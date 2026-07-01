@@ -119,3 +119,16 @@ export function recallDbPath(): string {
   // (and avoids touching Electron's `app` when run outside the app).
   return process.env.STEM_RECALL_DB ?? join(userDataRoot(), 'recall.sqlite');
 }
+
+/**
+ * Stem-owned chat-search index (FTS5 over every chat's title + messages). Kept in
+ * its OWN database, physically separate from recall.sqlite, because "search my own
+ * chats" deliberately does NOT obey the AI's memorize/taint rules — you must be able
+ * to find a chat even if it was marked don't-remember. Backfilled from the JSONL
+ * session files, so its coverage is complete and independent of when recall started.
+ */
+export function chatSearchDbPath(): string {
+  // STEM_CHAT_SEARCH_DB lets probe/verification scripts point at a throwaway database
+  // (and avoids touching Electron's `app` when run outside the app).
+  return process.env.STEM_CHAT_SEARCH_DB ?? join(userDataRoot(), 'chat_search.sqlite');
+}

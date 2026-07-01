@@ -136,6 +136,8 @@ const api: StemApi = {
   setTidyThreshold: (n: number) => ipcRenderer.invoke('memory:setTidyThreshold', n),
 
   listChats: () => ipcRenderer.invoke('chats:list'),
+  searchChatsFast: (query: string) => ipcRenderer.invoke('chats:searchFast', query),
+  searchChats: (query: string) => ipcRenderer.invoke('chats:search', query),
   openChat: (threadId: string) => ipcRenderer.invoke('chats:open', threadId),
   rollbackToTurn: (threadId: string, turnId: string) =>
     ipcRenderer.invoke('chats:rollbackToTurn', threadId, turnId),

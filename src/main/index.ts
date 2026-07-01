@@ -52,6 +52,8 @@ import { setRetrievalClients } from './recall/retrieval';
 import { createHttpEmbeddingsClient } from './recall/embeddings';
 import { createHttpRerankClient } from './recall/rerank';
 import type { LlmClient } from './recall/llm';
+import { searchChats, searchChatsLexical } from './chatsearch/search';
+import { backfillChatIndex, reindexChatThread, dropChatThread } from './chatsearch/index-sync';
 import {
   readSettings,
   updateCustomInstructions,
@@ -796,6 +798,22 @@ function registerIpc(): void {
   };
 
   ipcMain.handle('chats:list', () => chatList());
+  // Cross-language chat search: expand the query across Slovak+English (via the same
+  // hidden LlmClient seam as recall), then match the dedicated FTS5 chat index. The
+  // LLM is used regardless of the memory toggle — this is a foreground, user-initiated
+  // search, not background capture — and degrades to same-language search if it fails.
+  // Instant same-language results (no LLM) — the renderer shows these first, then swaps
+  // in the cross-language superset from chats:search when expansion resolves.
+  ipcMain.handle('chats:searchFast', (_e, query: string) =>
+    searchChatsLexical(query, { llm: null, listChats: () => runtime!.listThreads() })
+  );
+  ipcMain.handle('chats:search', (_e, query: string) => {
+    // Reuse the hidden one-shot seam (on the memory model) for query expansion.
+    const llm: LlmClient = {
+      complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).memory.model })
+    };
+    return searchChats(query, { llm, listChats: () => runtime!.listThreads() });
+  });
   ipcMain.handle('chats:open', async (_e, threadId: string) => {
     // Opening the overlay's live thread from the sidebar is an implicit hand-off:
     // route its events to the main window and drop the overlay/HUD so the two
@@ -821,7 +839,11 @@ function registerIpc(): void {
   ipcMain.handle('chats:forkThread', (_e, threadId: string, turnId: string) =>
     runtime!.forkThread(threadId, turnId)
   );
-  ipcMain.handle('chats:rename', (_e, threadId: string, name: string) => runtime!.renameThread(threadId, name));
+  ipcMain.handle('chats:rename', async (_e, threadId: string, name: string) => {
+    await runtime!.renameThread(threadId, name);
+    // The title is indexed for search too — reflect the new name right away.
+    void reindexChatThread(runtime!, threadId);
+  });
   ipcMain.handle('chats:delete', async (_e, threadId: string) => {
     // Independent stores (pi session file vs. folder-assignment JSON) — run concurrently.
     // Also drop any scheduled tasks bound to this chat (they'd otherwise run into a
@@ -831,6 +853,7 @@ function registerIpc(): void {
       removeChat(threadId),
       scheduler?.removeForThread(threadId) ?? Promise.resolve()
     ]);
+    dropChatThread(threadId); // forget it from the search index
   });
   ipcMain.handle('chats:setFolder', async (_e, threadId: string, folderId: string | null) => {
     await setChatFolder(threadId, folderId);
@@ -1201,11 +1224,23 @@ app.whenReady().then(async () => {
       }
       if (event.method === 'turn/completed') scheduleDistill();
     }
+    // Chat search indexes the user's own chats in full — independent of the memory
+    // toggle and of recall's memorize:false/taint gating (you must be able to find a
+    // chat even if it was marked don't-remember). Re-index this thread once its turn
+    // lands so the new messages are searchable without a relaunch.
+    if (threadId && event.method === 'turn/completed') {
+      void reindexChatThread(runtime!, threadId);
+    }
   });
 
   // Kick off a distillation pass shortly after startup so any messages captured
   // before the app last quit get turned into durable facts.
   scheduleDistill(20_000);
+
+  // Backfill the chat-search index in the background a little after startup (never
+  // blocking it). The per-thread watermark makes this a near no-op on every relaunch —
+  // only chats changed since they were last indexed (or edited externally) get reread.
+  setTimeout(() => void backfillChatIndex(runtime!), 8_000);
 
   // Strict CSP for the renderer in production: only self, no remote/inline
   // script. Skipped in dev so the Vite dev server / HMR can run.

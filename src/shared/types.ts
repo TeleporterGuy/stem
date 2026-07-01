@@ -634,6 +634,18 @@ export interface ChatSummary {
   updatedAt: number;
 }
 
+/** One chat matched by the sidebar search, with a snippet of why it matched. */
+export interface ChatSearchHit {
+  threadId: string;
+  title: string;
+  /** FTS5 snippet of the best-matching message; «…» wrap the matched terms. */
+  snippet: string;
+  /** bm25 score of the best-matching doc (lower = better). */
+  score: number;
+  /** Unix seconds of the matched message (0 for a title-only match). */
+  ts: number;
+}
+
 /** Full chat contents for replay when a chat is opened. */
 export interface ChatHistory {
   threadId: string;
@@ -964,6 +976,10 @@ export interface StemApi {
   // Chats + folders. Folder mutations return the fresh list (like addMcpServer);
   // chat rename/delete return void and the renderer re-fetches.
   listChats(): Promise<ChatListResult>;
+  /** Same-language (no-LLM) full-text search — instant; shown first by the renderer. */
+  searchChatsFast(query: string): Promise<ChatSearchHit[]>;
+  /** Cross-language (Slovak/English) search — expands the query, then matches. */
+  searchChats(query: string): Promise<ChatSearchHit[]>;
   openChat(threadId: string): Promise<ChatHistory>;
   /** Drop the given turn and every later turn from the thread (retry/edit re-run). */
   rollbackToTurn(threadId: string, turnId: string): Promise<void>;

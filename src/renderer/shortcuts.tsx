@@ -30,6 +30,7 @@ export type ShortcutId =
   | 'attach'
   | 'stop'
   | 'delete-thread'
+  | 'focus-chat-search'
   | 'send';
 
 interface Binding {
@@ -51,6 +52,7 @@ export const BINDINGS: Binding[] = [
   { id: 'toggle-speed', glyphs: '⌘⇧F', match: (e) => mod(e) && e.shiftKey && isKey(e, 'f') },
   { id: 'toggle-format', glyphs: '⌘⇧M', match: (e) => mod(e) && e.shiftKey && isKey(e, 'm') },
   { id: 'attach', glyphs: '⌘U', match: (e) => mod(e) && !e.shiftKey && isKey(e, 'u') },
+  { id: 'focus-chat-search', glyphs: '⌘F', match: (e) => mod(e) && !e.shiftKey && isKey(e, 'f') },
   { id: 'stop', glyphs: '⌘.', match: (e) => mod(e) && isKey(e, '.') },
   // Control (not ⌘) — the only ctrl-based binding; no hold-⌘ hint anchors it.
   { id: 'delete-thread', glyphs: '⌃X', match: (e) => e.ctrlKey && !e.metaKey && !e.altKey && isKey(e, 'x') },

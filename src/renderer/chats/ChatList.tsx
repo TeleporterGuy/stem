@@ -6,9 +6,12 @@ import {
   FolderOpen,
   FolderPlus,
   MessageSquare,
-  SquarePen
+  Search,
+  SquarePen,
+  X
 } from 'lucide-react';
-import type { ChatListResult, ChatSummary, Folder, ThreadStatus } from '../../shared/types';
+import type { ChatListResult, ChatSearchHit, ChatSummary, Folder, ThreadStatus } from '../../shared/types';
+import { useShortcut } from '../shortcuts';
 
 export interface ChatListProps {
   data: ChatListResult;
@@ -53,6 +56,28 @@ function dateBucket(ts: number, now: number): { key: string; label: string } {
   return { key: `y-${d.getFullYear()}`, label: String(d.getFullYear()) };
 }
 
+// Turn an FTS5 snippet (matched terms wrapped in «…») into highlighted nodes. Split
+// on the sentinels rather than injecting HTML so snippet text can never be markup.
+function highlightSnippet(snippet: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let key = 0;
+  snippet.split('«').forEach((chunk, idx) => {
+    if (idx === 0) {
+      if (chunk) nodes.push(chunk);
+      return;
+    }
+    const close = chunk.indexOf('»');
+    if (close === -1) {
+      nodes.push(chunk);
+      return;
+    }
+    nodes.push(<mark key={key++}>{chunk.slice(0, close)}</mark>);
+    const rest = chunk.slice(close + 1);
+    if (rest) nodes.push(rest);
+  });
+  return nodes;
+}
+
 const STATUS_LABEL: Record<ThreadStatus, string> = {
   idle: '',
   running: 'Generating…',
@@ -75,6 +100,83 @@ export function ChatList(props: ChatListProps) {
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [dropTarget, setDropTarget] = useState<string | 'root' | null>(null);
+
+  // ---- search ----
+  // The search box is collapsed to a header icon by default so it costs no vertical
+  // space until wanted; the icon (or ⌘F) surfaces it.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  // null = not searching (show the tree); array = results for the last run query.
+  const [results, setResults] = useState<ChatSearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Guards against a slow expansion+search resolving after a newer one (or a clear).
+  const searchSeq = useRef(0);
+
+  const clearSearch = useCallback(() => {
+    searchSeq.current += 1; // invalidate any in-flight run
+    setQuery('');
+    setResults(null);
+    setSearching(false);
+  }, []);
+
+  // Collapse the box back to the icon and drop any query/results (returns to the tree).
+  const closeSearch = useCallback(() => {
+    clearSearch();
+    setSearchOpen(false);
+  }, [clearSearch]);
+
+  // Focus (and select) the input whenever the box is surfaced.
+  useEffect(() => {
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }
+  }, [searchOpen]);
+
+  const runSearch = useCallback(async () => {
+    const q = query.trim();
+    if (!q) {
+      clearSearch();
+      return;
+    }
+    const seq = ++searchSeq.current;
+    setSearching(true);
+    // Two-phase for snappy feel: instant same-language results, then the cross-language
+    // superset once query expansion resolves. The expanded set ⊇ the fast set, so the
+    // swap only ever adds; `expanded` guards the fast result from clobbering it if it
+    // happens to arrive later.
+    let expanded = false;
+    window.stem
+      .searchChatsFast(q)
+      .then((hits) => {
+        if (searchSeq.current === seq && !expanded) setResults(hits);
+      })
+      .catch(() => {});
+    try {
+      const hits = await window.stem.searchChats(q);
+      if (searchSeq.current === seq) {
+        expanded = true;
+        setResults(hits);
+      }
+    } catch {
+      if (searchSeq.current === seq) {
+        expanded = true;
+        setResults((prev) => prev ?? []);
+      }
+    } finally {
+      if (searchSeq.current === seq) setSearching(false);
+    }
+  }, [query, clearSearch]);
+
+  // ⌘F surfaces the search box (the effect focuses it); if already open, refocus.
+  useShortcut('focus-chat-search', () => {
+    if (!searchOpen) setSearchOpen(true);
+    else {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }
+  });
 
   const closeMenu = useCallback(() => setMenu(null), []);
 
@@ -283,6 +385,32 @@ export function ChatList(props: ChatListProps) {
       </div>
     );
 
+  // Flat, ranked search results replace the tree while a search is active. Rows reuse
+  // the chat-row look but carry a why-it-matched snippet and skip drag/drop + context
+  // menus (search is a jump-to affordance, not an organizing surface).
+  const renderResults = (): React.ReactNode => {
+    // Show whatever we have (the instant fast results) even while the cross-language
+    // pass is still refining; only fall back to a status line when there's nothing yet.
+    if (!results || results.length === 0) {
+      return <div className="group-row search-status">{searching ? 'Searching…' : 'No matching chats.'}</div>;
+    }
+    return results.map((hit) => (
+      <div
+        key={hit.threadId}
+        className={`group-row chat-row search-result${hit.threadId === activeThreadId ? ' selected' : ''}`}
+        onClick={() => onOpen(hit.threadId)}
+      >
+        <span className="row-icon chat">
+          <MessageSquare size={13} />
+        </span>
+        <span className="row-main">
+          <strong>{hit.title}</strong>
+          {hit.snippet && <span className="chat-snippet">{highlightSnippet(hit.snippet)}</span>}
+        </span>
+      </div>
+    ));
+  };
+
   const isEmpty = data.chats.length === 0 && data.folders.length === 0;
 
   return (
@@ -290,6 +418,13 @@ export function ChatList(props: ChatListProps) {
       <div className="grp-head chats-head">
         <span>Chats</span>
         <span className="grp-head-actions">
+          <button
+            className={`grp-head-add${searchOpen ? ' active' : ''}`}
+            title="Search chats (⌘F)"
+            onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+          >
+            <Search size={14} />
+          </button>
           <button
             className="grp-head-add"
             title="New thread"
@@ -306,39 +441,76 @@ export function ChatList(props: ChatListProps) {
           </button>
         </span>
       </div>
+      {searchOpen && (
+        <div className="chat-search">
+          <Search size={13} className="chat-search-icon" />
+          <input
+            ref={searchInputRef}
+            className="chat-search-input"
+            type="text"
+            placeholder="Search chats…"
+            value={query}
+            onChange={(e) => {
+              const v = e.target.value;
+              setQuery(v);
+              if (!v.trim()) clearSearch(); // emptying the box returns to the tree
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void runSearch();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeSearch(); // Esc collapses the box back to the icon
+              }
+            }}
+          />
+          {query && (
+            <button className="chat-search-clear" title="Clear search" onClick={clearSearch}>
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      )}
       <div
         className={`group chats-group${dropTarget === 'root' ? ' drop-target' : ''}`}
         onDragOver={allowDrop('root')}
         onDragLeave={() => setDropTarget((t) => (t === 'root' ? null : t))}
         onDrop={onDrop(null)}
       >
-        {isEmpty && !creating && (
-          <div className="group-row">
-            <span className="row-main">
-              <em>No chats yet — start a conversation.</em>
-            </span>
-          </div>
+        {searching || results !== null ? (
+          renderResults()
+        ) : (
+          <>
+            {isEmpty && !creating && (
+              <div className="group-row">
+                <span className="row-main">
+                  <em>No chats yet — start a conversation.</em>
+                </span>
+              </div>
+            )}
+            {childFolders(null).map((f) => renderFolder(f, 0))}
+            {(() => {
+              const now = Date.now();
+              let lastKey: string | null = null;
+              const rows: React.ReactNode[] = [];
+              for (const c of folderChats(null)) {
+                const b = dateBucket(c.updatedAt, now);
+                if (b.key !== lastKey) {
+                  rows.push(
+                    <div key={`h-${b.key}`} className="chat-date-head">
+                      {b.label}
+                    </div>
+                  );
+                  lastKey = b.key;
+                }
+                rows.push(renderChat(c, 0));
+              }
+              return rows;
+            })()}
+            {creating && creating.parentId === null && renderCreateRow(0)}
+          </>
         )}
-        {childFolders(null).map((f) => renderFolder(f, 0))}
-        {(() => {
-          const now = Date.now();
-          let lastKey: string | null = null;
-          const rows: React.ReactNode[] = [];
-          for (const c of folderChats(null)) {
-            const b = dateBucket(c.updatedAt, now);
-            if (b.key !== lastKey) {
-              rows.push(
-                <div key={`h-${b.key}`} className="chat-date-head">
-                  {b.label}
-                </div>
-              );
-              lastKey = b.key;
-            }
-            rows.push(renderChat(c, 0));
-          }
-          return rows;
-        })()}
-        {creating && creating.parentId === null && renderCreateRow(0)}
       </div>
       {menu && (
         <div
