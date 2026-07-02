@@ -1,5 +1,5 @@
 import type { PiEvent } from './rpc';
-import type { TurnUsage } from '../../shared/types';
+import type { ActivityItem, SourceRef, TurnUsage } from '../../shared/types';
 
 // Translate pi's RPC event stream into Stem's canonical backend events (the
 // { method, params } envelopes the renderer/HUD/recall consume).
@@ -57,6 +57,10 @@ export interface TurnContext {
   phase: 'pending' | 'thinking' | 'tool' | 'answer';
   lastEventAt?: number; // epoch ms of the last normalized event, for interval attribution
   timing?: TurnTimingBreakdown; // stashed by reportTurnTiming so recordTurnEntry can persist it
+  /** Tool calls + native web searches this turn, in start order (drives activity rows). */
+  activity: ActivityItem[];
+  /** Web sources recovered from native web search (deduped by url). */
+  sources: SourceRef[];
 }
 
 /** The breakdown object PiRuntime.reportTurnTiming builds and emits as `turn/timing`. */
@@ -85,7 +89,9 @@ export function newTurnContext(threadId: string, turnId: string): TurnContext {
     thinkingMs: 0,
     toolMs: 0,
     answerMs: 0,
-    phase: 'pending'
+    phase: 'pending',
+    activity: [],
+    sources: []
   };
 }
 
@@ -190,6 +196,32 @@ function detailFromArgs(src: Record<string, unknown> | undefined): string | unde
   return undefined;
 }
 
+/**
+ * Build an ActivityItem for a tool call — from a live tool_execution_start or a
+ * replayed session `toolCall` content block. Unwraps the MCP router's invoke_tool
+ * meta-tool so the row stays specific. `fallbackDetail` covers the live path where
+ * the target may ride on the event itself rather than the args object.
+ */
+export function toolCallActivity(
+  id: string,
+  rawName: string | undefined,
+  args: Record<string, unknown> | undefined,
+  fallbackDetail?: string
+): ActivityItem {
+  let name = rawName;
+  let detail = detailFromArgs(args) ?? fallbackDetail;
+  if (name === 'invoke_tool') {
+    const real = typeof args?.tool === 'string' ? args.tool : undefined;
+    if (real) {
+      name = real;
+      const innerArgs = args?.args as Record<string, unknown> | undefined;
+      detail = detailFromArgs(innerArgs) ?? (typeof args?.server === 'string' ? args.server : undefined);
+    }
+  }
+  const type = toolItemType(name);
+  return { id, kind: type === 'webSearch' ? 'webSearch' : 'tool', type, name, detail, status: 'running' };
+}
+
 /** Pull a short, human target string (file/command/query) from a tool-start event. */
 function toolDetail(ev: PiEvent): string | undefined {
   const nested = (ev.toolInput ?? ev.args ?? ev.input ?? ev.arguments ?? ev.params) as
@@ -241,28 +273,36 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       break;
     }
     case 'tool_execution_start': {
-      let name = ev.toolName as string | undefined;
-      let detail = toolDetail(ev);
-      // Router unwrap: the bridge's invoke_tool wraps the real call as
-      // { server, tool, args }. Recover the underlying tool name + target so the
-      // activity label stays specific ("Searching the web…") instead of collapsing
-      // to "Using invoke_tool…".
-      if (name === 'invoke_tool') {
-        const inp = (ev.toolInput ?? ev.args ?? ev.input ?? ev.arguments ?? ev.params) as
-          | Record<string, unknown>
-          | undefined;
-        const real = typeof inp?.tool === 'string' ? inp.tool : undefined;
-        if (real) {
-          name = real;
-          const innerArgs = inp?.args as Record<string, unknown> | undefined;
-          detail = detailFromArgs(innerArgs) ?? (typeof inp?.server === 'string' ? inp.server : undefined);
-        }
-      }
-      const type = toolItemType(name);
+      const nested = (ev.toolInput ?? ev.args ?? ev.input ?? ev.arguments ?? ev.params) as
+        | Record<string, unknown>
+        | undefined;
+      const item = toolCallActivity(
+        String(ev.toolCallId ?? turnId),
+        ev.toolName as string | undefined,
+        nested,
+        toolDetail(ev)
+      );
+      if (!ctx.activity.some((a) => a.id === item.id)) ctx.activity.push(item);
       out.push({
         method: 'item/started',
         params: {
-          item: { type, id: String(ev.toolCallId ?? turnId), name, detail },
+          item: { type: item.type, id: item.id, name: item.name, detail: item.detail },
+          threadId,
+          turnId
+        }
+      });
+      break;
+    }
+    case 'tool_execution_end': {
+      const id = String(ev.toolCallId ?? '');
+      const entry = ctx.activity.find((a) => a.id === id);
+      if (!entry) break; // an end without a tracked start (or unkeyed) — nothing to flip
+      const result = ev.result as { isError?: boolean } | undefined;
+      entry.status = ev.isError === true || result?.isError === true ? 'error' : 'ok';
+      out.push({
+        method: 'item/completed',
+        params: {
+          item: { type: entry.type, id, name: entry.name, detail: entry.detail, status: entry.status },
           threadId,
           turnId
         }

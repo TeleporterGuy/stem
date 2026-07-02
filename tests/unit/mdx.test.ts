@@ -91,3 +91,48 @@ describe('MDX interactive components', () => {
     expect(jsxNamed('<Marquee>hi</Marquee>', 'Marquee')).toBeTruthy();
   });
 });
+
+// splitMdBlocks backs StreamingMdxView's incremental streaming parse: blocks
+// split on blank lines OUTSIDE fenced code, so stable (already-complete) blocks
+// are parsed exactly once while only the trailing block re-parses per delta.
+import { splitMdBlocks } from '../../src/renderer/mdx/render';
+
+describe('splitMdBlocks', () => {
+  it('splits paragraphs on blank lines', () => {
+    expect(splitMdBlocks('one\n\ntwo\n\nthree')).toEqual(['one', 'two', 'three']);
+  });
+
+  it('keeps a fenced code block with internal blank lines as one block', () => {
+    const text = 'intro\n\n```ts\nconst a = 1;\n\nconst b = 2;\n```\n\noutro';
+    expect(splitMdBlocks(text)).toEqual(['intro', '```ts\nconst a = 1;\n\nconst b = 2;\n```', 'outro']);
+  });
+
+  it('supports ~~~ fences and does not close on the other fence char', () => {
+    const text = '~~~\na\n\n```\nb\n~~~\n\ntail';
+    expect(splitMdBlocks(text)).toEqual(['~~~\na\n\n```\nb\n~~~', 'tail']);
+  });
+
+  it('treats an unterminated fence as part of the trailing block (mid-stream)', () => {
+    const text = 'para\n\n```py\nprint(1)\n\nprint(2)';
+    expect(splitMdBlocks(text)).toEqual(['para', '```py\nprint(1)\n\nprint(2)']);
+  });
+
+  it('handles empty and blank-only input', () => {
+    expect(splitMdBlocks('')).toEqual([]);
+    expect(splitMdBlocks('\n\n\n')).toEqual([]);
+  });
+
+  it('is append-stable: earlier blocks never change as text grows', () => {
+    const full = '# Title\n\npara one\n\n- a\n- b\n\n```js\ncode()\n```\n\nlast para';
+    let prev: string[] = [];
+    for (let i = 1; i <= full.length; i++) {
+      const blocks = splitMdBlocks(full.slice(0, i));
+      // All blocks except the last must be an exact prefix of the final split.
+      for (let b = 0; b < blocks.length - 1; b++) {
+        if (b < prev.length - 1) expect(blocks[b]).toBe(prev[b]);
+      }
+      prev = blocks;
+    }
+    expect(prev).toEqual(splitMdBlocks(full));
+  });
+});

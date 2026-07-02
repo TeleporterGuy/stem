@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import type {
+  ActivityItem,
   BackendEventEnvelope,
   ChatMessage,
   ChatSummary,
@@ -46,6 +47,7 @@ import {
   newTurnContext,
   normalizePiEvent,
   phaseOfEvents,
+  toolCallActivity,
   toTurnUsage,
   type NormalizedEvent,
   type PiUsage,
@@ -53,7 +55,9 @@ import {
   type TurnTimingBreakdown
 } from './normalize';
 import {
+  getTurnActivitiesByThread,
   getTurnTimingsByThread,
+  upsertTurnActivity,
   upsertTurnTiming,
   setActiveFacts,
   type Fact,
@@ -232,6 +236,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * wrong model (e.g. a vision request silently downgraded to text-only Spark).
    */
   private currentModel: string | null = null;
+  /**
+   * The thinking level of the CURRENTLY active pi session, mirrored like
+   * `currentModel` so `setThinking` can skip the redundant `set_thinking_level`
+   * round-trip issued on every turn. Sessions persist their own level, so this
+   * follows the exact same invalidation discipline: null on every session change.
+   */
+  private currentThinking: string | null = null;
   /** sessionId → on-disk session file, learned from get_state / dir scans. */
   private sessionFiles = new Map<string, string>();
   /**
@@ -571,8 +582,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     let title = 'New chat';
     const messages: ChatMessage[] = [];
     let lastUserId = '';
-    // Persisted answer-time breakdowns, keyed by the final assistant entry id.
+    // Persisted answer-time breakdowns + tool activity, keyed by the final
+    // assistant entry id.
     const timings = getTurnTimingsByThread(threadId);
+    const activities = getTurnActivitiesByThread(threadId);
+    // Fallback for turns predating the sqlite activity rows: synthesize activity
+    // items from the session's own persisted toolCall blocks + toolResult entries.
+    let pendingActivity: ActivityItem[] = [];
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
       let entry: {
@@ -580,7 +596,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         id?: string;
         name?: string;
         timestamp?: string;
-        message?: { role?: string; content?: unknown; usage?: PiUsage };
+        message?: { role?: string; content?: unknown; usage?: PiUsage; toolCallId?: string; isError?: boolean };
       };
       try {
         entry = JSON.parse(line);
@@ -593,9 +609,15 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       }
       if (entry.type !== 'message' || !entry.message) continue;
       const role = entry.message.role;
+      if (role === 'toolResult') {
+        const hit = pendingActivity.find((a) => a.id === entry.message?.toolCallId);
+        if (hit && entry.message.isError === true) hit.status = 'error';
+        continue;
+      }
       const { text: content, images, scheduled } = this.contentToParts(entry.message.content);
       if (role === 'user') {
         lastUserId = entry.id ?? lastUserId;
+        pendingActivity = [];
         if (content.trim() || images.length)
           messages.push({
             id: `user-${entry.id}`,
@@ -607,16 +629,39 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             ...(scheduled ? { scheduled } : {})
           });
       } else if (role === 'assistant') {
+        if (Array.isArray(entry.message.content)) {
+          for (const block of entry.message.content as Array<Record<string, unknown>>) {
+            if (block?.type !== 'toolCall' || typeof block.id !== 'string') continue;
+            if (pendingActivity.some((a) => a.id === block.id)) continue;
+            const item = toolCallActivity(
+              block.id,
+              typeof block.name === 'string' ? block.name : undefined,
+              block.arguments as Record<string, unknown> | undefined
+            );
+            // History has no live spinner — assume ok until a toolResult says error.
+            item.status = 'ok';
+            pendingActivity.push(item);
+          }
+        }
         if (content.trim()) {
           const timing = entry.id ? timings.get(entry.id) : undefined;
           const usage = toTurnUsage(entry.message.usage);
+          const persisted = entry.id ? activities.get(entry.id) : undefined;
+          const activity = persisted?.activity?.length
+            ? persisted.activity
+            : pendingActivity.length
+              ? [...pendingActivity]
+              : undefined;
+          const sources = persisted?.sources?.length ? persisted.sources : undefined;
           messages.push({
             id: `assistant-${entry.id}`,
             role: 'assistant',
             content,
             turnId: lastUserId || entry.id,
             ...(timing ? { timing } : {}),
-            ...(usage ? { usage } : {})
+            ...(usage ? { usage } : {}),
+            ...(activity ? { activity } : {}),
+            ...(sources ? { sources } : {})
           });
         }
       }
@@ -680,8 +725,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       await this.proc!.request({ type: 'new_session' }).catch(() => undefined);
       await writeFile(file, lines.slice(0, idx).join('\n') + '\n');
       await this.proc!.request({ type: 'switch_session', sessionPath: file });
-      // Both RPCs above swap the active session's model out from under us.
+      // Both RPCs above swap the active session's model/thinking out from under us.
       this.currentModel = null;
+      this.currentThinking = null;
       this.activeThreadId = threadId;
     });
   }
@@ -707,8 +753,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const state = await this.proc!.request({ type: 'get_state' });
       const newId = this.recordState(state.data);
       if (!newId) throw new Error('pi did not return a forked session id.');
-      // The fork becomes the active session — invalidate the model mirror.
+      // The fork becomes the active session — invalidate the model/thinking mirrors.
       this.currentModel = null;
+      this.currentThinking = null;
       this.activeThreadId = newId;
       return { threadId: newId };
     });
@@ -788,7 +835,21 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   async configMcpServerReload(): Promise<void> {
-    await this.restart();
+    // A reload is a full pi restart. Pay the cold-start cost HERE (spawn + MCP
+    // connect + re-activating the previous thread/model) instead of lazily on the
+    // next user turn — a user turn queued behind this gate then starts warm.
+    const prevThread = this.activeThreadId;
+    const prevModel = this.currentModel;
+    await this.shutdown();
+    await this.foreground.run(async () => {
+      await this.ensureStarted();
+      try {
+        if (prevThread) await this.ensureActive(prevThread);
+        if (prevModel) await this.applyModel(prevModel);
+      } catch {
+        // Best-effort warm-up; the next turn re-establishes state on the normal path.
+      }
+    });
   }
 
   setTaskBridge(bridge: TaskBridge | null): void {
@@ -895,6 +956,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     });
     this.proc = proc;
     this.currentModel = `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`;
+    // A fresh process starts a fresh session whose thinking level is unknown to us.
+    this.currentThinking = null;
 
     proc.on('event', (ev: PiEvent) => this.onPiEvent(ev));
     proc.on('stderr', (text: string) => this.emitEvent('process/stderr', { text }));
@@ -915,6 +978,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private onPiEvent(ev: PiEvent): void {
     if (ev.type === 'extension_ui_request') {
       const id = ev.id as string;
+      // The bridge's web-search tee (fire-and-forget notify; no response needed).
+      if (ev.method === 'notify') {
+        const msg = ev.message as string | undefined;
+        if (typeof msg === 'string' && msg.includes('stemWebSearch')) this.handleWebSearchTee(msg);
+        return;
+      }
       // The bridge's MCP add/remove approval → route to Stem's McpApprovalCard.
       if (ev.method === 'confirm' && ev.title === ADMIN_APPROVAL_TITLE) {
         this.handleAdminApproval(id, ev.message as string | undefined);
@@ -960,6 +1029,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       turn.endedAt = now;
       this.advancePhase(turn, [], now); // flush the trailing segment
       this.reportTurnTiming(turn);
+      // Web sources recovered by the tee ride out at turn end (the assistant
+      // bubble exists by now, so the renderer can attach them).
+      if (turn.sources.length) {
+        this.emitEvent('turn/sources', { threadId: turn.threadId, turnId: turn.turnId, sources: turn.sources });
+      }
       // The assistant may have created/patched a skill via manage_skill this turn;
       // detect it (the bridge bumps the rev marker) and reload at turn end.
       if (this.readSkillsRev() !== this.skillsRevAtTurnStart) {
@@ -970,6 +1044,68 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // Map this live turn's minted id to its persisted entry id so a later
       // fork/edit targets the right pi entry — and persist the turn's timing.
       void this.recordTurnEntry(turn);
+    }
+  }
+
+  /**
+   * A web-search event recovered by the bridge's provider-stream tee (native
+   * search runs server-side, so pi emits nothing for it — see the extension).
+   * Mapped onto the same item/started + item/completed events a function tool
+   * produces, so activity rows, the HUD label, and persistence all just work.
+   */
+  private handleWebSearchTee(message: string): void {
+    const turn = this.currentTurn;
+    if (!turn) return; // a tee event with no live turn — drop
+    interface TeePayload {
+      phase?: string;
+      id?: string;
+      query?: string;
+      status?: string;
+      url?: string;
+      title?: string;
+    }
+    let payload: TeePayload | null = null;
+    try {
+      payload = (JSON.parse(message) as { stemWebSearch?: TeePayload }).stemWebSearch ?? null;
+    } catch {
+      return;
+    }
+    if (!payload) return;
+    const { threadId, turnId } = turn;
+    if (payload.phase === 'source') {
+      const url = payload.url;
+      if (typeof url === 'string' && !turn.sources.some((s) => s.url === url)) {
+        turn.sources.push({ url, ...(payload.title ? { title: payload.title } : {}) });
+      }
+      return;
+    }
+    const id = payload.id ?? `websearch-${turn.activity.length}`;
+    if (payload.phase === 'started') {
+      if (!turn.activity.some((a) => a.id === id)) {
+        turn.activity.push({
+          id,
+          kind: 'webSearch',
+          type: 'webSearch',
+          name: 'web_search',
+          detail: payload.query,
+          status: 'running'
+        });
+      }
+      this.emitEvent('item/started', {
+        item: { type: 'webSearch', id, name: 'web_search', detail: payload.query },
+        threadId,
+        turnId
+      });
+    } else if (payload.phase === 'completed') {
+      const entry = turn.activity.find((a) => a.id === id);
+      if (!entry) return;
+      entry.status = payload.status === 'failed' ? 'error' : 'ok';
+      if (payload.query) entry.detail = payload.query; // the query often only fills in at done
+      this.emitEvent('item/completed', {
+        item: { type: 'webSearch', id, name: 'web_search', detail: entry.detail, status: entry.status },
+        threadId,
+        turnId
+      });
     }
   }
 
@@ -1063,6 +1199,15 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           ttftMs: b.sendToFirstTokenMs,
           buildMs: b.buildMs,
           recallMs: b.recall.total
+        });
+      }
+      // Persist the turn's tool activity + web sources next to the timing (same
+      // entry-id keying) so activity rows survive reopen.
+      if (turn.activity.length || turn.sources.length) {
+        upsertTurnActivity({
+          turnEntryId: last.entryId,
+          threadId: turn.threadId,
+          payload: { activity: turn.activity, sources: turn.sources }
         });
       }
     } catch {
@@ -1183,8 +1328,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private async newSession(): Promise<string> {
     await this.proc!.request({ type: 'new_session' });
     // A fresh pi session resets the active model to the spawn default — invalidate the
-    // mirror so the next applyModel re-issues set_model for the caller's chosen model.
+    // mirrors so the next applyModel/setThinking re-issue their RPCs.
     this.currentModel = null;
+    this.currentThinking = null;
     const state = await this.proc!.request({ type: 'get_state' });
     const id = this.recordState(state.data);
     if (!id) throw new Error('pi did not return a session id.');
@@ -1203,8 +1349,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       return id;
     }
     await this.proc!.request({ type: 'switch_session', sessionPath: file });
-    // The loaded session restores its OWN persisted model — invalidate the mirror.
+    // The loaded session restores its OWN persisted model/thinking — invalidate the mirrors.
     this.currentModel = null;
+    this.currentThinking = null;
     this.activeThreadId = threadId;
     return threadId;
   }
@@ -1218,7 +1365,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
   private async setThinking(effort: string): Promise<void> {
     const level = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort) ? effort : 'medium';
-    await this.proc!.request({ type: 'set_thinking_level', level }).catch(() => undefined);
+    if (level === this.currentThinking) return;
+    const res = await this.proc!.request({ type: 'set_thinking_level', level }).catch(() => null);
+    if (res?.success) this.currentThinking = level;
   }
 
   private parseModel(model: string): { provider: string; modelId: string } {

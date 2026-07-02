@@ -26,9 +26,11 @@ import {
   ChevronRight,
   Clock
 } from 'lucide-react';
-import type { ChatMessage, EscapeAction, ModelSummary, TurnAttachment, TurnTiming } from '../../shared/types';
+import type { ActivityItem, ChatMessage, EscapeAction, ModelSummary, TurnAttachment, TurnTiming } from '../../shared/types';
+import { ActivityRows, SourcesList } from './ActivityRows';
 import { ContextMeter } from './ContextMeter';
 import { MdxView } from './MdxView';
+import { StreamingMdxView } from './StreamingMdxView';
 import { ShortcutHint, useShortcut } from '../shortcuts';
 import { MdxActionContext } from '../mdx/ActionContext';
 import { mdxFeatureLabels } from '../mdx/components';
@@ -67,6 +69,8 @@ interface ChatViewProps {
   running: boolean;
   streamingId: string | null;
   activity: string | null;
+  /** Tool calls/web searches of the in-flight turn (live activity rows). */
+  activities?: ActivityItem[];
   onSend: (text: string, attachments: TurnAttachment[]) => void;
   onInterrupt: () => void;
   /** Escape-key behavior in the composer (off / single / two-stage). */
@@ -174,6 +178,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   running,
   streamingId,
   activity,
+  activities = [],
   onSend,
   onInterrupt,
   escapeAction,
@@ -442,6 +447,9 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
               </span>
             )}
           </div>
+          {m.role === 'assistant' && !isEditing && (m.activity?.length ?? 0) > 0 && (
+            <ActivityRows items={m.activity!} running={running && isStreaming} />
+          )}
           {isEditing ? (
             <div className="message-edit">
               <textarea
@@ -474,11 +482,18 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
               </div>
             </div>
           ) : renderRich ? (
-            <MdxView text={m.content} />
+            isStreaming ? (
+              <StreamingMdxView text={m.content} />
+            ) : (
+              <MdxView text={m.content} />
+            )
           ) : isStreaming && !m.content && showActivity ? (
             activityIndicator
           ) : (
             <div className="message-plain">{m.content}</div>
+          )}
+          {m.role === 'assistant' && !isEditing && (m.sources?.length ?? 0) > 0 && (
+            <SourcesList sources={m.sources!} />
           )}
           {!isEditing && m.attachments && m.attachments.length > 0 && (
             <div className="message-attachments">
@@ -597,7 +612,11 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
         {showActivity && !streamingMsg && (
           <div className="message message-assistant activity-row">
             <div className="msg-avatar stem">{AVATAR.assistant.icon}</div>
-            <div className="message-body">{activityIndicator}</div>
+            <div className="message-body">
+              {activities.length > 0 && <ActivityRows items={activities} running />}
+              {/* The generic dots only when no tool row is already pulsing. */}
+              {!activities.some((a) => a.status === 'running') && activityIndicator}
+            </div>
           </div>
         )}
         <div ref={endRef} />

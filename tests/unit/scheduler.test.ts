@@ -250,3 +250,122 @@ describe('TaskScheduler.runNow + management', () => {
     scheduler.stop();
   });
 });
+
+// A runtime whose turns hang until the test settles them — for preemption tests.
+class HangingRuntime extends EventEmitter {
+  starts: StartTurnInput[] = [];
+  interrupted: string[] = [];
+  async startTurn(input: StartTurnInput) {
+    this.starts.push(input);
+    return { threadId: input.threadId, turnId: `turn-${this.starts.length}` };
+  }
+  async listThreads() {
+    return [{ threadId: 't1', title: '', folderId: null, createdAt: 0, updatedAt: 0 }];
+  }
+  settle(turnId: string, method = 'turn/completed') {
+    this.emit('event', { method, params: { threadId: 't1', turn: { id: turnId } } });
+  }
+}
+
+describe('TaskScheduler defer + preempt', () => {
+  it('defers a run while the user is active and starts once idle', async () => {
+    vi.useFakeTimers();
+    const runtime = new FakeRuntime();
+    let active = true;
+    const scheduler = new TaskScheduler({
+      runtime: runtime as never,
+      onChange: () => {},
+      onRun: () => {},
+      isUserActive: () => active,
+      interrupt: async () => {}
+    });
+    const res = await scheduler.create({ prompt: 'p', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+
+    await vi.advanceTimersByTimeAsync(5);
+    expect(runtime.starts).toHaveLength(0); // deferred, not started
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runtime.starts).toHaveLength(0); // still active, still deferred
+
+    active = false;
+    await vi.advanceTimersByTimeAsync(16_000); // next idle poll notices
+    expect(runtime.starts).toHaveLength(1);
+    scheduler.stop();
+  });
+
+  it('preempts an in-flight run for the user and re-queues it after idle', async () => {
+    vi.useFakeTimers();
+    const runtime = new HangingRuntime();
+    let active = false;
+    const scheduler = new TaskScheduler({
+      runtime: runtime as never,
+      onChange: () => {},
+      onRun: () => {},
+      isUserActive: () => active,
+      // Preemption aborts via the backend; the fake settles the turn as aborted.
+      interrupt: async (turnId) => {
+        runtime.interrupted.push(turnId);
+        runtime.settle(turnId, 'turn/aborted');
+      }
+    });
+    const res = await scheduler.create({ prompt: 'p', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await vi.advanceTimersByTimeAsync(5);
+    expect(runtime.starts).toHaveLength(1); // run started (user idle)
+
+    // The user sends a message: the scheduled turn is aborted, not failed.
+    active = true;
+    scheduler.preemptForUser();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(runtime.interrupted).toEqual(['turn-1']);
+    const afterPreempt = scheduler.snapshot().find((t) => t.id === res.task.id)!;
+    expect(afterPreempt.lastStatus).not.toBe('failed');
+    expect(afterPreempt.lastStatus).not.toBe('running');
+
+    // Once the user goes idle, the re-queued run fires again and completes.
+    active = false;
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(runtime.starts).toHaveLength(2);
+    runtime.settle('turn-2');
+    await vi.advanceTimersByTimeAsync(5);
+    expect(scheduler.snapshot().find((t) => t.id === res.task.id)!.lastStatus).toBe('ok');
+    scheduler.stop();
+  });
+
+  it('catch-up runs defer while the user is active', async () => {
+    vi.useFakeTimers();
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await saveTasks([
+      {
+        id: 'c',
+        threadId: 't1',
+        prompt: 'overdue',
+        schedule: { kind: 'cron', expr: '0 8 * * *' },
+        enabled: true,
+        createdAt: past,
+        nextRunAt: past,
+        title: 'overdue'
+      }
+    ]);
+    const runtime = new FakeRuntime();
+    let active = true;
+    const scheduler = new TaskScheduler({
+      runtime: runtime as never,
+      onChange: () => {},
+      onRun: () => {},
+      isUserActive: () => active,
+      interrupt: async () => {}
+    });
+    await scheduler.start();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(runtime.starts).toHaveLength(0); // catch-up waits for idle
+
+    active = false;
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(runtime.starts).toHaveLength(1);
+    scheduler.stop();
+  });
+});

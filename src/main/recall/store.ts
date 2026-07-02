@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { recallDbPath } from '../workspace/paths';
-import type { EmbeddingCacheStats, EpisodicStats, TurnTiming } from '../../shared/types';
+import type { ActivityItem, EmbeddingCacheStats, EpisodicStats, SourceRef, TurnTiming } from '../../shared/types';
 
 // Stem Recall's storage layer. Owns recall.sqlite end-to-end so the memory
 // system is decoupled from the chat backend (pi today, anything later).
@@ -172,6 +172,18 @@ function open(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_turn_timings_thread ON turn_timings(thread_id);
 
+    -- Per-turn tool-call activity + web sources, surfaced as collapsible rows on
+    -- the assistant message. Same keying discipline as turn_timings: the FINAL
+    -- assistant entry id, so readThread can attach it on reopen. payload is a JSON
+    -- { activity: ActivityItem[], sources: SourceRef[] } blob.
+    CREATE TABLE IF NOT EXISTS turn_activities (
+      turn_entry_id TEXT PRIMARY KEY,
+      thread_id     TEXT NOT NULL,
+      payload       TEXT NOT NULL,
+      created_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_turn_activities_thread ON turn_activities(thread_id);
+
     -- The durable facts injected on a thread's most recent turn — surfaced in the
     -- Memory UI so you can see what the model actually "knew about you". Keyed by
     -- thread so reopening an old chat still shows its last injected set. fact_ids is
@@ -336,6 +348,51 @@ export function getTurnTimingsByThread(threadId: string): Map<string, TurnTiming
       buildMs: r.buildMs,
       recallMs: r.recallMs
     });
+  }
+  return out;
+}
+
+/** A turn's persisted tool activity + web sources (see turn_activities). */
+export interface TurnActivityPayload {
+  activity: ActivityItem[];
+  sources: SourceRef[];
+}
+
+/** Persist (or replace) a turn's tool activity + sources. Best-effort; keyed by entry id. */
+export function upsertTurnActivity(rec: {
+  turnEntryId: string;
+  threadId: string;
+  payload: TurnActivityPayload;
+}): void {
+  const handle = open();
+  handle
+    .prepare(
+      `INSERT INTO turn_activities (turn_entry_id, thread_id, payload, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(turn_entry_id) DO UPDATE SET
+         thread_id = excluded.thread_id,
+         payload = excluded.payload`
+    )
+    .run(rec.turnEntryId, rec.threadId, JSON.stringify(rec.payload), nowSeconds());
+}
+
+/** Load a thread's persisted turn activities, keyed by final assistant entry id. */
+export function getTurnActivitiesByThread(threadId: string): Map<string, TurnActivityPayload> {
+  const handle = open();
+  const rows = handle
+    .prepare(`SELECT turn_entry_id AS entryId, payload FROM turn_activities WHERE thread_id = ?`)
+    .all(threadId) as Array<{ entryId: string; payload: string }>;
+  const out = new Map<string, TurnActivityPayload>();
+  for (const r of rows) {
+    try {
+      const parsed = JSON.parse(r.payload) as TurnActivityPayload;
+      out.set(r.entryId, {
+        activity: Array.isArray(parsed.activity) ? parsed.activity : [],
+        sources: Array.isArray(parsed.sources) ? parsed.sources : []
+      });
+    } catch {
+      // Malformed row — skip; the message just renders without rows.
+    }
   }
   return out;
 }

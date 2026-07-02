@@ -133,6 +133,45 @@ function renderNode(node: MdNode, key: string): ReactNode {
 }
 
 /**
+ * Split markdown into top-level blocks: boundary = blank line outside a fenced
+ * code block. Backs StreamingMdxView's incremental parse — in an append-only
+ * stream every block except the last is final, so it's parsed exactly once.
+ * Approximate on purpose (a loose list or table split by blank lines renders as
+ * separate blocks until completion); the settled message re-renders via the
+ * exact full parse, healing any transient artifacts.
+ */
+export function splitMdBlocks(text: string): string[] {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let fence: string | null = null; // the opening fence marker (``` or ~~~, possibly longer)
+  for (const line of text.split('\n')) {
+    const open = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      current.push(line);
+      // Closing fence: same char, at least as long, nothing else on the line.
+      const close = /^\s{0,3}(`{3,}|~{3,})\s*$/.exec(line);
+      if (close && close[1][0] === fence[0] && close[1].length >= fence.length) fence = null;
+      continue;
+    }
+    if (open) {
+      fence = open[1];
+      current.push(line);
+      continue;
+    }
+    if (!line.trim()) {
+      if (current.length) {
+        blocks.push(current.join('\n'));
+        current = [];
+      }
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length) blocks.push(current.join('\n'));
+  return blocks;
+}
+
+/**
  * Parse the safe MDX subset and render it to React. Tries MDX parsing first
  * (to recognize component tags); if the model emitted malformed JSX, falls back
  * to plain Markdown so the answer still renders. Never executes model code.

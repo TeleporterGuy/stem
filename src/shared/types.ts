@@ -49,6 +49,31 @@ export interface TurnUsage {
 }
 
 /**
+ * One tool call (or native web search) that ran during a turn, shown as an
+ * activity row in the assistant bubble — live while running, collapsed into a
+ * "Used N tools" summary once the turn settles. Persisted per turn so rows
+ * survive reopen.
+ */
+export interface ActivityItem {
+  /** toolCallId (or the provider's web_search item id). */
+  id: string;
+  kind: 'tool' | 'webSearch';
+  /** Normalized item type (commandExecution/fileChange/mcpToolCall/webSearch). */
+  type: string;
+  /** Real tool name ('read', 'grep', an MCP tool) when known. */
+  name?: string;
+  /** Short human target: file basename, command, search query. */
+  detail?: string;
+  status: 'running' | 'ok' | 'error';
+}
+
+/** A web source the model consulted (recovered native-web-search citation). */
+export interface SourceRef {
+  url: string;
+  title?: string;
+}
+
+/**
  * A user attachment as shown in the chat bubble. Images carry a `dataUrl` for an inline
  * `<img>` thumbnail; non-image files render as a chip with just a `name`. Distinct from
  * the send-time {@link TurnAttachment} — this is the display/replay shape.
@@ -79,6 +104,10 @@ export interface ChatMessage {
   timing?: TurnTiming;
   /** Assistant messages only: token usage (context fill + cost) for this turn. */
   usage?: TurnUsage;
+  /** Assistant messages only: the tool calls/web searches that ran this turn. */
+  activity?: ActivityItem[];
+  /** Assistant messages only: web sources consulted by native web search. */
+  sources?: SourceRef[];
   /**
    * ISO timestamp the message was authored. Surfaced as a hover-revealed label on
    * user bubbles (mirroring the assistant model/timing reveal). Read from the pi
@@ -234,6 +263,8 @@ export interface BackendItem {
   name?: string;
   /** Tool items carry a short human target (file basename, command, query). */
   detail?: string;
+  /** Tool items on `item/completed`: how the call ended. */
+  status?: 'ok' | 'error';
 }
 
 /** `item/started` and `item/completed`. The completed agentMessage item carries authoritative text. */
@@ -269,6 +300,13 @@ export interface TurnTimingParams {
 export interface TurnUsageParams extends TurnUsage {
   threadId: string;
   turnId: string;
+}
+
+/** `turn/sources` — web sources recovered from native web search, emitted at turn end. */
+export interface TurnSourcesParams {
+  threadId: string;
+  turnId: string;
+  sources: SourceRef[];
 }
 
 /** `account/rateLimits/updated`. */

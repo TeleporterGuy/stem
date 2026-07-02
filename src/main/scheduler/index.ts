@@ -22,6 +22,14 @@ export interface SchedulerOptions {
   onChange: (tasks: ScheduledTask[]) => void;
   /** Pushed when a run starts, so the open thread can show a collapsed run row. */
   onRun: (run: ScheduledRunPayload) => void;
+  /**
+   * True while the user is actively interacting (a turn running, or recent input).
+   * Runs defer while this holds — a scheduled turn would hold the single foreground
+   * session gate and silently block the user's next message.
+   */
+  isUserActive?: () => boolean;
+  /** Abort an in-flight turn (wired to runtime.interruptTurn) for preemption. */
+  interrupt?: (turnId: string) => Promise<void>;
 }
 
 // Timer cap: setTimeout is unreliable over very long delays and across system
@@ -33,6 +41,12 @@ const RUN_TIMEOUT_MS = 15 * 60 * 1000; // 15m
 // Treat a task as due if its time has arrived within this slop (timers can fire a
 // hair early; cron is minute-resolution so this is harmless).
 const DUE_SLOP_MS = 1000;
+// While the user is active, poll for idle at this cadence before starting a run…
+const IDLE_POLL_MS = 15 * 1000;
+// …but never starve a task forever: after this long, run anyway.
+const DEFER_CAP_MS = 30 * 60 * 1000; // 30m
+// A run preempted by the user retries after idle at most this many times per firing.
+const MAX_REQUEUES = 3;
 
 export class TaskScheduler {
   private tasks: ScheduledTask[] = [];
@@ -40,8 +54,27 @@ export class TaskScheduler {
   /** Serializes runs (and bookkeeping writes) so two firings never overlap. */
   private queue: Promise<unknown> = Promise.resolve();
   private started = false;
+  /** The scheduler-owned turn currently in flight (preemption target). */
+  private activeRun: { taskId: string; turnId: string | null; preempted: boolean } | null = null;
+  /** Preempt-retry counts per firing, cleared on a completed (non-preempted) run. */
+  private requeueCounts = new Map<string, number>();
 
   constructor(private readonly opts: SchedulerOptions) {}
+
+  /**
+   * The user is about to start an interactive turn: abort the scheduler-owned turn
+   * (if any) so the foreground gate frees immediately. The preempted run is not a
+   * failure — runTask re-queues it to retry once the user goes idle. Only ever
+   * targets a scheduler-dispatched turn; user turns are never interrupted.
+   */
+  preemptForUser(): void {
+    const run = this.activeRun;
+    if (!run || run.preempted) return;
+    run.preempted = true;
+    // turnId may still be null while startTurn is building the prompt; runTask
+    // checks the flag right after it resolves and interrupts then.
+    if (run.turnId && this.opts.interrupt) void this.opts.interrupt(run.turnId).catch(() => undefined);
+  }
 
   /** Load persisted tasks, run any overdue ones once (catch-up), then arm the timer. */
   async start(): Promise<void> {
@@ -244,11 +277,21 @@ export class TaskScheduler {
 
   // Serialize all runs through one promise chain so firings never overlap (the
   // backend serializes turns too, but this keeps our bookkeeping race-free).
-  private enqueueRun(id: string, _reason: 'scheduled' | 'catchup' | 'manual'): void {
+  private enqueueRun(id: string, _reason: 'scheduled' | 'catchup' | 'manual' | 'requeued'): void {
     this.queue = this.queue.then(
       () => this.runTask(id),
       () => this.runTask(id)
     );
+  }
+
+  /** Poll until the user goes idle (bounded so a task is never starved forever). */
+  private async waitForUserIdle(): Promise<void> {
+    const isActive = this.opts.isUserActive;
+    if (!isActive) return;
+    const start = Date.now();
+    while (isActive() && Date.now() - start < DEFER_CAP_MS) {
+      await new Promise((r) => setTimeout(r, IDLE_POLL_MS));
+    }
   }
 
   private async runTask(id: string): Promise<void> {
@@ -270,11 +313,24 @@ export class TaskScheduler {
       return;
     }
 
+    // Defer while the user is actively chatting — this run would hold the single
+    // foreground gate and silently queue their message behind a whole agent turn.
+    // Covers catch-up at launch too (it enqueues through this same path).
+    await this.waitForUserIdle();
+    if (!task.enabled || !this.tasks.some((t) => t.id === id)) return; // paused/deleted while deferred
+
     const at = new Date();
     const atIso = at.toISOString();
+    const prevStatus = task.lastStatus;
     task.lastStatus = 'running';
     this.opts.onChange(this.snapshot());
 
+    const run: { taskId: string; turnId: string | null; preempted: boolean } = {
+      taskId: id,
+      turnId: null,
+      preempted: false
+    };
+    this.activeRun = run;
     try {
       const { turnId } = await this.opts.runtime.startTurn({
         input: task.prompt,
@@ -283,6 +339,9 @@ export class TaskScheduler {
         scheduled: { at: atIso, taskId: task.id }
       });
       if (turnId) {
+        run.turnId = turnId;
+        // A preempt that landed while startTurn was still building: interrupt now.
+        if (run.preempted && this.opts.interrupt) void this.opts.interrupt(turnId).catch(() => undefined);
         this.opts.onRun({ threadId: task.threadId, turnId, taskId: task.id, prompt: task.prompt, at: atIso });
         const status = await this.waitForSettle(turnId, task.threadId);
         task.lastStatus = status;
@@ -291,6 +350,27 @@ export class TaskScheduler {
       }
     } catch {
       task.lastStatus = 'failed';
+    } finally {
+      this.activeRun = null;
+    }
+
+    // Preempted by the user: not a failure. Restore the pre-run status and retry
+    // after idle, bounded so a busy user can't ping-pong a task indefinitely.
+    if (run.preempted) {
+      const n = (this.requeueCounts.get(id) ?? 0) + 1;
+      if (n <= MAX_REQUEUES) {
+        this.requeueCounts.set(id, n);
+        task.lastStatus = prevStatus;
+        this.opts.onChange(this.snapshot());
+        this.enqueueRun(id, 'requeued');
+        return;
+      }
+      this.requeueCounts.delete(id);
+      // Out of retries — record the firing as failed and fall through to the
+      // normal bookkeeping (lastRunAt, once-task cleanup, persist).
+      task.lastStatus = 'failed';
+    } else {
+      this.requeueCounts.delete(id);
     }
 
     task.lastRunAt = atIso;

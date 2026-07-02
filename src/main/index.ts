@@ -194,6 +194,11 @@ let followAcrossSpaces = true;
 let finishSound = false;
 /** Main-window threads currently running (working/answering), keyed by threadId. */
 const runningMainThreads = new Set<string>();
+// When the user last started/stopped a turn (main or Quick Chat). Drives the
+// scheduler's isUserActive signal so scheduled runs defer while they're chatting.
+let lastInteractiveAt = 0;
+// How long after the last interaction the user still counts as "active".
+const USER_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 /** Who currently owns the shared pill, so Quick Chat and follow-me never stomp. */
 let hudOwner: 'none' | 'quickchat' | 'main' = 'none';
 /** Last phase pushed to the pill, so the chime fires only on entering 'finished'. */
@@ -438,12 +443,16 @@ function driveHud(event: { method: string; params: unknown }): void {
     case 'item/started': {
       const item = (event.params as ItemEventParams)?.item;
       const type = item?.type;
-      if (type && type !== 'agentMessage' && !hudTextSeen)
+      // Always update — tool calls and teed web searches mid-answer keep the
+      // pill live instead of freezing at 'Answering…' after the first token.
+      if (type && type !== 'agentMessage')
         showHud({ phase: 'working', label: activityLabel(type, item?.name, item?.detail) }, 'quickchat');
       break;
     }
     case 'item/agentMessage/delta': {
-      if (!hudTextSeen) {
+      // Deltas arrive per token; only push when the label actually changes
+      // (first token, or resuming the answer after a mid-answer tool call).
+      if (!hudTextSeen || lastHudPhase !== 'answering') {
         hudTextSeen = true;
         showHud({ phase: 'answering', label: 'Answering…' }, 'quickchat');
       }
@@ -643,6 +652,10 @@ function registerIpc(): void {
     return status;
   });
   ipcMain.handle('backend:startTurn', async (_e, input: StartTurnInput) => {
+    // The user is actively chatting: yield any scheduler-owned turn (frees the
+    // foreground gate) and hold scheduled runs off for a while.
+    lastInteractiveAt = Date.now();
+    scheduler?.preemptForUser();
     // Main-window turns honor the main native-web-search toggle (the backend no-ops
     // it for providers without native search).
     const settings = await readSettings();
@@ -654,7 +667,10 @@ function registerIpc(): void {
       instructions: settings.customInstructions.main
     });
   });
-  ipcMain.handle('backend:interruptTurn', (_e, turnId: string) => runtime!.interruptTurn(turnId));
+  ipcMain.handle('backend:interruptTurn', (_e, turnId: string) => {
+    lastInteractiveAt = Date.now();
+    return runtime!.interruptTurn(turnId);
+  });
   ipcMain.handle('backend:newConversation', () => runtime!.newConversation());
   ipcMain.handle('dialog:openFiles', () =>
     dialog
@@ -954,6 +970,9 @@ function registerIpc(): void {
   // the thread (so its events route correctly from the very first event), then
   // hide the overlay and raise the HUD — the disappear→HUD half of the cycle.
   ipcMain.handle('quickchat:run', async (_e, prompt: QuickChatPrompt): Promise<StartTurnResult> => {
+    // Quick Chat is the latency-sensitive surface — yield any scheduler-owned turn.
+    lastInteractiveAt = Date.now();
+    scheduler?.preemptForUser();
     // Start the disappear→HUD half of the cycle immediately — before the (async)
     // thread creation — so the overlay never flashes the half-laid-out panel.
     hudTextSeen = false;
@@ -1065,7 +1084,13 @@ app.whenReady().then(async () => {
     // due task and observe it fire + clean up (see scheduler/e2e-backend.ts).
     runtime: E2E ? createE2ESchedulerBackend() : runtime,
     onChange: (tasks) => mainWindow?.webContents.send('tasks:changed', tasks),
-    onRun: (run) => mainWindow?.webContents.send('tasks:run', run)
+    onRun: (run) => mainWindow?.webContents.send('tasks:run', run),
+    // Active = a turn in flight on either surface, or interaction in the last
+    // couple of minutes. Scheduled runs defer while this holds and an in-flight
+    // scheduled run yields (preemptForUser) when the user sends a message.
+    isUserActive: () =>
+      runningMainThreads.size > 0 || overlayTurnRunning || Date.now() - lastInteractiveAt < USER_ACTIVE_WINDOW_MS,
+    interrupt: (turnId) => runtime!.interruptTurn(turnId)
   });
   runtime.setTaskBridge({
     schedule: (req, threadId) => scheduler!.create(req, threadId),

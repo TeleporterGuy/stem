@@ -32,6 +32,7 @@ import {
   backendEventThreadId,
   type ThreadState
 } from './chatState';
+import { createEventBatcher } from './eventBatcher';
 
 // Sentinel key for a brand-new chat that has no backend thread id yet. Its slice is
 // migrated to the real thread id once the first turn returns one.
@@ -303,7 +304,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    return window.stem.onBackendEvent((event: BackendEventEnvelope) => {
+    const applyEvent = (event: BackendEventEnvelope): void => {
       if (event.method === 'process/exit') {
         // No threadId — the server died, so clear every thread's run state.
         setThreadStates((prev) => {
@@ -330,7 +331,11 @@ export default function App() {
         });
         return nextState ? { ...prev, [threadId]: nextState } : prev;
       });
-    });
+    };
+    // Deltas are coalesced to one state update per frame; everything else applies
+    // immediately (flushing that thread's buffered delta first, keeping order).
+    const batcher = createEventBatcher(applyEvent);
+    return window.stem.onBackendEvent((event: BackendEventEnvelope) => batcher.push(event));
   }, []);
 
   // Scheduled tasks: keep the list in sync (drives chat badges + the Tasks tab),
@@ -905,6 +910,7 @@ export default function App() {
           running={cur.running}
           streamingId={cur.streamingId}
           activity={cur.activity}
+          activities={cur.activities}
           onSend={onSend}
           onInterrupt={onInterrupt}
           escapeAction={escapeAction}

@@ -545,6 +545,192 @@ function buildCatalogText(clients) {
   return sections.join('\n\n');
 }
 
+// ---- Native web-search tee ----
+//
+// pi-ai silently drops the provider's `web_search_call` stream items (and their
+// url_citation annotations) — its Responses stream handler only knows reasoning /
+// message / function_call. Native web search therefore produces ZERO events: the
+// UI shows "Thinking…" for the whole search and citations are lost. Since this
+// extension runs inside pi's process, we passively tee the provider's own
+// response stream (both transports: WebSocket-first, SSE-fetch fallback), pick
+// out the web-search items, and forward them to Stem via the fire-and-forget
+// ctx.ui.notify channel (an `extension_ui_request` method:'notify' event in RPC
+// mode). Everything is wrapped so ANY failure degrades to today's behavior —
+// the original request/response is never altered, and a broken tee just means
+// no web-search rows, never a broken turn.
+
+let teeInstalled = false; // module scope: survives factory re-runs per session
+let teeCtx = null; // latest ExtensionContext, captured from hook callbacks
+
+/** Forward one tee payload to Stem. Fire-and-forget; never throws. */
+function teeEmit(payload) {
+  try {
+    if (teeCtx && teeCtx.ui && typeof teeCtx.ui.notify === 'function') {
+      teeCtx.ui.notify(JSON.stringify({ stemWebSearch: payload }), 'info');
+    }
+  } catch {
+    // dropped — the turn must never notice the tee
+  }
+}
+
+/**
+ * Extract a web-search tee payload from one raw Responses stream event, or null
+ * when the event isn't web-search related. Pure — exported for unit tests; pi
+ * only consumes the default export.
+ */
+export function extractWebSearchEvent(event) {
+  if (!event || typeof event !== 'object') return null;
+  const type = event.type;
+  if (type === 'response.output_item.added' || type === 'response.output_item.done') {
+    const item = event.item;
+    if (!item || item.type !== 'web_search_call') return null;
+    const query =
+      item.action && typeof item.action.query === 'string' && item.action.query ? item.action.query : undefined;
+    return {
+      phase: type === 'response.output_item.added' ? 'started' : 'completed',
+      id: typeof item.id === 'string' ? item.id : undefined,
+      query,
+      status: typeof item.status === 'string' ? item.status : undefined
+    };
+  }
+  if (type === 'response.output_text.annotation.added') {
+    const a = event.annotation;
+    if (a && a.type === 'url_citation' && typeof a.url === 'string') {
+      return { phase: 'source', url: a.url, title: typeof a.title === 'string' ? a.title : undefined };
+    }
+  }
+  return null;
+}
+
+/** Feed one raw stream event through the extractor and forward any hit to Stem. */
+function teeFeed(event) {
+  try {
+    const payload = extractWebSearchEvent(event);
+    if (payload) teeEmit(payload);
+  } catch {
+    // malformed event — ignore
+  }
+}
+
+/** Only tee streams that are clearly a provider Responses call. */
+function teeUrlMatches(url) {
+  const s = String(url || '');
+  return /^(https|wss):\/\/([^/]*\.)?(chatgpt\.com|openai\.com)\/.*\/responses/i.test(s);
+}
+
+/** Drain a cloned SSE response and feed each data event to the extractor. */
+async function teeParseSse(res) {
+  const reader = res.body && typeof res.body.getReader === 'function' ? res.body.getReader() : null;
+  if (!reader) return;
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const chunk = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === '[DONE]') continue;
+          try {
+            teeFeed(JSON.parse(data));
+          } catch {
+            // non-JSON data line — skip
+          }
+        }
+      }
+    }
+  } catch {
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed
+    }
+  }
+}
+
+/** Decode one WebSocket frame (string / binary / Blob) and feed the extractor. */
+async function teeDecodeAndFeed(data) {
+  try {
+    let text = null;
+    if (typeof data === 'string') text = data;
+    else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) text = new TextDecoder().decode(data);
+    else if (data && typeof data.text === 'function') text = await data.text();
+    if (!text) return;
+    teeFeed(JSON.parse(text));
+  } catch {
+    // undecodable frame — ignore
+  }
+}
+
+/**
+ * Wrap globalThis.fetch (the SSE fallback transport) and globalThis.WebSocket
+ * (the primary codex transport — pi-ai reads the ctor fresh per connect on
+ * non-bun runtimes) with passive observers. Installed once per pi process.
+ */
+function installProviderTee() {
+  if (teeInstalled) return;
+  teeInstalled = true;
+  try {
+    const origFetch = globalThis.fetch;
+    if (typeof origFetch === 'function') {
+      globalThis.fetch = function stemTeeFetch(input, init) {
+        const p = origFetch.call(this, input, init);
+        return p.then((res) => {
+          try {
+            const url = input && typeof input === 'object' && 'url' in input ? input.url : input;
+            const ct =
+              res && res.headers && typeof res.headers.get === 'function'
+                ? res.headers.get('content-type') || ''
+                : '';
+            if (
+              res &&
+              res.ok &&
+              teeUrlMatches(url) &&
+              ct.includes('text/event-stream') &&
+              typeof res.clone === 'function'
+            ) {
+              void teeParseSse(res.clone()).catch(() => {});
+            }
+          } catch {
+            // the caller gets the original response regardless
+          }
+          return res;
+        });
+      };
+    }
+  } catch {
+    // leave fetch untouched
+  }
+  try {
+    const OrigWS = globalThis.WebSocket;
+    if (typeof OrigWS === 'function') {
+      class StemTeeWebSocket extends OrigWS {
+        constructor(...args) {
+          super(...args);
+          try {
+            if (teeUrlMatches(args[0])) {
+              this.addEventListener('message', (ev) => {
+                void teeDecodeAndFeed(ev && ev.data);
+              });
+            }
+          } catch {
+            // passive listener only — never fail construction
+          }
+        }
+      }
+      globalThis.WebSocket = StemTeeWebSocket;
+    }
+  } catch {
+    // leave WebSocket untouched
+  }
+}
+
 // Live MCP connections, cached at MODULE scope so they survive pi re-running this
 // factory on every session change. pi rebuilds the whole session runtime — and
 // re-invokes cached extension factories — on new/switch/fork/rollback. Connecting
@@ -693,6 +879,14 @@ export default async function stemMcpBridge(pi) {
     const nativeSearchEnabled = makeNativeSearchGate(join(dirname(cfgPath), 'native-search.json'));
     const serviceTier = makeServiceTierGate(join(dirname(cfgPath), 'service-tier.json'));
 
+    // (c) Web-search tee: observe the provider's own response stream to recover
+    // native web-search activity + citations that pi-ai drops (see the tee block
+    // above). The ctx captured here carries the notify channel back to Stem.
+    installProviderTee();
+    pi.on('turn_start', (_event, ctx) => {
+      if (ctx) teeCtx = ctx;
+    });
+
     // Turn ON pi's read-only browse tools grep/find/ls — they're registered but
     // INACTIVE by default, and the assistant needs them to explore connected folders
     // (an Obsidian vault is far too large to list in the prompt; it must ls/find/grep
@@ -743,7 +937,8 @@ export default async function stemMcpBridge(pi) {
       }
       return undefined;
     });
-    pi.on('before_provider_request', (event) => {
+    pi.on('before_provider_request', (event, ctx) => {
+      if (ctx) teeCtx = ctx;
       const p = event && event.payload;
       if (!p || typeof p !== 'object') return undefined;
       let next; // lazily cloned on first mutation; undefined => no change

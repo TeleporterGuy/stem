@@ -325,6 +325,45 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   .activity-dot { animation: none; opacity: 0.6; }
 }
 
+/* Per-turn tool-activity rows: live rows while the turn runs (the active one
+   pulses), collapsed into a "Used N tools" summary once it settles. Sources reuse
+   the same summary button for the citation list. */
+.activity-rows { display: flex; flex-direction: column; gap: var(--sp-2); margin-bottom: var(--sp-4); }
+.activity-row-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--muted);
+  font-size: var(--fs-13);
+  min-width: 0;
+}
+.activity-row-item svg { flex: none; opacity: 0.7; }
+.activity-row-item.error { color: var(--danger); }
+.activity-row-item.live { color: var(--ink); }
+.activity-row-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-rows-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: var(--fs-13);
+  cursor: pointer;
+  align-self: flex-start;
+}
+.activity-rows-summary:hover { color: var(--ink); }
+.activity-rows-chevron { transition: transform 0.12s ease; }
+.activity-rows.open .activity-rows-chevron,
+.sources.open .activity-rows-chevron { transform: rotate(90deg); }
+.sources { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-4); }
+.sources-list { list-style: none; margin: 0; padding: 0 0 0 var(--sp-6); display: flex; flex-direction: column; gap: var(--sp-2); }
+.sources-list li { display: flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-13); min-width: 0; }
+.sources-list li svg { flex: none; opacity: 0.6; }
+.sources-list a { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sources-list a:hover { color: var(--accent); }
+
 /* Per-chat status dot on a sidebar row: pulsing while a turn runs, solid when a
    background chat has an unread reply, red on error. */
 .chat-status {

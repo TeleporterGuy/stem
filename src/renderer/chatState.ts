@@ -1,4 +1,5 @@
 import type {
+  ActivityItem,
   AgentMessageDeltaParams,
   BackendEventEnvelope,
   ChatMessage,
@@ -6,6 +7,7 @@ import type {
   MessageMeta,
   ThreadStatus,
   TurnCompletedParams,
+  TurnSourcesParams,
   TurnTiming,
   TurnTimingParams,
   TurnUsage,
@@ -22,6 +24,8 @@ export interface ThreadState {
   streamingId: string | null;
   /** Label of the in-flight activity (tool/reasoning); null once text streams. */
   activity: string | null;
+  /** Tool calls/web searches of the in-flight turn, in start order (activity rows). */
+  activities: ActivityItem[];
   activeTurnId: string | null;
   /** Drives the status dot on the chat row. */
   status: ThreadStatus;
@@ -32,6 +36,7 @@ export const EMPTY_STATE: ThreadState = {
   running: false,
   streamingId: null,
   activity: null,
+  activities: [],
   activeTurnId: null,
   status: 'idle'
 };
@@ -45,6 +50,15 @@ interface ApplyBackendEventOptions {
 
 export function backendEventThreadId(event: BackendEventEnvelope): string | undefined {
   return (event.params as { threadId?: string } | undefined)?.threadId;
+}
+
+/** Copy the live activity list onto the turn's assistant bubble (if it exists yet). */
+function stampActivity(messages: ChatMessage[], turnId: string, activities: ActivityItem[]): ChatMessage[] {
+  if (!activities.length) return messages;
+  const id = `assistant-${turnId}`;
+  const idx = messages.findIndex((m) => m.id === id);
+  if (idx === -1) return messages;
+  return messages.map((m, i) => (i === idx ? { ...m, activity: activities } : m));
 }
 
 export function applyBackendEventToThread(
@@ -62,17 +76,54 @@ export function applyBackendEventToThread(
         idx === -1
           ? [...state.messages, { id, role: 'assistant', content: p.delta, meta, turnId: p.turnId } as ChatMessage]
           : state.messages.map((m, i) => (i === idx ? { ...m, content: m.content + p.delta } : m));
-      return { ...state, messages, running: true, streamingId: id, activity: null, status: 'running' };
+      return {
+        ...state,
+        messages: stampActivity(messages, p.turnId, state.activities),
+        running: true,
+        streamingId: id,
+        activity: null,
+        status: 'running'
+      };
     }
     case 'item/started': {
       const p = event.params as ItemEventParams;
       const type = p.item?.type;
       if (!type || type === 'agentMessage') return null;
-      return { ...state, activity: activityLabel(type, p.item?.name, p.item?.detail) };
+      const label = activityLabel(type, p.item?.name, p.item?.detail);
+      if (type === 'reasoning') return { ...state, activity: label };
+      // A tool call (or teed native web search) becomes an activity row.
+      const itemId = p.item.id;
+      const activities = state.activities.some((a) => a.id === itemId)
+        ? state.activities
+        : [
+            ...state.activities,
+            {
+              id: itemId,
+              kind: type === 'webSearch' ? 'webSearch' : 'tool',
+              type,
+              name: p.item.name,
+              detail: p.item.detail,
+              status: 'running'
+            } as ActivityItem
+          ];
+      return {
+        ...state,
+        activity: label,
+        activities,
+        messages: stampActivity(state.messages, p.turnId, activities)
+      };
     }
     case 'item/completed': {
       const p = event.params as ItemEventParams;
-      if (p.item?.type !== 'agentMessage') return null;
+      if (p.item?.type !== 'agentMessage') {
+        // A tool call finished — flip its row's status.
+        const idx = state.activities.findIndex((a) => a.id === p.item?.id);
+        if (idx === -1) return null;
+        const activities = state.activities.map((a, i) =>
+          i === idx ? { ...a, status: p.item.status ?? 'ok', detail: p.item.detail ?? a.detail } : a
+        );
+        return { ...state, activities, messages: stampActivity(state.messages, p.turnId, activities) };
+      }
       const id = `assistant-${p.turnId}`;
       const text = agentMessageText(p.item);
       const meta = options.turnMeta?.get(p.turnId);
@@ -83,7 +134,18 @@ export function applyBackendEventToThread(
           : state.messages.map((m, i) =>
               i === idx ? { ...m, content: text || m.content, meta: m.meta ?? meta } : m
             );
-      return { ...state, messages, streamingId: null };
+      return { ...state, messages: stampActivity(messages, p.turnId, state.activities), streamingId: null };
+    }
+    case 'turn/sources': {
+      const p = event.params as TurnSourcesParams;
+      if (!p.sources?.length) return null;
+      const id = `assistant-${p.turnId}`;
+      const idx = state.messages.findIndex((m) => m.id === id);
+      if (idx === -1) return null;
+      return {
+        ...state,
+        messages: state.messages.map((m, i) => (i === idx ? { ...m, sources: p.sources } : m))
+      };
     }
     case 'turn/timing': {
       const p = event.params as TurnTimingParams;
@@ -123,9 +185,13 @@ export function applyBackendEventToThread(
       const method = event.method as TurnSettledMethod;
       return {
         ...state,
+        // Stamp the final activity list onto the turn's bubble before clearing the
+        // live list — settled rows render collapsed from the message itself.
+        messages: stampActivity(state.messages, p.turn.id, state.activities),
         running: false,
         streamingId: null,
         activity: null,
+        activities: [],
         activeTurnId: null,
         status: options.settledStatus?.(method, p.threadId) ?? 'idle'
       };
@@ -141,6 +207,7 @@ export function applyProcessExitToThread(state: ThreadState): ThreadState {
     running: false,
     streamingId: null,
     activity: null,
+    activities: [],
     activeTurnId: null,
     status: state.status === 'running' ? 'idle' : state.status
   };

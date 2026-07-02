@@ -160,4 +160,68 @@ describe('chatState reducer', () => {
     expect(backendEventThreadId(event('turn/completed', { threadId: 't1' }))).toBe('t1');
     expect(backendEventThreadId(event('process/exit', { code: 1 }))).toBeUndefined();
   });
+
+  it('accumulates activity rows, survives streaming, and stamps them onto the message at settle', () => {
+    let s = applyBackendEventToThread(
+      EMPTY_STATE,
+      event('item/started', {
+        threadId: 't1',
+        turnId: 'turn1',
+        item: { type: 'commandExecution', id: 'c1', name: 'read', detail: 'a.md' }
+      })
+    )!;
+    expect(s.activities).toEqual([
+      { id: 'c1', kind: 'tool', type: 'commandExecution', name: 'read', detail: 'a.md', status: 'running' }
+    ]);
+
+    // Text streaming clears the label but keeps (and stamps) the activity rows.
+    s = applyBackendEventToThread(
+      s,
+      event('item/agentMessage/delta', { threadId: 't1', turnId: 'turn1', itemId: 'turn1', delta: 'Hi' })
+    )!;
+    expect(s.activity).toBeNull();
+    expect(s.activities).toHaveLength(1);
+    expect(s.messages[0].activity).toHaveLength(1);
+
+    // Tool completion flips the row's status (and can refresh the detail).
+    s = applyBackendEventToThread(
+      s,
+      event('item/completed', {
+        threadId: 't1',
+        turnId: 'turn1',
+        item: { type: 'commandExecution', id: 'c1', status: 'ok' }
+      })
+    )!;
+    expect(s.activities[0].status).toBe('ok');
+
+    // Turn settle stamps the final list on the bubble and clears live state.
+    s = applyBackendEventToThread(s, event('turn/completed', { threadId: 't1', turn: { id: 'turn1', status: 'completed' } }))!;
+    expect(s.activities).toHaveLength(0);
+    expect(s.messages[0].activity).toHaveLength(1);
+    expect(s.messages[0].activity![0].status).toBe('ok');
+  });
+
+  it('dedupes repeated item/started for the same tool call', () => {
+    const started = event('item/started', {
+      threadId: 't1',
+      turnId: 'turn1',
+      item: { type: 'webSearch', id: 'ws1', name: 'web_search', detail: 'weather' }
+    });
+    const once = applyBackendEventToThread(EMPTY_STATE, started)!;
+    const twice = applyBackendEventToThread(once, started)!;
+    expect(twice.activities).toHaveLength(1);
+    expect(twice.activities[0].kind).toBe('webSearch');
+  });
+
+  it('attaches web sources to the turn message', () => {
+    let s = applyBackendEventToThread(
+      EMPTY_STATE,
+      event('item/agentMessage/delta', { threadId: 't1', turnId: 'turn1', itemId: 'turn1', delta: 'Hi' })
+    )!;
+    s = applyBackendEventToThread(
+      s,
+      event('turn/sources', { threadId: 't1', turnId: 'turn1', sources: [{ url: 'https://example.com', title: 'Example' }] })
+    )!;
+    expect(s.messages[0].sources).toEqual([{ url: 'https://example.com', title: 'Example' }]);
+  });
 });

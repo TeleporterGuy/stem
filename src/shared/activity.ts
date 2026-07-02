@@ -25,6 +25,36 @@ function labelForTool(name: string, detail?: string): string | undefined {
   return `Using ${name}${on}…`;
 }
 
+/** Past-tense row label for a finished tool call ("Read foo.ts", "Searched the web for x"). */
+export function settledActivityLabel(type: string, name?: string, detail?: string): string {
+  const n = (name ?? '').toLowerCase();
+  const on = detail ? ` ${detail}` : '';
+  if (n === 'read') return detail ? `Read ${detail}` : 'Read a file';
+  if (n === 'bash' || n === 'cmd') return detail ? `Ran ${detail}` : 'Ran a command';
+  if (n === 'grep') return detail ? `Searched for ${detail}` : 'Searched files';
+  if (n === 'glob' || n === 'ls') return 'Listed files';
+  if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'apply_patch')
+    return detail ? `Edited ${detail}` : 'Edited files';
+  if (n.includes('search') || n.includes('web') || type === 'webSearch' || type === 'web_search')
+    return detail ? `Searched the web for ${detail}` : 'Searched the web';
+  if (n.startsWith('mcp')) {
+    const tool = (name ?? '').split('__').filter(Boolean).pop() ?? name;
+    return `Used ${tool}${on}`;
+  }
+  if (name) return `Used ${name}${on}`;
+  switch (type) {
+    case 'commandExecution':
+    case 'command_execution':
+    case 'exec':
+      return 'Ran a command';
+    case 'fileChange':
+    case 'file_change':
+      return 'Edited files';
+    default:
+      return 'Used a tool';
+  }
+}
+
 export function activityLabel(type: string, name?: string, detail?: string): string {
   if (name && type !== 'reasoning') {
     const specific = labelForTool(name, detail);

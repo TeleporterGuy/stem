@@ -157,6 +157,7 @@ export function QuickChat() {
         messages: [...s.messages, { id: userMsgId, role: 'user', content: text, attachments: msgAttachments }],
         running: true,
         activity: null,
+        activities: [],
         status: 'running'
       }));
       try {
@@ -198,7 +199,7 @@ export function QuickChat() {
 
   const onInterrupt = useCallback(async () => {
     if (activeTurnId) await window.stem.interruptTurn(activeTurnId);
-    setChatState((s) => ({ ...s, running: false, streamingId: null, activity: null, activeTurnId: null, status: 'idle' }));
+    setChatState((s) => ({ ...s, running: false, streamingId: null, activity: null, activities: [], activeTurnId: null, status: 'idle' }));
   }, [activeTurnId]);
 
   // Retry/Edit: roll the thread back to a turn and re-send. No-op while running.
@@ -340,6 +341,7 @@ export function QuickChat() {
           running={running}
           streamingId={streamingId}
           activity={activity}
+          activities={chatState.activities}
           onSend={onSend}
           onInterrupt={onInterrupt}
           escapeAction="off"
