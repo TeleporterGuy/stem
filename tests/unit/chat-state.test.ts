@@ -201,6 +201,52 @@ describe('chatState reducer', () => {
     expect(s.messages[0].activity![0].status).toBe('ok');
   });
 
+  it('labels concurrent tool calls with a count and falls back as they finish', () => {
+    // pi executes a turn's tool calls in parallel — two starts before any end.
+    let s = applyBackendEventToThread(
+      EMPTY_STATE,
+      event('item/started', {
+        threadId: 't1',
+        turnId: 'turn1',
+        item: { type: 'commandExecution', id: 'c1', name: 'read', detail: 'a.md' }
+      })
+    )!;
+    expect(s.activity).toBe('Reading a.md…');
+
+    s = applyBackendEventToThread(
+      s,
+      event('item/started', {
+        threadId: 't1',
+        turnId: 'turn1',
+        item: { type: 'commandExecution', id: 'c2', name: 'grep', detail: 'foo' }
+      })
+    )!;
+    expect(s.activity).toBe('Running 2 tools…');
+
+    // One finishes (out of order) — the label falls back to the still-running tool.
+    s = applyBackendEventToThread(
+      s,
+      event('item/completed', {
+        threadId: 't1',
+        turnId: 'turn1',
+        item: { type: 'commandExecution', id: 'c1', status: 'ok' }
+      })
+    )!;
+    expect(s.activity).toBe('Searching for foo…');
+
+    // Last one finishes — the label is kept until reasoning/answer overwrites it.
+    s = applyBackendEventToThread(
+      s,
+      event('item/completed', {
+        threadId: 't1',
+        turnId: 'turn1',
+        item: { type: 'commandExecution', id: 'c2', status: 'ok' }
+      })
+    )!;
+    expect(s.activity).toBe('Searching for foo…');
+    expect(s.activities.map((a) => a.status)).toEqual(['ok', 'ok']);
+  });
+
   it('dedupes repeated item/started for the same tool call', () => {
     const started = event('item/started', {
       threadId: 't1',

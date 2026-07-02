@@ -52,6 +52,18 @@ export function backendEventThreadId(event: BackendEventEnvelope): string | unde
   return (event.params as { threadId?: string } | undefined)?.threadId;
 }
 
+/**
+ * Label for the "working" line given the in-flight activity list: the single running
+ * tool's label, or a count when several run at once (pi executes a turn's tool calls
+ * in parallel). Null when no tool is running.
+ */
+function runningLabel(activities: ActivityItem[]): string | null {
+  const running = activities.filter((a) => a.status === 'running');
+  if (!running.length) return null;
+  if (running.length > 1) return `Running ${running.length} tools…`;
+  return activityLabel(running[0].type, running[0].name, running[0].detail);
+}
+
 /** Copy the live activity list onto the turn's assistant bubble (if it exists yet). */
 function stampActivity(messages: ChatMessage[], turnId: string, activities: ActivityItem[]): ChatMessage[] {
   if (!activities.length) return messages;
@@ -108,7 +120,7 @@ export function applyBackendEventToThread(
           ];
       return {
         ...state,
-        activity: label,
+        activity: runningLabel(activities) ?? label,
         activities,
         messages: stampActivity(state.messages, p.turnId, activities)
       };
@@ -122,7 +134,10 @@ export function applyBackendEventToThread(
         const activities = state.activities.map((a, i) =>
           i === idx ? { ...a, status: p.item.status ?? 'ok', detail: p.item.detail ?? a.detail } : a
         );
-        return { ...state, activities, messages: stampActivity(state.messages, p.turnId, activities) };
+        // Refresh the working label from whatever is still running; keep the last
+        // label when nothing is (reasoning/answer events overwrite it as before).
+        const activity = runningLabel(activities) ?? state.activity;
+        return { ...state, activity, activities, messages: stampActivity(state.messages, p.turnId, activities) };
       }
       const id = `assistant-${p.turnId}`;
       const text = agentMessageText(p.item);
