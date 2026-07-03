@@ -175,7 +175,7 @@ export function OnboardingGate({ variant, reauthMessage, onAuthenticated, onDism
             <h1>Welcome to Stem</h1>
             <p>A private AI assistant that lives on your Mac.</p>
             <p className="gate-sub">
-              Stem brings your own AI account: sign in with a Claude or ChatGPT subscription (or an API
+              Stem brings your own AI account: sign in with a ChatGPT or Claude subscription (or an API
               key). Your chats, files, and memory stay on this Mac.
             </p>
             <button className="primary" onClick={() => dispatch({ type: 'continue' })}>
@@ -195,14 +195,19 @@ export function OnboardingGate({ variant, reauthMessage, onAuthenticated, onDism
               </p>
             )}
             <div className="gate-providers">
-              <button className="primary" onClick={() => void startOAuth('anthropic')}>
-                Continue with Claude
-              </button>
-              <span className="gate-hint">Claude Pro or Max subscription</span>
               <button className="primary" onClick={() => void startOAuth('openai-codex')}>
                 Continue with ChatGPT
               </button>
-              <span className="gate-hint">ChatGPT Plus or Pro subscription</span>
+              <span className="gate-hint">
+                ChatGPT Plus or Pro subscription <span className="gate-rec">Recommended</span>
+              </span>
+              <button className="push" onClick={() => void startOAuth('anthropic')}>
+                Continue with Claude
+              </button>
+              <span className="gate-hint">
+                Claude Pro or Max subscription. Heads up: using a Claude subscription in a
+                third-party app like Stem can draw on extra usage on top of your plan.
+              </span>
             </div>
             <button className="gate-link" onClick={() => dispatch({ type: 'pickApiKey' })}>
               Use an API key instead

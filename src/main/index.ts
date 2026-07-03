@@ -11,6 +11,7 @@ import {
   shell
 } from 'electron';
 import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createBackend, type ChatBackend } from './backend';
@@ -25,7 +26,7 @@ import {
   removeConnectedFolder,
   updateConnectedFolder
 } from './workspace/connected-folders';
-import { embedModelsDir, piHome, workspaceRoot } from './workspace/paths';
+import { embedModelsDir, piHome, resolveProfileOverride, workspaceRoot } from './workspace/paths';
 import { TaskScheduler } from './scheduler';
 import { createE2ESchedulerBackend } from './scheduler/e2e-backend';
 import { imagePreviewDataUrl } from './pi/attachments';
@@ -128,6 +129,22 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // "Electron" — that comes from the Electron.app bundle and only changes when
 // the app is packaged.
 app.setName('Stem');
+
+// Alternate profiles: `--fresh` / `--profile=<name>` (or STEM_FRESH=1 / STEM_PROFILE=<name>)
+// relocate ALL app state to an isolated userData dir under a sibling "Stem Profiles/"
+// container, so the first-run onboarding can be walked as a brand-new user without touching
+// the real signed-in profile. Must run before anything reads a userData-derived path (all of
+// paths.ts is lazy and only fires after whenReady, so here is early enough).
+const profileOverride = resolveProfileOverride();
+const activeProfileLabel = profileOverride?.label ?? null;
+if (profileOverride) {
+  mkdirSync(profileOverride.userDataDir, { recursive: true });
+  app.setPath('userData', profileOverride.userDataDir);
+  console.log(
+    `[stem] profile "${profileOverride.label}" → userData ${profileOverride.userDataDir}`
+  );
+}
+
 const appIcon = nativeImage.createFromPath(join(app.getAppPath(), 'build', 'icon.png'));
 
 // In dev, expose a CDP port so tooling (agent-browser) can attach to the UI.
@@ -249,6 +266,8 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 820,
+    // Surfaces in the macOS Window menu / Mission Control when running an alternate profile.
+    title: activeProfileLabel ? `Stem — ${activeProfileLabel}` : 'Stem',
     titleBarStyle: 'hiddenInset',
     icon: appIcon,
     // Vertically center the inset traffic lights within the 52px toolbar.
@@ -265,6 +284,17 @@ function createWindow(): void {
   });
 
   installNavigationGuards(mainWindow);
+
+  // The renderer's HTML <title>Stem</title> otherwise clobbers the window title on
+  // load; when running an alternate profile, keep the label pinned so the demo
+  // window stays distinguishable in the macOS Window menu / Mission Control.
+  if (activeProfileLabel) {
+    const titled = mainWindow;
+    titled.webContents.on('page-title-updated', (e) => {
+      e.preventDefault();
+      titled.setTitle(`Stem — ${activeProfileLabel}`);
+    });
+  }
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -1225,8 +1255,9 @@ app.whenReady().then(async () => {
   // them from the first turn (also rewritten on every Folders-tab mutation).
   await publishProtectedRootsNow().catch(() => undefined);
   // pi is the only backend; it satisfies ChatBackend so everything below is
-  // backend-agnostic.
-  runtime = createBackend();
+  // backend-agnostic. Alternate profiles (--fresh / --profile) skip seeding auth
+  // from the user's global ~/.pi so they start unauthenticated in the onboarding wizard.
+  runtime = createBackend({ seedGlobalAuth: !profileOverride });
 
   // In-app provider sign-in for the onboarding wizard. Writes the same isolated
   // auth.json the pi subprocess reads; progress is pushed to the renderer.

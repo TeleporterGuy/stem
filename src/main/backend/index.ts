@@ -9,10 +9,11 @@ export type { ChatBackend } from './types';
  * {@link ChatBackend} seam so the rest of the app stays backend-agnostic and a
  * future backend can drop in here.
  */
-export function createBackend(): ChatBackend {
+export function createBackend(options?: { seedGlobalAuth?: boolean }): ChatBackend {
   return new PiRuntime({
     piHome: piHome(),
     sessionsDir: piSessionsDir(),
-    workspaceRoot: workspaceRoot()
+    workspaceRoot: workspaceRoot(),
+    seedGlobalAuth: options?.seedGlobalAuth
   });
 }

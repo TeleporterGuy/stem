@@ -166,6 +166,12 @@ interface RuntimeOptions {
   piHome: string;
   sessionsDir: string;
   workspaceRoot: string;
+  /**
+   * Seed auth.json from the user's global ~/.pi/agent on first run (default true).
+   * Set false for alternate profiles (--fresh / --profile) so they start genuinely
+   * unauthenticated and land in the first-run onboarding wizard.
+   */
+  seedGlobalAuth?: boolean;
 }
 
 interface PiModel {
@@ -1648,7 +1654,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     await mkdir(this.options.sessionsDir, { recursive: true });
     await mkdir(join(this.options.workspaceRoot, '.stem-internal'), { recursive: true });
     const dest = join(this.options.piHome, 'auth.json');
-    if (!(await this.fileExists(dest))) {
+    if (this.options.seedGlobalAuth !== false && !(await this.fileExists(dest))) {
       const src = join(homedir(), '.pi', 'agent', 'auth.json');
       if (await this.fileExists(src)) await copyFile(src, dest).catch(() => undefined);
     }

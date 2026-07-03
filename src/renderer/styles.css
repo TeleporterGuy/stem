@@ -220,8 +220,14 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   gap: 4px;
   margin: 14px 0 10px;
 }
-.gate-providers .primary { width: 100%; padding: 8px 18px; }
+.gate-providers .primary,
+.gate-providers .push { width: 100%; padding: 8px 18px; }
 .gate-providers .gate-hint { margin: 0 0 10px; }
+.gate-rec {
+  color: var(--accent);
+  font-weight: 600;
+  margin-left: 4px;
+}
 .gate-link {
   font: inherit;
   font-size: var(--fs-12);

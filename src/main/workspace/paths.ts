@@ -9,6 +9,49 @@ export function userDataRoot(): string {
   return app.getPath('userData');
 }
 
+/** A resolved alternate profile: an isolated userData dir + a human label for it. */
+export interface ProfileOverride {
+  userDataDir: string;
+  label: string;
+}
+
+/**
+ * Resolve a `--fresh` / `--profile=<name>` (or `STEM_FRESH=1` / `STEM_PROFILE=<name>`)
+ * request into an alternate userData directory under a sibling `Stem Profiles/` container,
+ * so you can walk the first-run onboarding as a brand-new user without touching the real
+ * signed-in profile. Returns null when nothing is requested (the native `--user-data-dir`
+ * switch, if any, still applies untouched).
+ *
+ * Precedence: fresh > named profile > none. Args are injectable so this is unit-testable
+ * without Electron and with a deterministic clock.
+ */
+export function resolveProfileOverride(
+  argv: string[] = process.argv,
+  env: NodeJS.ProcessEnv = process.env,
+  appDataDir: string = app.getPath('appData'),
+  now: () => Date = () => new Date()
+): ProfileOverride | null {
+  const container = join(appDataDir, 'Stem Profiles');
+  const hasFlag = (name: string) => argv.includes(`--${name}`);
+  const flagValue = (name: string) =>
+    argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+
+  if (hasFlag('fresh') || env.STEM_FRESH === '1') {
+    const stamp = now().toISOString().replace(/[:.]/g, '-');
+    const label = `fresh-${stamp}`;
+    return { userDataDir: join(container, label), label };
+  }
+
+  const requested = flagValue('profile') ?? env.STEM_PROFILE;
+  if (requested && requested.trim()) {
+    // Reduce to a safe basename: no path separators or traversal can escape the container.
+    const label = requested.trim().replace(/[^A-Za-z0-9._-]/g, '-');
+    return { userDataDir: join(container, label), label };
+  }
+
+  return null;
+}
+
 /** The legacy codex backend home, removed on startup (see bootstrap cleanup). */
 export function legacyCodexHome(): string {
   return join(userDataRoot(), 'codex-home');
