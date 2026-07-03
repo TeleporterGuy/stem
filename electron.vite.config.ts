@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const rootDir = fileURLToPath(new URL('.', import.meta.url));
 const mainAssets = [
   ['src/main/pi/stem-mcp-extension.mjs', 'dist/main/pi/stem-mcp-extension.mjs'],
+  ['src/main/pi/pi-node-shim.mjs', 'dist/main/pi/pi-node-shim.mjs'],
   ['src/main/recall/mcp-server.mjs', 'dist/main/recall/mcp-server.mjs']
 ] as const;
 

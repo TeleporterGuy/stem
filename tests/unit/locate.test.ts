@@ -46,7 +46,9 @@ describe('resolvePi', () => {
     // resolve (under vitest import.meta.resolve sees node_modules).
     expect(pi?.source).toBe('bundled');
     expect(pi?.command).toBe(process.execPath);
-    expect(pi?.prefixArgs[0]).toMatch(/pi-coding-agent[/\\]dist[/\\]cli\.js$/);
+    // The Dock-icon shim runs first, then pi's real cli.js.
+    expect(pi?.prefixArgs[0]).toMatch(/pi-node-shim\.mjs$/);
+    expect(pi?.prefixArgs[1]).toMatch(/pi-coding-agent[/\\]dist[/\\]cli\.js$/);
     expect(pi?.env.ELECTRON_RUN_AS_NODE).toBe('1');
   });
 });

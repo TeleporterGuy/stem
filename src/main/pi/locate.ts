@@ -38,9 +38,13 @@ export async function resolvePi(): Promise<PiInvocation | null> {
 
   const bundled = await locateBundledCli();
   if (bundled) {
+    // The shim freezes process.title before pi loads: pi's title assignment
+    // would otherwise check this headless Electron-as-Node child into
+    // LaunchServices as a bouncing "Electron" Dock icon (see pi-node-shim.mjs).
+    const shim = await locateNodeShim();
     return (cached = {
       command: process.execPath,
-      prefixArgs: [bundled],
+      prefixArgs: [...(shim ? [shim] : []), bundled],
       // Per-child only — never set globally (it would break Electron child windows).
       env: { ELECTRON_RUN_AS_NODE: '1' },
       source: 'bundled',
@@ -80,6 +84,28 @@ async function locateBundledCli(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Locate pi-node-shim.mjs next to the built main bundle (dist/main/pi/, copied
+ * by the electron-vite asset plugin) or in the source tree (vitest). Missing
+ * shim degrades to a direct spawn — pi still works, just with the Dock-icon wart.
+ */
+async function locateNodeShim(): Promise<string | null> {
+  const candidates = [
+    new URL('./pi/pi-node-shim.mjs', import.meta.url), // dist/main/index.js → dist/main/pi/
+    new URL('./pi-node-shim.mjs', import.meta.url) // src/main/pi/locate.ts (vitest)
+  ];
+  for (const candidate of candidates) {
+    try {
+      const path = fileURLToPath(candidate);
+      await access(path);
+      return path;
+    } catch {
+      // keep looking
+    }
+  }
+  return null;
 }
 
 async function findSystemPi(): Promise<string | null> {
