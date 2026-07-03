@@ -13,7 +13,9 @@ export const app = {
 
 export const shell = {
   showItemInFolder: () => {},
-  openPath: async () => ''
+  openPath: async () => '',
+  // provider-auth opens the OAuth page in the system browser.
+  openExternal: async () => {}
 };
 
 export default { app, shell };

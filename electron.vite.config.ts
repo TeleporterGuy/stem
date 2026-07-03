@@ -35,7 +35,10 @@ export default defineConfig({
         // transformers.js must stay external: it lazily loads onnxruntime-node's
         // native .node binary, which cannot live inside a rollup bundle. Resolved
         // from node_modules at runtime instead.
-        external: ['@huggingface/transformers'],
+        // pi-coding-agent must stay external too: pure-ESM, exports-map-only, and
+        // its dist/cli.js is spawned as a real file (plus AuthStorage relies on
+        // package-relative resolution). Loaded lazily via dynamic import.
+        external: ['@huggingface/transformers', '@earendil-works/pi-coding-agent'],
         // Multi-input builds default to hashed names; package.json main expects
         // dist/main/index.js, so pin entry names.
         output: { entryFileNames: '[name].js' }

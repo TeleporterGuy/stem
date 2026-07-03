@@ -3,9 +3,11 @@ import { readFile, rename, writeFile } from 'node:fs/promises';
 import type {
   AppSettings,
   CustomInstructionsSettings,
+  DefaultsSettings,
   EmbeddingsMode,
   EmbeddingsSettings,
   EscapeAction,
+  OnboardingSettings,
   LocalEmbedModelId,
   MemoryModelSettings,
   NativeWebSearchSettings,
@@ -64,7 +66,13 @@ const DEFAULTS: AppSettings = {
   // Escape-to-retract is opt-in: off until the user picks single/two-stage.
   escapeAction: 'off',
   // Standing custom instructions; empty until the user (or Stem) sets them.
-  customInstructions: { main: '', quickChat: '' }
+  customInstructions: { main: '', quickChat: '' },
+  // First-run wizard: not completed until the user signs in (or the app first
+  // reaches an authenticated status, e.g. seeded from an existing ~/.pi).
+  onboarding: { completed: false },
+  // App-level default model ('provider/modelId'); null = built-in constant.
+  // Set after onboarding to match the provider the user signed in with.
+  defaults: { model: null }
 };
 
 const ESCAPE_ACTIONS: readonly EscapeAction[] = ['off', 'single', 'twoStage'];
@@ -143,6 +151,14 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     main: typeof rawCi.main === 'string' ? rawCi.main : DEFAULTS.customInstructions.main,
     quickChat: typeof rawCi.quickChat === 'string' ? rawCi.quickChat : DEFAULTS.customInstructions.quickChat
   };
+  const rawOb = (parsed?.onboarding ?? {}) as Partial<OnboardingSettings>;
+  const onboarding: OnboardingSettings = {
+    completed: typeof rawOb.completed === 'boolean' ? rawOb.completed : DEFAULTS.onboarding.completed
+  };
+  const rawDef = (parsed?.defaults ?? {}) as Partial<DefaultsSettings>;
+  const defaults: DefaultsSettings = {
+    model: typeof rawDef.model === 'string' && rawDef.model.trim() ? rawDef.model : null
+  };
   return {
     quickChat: {
       shortcut: typeof qc.shortcut === 'string' && qc.shortcut.trim() ? qc.shortcut : null,
@@ -164,7 +180,9 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     skills,
     retrieval,
     escapeAction,
-    customInstructions
+    customInstructions,
+    onboarding,
+    defaults
   };
 }
 
@@ -251,6 +269,26 @@ export function updateSkillsSettings(patch: Partial<SkillsModelSettings>): Promi
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, skills: { ...cur.skills, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Mark the first-run wizard finished and persist; returns the full settings. */
+export function markOnboardingCompleted(): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, onboarding: { completed: true } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Set the app-level default model ('provider/modelId' or null) and persist. */
+export function updateDefaultModel(model: string | null): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, defaults: { model } });
     await writeSettings(next);
     return next;
   });

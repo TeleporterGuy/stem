@@ -25,11 +25,12 @@ import {
   removeConnectedFolder,
   updateConnectedFolder
 } from './workspace/connected-folders';
-import { embedModelsDir, workspaceRoot } from './workspace/paths';
+import { embedModelsDir, piHome, workspaceRoot } from './workspace/paths';
 import { TaskScheduler } from './scheduler';
 import { createE2ESchedulerBackend } from './scheduler/e2e-backend';
 import { imagePreviewDataUrl } from './pi/attachments';
 import * as piMcp from './pi/mcp';
+import { ProviderAuth } from './pi/provider-auth';
 import {
   clearEpisodicMemory,
   clearFactsMemory,
@@ -68,8 +69,10 @@ import type { LlmClient } from './recall/llm';
 import { searchChats, searchChatsLexical } from './chatsearch/search';
 import { backfillChatIndex, reindexChatThread, dropChatThread } from './chatsearch/index-sync';
 import {
+  markOnboardingCompleted,
   readSettings,
   updateCustomInstructions,
+  updateDefaultModel,
   updateEscapeAction,
   updateMemorySettings,
   updateNativeWebSearch,
@@ -89,6 +92,8 @@ import {
 } from './workspace/chats';
 import { activityLabel } from '../shared/activity';
 import type {
+  ApiKeyProviderId,
+  AuthProviderId,
   ChatListResult,
   ConnectedFolderPatch,
   CustomInstructionsSettings,
@@ -97,6 +102,7 @@ import type {
   LocalEmbedStatus,
   McpServerInput,
   MemoryModelSettings,
+  ModelSummary,
   NativeWebSearchSettings,
   PartialRetrievalSettings,
   RetrievalStage,
@@ -651,15 +657,70 @@ function revealMainWindow(): void {
 // (recall, files, settings) still runs for real against the isolated workspace.
 const E2E = !!process.env.STEM_E2E;
 
+// Onboarding sub-seam: with STEM_E2E_ONBOARDING (implies STEM_E2E) the faked
+// backend starts UNAUTHENTICATED so specs can drive the first-run wizard; the
+// fake auth handlers below flip it to authenticated, mimicking a real login.
+const E2E_ONBOARDING = E2E && !!process.env.STEM_E2E_ONBOARDING;
+let e2eAuthed = !E2E_ONBOARDING;
+
+function e2eStatus(): RuntimeStatus {
+  return e2eAuthed
+    ? { ok: true, authenticated: true, backendPath: null, backendHome: '', workspaceRoot: '' }
+    : {
+        ok: false,
+        authenticated: false,
+        providers: [],
+        backendPath: null,
+        backendHome: '',
+        workspaceRoot: '',
+        error: 'Stem is not signed in yet.'
+      };
+}
+
+// In-app provider sign-in (OAuth / API key) for the onboarding wizard; created in
+// the whenReady bootstrap alongside the runtime.
+let providerAuth: ProviderAuth | null = null;
+
+/** Pick a sensible app default from the models the signed-in providers expose. */
+function chooseDefaultModel(models: ModelSummary[]): string | null {
+  const pick =
+    models.find((m) => m.provider === 'openai-codex' && m.id.endsWith('gpt-5.3-codex-spark')) ??
+    models.find((m) => m.provider === 'anthropic' && /sonnet/i.test(m.id)) ??
+    models.find((m) => m.provider === 'anthropic') ??
+    models[0];
+  return pick?.id ?? null;
+}
+
+/**
+ * Post-sign-in sequence: persist a default model matching the new provider,
+ * restart pi so it re-reads auth.json (it loads credentials once at spawn),
+ * and bring up the scheduler. Returns the fresh status for the renderer.
+ */
+async function onAuthenticated(): Promise<RuntimeStatus> {
+  try {
+    // listModels spawns pi if needed (doubles as the wizard's prewarm) and is
+    // already filtered to providers with credentials.
+    const models = await runtime!.listModels();
+    const current = (await readSettings()).defaults.model;
+    if (models.length && (!current || !models.some((m) => m.id === current))) {
+      await updateDefaultModel(chooseDefaultModel(models));
+    }
+  } catch {
+    // model list unavailable — keep the built-in default
+  }
+  // Apply fresh credentials + the new default to the running process.
+  await runtime!.restart().catch(() => undefined);
+  void scheduler?.start();
+  return runtime!.status();
+}
+
 // Local embedding worker manager (created in the whenReady bootstrap; null until
 // then and under E2E, where downloading model weights would break hermeticity).
 let embedManager: EmbedWorkerManager | null = null;
 
 function registerIpc(): void {
   ipcMain.handle('runtime:status', (): Promise<RuntimeStatus> | RuntimeStatus => {
-    if (E2E) {
-      return { ok: true, authenticated: true, backendPath: null, backendHome: '', workspaceRoot: '' };
-    }
+    if (E2E) return e2eStatus();
     return runtime!.status();
   });
   ipcMain.handle('runtime:login', async () => {
@@ -669,6 +730,40 @@ function registerIpc(): void {
     if (status.ok) void scheduler?.start();
     return status;
   });
+
+  // ---- provider sign-in (onboarding wizard) ----
+  ipcMain.handle('auth:providerLogin', async (_e, provider: AuthProviderId) => {
+    if (E2E) {
+      // Scripted fake: surface the URL step, then complete, so the wizard's
+      // whole state machine is exercised without a browser or network.
+      sendToMain('auth:event', { kind: 'auth-url', url: 'https://oauth.example.test/authorize' });
+      e2eAuthed = true;
+      sendToMain('auth:event', { kind: 'done', ok: true, provider });
+      return { ok: true, status: e2eStatus() };
+    }
+    const res = await providerAuth!.login(provider);
+    if (!res.ok) return res;
+    return { ok: true, status: await onAuthenticated() };
+  });
+  ipcMain.handle('auth:setApiKey', async (_e, provider: ApiKeyProviderId, key: string) => {
+    if (E2E) {
+      e2eAuthed = true;
+      return { ok: true, status: e2eStatus() };
+    }
+    try {
+      await providerAuth!.setApiKey(provider, key);
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    return { ok: true, status: await onAuthenticated() };
+  });
+  ipcMain.handle('auth:respond', (_e, requestId: string, value: string) => {
+    providerAuth?.respond(requestId, value);
+  });
+  ipcMain.handle('auth:cancel', () => {
+    providerAuth?.cancel();
+  });
+  ipcMain.handle('auth:completeOnboarding', () => markOnboardingCompleted());
   ipcMain.handle('backend:startTurn', async (_e, input: StartTurnInput) => {
     // The user is actively chatting: yield any scheduler-owned turn (frees the
     // foreground gate) and hold scheduled runs off for a while.
@@ -1133,6 +1228,10 @@ app.whenReady().then(async () => {
   // backend-agnostic.
   runtime = createBackend();
 
+  // In-app provider sign-in for the onboarding wizard. Writes the same isolated
+  // auth.json the pi subprocess reads; progress is pushed to the renderer.
+  providerAuth = new ProviderAuth(join(piHome(), 'auth.json'), (event) => sendToMain('auth:event', event));
+
   // Scheduled tasks: re-run a chat's prompt as an autonomous turn on a cron/once
   // schedule. The scheduler owns timing + execution; the backend routes the
   // assistant's schedule_task/notify_user tools to it via the TaskBridge below.
@@ -1410,8 +1509,13 @@ app.whenReady().then(async () => {
     mainWindow?.webContents.once('did-finish-load', () => {
       void runtime!
         .status()
-        .then((s) => {
+        .then(async (s) => {
           if (!s.ok) return;
+          // Already authenticated (e.g. auth seeded from an existing ~/.pi): count
+          // onboarding as done, so a LATER auth loss shows the compact re-sign-in
+          // screen instead of the first-run welcome.
+          const settings = await readSettings();
+          if (!settings.onboarding.completed) await markOnboardingCompleted();
           // Start the scheduler only once signed in — runs are turns, which need a
           // working backend. This also runs any tasks missed while Stem was closed
           // (catch-up), exactly once each.

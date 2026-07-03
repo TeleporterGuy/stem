@@ -36,7 +36,10 @@ interface Pending {
 const REQUEST_TIMEOUT_MS = 120_000;
 
 export interface PiProcessOptions {
-  piPath: string;
+  /** argv[0]: a pi binary, or Electron's execPath when running the bundled cli.js. */
+  command: string;
+  /** Args before `--mode rpc` (bundled pi: the cli.js path). */
+  prefixArgs?: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
   /** Extra CLI args after `--mode rpc` (e.g. provider/model/session flags). */
@@ -65,11 +68,15 @@ export class PiProcess extends EventEmitter {
 
   start(): void {
     if (this.proc) return;
-    const proc = spawn(this.options.piPath, ['--mode', 'rpc', ...this.options.args], {
-      cwd: this.options.cwd,
-      env: this.options.env,
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+    const proc = spawn(
+      this.options.command,
+      [...(this.options.prefixArgs ?? []), '--mode', 'rpc', ...this.options.args],
+      {
+        cwd: this.options.cwd,
+        env: this.options.env,
+        stdio: ['pipe', 'pipe', 'pipe']
+      }
+    );
     this.proc = proc;
 
     this.attachJsonlReader(proc.stdout, (line) => this.handleLine(line));

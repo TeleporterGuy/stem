@@ -21,6 +21,7 @@ import type {
   StartTurnResult
 } from '../../shared/types';
 import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bootstrap';
+import { readSettings } from '../workspace/settings';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
 import { buildRecallContext, type RecallTimings } from '../recall/inject';
 import { buildFilesContext } from '../files/inject';
@@ -41,7 +42,7 @@ import {
 } from './mcp-config';
 import { authorizeMcp } from './oauth';
 import { piMcpConfigPath, skillsRoot } from '../workspace/paths';
-import { findPiPath } from './locate';
+import { resolvePi, type PiInvocation } from './locate';
 import { PiProcess, type PiEvent } from './rpc';
 import {
   newTurnContext,
@@ -292,21 +293,23 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       backendHome: this.options.piHome,
       workspaceRoot: this.options.workspaceRoot
     };
-    const piPath = await findPiPath();
-    if (!piPath) return { ...base, error: 'pi was not found on PATH.' };
-    base.backendPath = piPath;
+    const pi = await resolvePi();
+    if (!pi) return { ...base, error: 'The pi backend could not be located (bundled copy missing and no system pi).' };
+    base.backendPath = pi.displayPath;
 
     await this.ensurePiHome();
+    const providers = [...(await this.authProviders())];
     const authed = await this.fileExists(join(this.options.piHome, 'auth.json'));
     if (!authed) {
       return {
         ...base,
         authenticated: false,
-        loginCommand: this.loginCommand(piPath),
-        error: 'Stem is not signed in to pi. Run the login command, then retry.'
+        providers,
+        loginCommand: this.loginCommand(pi),
+        error: 'Stem is not signed in yet.'
       };
     }
-    return { ...base, ok: true, authenticated: true, loginCommand: this.loginCommand(piPath) };
+    return { ...base, ok: true, authenticated: true, providers, loginCommand: this.loginCommand(pi) };
   }
 
   async login(): Promise<RuntimeStatus> {
@@ -441,6 +444,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     const models = ((res.data as { models?: PiModel[] } | undefined)?.models ?? []).filter(Boolean);
     const providers = await this.authProviders();
     const visible = providers.size ? models.filter((m) => providers.has(m.provider)) : models;
+    const def = await this.resolveDefaultModel();
     return visible.map((m) => {
       const id = `${m.provider}/${m.id}`;
       const efforts = effortsFor(m);
@@ -454,7 +458,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         supportedEfforts: efforts,
         defaultEffort: efforts.includes('medium') ? 'medium' : efforts[0] ?? 'medium',
         serviceTiers: serviceTiersFor(m),
-        isDefault: m.provider === DEFAULT_PROVIDER && m.id === DEFAULT_MODEL,
+        isDefault: m.provider === def.provider && m.id === def.modelId,
         ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {})
       };
     });
@@ -482,18 +486,19 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    */
   async complete(prompt: string, opts?: { model?: string | null; timeoutMs?: number }): Promise<string> {
     const timeoutMs = opts?.timeoutMs ?? 120_000;
-    const piPath = await findPiPath();
-    if (!piPath) throw new Error('pi was not found on PATH.');
+    const pi = await resolvePi();
+    if (!pi) throw new Error('The pi backend could not be located.');
     await this.ensurePiHome();
     // Memory distillation/consolidation can run on a user-configured model
     // (Manage → Memory); fall back to the backend default when unset.
     const { provider, modelId } = opts?.model
       ? this.parseModel(opts.model)
-      : { provider: DEFAULT_PROVIDER, modelId: DEFAULT_MODEL };
+      : await this.resolveDefaultModel();
     const child = new PiProcess({
-      piPath,
+      command: pi.command,
+      prefixArgs: pi.prefixArgs,
       cwd: join(this.options.workspaceRoot, '.stem-internal'),
-      env: this.sanitizedEnv(),
+      env: this.sanitizedEnv(pi),
       args: [
         '--no-session',
         '--no-builtin-tools',
@@ -923,14 +928,16 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   private async start(): Promise<void> {
-    const piPath = await findPiPath();
-    if (!piPath) throw new Error('pi was not found on PATH.');
+    const pi = await resolvePi();
+    if (!pi) throw new Error('The pi backend could not be located.');
     await this.ensurePiHome();
+    const { provider, modelId } = await this.resolveDefaultModel();
 
     const proc = new PiProcess({
-      piPath,
+      command: pi.command,
+      prefixArgs: pi.prefixArgs,
       cwd: this.options.workspaceRoot,
-      env: this.sanitizedEnv(),
+      env: this.sanitizedEnv(pi),
       args: [
         // Filesystem access: keep pi's read/edit/write built-ins (so the assistant can
         // open AND create/modify files in the Files folder). Exclude only `bash`
@@ -947,15 +954,15 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         '-e',
         piExtensionPath(),
         '--provider',
-        DEFAULT_PROVIDER,
+        provider,
         '--model',
-        DEFAULT_MODEL,
+        modelId,
         '--append-system-prompt',
         STEM_ASSISTANT_INSTRUCTIONS
       ]
     });
     this.proc = proc;
-    this.currentModel = `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`;
+    this.currentModel = `${provider}/${modelId}`;
     // A fresh process starts a fresh session whose thinking level is unknown to us.
     this.currentThinking = null;
 
@@ -1376,6 +1383,20 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     return { provider: model.slice(0, i), modelId: model.slice(i + 1) };
   }
 
+  /**
+   * The app-level default model: the persisted post-onboarding choice (matched to
+   * the provider the user signed in with), else the built-in codex constant.
+   */
+  private async resolveDefaultModel(): Promise<{ provider: string; modelId: string }> {
+    try {
+      const { defaults } = await readSettings();
+      if (defaults.model) return this.parseModel(defaults.model);
+    } catch {
+      // settings unreadable → constant
+    }
+    return { provider: DEFAULT_PROVIDER, modelId: DEFAULT_MODEL };
+  }
+
   /** Assemble the prompt: prepend recall/files/format context (pi has no per-turn context field). */
   private async buildMessage(
     input: StartTurnInput,
@@ -1644,12 +1665,15 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
   }
 
-  private loginCommand(piPath: string): string {
-    return `env PI_CODING_AGENT_DIR="${this.options.piHome}" "${piPath}"`;
+  /** Diagnostics-only: how to reach this exact pi + home from a terminal. */
+  private loginCommand(pi: PiInvocation): string {
+    const extra = pi.env.ELECTRON_RUN_AS_NODE ? 'ELECTRON_RUN_AS_NODE=1 ' : '';
+    const argv = [pi.command, ...pi.prefixArgs].map((a) => `"${a}"`).join(' ');
+    return `env PI_CODING_AGENT_DIR="${this.options.piHome}" ${extra}${argv}`;
   }
 
-  private sanitizedEnv(): NodeJS.ProcessEnv {
-    const env = { ...process.env };
+  private sanitizedEnv(pi?: PiInvocation): NodeJS.ProcessEnv {
+    const env = { ...process.env, ...(pi?.env ?? {}) };
     env.PI_CODING_AGENT_DIR = this.options.piHome;
     env.PI_CODING_AGENT_SESSION_DIR = this.options.sessionsDir;
     env.PI_SKIP_VERSION_CHECK = '1';

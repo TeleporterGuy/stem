@@ -206,6 +206,51 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   word-break: break-all;
 }
 
+/* ---- onboarding wizard (first-run / re-auth gate) ---- */
+.gate-card.onboarding { max-width: 460px; }
+.gate-card.onboarding .gate-sub { color: var(--muted); margin: 4px 0 14px; }
+.gate-card.onboarding .gate-hint {
+  color: var(--muted);
+  font-size: var(--fs-11);
+  margin: 6px 0 12px;
+}
+.gate-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 14px 0 10px;
+}
+.gate-providers .primary { width: 100%; padding: 8px 18px; }
+.gate-providers .gate-hint { margin: 0 0 10px; }
+.gate-link {
+  font: inherit;
+  font-size: var(--fs-12);
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  display: inline-block;
+}
+.gate-link:hover { text-decoration: underline; }
+.gate-code {
+  font-size: var(--fs-16);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+.gate-form { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.gate-form input,
+.gate-form select {
+  font: inherit;
+  font-size: var(--fs-13);
+  padding: 6px 10px;
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--content);
+  color: var(--ink);
+}
+.gate-form-actions { display: flex; justify-content: center; gap: 8px; }
+
 /* ---- conversation ---- */
 .conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 0.5px solid var(--line); background: var(--content); }
 .chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }

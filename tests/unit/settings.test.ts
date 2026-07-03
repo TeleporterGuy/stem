@@ -4,7 +4,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { readSettings, updateEscapeAction, updateRetrievalSettings } from '../../src/main/workspace/settings';
+import {
+  markOnboardingCompleted,
+  readSettings,
+  updateDefaultModel,
+  updateEscapeAction,
+  updateRetrievalSettings
+} from '../../src/main/workspace/settings';
 import { settingsStorePath } from '../../src/main/workspace/paths';
 
 const path = settingsStorePath();
@@ -38,6 +44,32 @@ describe('escapeAction setting', () => {
   it('falls back to off when the field is missing', async () => {
     writeFileSync(path, JSON.stringify({ quickChat: {} }));
     expect((await readSettings()).escapeAction).toBe('off');
+  });
+});
+
+describe('onboarding + default-model settings', () => {
+  it('defaults to not-completed and no default model', async () => {
+    const s = await readSettings();
+    expect(s.onboarding.completed).toBe(false);
+    expect(s.defaults.model).toBeNull();
+  });
+
+  it('markOnboardingCompleted persists', async () => {
+    expect((await markOnboardingCompleted()).onboarding.completed).toBe(true);
+    expect((await readSettings()).onboarding.completed).toBe(true);
+  });
+
+  it('updateDefaultModel round-trips and clears back to null', async () => {
+    expect((await updateDefaultModel('anthropic/claude-sonnet-4')).defaults.model).toBe('anthropic/claude-sonnet-4');
+    expect((await readSettings()).defaults.model).toBe('anthropic/claude-sonnet-4');
+    expect((await updateDefaultModel(null)).defaults.model).toBeNull();
+  });
+
+  it('coerces garbage values back to defaults', async () => {
+    writeFileSync(path, JSON.stringify({ onboarding: { completed: 'yes' }, defaults: { model: 42 } }));
+    const s = await readSettings();
+    expect(s.onboarding.completed).toBe(false);
+    expect(s.defaults.model).toBeNull();
   });
 });
 

@@ -16,6 +16,7 @@ import type {
 } from '../shared/types';
 import { toMessageAttachments } from './attachments';
 import { ChatView, type ChatViewHandle } from './chat/ChatView';
+import { OnboardingGate } from './onboarding/OnboardingGate';
 import { ShortcutHint, useShortcut } from './shortcuts';
 import { ManagePanel } from './manage/ManagePanel';
 import { McpApprovalCard } from './manage/McpApprovalCard';
@@ -38,6 +39,12 @@ import { createEventBatcher } from './eventBatcher';
 // migrated to the real thread id once the first turn returns one.
 const DRAFT = '__draft__';
 
+// Conservative "this smells like an auth failure" match on a failed turn's error
+// text. A false positive only shows the re-sign-in screen, which has a
+// "Back to chat" escape — but keep it tight anyway.
+const AUTH_ERROR_RE =
+  /\b401\b|\b403\b|unauthori[sz]ed|invalid[_ ]?(api[_ ]?key|grant|token)|token.*(expired|revoked)|re-?authenticat/i;
+
 // Merge a DRAFT slice into the (possibly already-created) real-thread slice when a
 // new chat's first turn returns its id. The draft holds the user bubble; the live
 // slice may already hold assistant deltas that arrived before startTurn resolved.
@@ -55,8 +62,15 @@ export default function App() {
   // uncreated chat). This is what lets several chats run concurrently — each has
   // its own messages/running/streaming slice that events route into by threadId.
   const [threadStates, setThreadStates] = useState<Record<string, ThreadState>>({});
-  const [signingIn, setSigningIn] = useState(false);
   const [showInspector, setShowInspector] = useState(true);
+  // First-run wizard state (null until settings load). Completed=false + not
+  // authenticated → the full welcome wizard; completed=true → the compact
+  // re-sign-in variant.
+  const [onboardingCompleted, setOnboardingCompleted] = useState<boolean | null>(null);
+  // Set when a turn fails with an auth-looking error while status.ok — an expired
+  // refresh token still leaves auth.json on disk, so status() can't detect it.
+  // Renders the re-auth wizard over the app; cleared on re-login or dismiss.
+  const [authProblem, setAuthProblem] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   // The active thread queued for deletion behind the ⌃X confirm popup (null = closed).
   const [pendingDelete, setPendingDelete] = useState<{ threadId: string; title: string } | null>(null);
@@ -207,7 +221,11 @@ export default function App() {
   const [escapeAction, setEscapeAction] = useState<EscapeAction>('off');
   useEffect(() => {
     const load = () => {
-      if (window.stem) window.stem.getSettings().then((s) => setEscapeAction(s.escapeAction));
+      if (window.stem)
+        window.stem.getSettings().then((s) => {
+          setEscapeAction(s.escapeAction);
+          setOnboardingCompleted(s.onboarding.completed);
+        });
     };
     load();
     // Re-read on focus (covers external edits) and on the in-window event the
@@ -313,6 +331,13 @@ export default function App() {
           return next;
         });
         return;
+      }
+
+      // A failed turn with an auth-looking error → surface the re-sign-in screen
+      // (status.ok can't flip by itself: an expired token still leaves auth.json).
+      if (event.method === 'turn/failed') {
+        const err = (event.params as { error?: string } | undefined)?.error;
+        if (err && AUTH_ERROR_RE.test(err)) setAuthProblem(err);
       }
 
       const threadId = backendEventThreadId(event);
@@ -560,14 +585,13 @@ export default function App() {
     setThread(key, () => ({ running: false, streamingId: null, activity: null, activeTurnId: null, status: 'idle' }));
   }, [setThread]);
 
-  async function signIn() {
-    setSigningIn(true);
-    try {
-      setStatus(await window.stem.login());
-    } finally {
-      setSigningIn(false);
-    }
-  }
+  // Sign-in finished (wizard or re-auth): adopt the fresh status and clear any
+  // auth-failure gate so the app (re)mounts its normal effects.
+  const onAuthenticated = useCallback((next: RuntimeStatus) => {
+    setAuthProblem(null);
+    setOnboardingCompleted(true);
+    setStatus(next);
+  }, []);
 
   const newConversation = useCallback(async (folderId: string | null = null) => {
     // Reset only the draft slice and switch to it — any chats running in the
@@ -877,26 +901,42 @@ export default function App() {
   }
 
   if (!status.ok) {
+    if (status.authenticated === false) {
+      // Wait for settings before picking the wizard variant — the gate mounts its
+      // reducer once, so flipping variant after the fact wouldn't re-init it.
+      if (onboardingCompleted === null) {
+        return shell(<div className="app loading">Starting Stem…</div>);
+      }
+      // Not signed in: first-run welcome wizard, or the compact re-sign-in
+      // variant when onboarding already happened (e.g. auth.json was deleted).
+      return shell(
+        <OnboardingGate
+          variant={onboardingCompleted ? 'reauth' : 'firstRun'}
+          onAuthenticated={onAuthenticated}
+        />
+      );
+    }
     return shell(
       <div className="app gate">
         <div className="gate-card">
           <h1>Stem</h1>
-          {status.authenticated === false ? (
-            <>
-              <p>Sign in with your Claude subscription to continue.</p>
-              <button className="primary" onClick={signIn} disabled={signingIn}>
-                {signingIn ? 'Waiting for browser…' : 'Sign in with Claude'}
-              </button>
-              {status.loginCommand && <code className="login-cmd">{status.loginCommand}</code>}
-            </>
-          ) : (
-            <>
-              <p className="error">{status.error}</p>
-              <button className="push" onClick={refreshStatus}>Retry</button>
-            </>
-          )}
+          <p className="error">{status.error}</p>
+          <button className="push" onClick={refreshStatus}>Retry</button>
         </div>
       </div>
+    );
+  }
+
+  if (authProblem) {
+    // Signed-in status but a turn failed with an auth-looking error (expired /
+    // revoked token). Re-auth screen with a way back — never trap the user.
+    return shell(
+      <OnboardingGate
+        variant="reauth"
+        reauthMessage={authProblem}
+        onAuthenticated={onAuthenticated}
+        onDismissReauth={() => setAuthProblem(null)}
+      />
     );
   }
 

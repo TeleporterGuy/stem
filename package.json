@@ -17,6 +17,7 @@
     "test:e2e:real": "STEM_E2E_REAL=1 playwright test"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.3",
     "@huggingface/transformers": "^3.8.1",
     "lucide-react": "^0.468.0",
     "remark-gfm": "^4.0.0",

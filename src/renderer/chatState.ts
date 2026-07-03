@@ -198,11 +198,24 @@ export function applyBackendEventToThread(
     case 'turn/aborted': {
       const p = event.params as TurnCompletedParams;
       const method = event.method as TurnSettledMethod;
+      // A failed turn carries its failure text — surface it as a system bubble
+      // instead of silently stopping (auth expiry, provider errors, …).
+      const settled =
+        method === 'turn/failed'
+          ? [
+              ...stampActivity(state.messages, p.turn.id, state.activities),
+              {
+                id: `system-${p.turn.id}`,
+                role: 'system' as const,
+                content: p.error?.trim() || 'The reply failed. Try sending the message again.'
+              }
+            ]
+          : stampActivity(state.messages, p.turn.id, state.activities);
       return {
         ...state,
         // Stamp the final activity list onto the turn's bubble before clearing the
         // live list — settled rows render collapsed from the message itself.
-        messages: stampActivity(state.messages, p.turn.id, state.activities),
+        messages: settled,
         running: false,
         streamingId: null,
         activity: null,

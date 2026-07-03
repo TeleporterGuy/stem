@@ -131,9 +131,39 @@ export interface RuntimeStatus {
   backendHome: string;
   workspaceRoot: string;
   authenticated?: boolean;
-  /** Copy-pasteable login command, surfaced when not authenticated. */
+  /** Provider ids Stem holds credentials for (keys of the isolated auth.json). */
+  providers?: string[];
+  /** Copy-pasteable login command, surfaced when not authenticated (diagnostics). */
   loginCommand?: string;
   error?: string;
+}
+
+// ---- Provider sign-in (onboarding wizard) ----
+
+/** Providers the wizard can OAuth into (pi's registered OAuth flows, minus Copilot). */
+export type AuthProviderId = 'anthropic' | 'openai-codex';
+
+/** Providers accepting a plain API key (written to auth.json as type:'api_key'). */
+export type ApiKeyProviderId = 'anthropic' | 'openai';
+
+/**
+ * Main → renderer pushes while a provider login is in flight. `input-request`
+ * expects the renderer to answer via providerLoginRespond(requestId, value)
+ * (e.g. pasting the code manually when the localhost callback can't run).
+ */
+export type AuthUiEvent =
+  | { kind: 'auth-url'; url: string; instructions?: string }
+  | { kind: 'device-code'; userCode: string; verificationUri: string }
+  | { kind: 'progress'; message: string }
+  | { kind: 'input-request'; requestId: string; message: string; placeholder?: string }
+  | { kind: 'done'; ok: true; provider: string }
+  | { kind: 'done'; ok: false; provider: string; error: string };
+
+/** Result of a providerLogin/setApiKey IPC call; status is fresh when ok. */
+export interface ProviderLoginResult {
+  ok: boolean;
+  error?: string;
+  status?: RuntimeStatus;
 }
 
 // ---- Turn lifecycle ----
@@ -274,10 +304,12 @@ export interface ItemEventParams {
   turnId: string;
 }
 
-/** `turn/completed`. */
+/** `turn/completed` and `turn/failed` (the latter carries the failure text). */
 export interface TurnCompletedParams {
   threadId: string;
   turn: { id: string; status: string; durationMs?: number | null };
+  /** Human-readable failure reason on `turn/failed`. */
+  error?: string;
 }
 
 /** `turn/timing` — per-turn latency breakdown emitted when a turn ends. */
@@ -869,6 +901,20 @@ export interface RetrievalTestResult {
  */
 export type EscapeAction = 'off' | 'single' | 'twoStage';
 
+/** First-run state: whether the user has been through (or past) the welcome wizard. */
+export interface OnboardingSettings {
+  completed: boolean;
+}
+
+/**
+ * App-level backend defaults. `model` is 'provider/modelId' (same shape as
+ * ModelSummary.id); null = the built-in constant. Set after onboarding so the
+ * default matches the provider the user actually signed in with.
+ */
+export interface DefaultsSettings {
+  model: string | null;
+}
+
 export interface AppSettings {
   quickChat: QuickChatSettings;
   nativeWebSearch: NativeWebSearchSettings;
@@ -879,6 +925,10 @@ export interface AppSettings {
   escapeAction: EscapeAction;
   /** Standing custom instructions, separate for Main and Quick Chat (QC inherits Main). */
   customInstructions: CustomInstructionsSettings;
+  /** First-run wizard state. */
+  onboarding: OnboardingSettings;
+  /** App-level backend defaults (default model). */
+  defaults: DefaultsSettings;
 }
 
 /**
@@ -948,6 +998,18 @@ export interface QuickChatSessionStarted {
 export interface StemApi {
   runtimeStatus(): Promise<RuntimeStatus>;
   login(): Promise<RuntimeStatus>;
+  /** Start an in-app OAuth sign-in for a provider (opens the system browser). */
+  providerLogin(provider: AuthProviderId): Promise<ProviderLoginResult>;
+  /** Answer an `input-request` auth event (manual code paste). */
+  providerLoginRespond(requestId: string, value: string): Promise<void>;
+  /** Abort the in-flight provider login. */
+  providerLoginCancel(): Promise<void>;
+  /** Save an API key for a provider (auth.json type:'api_key'). */
+  setApiKey(provider: ApiKeyProviderId, key: string): Promise<ProviderLoginResult>;
+  /** Mark the first-run wizard as finished. */
+  completeOnboarding(): Promise<AppSettings>;
+  /** Provider-login progress pushes (auth-url opened, device code, done, …). */
+  onAuthEvent(listener: (event: AuthUiEvent) => void): () => void;
   startTurn(input: StartTurnInput): Promise<StartTurnResult>;
   interruptTurn(turnId: string): Promise<void>;
   newConversation(): Promise<void>;

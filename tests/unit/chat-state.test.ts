@@ -78,6 +78,30 @@ describe('chatState reducer', () => {
     }
   });
 
+  it('surfaces a failed turn as a system bubble with its error text', () => {
+    const running = { ...EMPTY_STATE, running: true, activeTurnId: 'turn1', status: 'running' as const };
+    const failed = applyBackendEventToThread(
+      running,
+      event('turn/failed', { threadId: 't1', turn: { id: 'turn1', status: 'failed' }, error: '401 Unauthorized' })
+    )!;
+    expect(failed.messages.at(-1)).toMatchObject({ role: 'system', content: '401 Unauthorized' });
+
+    // Without error text a generic message still tells the user what happened.
+    const generic = applyBackendEventToThread(
+      running,
+      event('turn/failed', { threadId: 't1', turn: { id: 'turn1', status: 'failed' } })
+    )!;
+    expect(generic.messages.at(-1)).toMatchObject({ role: 'system' });
+    expect((generic.messages.at(-1)!.content as string).length).toBeGreaterThan(0);
+
+    // Completed/aborted turns do NOT grow a bubble.
+    const completed = applyBackendEventToThread(
+      running,
+      event('turn/completed', { threadId: 't1', turn: { id: 'turn1', status: 'completed' } })
+    )!;
+    expect(completed.messages).toHaveLength(0);
+  });
+
   it('supports main inactive completion and quick-chat idle completion policies', () => {
     const running = { ...EMPTY_STATE, running: true, activeTurnId: 'turn1', status: 'running' as const };
     const completed = event('turn/completed', { threadId: 'background', turn: { id: 'turn1', status: 'completed' } });

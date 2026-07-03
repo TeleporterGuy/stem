@@ -1,5 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
+  ApiKeyProviderId,
+  AuthProviderId,
+  AuthUiEvent,
   BackendEventEnvelope,
   ConnectedFolderPatch,
   CustomInstructionsSettings,
@@ -32,6 +35,17 @@ import type {
 const api: StemApi = {
   runtimeStatus: () => ipcRenderer.invoke('runtime:status'),
   login: () => ipcRenderer.invoke('runtime:login'),
+  providerLogin: (provider: AuthProviderId) => ipcRenderer.invoke('auth:providerLogin', provider),
+  providerLoginRespond: (requestId: string, value: string) =>
+    ipcRenderer.invoke('auth:respond', requestId, value),
+  providerLoginCancel: () => ipcRenderer.invoke('auth:cancel'),
+  setApiKey: (provider: ApiKeyProviderId, key: string) => ipcRenderer.invoke('auth:setApiKey', provider, key),
+  completeOnboarding: () => ipcRenderer.invoke('auth:completeOnboarding'),
+  onAuthEvent: (listener: (event: AuthUiEvent) => void) => {
+    const handler = (_e: unknown, event: AuthUiEvent) => listener(event);
+    ipcRenderer.on('auth:event', handler);
+    return () => ipcRenderer.removeListener('auth:event', handler);
+  },
   startTurn: (input: StartTurnInput) => ipcRenderer.invoke('backend:startTurn', input),
   interruptTurn: (turnId: string) => ipcRenderer.invoke('backend:interruptTurn', turnId),
   newConversation: () => ipcRenderer.invoke('backend:newConversation'),
