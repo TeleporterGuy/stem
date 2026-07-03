@@ -1,26 +1,104 @@
 # Stem
 
-An isolated, pi-backed macOS personal assistant with rich MDX output, app-scoped skills, MCP, and Stem Recall memory.
+**A personal AI assistant for your Mac — ask from anywhere, get rich interactive answers, and let it remember, organize, and automate for you.**
 
-Stem is an Electron desktop app (Electron + React + TypeScript) that runs a conversational assistant backed by [pi](https://pi.dev). It renders assistant responses as MDX, organizes work into Spaces, supports self-improving skills and MCP servers, and keeps a long-lived memory via **Stem Recall**.
+Stem is an Electron desktop app (React + TypeScript) powered by [pi](https://pi.dev) under the hood. Bring your own model — sign in with Claude or ChatGPT, paste an API key, or point it at a local server.
 
-![Stem rendering an MDX answer with a callout, steps, a table, and a chart](docs/screenshots/stem-mdx-demo.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/hero-mdx-dark.png">
+  <img alt="Stem rendering a rich MDX answer with steps, a data table, and a chart" src="docs/screenshots/hero-mdx-light.png">
+</picture>
 
-## Features
+## Ask and keep working
 
-- **MDX output** — assistant responses render as rich, interactive MDX rather than plain text.
-- **Spaces** — chats are organized into Spaces, with root chats grouped by date in the sidebar.
-- **Skills** — app-scoped, self-improving skills that the assistant can manage and refine over time.
-- **MCP** — connect Model Context Protocol servers to extend the assistant's tools.
-- **Stem Recall** — long-term memory combining FTS5 episodic recall with LLM-distilled facts.
-- **Connected folders** — read external folders in place (read-only), without copying them into the app.
-- **Native web search** — provider-aware web search.
+Summon **Quick Chat** from any app with a global shortcut, ask, and dismiss it — you don't wait for the AI. A small status pill tracks progress in the corner of your screen and tells you (with an optional chime) the moment the answer is ready. Hit the shortcut again to read it, or hand the thread off to the main window.
 
-## Screenshots
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/quick-chat-dark.png">
+    <img alt="The Quick Chat overlay answering a question" src="docs/screenshots/quick-chat-light.png" width="596">
+  </picture>
+</p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/status-hud-dark.png">
+    <img alt="The status pill announcing the answer is ready" src="docs/screenshots/status-hud-light.png" width="216">
+  </picture>
+</p>
 
-Assistant responses render as rich MDX — callouts, steps, tables, and charts (above). The empty state, ready for a question:
+Quick Chat keeps its own thread, model, and settings — separate from whatever you're doing in the main window. The same pill can also follow long-running main-window turns across Spaces and displays, so you always know when Stem finishes.
 
-![Empty state](docs/screenshots/stem-empty-state.png)
+## Rich, interactive answers
+
+Responses render as **MDX**, not walls of text: callouts, step-by-step guides, collapsibles, tabs, data tables, charts — even quizzes and forms whose answers feed straight back into the conversation. Prefer plain text? Toggle between MDX and Markdown per turn.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/mdx-showcase-dark.png">
+  <img alt="An interactive quiz rendered inside a Stem answer" src="docs/screenshots/mdx-showcase-light.png">
+</picture>
+
+While Stem works you see live **tool activity** — web searches, file reads, terminal commands — and web-searched answers come with a **cited sources** list. A context meter shows how full the model's context window is and what the session has cost.
+
+## Memory that compounds
+
+**Stem Recall** is a two-level memory. Every conversation is captured into a searchable episodic store, and the important parts are distilled into durable facts about you — reviewed, deduplicated, and tidied over time. You stay in control: preview which facts get injected, forget any of them, cap the storage, or switch memory off entirely.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/memory-facts-dark.png">
+    <img alt="The Memory tab showing distilled facts Stem has learned" src="docs/screenshots/memory-facts-light.png" width="320">
+  </picture>
+</p>
+
+Facts flow into every new chat: ask for weekend ideas and the suggestions already know your partner is vegetarian. Relevance ranking runs on **bundled local embeddings** (Multilingual-E5 or EmbeddingGemma, downloaded once, run on-device) — or an OpenAI-compatible endpoint, or plain keyword matching. Nothing leaves your machine by default and embedding never blocks a reply.
+
+## Organized like you think
+
+Chats live in **Spaces** — nestable folders with drag-and-drop — alongside a date-grouped list of recent conversations and **full-text search across every chat**. Each message carries actions: retry, edit-and-rerun, branch into a new chat, copy.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sidebar-spaces-dark.png">
+  <img alt="The sidebar with Spaces, recent chats, and search" src="docs/screenshots/sidebar-spaces-light.png">
+</picture>
+
+## Automate it
+
+Ask Stem to check something every morning and it becomes a **scheduled task**: a prompt re-run on a cron or one-time schedule inside its own chat, autonomously. Tasks that miss their slot (laptop asleep) catch up on launch, and a task can raise an alert when it finds something you should see.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/tasks-dark.png">
+    <img alt="The Tasks tab with scheduled recurring tasks" src="docs/screenshots/tasks-light.png" width="320">
+  </picture>
+</p>
+
+## Extend it
+
+- **MCP servers** — connect local or remote Model Context Protocol servers (with sign-in for remote ones) to give Stem new tools.
+- **Skills** — self-improving, app-scoped procedures Stem writes and refines for itself; a curator keeps them tidy.
+- **Connected folders** — let Stem read folders like an Obsidian vault *in place*, read-only by default, with per-folder write and memorize toggles.
+- **Custom instructions** — standing directives for how Stem should behave, with a separate layer just for Quick Chat. Stem can even propose edits to its own instructions — applied only with your approval.
+
+## Bring your own model
+
+First launch walks you through a short onboarding with in-app sign-in. Switch models any time from a searchable picker — per window, mid-conversation.
+
+| Provider | Connection |
+| --- | --- |
+| Claude (Anthropic) | Sign in with your account (OAuth) or API key |
+| ChatGPT (OpenAI) | Sign in with your account (OAuth) or API key |
+| OpenRouter | API key |
+| Ollama | Local server, no key |
+| LM Studio | Local server, no key |
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-providers-dark.png">
+    <img alt="Settings with the model picker and AI providers" src="docs/screenshots/settings-providers-light.png" width="320">
+  </picture>
+</p>
+
+Native **web search** uses your provider's built-in search — no separate search API key.
 
 ## Getting started
 
@@ -30,6 +108,8 @@ Requires Node.js and macOS.
 npm install
 npm run dev      # launch the app in development
 ```
+
+First run opens the onboarding wizard — pick a provider and sign in, and you're chatting. Use `--fresh` (or `--profile=<name>`) to try Stem with a separate profile without touching your main one.
 
 ## Scripts
 
@@ -44,4 +124,4 @@ npm run dev      # launch the app in development
 
 ## Tech stack
 
-Electron, React 19, TypeScript, Vite (electron-vite), Vitest, Playwright, and unified/remark for MDX.
+Electron, React 19, TypeScript, Vite (electron-vite), Vitest, Playwright, and unified/remark for MDX. Screenshots in this README are captured by `scripts/capture-readme-shots.mts`.

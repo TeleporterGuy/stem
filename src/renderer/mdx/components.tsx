@@ -332,7 +332,9 @@ export function Chart({ type, title, data }: { type?: string; title?: string; da
               className="chart-axis"
               x={kind === 'bar' ? padL + (i + 0.5) * slot : lineX(i)}
               y={H - 10}
-              textAnchor="middle"
+              // Line/area points reach the pad edges — anchor the end labels
+              // inward so they don't clip outside the viewBox.
+              textAnchor={kind !== 'bar' && i === n - 1 ? 'end' : kind !== 'bar' && i === 0 ? 'start' : 'middle'}
             >
               {d.label}
             </text>
