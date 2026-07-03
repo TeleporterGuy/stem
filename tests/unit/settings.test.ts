@@ -9,6 +9,7 @@ import {
   readSettings,
   updateDefaultModel,
   updateEscapeAction,
+  updateLocalProvider,
   updateRetrievalSettings
 } from '../../src/main/workspace/settings';
 import { settingsStorePath } from '../../src/main/workspace/paths';
@@ -70,6 +71,31 @@ describe('onboarding + default-model settings', () => {
     const s = await readSettings();
     expect(s.onboarding.completed).toBe(false);
     expect(s.defaults.model).toBeNull();
+  });
+});
+
+describe('local provider settings', () => {
+  it('defaults to disabled with the servers\' standard URLs', async () => {
+    const lp = (await readSettings()).localProviders;
+    expect(lp.ollama).toEqual({ enabled: false, baseUrl: 'http://localhost:11434' });
+    expect(lp.lmstudio).toEqual({ enabled: false, baseUrl: 'http://localhost:1234' });
+  });
+
+  it('round-trips enable + custom URL per provider independently', async () => {
+    await updateLocalProvider('ollama', { enabled: true, baseUrl: 'http://box:11434' });
+    const lp = (await readSettings()).localProviders;
+    expect(lp.ollama).toEqual({ enabled: true, baseUrl: 'http://box:11434' });
+    expect(lp.lmstudio.enabled).toBe(false);
+    // partial patch keeps the other field
+    await updateLocalProvider('ollama', { enabled: false });
+    expect((await readSettings()).localProviders.ollama).toEqual({ enabled: false, baseUrl: 'http://box:11434' });
+  });
+
+  it('coerces garbage values back to defaults', async () => {
+    writeFileSync(path, JSON.stringify({ localProviders: { ollama: { enabled: 'yes', baseUrl: 42 }, bogus: {} } }));
+    const lp = (await readSettings()).localProviders;
+    expect(lp.ollama).toEqual({ enabled: false, baseUrl: 'http://localhost:11434' });
+    expect(Object.keys(lp).sort()).toEqual(['lmstudio', 'ollama']);
   });
 });
 

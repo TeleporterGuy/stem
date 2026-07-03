@@ -276,8 +276,7 @@ export default function App() {
 
   // Fetch the model catalog once the runtime is ready; seed defaults from the backend
   // (the `isDefault` model + its default effort) when nothing is remembered yet.
-  useEffect(() => {
-    if (!status?.ok) return;
+  const refreshModels = useCallback(() => {
     window.stem.listModels().then((list) => {
       setModels(list);
       setModelId((cur) => {
@@ -290,7 +289,21 @@ export default function App() {
         return cur;
       });
     });
-  }, [status?.ok]);
+  }, []);
+  useEffect(() => {
+    if (status?.ok) refreshModels();
+  }, [status?.ok, refreshModels]);
+
+  // Providers added/removed in Settings: the auth set (and with it the model
+  // catalog) changed under us — re-pull both. Fired by the AI-providers section.
+  useEffect(() => {
+    const onChanged = () => {
+      void refreshStatus();
+      refreshModels();
+    };
+    window.addEventListener('stem:providers-changed', onChanged);
+    return () => window.removeEventListener('stem:providers-changed', onChanged);
+  }, [refreshStatus, refreshModels]);
 
   // Persist the remembered selections.
   useEffect(() => {
@@ -1036,7 +1049,11 @@ export default function App() {
       </button>
       <div className="toolbar-title">
         <strong>Stem</strong>
-        {selectedModel && <span>{selectedModel.displayName}</span>}
+        {selectedModel && (
+          <span>
+            {selectedModel.displayName} · {selectedModel.providerName}
+          </span>
+        )}
       </div>
       <div className="toolbar-spacer" />
       <button

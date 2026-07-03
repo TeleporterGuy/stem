@@ -9,6 +9,9 @@ import type {
   EscapeAction,
   OnboardingSettings,
   LocalEmbedModelId,
+  LocalProviderId,
+  LocalProviderSettings,
+  LocalProvidersSettings,
   MemoryModelSettings,
   NativeWebSearchSettings,
   PartialRetrievalSettings,
@@ -72,7 +75,13 @@ const DEFAULTS: AppSettings = {
   onboarding: { completed: false },
   // App-level default model ('provider/modelId'); null = built-in constant.
   // Set after onboarding to match the provider the user signed in with.
-  defaults: { model: null }
+  defaults: { model: null },
+  // Local model servers (registered with the backend via the pi-home models.json).
+  // Base URLs are the servers' standard defaults; disabled until the user opts in.
+  localProviders: {
+    ollama: { enabled: false, baseUrl: 'http://localhost:11434' },
+    lmstudio: { enabled: false, baseUrl: 'http://localhost:1234' }
+  }
 };
 
 const ESCAPE_ACTIONS: readonly EscapeAction[] = ['off', 'single', 'twoStage'];
@@ -159,6 +168,19 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   const defaults: DefaultsSettings = {
     model: typeof rawDef.model === 'string' && rawDef.model.trim() ? rawDef.model : null
   };
+  const rawLp = (parsed?.localProviders ?? {}) as Partial<Record<LocalProviderId, Partial<LocalProviderSettings>>>;
+  const coerceLocal = (id: LocalProviderId): LocalProviderSettings => {
+    const r = rawLp[id] ?? {};
+    const def = DEFAULTS.localProviders[id];
+    return {
+      enabled: typeof r.enabled === 'boolean' ? r.enabled : def.enabled,
+      baseUrl: typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : def.baseUrl
+    };
+  };
+  const localProviders: LocalProvidersSettings = {
+    ollama: coerceLocal('ollama'),
+    lmstudio: coerceLocal('lmstudio')
+  };
   return {
     quickChat: {
       shortcut: typeof qc.shortcut === 'string' && qc.shortcut.trim() ? qc.shortcut : null,
@@ -182,7 +204,8 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     escapeAction,
     customInstructions,
     onboarding,
-    defaults
+    defaults,
+    localProviders
   };
 }
 
@@ -289,6 +312,19 @@ export function updateDefaultModel(model: string | null): Promise<AppSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, defaults: { model } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch one local provider (Ollama / LM Studio) and persist; returns the full settings. */
+export function updateLocalProvider(id: LocalProviderId, patch: Partial<LocalProviderSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({
+      ...cur,
+      localProviders: { ...cur.localProviders, [id]: { ...cur.localProviders[id], ...patch } }
+    });
     await writeSettings(next);
     return next;
   });

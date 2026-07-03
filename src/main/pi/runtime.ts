@@ -20,6 +20,7 @@ import type {
   StartTurnInput,
   StartTurnResult
 } from '../../shared/types';
+import { providerName } from '../../shared/providers';
 import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
@@ -41,6 +42,7 @@ import {
   writeServiceTierGate
 } from './mcp-config';
 import { authorizeMcp } from './oauth';
+import { syncModelsConfig } from './models-config';
 import { piMcpConfigPath, skillsRoot } from '../workspace/paths';
 import { resolvePi, type PiInvocation } from './locate';
 import { PiProcess, type PiEvent } from './rpc';
@@ -77,9 +79,8 @@ const DEFAULT_MODEL = 'gpt-5.3-codex-spark';
 // extension injects via before_provider_request. Add 'anthropic' once Claude-via-pi
 // is ungated and its injection branch is enabled.
 const PROVIDER_NATIVE_SEARCH = new Set(['openai-codex']);
-// Friendly provider names for the UI (provider picker, web-search toggle).
-const PROVIDER_NAMES: Record<string, string> = { 'openai-codex': 'ChatGPT', anthropic: 'Claude' };
-const providerName = (p: string): string => PROVIDER_NAMES[p] ?? p;
+// Friendly provider names for the UI live in shared/providers.ts (also used by
+// the renderer's settings/onboarding surfaces).
 
 // Sentinel title the bridge uses for an MCP add/remove approval (see
 // stem-mcp-extension.mjs). The message is a JSON McpAdminProposal payload.
@@ -445,6 +446,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   async listModels(): Promise<ModelSummary[]> {
+    await this.maybeRefreshLocalModels();
     await this.ensureStarted();
     const res = await this.proc!.request({ type: 'get_available_models' });
     const models = ((res.data as { models?: PiModel[] } | undefined)?.models ?? []).filter(Boolean);
@@ -937,6 +939,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     const pi = await resolvePi();
     if (!pi) throw new Error('The pi backend could not be located.');
     await this.ensurePiHome();
+    // Refresh the local-provider catalog (models.json) before the spawn: pi's RPC
+    // mode reads the file once at startup and never again.
+    this.lastLocalSyncAt = Date.now();
+    await syncModelsConfig().catch(() => undefined);
     const { provider, modelId } = await this.resolveDefaultModel();
 
     const proc = new PiProcess({
@@ -1631,6 +1637,29 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     const sched = raw.match(SCHED_STRIP_RE);
     const text = raw.replace(SCHED_STRIP_RE, '').replace(CONTEXT_STRIP_RE, '');
     return sched ? { text, images, scheduled: { at: sched[1] } } : { text, images };
+  }
+
+  // Last local-provider catalog sync (models.json); throttles listModels re-probes.
+  private lastLocalSyncAt = 0;
+
+  /**
+   * Keep the local-provider catalog fresh: re-probe enabled Ollama/LM Studio
+   * servers at most every 30s so newly pulled models appear without an app
+   * restart. pi's RPC mode loads models.json once at spawn, so a content change
+   * needs a process restart — done only when no turn is streaming; otherwise the
+   * next sync (or any restart) catches up.
+   */
+  private async maybeRefreshLocalModels(): Promise<void> {
+    if (Date.now() - this.lastLocalSyncAt < 30_000) return;
+    this.lastLocalSyncAt = Date.now();
+    try {
+      const { localProviders } = await readSettings();
+      if (!Object.values(localProviders).some((p) => p.enabled)) return;
+      const changed = await syncModelsConfig(localProviders);
+      if (changed && this.proc?.running && !this.currentTurn) await this.restart();
+    } catch {
+      // non-fatal: the model list just stays as pi last loaded it
+    }
   }
 
   /** Providers Stem has credentials for (from the isolated auth.json). */

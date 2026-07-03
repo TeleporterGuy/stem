@@ -75,12 +75,14 @@ import {
   updateCustomInstructions,
   updateDefaultModel,
   updateEscapeAction,
+  updateLocalProvider,
   updateMemorySettings,
   updateNativeWebSearch,
   updateQuickChat,
   updateRetrievalSettings,
   updateSkillsSettings
 } from './workspace/settings';
+import { probeLocalProvider, syncModelsConfig } from './pi/models-config';
 import {
   createFolder,
   deleteFolder,
@@ -101,6 +103,8 @@ import type {
   EscapeAction,
   ItemEventParams,
   LocalEmbedStatus,
+  LocalProviderId,
+  LocalProviderSettings,
   McpServerInput,
   MemoryModelSettings,
   ModelSummary,
@@ -732,7 +736,9 @@ async function onAuthenticated(): Promise<RuntimeStatus> {
     // already filtered to providers with credentials.
     const models = await runtime!.listModels();
     const current = (await readSettings()).defaults.model;
-    if (models.length && (!current || !models.some((m) => m.id === current))) {
+    if (!current || !models.some((m) => m.id === current)) {
+      // Re-pick when unset or the provider that served the default is gone; an
+      // empty list (last provider disconnected) clears it back to the constant.
       await updateDefaultModel(chooseDefaultModel(models));
     }
   } catch {
@@ -789,6 +795,45 @@ function registerIpc(): void {
   });
   ipcMain.handle('auth:respond', (_e, requestId: string, value: string) => {
     providerAuth?.respond(requestId, value);
+  });
+  // ---- local providers (Ollama / LM Studio) + provider removal ----
+  ipcMain.handle('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string) => {
+    if (E2E) return { ok: true, models: ['stem-e2e-model'] };
+    return probeLocalProvider(baseUrl);
+  });
+  ipcMain.handle('providers:updateLocal', async (_e, id: LocalProviderId, patch: Partial<LocalProviderSettings>) => {
+    if (E2E) {
+      e2eAuthed = true;
+      return { ok: true, status: e2eStatus() };
+    }
+    try {
+      const settings = await updateLocalProvider(id, patch);
+      const cfg = settings.localProviders[id];
+      // Placeholder credential for keyless local servers (see ProviderAuth.setApiKey).
+      if (cfg.enabled) await providerAuth!.setApiKey(id, 'local');
+      else await providerAuth!.removeProvider(id);
+      await syncModelsConfig(settings.localProviders);
+      // pi reads models.json and auth.json only at spawn — restart before
+      // onAuthenticated() lists models so the new registry is visible to it.
+      await runtime!.restart();
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    return { ok: true, status: await onAuthenticated() };
+  });
+  ipcMain.handle('providers:disconnect', async (_e, providerId: string) => {
+    if (E2E) return { ok: true, status: e2eStatus() };
+    try {
+      await providerAuth!.removeProvider(providerId);
+      if (providerId === 'ollama' || providerId === 'lmstudio') {
+        const settings = await updateLocalProvider(providerId, { enabled: false });
+        await syncModelsConfig(settings.localProviders);
+      }
+      await runtime!.restart();
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    return { ok: true, status: await onAuthenticated() };
   });
   ipcMain.handle('auth:cancel', () => {
     providerAuth?.cancel();

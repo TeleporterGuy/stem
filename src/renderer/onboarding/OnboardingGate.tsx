@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useReducer, useRef } from 'react';
-import type { AuthProviderId, ApiKeyProviderId, AuthUiEvent, RuntimeStatus } from '../../shared/types';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import type {
+  AuthProviderId,
+  ApiKeyProviderId,
+  AuthUiEvent,
+  LocalProviderId,
+  LocalProviderTestResult,
+  RuntimeStatus
+} from '../../shared/types';
+import { API_KEY_PROVIDER_IDS, providerName } from '../../shared/providers';
 
 // First-run / re-auth gate: the wizard shown instead of the app until Stem holds
 // working provider credentials. Drives the main-process ProviderAuth over IPC:
@@ -13,7 +21,7 @@ const PROVIDER_LABELS: Record<AuthProviderId, string> = {
   'openai-codex': 'ChatGPT'
 };
 
-type Step = 'welcome' | 'chooseProvider' | 'oauthWait' | 'apiKey' | 'manualInput' | 'finishing' | 'error';
+type Step = 'welcome' | 'chooseProvider' | 'oauthWait' | 'apiKey' | 'localServer' | 'manualInput' | 'finishing' | 'error';
 
 interface WizardState {
   step: Step;
@@ -29,6 +37,7 @@ type WizardAction =
   | { type: 'continue' }
   | { type: 'pickProvider'; provider: AuthProviderId }
   | { type: 'pickApiKey' }
+  | { type: 'pickLocal' }
   | { type: 'backToChoice' }
   | { type: 'finishing' }
   | { type: 'authEvent'; event: AuthUiEvent }
@@ -63,6 +72,8 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
       };
     case 'pickApiKey':
       return { ...state, step: 'apiKey', provider: null, error: null };
+    case 'pickLocal':
+      return { ...state, step: 'localServer', provider: null, error: null };
     case 'backToChoice':
       return { ...initialState('reauth'), step: 'chooseProvider' };
     case 'finishing':
@@ -175,8 +186,9 @@ export function OnboardingGate({ variant, reauthMessage, onAuthenticated, onDism
             <h1>Welcome to Stem</h1>
             <p>A private AI assistant that lives on your Mac.</p>
             <p className="gate-sub">
-              Stem brings your own AI account: sign in with a ChatGPT or Claude subscription (or an API
-              key). Your chats, files, and memory stay on this Mac.
+              Stem brings your own AI account: sign in with a ChatGPT or Claude subscription, use an API
+              key (Anthropic, OpenAI, OpenRouter), or run local models with Ollama or LM Studio. Your
+              chats, files, and memory stay on this Mac.
             </p>
             <button className="primary" onClick={() => dispatch({ type: 'continue' })}>
               Get started
@@ -211,6 +223,9 @@ export function OnboardingGate({ variant, reauthMessage, onAuthenticated, onDism
             </div>
             <button className="gate-link" onClick={() => dispatch({ type: 'pickApiKey' })}>
               Use an API key instead
+            </button>
+            <button className="gate-link" onClick={() => dispatch({ type: 'pickLocal' })}>
+              Use a local model (Ollama or LM Studio)
             </button>
             {variant === 'reauth' && onDismissReauth && (
               <button className="gate-link" onClick={onDismissReauth}>
@@ -257,6 +272,14 @@ export function OnboardingGate({ variant, reauthMessage, onAuthenticated, onDism
         )}
 
         {state.step === 'apiKey' && <ApiKeyForm onSave={saveApiKey} onBack={() => dispatch({ type: 'backToChoice' })} />}
+
+        {state.step === 'localServer' && (
+          <LocalServerForm
+            onDone={(status) => void finish(status)}
+            onFail={(error) => dispatch({ type: 'fail', error })}
+            onBack={() => dispatch({ type: 'backToChoice' })}
+          />
+        )}
 
         {state.step === 'finishing' && (
           <>
@@ -320,6 +343,122 @@ function ManualCodeForm({
   );
 }
 
+const LOCAL_SERVER_DEFAULTS: Record<LocalProviderId, string> = {
+  ollama: 'http://localhost:11434',
+  lmstudio: 'http://localhost:1234'
+};
+
+/**
+ * Local-only onboarding: point Stem at a running Ollama / LM Studio server. The
+ * Test probe must find at least one model before Continue unlocks, so the wizard
+ * can't finish into an empty catalog.
+ */
+function LocalServerForm({
+  onDone,
+  onFail,
+  onBack
+}: {
+  onDone: (status?: RuntimeStatus) => void;
+  onFail: (error: string) => void;
+  onBack: () => void;
+}) {
+  const [server, setServer] = useState<LocalProviderId>('ollama');
+  const [baseUrl, setBaseUrl] = useState(LOCAL_SERVER_DEFAULTS.ollama);
+  const [test, setTest] = useState<LocalProviderTestResult | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  function pickServer(id: LocalProviderId) {
+    setServer(id);
+    setTest(null);
+    setBaseUrl((cur) => (cur === LOCAL_SERVER_DEFAULTS.ollama || cur === LOCAL_SERVER_DEFAULTS.lmstudio ? LOCAL_SERVER_DEFAULTS[id] : cur));
+  }
+
+  async function runTest() {
+    setTesting(true);
+    setTest(null);
+    try {
+      setTest(await window.stem.testLocalProvider(server, baseUrl));
+    } catch {
+      setTest({ ok: false, error: 'The server could not be reached.' });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      const res = await window.stem.updateLocalProvider(server, { enabled: true, baseUrl: baseUrl.trim() });
+      if (res.ok) onDone(res.status);
+      else onFail(res.error ?? 'The local server could not be set up.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const modelCount = test?.ok ? test.models?.length ?? 0 : 0;
+  const canContinue = !!test?.ok && modelCount > 0 && !saving;
+
+  return (
+    <>
+      <h1>Use a local model</h1>
+      <p className="gate-sub">
+        Chat with models running on this Mac — nothing leaves your machine. Start {providerName(server)}, then test
+        the connection.
+      </p>
+      <form
+        className="gate-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canContinue) void save();
+        }}
+      >
+        <select
+          value={server}
+          aria-label="Local server"
+          onChange={(e) => pickServer(e.target.value as LocalProviderId)}
+        >
+          <option value="ollama">Ollama</option>
+          <option value="lmstudio">LM Studio</option>
+        </select>
+        <input
+          type="text"
+          aria-label="Server URL"
+          value={baseUrl}
+          onChange={(e) => {
+            setBaseUrl(e.target.value);
+            setTest(null);
+          }}
+        />
+        {test && (
+          <p className={test.ok ? 'gate-hint' : 'error'}>
+            {test.ok
+              ? modelCount > 0
+                ? `Found ${modelCount} model${modelCount === 1 ? '' : 's'}.` +
+                  (test.skippedNoTools ? ` ${test.skippedNoTools} hidden (no tool support).` : '')
+                : test.skippedNoTools
+                  ? `The server only has models without tool support — Stem needs a tool-capable model (e.g. llama3.1 or qwen2.5).`
+                  : `The server is running but has no models yet — pull/download one first.`
+              : test.error}
+          </p>
+        )}
+        <div className="gate-form-actions">
+          <button type="button" className="push" onClick={onBack}>
+            Back
+          </button>
+          <button type="button" className="push" onClick={() => void runTest()} disabled={testing}>
+            {testing ? 'Testing…' : 'Test connection'}
+          </button>
+          <button type="submit" className="primary" disabled={!canContinue}>
+            {saving ? 'Setting up…' : 'Continue'}
+          </button>
+        </div>
+      </form>
+    </>
+  );
+}
+
 function ApiKeyForm({
   onSave,
   onBack
@@ -332,7 +471,9 @@ function ApiKeyForm({
   return (
     <>
       <h1>Use an API key</h1>
-      <p className="gate-sub">Paste a key from your Anthropic or OpenAI account. It's stored only on this Mac.</p>
+      <p className="gate-sub">
+        Paste a key from your Anthropic, OpenAI, or OpenRouter account. It's stored only on this Mac.
+      </p>
       <form
         className="gate-form"
         onSubmit={(e) => {
@@ -343,8 +484,11 @@ function ApiKeyForm({
         }}
       >
         <select ref={providerRef} defaultValue="anthropic" aria-label="API key provider">
-          <option value="anthropic">Anthropic (Claude)</option>
-          <option value="openai">OpenAI</option>
+          {API_KEY_PROVIDER_IDS.map((id) => (
+            <option key={id} value={id}>
+              {id === 'anthropic' ? 'Anthropic (Claude)' : providerName(id)}
+            </option>
+          ))}
         </select>
         <input ref={keyRef} type="password" placeholder="sk-…" autoFocus />
         <div className="gate-form-actions">

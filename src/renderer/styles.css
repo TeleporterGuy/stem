@@ -1117,6 +1117,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 }
 .mp-trigger:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--shadow-focus); }
 .mp-trigger-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-trigger-provider { color: var(--muted); }
 .mp-trigger-chevron { flex: none; color: var(--muted); }
 .mp-pop {
   position: fixed;
@@ -1131,6 +1132,17 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .mp-search { margin-bottom: 4px; }
 .mp-list { max-height: 220px; overflow-y: auto; }
 .mp-empty { padding: 8px 9px; font-size: var(--fs-12); color: var(--muted); }
+/* Provider group headers interleaved between option rows (display:contents keeps
+   the wrapper out of layout so options render exactly as before). */
+.mp-group-wrap { display: contents; }
+.mp-group {
+  padding: 7px 9px 3px;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
 .mp-opt {
   display: flex;
   align-items: center;

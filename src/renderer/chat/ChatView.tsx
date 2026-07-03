@@ -108,13 +108,18 @@ interface ChatViewProps {
   onDraftChange?: (text: string) => void;
 }
 
-// Build the inline meta label: "Claude Opus · High". Resolves the model id to its
-// catalog display name; effort is appended only when known (some models have no
-// effort). Speed is omitted — the pi backend has no service tier.
+// Build the inline meta label: "Claude Opus · Claude · High". Resolves the model
+// id to its catalog display name plus its provider (the same model can be served
+// by several providers, e.g. Anthropic vs OpenRouter); effort is appended only
+// when known (some models have no effort). Speed is omitted — the pi backend has
+// no service tier.
 function metaTooltip(meta: ChatMessage['meta'], models: ModelSummary[]): string | undefined {
   if (!meta) return undefined;
   const parts: string[] = [];
-  if (meta.model) parts.push(models.find((m) => m.id === meta.model)?.displayName ?? meta.model);
+  if (meta.model) {
+    const m = models.find((x) => x.id === meta.model);
+    parts.push(m ? `${m.displayName} · ${m.providerName}` : meta.model);
+  }
   if (meta.effort) parts.push(EFFORT_LABELS[meta.effort] ?? meta.effort);
   return parts.length ? parts.join(' · ') : undefined;
 }

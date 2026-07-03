@@ -144,7 +144,37 @@ export interface RuntimeStatus {
 export type AuthProviderId = 'anthropic' | 'openai-codex';
 
 /** Providers accepting a plain API key (written to auth.json as type:'api_key'). */
-export type ApiKeyProviderId = 'anthropic' | 'openai';
+export type ApiKeyProviderId = 'anthropic' | 'openai' | 'openrouter';
+
+/**
+ * Local OpenAI-compatible model servers Stem can register with the backend
+ * (via the isolated pi-home's models.json). Keyless: they get a placeholder
+ * auth.json entry so the backend and Stem's provider filter treat them as
+ * signed in.
+ */
+export type LocalProviderId = 'ollama' | 'lmstudio';
+
+export interface LocalProviderSettings {
+  enabled: boolean;
+  /** Server root, e.g. http://localhost:11434 (no path; Stem appends /v1/…). */
+  baseUrl: string;
+}
+
+export type LocalProvidersSettings = Record<LocalProviderId, LocalProviderSettings>;
+
+/** Result of probing a local server's /v1/models (the "Test" button / onboarding). */
+export interface LocalProviderTestResult {
+  ok: boolean;
+  /** Model ids the server reported (ok only), minus tool-incapable ones. */
+  models?: string[];
+  /**
+   * Models hidden because they can't call tools (Ollama reports capabilities and
+   * rejects tool-bearing requests outright — and Stem's turns always carry tools).
+   */
+  skippedNoTools?: number;
+  /** Human-readable failure, e.g. ECONNREFUSED (not ok only). */
+  error?: string;
+}
 
 /**
  * Main → renderer pushes while a provider login is in flight. `input-request`
@@ -929,6 +959,8 @@ export interface AppSettings {
   onboarding: OnboardingSettings;
   /** App-level backend defaults (default model). */
   defaults: DefaultsSettings;
+  /** Local model servers (Ollama, LM Studio) registered with the chat backend. */
+  localProviders: LocalProvidersSettings;
 }
 
 /**
@@ -1006,6 +1038,15 @@ export interface StemApi {
   providerLoginCancel(): Promise<void>;
   /** Save an API key for a provider (auth.json type:'api_key'). */
   setApiKey(provider: ApiKeyProviderId, key: string): Promise<ProviderLoginResult>;
+  /**
+   * Enable/disable or repoint a local model server (Ollama / LM Studio). On enable,
+   * main probes the server, registers its models with the backend, and restarts it.
+   */
+  updateLocalProvider(id: LocalProviderId, patch: Partial<LocalProviderSettings>): Promise<ProviderLoginResult>;
+  /** Probe a local server's /v1/models without persisting anything. */
+  testLocalProvider(id: LocalProviderId, baseUrl: string): Promise<LocalProviderTestResult>;
+  /** Remove a provider's credentials (or disable a local provider) and refresh the backend. */
+  disconnectProvider(providerId: string): Promise<ProviderLoginResult>;
   /** Mark the first-run wizard as finished. */
   completeOnboarding(): Promise<AppSettings>;
   /** Provider-login progress pushes (auth-url opened, device code, done, …). */

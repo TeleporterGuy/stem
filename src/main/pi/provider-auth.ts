@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { shell } from 'electron';
-import type { AuthProviderId, ApiKeyProviderId, AuthUiEvent } from '../../shared/types';
+import type { AuthProviderId, ApiKeyProviderId, AuthUiEvent, LocalProviderId } from '../../shared/types';
 
 // In-app provider sign-in. pi's TUI is NOT required for login: the pi package
 // exports AuthStorage, whose login(providerId, callbacks) runs the full PKCE
@@ -90,12 +90,23 @@ export class ProviderAuth {
     active.controller.abort();
   }
 
-  /** Save a plain API key; written through AuthStorage so the file lock is honored. */
-  async setApiKey(provider: ApiKeyProviderId, key: string): Promise<void> {
+  /**
+   * Save a plain API key; written through AuthStorage so the file lock is honored.
+   * Local providers (Ollama, LM Studio) get a placeholder key — their servers are
+   * keyless, but the entry makes pi's availability check, Stem's provider filter,
+   * and the authenticated gate all treat them as signed in.
+   */
+  async setApiKey(provider: ApiKeyProviderId | LocalProviderId, key: string): Promise<void> {
     const trimmed = key.trim();
     if (!trimmed) throw new Error('API key is empty.');
     const { AuthStorage } = await this.loadPi();
     AuthStorage.create(this.authPath).set(provider, { type: 'api_key', key: trimmed });
+  }
+
+  /** Remove a provider's stored credential (Disconnect). Missing entries are a no-op. */
+  async removeProvider(provider: string): Promise<void> {
+    const { AuthStorage } = await this.loadPi();
+    AuthStorage.create(this.authPath).remove(provider);
   }
 
   /** Provider ids with stored credentials. */

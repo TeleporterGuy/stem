@@ -27,8 +27,13 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
 
   const selected = value ? models.find((m) => m.id === value) ?? null : null;
   const triggerLabel = selected?.displayName ?? emptyLabel ?? 'Select a model';
+  // Disambiguate the trigger too — the same model name can come from two
+  // providers (e.g. Claude via Anthropic vs via OpenRouter).
+  const triggerProvider = selected?.providerName ?? null;
 
   // Filtered rows, with an optional "empty" row (id = null) pinned first.
+  // Each row carries its provider group; the list renders a header whenever the
+  // group changes (models arrive from the backend already grouped by provider).
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
     const matched = models.filter((m) =>
@@ -37,9 +42,13 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
       m.providerName.toLowerCase().includes(q) ||
       m.id.toLowerCase().includes(q)
     );
-    const opts: { id: string | null; label: string }[] = matched.map((m) => ({ id: m.id, label: m.displayName }));
+    const opts: { id: string | null; label: string; group: string | null }[] = matched.map((m) => ({
+      id: m.id,
+      label: m.displayName,
+      group: m.providerName
+    }));
     if (emptyLabel && (!q || emptyLabel.toLowerCase().includes(q))) {
-      opts.unshift({ id: null, label: emptyLabel });
+      opts.unshift({ id: null, label: emptyLabel, group: null });
     }
     return opts;
   }, [models, query, emptyLabel]);
@@ -87,7 +96,8 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
   }, [rows.length, active]);
   useEffect(() => {
     if (!open) return;
-    const el = listRef.current?.children[active] as HTMLElement | undefined;
+    // Index into option rows only — group headers are interleaved siblings.
+    const el = listRef.current?.querySelectorAll<HTMLElement>('[role="option"]')[active];
     el?.scrollIntoView({ block: 'nearest' });
   }, [active, open]);
 
@@ -119,7 +129,10 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
         aria-expanded={open}
         onClick={() => (open ? setOpen(false) : openMenu())}
       >
-        <span className="mp-trigger-label">{triggerLabel}</span>
+        <span className="mp-trigger-label">
+          {triggerLabel}
+          {triggerProvider && <span className="mp-trigger-provider"> · {triggerProvider}</span>}
+        </span>
         <ChevronDown size={14} className="mp-trigger-chevron" />
       </button>
       {open && (
@@ -144,19 +157,22 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
             {rows.length === 0 && <div className="mp-empty">No matches</div>}
             {rows.map((row, i) => {
               const isSel = row.id === value;
+              const header = row.group && row.group !== rows[i - 1]?.group ? row.group : null;
               return (
-                <button
-                  key={row.id ?? '__empty__'}
-                  type="button"
-                  role="option"
-                  aria-selected={isSel}
-                  className={`mp-opt${i === active ? ' active' : ''}`}
-                  onMouseEnter={() => setActive(i)}
-                  onClick={() => commit(row.id)}
-                >
-                  <span className="mp-opt-label">{row.label}</span>
-                  {isSel && <Check size={14} className="mp-opt-check" />}
-                </button>
+                <div key={row.id ?? '__empty__'} className="mp-group-wrap">
+                  {header && <div className="mp-group">{header}</div>}
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={isSel}
+                    className={`mp-opt${i === active ? ' active' : ''}`}
+                    onMouseEnter={() => setActive(i)}
+                    onClick={() => commit(row.id)}
+                  >
+                    <span className="mp-opt-label">{row.label}</span>
+                    {isSel && <Check size={14} className="mp-opt-check" />}
+                  </button>
+                </div>
               );
             })}
           </div>

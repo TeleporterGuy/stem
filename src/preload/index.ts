@@ -9,6 +9,8 @@ import type {
   EscapeAction,
   InstructionsProposal,
   LocalEmbedStatus,
+  LocalProviderId,
+  LocalProviderSettings,
   McpAdminProposal,
   McpServerInput,
   McpServerStatus,
@@ -40,6 +42,11 @@ const api: StemApi = {
     ipcRenderer.invoke('auth:respond', requestId, value),
   providerLoginCancel: () => ipcRenderer.invoke('auth:cancel'),
   setApiKey: (provider: ApiKeyProviderId, key: string) => ipcRenderer.invoke('auth:setApiKey', provider, key),
+  updateLocalProvider: (id: LocalProviderId, patch: Partial<LocalProviderSettings>) =>
+    ipcRenderer.invoke('providers:updateLocal', id, patch),
+  testLocalProvider: (id: LocalProviderId, baseUrl: string) =>
+    ipcRenderer.invoke('providers:testLocal', id, baseUrl),
+  disconnectProvider: (providerId: string) => ipcRenderer.invoke('providers:disconnect', providerId),
   completeOnboarding: () => ipcRenderer.invoke('auth:completeOnboarding'),
   onAuthEvent: (listener: (event: AuthUiEvent) => void) => {
     const handler = (_e: unknown, event: AuthUiEvent) => listener(event);

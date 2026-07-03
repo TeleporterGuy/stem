@@ -75,6 +75,14 @@ export function piMcpConfigPath(): string {
   return join(piHome(), 'mcp.json');
 }
 
+/**
+ * pi's custom-providers config (models.json) under the isolated pi home. Stem
+ * writes local providers (Ollama, LM Studio) here; pi reads it at spawn.
+ */
+export function piModelsConfigPath(): string {
+  return process.env.STEM_PI_MODELS_CONFIG ?? join(piHome(), 'models.json');
+}
+
 export function skillsRoot(): string {
   // STEM_SKILLS_DIR lets probe/verification scripts and unit tests point at a
   // throwaway folder (and avoids touching Electron's `app` when run outside the
