@@ -29,7 +29,16 @@ export default defineConfig({
     build: {
       outDir: 'dist/main',
       rollupOptions: {
-        input: 'src/main/index.ts'
+        // embed-worker is a second entry: it runs in its own utilityProcess
+        // (utilityProcess.fork(dist/main/embed-worker.js) in embed-worker-host.ts).
+        input: { index: 'src/main/index.ts', 'embed-worker': 'src/main/recall/embed-worker.ts' },
+        // transformers.js must stay external: it lazily loads onnxruntime-node's
+        // native .node binary, which cannot live inside a rollup bundle. Resolved
+        // from node_modules at runtime instead.
+        external: ['@huggingface/transformers'],
+        // Multi-input builds default to hashed names; package.json main expects
+        // dist/main/index.js, so pin entry names.
+        output: { entryFileNames: '[name].js' }
       }
     }
   },

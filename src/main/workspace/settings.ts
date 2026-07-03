@@ -3,7 +3,10 @@ import { readFile, rename, writeFile } from 'node:fs/promises';
 import type {
   AppSettings,
   CustomInstructionsSettings,
+  EmbeddingsMode,
+  EmbeddingsSettings,
   EscapeAction,
+  LocalEmbedModelId,
   MemoryModelSettings,
   NativeWebSearchSettings,
   PartialRetrievalSettings,
@@ -43,11 +46,19 @@ const DEFAULTS: AppSettings = {
   // Background skills-curator model; null = the backend default. Separate from the
   // memory model so curation (which can be a harder task) can use a stronger model.
   skills: { model: null },
-  // Embeddings + reranker endpoints for relevance-ranking facts at inject time.
-  // Off by default: until the user points these at a server, fact selection stays
-  // recency-based (no network). Default URL/model match a local Ollama setup.
+  // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
+  // default to the bundled local model (multilingual, in-process, nothing leaves
+  // the machine); weights download once on first need, and until they're ready
+  // fact selection stays lexical/recency-based. Remote URL/model defaults match
+  // a local Ollama setup for users who switch to their own endpoint.
   retrieval: {
-    embeddings: { baseUrl: 'http://localhost:11434', model: 'qwen3-embedding:8b', apiKey: null, enabled: false },
+    embeddings: {
+      mode: 'local',
+      localModel: 'multilingual-e5-small',
+      baseUrl: 'http://localhost:11434',
+      model: 'qwen3-embedding:8b',
+      apiKey: null
+    },
     reranker: { baseUrl: 'http://localhost:8080', model: '', apiKey: null, enabled: false }
   },
   // Escape-to-retract is opt-in: off until the user picks single/two-stage.
@@ -71,6 +82,38 @@ function coerceEndpoint(
   };
 }
 
+const EMBEDDINGS_MODES: readonly EmbeddingsMode[] = ['off', 'local', 'remote'];
+const LOCAL_EMBED_MODELS: readonly LocalEmbedModelId[] = [
+  'multilingual-e5-small',
+  'multilingual-e5-base',
+  'embeddinggemma-300m'
+];
+
+function coerceEmbeddings(
+  raw: (Partial<EmbeddingsSettings> & { enabled?: unknown }) | undefined,
+  def: EmbeddingsSettings
+): EmbeddingsSettings {
+  const r = raw ?? {};
+  // Migration from the pre-mode shape ({ enabled: boolean } + endpoint fields):
+  // enabled:true meant "user pointed us at their own server" → remote. enabled:false
+  // is indistinguishable from "never touched" (defaults persist to settings.json),
+  // so it takes the new local default; an explicit Off mode remains available.
+  const mode: EmbeddingsMode = EMBEDDINGS_MODES.includes(r.mode as EmbeddingsMode)
+    ? (r.mode as EmbeddingsMode)
+    : r.enabled === true
+      ? 'remote'
+      : def.mode;
+  return {
+    mode,
+    localModel: LOCAL_EMBED_MODELS.includes(r.localModel as LocalEmbedModelId)
+      ? (r.localModel as LocalEmbedModelId)
+      : def.localModel,
+    baseUrl: typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : def.baseUrl,
+    model: typeof r.model === 'string' ? r.model.trim() : def.model,
+    apiKey: typeof r.apiKey === 'string' && r.apiKey.trim() ? r.apiKey : null
+  };
+}
+
 function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   const qc = (parsed?.quickChat ?? {}) as Partial<QuickChatSettings>;
   const d = DEFAULTS.quickChat;
@@ -89,7 +132,7 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   };
   const rawRet = (parsed?.retrieval ?? {}) as Partial<RetrievalSettings>;
   const retrieval: RetrievalSettings = {
-    embeddings: coerceEndpoint(rawRet.embeddings, DEFAULTS.retrieval.embeddings),
+    embeddings: coerceEmbeddings(rawRet.embeddings, DEFAULTS.retrieval.embeddings),
     reranker: coerceEndpoint(rawRet.reranker, DEFAULTS.retrieval.reranker)
   };
   const escapeAction: EscapeAction = ESCAPE_ACTIONS.includes(parsed?.escapeAction as EscapeAction)

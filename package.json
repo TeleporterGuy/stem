@@ -17,6 +17,7 @@
     "test:e2e:real": "STEM_E2E_REAL=1 playwright test"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "lucide-react": "^0.468.0",
     "remark-gfm": "^4.0.0",
     "remark-mdx": "^3.1.0",

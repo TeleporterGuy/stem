@@ -25,7 +25,7 @@ import {
   removeConnectedFolder,
   updateConnectedFolder
 } from './workspace/connected-folders';
-import { workspaceRoot } from './workspace/paths';
+import { embedModelsDir, workspaceRoot } from './workspace/paths';
 import { TaskScheduler } from './scheduler';
 import { createE2ESchedulerBackend } from './scheduler/e2e-backend';
 import { imagePreviewDataUrl } from './pi/attachments';
@@ -42,7 +42,15 @@ import {
   setTidyUpThreshold
 } from './workspace/memory';
 import { captureFromEvent } from './recall/capture';
-import { getEmbeddingCacheStats, getEpisodicStats, getActiveFactIds, getFactsByIds } from './recall/store';
+import {
+  getEmbeddingCacheStats,
+  getEpisodicStats,
+  getActiveFactIds,
+  getFactsByIds,
+  getFactsMissingVector,
+  pruneVectorsExceptModel,
+  upsertFactVector
+} from './recall/store';
 import { previewFacts } from './recall/inject';
 import type { ActiveFacts } from '../shared/types';
 import { distillNewMessages, shouldConsolidate } from './recall/distill';
@@ -51,6 +59,11 @@ import { curateSkills } from './skills/curate';
 import { setRetrievalClients } from './recall/retrieval';
 import { createHttpEmbeddingsClient } from './recall/embeddings';
 import { createHttpRerankClient } from './recall/rerank';
+import { EMBED_CATALOG, effectiveEmbedModelKey, localModelCacheKey } from './recall/embed-catalog';
+import { createEmbedWorkerManager } from './recall/embed-manager';
+import type { EmbedWorkerManager } from './recall/embed-manager';
+import { createEmbeddingsRouter, createLocalEmbeddingsClient } from './recall/embed-local';
+import { spawnEmbedWorker } from './recall/embed-worker-host';
 import type { LlmClient } from './recall/llm';
 import { searchChats, searchChatsLexical } from './chatsearch/search';
 import { backfillChatIndex, reindexChatThread, dropChatThread } from './chatsearch/index-sync';
@@ -81,6 +94,7 @@ import type {
   CustomInstructionsSettings,
   EscapeAction,
   ItemEventParams,
+  LocalEmbedStatus,
   McpServerInput,
   MemoryModelSettings,
   NativeWebSearchSettings,
@@ -637,6 +651,10 @@ function revealMainWindow(): void {
 // (recall, files, settings) still runs for real against the isolated workspace.
 const E2E = !!process.env.STEM_E2E;
 
+// Local embedding worker manager (created in the whenReady bootstrap; null until
+// then and under E2E, where downloading model weights would break hermeticity).
+let embedManager: EmbedWorkerManager | null = null;
+
 function registerIpc(): void {
   ipcMain.handle('runtime:status', (): Promise<RuntimeStatus> | RuntimeStatus => {
     if (E2E) {
@@ -770,8 +788,16 @@ function registerIpc(): void {
   ipcMain.handle('memory:resetEpisodic', () => clearEpisodicMemory());
   ipcMain.handle('memory:episodicStats', () => getEpisodicStats());
   ipcMain.handle('memory:embeddingStats', async () =>
-    getEmbeddingCacheStats((await readSettings()).retrieval.embeddings.model)
+    getEmbeddingCacheStats(effectiveEmbedModelKey((await readSettings()).retrieval.embeddings))
   );
+  ipcMain.handle('embeddings:localStatus', async (): Promise<LocalEmbedStatus> => {
+    // Opening the panel doubles as a kick (idempotent while healthy), so someone
+    // who goes straight to Memory → advanced right after launch sees the worker
+    // start immediately instead of an idle state until the startup timer lands.
+    const e = (await readSettings()).retrieval.embeddings;
+    if (!E2E && e.mode === 'local') embedManager?.ensure(EMBED_CATALOG[e.localModel]);
+    return embedManager?.status() ?? { model: 'multilingual-e5-small', state: 'idle' };
+  });
   ipcMain.handle('memory:activeFacts', (_e, threadId: string | null): ActiveFacts | null => {
     if (!threadId) return null;
     const rec = getActiveFactIds(threadId);
@@ -938,18 +964,50 @@ function registerIpc(): void {
     return updateCustomInstructions(patch);
   });
   ipcMain.handle('settings:updateRetrieval', async (_e, patch: PartialRetrievalSettings) => {
-    // Just persist — the embeddings/rerank clients read their config fresh from
-    // settings on each turn, so the change applies to the next fact-ranking pass.
-    return updateRetrievalSettings(patch);
+    // Persist — the embeddings/rerank clients read their config fresh from settings
+    // on each turn, so the change applies to the next fact-ranking pass. The local
+    // worker is the one stateful piece: kick it immediately on a mode/model change
+    // so the download/load starts now rather than on the next turn.
+    const before = (await readSettings()).retrieval.embeddings;
+    const next = await updateRetrievalSettings(patch);
+    const after = next.retrieval.embeddings;
+    if (embedManager && (before.mode !== after.mode || before.localModel !== after.localModel)) {
+      if (after.mode === 'local') embedManager.reconfigure(EMBED_CATALOG[after.localModel]);
+      else if (before.mode === 'local') embedManager.reconfigure(null);
+    }
+    return next;
   });
   ipcMain.handle('settings:testRetrieval', async (_e, stage: RetrievalStage): Promise<RetrievalTestResult> => {
-    // Live one-shot probe of the configured endpoint so the user can confirm it
-    // actually responds (the fact-ranking path is otherwise silent). Ignores the
-    // `enabled` flag — testing while toggling is the point.
-    const cfg = (await readSettings()).retrieval[stage];
+    // Live one-shot probe of the configured backend so the user can confirm it
+    // actually responds (the fact-ranking path is otherwise silent).
+    const retrieval = (await readSettings()).retrieval;
+    const startedAt = Date.now();
+    if (stage === 'embeddings' && retrieval.embeddings.mode !== 'remote') {
+      const emb = retrieval.embeddings;
+      if (emb.mode === 'off') return { ok: false, detail: 'Embeddings are off.' };
+      // Local mode: Test doubles as the "start/retry the download" button — force
+      // past the error-retry gate, then report where the worker is right now.
+      if (!embedManager) return { ok: false, detail: 'Embedding worker not started yet.' };
+      const spec = EMBED_CATALOG[emb.localModel];
+      embedManager.ensure(spec, { force: true });
+      const st = embedManager.status();
+      if (st.state === 'error') return { ok: false, detail: st.error ?? 'model failed to load' };
+      if (st.state !== 'ready' || st.model !== spec.id) {
+        return {
+          ok: true,
+          detail: st.state === 'downloading' ? `downloading model — ${st.progressPct ?? 0}%` : 'loading model…'
+        };
+      }
+      try {
+        const [vec] = await embedManager.embed(['Stem retrieval test'], 'query');
+        return { ok: true, detail: `${vec.length}-dim · ${Date.now() - startedAt} ms · local` };
+      } catch (err) {
+        return { ok: false, detail: err instanceof Error ? err.message : 'embed failed' };
+      }
+    }
+    const cfg = stage === 'embeddings' ? retrieval.embeddings : retrieval.reranker;
     if (!cfg.baseUrl || !cfg.model) return { ok: false, detail: 'Set a base URL and model first.' };
     const getCfg = async () => ({ baseUrl: cfg.baseUrl, model: cfg.model, apiKey: cfg.apiKey });
-    const startedAt = Date.now();
     try {
       if (stage === 'embeddings') {
         const [vec] = await createHttpEmbeddingsClient(getCfg, { timeoutMs: 20_000 }).embed(['Stem retrieval test']);
@@ -1128,15 +1186,26 @@ app.whenReady().then(async () => {
     complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).skills.model })
   };
 
-  // Stem Recall relevance ranking: embeddings + reranker HTTP endpoints (e.g. a
-  // local Ollama + a /rerank server). Config is read fresh each turn, so toggling
-  // or repointing them in Settings takes effect on the next fact-ranking pass with
-  // no restart. Disabled config → the clients report unavailable and inject falls
-  // back to recency selection.
+  // Stem Recall relevance ranking. Embeddings route per the settings mode: the
+  // bundled local model (in a utility process; the out-of-box default) or the
+  // user's own HTTP endpoint. Config is read fresh each turn, so switching mode
+  // or repointing endpoints in Settings takes effect on the next fact-ranking
+  // pass with no restart. Off/not-ready → the clients report unavailable and
+  // inject falls back to lexical/recency selection — a chat turn never waits on
+  // a model download.
+  embedManager = createEmbedWorkerManager({ spawn: spawnEmbedWorker, cacheDir: embedModelsDir });
+  const getEmbedSettings = async () => (await readSettings()).retrieval.embeddings;
+  const localEmbeddings = createLocalEmbeddingsClient(getEmbedSettings, embedManager);
   setRetrievalClients({
-    embeddings: createHttpEmbeddingsClient(async () => {
-      const e = (await readSettings()).retrieval.embeddings;
-      return e.enabled && e.baseUrl && e.model ? { baseUrl: e.baseUrl, model: e.model, apiKey: e.apiKey } : null;
+    embeddings: createEmbeddingsRouter({
+      getMode: async () => (await getEmbedSettings()).mode,
+      local: localEmbeddings,
+      remote: createHttpEmbeddingsClient(async () => {
+        const e = await getEmbedSettings();
+        return e.mode === 'remote' && e.baseUrl && e.model
+          ? { baseUrl: e.baseUrl, model: e.model, apiKey: e.apiKey }
+          : null;
+      })
     }),
     // Reranker is intentionally not wired to the live ranking path: it has no UI and
     // a verified /rerank server is hard to host (Ollama can't serve one). Fact ranking
@@ -1145,6 +1214,46 @@ app.whenReady().then(async () => {
     // real /rerank endpoint (llama.cpp --reranking, Infinity, …).
     rerank: null
   });
+  embedManager.onStatus((status) => {
+    mainWindow?.webContents.send('embeddings:localStatus', status);
+    // The model just came up: prune vectors from previously-used models (local
+    // vectors are cheap to regenerate; keeps recall.sqlite tidy) and backfill any
+    // facts missing a vector in the background. Without this, inject would embed
+    // the entire fact set inline in the first semantic turn — many seconds on CPU.
+    if (status.state !== 'ready') return;
+    void (async () => {
+      try {
+        const e = await getEmbedSettings();
+        if (e.mode !== 'local' || e.localModel !== status.model) return;
+        const key = localModelCacheKey(EMBED_CATALOG[e.localModel]);
+        pruneVectorsExceptModel(key);
+        const missing = getFactsMissingVector(key);
+        for (let i = 0; i < missing.length; i += 64) {
+          const batch = missing.slice(i, i + 64);
+          const vecs = await localEmbeddings.embed(
+            batch.map((f) => f.text),
+            'passage'
+          );
+          batch.forEach((f, j) => upsertFactVector(f.id, key, vecs[j]));
+        }
+      } catch {
+        // non-fatal: inject tops up lazily on the next semantic turn
+      }
+    })();
+  });
+  // Kick the download/load shortly after launch (instead of on the first turn
+  // that needs it) so the model is usually ready before the user accumulates
+  // enough facts to matter. The delay only yields the window/backend startup
+  // burst — keep it short, or the Manage panel shows a misleading idle state
+  // ("not downloaded yet") on every restart until the kick lands. Skipped under
+  // E2E: hermetic runs must not hit the network.
+  if (!E2E) {
+    setTimeout(() => {
+      void getEmbedSettings().then((e) => {
+        if (e.mode === 'local') embedManager?.ensure(EMBED_CATALOG[e.localModel]);
+      });
+    }, 1_500);
+  }
   let distilling = false;
   let distillTimer: NodeJS.Timeout | null = null;
   const scheduleDistill = (delayMs = 15_000): void => {
@@ -1344,6 +1453,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   quitting = true;
   scheduler?.stop();
+  embedManager?.dispose();
   runtime.shutdown().finally(() => app.exit(0));
 });
 

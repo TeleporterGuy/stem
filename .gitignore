@@ -15,5 +15,8 @@ out/
 test-results/
 playwright-report/
 
+# Local embedding model weights downloaded by scripts/embed-smoke.mjs
+.embed-smoke-cache/
+
 # External folders connected for in-place reading (separate repos)
 .external/

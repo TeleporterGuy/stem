@@ -77,12 +77,15 @@ async function selectRelevantFacts(userText: string, facts: Fact[], timings?: Re
   const model = (await emb.modelId()) ?? '';
 
   const embStart = Date.now();
-  const [qVec] = await emb.embed([userText]);
+  const [qVec] = await emb.embed([userText], 'query');
 
   // Lazily embed only facts missing a vector for this model, then cache them.
   const missing = getFactsMissingVector(model);
   if (missing.length > 0) {
-    const vecs = await emb.embed(missing.map((f) => f.text));
+    const vecs = await emb.embed(
+      missing.map((f) => f.text),
+      'passage'
+    );
     missing.forEach((f, i) => upsertFactVector(f.id, model, vecs[i]));
   }
   if (timings) timings.embed = Date.now() - embStart;

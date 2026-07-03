@@ -5,6 +5,7 @@ import type {
   CustomInstructionsSettings,
   EscapeAction,
   InstructionsProposal,
+  LocalEmbedStatus,
   McpAdminProposal,
   McpServerInput,
   McpServerStatus,
@@ -166,6 +167,12 @@ const api: StemApi = {
     ipcRenderer.invoke('settings:updateRetrieval', patch),
   testRetrievalEndpoint: (stage: RetrievalStage) => ipcRenderer.invoke('settings:testRetrieval', stage),
   getEmbeddingStats: () => ipcRenderer.invoke('memory:embeddingStats'),
+  getLocalEmbedStatus: () => ipcRenderer.invoke('embeddings:localStatus'),
+  onLocalEmbedStatus: (listener: (status: LocalEmbedStatus) => void) => {
+    const handler = (_e: unknown, status: LocalEmbedStatus) => listener(status);
+    ipcRenderer.on('embeddings:localStatus', handler);
+    return () => ipcRenderer.removeListener('embeddings:localStatus', handler);
+  },
   runQuickChat: (prompt: QuickChatPrompt) => ipcRenderer.invoke('quickchat:run', prompt),
   newQuickChatThread: () => ipcRenderer.invoke('quickchat:newThread'),
   handoffQuickChat: (payload: QuickChatHandoff) => ipcRenderer.invoke('quickchat:handoff', payload),

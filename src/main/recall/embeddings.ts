@@ -12,6 +12,15 @@ export interface EmbeddingsConfig {
   apiKey?: string | null;
 }
 
+/**
+ * Whether the texts are search queries or the documents being searched. Some
+ * models (e.g. the e5 family) were trained with distinct query/passage prefixes;
+ * the local backend applies them per its catalog spec. The HTTP client ignores
+ * this — remote servers run arbitrary models and blind prefixing would corrupt
+ * ones that don't expect it.
+ */
+export type EmbedKind = 'query' | 'passage';
+
 export interface EmbeddingsClient {
   /** Whether a usable (enabled + configured) endpoint is present right now. */
   available(): Promise<boolean>;
@@ -22,7 +31,7 @@ export interface EmbeddingsClient {
    * {@link EmbeddingsUnavailableError} when no config is present, or a plain Error
    * on any transport/timeout/shape failure — callers fall back rather than break.
    */
-  embed(texts: string[]): Promise<Float32Array[]>;
+  embed(texts: string[], kind?: EmbedKind): Promise<Float32Array[]>;
 }
 
 /** Thrown when the endpoint is disabled/unconfigured — callers fall back to recency. */

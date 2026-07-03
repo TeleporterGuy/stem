@@ -185,7 +185,10 @@ async function chunkFacts(facts: Fact[]): Promise<Fact[][]> {
     const model = (await emb.modelId()) ?? '';
     const missing = getFactsMissingVector(model);
     if (missing.length > 0) {
-      const vecs = await emb.embed(missing.map((f) => f.text));
+      const vecs = await emb.embed(
+        missing.map((f) => f.text),
+        'passage'
+      );
       missing.forEach((f, i) => upsertFactVector(f.id, model, vecs[i]));
     }
     return greedyClusters(facts, getFactVectors(model), size);

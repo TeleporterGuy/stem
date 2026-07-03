@@ -101,6 +101,17 @@ export function tasksStorePath(): string {
 }
 
 /**
+ * Cache dir for the bundled local embedding models (transformers.js `env.cacheDir`).
+ * Weights download here once per model on first use; safe to delete — they just
+ * re-download on next need.
+ */
+export function embedModelsDir(): string {
+  // STEM_EMBED_MODELS_DIR lets probe/verification scripts point at a throwaway
+  // cache (and avoids touching Electron's `app` when run outside the app).
+  return process.env.STEM_EMBED_MODELS_DIR ?? join(userDataRoot(), 'embed-models');
+}
+
+/**
  * Stem-owned app settings (e.g. the global Quick Chat shortcut + its defaults).
  * Held in the main process because some of it — the global accelerator — can
  * only be registered from main, not the renderer.

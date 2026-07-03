@@ -17,9 +17,11 @@ import type {
   ModelSummary,
   NativeWebSearchSettings,
   QuickChatSettings,
-  RetrievalEndpointSettings,
+  EmbeddingsMode,
+  EmbeddingsSettings,
+  LocalEmbedModelId,
+  LocalEmbedStatus,
   RetrievalSettings,
-  RetrievalStage,
   RetrievalTestResult,
   SkillSummary,
   ActiveFacts,
@@ -290,34 +292,65 @@ function EpisodicTab() {
   );
 }
 
-// One retrieval endpoint's controls (embeddings or reranker). Free-text — Stem
-// just makes the HTTP call — so it isn't the pi ModelPicker. Edits stay local
-// while typing and persist on blur; the enable toggle persists immediately.
-function RetrievalFields({
-  label,
-  hint,
-  modelPlaceholder,
-  stage,
+// The curated local models, mirrored from main/recall/embed-catalog.ts (labels +
+// sizes only — the specs live in main; the id is the contract).
+const LOCAL_EMBED_MODELS: { id: LocalEmbedModelId; label: string; detail: string }[] = [
+  { id: 'multilingual-e5-small', label: 'Multilingual E5 Small', detail: '~120 MB · recommended' },
+  { id: 'multilingual-e5-base', label: 'Multilingual E5 Base', detail: '~280 MB · higher quality' },
+  { id: 'embeddinggemma-300m', label: 'EmbeddingGemma 300M', detail: '~330 MB · highest quality' }
+];
+
+const EMBED_MODES: { id: EmbeddingsMode; label: string; hint: string }[] = [
+  { id: 'local', label: 'Built-in', hint: 'Bundled multilingual model, runs on this Mac' },
+  { id: 'remote', label: 'Server', hint: 'Your own OpenAI-compatible endpoint (Ollama, LM Studio…)' },
+  { id: 'off', label: 'Off', hint: 'Rank facts by keywords/recency only' }
+];
+
+/** One line describing where the local embedding worker is right now. */
+function localStatusLabel(status: LocalEmbedStatus | null): string {
+  switch (status?.state) {
+    case 'downloading':
+      return `Downloading model… ${status.progressPct ?? 0}%`;
+    case 'loading':
+      return 'Loading model…';
+    case 'ready':
+      return `Ready${status.dim ? ` · ${status.dim}-dim` : ''}`;
+    case 'error':
+      return `Error: ${status.error ?? 'model failed to load'}`;
+    default:
+      // 'idle' is transient in local mode (the startup kick lands ~1.5 s after
+      // launch), and we can't tell cached-from-not-yet-downloaded from here — so
+      // don't claim either.
+      return 'Starting up… (first use downloads the model once)';
+  }
+}
+
+// Embeddings-stage controls: an exclusive Built-in / Server / Off mode, the local
+// model picker + live download/ready status, or the remote endpoint fields (free
+// text — Stem just makes the HTTP call). Text edits stay local while typing and
+// persist on blur; mode/model switches persist immediately.
+function EmbeddingsFields({
   value,
   onPatch
 }: {
-  label: string;
-  hint: string;
-  modelPlaceholder: string;
-  stage: RetrievalStage;
-  value: RetrievalEndpointSettings;
-  onPatch: (patch: Partial<RetrievalEndpointSettings>) => void;
+  value: EmbeddingsSettings;
+  onPatch: (patch: Partial<EmbeddingsSettings>) => void;
 }) {
   const [local, setLocal] = useState(value);
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<RetrievalTestResult | null>(null);
+  const [status, setStatus] = useState<LocalEmbedStatus | null>(null);
   useEffect(() => setLocal(value), [value]);
+  useEffect(() => {
+    window.stem.getLocalEmbedStatus().then(setStatus);
+    return window.stem.onLocalEmbedStatus(setStatus);
+  }, []);
 
   async function runTest() {
     setTesting(true);
     setTest(null);
     try {
-      setTest(await window.stem.testRetrievalEndpoint(stage));
+      setTest(await window.stem.testRetrievalEndpoint('embeddings'));
     } catch {
       setTest({ ok: false, detail: 'request failed' });
     } finally {
@@ -325,64 +358,100 @@ function RetrievalFields({
     }
   }
 
+  const mode = value.mode;
+
   return (
     <div className="set-block fg-divider">
       <div className="group-row">
         <span className="row-main">
-          <strong>{label}</strong>
-          <em>{hint}</em>
+          <strong>Embeddings</strong>
+          <em>{EMBED_MODES.find((m) => m.id === mode)?.hint}</em>
         </span>
-        <button
-          className={`switch${local.enabled ? ' on' : ''}`}
-          role="switch"
-          aria-checked={local.enabled}
-          aria-label={`${label} enabled`}
-          onClick={() => onPatch({ enabled: !local.enabled })}
-        />
       </div>
-      <input
-        className="ifield"
-        placeholder="http://localhost:11434"
-        aria-label={`${label} base URL`}
-        value={local.baseUrl}
-        onChange={(e) => setLocal({ ...local, baseUrl: e.target.value })}
-        onBlur={() => onPatch({ baseUrl: local.baseUrl })}
-      />
-      <input
-        className="ifield"
-        placeholder={modelPlaceholder}
-        aria-label={`${label} model`}
-        value={local.model}
-        onChange={(e) => setLocal({ ...local, model: e.target.value })}
-        onBlur={() => onPatch({ model: local.model })}
-      />
-      <input
-        className="ifield"
-        type="password"
-        placeholder="API key (optional)"
-        aria-label={`${label} API key`}
-        value={local.apiKey ?? ''}
-        onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
-        onBlur={() => onPatch({ apiKey: local.apiKey })}
-      />
-      <div className="retrieval-test">
-        <button
-          className="retrieval-test-btn"
-          onClick={runTest}
-          disabled={testing}
-          title={testing ? 'Testing…' : 'Test connection'}
-          aria-label="Test connection"
-        >
-          <Plug size={14} />
-        </button>
-        {testing && <span className="retrieval-test-status">Testing…</span>}
-        {!testing && test && (
-          <span className={`retrieval-test-status ${test.ok ? 'ok' : 'err'}`} title={test.detail}>
-            {test.ok ? <Check size={12} /> : <X size={12} />}
-            {test.detail}
-          </span>
-        )}
+      <div className="seg-ctl">
+        {EMBED_MODES.map((m) => (
+          <button
+            key={m.id}
+            className={mode === m.id ? 'active' : ''}
+            onClick={() => {
+              setTest(null);
+              onPatch({ mode: m.id });
+            }}
+            title={m.hint}
+          >
+            {m.label}
+          </button>
+        ))}
       </div>
+      {mode === 'local' && (
+        <>
+          <select
+            className="ifield"
+            aria-label="Local embedding model"
+            value={value.localModel}
+            onChange={(e) => {
+              setTest(null);
+              onPatch({ localModel: e.target.value as LocalEmbedModelId });
+            }}
+          >
+            {LOCAL_EMBED_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} ({m.detail})
+              </option>
+            ))}
+          </select>
+          <p className="muted">{localStatusLabel(status)}</p>
+        </>
+      )}
+      {mode === 'remote' && (
+        <>
+          <input
+            className="ifield"
+            placeholder="http://localhost:11434"
+            aria-label="Embeddings base URL"
+            value={local.baseUrl}
+            onChange={(e) => setLocal({ ...local, baseUrl: e.target.value })}
+            onBlur={() => onPatch({ baseUrl: local.baseUrl })}
+          />
+          <input
+            className="ifield"
+            placeholder="qwen3-embedding:8b"
+            aria-label="Embeddings model"
+            value={local.model}
+            onChange={(e) => setLocal({ ...local, model: e.target.value })}
+            onBlur={() => onPatch({ model: local.model })}
+          />
+          <input
+            className="ifield"
+            type="password"
+            placeholder="API key (optional)"
+            aria-label="Embeddings API key"
+            value={local.apiKey ?? ''}
+            onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
+            onBlur={() => onPatch({ apiKey: local.apiKey })}
+          />
+        </>
+      )}
+      {mode !== 'off' && (
+        <div className="retrieval-test">
+          <button
+            className="retrieval-test-btn"
+            onClick={runTest}
+            disabled={testing}
+            title={testing ? 'Testing…' : 'Test connection'}
+            aria-label="Test connection"
+          >
+            <Plug size={14} />
+          </button>
+          {testing && <span className="retrieval-test-status">Testing…</span>}
+          {!testing && test && (
+            <span className={`retrieval-test-status ${test.ok ? 'ok' : 'err'}`} title={test.detail}>
+              {test.ok ? <Check size={12} /> : <X size={12} />}
+              {test.detail}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -474,7 +543,7 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
     window.stem.updateMemorySettings({ model: id }).then((s) => setMemoryModel(s.memory.model));
   }
 
-  function patchEmbeddings(patch: Partial<RetrievalEndpointSettings>) {
+  function patchEmbeddings(patch: Partial<EmbeddingsSettings>) {
     window.stem.updateRetrievalSettings({ embeddings: patch }).then((s) => setRetrieval(s.retrieval));
   }
 
@@ -615,17 +684,11 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
             <div className="formgroup">
               <p className="muted">
                 With more than ~40 facts, Stem ranks them by relevance to each message instead of injecting
-                them all. Point this at an OpenAI-compatible embeddings endpoint (e.g. Ollama). Off → the
-                most recent facts are used.
+                them all. The built-in model understands all languages and runs entirely on this Mac; you
+                can point Stem at your own embeddings server instead. While no model is ready, facts are
+                ranked by keywords/recency.
               </p>
-              <RetrievalFields
-                label="Embeddings"
-                hint="Ranks facts by similarity"
-                modelPlaceholder="qwen3-embedding:8b"
-                stage="embeddings"
-                value={retrieval.embeddings}
-                onPatch={patchEmbeddings}
-              />
+              <EmbeddingsFields value={retrieval.embeddings} onPatch={patchEmbeddings} />
               <p className="muted">
                 {embStats == null
                   ? 'Embedding cache: …'

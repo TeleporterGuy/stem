@@ -213,6 +213,29 @@ describe('Stem Recall — fact relevance ranking', () => {
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
   });
 
+  it('embeds the message as a query and fact backfill as passages', async () => {
+    // Prefix-sensitive local models depend on this: get it backwards and e5's
+    // query/passage asymmetry quietly degrades every ranking.
+    store.resetFacts();
+    const kinds: Array<string | undefined> = [];
+    retrieval.setRetrievalClients({
+      embeddings: {
+        available: async () => true,
+        modelId: async () => 'fake-model',
+        embed: async (texts: string[], kind?: 'query' | 'passage') => {
+          kinds.push(kind);
+          return texts.map(() => Float32Array.from([1, 0]));
+        }
+      },
+      rerank: null
+    });
+    for (let i = 0; i < 45; i++) store.upsertFact(`The user has misc preference ${i}`, 'distilled');
+
+    await inject.buildRecallContext('what are my preferences', {});
+    expect(kinds).toEqual(['query', 'passage']); // message first, then the missing-vector backfill
+    retrieval.setRetrievalClients({ embeddings: null, rerank: null });
+  });
+
   it('below the threshold injects every fact without calling embeddings', async () => {
     store.resetFacts();
     const emb = keywordEmbeddings(/anything/i);

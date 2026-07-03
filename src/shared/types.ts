@@ -784,18 +784,58 @@ export interface RetrievalEndpointSettings {
 }
 
 /**
+ * How fact embeddings are produced:
+ * - `off`    — no embeddings; fact selection stays lexical/recency-based.
+ * - `local`  — bundled in-process model (transformers.js/ONNX in a utility
+ *              process); weights download once to userData, nothing leaves the
+ *              machine. The out-of-box default.
+ * - `remote` — the user's own OpenAI-compatible HTTP endpoint (Ollama, LM
+ *              Studio, vLLM, hosted).
+ */
+export type EmbeddingsMode = 'off' | 'local' | 'remote';
+
+/** Curated local embedding models (specs live in main/recall/embed-catalog.ts). */
+export type LocalEmbedModelId = 'multilingual-e5-small' | 'multilingual-e5-base' | 'embeddinggemma-300m';
+
+/**
+ * Embeddings-stage settings: an exclusive mode plus the config for both backends
+ * (kept side-by-side so switching modes never loses the remote endpoint details).
+ */
+export interface EmbeddingsSettings {
+  mode: EmbeddingsMode;
+  /** Which curated local model to run when mode === 'local'. */
+  localModel: LocalEmbedModelId;
+  /** Remote-endpoint fields (used when mode === 'remote'); same semantics as RetrievalEndpointSettings. */
+  baseUrl: string;
+  model: string;
+  apiKey: string | null;
+}
+
+/** Live state of the local embedding worker/model — drives the Manage-panel status line. */
+export interface LocalEmbedStatus {
+  model: LocalEmbedModelId;
+  state: 'idle' | 'downloading' | 'loading' | 'ready' | 'error';
+  /** Download progress 0–100 while state === 'downloading'. */
+  progressPct?: number;
+  /** Vector dimension once ready. */
+  dim?: number;
+  /** Human-readable failure while state === 'error'. */
+  error?: string;
+}
+
+/**
  * Reusable two-stage retrieval config: embeddings (candidate ranking) + reranker
  * (precision reorder). Used today to rank durable facts at inject time; the same
  * seam can back episodic semantic search later.
  */
 export interface RetrievalSettings {
-  embeddings: RetrievalEndpointSettings;
+  embeddings: EmbeddingsSettings;
   reranker: RetrievalEndpointSettings;
 }
 
 /** A partial retrieval patch — update either stage, any subset of its fields. */
 export interface PartialRetrievalSettings {
-  embeddings?: Partial<RetrievalEndpointSettings>;
+  embeddings?: Partial<EmbeddingsSettings>;
   reranker?: Partial<RetrievalEndpointSettings>;
 }
 
@@ -1061,6 +1101,10 @@ export interface StemApi {
   testRetrievalEndpoint(stage: RetrievalStage): Promise<RetrievalTestResult>;
   /** Embedding-cache coverage for the configured model (how many facts are embedded). */
   getEmbeddingStats(): Promise<EmbeddingCacheStats>;
+  /** Current local embedding worker state (download/load/ready) for the Manage panel. */
+  getLocalEmbedStatus(): Promise<LocalEmbedStatus>;
+  /** Fired whenever the local embedding worker's status changes (incl. download progress). */
+  onLocalEmbedStatus(listener: (status: LocalEmbedStatus) => void): () => void;
   /** Overlay → main: run a prompt in the overlay's own thread (main hides the
    *  overlay + raises the HUD, pre-creating a thread for a fresh session). */
   runQuickChat(prompt: QuickChatPrompt): Promise<StartTurnResult>;
