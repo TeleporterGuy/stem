@@ -50,7 +50,7 @@ Rules:
 - DEFAULT TO KEEP. Only act on facts you are confident are duplicates, superseded, or wrong. If unsure, leave a fact out of all three lists.
 - merge: group facts that express the SAME underlying fact (rewordings, or one subsuming another). Give the cleanest single statement as "text". Do not merge facts that are merely related but distinct.
 - correct: only when a fact is factually wrong given a later fact — keep the corrected truth.
-- drop: only a fact another fact already fully covers or directly contradicts.
+- drop: only a fact another fact already fully covers or directly contradicts, OR a fact about a one-off dated event (a trip, reservation, appointment, deadline) whose date is clearly in the past. A fact without a date is never stale — keep it.
 - NEVER drop, merge, or alter a fact marked PROTECTED — the user explicitly asked to remember it.
 - Keep wording as short third-person statements ("The user ...").
 - If nothing needs changing, return {"merge":[],"correct":[],"drop":[]}.`;
@@ -130,7 +130,8 @@ function buildPrompt(facts: Fact[]): string {
   const lines = facts
     .map((f) => `[${f.id}] ${f.text}${isProtected(f) ? '  (PROTECTED)' : ''}`)
     .join('\n');
-  return `${INSTRUCTIONS}\n\nFacts:\n${lines}`;
+  const today = new Date().toISOString().slice(0, 10);
+  return `${INSTRUCTIONS}\n\nToday's date: ${today}.\n\nFacts:\n${lines}`;
 }
 
 const ZERO: ConsolidationResult = { merged: 0, corrected: 0, dropped: 0 };

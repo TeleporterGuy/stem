@@ -41,12 +41,13 @@ export function shouldConsolidate(): boolean {
 
 const INSTRUCTIONS = `You maintain a long-term memory of DURABLE facts about a user, from a chat transcript. This is a PRIVATE personal assistant used by one person on their own device — knowing a lot about the user is the whole point, so capture genuinely personal details that make future help better.
 
-Extract STABLE, reusable facts ABOUT THE USER: their identity, contact details, personal circumstances (address, phone, important dates, health conditions, family/relationships, work), preferences, ongoing situations, projects, constraints, and standing instructions. Phrase each as a short third-person statement ("The user ...").
+Extract STABLE, reusable facts ABOUT THE USER: their identity, contact details, personal circumstances (address, phone, important dates, health conditions, family/relationships, work), preferences, ongoing situations, projects, constraints, upcoming plans, and standing instructions. Phrase each as a short third-person statement ("The user ...").
 
 Rules:
 - Only state facts the USER revealed about themselves — directly, or via information retrieved on their behalf (e.g. their own emails). Such personal details ARE wanted; do not omit, redact, or soften them.
 - CRITICAL: Never turn the ASSISTANT's own words into a user fact. The assistant's disclaimers, caution, hedging, redactions, or self-imposed behavior ("I left out identifiers", "I ignored spam") are NOT user preferences. Only record a preference or instruction if the USER explicitly stated it.
-- Include only things likely still true in future conversations. EXCLUDE one-off task details, ephemeral context, and anything already obvious.
+- Include only things likely still true in future conversations. EXCLUDE details of already-completed one-off tasks, ephemeral context, and anything already obvious.
+- DO capture upcoming dated plans and commitments — trips, holidays, reservations, appointments, deadlines — WITH their key specifics: dates, destination and departure point, who is going, booking references. These stay relevant until the date has passed. Resolve relative dates ("tomorrow", "next Friday") to absolute dates using the message dates and today's date.
 - Do NOT record standing behavioral directives or response-style preferences (how long or short replies should be, tone, output format, language style, whether to use components). Those are managed separately as the user's custom instructions, NOT as facts — leave them out entirely.
 - If the user corrected an earlier assumption, state the corrected truth.
 - Do NOT restate facts already in "Known facts" below; output only NEW facts or corrections to existing ones.
@@ -136,8 +137,10 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   const messages = getMessagesForDistill(sinceId, MAX_MESSAGES_PER_RUN);
   if (messages.length === 0) return 0;
 
+  // Each line carries its message date so the model can resolve relative dates
+  // ("tomorrow", "next week") in older messages against when they were said.
   const transcript = messages
-    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
+    .map((m) => `[${new Date(m.ts * 1000).toISOString().slice(0, 10)}] ${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
     .join('\n')
     .slice(0, MAX_TRANSCRIPT_CHARS);
 
@@ -149,7 +152,10 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
 
   let facts: string[] = [];
   try {
-    const reply = await llm.complete(`${INSTRUCTIONS}${knownBlock}\n\nTranscript:\n${transcript}`);
+    const today = new Date().toISOString().slice(0, 10);
+    const reply = await llm.complete(
+      `${INSTRUCTIONS}\n\nToday's date: ${today}.${knownBlock}\n\nTranscript:\n${transcript}`
+    );
     facts = parseFacts(reply);
   } catch {
     // Leave the watermark unmoved so a later run retries these messages.
