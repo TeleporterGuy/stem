@@ -37,6 +37,12 @@ interface Pending {
 const EMBED_TIMEOUT_MS = 60_000;
 const ERROR_RETRY_MS = 5 * 60_000;
 const MAX_RESPAWNS = 3;
+// A worker that survives this long before dying is treated as a genuine one-off
+// crash (fresh respawn budget), not a crash loop. Shorter than this counts toward
+// MAX_RESPAWNS so a worker that aborts moments after loading — e.g. an ONNX OOM on
+// the first backfill batch — settles into a visible 'error' instead of respawning
+// forever. Must exceed a load+first-embed cycle (a few seconds) comfortably.
+const STABLE_UPTIME_MS = 60_000;
 
 export function createEmbedWorkerManager(deps: {
   spawn: () => WorkerTransport;
@@ -50,6 +56,7 @@ export function createEmbedWorkerManager(deps: {
   let status: LocalEmbedStatus = { model: 'multilingual-e5-small', state: 'idle' };
   let lastErrorAt = 0;
   let respawns = 0;
+  let spawnedAt = 0;
   let nextId = 1;
   const inflight = new Map<number, Pending>();
   const queued: Pending[] = []; // held until 'ready', then flushed
@@ -91,7 +98,10 @@ export function createEmbedWorkerManager(deps: {
     if (msg.type === 'status') {
       setStatus(msg.status);
       if (msg.status.state === 'ready') {
-        respawns = 0;
+        // Reaching 'ready' does NOT reset the respawn budget: a worker can load
+        // fine and then abort on the first embed (ONNX OOM), and resetting here
+        // would let that crash loop forever. The budget is refreshed instead when
+        // a worker proves stable by living past STABLE_UPTIME_MS (see onExit).
         flushQueued();
       } else if (msg.status.state === 'error') {
         failAll(`local embeddings: ${msg.status.error ?? 'model failed to load'}`);
@@ -131,6 +141,7 @@ export function createEmbedWorkerManager(deps: {
       return;
     }
     transport = t;
+    spawnedAt = Date.now();
     setStatus({ model: target.id, state: 'loading' });
     // Identity-guarded: a superseded worker lives up to 2 s after stop() and its
     // late messages must not clobber the replacement's status or requests.
@@ -141,6 +152,10 @@ export function createEmbedWorkerManager(deps: {
       if (transport !== t) return; // superseded by reconfigure
       transport = null;
       failAll('local embeddings: worker exited');
+      // A worker that ran past STABLE_UPTIME_MS before dying is a one-off crash,
+      // not a loop — refund its respawn budget so a long-lived worker that finally
+      // trips over one bad input gets a fresh start.
+      if (Date.now() - spawnedAt >= STABLE_UPTIME_MS) respawns = 0;
       // Unexpected exit (dispose/reconfigure clear `transport` first): respawn
       // with a cap so a crash-looping model settles into 'error' instead of
       // burning CPU forever; the next settings change or Test resets the count.
@@ -148,7 +163,11 @@ export function createEmbedWorkerManager(deps: {
         respawns += 1;
         spawn(spec);
       } else {
-        setStatus({ model: target.id, state: 'error', error: 'embedding worker crashed' });
+        setStatus({
+          model: target.id,
+          state: 'error',
+          error: 'embedding worker keeps crashing — try a smaller model or turn embeddings off'
+        });
       }
     });
     t.send({ type: 'load', spec: target, cacheDir: deps.cacheDir() });

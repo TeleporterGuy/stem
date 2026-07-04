@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { applyPrefixes } from './embed-catalog';
 import type { LocalEmbedModelSpec } from './embed-catalog';
 import type { EmbedKind } from './embeddings';
@@ -21,7 +23,14 @@ export type WorkerOutMessage =
   | { type: 'disposed' };
 
 // Model runs in batches this size so one huge backfill request can't spike memory.
-const RUN_BATCH = 64;
+// Kept small deliberately: MultiHeadAttention allocates O(batch · maxSeqLen²) and
+// every item in a batch pads to the longest one (up to the tokenizer's 512-token
+// window). At 64, a batch of long episodic messages peaks ~2.7 GB and aborts
+// onnxruntime inside the sandboxed utility process (BFCArena::Extend →
+// posix_memalign fails → SIGTRAP). CPU inference is compute-bound, not
+// batch-amortized — per-item throughput is the same at 8 as at 64 — so a small
+// batch costs no speed while keeping the worst-case allocation ~1 GB.
+const RUN_BATCH = 8;
 // Download progress is per-chunk chatty; cap status posts to ~4/s.
 const PROGRESS_THROTTLE_MS = 250;
 
@@ -46,12 +55,22 @@ function postStatus(status: Omit<LocalEmbedStatus, 'model'>): void {
   post({ type: 'status', status: { model: spec.id, ...status } });
 }
 
+/** The weights filename transformers.js resolves for each catalog dtype. */
+function weightsFile(dtype: LocalEmbedModelSpec['dtype']): string {
+  return dtype === 'q8' ? 'model_quantized.onnx' : dtype === 'q4' ? 'model_q4.onnx' : 'model.onnx';
+}
+
 async function load(nextSpec: LocalEmbedModelSpec, cacheDir: string): Promise<void> {
   spec = nextSpec;
   postStatus({ state: 'loading' });
   try {
     const { pipeline, env } = await import('@huggingface/transformers');
     env.cacheDir = cacheDir;
+    // transformers.js fires the same 'progress' events when streaming cached
+    // files off disk as during a real download, so a cache-hit load would show
+    // as "downloading" on every launch. If the weights are already in the cache,
+    // report those reads as plain loading instead.
+    const cached = existsSync(join(cacheDir, nextSpec.repo, 'onnx', weightsFile(nextSpec.dtype)));
     // Aggregate per-file {loaded,total} into one percentage; files download in
     // parallel and each reports independently.
     const files = new Map<string, { loaded: number; total: number }>();
@@ -69,8 +88,8 @@ async function load(nextSpec: LocalEmbedModelSpec, cacheDir: string): Promise<vo
       if (!done && now - lastProgressPost < PROGRESS_THROTTLE_MS) return;
       lastProgressPost = now;
       postStatus(
-        done
-          ? { state: 'loading' } // bytes are in; ONNX session creation is what remains
+        cached || done
+          ? { state: 'loading' } // bytes are in (or on disk already); ONNX session creation is what remains
           : { state: 'downloading', progressPct: Math.floor((loaded / total) * 100) }
       );
     };
