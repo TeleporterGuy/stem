@@ -37,8 +37,15 @@ export interface SearchHit {
   ts: number;
   text: string;
   snippet: string;
-  /** bm25 score (lower = better match). */
+  /**
+   * bm25 score (lower = better) from FTS paths; on hybrid output this is the RRF
+   * score instead (higher = better) — see searchMemoryHybrid.
+   */
   score: number;
+  /** Debug evidence on hybrid output: the FTS leg's bm25 score, when FTS saw it. */
+  ftsScore?: number;
+  /** Debug evidence on hybrid/semantic output: cosine similarity, when the semantic leg saw it. */
+  cosine?: number;
 }
 
 export interface SearchOptions {
@@ -148,6 +155,19 @@ function open(): DatabaseSync {
       vec        BLOB NOT NULL,
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (fact_id, model)
+    );
+
+    -- Cached embedding per (message, model) for semantic episodic search. Same
+    -- contract as fact_vectors: model-keyed, pruned on model switch. Messages are
+    -- append-only so vectors never go stale from edits, but deletions (episodic
+    -- pruning / reset) must clean this table by hand — no FK cascade.
+    CREATE TABLE IF NOT EXISTS message_vectors (
+      message_id INTEGER NOT NULL,
+      model      TEXT NOT NULL,
+      dim        INTEGER NOT NULL,
+      vec        BLOB NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (message_id, model)
     );
 
     CREATE TABLE IF NOT EXISTS meta (
@@ -520,22 +540,28 @@ export function getMessagesForDistill(sinceId: number, limit = 200): StoredMessa
   }));
 }
 
-/** Insert or refresh a durable fact (Level 1). Correction-aware via the norm key. */
-export function upsertFact(text: string, source = 'distilled'): void {
+/**
+ * Insert or refresh a durable fact (Level 1). Correction-aware via the norm key.
+ * Returns the fact's row id (insert or conflict-update alike; null on empty text)
+ * so callers holding a fresh embedding can cache it without a lookup.
+ */
+export function upsertFact(text: string, source = 'distilled'): number | null {
   const clean = text.trim();
-  if (!clean) return;
+  if (!clean) return null;
   const handle = open();
   const norm = normalizeFact(clean);
   // A correction can change the text under an existing norm — drop any cached
   // vector so it's re-embedded against the new text on the next inject.
   handle.prepare(`DELETE FROM fact_vectors WHERE fact_id IN (SELECT id FROM facts WHERE norm = ?)`).run(norm);
-  handle
+  const row = handle
     .prepare(
       `INSERT INTO facts (text, norm, source, updated_at)
        VALUES (?, ?, ?, ?)
-       ON CONFLICT(norm) DO UPDATE SET text = excluded.text, source = excluded.source, updated_at = excluded.updated_at`
+       ON CONFLICT(norm) DO UPDATE SET text = excluded.text, source = excluded.source, updated_at = excluded.updated_at
+       RETURNING id`
     )
-    .run(clean, norm, source, nowSeconds());
+    .get(clean, norm, source, nowSeconds()) as { id: number } | undefined;
+  return row?.id ?? null;
 }
 
 export function getFacts(limit = 100): Fact[] {
@@ -713,6 +739,152 @@ export function getEmbeddingCacheStats(model: string): EmbeddingCacheStats {
   return { factCount, embeddedCount: row.n, dim: row.n > 0 ? (row.dim ?? null) : null };
 }
 
+// ---- message embedding cache (Level 2 semantic episodic search) ----
+
+const MESSAGE_EMBED_WATERMARK_KEY = 'message_embed_watermark';
+
+/**
+ * Messages with id greater than `afterId`, oldest first — the episodic embed
+ * pass walks these in batches, watermark-style (mirrors getMessagesForDistill).
+ */
+export function getMessagesForEmbedding(afterId: number, limit = 200): StoredMessage[] {
+  const rows = open()
+    .prepare(
+      `SELECT id, thread_id AS threadId, role, ts, text
+       FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?`
+    )
+    .all(afterId, limit) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: r.id as number,
+    threadId: r.threadId as string,
+    role: r.role as MessageRole,
+    ts: r.ts as number,
+    text: r.text as string
+  }));
+}
+
+/** Cache a message's embedding for `model` (replaces any prior vector). */
+export function upsertMessageVector(messageId: number, model: string, vec: Float32Array): void {
+  const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+  open()
+    .prepare(
+      `INSERT INTO message_vectors (message_id, model, dim, vec, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(message_id, model) DO UPDATE SET dim = excluded.dim, vec = excluded.vec, updated_at = excluded.updated_at`
+    )
+    .run(messageId, model, vec.length, buf, nowSeconds());
+}
+
+/** Drop cached message vectors for every model except `model` (after a model switch). */
+export function pruneMessageVectorsExceptModel(model: string): void {
+  open().prepare(`DELETE FROM message_vectors WHERE model <> ?`).run(model);
+}
+
+/**
+ * Last message id the episodic embed pass has processed for `model` (embedded OR
+ * deliberately skipped). A watermark recorded under a different model — the
+ * embeddings model changed — reads as 0, restarting the backfill.
+ */
+export function getMessageEmbedWatermark(model: string): number {
+  const raw = getMeta(MESSAGE_EMBED_WATERMARK_KEY);
+  if (!raw) return 0;
+  try {
+    const parsed = JSON.parse(raw) as { model?: string; id?: number };
+    return parsed.model === model && typeof parsed.id === 'number' ? parsed.id : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function setMessageEmbedWatermark(model: string, id: number): void {
+  setMeta(MESSAGE_EMBED_WATERMARK_KEY, JSON.stringify({ model, id }));
+}
+
+/** An episodic hit produced by cosine ranking; `score` carries the cosine too. */
+export interface SemanticHit extends SearchHit {
+  cosine: number;
+}
+
+/**
+ * Brute-force cosine top-N over the cached message vectors for `model`. Streams
+ * rows instead of materializing a full id→vector map — unlike facts, the message
+ * set can reach tens of thousands of rows, and a per-turn multi-MB allocation is
+ * the thing to avoid; the arithmetic itself is cheap. Rows with a dim mismatch
+ * (stale model collision) are skipped.
+ */
+export function semanticSearchMessages(
+  qVec: Float32Array,
+  model: string,
+  opts: { limit: number; minCosine: number; excludeThreadId?: string | null }
+): SemanticHit[] {
+  if (opts.limit <= 0) return [];
+  const exclude = opts.excludeThreadId ?? null;
+  const qMag = Math.sqrt(qVec.reduce((s, v) => s + v * v, 0));
+  if (qMag === 0) return [];
+  const stmt = open().prepare(
+    `SELECT v.message_id AS id, v.vec AS vec, m.thread_id AS threadId, m.turn_id AS turnId,
+            m.role AS role, m.ts AS ts, m.text AS text
+     FROM message_vectors v
+     JOIN messages m ON m.id = v.message_id
+     WHERE v.model = ? AND (? IS NULL OR m.thread_id <> ?)`
+  );
+  const top: SemanticHit[] = [];
+  for (const row of stmt.iterate(model, exclude, exclude) as Iterable<Record<string, unknown>>) {
+    const vec = bytesToFloat32(row.vec as Uint8Array);
+    if (vec.length !== qVec.length) continue;
+    let dot = 0;
+    let mag = 0;
+    for (let i = 0; i < vec.length; i++) {
+      dot += vec[i] * qVec[i];
+      mag += vec[i] * vec[i];
+    }
+    const denom = qMag * Math.sqrt(mag);
+    const cos = denom === 0 ? 0 : dot / denom;
+    if (cos < opts.minCosine) continue;
+    const text = row.text as string;
+    const hit: SemanticHit = {
+      id: row.id as number,
+      threadId: row.threadId as string,
+      turnId: (row.turnId as string | null) ?? null,
+      role: row.role as MessageRole,
+      ts: row.ts as number,
+      text,
+      snippet: text.length > 160 ? `${text.slice(0, 160)}…` : text,
+      score: cos,
+      cosine: cos
+    };
+    // Insertion into a small sorted top-N (limit is single digits in practice).
+    const at = top.findIndex((t) => cos > t.cosine);
+    if (at === -1) {
+      if (top.length < opts.limit) top.push(hit);
+    } else {
+      top.splice(at, 0, hit);
+      if (top.length > opts.limit) top.pop();
+    }
+  }
+  return top;
+}
+
+/**
+ * True when ANY message vector is cached (any model). The hybrid search uses
+ * this as a pre-embed gate: with an empty table there is nothing to scan, so
+ * the query embed would be pure waste (e.g. embeddings just turned on, backfill
+ * not yet run — or a fact-only turn on a fresh DB).
+ */
+export function hasMessageVectors(): boolean {
+  const row = open().prepare(`SELECT EXISTS(SELECT 1 FROM message_vectors) AS n`).get() as { n: number };
+  return row.n === 1;
+}
+
+/** How many messages have a cached vector for `model`, vs total messages. */
+export function getEpisodicVectorStats(model: string): { messageCount: number; embeddedCount: number } {
+  const handle = open();
+  const embedded = handle
+    .prepare(`SELECT COUNT(*) AS n FROM message_vectors WHERE model = ?`)
+    .get(model) as { n: number };
+  return { messageCount: messageCount(), embeddedCount: embedded.n };
+}
+
 /**
  * Wipe the episodic store (Level 2): all messages + their FTS index, and the
  * distill watermark — message ids can be reused after a VACUUM, so a stale
@@ -728,7 +900,11 @@ export function resetEpisodic(): void {
   handle.exec('BEGIN');
   try {
     handle.exec('DELETE FROM messages');
+    handle.exec('DELETE FROM message_vectors');
     handle.exec(`DELETE FROM meta WHERE key = 'distill_watermark'`);
+    // Same rowid-reuse hazard as the distill watermark: after VACUUM, new
+    // messages can reclaim old ids and would be skipped by a stale embed watermark.
+    handle.exec(`DELETE FROM meta WHERE key = '${MESSAGE_EMBED_WATERMARK_KEY}'`);
     handle.exec('COMMIT');
   } catch (err) {
     handle.exec('ROLLBACK');
@@ -951,6 +1127,43 @@ export function getFactRerankK(): number {
   return getMetaPositiveInt(FACT_RERANK_K_KEY, DEFAULT_FACT_RERANK_K);
 }
 
+// ---- episodic semantic tunable ----
+
+const SEMANTIC_MIN_COSINE_KEY = 'recall_semantic_min_cosine';
+/**
+ * Floor for semantic-only episodic hits. e5-family similarities squash into
+ * roughly [0.7, 1.0], so 0.82 sits above unrelated-content noise while keeping
+ * genuine cross-language matches (calibrated by scripts/recall-eval.mjs).
+ */
+export const DEFAULT_SEMANTIC_MIN_COSINE = 0.82;
+
+export function getSemanticMinCosine(): number {
+  const raw = Number.parseFloat(getMeta(SEMANTIC_MIN_COSINE_KEY) ?? '');
+  return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_SEMANTIC_MIN_COSINE;
+}
+export function setSemanticMinCosine(v: number): void {
+  setMeta(SEMANTIC_MIN_COSINE_KEY, String(Math.min(1, Math.max(0, v))));
+}
+
+const DUP_COSINE_KEY = 'recall_dup_cosine';
+/**
+ * Write-time duplicate-fact threshold (passage↔passage cosine). Calibrated by
+ * scripts/recall-eval.mjs on 2026-07-04 with e5-small: same-language duplicates
+ * score ≥ .949 while distinct-but-related facts reach .925 — 0.94 sits in that
+ * gap. Cross-language duplicates (~.85) are deliberately NOT reachable: catching
+ * them would over-trigger on same-language distinct pairs; regular consolidation
+ * handles them. A hit never drops the fact — it only accelerates consolidation.
+ */
+export const DEFAULT_DUP_COSINE = 0.94;
+
+export function getDupCosine(): number {
+  const raw = Number.parseFloat(getMeta(DUP_COSINE_KEY) ?? '');
+  return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_DUP_COSINE;
+}
+export function setDupCosine(v: number): void {
+  setMeta(DUP_COSINE_KEY, String(Math.min(1, Math.max(0, v))));
+}
+
 const CONSOLIDATE_CHUNK_KEY = 'consolidate_chunk_size';
 /** Max facts per consolidation prompt; larger sets are clustered into chunks. */
 export const DEFAULT_CONSOLIDATE_CHUNK = 50;
@@ -992,9 +1205,12 @@ export function enforceEpisodicLimit(): number {
     const cutoff = handle
       .prepare(`SELECT id FROM messages ORDER BY id ASC LIMIT 1 OFFSET ?`)
       .get(dropCount) as { id?: number } | undefined;
+    // No FK cascade — drop the pruned messages' cached vectors in the same pass.
     if (cutoff?.id == null) {
+      handle.prepare(`DELETE FROM message_vectors`).run();
       deleted += handle.prepare(`DELETE FROM messages`).run().changes as number;
     } else {
+      handle.prepare(`DELETE FROM message_vectors WHERE message_id < ?`).run(cutoff.id);
       deleted += handle.prepare(`DELETE FROM messages WHERE id < ?`).run(cutoff.id).changes as number;
     }
     handle.exec('VACUUM');

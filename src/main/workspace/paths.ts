@@ -183,6 +183,16 @@ export function recallDbPath(): string {
 }
 
 /**
+ * Unix socket where main serves query embeddings to the stem-recall MCP server
+ * (see recall/embed-endpoint.ts). Lives in userData — comfortably under the
+ * 104-byte sun_path limit at the default location; the endpoint logs-and-skips
+ * if an exotic profile path ever pushes past it.
+ */
+export function embedSocketPath(): string {
+  return process.env.STEM_EMBED_SOCK ?? join(userDataRoot(), 'stem-embed.sock');
+}
+
+/**
  * Stem-owned chat-search index (FTS5 over every chat's title + messages). Kept in
  * its OWN database, physically separate from recall.sqlite, because "search my own
  * chats" deliberately does NOT obey the AI's memorize/taint rules — you must be able

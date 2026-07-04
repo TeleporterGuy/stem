@@ -26,7 +26,7 @@ import {
   removeConnectedFolder,
   updateConnectedFolder
 } from './workspace/connected-folders';
-import { embedModelsDir, piHome, resolveProfileOverride, workspaceRoot } from './workspace/paths';
+import { embedModelsDir, embedSocketPath, piHome, resolveProfileOverride, workspaceRoot } from './workspace/paths';
 import { TaskScheduler } from './scheduler';
 import { createE2ESchedulerBackend } from './scheduler/e2e-backend';
 import { imagePreviewDataUrl } from './pi/attachments';
@@ -50,15 +50,18 @@ import {
   getActiveFactIds,
   getFactsByIds,
   getFactsMissingVector,
+  pruneMessageVectorsExceptModel,
   pruneVectorsExceptModel,
   upsertFactVector
 } from './recall/store';
+import { embedNewMessages } from './recall/embed-episodic';
 import { previewFacts } from './recall/inject';
 import type { ActiveFacts } from '../shared/types';
 import { distillNewMessages, shouldConsolidate } from './recall/distill';
 import { consolidateFacts } from './recall/consolidate';
 import { curateSkills } from './skills/curate';
-import { setRetrievalClients } from './recall/retrieval';
+import { getEmbeddingsClient, setRetrievalClients } from './recall/retrieval';
+import { startEmbedEndpoint } from './recall/embed-endpoint';
 import { createHttpEmbeddingsClient } from './recall/embeddings';
 import { createHttpRerankClient } from './recall/rerank';
 import { EMBED_CATALOG, effectiveEmbedModelKey, localModelCacheKey } from './recall/embed-catalog';
@@ -1389,6 +1392,16 @@ app.whenReady().then(async () => {
     // real /rerank endpoint (llama.cpp --reranking, Infinity, …).
     rerank: null
   });
+  // Serve query embeddings to the stem-recall MCP server over a local unix
+  // socket, so search_past_chats gets the same hybrid (semantic) retrieval as
+  // auto-inject. Listen failures are logged and non-fatal (tool stays FTS-only).
+  const embedEndpoint = startEmbedEndpoint({
+    socketPath: embedSocketPath(),
+    getClient: getEmbeddingsClient
+  });
+  app.on('will-quit', () => {
+    void embedEndpoint.close();
+  });
   embedManager.onStatus((status) => {
     mainWindow?.webContents.send('embeddings:localStatus', status);
     // The model just came up: prune vectors from previously-used models (local
@@ -1411,6 +1424,11 @@ app.whenReady().then(async () => {
           );
           batch.forEach((f, j) => upsertFactVector(f.id, key, vecs[j]));
         }
+        // Same hygiene + backfill for the episodic message vectors (semantic
+        // episodic search). Watermark-driven and self-guarding, so a concurrent
+        // post-turn kick can't double-embed.
+        pruneMessageVectorsExceptModel(key);
+        await embedNewMessages(localEmbeddings);
       } catch {
         // non-fatal: inject tops up lazily on the next semantic turn
       }
@@ -1448,6 +1466,20 @@ app.whenReady().then(async () => {
       } finally {
         distilling = false;
       }
+    }, delayMs);
+  };
+
+  // Episodic embed pass: keep message vectors current for semantic recall.
+  // Debounced off turn/completed (plus one startup pass) and routed through the
+  // settings-aware router client, so remote-mode users backfill too — the
+  // ready-transition hook above only covers the local worker coming up.
+  let episodicEmbedTimer: NodeJS.Timeout | null = null;
+  const scheduleEpisodicEmbed = (delayMs = 10_000): void => {
+    if (!isRecallEnabled()) return;
+    if (episodicEmbedTimer) clearTimeout(episodicEmbedTimer);
+    episodicEmbedTimer = setTimeout(() => {
+      const client = getEmbeddingsClient();
+      if (client) void embedNewMessages(client);
     }, delayMs);
   };
 
@@ -1531,7 +1563,10 @@ app.whenReady().then(async () => {
       if (!(threadId && runtime!.isCaptureSuppressed(threadId))) {
         captureFromEvent(event); // tap assistant replies into Stem Recall (all threads)
       }
-      if (event.method === 'turn/completed') scheduleDistill();
+      if (event.method === 'turn/completed') {
+        scheduleDistill();
+        scheduleEpisodicEmbed();
+      }
     }
     // Chat search indexes the user's own chats in full — independent of the memory
     // toggle and of recall's memorize:false/taint gating (you must be able to find a
@@ -1543,8 +1578,10 @@ app.whenReady().then(async () => {
   });
 
   // Kick off a distillation pass shortly after startup so any messages captured
-  // before the app last quit get turned into durable facts.
+  // before the app last quit get turned into durable facts. The episodic embed
+  // pass runs too, covering remote embeddings mode (no ready-transition there).
   scheduleDistill(20_000);
+  scheduleEpisodicEmbed(25_000);
 
   // Backfill the chat-search index in the background a little after startup (never
   // blocking it). The per-thread watermark makes this a near no-op on every relaunch —

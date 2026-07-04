@@ -3,8 +3,9 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { piHome, piMcpConfigPath, recallDbPath } from '../workspace/paths';
+import { embedSocketPath, piHome, piMcpConfigPath, recallDbPath } from '../workspace/paths';
 import { RECALL_MCP_NAME, recallMcpServerPath } from '../recall/register-mcp';
+import { getEmbedEndpointToken } from '../recall/embed-endpoint';
 import type { OAuthToken } from './oauth';
 
 // Stem's MCP config for the pi backend (mcp.json). Consumed by the bridge
@@ -183,7 +184,16 @@ function recallServerEntry(): PiMcpServer {
   return {
     command: process.execPath,
     args: [recallMcpServerPath()],
-    env: { ELECTRON_RUN_AS_NODE: '1', STEM_RECALL_DB: recallDbPath() },
+    env: {
+      ELECTRON_RUN_AS_NODE: '1',
+      STEM_RECALL_DB: recallDbPath(),
+      // Query-embed channel for hybrid search (embed-endpoint.ts). The token is a
+      // lazy singleton, so reading it here at bootstrap is safe even before (or
+      // without) the endpoint actually listening — the server falls back to
+      // keyword-only whenever the socket doesn't answer.
+      STEM_EMBED_SOCK: embedSocketPath(),
+      STEM_EMBED_TOKEN: getEmbedEndpointToken()
+    },
     trusted: true
   };
 }

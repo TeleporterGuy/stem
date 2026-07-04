@@ -2,8 +2,12 @@ import {
   search as storeSearch,
   factTermSearch,
   factTrigramSearch,
+  getSemanticMinCosine,
+  hasMessageVectors,
+  semanticSearchMessages,
   type SearchHit,
   type SearchOptions,
+  type SemanticHit,
   type Fact
 } from './store';
 
@@ -125,6 +129,88 @@ export function searchMemory(rawQuery: string, options: SearchOptions = {}): Sea
     // A malformed index / unexpected SQL error must never break a turn.
     return [];
   }
+}
+
+// ---- hybrid episodic retrieval (FTS + semantic, reciprocal rank fusion) ----
+
+export const RRF_K = 60;
+export const FTS_CANDIDATES = 12;
+export const SEMANTIC_CANDIDATES = 12;
+/**
+ * bm25 noise gate for the FTS leg (scores are negative; more-negative = better).
+ * Lives here — not on the fused output — because RRF scores aren't bm25: each leg
+ * filters its own noise BEFORE fusion, so a garbage leg can never mint a hit.
+ */
+export const FTS_SCORE_CEILING = -0.1;
+
+/** A query embedding plus the model that keys the message-vector cache. */
+export interface QueryEmbedding {
+  vec: Float32Array;
+  model: string;
+}
+
+export interface HybridOptions extends SearchOptions {
+  /**
+   * Lazy query-embed thunk (memoized by the caller so fact ranking and episodic
+   * search share one embed per turn). Absent/null result/throw → FTS-only.
+   */
+  getQueryEmbedding?: () => Promise<QueryEmbedding | null>;
+  /** Optional sink: wall time of the semantic leg (cosine scan + fusion), ms. */
+  timingSink?: { semantic?: number };
+}
+
+/**
+ * Hybrid episodic search: the FTS leg (bm25-gated) fused with a cosine leg over
+ * the cached message vectors via reciprocal rank fusion. When the semantic leg is
+ * unavailable (embeddings off/not-ready/erroring) the result is exactly the gated
+ * FTS ranking — the zero-regression path. Output `score` is the RRF score
+ * (higher = better, unlike bm25); `ftsScore`/`cosine` carry the per-leg evidence.
+ */
+export async function searchMemoryHybrid(rawQuery: string, options: HybridOptions = {}): Promise<SearchHit[]> {
+  const limit = options.limit ?? 5;
+  const fts = searchMemory(rawQuery, {
+    limit: FTS_CANDIDATES,
+    excludeThreadId: options.excludeThreadId
+  }).filter((h) => h.score <= FTS_SCORE_CEILING);
+
+  let sem: SemanticHit[] = [];
+  if (options.getQueryEmbedding && hasMessageVectors()) {
+    const semStart = Date.now();
+    try {
+      const qe = await options.getQueryEmbedding();
+      if (qe) {
+        sem = semanticSearchMessages(qe.vec, qe.model, {
+          limit: SEMANTIC_CANDIDATES,
+          minCosine: getSemanticMinCosine(),
+          excludeThreadId: options.excludeThreadId
+        });
+      }
+    } catch {
+      // The semantic leg is optional; a dead embedder must never break a turn.
+    }
+    if (options.timingSink) options.timingSink.semantic = Date.now() - semStart;
+  }
+  if (sem.length === 0) return fts.slice(0, limit);
+
+  const merged = new Map<number, SearchHit>();
+  const rrf = new Map<number, number>();
+  for (const list of [fts, sem]) {
+    list.forEach((hit, i) => {
+      rrf.set(hit.id, (rrf.get(hit.id) ?? 0) + 1 / (RRF_K + i + 1));
+      const prior = merged.get(hit.id);
+      if (!prior) {
+        // First sighting: keep the leg's hit (FTS hits carry the real snippet).
+        merged.set(hit.id, { ...hit, ftsScore: 'cosine' in hit ? undefined : hit.score, cosine: (hit as SemanticHit).cosine });
+      } else {
+        // Seen by both legs — graft the other leg's evidence onto the FTS hit.
+        prior.cosine = prior.cosine ?? (hit as SemanticHit).cosine;
+      }
+    });
+  }
+  return [...merged.values()]
+    .map((hit) => ({ ...hit, score: rrf.get(hit.id) ?? 0 }))
+    .sort((a, b) => b.score - a.score || b.ts - a.ts)
+    .slice(0, limit);
 }
 
 export type { SearchHit } from './store';

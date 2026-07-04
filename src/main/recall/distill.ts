@@ -1,4 +1,16 @@
-import { getFacts, getMessagesForDistill, getMeta, getTidyThreshold, setMeta, upsertFact } from './store';
+import {
+  getDupCosine,
+  getFacts,
+  getFactVectors,
+  getMessagesForDistill,
+  getMeta,
+  getTidyThreshold,
+  setMeta,
+  upsertFact,
+  upsertFactVector
+} from './store';
+import { getEmbeddingsClient } from './retrieval';
+import { cosineSim } from './vector';
 import { isRecallEnabled } from '../workspace/memory';
 import type { LlmClient } from './llm';
 
@@ -81,6 +93,39 @@ export function parseFacts(output: string): string[] {
 }
 
 /**
+ * Max cosine of each candidate fact against the cached fact vectors — the
+ * write-time near-duplicate signal. The snapshot of existing vectors is taken
+ * BEFORE anything is written, and candidates are also compared to EARLIER
+ * candidates in the same batch (the LLM sometimes emits two rewordings at once).
+ * Candidates are embedded 'passage'-kind: fact↔fact comparison is symmetric, so
+ * both sides use the passage prefix — never 'query'. Returns null when
+ * embeddings are unavailable or anything fails, and the caller takes exactly the
+ * pre-dedup path; distillation never breaks on a dead embedder.
+ */
+async function scoreCandidatesAgainstFacts(
+  candidates: string[]
+): Promise<{ vecs: Float32Array[]; model: string; maxSims: number[] } | null> {
+  if (candidates.length === 0) return null;
+  try {
+    const emb = getEmbeddingsClient();
+    if (!emb || !(await emb.available())) return null;
+    const model = (await emb.modelId()) ?? '';
+    if (!model) return null;
+    const vecs = await emb.embed(candidates, 'passage');
+    const existing = [...getFactVectors(model).values()];
+    const maxSims = vecs.map((v, i) => {
+      let max = 0;
+      for (const e of existing) max = Math.max(max, cosineSim(v, e));
+      for (let j = 0; j < i; j++) max = Math.max(max, cosineSim(v, vecs[j]));
+      return max;
+    });
+    return { vecs, model, maxSims };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Distill durable facts from messages captured since the last run. Returns the
  * number of facts written. Safe to call repeatedly — advances a watermark so each
  * message is only processed once.
@@ -111,12 +156,31 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
     return 0;
   }
 
-  for (const fact of facts) upsertFact(fact, 'distilled');
+  // Write-time semantic dedup — never a silent drop. A near-duplicate is still
+  // inserted (the LLM consolidation pass stays the only thing that ever removes
+  // a fact, keeping the protected-facts guarantees in one place); it just forces
+  // the dirty counter past the tidy threshold so consolidation adjudicates on
+  // the very next debounce instead of waiting for more facts to pile up.
+  const scored = await scoreCandidatesAgainstFacts(facts);
+  const dupThreshold = getDupCosine();
+  let dupSeen = false;
+  facts.forEach((fact, i) => {
+    const id = upsertFact(fact, 'distilled');
+    if (scored && id != null) {
+      // We already hold this fact's fresh passage vector — cache it so neither
+      // the ready-hook backfill nor inject's lazy path re-embeds it.
+      upsertFactVector(id, scored.model, scored.vecs[i]);
+      if (scored.maxSims[i] >= dupThreshold) dupSeen = true;
+    }
+  });
 
   // Mark new material for the consolidation pass to clean up later.
   if (facts.length > 0) {
-    const pending = Number.parseInt(getMeta(PENDING_KEY) ?? '0', 10) || 0;
-    setMeta(PENDING_KEY, String(pending + facts.length));
+    let pending = (Number.parseInt(getMeta(PENDING_KEY) ?? '0', 10) || 0) + facts.length;
+    // A detected near-duplicate fast-tracks consolidation. max() with the
+    // threshold respects a 0 threshold (auto tidy-up disabled → manual only).
+    if (dupSeen) pending = Math.max(pending, getTidyThreshold());
+    setMeta(PENDING_KEY, String(pending));
   }
 
   // Advance past everything we just considered (even if 0 facts — they had nothing durable).

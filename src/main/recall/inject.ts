@@ -10,8 +10,9 @@ import {
   type Fact,
   type FactTier
 } from './store';
-import { searchMemory, rankFactsLexically } from './search';
+import { searchMemoryHybrid, rankFactsLexically } from './search';
 import { getEmbeddingsClient, getRerankClient } from './retrieval';
+import type { EmbeddingsClient } from './embeddings';
 import { dot, magnitude } from './vector';
 
 // Builds the per-turn recall context Stem prepends to the user's message.
@@ -28,9 +29,8 @@ import { dot, magnitude } from './vector';
 // fall all the way back to recency injection — so a turn never breaks.
 
 const MAX_HITS = 3;
-// bm25 returns negative scores; more-negative = better. Drop weak matches so we
-// don't inject noise into every turn.
-const SCORE_CEILING = -0.1;
+// Per-leg noise gates (bm25 ceiling, semantic min-cosine) live inside the hybrid
+// search now — see FTS_SCORE_CEILING in search.ts.
 const MAX_SNIPPET_CHARS = 400;
 
 function formatDate(tsSeconds: number): string {
@@ -48,8 +48,50 @@ export interface RecallTimings {
   facts?: number; // chooseFacts total (embed + cosine + rerank, or cheap path)
   embed?: number; // query embed + lazy fact-vector backfill
   rerank?: number; // reranker round-trip
-  search?: number; // FTS5 episodic search
+  search?: number; // episodic search total (FTS + semantic + fusion)
+  semantic?: number; // semantic leg of the episodic search (cosine scan + fusion)
   total?: number; // buildRecallContext wall time
+}
+
+/**
+ * The per-turn query embedding, resolved lazily and at most once: fact ranking
+ * and the episodic semantic leg share the same vector. `client` rides along so
+ * the fact path can also run its lazy passage-vector backfill.
+ */
+interface TurnQueryEmbedding {
+  vec: Float32Array;
+  model: string;
+  client: EmbeddingsClient;
+}
+
+type QueryEmbedGetter = () => Promise<TurnQueryEmbedding | null>;
+
+/**
+ * Memoized query-embed thunk. First call embeds `userText` (kind 'query' — the
+ * prefix asymmetry matters for e5-family models); every caller after that gets
+ * the cached result, including a cached null when embeddings are off/unavailable
+ * or the embed failed — one turn never embeds the same query twice.
+ */
+function makeQueryEmbedder(userText: string, timings?: RecallTimings): QueryEmbedGetter {
+  let cached: Promise<TurnQueryEmbedding | null> | null = null;
+  return () => {
+    cached ??= (async () => {
+      const client = getEmbeddingsClient();
+      if (!client || !(await client.available())) return null;
+      const model = (await client.modelId()) ?? '';
+      if (!model) return null;
+      const start = Date.now();
+      try {
+        const [vec] = await client.embed([userText], 'query');
+        return { vec, model, client };
+      } catch {
+        return null;
+      } finally {
+        if (timings) timings.embed = (timings.embed ?? 0) + (Date.now() - start);
+      }
+    })();
+    return cached;
+  };
 }
 
 /** Cosine-rank `facts` against the query vector; return the top `m` facts. */
@@ -71,24 +113,27 @@ function cosineTopM(qVec: Float32Array, facts: Fact[], vectors: Map<number, Floa
  * K (or cosine top-K when no reranker). Throws on any unavailability/error so the
  * caller can fall back to recency.
  */
-async function selectRelevantFacts(userText: string, facts: Fact[], timings?: RecallTimings): Promise<Fact[]> {
-  const emb = getEmbeddingsClient();
-  if (!emb || !(await emb.available())) throw new Error('embeddings unavailable');
-  const model = (await emb.modelId()) ?? '';
-
-  const embStart = Date.now();
-  const [qVec] = await emb.embed([userText], 'query');
+async function selectRelevantFacts(
+  userText: string,
+  facts: Fact[],
+  getQueryEmbedding: QueryEmbedGetter,
+  timings?: RecallTimings
+): Promise<Fact[]> {
+  const qe = await getQueryEmbedding();
+  if (!qe) throw new Error('embeddings unavailable');
+  const { vec: qVec, model, client } = qe;
 
   // Lazily embed only facts missing a vector for this model, then cache them.
+  const embStart = Date.now();
   const missing = getFactsMissingVector(model);
   if (missing.length > 0) {
-    const vecs = await emb.embed(
+    const vecs = await client.embed(
       missing.map((f) => f.text),
       'passage'
     );
     missing.forEach((f, i) => upsertFactVector(f.id, model, vecs[i]));
   }
-  if (timings) timings.embed = Date.now() - embStart;
+  if (timings) timings.embed = (timings.embed ?? 0) + (Date.now() - embStart);
 
   const vectors = getFactVectors(model);
   const candidates = cosineTopM(qVec, facts, vectors, getFactCosineM());
@@ -119,13 +164,14 @@ async function selectRelevantFacts(userText: string, facts: Fact[], timings?: Re
  */
 async function chooseFacts(
   userText: string,
+  getQueryEmbedding: QueryEmbedGetter,
   timings?: RecallTimings
 ): Promise<{ facts: Fact[]; tier: FactTier }> {
   const all = getAllFacts();
   const threshold = getFactThreshold();
   if (all.length <= threshold) return { facts: all, tier: 'all' }; // cheap path: inject everything
   try {
-    return { facts: await selectRelevantFacts(userText, all, timings), tier: 'embedding' };
+    return { facts: await selectRelevantFacts(userText, all, getQueryEmbedding, timings), tier: 'embedding' };
   } catch {
     // Embeddings disabled/unreachable/error → lexical (BM25) fallback tier: still
     // query-aware, but local and model-free. Lexically-relevant facts go first (so a
@@ -146,7 +192,7 @@ async function chooseFacts(
  * injection. Powers the Memory UI's "what would be injected for this draft" preview.
  */
 export async function previewFacts(userText: string): Promise<{ facts: Fact[]; tier: FactTier }> {
-  return chooseFacts(userText);
+  return chooseFacts(userText, makeQueryEmbedder(userText));
 }
 
 export interface BuildContextOptions {
@@ -169,9 +215,12 @@ export async function buildRecallContext(
 ): Promise<string | null> {
   const timings = options.timings;
   const totalStart = Date.now();
+  // One memoized query embedding per turn, shared by fact ranking and the
+  // episodic semantic leg — whichever needs it first pays the single embed.
+  const getQueryEmbedding = makeQueryEmbedder(userText, timings);
 
   const factsStart = Date.now();
-  const { facts, tier } = await chooseFacts(userText, timings);
+  const { facts, tier } = await chooseFacts(userText, getQueryEmbedding, timings);
   if (timings) timings.facts = Date.now() - factsStart;
   if (options.chosen) {
     options.chosen.facts = facts;
@@ -179,10 +228,12 @@ export async function buildRecallContext(
   }
 
   const searchStart = Date.now();
-  const hits = searchMemory(userText, {
+  const hits = await searchMemoryHybrid(userText, {
     limit: MAX_HITS,
-    excludeThreadId: options.currentThreadId ?? null
-  }).filter((h) => h.score <= SCORE_CEILING);
+    excludeThreadId: options.currentThreadId ?? null,
+    getQueryEmbedding,
+    timingSink: timings
+  });
   if (timings) {
     timings.search = Date.now() - searchStart;
     timings.total = Date.now() - totalStart;
