@@ -43,6 +43,26 @@ export const EMPTY_STATE: ThreadState = {
 
 type TurnSettledMethod = 'turn/completed' | 'turn/failed' | 'turn/aborted';
 
+// A dropped provider connection surfaces as a bare, alarming failure like
+// "WebSocket error". The ChatGPT/codex transport is a WebSocket that pi does NOT
+// auto-retry once streaming has begun (replaying could re-run tools it already
+// executed — see openai-codex-responses' websocketStarted branch), so the turn
+// just fails even though its tool calls (e.g. a scheduled reminder) already
+// committed. Rewrite transport-class failures into copy that explains the drop
+// AND reassures that already-completed work was saved — so the user neither
+// assumes it failed nor blindly resends and repeats a side effect.
+const TRANSPORT_ERROR =
+  /websocket|socket hang ?up|econnreset|econnrefused|etimedout|network error|fetch failed|stream (?:closed|ended|error)|connection (?:closed|reset|refused|error)|terminated|premature close/i;
+
+export function turnFailureMessage(error?: string): string {
+  const trimmed = error?.trim();
+  if (!trimmed) return 'The reply failed. Try sending the message again.';
+  if (TRANSPORT_ERROR.test(trimmed)) {
+    return `The connection to the model dropped before it finished replying (${trimmed}). Anything it already did this turn — like scheduling a task — was saved, so check the Tasks tab before resending to avoid repeating it.`;
+  }
+  return trimmed;
+}
+
 interface ApplyBackendEventOptions {
   turnMeta?: ReadonlyMap<string, MessageMeta>;
   settledStatus?: (method: TurnSettledMethod, threadId: string) => ThreadStatus;
@@ -207,7 +227,7 @@ export function applyBackendEventToThread(
               {
                 id: `system-${p.turn.id}`,
                 role: 'system' as const,
-                content: p.error?.trim() || 'The reply failed. Try sending the message again.'
+                content: turnFailureMessage(p.error)
               }
             ]
           : stampActivity(state.messages, p.turn.id, state.activities);

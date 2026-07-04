@@ -4,7 +4,8 @@ import {
   EMPTY_STATE,
   applyBackendEventToThread,
   applyProcessExitToThread,
-  backendEventThreadId
+  backendEventThreadId,
+  turnFailureMessage
 } from '../../src/renderer/chatState';
 
 function event(method: string, params: unknown): BackendEventEnvelope {
@@ -94,12 +95,32 @@ describe('chatState reducer', () => {
     expect(generic.messages.at(-1)).toMatchObject({ role: 'system' });
     expect((generic.messages.at(-1)!.content as string).length).toBeGreaterThan(0);
 
+    // A dropped provider connection ("WebSocket error") must not read as a hard
+    // failure: the copy reassures that already-committed work (a scheduled task)
+    // survived, so a succeeded reminder isn't mistaken for a lost one.
+    const dropped = applyBackendEventToThread(
+      running,
+      event('turn/failed', { threadId: 't1', turn: { id: 'turn1', status: 'failed' }, error: 'WebSocket error' })
+    )!;
+    const droppedText = dropped.messages.at(-1)!.content as string;
+    expect(droppedText).toContain('WebSocket error');
+    expect(droppedText).toMatch(/saved|Tasks tab/);
+
     // Completed/aborted turns do NOT grow a bubble.
     const completed = applyBackendEventToThread(
       running,
       event('turn/completed', { threadId: 't1', turn: { id: 'turn1', status: 'completed' } })
     )!;
     expect(completed.messages).toHaveLength(0);
+  });
+
+  it('turnFailureMessage rewrites transport drops but passes other errors through', () => {
+    expect(turnFailureMessage('WebSocket error')).toMatch(/dropped/i);
+    expect(turnFailureMessage('socket hang up')).toMatch(/dropped/i);
+    expect(turnFailureMessage('ECONNRESET')).toMatch(/dropped/i);
+    // Auth/quota/other errors are already meaningful — keep them verbatim.
+    expect(turnFailureMessage('401 Unauthorized')).toBe('401 Unauthorized');
+    expect(turnFailureMessage('  ')).toMatch(/Try sending the message again/);
   });
 
   it('supports main inactive completion and quick-chat idle completion policies', () => {

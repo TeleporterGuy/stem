@@ -1689,6 +1689,44 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
     // Ensure mcp.json (with the reserved stem-recall entry) for the bridge extension.
     await ensureMcpConfig().catch(() => undefined);
+    // Prefer pi's SSE transport over its default WebSocket-first "auto".
+    await this.ensurePiTransportDefault().catch(() => undefined);
+  }
+
+  /**
+   * Seed `transport: "sse"` into pi's settings.json (read once at spawn — see the
+   * pi RPC no-hot-reload note). pi's codex/ChatGPT transport is WebSocket-first,
+   * but a WebSocket that drops MID-stream cannot be retried (replaying would re-run
+   * tools it already executed — openai-codex-responses throws once websocketStarted),
+   * so a transient disconnect hard-fails the whole turn even though its side effects
+   * (e.g. a scheduled reminder) already committed. The SSE fetch path instead retries
+   * transient errors with backoff and is sturdier through network filters (Little
+   * Snitch). Only seed when unset — an explicit transport in the file wins — and never
+   * clobber existing/hand-authored settings.
+   */
+  private async ensurePiTransportDefault(): Promise<void> {
+    const file = join(this.options.piHome, 'settings.json');
+    let raw: string | null = null;
+    try {
+      raw = await readFile(file, 'utf8');
+    } catch {
+      raw = null; // absent — we create it
+    }
+    let settings: Record<string, unknown>;
+    if (raw === null) {
+      settings = {};
+    } else {
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return; // unexpected shape — leave it
+        settings = parsed as Record<string, unknown>;
+      } catch {
+        return; // present but malformed — never destroy hand-authored content
+      }
+    }
+    if ('transport' in settings) return; // respect an explicit choice
+    settings.transport = 'sse';
+    await writeFile(file, JSON.stringify(settings, null, 2) + '\n');
   }
 
   private async fileExists(path: string): Promise<boolean> {
