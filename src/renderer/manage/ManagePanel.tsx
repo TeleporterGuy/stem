@@ -438,12 +438,16 @@ function EmbeddingsFields({
           />
           <input
             className="ifield"
-            placeholder="qwen3-embedding:8b"
+            placeholder="qwen3-embedding:4b"
             aria-label="Embeddings model"
             value={local.model}
             onChange={(e) => setLocal({ ...local, model: e.target.value })}
             onBlur={() => onPatch({ model: local.model })}
           />
+          <p className="muted">
+            Recommended with Ollama: <code>qwen3-embedding:4b</code> — the best cross-language fact
+            recall we measured.
+          </p>
           <input
             className="ifield"
             type="password"
@@ -859,6 +863,12 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
                 <button className="link-btn" onClick={loadEmbStats}>
                   Refresh
                 </button>
+              </p>
+              <p className="muted">
+                The reranker is a second, precision pass: a cross-encoder re-scores the top embedding
+                matches before injection, which is what catches cross-language matches (a Slovak
+                question finding an English fact). It applies whichever embeddings mode is active —
+                Built-in or Server. While off or not ready, ranking uses embedding similarity alone.
               </p>
               <RerankerFields value={retrieval.reranker} onPatch={patchReranker} />
             </div>

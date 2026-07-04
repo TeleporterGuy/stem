@@ -63,7 +63,8 @@ const DEFAULTS: AppSettings = {
       mode: 'local',
       localModel: 'multilingual-e5-small',
       baseUrl: 'http://localhost:11434',
-      model: 'qwen3-embedding:8b',
+      // 4b, not 8b: measured best cross-language fact recall on Ollama (2026-07-04).
+      model: 'qwen3-embedding:4b',
       apiKey: null
     },
     reranker: {
