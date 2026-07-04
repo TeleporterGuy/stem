@@ -68,6 +68,8 @@ import { EMBED_CATALOG, effectiveEmbedModelKey, localModelCacheKey } from './rec
 import { createEmbedWorkerManager } from './recall/embed-manager';
 import type { EmbedWorkerManager } from './recall/embed-manager';
 import { createEmbeddingsRouter, createLocalEmbeddingsClient } from './recall/embed-local';
+import { DEFAULT_LOCAL_RERANK_MODEL, RERANK_CATALOG } from './recall/rerank-catalog';
+import { createLocalRerankClient, createRerankRouter } from './recall/rerank-local';
 import { spawnEmbedWorker } from './recall/embed-worker-host';
 import type { LlmClient } from './recall/llm';
 import { searchChats, searchChatsLexical } from './chatsearch/search';
@@ -108,6 +110,7 @@ import type {
   LocalEmbedStatus,
   LocalProviderId,
   LocalProviderSettings,
+  LocalRerankStatus,
   McpServerInput,
   MemoryModelSettings,
   ModelSummary,
@@ -971,6 +974,12 @@ function registerIpc(): void {
     if (!E2E && e.mode === 'local') embedManager?.ensure(EMBED_CATALOG[e.localModel]);
     return embedManager?.status() ?? { model: 'multilingual-e5-small', state: 'idle' };
   });
+  ipcMain.handle('reranker:localStatus', async (): Promise<LocalRerankStatus> => {
+    // Same panel-open kick as embeddings:localStatus, for the reranker model.
+    const r = (await readSettings()).retrieval.reranker;
+    if (!E2E && r.mode === 'local') embedManager?.ensureRerank(RERANK_CATALOG[r.localModel]);
+    return embedManager?.rerankStatus() ?? { model: DEFAULT_LOCAL_RERANK_MODEL, state: 'idle' };
+  });
   ipcMain.handle('memory:activeFacts', (_e, threadId: string | null): ActiveFacts | null => {
     if (!threadId) return null;
     const rec = getActiveFactIds(threadId);
@@ -1141,12 +1150,23 @@ function registerIpc(): void {
     // on each turn, so the change applies to the next fact-ranking pass. The local
     // worker is the one stateful piece: kick it immediately on a mode/model change
     // so the download/load starts now rather than on the next turn.
-    const before = (await readSettings()).retrieval.embeddings;
+    const before = (await readSettings()).retrieval;
     const next = await updateRetrievalSettings(patch);
-    const after = next.retrieval.embeddings;
-    if (embedManager && (before.mode !== after.mode || before.localModel !== after.localModel)) {
-      if (after.mode === 'local') embedManager.reconfigure(EMBED_CATALOG[after.localModel]);
-      else if (before.mode === 'local') embedManager.reconfigure(null);
+    const after = next.retrieval;
+    if (
+      embedManager &&
+      (before.embeddings.mode !== after.embeddings.mode ||
+        before.embeddings.localModel !== after.embeddings.localModel)
+    ) {
+      if (after.embeddings.mode === 'local') embedManager.reconfigure(EMBED_CATALOG[after.embeddings.localModel]);
+      else if (before.embeddings.mode === 'local') embedManager.reconfigure(null);
+    }
+    if (
+      embedManager &&
+      (before.reranker.mode !== after.reranker.mode || before.reranker.localModel !== after.reranker.localModel)
+    ) {
+      if (after.reranker.mode === 'local') embedManager.reconfigureRerank(RERANK_CATALOG[after.reranker.localModel]);
+      else if (before.reranker.mode === 'local') embedManager.reconfigureRerank(null);
     }
     return next;
   });
@@ -1176,6 +1196,29 @@ function registerIpc(): void {
         return { ok: true, detail: `${vec.length}-dim · ${Date.now() - startedAt} ms · local` };
       } catch (err) {
         return { ok: false, detail: err instanceof Error ? err.message : 'embed failed' };
+      }
+    }
+    if (stage === 'reranker' && retrieval.reranker.mode !== 'remote') {
+      const rr = retrieval.reranker;
+      if (rr.mode === 'off') return { ok: false, detail: 'Reranker is off.' };
+      // Local mode: Test doubles as the "start/retry the download" button, same
+      // contract as the embeddings branch above.
+      if (!embedManager) return { ok: false, detail: 'Embedding worker not started yet.' };
+      const spec = RERANK_CATALOG[rr.localModel];
+      embedManager.ensureRerank(spec, { force: true });
+      const st = embedManager.rerankStatus();
+      if (st.state === 'error') return { ok: false, detail: st.error ?? 'model failed to load' };
+      if (st.state !== 'ready' || st.model !== spec.id) {
+        return {
+          ok: true,
+          detail: st.state === 'downloading' ? `downloading model — ${st.progressPct ?? 0}%` : 'loading model…'
+        };
+      }
+      try {
+        const ranked = await embedManager.rerank('pets', ['I have a dog', 'the sky is blue'], 2);
+        return { ok: true, detail: `ranked ${ranked.length} · ${Date.now() - startedAt} ms · local` };
+      } catch (err) {
+        return { ok: false, detail: err instanceof Error ? err.message : 'rerank failed' };
       }
     }
     const cfg = stage === 'embeddings' ? retrieval.embeddings : retrieval.reranker;
@@ -1373,6 +1416,7 @@ app.whenReady().then(async () => {
   // a model download.
   embedManager = createEmbedWorkerManager({ spawn: spawnEmbedWorker, cacheDir: embedModelsDir });
   const getEmbedSettings = async () => (await readSettings()).retrieval.embeddings;
+  const getRerankSettings = async () => (await readSettings()).retrieval.reranker;
   const localEmbeddings = createLocalEmbeddingsClient(getEmbedSettings, embedManager);
   setRetrievalClients({
     embeddings: createEmbeddingsRouter({
@@ -1385,12 +1429,20 @@ app.whenReady().then(async () => {
           : null;
       })
     }),
-    // Reranker is intentionally not wired to the live ranking path: it has no UI and
-    // a verified /rerank server is hard to host (Ollama can't serve one). Fact ranking
-    // runs embeddings → cosine only. The seam (rerank.ts, the optional rerank step in
-    // inject, the Test handler below) stays intact, so re-enable here once you run a
-    // real /rerank endpoint (llama.cpp --reranking, Infinity, …).
-    rerank: null
+    // Precision rerank stage: the bundled cross-encoder (co-hosted in the embed
+    // worker) or the user's own Cohere/Jina-style /rerank endpoint (llama.cpp
+    // --reranking, vLLM, Infinity, TEI — note Ollama can't serve one). Off/not
+    // ready → inject degrades to the cosine ranking.
+    rerank: createRerankRouter({
+      getMode: async () => (await getRerankSettings()).mode,
+      local: createLocalRerankClient(getRerankSettings, embedManager),
+      remote: createHttpRerankClient(async () => {
+        const r = await getRerankSettings();
+        return r.mode === 'remote' && r.baseUrl && r.model
+          ? { baseUrl: r.baseUrl, model: r.model, apiKey: r.apiKey }
+          : null;
+      })
+    })
   });
   // Serve query embeddings to the stem-recall MCP server over a local unix
   // socket, so search_past_chats gets the same hybrid (semantic) retrieval as
@@ -1401,6 +1453,9 @@ app.whenReady().then(async () => {
   });
   app.on('will-quit', () => {
     void embedEndpoint.close();
+  });
+  embedManager.onRerankStatus((status) => {
+    mainWindow?.webContents.send('reranker:localStatus', status);
   });
   embedManager.onStatus((status) => {
     mainWindow?.webContents.send('embeddings:localStatus', status);
@@ -1444,6 +1499,9 @@ app.whenReady().then(async () => {
     setTimeout(() => {
       void getEmbedSettings().then((e) => {
         if (e.mode === 'local') embedManager?.ensure(EMBED_CATALOG[e.localModel]);
+      });
+      void getRerankSettings().then((r) => {
+        if (r.mode === 'local') embedManager?.ensureRerank(RERANK_CATALOG[r.localModel]);
       });
     }, 1_500);
   }

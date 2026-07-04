@@ -831,21 +831,6 @@ export interface CustomInstructionsSettings {
 }
 
 /**
- * One HTTP retrieval endpoint (embeddings or reranker). Free-text — Stem just
- * makes the call — so it works with Ollama, vLLM, LM Studio, TEI, or a hosted API.
- * Disabled by default; until enabled+configured, fact selection stays recency-based.
- */
-export interface RetrievalEndpointSettings {
-  /** Base URL, e.g. http://localhost:11434 (no path; Stem appends /v1/embeddings or /rerank). */
-  baseUrl: string;
-  /** Model id as the server names it, e.g. qwen3-embedding:8b. */
-  model: string;
-  /** Optional bearer token for hosted/secured endpoints. */
-  apiKey: string | null;
-  enabled: boolean;
-}
-
-/**
  * How fact embeddings are produced:
  * - `off`    — no embeddings; fact selection stays lexical/recency-based.
  * - `local`  — bundled in-process model (transformers.js/ONNX in a utility
@@ -867,7 +852,7 @@ export interface EmbeddingsSettings {
   mode: EmbeddingsMode;
   /** Which curated local model to run when mode === 'local'. */
   localModel: LocalEmbedModelId;
-  /** Remote-endpoint fields (used when mode === 'remote'); same semantics as RetrievalEndpointSettings. */
+  /** Remote endpoint (used when mode === 'remote'): any OpenAI-compatible /v1/embeddings server. */
   baseUrl: string;
   model: string;
   apiKey: string | null;
@@ -886,19 +871,56 @@ export interface LocalEmbedStatus {
 }
 
 /**
+ * How the precision rerank stage runs (same shape as {@link EmbeddingsMode}):
+ * - `off`    — no reranking; fact selection is embeddings-cosine only.
+ * - `local`  — bundled cross-encoder (transformers.js/ONNX in the same utility
+ *              process as local embeddings); weights download once to userData.
+ * - `remote` — the user's own Cohere/Jina-style /rerank endpoint (llama.cpp
+ *              --reranking, vLLM, Infinity, TEI).
+ */
+export type RerankerMode = 'off' | 'local' | 'remote';
+
+/** Curated local reranker models (specs live in main/recall/rerank-catalog.ts). */
+export type LocalRerankModelId = 'bge-reranker-v2-m3';
+
+/**
+ * Reranker-stage settings: an exclusive mode plus the config for both backends
+ * (kept side-by-side so switching modes never loses the remote endpoint details).
+ */
+export interface RerankerSettings {
+  mode: RerankerMode;
+  /** Which curated local model to run when mode === 'local'. */
+  localModel: LocalRerankModelId;
+  /** Remote-endpoint fields (used when mode === 'remote'). */
+  baseUrl: string;
+  model: string;
+  apiKey: string | null;
+}
+
+/** Live state of the local reranker model — drives the Manage-panel status line. */
+export interface LocalRerankStatus {
+  model: LocalRerankModelId;
+  state: 'idle' | 'downloading' | 'loading' | 'ready' | 'error';
+  /** Download progress 0–100 while state === 'downloading'. */
+  progressPct?: number;
+  /** Human-readable failure while state === 'error'. */
+  error?: string;
+}
+
+/**
  * Reusable two-stage retrieval config: embeddings (candidate ranking) + reranker
  * (precision reorder). Used today to rank durable facts at inject time; the same
  * seam can back episodic semantic search later.
  */
 export interface RetrievalSettings {
   embeddings: EmbeddingsSettings;
-  reranker: RetrievalEndpointSettings;
+  reranker: RerankerSettings;
 }
 
 /** A partial retrieval patch — update either stage, any subset of its fields. */
 export interface PartialRetrievalSettings {
   embeddings?: Partial<EmbeddingsSettings>;
-  reranker?: Partial<RetrievalEndpointSettings>;
+  reranker?: Partial<RerankerSettings>;
 }
 
 /** Embedding-cache coverage for the configured model — shown in the Manage panel. */
@@ -1208,6 +1230,10 @@ export interface StemApi {
   getLocalEmbedStatus(): Promise<LocalEmbedStatus>;
   /** Fired whenever the local embedding worker's status changes (incl. download progress). */
   onLocalEmbedStatus(listener: (status: LocalEmbedStatus) => void): () => void;
+  /** Current local reranker model state (download/load/ready) for the Manage panel. */
+  getLocalRerankStatus(): Promise<LocalRerankStatus>;
+  /** Fired whenever the local reranker model's status changes (incl. download progress). */
+  onLocalRerankStatus(listener: (status: LocalRerankStatus) => void): () => void;
   /** Overlay → main: run a prompt in the overlay's own thread (main hides the
    *  overlay + raises the HUD, pre-creating a thread for a fresh session). */
   runQuickChat(prompt: QuickChatPrompt): Promise<StartTurnResult>;

@@ -12,11 +12,13 @@ import type {
   LocalProviderId,
   LocalProviderSettings,
   LocalProvidersSettings,
+  LocalRerankModelId,
   MemoryModelSettings,
   NativeWebSearchSettings,
   PartialRetrievalSettings,
   QuickChatSettings,
-  RetrievalEndpointSettings,
+  RerankerMode,
+  RerankerSettings,
   RetrievalSettings,
   SkillsModelSettings
 } from '../../shared/types';
@@ -64,7 +66,13 @@ const DEFAULTS: AppSettings = {
       model: 'qwen3-embedding:8b',
       apiKey: null
     },
-    reranker: { baseUrl: 'http://localhost:8080', model: '', apiKey: null, enabled: false }
+    reranker: {
+      mode: 'off',
+      localModel: 'bge-reranker-v2-m3',
+      baseUrl: 'http://localhost:8080',
+      model: '',
+      apiKey: null
+    }
   },
   // Escape-to-retract is opt-in: off until the user picks single/two-stage.
   escapeAction: 'off',
@@ -86,16 +94,30 @@ const DEFAULTS: AppSettings = {
 
 const ESCAPE_ACTIONS: readonly EscapeAction[] = ['off', 'single', 'twoStage'];
 
-function coerceEndpoint(
-  raw: Partial<RetrievalEndpointSettings> | undefined,
-  def: RetrievalEndpointSettings
-): RetrievalEndpointSettings {
+const RERANKER_MODES: readonly RerankerMode[] = ['off', 'local', 'remote'];
+const LOCAL_RERANK_MODELS: readonly LocalRerankModelId[] = ['bge-reranker-v2-m3'];
+
+function coerceReranker(
+  raw: (Partial<RerankerSettings> & { enabled?: unknown }) | undefined,
+  def: RerankerSettings
+): RerankerSettings {
   const r = raw ?? {};
+  // Migration from the pre-mode shape ({ enabled: boolean } + endpoint fields):
+  // enabled:true meant "user pointed us at their own /rerank server" → remote;
+  // anything else takes the default (off — the rerank stage is opt-in).
+  const mode: RerankerMode = RERANKER_MODES.includes(r.mode as RerankerMode)
+    ? (r.mode as RerankerMode)
+    : r.enabled === true
+      ? 'remote'
+      : def.mode;
   return {
+    mode,
+    localModel: LOCAL_RERANK_MODELS.includes(r.localModel as LocalRerankModelId)
+      ? (r.localModel as LocalRerankModelId)
+      : def.localModel,
     baseUrl: typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : def.baseUrl,
     model: typeof r.model === 'string' ? r.model.trim() : def.model,
-    apiKey: typeof r.apiKey === 'string' && r.apiKey.trim() ? r.apiKey : null,
-    enabled: typeof r.enabled === 'boolean' ? r.enabled : def.enabled
+    apiKey: typeof r.apiKey === 'string' && r.apiKey.trim() ? r.apiKey : null
   };
 }
 
@@ -150,7 +172,7 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   const rawRet = (parsed?.retrieval ?? {}) as Partial<RetrievalSettings>;
   const retrieval: RetrievalSettings = {
     embeddings: coerceEmbeddings(rawRet.embeddings, DEFAULTS.retrieval.embeddings),
-    reranker: coerceEndpoint(rawRet.reranker, DEFAULTS.retrieval.reranker)
+    reranker: coerceReranker(rawRet.reranker, DEFAULTS.retrieval.reranker)
   };
   const escapeAction: EscapeAction = ESCAPE_ACTIONS.includes(parsed?.escapeAction as EscapeAction)
     ? (parsed!.escapeAction as EscapeAction)

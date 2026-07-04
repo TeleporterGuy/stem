@@ -157,3 +157,48 @@ describe('embeddings settings migration + coercion', () => {
     expect((await readSettings()).retrieval.embeddings.mode).toBe('off');
   });
 });
+
+describe('reranker settings migration + coercion', () => {
+  it('defaults to off / bge-reranker-v2-m3 when no file exists', async () => {
+    const rr = (await readSettings()).retrieval.reranker;
+    expect(rr.mode).toBe('off');
+    expect(rr.localModel).toBe('bge-reranker-v2-m3');
+  });
+
+  it('migrates a legacy enabled:true endpoint to remote, keeping its fields', async () => {
+    writeFileSync(
+      path,
+      JSON.stringify({
+        retrieval: {
+          reranker: { baseUrl: 'http://box:8012', model: 'my-reranker', apiKey: 'sk-2', enabled: true }
+        }
+      })
+    );
+    const rr = (await readSettings()).retrieval.reranker;
+    expect(rr.mode).toBe('remote');
+    expect(rr.baseUrl).toBe('http://box:8012');
+    expect(rr.model).toBe('my-reranker');
+    expect(rr.apiKey).toBe('sk-2');
+  });
+
+  it('migrates a legacy enabled:false endpoint to off (the rerank stage is opt-in)', async () => {
+    writeFileSync(
+      path,
+      JSON.stringify({
+        retrieval: { reranker: { baseUrl: 'http://localhost:8080', model: '', apiKey: null, enabled: false } }
+      })
+    );
+    expect((await readSettings()).retrieval.reranker.mode).toBe('off');
+  });
+
+  it('coerces garbage mode/localModel back to defaults and round-trips local mode', async () => {
+    writeFileSync(path, JSON.stringify({ retrieval: { reranker: { mode: 'bogus', localModel: 'bogus' } } }));
+    let rr = (await readSettings()).retrieval.reranker;
+    expect(rr.mode).toBe('off');
+    expect(rr.localModel).toBe('bge-reranker-v2-m3');
+    await updateRetrievalSettings({ reranker: { mode: 'local' } });
+    rr = (await readSettings()).retrieval.reranker;
+    expect(rr.mode).toBe('local');
+    expect(rr.localModel).toBe('bge-reranker-v2-m3');
+  });
+});

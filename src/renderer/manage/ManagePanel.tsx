@@ -26,6 +26,10 @@ import type {
   LocalProviderId,
   LocalProvidersSettings,
   LocalProviderTestResult,
+  LocalRerankModelId,
+  LocalRerankStatus,
+  RerankerMode,
+  RerankerSettings,
   RetrievalSettings,
   RetrievalTestResult,
   SkillSummary,
@@ -303,7 +307,7 @@ function EpisodicTab() {
 const LOCAL_EMBED_MODELS: { id: LocalEmbedModelId; label: string; detail: string }[] = [
   { id: 'multilingual-e5-small', label: 'Multilingual E5 Small', detail: '~120 MB · recommended' },
   { id: 'multilingual-e5-base', label: 'Multilingual E5 Base', detail: '~280 MB · higher quality' },
-  { id: 'embeddinggemma-300m', label: 'EmbeddingGemma 300M', detail: '~330 MB · highest quality' }
+  { id: 'embeddinggemma-300m', label: 'EmbeddingGemma 300M', detail: '~330 MB · largest' }
 ];
 
 const EMBED_MODES: { id: EmbeddingsMode; label: string; hint: string }[] = [
@@ -312,8 +316,21 @@ const EMBED_MODES: { id: EmbeddingsMode; label: string; hint: string }[] = [
   { id: 'off', label: 'Off', hint: 'Rank facts by keywords/recency only' }
 ];
 
-/** One line describing where the local embedding worker is right now. */
-function localStatusLabel(status: LocalEmbedStatus | null): string {
+// The curated local reranker, mirrored from main/recall/rerank-catalog.ts.
+const LOCAL_RERANK_MODELS: { id: LocalRerankModelId; label: string; detail: string }[] = [
+  { id: 'bge-reranker-v2-m3', label: 'BGE Reranker v2 M3', detail: '~570 MB · multilingual' }
+];
+
+const RERANK_MODES: { id: RerankerMode; label: string; hint: string }[] = [
+  { id: 'off', label: 'Off', hint: 'Rank facts by embedding similarity only' },
+  { id: 'local', label: 'Built-in', hint: 'Bundled cross-encoder re-scores the top matches, runs on this Mac' },
+  { id: 'remote', label: 'Server', hint: 'Your own /rerank endpoint (llama.cpp --reranking, vLLM, Infinity…)' }
+];
+
+/** One line describing where a local retrieval model (embedder/reranker) is right now. */
+function localStatusLabel(
+  status: { state: LocalEmbedStatus['state']; progressPct?: number; dim?: number; error?: string } | null
+): string {
   switch (status?.state) {
     case 'downloading':
       return `Downloading model… ${status.progressPct ?? 0}%`;
@@ -462,6 +479,138 @@ function EmbeddingsFields({
   );
 }
 
+// Reranker-stage controls, mirroring EmbeddingsFields: an exclusive Off /
+// Built-in / Server mode, the local model + live download/ready status, or the
+// remote endpoint fields. The reranker re-scores the embedding shortlist with a
+// cross-encoder — the precision stage that catches cross-language matches
+// cosine ranking misses.
+function RerankerFields({
+  value,
+  onPatch
+}: {
+  value: RerankerSettings;
+  onPatch: (patch: Partial<RerankerSettings>) => void;
+}) {
+  const [local, setLocal] = useState(value);
+  const [testing, setTesting] = useState(false);
+  const [test, setTest] = useState<RetrievalTestResult | null>(null);
+  const [status, setStatus] = useState<LocalRerankStatus | null>(null);
+  useEffect(() => setLocal(value), [value]);
+  useEffect(() => {
+    window.stem.getLocalRerankStatus().then(setStatus);
+    return window.stem.onLocalRerankStatus(setStatus);
+  }, []);
+
+  async function runTest() {
+    setTesting(true);
+    setTest(null);
+    try {
+      setTest(await window.stem.testRetrievalEndpoint('reranker'));
+    } catch {
+      setTest({ ok: false, detail: 'request failed' });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const mode = value.mode;
+
+  return (
+    <div className="set-block fg-divider">
+      <div className="group-row">
+        <span className="row-main">
+          <strong>Reranker</strong>
+          <em>{RERANK_MODES.find((m) => m.id === mode)?.hint}</em>
+        </span>
+      </div>
+      <div className="seg-ctl">
+        {RERANK_MODES.map((m) => (
+          <button
+            key={m.id}
+            className={mode === m.id ? 'active' : ''}
+            onClick={() => {
+              setTest(null);
+              onPatch({ mode: m.id });
+            }}
+            title={m.hint}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      {mode === 'local' && (
+        <>
+          <select
+            className="ifield"
+            aria-label="Local reranker model"
+            value={value.localModel}
+            onChange={(e) => {
+              setTest(null);
+              onPatch({ localModel: e.target.value as LocalRerankModelId });
+            }}
+          >
+            {LOCAL_RERANK_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} ({m.detail})
+              </option>
+            ))}
+          </select>
+          <p className="muted">{localStatusLabel(status)}</p>
+        </>
+      )}
+      {mode === 'remote' && (
+        <>
+          <input
+            className="ifield"
+            placeholder="http://localhost:8080"
+            aria-label="Reranker base URL"
+            value={local.baseUrl}
+            onChange={(e) => setLocal({ ...local, baseUrl: e.target.value })}
+            onBlur={() => onPatch({ baseUrl: local.baseUrl })}
+          />
+          <input
+            className="ifield"
+            placeholder="bge-reranker-v2-m3"
+            aria-label="Reranker model"
+            value={local.model}
+            onChange={(e) => setLocal({ ...local, model: e.target.value })}
+            onBlur={() => onPatch({ model: local.model })}
+          />
+          <input
+            className="ifield"
+            type="password"
+            placeholder="API key (optional)"
+            aria-label="Reranker API key"
+            value={local.apiKey ?? ''}
+            onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
+            onBlur={() => onPatch({ apiKey: local.apiKey })}
+          />
+        </>
+      )}
+      {mode !== 'off' && (
+        <div className="retrieval-test">
+          <button
+            className="retrieval-test-btn"
+            onClick={runTest}
+            disabled={testing}
+            title={testing ? 'Testing…' : 'Test connection'}
+            aria-label="Test reranker"
+          >
+            <Plug size={14} />
+          </button>
+          {testing && <span className="retrieval-test-status">Testing…</span>}
+          {!testing && test && (
+            <span className={`retrieval-test-status ${test.ok ? 'ok' : 'err'}`} title={test.detail}>
+              {test.ok ? <Check size={12} /> : <X size={12} />}
+              {test.detail}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Human label for a fact-selection tier, shown in the active-facts summary. */
 function tierLabel(t: FactTier): string {
   switch (t) {
@@ -551,6 +700,10 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
 
   function patchEmbeddings(patch: Partial<EmbeddingsSettings>) {
     window.stem.updateRetrievalSettings({ embeddings: patch }).then((s) => setRetrieval(s.retrieval));
+  }
+
+  function patchReranker(patch: Partial<RerankerSettings>) {
+    window.stem.updateRetrievalSettings({ reranker: patch }).then((s) => setRetrieval(s.retrieval));
   }
 
   function selectTidyThreshold(n: number) {
@@ -707,6 +860,7 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
                   Refresh
                 </button>
               </p>
+              <RerankerFields value={retrieval.reranker} onPatch={patchReranker} />
             </div>
           )}
         </>

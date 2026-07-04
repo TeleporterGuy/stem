@@ -3,12 +3,14 @@
 // has no utilityProcess; the WorkerTransport seam exists exactly for this).
 import { describe, expect, it, vi } from 'vitest';
 import { EMBED_CATALOG } from '../../src/main/recall/embed-catalog';
+import { RERANK_CATALOG } from '../../src/main/recall/rerank-catalog';
 import { createEmbedWorkerManager } from '../../src/main/recall/embed-manager';
 import type { WorkerOutMessage } from '../../src/main/recall/embed-worker';
 import type { WorkerTransport } from '../../src/main/recall/embed-worker-host';
 import type { LocalEmbedStatus } from '../../src/shared/types';
 
 const SPEC = EMBED_CATALOG['multilingual-e5-small'];
+const RERANK_SPEC = RERANK_CATALOG['bge-reranker-v2-m3'];
 
 interface FakeWorker extends WorkerTransport {
   sent: Array<Record<string, unknown>>;
@@ -41,7 +43,7 @@ function fakeWorker(): FakeWorker {
   return w;
 }
 
-function manager(opts: { embedTimeoutMs?: number } = {}) {
+function manager(opts: { embedTimeoutMs?: number; rerankTimeoutMs?: number } = {}) {
   const workers: FakeWorker[] = [];
   const mgr = createEmbedWorkerManager({
     spawn: () => {
@@ -58,6 +60,11 @@ function manager(opts: { embedTimeoutMs?: number } = {}) {
 const ready = (dim = 384): WorkerOutMessage => ({
   type: 'status',
   status: { model: SPEC.id, state: 'ready', dim }
+});
+
+const rerankReady = (): WorkerOutMessage => ({
+  type: 'rerank-status',
+  status: { model: RERANK_SPEC.id, state: 'ready' }
 });
 
 describe('embed worker manager', () => {
@@ -181,5 +188,123 @@ describe('embed worker manager', () => {
     });
     expect(() => mgr.ensure(SPEC)).not.toThrow();
     expect(mgr.status()).toMatchObject({ state: 'error', error: 'utilityProcess unavailable' });
+  });
+});
+
+describe('co-hosted reranker', () => {
+  it('loads the reranker into a live embed worker in place (no restart)', () => {
+    const { mgr, workers } = manager();
+    mgr.ensure(SPEC);
+    workers[0].emit(ready());
+    mgr.ensureRerank(RERANK_SPEC);
+    expect(workers).toHaveLength(1); // same process
+    expect(workers[0].sent.at(-1)).toMatchObject({ type: 'load-rerank', cacheDir: '/tmp/models' });
+    expect(mgr.rerankStatus().state).toBe('loading');
+    mgr.ensureRerank(RERANK_SPEC); // idempotent while the same model is up
+    expect(workers[0].sent.filter((m) => m.type === 'load-rerank')).toHaveLength(1);
+  });
+
+  it('spawns rerank-only when embeddings are not local, then adds the embedder in place', () => {
+    const { mgr, workers } = manager();
+    mgr.ensureRerank(RERANK_SPEC);
+    expect(workers).toHaveLength(1);
+    expect(workers[0].sent.map((m) => m.type)).toEqual(['load-rerank']);
+    mgr.ensure(SPEC);
+    expect(workers).toHaveLength(1);
+    expect(workers[0].sent.map((m) => m.type)).toEqual(['load-rerank', 'load']);
+  });
+
+  it('queues reranks while loading, flushes on ready, and resolves results', async () => {
+    const { mgr, workers } = manager();
+    mgr.ensureRerank(RERANK_SPEC);
+    const pending = mgr.rerank('q', ['a', 'b'], 2);
+    expect(workers[0].sent.filter((m) => m.type === 'rerank')).toHaveLength(0);
+    workers[0].emit(rerankReady());
+    const req = workers[0].sent.find((m) => m.type === 'rerank')!;
+    expect(req).toMatchObject({ query: 'q', docs: ['a', 'b'], topN: 2 });
+    workers[0].emit({
+      type: 'rerank-result',
+      id: req.id as number,
+      results: [
+        { index: 1, score: 0.9 },
+        { index: 0, score: 0.1 }
+      ]
+    });
+    expect(await pending).toEqual([
+      { index: 1, score: 0.9 },
+      { index: 0, score: 0.1 }
+    ]);
+  });
+
+  it('keeps embed and rerank failure domains separate: a rerank load error only fails reranks', async () => {
+    const { mgr, workers } = manager();
+    mgr.ensure(SPEC);
+    mgr.ensureRerank(RERANK_SPEC);
+    workers[0].emit(ready());
+    const embedPending = mgr.embed(['x'], 'passage');
+    const rerankPending = mgr.rerank('q', ['a'], 1);
+    workers[0].emit({ type: 'rerank-status', status: { model: RERANK_SPEC.id, state: 'error', error: 'oom' } });
+    await expect(rerankPending).rejects.toThrow(/oom/);
+    expect(mgr.rerankStatus().state).toBe('error');
+    // The embed side is untouched and still completes.
+    expect(mgr.status().state).toBe('ready');
+    const req = workers[0].sent.find((m) => m.type === 'embed')!;
+    workers[0].emit({ type: 'result', id: req.id as number, dim: 384, vectors: [new Float32Array([1])] });
+    expect((await embedPending).length).toBe(1);
+  });
+
+  it('a crash respawn reloads BOTH models', async () => {
+    const { mgr, workers } = manager();
+    mgr.ensure(SPEC);
+    mgr.ensureRerank(RERANK_SPEC);
+    workers[0].emit(ready());
+    workers[0].emit(rerankReady());
+    const pending = mgr.rerank('q', ['a'], 1);
+    workers[0].exit(1);
+    await expect(pending).rejects.toThrow(/exited/);
+    expect(workers).toHaveLength(2);
+    expect(workers[1].sent.map((m) => m.type).sort()).toEqual(['load', 'load-rerank']);
+  });
+
+  it('an embed model switch restarts the process and reloads the reranker too', () => {
+    const { mgr, workers } = manager();
+    mgr.ensure(SPEC);
+    mgr.ensureRerank(RERANK_SPEC);
+    workers[0].emit(ready());
+    workers[0].emit(rerankReady());
+    mgr.reconfigure(EMBED_CATALOG['multilingual-e5-base']);
+    expect(workers).toHaveLength(2);
+    expect(workers[1].sent.map((m) => m.type).sort()).toEqual(['load', 'load-rerank']);
+  });
+
+  it('reconfigureRerank(null) restarts with the embedder only and goes idle', () => {
+    const { mgr, workers } = manager();
+    mgr.ensure(SPEC);
+    mgr.ensureRerank(RERANK_SPEC);
+    workers[0].emit(ready());
+    workers[0].emit(rerankReady());
+    mgr.reconfigureRerank(null);
+    expect(mgr.rerankStatus().state).toBe('idle');
+    expect(workers).toHaveLength(2);
+    expect(workers[1].sent.map((m) => m.type)).toEqual(['load']);
+  });
+
+  it('rejects reranks when the worker is not running instead of hanging', async () => {
+    const { mgr } = manager();
+    await expect(mgr.rerank('q', ['a'], 1)).rejects.toThrow(/not running/);
+  });
+
+  it('rejects an in-flight rerank on timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const { mgr, workers } = manager({ rerankTimeoutMs: 1000 });
+      mgr.ensureRerank(RERANK_SPEC);
+      workers[0].emit(rerankReady());
+      const pending = mgr.rerank('q', ['a'], 1);
+      vi.advanceTimersByTime(1500);
+      await expect(pending).rejects.toThrow(/timed out/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

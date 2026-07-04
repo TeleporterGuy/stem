@@ -11,6 +11,7 @@ import type {
   LocalEmbedStatus,
   LocalProviderId,
   LocalProviderSettings,
+  LocalRerankStatus,
   McpAdminProposal,
   McpServerInput,
   McpServerStatus,
@@ -193,6 +194,12 @@ const api: StemApi = {
     const handler = (_e: unknown, status: LocalEmbedStatus) => listener(status);
     ipcRenderer.on('embeddings:localStatus', handler);
     return () => ipcRenderer.removeListener('embeddings:localStatus', handler);
+  },
+  getLocalRerankStatus: () => ipcRenderer.invoke('reranker:localStatus'),
+  onLocalRerankStatus: (listener: (status: LocalRerankStatus) => void) => {
+    const handler = (_e: unknown, status: LocalRerankStatus) => listener(status);
+    ipcRenderer.on('reranker:localStatus', handler);
+    return () => ipcRenderer.removeListener('reranker:localStatus', handler);
   },
   runQuickChat: (prompt: QuickChatPrompt) => ipcRenderer.invoke('quickchat:run', prompt),
   newQuickChatThread: () => ipcRenderer.invoke('quickchat:newThread'),
