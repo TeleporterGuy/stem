@@ -61,6 +61,7 @@ import type { ActiveFacts } from '../shared/types';
 import { distillNewMessages, shouldConsolidate } from './recall/distill';
 import { consolidateFacts } from './recall/consolidate';
 import { curateSkills } from './skills/curate';
+import { distillSkillsFromMessages, drainSkillDistill } from './skills/distill';
 import { getEmbeddingsClient, setRetrievalClients } from './recall/retrieval';
 import { startEmbedEndpoint } from './recall/embed-endpoint';
 import { createHttpEmbeddingsClient } from './recall/embeddings';
@@ -886,6 +887,17 @@ function registerIpc(): void {
     await runtime!.requestSkillReload();
     return listSkills();
   });
+  ipcMain.handle('skills:distillNow', async () => {
+    // Manual "collect now": drain the whole message backlog through the skill
+    // distiller (force bypasses the min-batch gate), then reload so any new
+    // skill activates immediately.
+    const llm: LlmClient = {
+      complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).skills.model })
+    };
+    const written = await drainSkillDistill(llm);
+    if (written > 0) await runtime!.requestSkillReload();
+    return listSkills();
+  });
 
   ipcMain.handle('files:list', () => listFiles());
   ipcMain.handle('files:add', (_e, paths: string[], subdir?: string) => addFiles(paths, subdir));
@@ -1521,6 +1533,11 @@ app.whenReady().then(async () => {
         // duplicates, apply corrections, drop superseded facts. Same hidden
         // LlmClient seam, so it's invisible to the user like distillation.
         if (shouldConsolidate()) await consolidateFacts(recallLlm);
+        // Skills acquisition: a separate single-purpose pass over the same new
+        // messages (own watermark) — the in-turn manage_skill nudge alone never
+        // fires. Uses the skills model; a write reloads pi so the skill activates.
+        const newSkills = await distillSkillsFromMessages(skillsLlm);
+        if (newSkills > 0) await runtime!.requestSkillReload();
       } catch {
         // non-fatal
       } finally {

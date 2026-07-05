@@ -1092,6 +1092,8 @@ export interface StemApi {
   setSkillEnabled(slug: string, enabled: boolean): Promise<SkillSummary[]>;
   /** Run the skills curator now (merge duplicates, patch, archive). Returns fresh list. */
   curateSkills(): Promise<SkillSummary[]>;
+  /** Run the skill distiller now over the whole message backlog. Returns fresh list. */
+  distillSkillsNow(): Promise<SkillSummary[]>;
   /** Fired after skills change (auto-create/patch by the assistant, or the curator). */
   onSkillsChanged(listener: () => void): () => void;
 

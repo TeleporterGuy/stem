@@ -69,6 +69,7 @@ const api: StemApi = {
   listSkills: () => ipcRenderer.invoke('skills:list'),
   setSkillEnabled: (slug: string, enabled: boolean) => ipcRenderer.invoke('skills:setEnabled', slug, enabled),
   curateSkills: () => ipcRenderer.invoke('skills:curate'),
+  distillSkillsNow: () => ipcRenderer.invoke('skills:distillNow'),
   onSkillsChanged: (listener: () => void) => {
     const handler = () => listener();
     ipcRenderer.on('skills:changed', handler);

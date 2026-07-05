@@ -915,6 +915,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 /* inset-grouped lists (System Settings style) */
 .grp-head { font-size: var(--fs-10); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 4px 4px 7px; }
 .grp-head + .grp-head, .group + .grp-head, .formgroup + .grp-head { margin-top: 18px; }
+/* Header variant with a right-aligned icon-action row (mirrors .memory-view-head). */
+.grp-head.with-actions { display: flex; align-items: center; justify-content: space-between; }
 .group { background: var(--surface); border: 0.5px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
 .group-row { display: flex; align-items: center; gap: var(--sp-5); padding: 9px 12px; }
 .group-row + .group-row { border-top: 0.5px solid var(--hair); }

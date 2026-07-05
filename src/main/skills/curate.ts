@@ -65,7 +65,7 @@ Rules:
 - If nothing needs changing, return {"merge":[],"patch":[],"archive":[]}.`;
 
 /** Parse the leading `---` YAML front-matter; tolerant of a missing/garbled block. */
-function parseFront(text: string): { name?: string; description?: string; source?: string; version?: number; created?: string } {
+export function parseFront(text: string): { name?: string; description?: string; source?: string; version?: number; created?: string } {
   const match = /^---\n([\s\S]*?)\n---/.exec(text);
   if (!match) return {};
   try {
@@ -89,8 +89,9 @@ function stripFront(text: string): string {
   return (match ? text.slice(match[0].length) : text).trim();
 }
 
-/** Recompose a SKILL.md (agent-authored), bumping version and refreshing `updated`. */
-function composeSkillMd(s: { name: string; description: string; body: string; version: number; created: string }): string {
+/** Compose a SKILL.md (agent-authored), refreshing `updated`. Also used by the
+ *  skill distiller (distill.ts) for brand-new skills (version 1, created now). */
+export function composeSkillMd(s: { name: string; description: string; body: string; version: number; created: string }): string {
   const fm = [
     '---',
     `name: ${JSON.stringify(s.name)}`,

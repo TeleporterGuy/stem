@@ -90,6 +90,22 @@ const EPISODIC_PRESETS: { label: string; bytes: number }[] = [
   { label: 'Unlimited', bytes: 0 }
 ];
 
+// Icon-button feedback: a fast local call finishes before the spin animation shows
+// a single visible frame, which reads as "nothing happened". Hold the spinning
+// state until the animation lands on a whole rotation (cycle length must match
+// link-btn-spin in styles.css), so short jobs show one clean turn and longer jobs
+// stop without a mid-rotation snap.
+const SPIN_CYCLE_MS = 900;
+async function holdFullSpin<T>(work: Promise<T>): Promise<T> {
+  const start = Date.now();
+  try {
+    return await work;
+  } finally {
+    const elapsed = Date.now() - start;
+    await new Promise((r) => setTimeout(r, SPIN_CYCLE_MS - (elapsed % SPIN_CYCLE_MS)));
+  }
+}
+
 interface ModelTabProps {
   models: ModelSummary[];
   modelId: string | null;
@@ -690,8 +706,19 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
   const [showRetrieval, setShowRetrieval] = useState(false);
   const [embStats, setEmbStats] = useState<EmbeddingCacheStats | null>(null);
 
+  const [refreshing, setRefreshing] = useState(false);
+
   function loadContents() {
     window.stem.readMemory().then(setContents);
+  }
+
+  async function refreshContents() {
+    setRefreshing(true);
+    try {
+      setContents(await holdFullSpin(window.stem.readMemory()));
+    } finally {
+      setRefreshing(false);
+    }
   }
   function loadEmbStats() {
     window.stem.getEmbeddingStats().then(setEmbStats);
@@ -759,7 +786,7 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
     setConsolidating(true);
     setConsolidateMsg(null);
     try {
-      const r = await window.stem.consolidateMemory();
+      const r = await holdFullSpin(window.stem.consolidateMemory());
       setContents(r.contents);
       const changed = r.merged + r.corrected + r.dropped;
       setConsolidateMsg(
@@ -942,11 +969,12 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
             </button>
             <button
               className="link-btn icon-only"
-              onClick={loadContents}
+              onClick={refreshContents}
+              disabled={refreshing}
               data-label="Refresh"
               aria-label="Refresh facts"
             >
-              <RefreshCw size={15} />
+              <RefreshCw size={15} className={refreshing ? 'spin' : undefined} />
             </button>
           </span>
         </div>
@@ -1045,6 +1073,7 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
 function SkillsTab({ models }: { models: ModelSummary[] }) {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [tidying, setTidying] = useState(false);
+  const [collecting, setCollecting] = useState(false);
   // null => use the backend default model for the curator.
   const [curatorModel, setCuratorModel] = useState<string | null>(null);
   useEffect(() => {
@@ -1068,9 +1097,20 @@ function SkillsTab({ models }: { models: ModelSummary[] }) {
   async function tidy() {
     setTidying(true);
     try {
-      setSkills(await window.stem.curateSkills());
+      setSkills(await holdFullSpin(window.stem.curateSkills()));
     } finally {
       setTidying(false);
+    }
+  }
+
+  // "Collect now": rerun the skill distiller over the whole chat backlog (not just
+  // a list refresh) — the returned list already reflects anything it wrote.
+  async function collect() {
+    setCollecting(true);
+    try {
+      setSkills(await holdFullSpin(window.stem.distillSkillsNow()));
+    } finally {
+      setCollecting(false);
     }
   }
 
@@ -1079,15 +1119,30 @@ function SkillsTab({ models }: { models: ModelSummary[] }) {
 
   return (
     <div>
-      <div className="grp-head">
+      <div className="grp-head with-actions">
         Skills
-        {hasAgentSkills && (
-          <span className="memory-view-actions">
-            <button className="link-btn" onClick={tidy} disabled={tidying} title="Merge duplicates and archive stale auto-created skills now">
-              <Wand2 size={13} /> {tidying ? 'Tidying…' : 'Tidy up'}
+        <span className="memory-view-actions">
+          {hasAgentSkills && (
+            <button
+              className="link-btn icon-only"
+              onClick={tidy}
+              disabled={tidying}
+              data-label={tidying ? 'Tidying…' : 'Tidy up'}
+              aria-label="Tidy up: merge duplicates and archive stale auto-created skills"
+            >
+              <Wand2 size={15} className={tidying ? 'spin' : undefined} />
             </button>
-          </span>
-        )}
+          )}
+          <button
+            className="link-btn icon-only"
+            onClick={collect}
+            disabled={collecting}
+            data-label={collecting ? 'Collecting…' : 'Collect now'}
+            aria-label="Scan recent chats for new skills now"
+          >
+            <RefreshCw size={15} className={collecting ? 'spin' : undefined} />
+          </button>
+        </span>
       </div>
       {skills.length === 0 ? (
         <p className="muted">No skills yet. Stem saves reusable procedures it works out, or you can drop a SKILL.md folder into the skills directory.</p>
