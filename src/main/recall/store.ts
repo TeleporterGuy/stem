@@ -1102,8 +1102,14 @@ export function setTidyThreshold(n: number): void {
 const FACT_THRESHOLD_KEY = 'recall_fact_threshold';
 const FACT_COSINE_M_KEY = 'recall_cosine_m';
 const FACT_RERANK_K_KEY = 'recall_rerank_k';
-/** At or below this many facts, inject all of them (cheap, no embedding call). */
-export const DEFAULT_FACT_THRESHOLD = 40;
+/**
+ * At or below this many facts, inject all of them (cheap, no embedding call).
+ * Deliberately generous: relevance ranking matches by topic, so it silently drops
+ * answer-relevant-but-off-topic facts (family, vehicle, budget) from requests like
+ * "compare travel insurance". ~200 facts ≈ 5k tokens per turn — acceptable — so we
+ * only switch to ranking when the store outgrows that. Tunable in Memory → Facts.
+ */
+export const DEFAULT_FACT_THRESHOLD = 200;
 /** Embedding-cosine shortlist size handed to the reranker. */
 export const DEFAULT_FACT_COSINE_M = 20;
 /** Facts actually injected after reranking (or cosine top-K when no reranker). */

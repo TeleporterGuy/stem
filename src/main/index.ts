@@ -40,6 +40,7 @@ import {
   isRecallEnabled,
   readMemoryFiles,
   setEpisodicLimit,
+  setFactInjectThreshold,
   setMemoryEnabled,
   setTidyUpThreshold
 } from './workspace/memory';
@@ -993,6 +994,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('memory:setEpisodicLimit', (_e, bytes: number) => setEpisodicLimit(bytes));
   ipcMain.handle('memory:setTidyThreshold', (_e, n: number) => setTidyUpThreshold(n));
+  ipcMain.handle('memory:setFactThreshold', (_e, n: number) => setFactInjectThreshold(n));
   ipcMain.handle('memory:consolidate', async () => {
     // Same hidden one-shot seam distillation uses; `force` bypasses the size floor
     // so a manual run always executes.

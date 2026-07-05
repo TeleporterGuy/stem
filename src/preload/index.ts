@@ -157,6 +157,7 @@ const api: StemApi = {
   getEpisodicStats: () => ipcRenderer.invoke('memory:episodicStats'),
   setEpisodicLimit: (bytes: number) => ipcRenderer.invoke('memory:setEpisodicLimit', bytes),
   setTidyThreshold: (n: number) => ipcRenderer.invoke('memory:setTidyThreshold', n),
+  setFactThreshold: (n: number) => ipcRenderer.invoke('memory:setFactThreshold', n),
 
   listChats: () => ipcRenderer.invoke('chats:list'),
   searchChatsFast: (query: string) => ipcRenderer.invoke('chats:searchFast', query),

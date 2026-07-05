@@ -71,6 +71,16 @@ const TIDY_PRESETS: { label: string; value: number; hint: string }[] = [
   { label: 'Manual', value: 0, hint: 'never automatically' }
 ];
 
+// Inject-all-facts ceiling: at or below this many stored facts every fact rides
+// along on each message; above it, only the most relevant are selected. Default
+// is 200 (see DEFAULT_FACT_THRESHOLD in the recall store).
+const FACT_INJECT_PRESETS: { label: string; value: number }[] = [
+  { label: '40', value: 40 },
+  { label: '200', value: 200 },
+  { label: '500', value: 500 },
+  { label: '1000', value: 1000 }
+];
+
 // Episodic-store size caps. 0 = unlimited. Default is 100 MB (see the recall store).
 const MB = 1024 * 1024;
 const EPISODIC_PRESETS: { label: string; bytes: number }[] = [
@@ -714,6 +724,10 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
     window.stem.setTidyThreshold(n).then(setSettings);
   }
 
+  function selectFactThreshold(n: number) {
+    window.stem.setFactThreshold(n).then(setSettings);
+  }
+
   async function toggle() {
     if (!settings) return;
     setSettings(await window.stem.setMemoryEnabled(!settings.enabled));
@@ -846,11 +860,32 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
           {showRetrieval && (
             <div className="formgroup">
               <p className="muted">
-                With more than ~40 facts, Stem ranks them by relevance to each message instead of injecting
-                them all. The built-in model understands all languages and runs entirely on this Mac; you
-                can point Stem at your own embeddings server instead. While no model is ready, facts are
-                ranked by keywords/recency.
+                With more than {settings.factThreshold} facts, Stem ranks them by relevance to each message
+                instead of injecting them all. The built-in model understands all languages and runs entirely
+                on this Mac; you can point Stem at your own embeddings server instead. While no model is
+                ready, facts are ranked by keywords/recency.
               </p>
+              <div className="set-block">
+                <span className="set-sub">Include all facts up to</span>
+                <div className="seg-ctl">
+                  {FACT_INJECT_PRESETS.map((p) => (
+                    <button
+                      key={p.label}
+                      className={settings.factThreshold === p.value ? 'active' : ''}
+                      onClick={() => selectFactThreshold(p.value)}
+                      title={`Inject every fact while ${p.value} or fewer are stored; rank by relevance above that`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="muted">
+                  Relevance ranking matches by topic, so it can miss facts that matter but aren't topically
+                  related to your message (e.g. your family when asking about travel insurance). Keeping this
+                  above your stored-fact count ({notes.length}) sends everything with every message — roughly
+                  25 facts per 1k tokens.
+                </p>
+              </div>
               <EmbeddingsFields value={retrieval.embeddings} onPatch={patchEmbeddings} />
               <p className="muted">
                 {embStats == null

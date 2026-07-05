@@ -4,11 +4,13 @@ import {
   getAllFacts,
   getEpisodicLimitBytes,
   getEpisodicStats,
+  getFactThreshold,
   getMeta,
   getTidyThreshold,
   resetEpisodic,
   resetFacts,
   setEpisodicLimitBytes,
+  setFactThreshold,
   setMeta,
   setTidyThreshold,
   upsertFact
@@ -36,7 +38,8 @@ export async function getMemorySettings(): Promise<MemorySettings> {
     useMemories: enabled,
     generateMemories: enabled,
     episodicLimitBytes: getEpisodicLimitBytes(),
-    tidyThreshold: getTidyThreshold()
+    tidyThreshold: getTidyThreshold(),
+    factThreshold: getFactThreshold()
   };
 }
 
@@ -49,6 +52,12 @@ export async function setEpisodicLimit(bytes: number): Promise<MemorySettings> {
 /** Set the auto-tidy-up fact threshold (0 = manual only); returns refreshed settings. */
 export async function setTidyUpThreshold(n: number): Promise<MemorySettings> {
   setTidyThreshold(n);
+  return getMemorySettings();
+}
+
+/** Set the inject-all-facts threshold (above it, facts are relevance-ranked per message). */
+export async function setFactInjectThreshold(n: number): Promise<MemorySettings> {
+  setFactThreshold(n);
   return getMemorySettings();
 }
 

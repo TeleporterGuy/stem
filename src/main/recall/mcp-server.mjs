@@ -1,4 +1,5 @@
-// Stem Recall — standalone stdio MCP server exposing `search_past_chats`.
+// Stem Recall — standalone stdio MCP server exposing `search_past_chats` (episodic
+// messages) and `search_facts` (durable Level-1 facts).
 //
 // The pi backend spawns this as an MCP server (registered in mcp.json by
 // pi/mcp-config.ts). It runs under Electron-as-node (ELECTRON_RUN_AS_NODE=1) so it
@@ -207,6 +208,82 @@ async function searchPastChats(query, limit) {
     .slice(0, lim);
 }
 
+// ---- durable-facts search (Level 1) ----
+
+function factsFtsSearch(query, limit) {
+  const match = buildMatchQuery(query);
+  if (!match) return [];
+  const handle = open();
+  return handle
+    .prepare(
+      `SELECT f.id AS id, f.text AS text, bm25(facts_fts) AS score
+       FROM facts_fts
+       JOIN facts f ON f.id = facts_fts.rowid
+       WHERE facts_fts MATCH ?
+       ORDER BY score
+       LIMIT ?`
+    )
+    .all(match, limit)
+    .filter((r) => r.score <= FTS_SCORE_CEILING);
+}
+
+/** Cosine top-N over fact_vectors. [] on any failure (e.g. old DB without the table).
+ *  No min-cosine floor: facts are short and few, so we let RRF sort out weak hits. */
+function factsSemanticSearch(qVec, model, limit) {
+  try {
+    const handle = open();
+    let qMag = 0;
+    for (const v of qVec) qMag += v * v;
+    qMag = Math.sqrt(qMag);
+    if (qMag === 0) return [];
+    const scored = [];
+    const rows = handle
+      .prepare(`SELECT v.fact_id AS id, v.vec AS vec, f.text AS text FROM fact_vectors v JOIN facts f ON f.id = v.fact_id WHERE v.model = ?`)
+      .iterate(model);
+    for (const row of rows) {
+      const vec = bytesToFloat32(row.vec);
+      if (vec.length !== qVec.length) continue;
+      let dot = 0;
+      let mag = 0;
+      for (let i = 0; i < vec.length; i++) {
+        dot += vec[i] * qVec[i];
+        mag += vec[i] * vec[i];
+      }
+      const denom = qMag * Math.sqrt(mag);
+      scored.push({ id: row.id, text: row.text, score: denom === 0 ? 0 : dot / denom });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+/** Hybrid facts search: FTS leg + semantic leg fused by RRF; FTS-only when semantic fails. */
+async function searchFacts(query, limit) {
+  const lim = Math.max(1, Math.min(limit ?? 10, 30));
+  const fts = factsFtsSearch(query, FTS_CANDIDATES);
+  let sem = [];
+  const qe = await embedQueryViaSocket(query);
+  if (qe) sem = factsSemanticSearch(qe.vec, qe.model, SEMANTIC_CANDIDATES);
+  if (sem.length === 0) return fts.slice(0, lim);
+
+  const rrf = new Map();
+  const byId = new Map();
+  for (const list of [fts, sem]) {
+    list.forEach((hit, i) => {
+      rrf.set(hit.id, (rrf.get(hit.id) ?? 0) + 1 / (RRF_K + i + 1));
+      if (!byId.has(hit.id)) byId.set(hit.id, hit);
+    });
+  }
+  return [...byId.values()].sort((a, b) => rrf.get(b.id) - rrf.get(a.id)).slice(0, lim);
+}
+
+function formatFacts(rows) {
+  if (rows.length === 0) return 'No matching stored facts found.';
+  return rows.map((r) => `- ${r.text.replace(/\s+/g, ' ').trim()}`).join('\n');
+}
+
 function formatResults(rows) {
   if (rows.length === 0) return 'No matching past conversations found.';
   return rows
@@ -232,6 +309,20 @@ function reply(id, result) {
 function replyError(id, code, message) {
   send({ jsonrpc: '2.0', id, error: { code, message } });
 }
+
+const FACTS_TOOL = {
+  name: 'search_facts',
+  description:
+    'Search the durable facts Stem has learned about the user (family, vehicles, home, health, preferences, plans). Only the facts most relevant to the current message are pre-injected, so when a request depends on personal context that might not be in view — planning, purchases, recommendations, anything where family members, ages, vehicle, budget or preferences would change the answer — search here first. Matching is keyword plus semantic (multilingual); if a search misses, retry with the key terms in the other language (e.g. add English to a Slovak query).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'What to look for — a topic or attribute, e.g. "family children age", "car vehicle", "rodina deti".' },
+      limit: { type: 'number', description: 'Max facts to return (default 10, max 30).' }
+    },
+    required: ['query']
+  }
+};
 
 const TOOL = {
   name: 'search_past_chats',
@@ -264,17 +355,23 @@ function handle(msg) {
       reply(id, {});
       return;
     case 'tools/list':
-      reply(id, { tools: [TOOL] });
+      reply(id, { tools: [TOOL, FACTS_TOOL] });
       return;
     case 'tools/call': {
-      if (params?.name !== 'search_past_chats') {
-        replyError(id, -32602, `Unknown tool: ${params?.name}`);
+      const name = params?.name;
+      if (name !== 'search_past_chats' && name !== 'search_facts') {
+        replyError(id, -32602, `Unknown tool: ${name}`);
         return;
       }
       void (async () => {
         try {
-          const rows = await searchPastChats(String(params?.arguments?.query ?? ''), params?.arguments?.limit);
-          reply(id, { content: [{ type: 'text', text: formatResults(rows) }] });
+          const query = String(params?.arguments?.query ?? '');
+          const limit = params?.arguments?.limit;
+          const text =
+            name === 'search_facts'
+              ? formatFacts(await searchFacts(query, limit))
+              : formatResults(await searchPastChats(query, limit));
+          reply(id, { content: [{ type: 'text', text }] });
         } catch (e) {
           // Surface as a tool error rather than crashing the server.
           reply(id, { content: [{ type: 'text', text: `Recall search failed: ${e.message}` }], isError: true });

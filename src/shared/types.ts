@@ -648,6 +648,9 @@ export interface MemorySettings {
   episodicLimitBytes: number;
   /** New-fact count that triggers an automatic tidy-up (0 = manual only). */
   tidyThreshold: number;
+  /** At or below this many facts, every fact is injected each turn; above it,
+   *  only the most relevant are selected per message. */
+  factThreshold: number;
 }
 
 /** Metadata for the Level-2 episodic store, shown in the Memory → Recall sub-tab. */
@@ -1175,6 +1178,8 @@ export interface StemApi {
   setEpisodicLimit(bytes: number): Promise<MemorySettings>;
   /** Set the auto-tidy-up fact threshold (0 = manual only); returns refreshed settings. */
   setTidyThreshold(n: number): Promise<MemorySettings>;
+  /** Set the inject-all-facts threshold (above it, facts are relevance-ranked); returns refreshed settings. */
+  setFactThreshold(n: number): Promise<MemorySettings>;
 
   // Chats + folders. Folder mutations return the fresh list (like addMcpServer);
   // chat rename/delete return void and the renderer re-fetches.

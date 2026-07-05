@@ -2,7 +2,7 @@
 // Exercises the REAL store/search/inject/distill/consolidate modules against the
 // throwaway DB from tests/setup-unit.ts. Tests are stateful and ORDER-DEPENDENT
 // (they share one DB, mirroring the original probe), so keep them sequential.
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as store from '../../src/main/recall/store';
 import * as search from '../../src/main/recall/search';
 import * as inject from '../../src/main/recall/inject';
@@ -181,6 +181,11 @@ describe('Stem Recall', () => {
 // stays offline. Shares the same DB as above; closeForTest runs in the file-level
 // afterAll. resetFacts() at the start of each test makes the fact set deterministic.
 describe('Stem Recall — fact relevance ranking', () => {
+  // These cases seed ~46 facts to exceed the inject-all ceiling; pin it at the old
+  // 40 so the suite stays independent of DEFAULT_FACT_THRESHOLD.
+  beforeAll(() => store.setFactThreshold(40));
+  afterAll(() => store.setFactThreshold(store.DEFAULT_FACT_THRESHOLD));
+
   // Keyword-encoding fake embedder: a text matching `key` maps to [1,0], else [0,1],
   // so the query and any fact sharing the keyword have cosine 1 and everything else 0.
   function keywordEmbeddings(key: RegExp) {
@@ -357,6 +362,24 @@ describe('Stem Recall — fact relevance ranking', () => {
     expect(ctx).toMatch(/reranking stage/);
   });
 
+  it('subset tiers flag the facts as partial and point at search_facts; tier "all" does not', async () => {
+    store.resetFacts();
+    retrieval.setRetrievalClients({ embeddings: null, rerank: null });
+    store.upsertFact('The user lives in Bratislava', 'distilled');
+
+    // Below the ceiling every fact is present — no gap to warn about.
+    const all = (await inject.buildRecallContext('where do I live', {})) ?? '';
+    expect(all).not.toMatch(/search_facts/);
+    expect(all).not.toMatch(/relevance-selected subset/);
+
+    // Above it the injected set is partial: say so and point at the facts tool,
+    // so off-topic-but-relevant context (family, vehicle) can still be found.
+    for (let i = 0; i < 45; i++) store.upsertFact(`The user has misc preference ${i}`, 'distilled');
+    const subset = (await inject.buildRecallContext('tell me about Bratislava', {})) ?? '';
+    expect(subset).toMatch(/relevance-selected subset/);
+    expect(subset).toMatch(/search_facts/);
+  });
+
   it('recencyWeight decays monotonically from 1 to ~0', () => {
     expect(search.recencyWeight(0)).toBeCloseTo(1, 10);
     expect(search.recencyWeight(30)).toBeLessThan(search.recencyWeight(0));
@@ -430,6 +453,9 @@ describe('Stem Recall — fact relevance ranking', () => {
 // produced it, and the per-thread store round-trips the injected ids (dropping any
 // since deleted). Shares the same DB; resetFacts() makes each case deterministic.
 describe('Stem Recall — active facts', () => {
+  beforeAll(() => store.setFactThreshold(40)); // ~46-fact seeds must exceed the ceiling
+  afterAll(() => store.setFactThreshold(store.DEFAULT_FACT_THRESHOLD));
+
   function keywordEmbeddings(key: RegExp) {
     return {
       available: async () => true,
