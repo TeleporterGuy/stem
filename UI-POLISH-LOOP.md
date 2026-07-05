@@ -45,9 +45,15 @@ iteration.
 - The JS-expression argument is how you navigate before the shot (e.g. click a
   Settings tab). For interactive flows (press states, hover reveals), drive
   the app over CDP/agent-browser instead of one-shot screenshots.
-- To avoid dirtying the real profile, launch with `STEM_FRESH=1` or
-  `STEM_PROFILE=uiloop` (see `src/main/index.ts` ~line 145). A fresh profile
-  shows the onboarding wizard — that's also a surface worth checking.
+- **Run against the real, live profile** (plain `npm run dev`, no `STEM_FRESH`
+  / `STEM_PROFILE`). The whole point is to see the UI as a real user sees it —
+  populated with real chats, facts, skills, tasks, folders. An empty fresh
+  profile hides exactly the truncation/overflow/orphaned-row problems this loop
+  hunts for, so do NOT use a throwaway profile for the polish pass. Only launch
+  a fresh profile (`STEM_FRESH=1`) if you specifically need to check the
+  onboarding wizard as a surface.
+- These are read-only screenshot passes; don't send messages, delete data, or
+  otherwise mutate the real profile while polishing.
 - Save screenshots under `/tmp/uiloop/` (e.g. `/tmp/uiloop/<issue>-before-dark.png`),
   NOT in the repo.
 
@@ -73,10 +79,17 @@ predates your change.
 
 ## Backlog
 
-- [ ] Text truncated with `…` instead of being fully visible — find the
-      places where labels/values ellipsize even though space exists or
-      wrapping would work (chat list? settings rows? fact/skill names?).
-      Fix the worst offender; file the rest as separate items.
+- [x] Text truncated with `…` instead of being fully visible — worst offender
+      was the CHATS sidebar: every chat/folder/search-hit title ellipsizes with
+      NO `title` attribute, so the full title was completely unreachable (can't
+      even hover to read it). Added `title={…}` to chat titles, folder names,
+      and search-hit titles in `ChatList.tsx` so the full text is reachable on
+      hover. (Fixed 2026-07-06.)
+      Remaining truncation offenders to file as separate items on a later hunt:
+      Settings model-picker labels (`.mp-trigger-label` / `.mp-opt-label`),
+      attachment names (`.attachment-name`), activity-row labels
+      (`.activity-row-label`), scheduled-run titles (`.sched-run-title`) — check
+      each for a reachable full text before fixing.
 - [ ] `+` / `-` buttons rendered on the same line, cramped together —
       separate/space them properly.
 - [ ] Test row sits alone on its own line and looks orphaned; its result

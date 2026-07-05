@@ -304,7 +304,7 @@ export function ChatList(props: ChatListProps) {
             {isEditing ? (
               editInput(editing.value, (v) => setEditing({ ...editing, value: v }), commitEdit)
             ) : (
-              <strong>{folder.name}</strong>
+              <strong title={folder.name}>{folder.name}</strong>
             )}
           </span>
           <button
@@ -361,7 +361,7 @@ export function ChatList(props: ChatListProps) {
           {isEditing ? (
             editInput(editing.value, (v) => setEditing({ ...editing, value: v }), commitEdit)
           ) : (
-            <strong>{chat.title}</strong>
+            <strong title={chat.title}>{chat.title}</strong>
           )}
         </span>
         {!isEditing && props.scheduledThreadIds?.has(chat.threadId) && (
@@ -404,7 +404,7 @@ export function ChatList(props: ChatListProps) {
           <MessageSquare size={13} />
         </span>
         <span className="row-main">
-          <strong>{hit.title}</strong>
+          <strong title={hit.title}>{hit.title}</strong>
           {hit.snippet && <span className="chat-snippet">{highlightSnippet(hit.snippet)}</span>}
         </span>
       </div>
