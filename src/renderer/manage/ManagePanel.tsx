@@ -1159,7 +1159,7 @@ function SkillsTab({ models }: { models: ModelSummary[] }) {
                     </span>
                   )}
                 </strong>
-                <em title={s.description}>{s.description}</em>
+                <em>{s.description}</em>
               </span>
               <button
                 className={`switch${s.enabled ? ' on' : ''}`}
@@ -1251,7 +1251,7 @@ function FoldersTab() {
                     {f.label}
                     {f.missing && <span className="muted cfolder-missing"> · missing</span>}
                   </strong>
-                  <em title={f.path}>{f.path}</em>
+                  <em>{f.path}</em>
                 </span>
                 <button className="icon-action sm" onClick={() => window.stem.revealConnectedFolder(f.id)} title="Reveal in Finder" aria-label="Reveal in Finder">
                   <FolderOpen size={14} />
@@ -1308,6 +1308,15 @@ function formatWhen(iso: string | null | undefined): string {
 
 function TasksTab({ onOpenChat }: { onOpenChat: (threadId: string) => void }) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+  // Task prompts can be long; show a clamped preview and let the row expand in place.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   useEffect(() => {
     window.stem.listTasks().then(setTasks);
@@ -1334,7 +1343,13 @@ function TasksTab({ onOpenChat }: { onOpenChat: (threadId: string) => void }) {
             <div key={t.id} className={`task-item${t.enabled ? '' : ' paused'}`}>
               <div className="task-head">
                 <span className="row-main">
-                  <strong title={t.prompt}>{t.title}</strong>
+                  <strong
+                    className={`task-title${expanded.has(t.id) ? ' expanded' : ''}`}
+                    onClick={() => toggleExpanded(t.id)}
+                    title={expanded.has(t.id) ? 'Collapse' : 'Show the full task'}
+                  >
+                    {t.prompt}
+                  </strong>
                   <em>{describeSchedule(t)}</em>
                 </span>
                 <button

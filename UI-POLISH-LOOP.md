@@ -79,6 +79,20 @@ predates your change.
 
 ## Hunting log
 
+- **2026-07-06 — corrected the truncation fixes (user feedback).** Hover
+  `title` tooltips are NOT an acceptable way to read hidden text — the earlier
+  skill/folder/model/task "tooltip" fixes didn't actually let the user see the
+  content. Proper fix: switched the shared `.row-main em` detail line from
+  one-line ellipsis to full wrapping (`overflow-wrap: anywhere`), so skill
+  descriptions, connected-folder paths, and MCP-server commands now show in
+  full. Removed the now-redundant `title=` attrs on skills/folders. For
+  scheduled tasks (whose prompt can be a long paragraph) the card now renders
+  the full `t.prompt` clamped to a 3-line preview via `.task-title` and
+  expands in place on click (`expanded` state) — compact yet fully viewable;
+  also top-aligned the task action buttons (`.task-head { align-items:
+  flex-start }`). The dense chat sidebar is unaffected (its titles use
+  `.row-main strong`, not `em`). Verified all four surfaces light+dark.
+
 - **2026-07-06 — clean sweep, loop stopped.** Full hunting pass over all
   live-data surfaces found no new genuine defect: Chats (list + message view +
   `Used N tool` expander), quick chat, Settings (model/providers/files/input),
