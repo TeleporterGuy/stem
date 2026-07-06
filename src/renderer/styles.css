@@ -1193,11 +1193,12 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .retrieval-test { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); }
 .retrieval-test-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  flex: none; padding: 5px; background: none;
+  flex: none; gap: var(--sp-2); padding: 5px 10px; background: none;
   border: 0.5px solid var(--line); border-radius: var(--radius);
-  color: var(--muted); cursor: pointer;
+  color: var(--muted); cursor: pointer; font-size: var(--fs-11);
   transition: color var(--motion-fast) ease, border-color var(--motion-fast) ease;
 }
+.retrieval-test-btn svg { flex: none; }
 .retrieval-test-btn:hover:not(:disabled) { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
 .retrieval-test-btn:disabled { opacity: 0.5; cursor: default; }
 .retrieval-test-status { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-11); color: var(--muted); }

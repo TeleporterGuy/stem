@@ -90,8 +90,22 @@ predates your change.
       attachment names (`.attachment-name`), activity-row labels
       (`.activity-row-label`), scheduled-run titles (`.sched-run-title`) — check
       each for a reachable full text before fixing.
-- [ ] `+` / `-` buttons rendered on the same line, cramped together —
-      separate/space them properly.
-- [ ] Test row sits alone on its own line and looks orphaned; its result
+- [x] `+` / `-` buttons rendered on the same line, cramped together —
+      separate/space them properly. NON-REPRO (2026-07-06): these are the
+      `.gutter` add/remove buttons under the AI Providers and MCP Servers lists.
+      On inspection they're a correctly-formed macOS-native joined segmented
+      control (divider between them, proper padding, rounded corners, renders
+      cleanly light+dark) — the standard System-Settings source-list gutter
+      idiom, not a defect. Joining them is intentional; separating them would
+      break the pattern. No change made.
+- [x] Test row sits alone on its own line and looks orphaned; its result
       ("test is good") only appears after pressing it. Show the state
       inline/at rest and integrate the row visually with its context.
+      FIXED (2026-07-06): the `.retrieval-test-btn` (Memory → Facts → Relevance
+      ranking → Embeddings/Reranker, and the provider connection test) was a
+      bare unlabeled plug icon sitting alone — unreadable at rest. Added a
+      visible "Test connection" text label to all three buttons (which becomes
+      "Testing…" in progress, folding away the old separate status span), and
+      widened `.retrieval-test-btn` padding/gap + `font-size` in styles.css. The
+      button now reads as a labeled control at rest; the ✓/✗ result still shows
+      inline beside it after pressing.

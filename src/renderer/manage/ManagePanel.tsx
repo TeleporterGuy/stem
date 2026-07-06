@@ -495,8 +495,8 @@ function EmbeddingsFields({
             aria-label="Test connection"
           >
             <Plug size={14} />
+            <span>{testing ? 'Testing…' : 'Test connection'}</span>
           </button>
-          {testing && <span className="retrieval-test-status">Testing…</span>}
           {!testing && test && (
             <span className={`retrieval-test-status ${test.ok ? 'ok' : 'err'}`} title={test.detail}>
               {test.ok ? <Check size={12} /> : <X size={12} />}
@@ -627,8 +627,8 @@ function RerankerFields({
             aria-label="Test reranker"
           >
             <Plug size={14} />
+            <span>{testing ? 'Testing…' : 'Test connection'}</span>
           </button>
-          {testing && <span className="retrieval-test-status">Testing…</span>}
           {!testing && test && (
             <span className={`retrieval-test-status ${test.ok ? 'ok' : 'err'}`} title={test.detail}>
               {test.ok ? <Check size={12} /> : <X size={12} />}
@@ -2003,8 +2003,8 @@ function LocalServerAddForm({
           aria-label={`Test ${providerName(server)} connection`}
         >
           <Plug size={14} />
+          <span>{testing ? 'Testing…' : 'Test connection'}</span>
         </button>
-        {testing && <span className="retrieval-test-status">Testing…</span>}
         {!testing && testLabel && (
           <span className={`retrieval-test-status ${test!.ok ? 'ok' : 'err'}`} title={testLabel}>
             {test!.ok ? <Check size={12} /> : <X size={12} />}
