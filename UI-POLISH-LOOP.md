@@ -77,6 +77,20 @@ unchecked items AND a full hunting pass over all surfaces found nothing new,
 OR the same issue failed twice, OR typecheck/lint is broken in a way that
 predates your change.
 
+## Hunting log
+
+- **2026-07-06 — clean sweep, loop stopped.** Full hunting pass over all
+  live-data surfaces found no new genuine defect: Chats (list + message view +
+  `Used N tool` expander), quick chat, Settings (model/providers/files/input),
+  Connected Folders (paths already carry `title` tooltips), Tasks, MCP &
+  Skills, Memory → Facts (+ stored-memory list, header icons have
+  `aria-label`+`data-label`) and Memory → Recall. Backlog fully resolved +
+  nothing new ⇒ stop condition met. NOT swept: the first-run onboarding wizard
+  — it only appears on a fresh profile (no live data) and launching one would
+  disrupt the live instance, which is out of scope for the user's "run on the
+  live app with live data" directive. Resume the loop later to cover onboarding
+  on a `STEM_FRESH=1` profile if desired.
+
 ## Backlog
 
 - [x] Text truncated with `…` instead of being fully visible — worst offender
