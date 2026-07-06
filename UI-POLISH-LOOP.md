@@ -109,3 +109,15 @@ predates your change.
       widened `.retrieval-test-btn` padding/gap + `font-size` in styles.css. The
       button now reads as a labeled control at rest; the ✓/✗ result still shows
       inline beside it after pressing.
+- [x] Tasks tab: the schedule meta line truncated a datetime mid-value
+      (`once · Jul 15, 09:0…`) because `.task-head .row-main em` inherited
+      `white-space: nowrap; text-overflow: ellipsis` and the 4 action buttons
+      crowded the row. FIXED (2026-07-06): scoped `.task-head .row-main em` to
+      `white-space: normal; overflow: visible; text-overflow: clip` so the
+      short schedule string wraps and shows in full instead of clipping. Found
+      during the first hunting pass. Verified light+dark.
+- [ ] Tasks tab: the task TITLE (`.task-head .row-main strong`) clamps to a
+      few lines and ellipsizes (`…Golden Gate be…`, `…ABRP Premium subsc…`)
+      with NO `title` attribute, so the full title is unreachable — same class
+      of defect as the chat-list titles already fixed. Add `title={t.title}`
+      to the task-title `<strong>` in ManagePanel.tsx.

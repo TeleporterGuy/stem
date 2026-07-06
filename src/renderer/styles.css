@@ -1765,7 +1765,7 @@ body.hud-body { background: transparent; }
 .task-item + .task-item { border-top: 0.5px solid var(--hair); }
 .task-item.paused { opacity: 0.6; }
 .task-head { display: flex; align-items: center; gap: var(--sp-3); }
-.task-head .row-main em { font-family: var(--font-mono, ui-monospace, monospace); }
+.task-head .row-main em { font-family: var(--font-mono, ui-monospace, monospace); white-space: normal; overflow: visible; text-overflow: clip; }
 .task-meta { font-size: var(--fs-11); padding-left: 2px; }
 .task-running { color: var(--accent); }
 
