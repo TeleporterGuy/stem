@@ -132,3 +132,12 @@ predates your change.
       (2026-07-06) by adding `title={s.description}` to the `<em>` in the
       SkillsTab list so the full description is reachable on hover. Additive,
       no layout change. Found during a hunting pass; verified light+dark.
+- [x] Model picker dropdown: long model names truncate in the option list
+      (`.mp-opt-label`, e.g. `text-embedding-multilingual-e5-large-in…`,
+      `…snowflake-arctic-embe…`) with NO `title`, so the full model id was
+      unreachable; the trigger label (`.mp-trigger-label`) has the same
+      exposure for a long selected model. FIXED (2026-07-06) by adding
+      `title={row.label}` to `.mp-opt-label` and a combined
+      `title={label · provider}` to `.mp-trigger-label` in ModelPicker.tsx.
+      Additive, no layout change. Found during a hunting pass; verified in the
+      open dropdown.

@@ -129,7 +129,7 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
         aria-expanded={open}
         onClick={() => (open ? setOpen(false) : openMenu())}
       >
-        <span className="mp-trigger-label">
+        <span className="mp-trigger-label" title={triggerProvider ? `${triggerLabel} · ${triggerProvider}` : triggerLabel}>
           {triggerLabel}
           {triggerProvider && <span className="mp-trigger-provider"> · {triggerProvider}</span>}
         </span>
@@ -169,7 +169,7 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
                     onMouseEnter={() => setActive(i)}
                     onClick={() => commit(row.id)}
                   >
-                    <span className="mp-opt-label">{row.label}</span>
+                    <span className="mp-opt-label" title={row.label}>{row.label}</span>
                     {isSel && <Check size={14} className="mp-opt-check" />}
                   </button>
                 </div>
