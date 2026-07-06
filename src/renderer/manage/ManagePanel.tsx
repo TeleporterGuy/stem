@@ -1159,7 +1159,7 @@ function SkillsTab({ models }: { models: ModelSummary[] }) {
                     </span>
                   )}
                 </strong>
-                <em>{s.description}</em>
+                <em title={s.description}>{s.description}</em>
               </span>
               <button
                 className={`switch${s.enabled ? ' on' : ''}`}

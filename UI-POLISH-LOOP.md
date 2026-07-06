@@ -126,3 +126,9 @@ predates your change.
       reveals the FULL task prompt (the instruction it re-runs), which is the
       genuinely-unreachable text. Uses the existing `prompt` field, no
       structural change. Verified light+dark, no layout shift.
+- [x] Skills tab (MCP & Skills → Skills): every skill's description
+      (`.group-row .row-main em`) truncates to one ellipsized line and had NO
+      `title` attribute — the full description was unreachable. FIXED
+      (2026-07-06) by adding `title={s.description}` to the `<em>` in the
+      SkillsTab list so the full description is reachable on hover. Additive,
+      no layout change. Found during a hunting pass; verified light+dark.
