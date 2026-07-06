@@ -116,8 +116,13 @@ predates your change.
       `white-space: normal; overflow: visible; text-overflow: clip` so the
       short schedule string wraps and shows in full instead of clipping. Found
       during the first hunting pass. Verified light+dark.
-- [ ] Tasks tab: the task TITLE (`.task-head .row-main strong`) clamps to a
-      few lines and ellipsizes (`…Golden Gate be…`, `…ABRP Premium subsc…`)
-      with NO `title` attribute, so the full title is unreachable — same class
-      of defect as the chat-list titles already fixed. Add `title={t.title}`
-      to the task-title `<strong>` in ManagePanel.tsx.
+- [x] Tasks tab: the task TITLE (`.task-head .row-main strong`) shows an
+      ellipsis (`…Golden Gate be…`) that is NOT CSS truncation — on inspection
+      the `…` is part of the STORED title string itself (`ScheduledTask.title`
+      is a short label deliberately derived+truncated from the prompt; the
+      strong wraps fully, no clamp). So `title={t.title}` would be useless
+      (same truncated text). FIXED (2026-07-06) instead by adding
+      `title={t.prompt}` to the `<strong>` — hovering the shortened label now
+      reveals the FULL task prompt (the instruction it re-runs), which is the
+      genuinely-unreachable text. Uses the existing `prompt` field, no
+      structural change. Verified light+dark, no layout shift.

@@ -1334,7 +1334,7 @@ function TasksTab({ onOpenChat }: { onOpenChat: (threadId: string) => void }) {
             <div key={t.id} className={`task-item${t.enabled ? '' : ' paused'}`}>
               <div className="task-head">
                 <span className="row-main">
-                  <strong>{t.title}</strong>
+                  <strong title={t.prompt}>{t.title}</strong>
                   <em>{describeSchedule(t)}</em>
                 </span>
                 <button
