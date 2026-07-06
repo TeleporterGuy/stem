@@ -141,3 +141,12 @@ predates your change.
       `title={label · provider}` to `.mp-trigger-label` in ModelPicker.tsx.
       Additive, no layout change. Found during a hunting pass; verified in the
       open dropdown.
+- [x] Composer context meter overflowed off-screen at narrow widths — the
+      `.composer-controls` flex row had no `flex-wrap`, so when the reasoning /
+      speed / MDX toggle segments didn't fit (~900px window with the sidebar
+      open), the `.context-meter` (pushed right by `margin-left:auto`) spilled
+      past the composer's right edge and got clipped by the sidebar
+      (`17k / 27…`). FIXED (2026-07-06) by adding `flex-wrap: wrap` to
+      `.composer-controls` so the meter drops to a second line and stays fully
+      visible; no effect at default width (everything fits on one line). First
+      NON-truncation find. Verified narrow(900) + default(1200), light+dark.

@@ -526,7 +526,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .icon-btn.stop { background: var(--danger); }
 
 /* effort + speed controls above the field */
-.composer-controls { display: flex; gap: var(--sp-4); margin: 0 2px 8px; }
+.composer-controls { display: flex; flex-wrap: wrap; gap: var(--sp-4); margin: 0 2px 8px; }
 
 /* Context-fill meter: pushed to the right edge of the controls row. Mini bar + compact
    token text; the fill color shifts neutral → amber → red via .warn/.danger as it nears
