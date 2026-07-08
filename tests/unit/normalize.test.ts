@@ -61,3 +61,36 @@ describe('normalize tool activity', () => {
     expect(item).toMatchObject({ type: 'fileChange', kind: 'tool', detail: 'z.ts' });
   });
 });
+
+describe('normalize turn outcome', () => {
+  const assistantEnd = (msg: Record<string, unknown>) =>
+    ev({ type: 'message_end', message: { role: 'assistant', ...msg } });
+
+  it('fails the turn when the last assistant message errored', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(assistantEnd({ content: [], stopReason: 'error', errorMessage: 'fetch failed' }), ctx);
+    const end = normalizePiEvent(ev({ type: 'agent_end' }), ctx);
+    expect(end.events.at(-1)).toMatchObject({
+      method: 'turn/failed',
+      params: { error: 'fetch failed' }
+    });
+  });
+
+  it('completes the turn when pi recovers from an errored message within the run', () => {
+    // pi retries transient failures (fetch failed / context overflow + compaction)
+    // inside one agent run — the turn's outcome is its LAST message, not its worst.
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(assistantEnd({ content: [], stopReason: 'error', errorMessage: 'fetch failed' }), ctx);
+    normalizePiEvent(assistantEnd({ content: [{ type: 'text', text: 'answer' }], stopReason: 'stop' }), ctx);
+    const end = normalizePiEvent(ev({ type: 'agent_end' }), ctx);
+    expect(end.events.at(-1)).toMatchObject({ method: 'turn/completed' });
+  });
+
+  it('keeps an abort latched even if a later message ends cleanly', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(assistantEnd({ content: [], stopReason: 'aborted' }), ctx);
+    normalizePiEvent(assistantEnd({ content: [{ type: 'text', text: 'late' }], stopReason: 'stop' }), ctx);
+    const end = normalizePiEvent(ev({ type: 'agent_end' }), ctx);
+    expect(end.events.at(-1)).toMatchObject({ method: 'turn/aborted' });
+  });
+});

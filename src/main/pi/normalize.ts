@@ -318,6 +318,13 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
         ctx.errorMessage = msg.errorMessage;
       } else if (msg.stopReason === 'aborted') {
         ctx.aborted = true;
+      } else {
+        // pi retries transient provider failures (fetch failed, context overflow
+        // via auto-compaction) within the same agent run. A later assistant
+        // message that ends cleanly means the run recovered — clear the latched
+        // error so agent_end reports the turn's final outcome, not its worst one.
+        ctx.errored = false;
+        ctx.errorMessage = undefined;
       }
       if (text) ctx.assistantText = text;
       // Emit the authoritative completed message (renderer replaces streamed deltas).
