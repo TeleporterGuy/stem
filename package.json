@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:real": "STEM_E2E_REAL=1 playwright test",
-    "eval:retrieval": "node scripts/recall-eval.mjs"
+    "eval:retrieval": "node scripts/recall-eval.mjs",
+    "eval:memory": "node scripts/memory-eval.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.3",

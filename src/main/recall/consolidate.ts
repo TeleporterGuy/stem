@@ -33,9 +33,15 @@ import type { LlmClient } from './llm';
 
 // Below this many facts there's nothing worth consolidating.
 const MIN_FACTS = 6;
-// Reject the whole batch if it would delete more than this fraction of the set —
-// a cheap guard against the model nuking memory.
+// Reject a chunk's ops if its DROPS alone would retire more than this fraction —
+// a cheap guard against the model nuking memory. Merge losers are deliberately
+// exempt: a merge is content-preserving (the survivor's text subsumes the losers)
+// and, since v2, reversible (losers are superseded, not deleted) — and a store full
+// of migration-era duplicates legitimately needs >40% of a chunk merged away.
 const MAX_DROP_FRACTION = 0.4;
+// A duplicate cluster is a handful of rewordings; a merge swallowing more ids than
+// this is a model gone wild, so the group is rejected (left for a later pass).
+const MAX_MERGE_GROUP = 8;
 
 const INSTRUCTIONS = `You are cleaning up a long-term memory of DURABLE facts about a single user. Each fact is listed as "[id] text". Some are reworded duplicates of each other; some have been superseded or contradicted by a later, more accurate fact. Your job is to propose a minimal set of edits that makes the memory accurate and non-redundant.
 
@@ -51,6 +57,7 @@ Rules:
 - merge: group facts that express the SAME underlying fact (rewordings, or one subsuming another). Give the cleanest single statement as "text". Do not merge facts that are merely related but distinct.
 - correct: only when a fact is factually wrong given a later fact — keep the corrected truth.
 - drop: only a fact another fact already fully covers or directly contradicts, OR a fact about a one-off dated event (a trip, reservation, appointment, deadline) whose date is clearly in the past. A fact without a date is never stale — keep it.
+- A fact annotated "(injected N×, never used)" has repeatedly been offered to the assistant without ever mattering to a reply. Treat that as SUPPORTING evidence when deciding whether it is redundant or stale — but usage alone is NEVER a reason to drop a fact that is unique and plausibly true.
 - NEVER drop, merge, or alter a fact marked PROTECTED — the user explicitly asked to remember it.
 - Keep wording as short third-person statements ("The user ...").
 - If nothing needs changing, return {"merge":[],"correct":[],"drop":[]}.`;
@@ -107,34 +114,39 @@ export function parseConsolidation(output: string): ConsolidationOps {
 }
 
 /**
- * Strip any op touching a PROTECTED id, then reject the entire batch (return empty
- * ops) if it would still delete more than MAX_DROP_FRACTION of the set. `total` is
- * the current fact count; `protectedIds` the set the model must never touch.
+ * Strip any op touching a PROTECTED id, reject oversized merge groups, then reject
+ * the entire batch (return empty ops) if its drops alone would retire more than
+ * MAX_DROP_FRACTION of the set. `total` is the current fact count; `protectedIds`
+ * the set the model must never touch.
  */
 export function clampOps(ops: ConsolidationOps, protectedIds: Set<number>, total: number): ConsolidationOps {
   const merge = ops.merge
     .map((m) => ({ ...m, ids: m.ids.filter((id) => !protectedIds.has(id)) }))
-    .filter((m) => m.ids.length >= 2);
+    .filter((m) => m.ids.length >= 2 && m.ids.length <= MAX_MERGE_GROUP);
   const correct = ops.correct.filter((c) => !protectedIds.has(c.id));
   const drop = ops.drop.filter((id) => !protectedIds.has(id));
 
-  // Worst-case removals: every explicit drop + every merge's losers.
-  const mergeLosers = merge.reduce((n, m) => n + (m.ids.length - 1), 0);
-  const wouldRemove = drop.length + mergeLosers;
-  if (total > 0 && wouldRemove / total > MAX_DROP_FRACTION) return { ...EMPTY_OPS };
+  if (total > 0 && drop.length / total > MAX_DROP_FRACTION) return { ...EMPTY_OPS };
 
   return { merge, correct, drop };
 }
 
-function buildPrompt(facts: Fact[]): string {
+/** A fact must fail this often before its disuse is worth telling the model. */
+const NEVER_USED_MIN_INJECTIONS = 5;
+
+export function buildPrompt(facts: Fact[]): string {
   const lines = facts
-    .map((f) => `[${f.id}] ${f.text}${isProtected(f) ? '  (PROTECTED)' : ''}`)
+    .map((f) => {
+      const neverUsed = f.timesInjected >= NEVER_USED_MIN_INJECTIONS && f.timesUsed === 0;
+      const marks = `${isProtected(f) ? '  (PROTECTED)' : ''}${neverUsed ? `  (injected ${f.timesInjected}×, never used)` : ''}`;
+      return `[${f.id}] ${f.text}${marks}`;
+    })
     .join('\n');
   const today = new Date().toISOString().slice(0, 10);
   return `${INSTRUCTIONS}\n\nToday's date: ${today}.\n\nFacts:\n${lines}`;
 }
 
-const ZERO: ConsolidationResult = { merged: 0, corrected: 0, dropped: 0 };
+const ZERO: ConsolidationResult = { merged: 0, corrected: 0, dropped: 0, failedChunks: 0 };
 
 /** Even-sized chunk target so a large set splits into balanced chunks (no tiny tail). */
 function chunkTarget(total: number, max: number): number {
@@ -209,7 +221,7 @@ export async function consolidateFacts(
   opts: { force?: boolean } = {}
 ): Promise<ConsolidationResult> {
   if (!isRecallEnabled()) return ZERO;
-  const facts = getAllFacts();
+  const facts = getAllFacts().filter((f) => f.status === 'active');
   // The automatic pass skips small sets (nothing worth a model call); a manual
   // trigger (`force`) still needs at least two facts to merge anything.
   if (facts.length < (opts.force ? 2 : MIN_FACTS)) return ZERO;
@@ -219,13 +231,13 @@ export async function consolidateFacts(
   const protectedIds = new Set(facts.filter(isProtected).map((f) => f.id));
 
   const combined: ConsolidationOps = { merge: [], correct: [], drop: [] };
-  let anyFailed = false;
+  let failedChunks = 0;
   for (const chunk of chunks) {
     let chunkOps: ConsolidationOps;
     try {
       chunkOps = parseConsolidation(await llm.complete(buildPrompt(chunk)));
     } catch {
-      anyFailed = true; // leave this chunk for a later cycle
+      failedChunks += 1; // leave this chunk for a later cycle
       continue;
     }
     // Clamp per chunk against its own size: bounds the model's blast radius to
@@ -240,6 +252,6 @@ export async function consolidateFacts(
   const result = applyConsolidation(combined);
   // Only clear the pending counter when every chunk ran — a failed chunk (model
   // error) should be retried next cycle rather than marked done.
-  if (!anyFailed) setMeta(PENDING_KEY, '0');
-  return result;
+  if (failedChunks === 0) setMeta(PENDING_KEY, '0');
+  return { ...result, failedChunks };
 }

@@ -1,17 +1,29 @@
 import {
   getDupCosine,
   getFacts,
+  getFactDetails,
+  getFactsByIds,
   getFactVectors,
-  getMessagesForDistill,
+  getMessagesForDistillFrom,
   getMeta,
   getTidyThreshold,
+  getUngradedTurnFacts,
+  markTurnFactsGraded,
+  recordFactUsage,
   setMeta,
+  supersedeFact,
+  createFactConflict,
   upsertFact,
-  upsertFactVector
+  upsertFactVector,
+  type StoredMessage,
+  type TurnInjectedFacts
 } from './store';
+import { lexTokens } from './search-core';
 import { getEmbeddingsClient } from './retrieval';
 import { cosineSim } from './vector';
 import { isRecallEnabled } from '../workspace/memory';
+import { contradicts } from './reconcile';
+import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
 
 // Level 1: the reflection pass. Periodically reads conversation that's new since
@@ -20,8 +32,17 @@ import type { LlmClient } from './llm';
 // only the small "profile" layer.
 
 const WATERMARK = 'distill_watermark';
+export const CURSOR_KEY = 'distill_cursor_v2';
 const MAX_MESSAGES_PER_RUN = 200;
-const MAX_TRANSCRIPT_CHARS = 16000;
+export const MAX_TRANSCRIPT_CHARS = 16000;
+export const DISTILL_OVERLAP_CHARS = 256;
+
+export interface DistillCursor { messageId: number; offset: number }
+export interface DistillBatch {
+  transcript: string;
+  messages: StoredMessage[];
+  nextCursor: DistillCursor;
+}
 
 // Counts durable facts written since the last consolidation pass — the dirty
 // signal that gates consolidation (see consolidate.ts). Distillation is the only
@@ -39,23 +60,191 @@ export function shouldConsolidate(): boolean {
   return (Number.parseInt(getMeta(PENDING_KEY) ?? '0', 10) || 0) >= threshold;
 }
 
-const INSTRUCTIONS = `You maintain a long-term memory of DURABLE facts about a user, from a chat transcript. This is a PRIVATE personal assistant used by one person on their own device — knowing a lot about the user is the whole point, so capture genuinely personal details that make future help better.
+export const DISTILL_INSTRUCTIONS = `You maintain a long-term memory of DURABLE facts about a user from a chat transcript. Each transcript entry includes a stable message id.
 
 Extract STABLE, reusable facts ABOUT THE USER: their identity, contact details, personal circumstances (address, phone, important dates, health conditions, family/relationships, work), preferences, ongoing situations, projects, constraints, upcoming plans, and standing instructions. Phrase each as a short third-person statement ("The user ...").
 
 Rules:
+- Write every fact in ENGLISH, regardless of the transcript's language. Keep proper names, place names, and quoted identifiers as-is.
 - Only state facts the USER revealed about themselves — directly, or via information retrieved on their behalf (e.g. their own emails). Such personal details ARE wanted; do not omit, redact, or soften them.
 - CRITICAL: Never turn the ASSISTANT's own words into a user fact. The assistant's disclaimers, caution, hedging, redactions, or self-imposed behavior ("I left out identifiers", "I ignored spam") are NOT user preferences. Only record a preference or instruction if the USER explicitly stated it.
 - Include only things likely still true in future conversations. EXCLUDE details of already-completed one-off tasks, ephemeral context, and anything already obvious.
 - DO capture upcoming dated plans and commitments — trips, holidays, reservations, appointments, deadlines — WITH their key specifics: dates, destination and departure point, who is going, booking references. These stay relevant until the date has passed. Resolve relative dates ("tomorrow", "next Friday") to absolute dates using the message dates and today's date.
 - Do NOT record standing behavioral directives or response-style preferences (how long or short replies should be, tone, output format, language style, whether to use components). Those are managed separately as the user's custom instructions, NOT as facts — leave them out entirely.
-- If the user corrected an earlier assumption, state the corrected truth.
-- Do NOT restate facts already in "Known facts" below; output only NEW facts or corrections to existing ones.
-- Never include CREDENTIALS (passwords, PINs, API keys, tokens, card numbers, seed/recovery phrases). Ordinary personal identifiers (national ID / birth number, address, phone, email) are allowed.
-- Output ONLY a JSON array of strings. No prose, no markdown fences. If there is nothing new and durable, output [].`;
+- If a new claim clearly replaces a known fact, include that fact id in supersedesFactIds. If the conflict is ambiguous, include it in conflictsWithFactIds instead.
+- Never include credentials, payment secrets, recovery phrases, or government identifiers. Addresses, contact details, health, and finance are allowed but must use sensitivity "sensitive".
+- For every claim cite only message ids present in the transcript.
+- SECOND DUTY — fact-usage grading. The prompt may include an "Injected facts per assistant reply" section listing, for some assistant messages, the stored facts that were available when that reply was written. For each listed message, judge which of those facts VISIBLY informed the reply's content (its recommendations, specifics, or phrasing) and report them in factUsage. Merely being available does not count; when none were used, report an empty usedFactIds. Grade only the listed messages and only their listed fact ids.
+- Output ONLY {"claims":[...],"factUsage":[...]} where each claim is:
+  {"text":"The user ...","category":"identity|preference|relationship|work|project|health|finance|location|schedule|other","sensitivity":"standard|sensitive","validUntil":"YYYY-MM-DD or null","evidenceMessageIds":[1],"supersedesFactIds":[],"conflictsWithFactIds":[]}
+  and each factUsage entry is {"messageId":1,"usedFactIds":[2]}. Omit factUsage (or use []) when no injected-facts section is present.
+If there is nothing new and durable, output {"claims":[]}.`;
 
 const SECRET_RE =
-  /\b(?:password|passcode|api[_ -]?key|auth token|access token|bearer token|secret key|private key|seed phrase|recovery phrase|credit card|card number|cvv)\b/i;
+  /\b(?:password|passcode|pin|api[_ -]?key|auth token|access token|bearer token|secret key|private key|seed phrase|recovery phrase|credit card|card number|cvv|ssn|social security|national id|government id|birth number)\b/i;
+
+export interface DistilledClaim {
+  text: string;
+  category: FactCategory;
+  sensitivity: FactSensitivity;
+  validUntil: number | null;
+  evidenceMessageIds: number[];
+  supersedesFactIds: number[];
+  conflictsWithFactIds: number[];
+}
+
+const CATEGORIES = new Set<FactCategory>([
+  'identity', 'preference', 'relationship', 'work', 'project', 'health', 'finance', 'location', 'schedule', 'other'
+]);
+
+function cleanIds(v: unknown): number[] {
+  return Array.isArray(v) ? [...new Set(v.filter((n): n is number => Number.isInteger(n)))] : [];
+}
+
+function parseValidUntil(v: unknown): number | null {
+  if (typeof v !== 'string' || !v.trim()) return null;
+  const ms = Date.parse(`${v.trim()}T23:59:59Z`);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+export function parseClaims(output: string): DistilledClaim[] {
+  const trimmed = output.trim();
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  let raw: unknown[] = [];
+  if (start !== -1 && end > start) {
+    try {
+      const obj = JSON.parse(trimmed.slice(start, end + 1)) as { claims?: unknown };
+      if (Array.isArray(obj.claims)) raw = obj.claims;
+    } catch {
+      // Legacy/bullet fallback below.
+    }
+  }
+  if (raw.length === 0) {
+    raw = parseFacts(output).map((text) => ({ text }));
+  }
+  const seen = new Set<string>();
+  const out: DistilledClaim[] = [];
+  for (const value of raw) {
+    if (!value || typeof value !== 'object') continue;
+    const r = value as Record<string, unknown>;
+    const text = typeof r.text === 'string' ? r.text.replace(/\s+/g, ' ').trim() : '';
+    const key = text.toLowerCase();
+    if (text.length < 3 || text.length > 300 || SECRET_RE.test(text) || seen.has(key)) continue;
+    seen.add(key);
+    const category = CATEGORIES.has(r.category as FactCategory) ? r.category as FactCategory : 'other';
+    const sensitiveByCategory = ['health', 'finance', 'location', 'schedule'].includes(category);
+    out.push({
+      text,
+      category,
+      sensitivity: r.sensitivity === 'sensitive' || sensitiveByCategory ? 'sensitive' : 'standard',
+      validUntil: parseValidUntil(r.validUntil),
+      evidenceMessageIds: cleanIds(r.evidenceMessageIds),
+      supersedesFactIds: cleanIds(r.supersedesFactIds),
+      conflictsWithFactIds: cleanIds(r.conflictsWithFactIds)
+    });
+  }
+  return out;
+}
+
+/** One graded assistant reply: which injected facts it visibly used. */
+export interface FactUsageGrade {
+  messageId: number;
+  usedFactIds: number[];
+}
+
+/**
+ * Parse the model's factUsage grades from the same reply parseClaims reads.
+ * Absent/malformed → [] (never an error): grading rides free on the distill
+ * call, and the lexical fallback covers a model that ignored the second duty.
+ */
+export function parseFactUsage(output: string): FactUsageGrade[] {
+  const trimmed = output.trim();
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start === -1 || end <= start) return [];
+  try {
+    const obj = JSON.parse(trimmed.slice(start, end + 1)) as { factUsage?: unknown };
+    if (!Array.isArray(obj.factUsage)) return [];
+    return obj.factUsage.flatMap((v) => {
+      if (!v || typeof v !== 'object') return [];
+      const r = v as Record<string, unknown>;
+      return Number.isInteger(r.messageId)
+        ? [{ messageId: r.messageId as number, usedFactIds: cleanIds(r.usedFactIds) }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Model-free usage heuristic: a fact counts as used when the reply contains at
+ * least two of its content tokens, or at least half of them (a short fact like
+ * "The user drives a Škoda" only has a couple). Noisier than the LLM grade but
+ * available even when the model ignores the grading duty.
+ */
+export function lexicalUsage(factText: string, replyText: string): boolean {
+  const factTokens = lexTokens(factText, 3).filter((t) => t !== 'user');
+  if (factTokens.length === 0) return false;
+  const replyTokens = new Set(lexTokens(replyText, 3));
+  const hits = factTokens.filter((t) => replyTokens.has(t)).length;
+  return hits >= 2 || hits / factTokens.length >= 0.5;
+}
+
+/** Cap grading work per distill call — a huge backlog converges over passes. */
+const MAX_GRADED_TURNS_PER_RUN = 8;
+
+/**
+ * The ungraded injected-fact rows whose assistant reply appears in this batch,
+ * paired with that reply. Only fully known pairs are gradable.
+ */
+function gradableTurns(batch: DistillBatch): Array<{ row: TurnInjectedFacts; reply: StoredMessage }> {
+  const assistantByTurn = new Map<string, StoredMessage>();
+  for (const m of batch.messages) {
+    if (m.role === 'assistant' && m.turnId) assistantByTurn.set(m.turnId, m);
+  }
+  if (assistantByTurn.size === 0) return [];
+  return getUngradedTurnFacts([...assistantByTurn.keys()])
+    .slice(0, MAX_GRADED_TURNS_PER_RUN)
+    .map((row) => ({ row, reply: assistantByTurn.get(row.turnId)! }));
+}
+
+/** The "Injected facts per assistant reply" prompt section. Empty when nothing to grade. */
+function buildUsageBlock(turns: Array<{ row: TurnInjectedFacts; reply: StoredMessage }>): string {
+  const lines: string[] = [];
+  for (const { row, reply } of turns) {
+    const facts = getFactsByIds(row.factIds);
+    if (facts.length === 0) continue;
+    const listed = facts.map((f) => `[fact:${f.id}] ${f.text.slice(0, 200)}`).join('; ');
+    lines.push(`[message:${reply.id}] was written with these facts available: ${listed}`);
+  }
+  return lines.length
+    ? `\n\nInjected facts per assistant reply (grade these in factUsage):\n${lines.join('\n')}`
+    : '';
+}
+
+/**
+ * Apply one distill reply's usage grades: every listed fact gains an injection
+ * count, the used subset a use count; the row is then marked graded so it can
+ * never double-count. Falls back to the lexical heuristic for turns the model
+ * didn't grade. Counters only — confidence is never touched.
+ */
+function applyUsageGrades(
+  turns: Array<{ row: TurnInjectedFacts; reply: StoredMessage }>,
+  grades: FactUsageGrade[]
+): void {
+  const byMessageId = new Map(grades.map((g) => [g.messageId, g]));
+  for (const { row, reply } of turns) {
+    const graded = byMessageId.get(reply.id);
+    const injected = new Set(row.factIds);
+    const used = graded
+      ? graded.usedFactIds.filter((id) => injected.has(id))
+      : getFactsByIds(row.factIds).filter((f) => lexicalUsage(f.text, reply.text)).map((f) => f.id);
+    recordFactUsage(row.factIds, used, reply.ts);
+    markTurnFactsGraded(row.threadId, row.turnId);
+  }
+}
 
 /** Parse the model's reply into clean fact strings (JSON array, with a bullet fallback). */
 export function parseFacts(output: string): string[] {
@@ -91,6 +280,60 @@ export function parseFacts(output: string): string[] {
     facts.push(f);
   }
   return facts;
+}
+
+/**
+ * The "you already know this" hint prepended to an extraction prompt. Bounded at
+ * 100 facts (recency) on purpose: a dedup hint, not authority, and it caps prompt
+ * size. Shared with the rebuild pass — an extractor that isn't told to skip known
+ * facts restates them under new wording, minting duplicate rows and bogus
+ * "this supersedes that" links between two facts that say the same thing.
+ */
+export function knownFactsBlock(): string {
+  const known = getFacts(100).map((f) => `- [fact:${f.id} source:${f.source}] ${f.text}`).join('\n');
+  return known ? `\n\nKnown facts (do not restate these):\n${known}` : '';
+}
+
+export function readDistillCursor(): DistillCursor {
+  const raw = getMeta(CURSOR_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<DistillCursor>;
+      if (Number.isInteger(parsed.messageId) && Number.isInteger(parsed.offset)) {
+        return { messageId: Math.max(1, parsed.messageId!), offset: Math.max(0, parsed.offset!) };
+      }
+    } catch {
+      // Bootstrap from the v1 watermark below.
+    }
+  }
+  const old = Number.parseInt(getMeta(WATERMARK) ?? '0', 10) || 0;
+  return { messageId: old + 1, offset: 0 };
+}
+
+export function buildDistillBatch(cursor: DistillCursor, maxChars = MAX_TRANSCRIPT_CHARS): DistillBatch | null {
+  const source = getMessagesForDistillFrom(cursor.messageId, MAX_MESSAGES_PER_RUN);
+  if (source.length === 0) return null;
+  let transcript = '';
+  const included: StoredMessage[] = [];
+  let next: DistillCursor = cursor;
+
+  for (const message of source) {
+    const offset = message.id === cursor.messageId ? Math.min(cursor.offset, message.text.length) : 0;
+    const prefix = `[message:${message.id} date:${new Date(message.ts * 1000).toISOString().slice(0, 10)} role:${message.role}] `;
+    const room = maxChars - transcript.length - prefix.length - 1;
+    if (room <= DISTILL_OVERLAP_CHARS && transcript) break;
+    const take = Math.max(1, Math.min(message.text.length - offset, room));
+    const end = offset + take;
+    transcript += `${transcript ? '\n' : ''}${prefix}${message.text.slice(offset, end)}`;
+    included.push(message);
+    if (end < message.text.length) {
+      next = { messageId: message.id, offset: Math.max(offset + 1, end - DISTILL_OVERLAP_CHARS) };
+      break;
+    }
+    next = { messageId: message.id + 1, offset: 0 };
+    if (transcript.length >= maxChars) break;
+  }
+  return transcript ? { transcript, messages: included, nextCursor: next } : null;
 }
 
 /**
@@ -133,33 +376,44 @@ async function scoreCandidatesAgainstFacts(
  */
 export async function distillNewMessages(llm: LlmClient): Promise<number> {
   if (!isRecallEnabled()) return 0;
-  const sinceId = Number.parseInt(getMeta(WATERMARK) ?? '0', 10) || 0;
-  const messages = getMessagesForDistill(sinceId, MAX_MESSAGES_PER_RUN);
-  if (messages.length === 0) return 0;
-
-  // Each line carries its message date so the model can resolve relative dates
-  // ("tomorrow", "next week") in older messages against when they were said.
-  const transcript = messages
-    .map((m) => `[${new Date(m.ts * 1000).toISOString().slice(0, 10)}] ${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
-    .join('\n')
-    .slice(0, MAX_TRANSCRIPT_CHARS);
+  const batch = buildDistillBatch(readDistillCursor());
+  if (!batch) return 0;
 
   // Show the model what it already knows so it returns only new/corrected facts
-  // (curbs reworded duplicates the norm-based dedup can't catch). Bounded at 100
-  // (recency) on purpose: a dedup hint, not authoritative, and it caps prompt size.
-  const known = getFacts(100).map((f) => `- ${f.text}`).join('\n');
-  const knownBlock = known ? `\n\nKnown facts (do not restate these):\n${known}` : '';
+  // (curbs reworded duplicates the norm-based dedup can't catch).
+  const knownBlock = knownFactsBlock();
 
-  let facts: string[] = [];
+  // Usage grading rides on the same call: the batch's assistant replies whose
+  // injected-fact sets are still ungraded get listed for the model to judge.
+  const usageTurns = gradableTurns(batch);
+  const usageBlock = buildUsageBlock(usageTurns);
+
+  let claims: DistilledClaim[] = [];
+  let usageGrades: FactUsageGrade[] = [];
   try {
     const today = new Date().toISOString().slice(0, 10);
     const reply = await llm.complete(
-      `${INSTRUCTIONS}\n\nToday's date: ${today}.${knownBlock}\n\nTranscript:\n${transcript}`
+      `${DISTILL_INSTRUCTIONS}\n\nToday's date: ${today}.${knownBlock}${usageBlock}\n\nTranscript:\n${batch.transcript}`
     );
-    facts = parseFacts(reply);
+    claims = parseClaims(reply);
+    usageGrades = parseFactUsage(reply);
   } catch {
-    // Leave the watermark unmoved so a later run retries these messages.
+    // Leave the cursor unmoved so a later run retries this exact segment
+    // (grading rides along: ungraded rows stay ungraded).
     return 0;
+  }
+  applyUsageGrades(usageTurns, usageGrades);
+
+  const byId = new Map(batch.messages.map((m) => [m.id, m]));
+  // Legacy string-array output has no citations. For compatibility, bind those
+  // claims to direct user messages in the processed segment; assistant-only
+  // segments remain low-confidence.
+  for (const claim of claims) {
+    claim.evidenceMessageIds = claim.evidenceMessageIds.filter((id) => byId.has(id));
+    if (claim.evidenceMessageIds.length === 0) {
+      claim.evidenceMessageIds = batch.messages.filter((m) => m.role === 'user').map((m) => m.id);
+      if (claim.evidenceMessageIds.length === 0) claim.evidenceMessageIds = batch.messages.map((m) => m.id);
+    }
   }
 
   // Write-time semantic dedup — never a silent drop. A near-duplicate is still
@@ -167,30 +421,67 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   // a fact, keeping the protected-facts guarantees in one place); it just forces
   // the dirty counter past the tidy threshold so consolidation adjudicates on
   // the very next debounce instead of waiting for more facts to pile up.
-  const scored = await scoreCandidatesAgainstFacts(facts);
+  const scored = await scoreCandidatesAgainstFacts(claims.map((c) => c.text));
   const dupThreshold = getDupCosine();
   let dupSeen = false;
-  facts.forEach((fact, i) => {
-    const id = upsertFact(fact, 'distilled');
+  let i = -1;
+  for (const claim of claims) {
+    i += 1;
+    const evidenceMessages = claim.evidenceMessageIds.map((id) => byId.get(id)).filter((m): m is StoredMessage => !!m);
+    const directUser = evidenceMessages.some((m) => m.role === 'user');
+    const id = upsertFact(claim.text, {
+      source: 'distilled',
+      category: claim.category,
+      sensitivity: claim.sensitivity,
+      confidence: directUser ? 0.9 : 0.55,
+      validUntil: claim.validUntil,
+      evidence: evidenceMessages.map((m) => ({
+        messageId: m.id,
+        threadId: m.threadId,
+        role: m.role,
+        timestamp: m.ts,
+        excerpt: m.text,
+        origin: directUser && m.role === 'user' ? 'user_message' : 'assistant_claim'
+      }))
+    });
     if (scored && id != null) {
       // We already hold this fact's fresh passage vector — cache it so neither
       // the ready-hook backfill nor inject's lazy path re-embeds it.
       upsertFactVector(id, scored.model, scored.vecs[i]);
       if (scored.maxSims[i] >= dupThreshold) dupSeen = true;
     }
-  });
+    if (id != null) {
+      for (const targetId of claim.supersedesFactIds) {
+        const target = getFactDetails(targetId);
+        if (!target || target.id === id) continue;
+        if (directUser && target.source !== 'explicit') supersedeFact(target.id, id);
+        // No authority to supersede — but the extractor's say-so isn't proof the two
+        // facts disagree, so check before making the user adjudicate.
+        else if (await contradicts(target.text, claim.text, llm)) {
+          createFactConflict(target.id, id, 'A newer memory may contradict this fact.');
+        }
+      }
+      for (const targetId of claim.conflictsWithFactIds) {
+        if (targetId !== id && getFactDetails(targetId)) {
+          createFactConflict(targetId, id, 'The available evidence is ambiguous.');
+        }
+      }
+    }
+  }
 
   // Mark new material for the consolidation pass to clean up later.
-  if (facts.length > 0) {
-    let pending = (Number.parseInt(getMeta(PENDING_KEY) ?? '0', 10) || 0) + facts.length;
+  if (claims.length > 0) {
+    let pending = (Number.parseInt(getMeta(PENDING_KEY) ?? '0', 10) || 0) + claims.length;
     // A detected near-duplicate fast-tracks consolidation. max() with the
     // threshold respects a 0 threshold (auto tidy-up disabled → manual only).
     if (dupSeen) pending = Math.max(pending, getTidyThreshold());
     setMeta(PENDING_KEY, String(pending));
   }
 
-  // Advance past everything we just considered (even if 0 facts — they had nothing durable).
-  const maxId = messages.reduce((max, m) => Math.max(max, m.id), sinceId);
-  setMeta(WATERMARK, String(maxId));
-  return facts.length;
+  // Advance through exactly the characters the successful prompt contained.
+  setMeta(CURSOR_KEY, JSON.stringify(batch.nextCursor));
+  // Keep the old watermark moving for downgrade compatibility, but never use it
+  // to decide v2 progress.
+  setMeta(WATERMARK, String(Math.max(0, batch.nextCursor.messageId - 1)));
+  return claims.length;
 }

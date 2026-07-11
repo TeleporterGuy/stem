@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { SquarePen, PanelRight } from 'lucide-react';
 import type {
+  AuthProviderId,
   ChatListResult,
   ChatSummary,
   BackendEventEnvelope,
@@ -14,6 +15,7 @@ import type {
   TurnAttachment,
   ThreadStatus
 } from '../shared/types';
+import { AUTH_PROVIDER_IDS, providerName } from '../shared/providers';
 import { toMessageAttachments } from './attachments';
 import { ChatView, type ChatViewHandle } from './chat/ChatView';
 import { OnboardingGate } from './onboarding/OnboardingGate';
@@ -39,11 +41,13 @@ import { createEventBatcher } from './eventBatcher';
 // migrated to the real thread id once the first turn returns one.
 const DRAFT = '__draft__';
 
-// Conservative "this smells like an auth failure" match on a failed turn's error
-// text. A false positive only shows the re-sign-in screen, which has a
-// "Back to chat" escape — but keep it tight anyway.
+// "This smells like an auth failure" match on a failed turn's error text. Used as
+// the fallback classifier for API-key/local providers, where the getApiKey probe
+// can't validate a stored key server-side. (OAuth providers are classified by the
+// authoritative probe instead, so they don't rely on this.) A false positive only
+// shows the re-sign-in screen, which has a "Back to chat" escape — but keep it tight.
 const AUTH_ERROR_RE =
-  /\b401\b|\b403\b|unauthori[sz]ed|invalid[_ ]?(api[_ ]?key|grant|token)|token.*(expired|revoked)|re-?authenticat/i;
+  /\b401\b|\b403\b|unauthori[sz]ed|invalid[_ ]?(api[_ ]?key|grant|token)|token.*(expired|revoked)|re-?authenticat|oauth|credential|sign[- ]?in|log[- ]?in.*(expired|required)/i;
 
 // Merge a DRAFT slice into the (possibly already-created) real-thread slice when a
 // new chat's first turn returns its id. The draft holds the user bubble; the live
@@ -71,6 +75,13 @@ export default function App() {
   // refresh token still leaves auth.json on disk, so status() can't detect it.
   // Renders the re-auth wizard over the app; cleared on re-login or dismiss.
   const [authProblem, setAuthProblem] = useState<string | null>(null);
+  // The specific dead provider behind an authProblem, so the re-auth gate can
+  // deep-link straight to it ("Reconnect ChatGPT") instead of the generic chooser.
+  const [authProvider, setAuthProvider] = useState<AuthProviderId | null>(null);
+  // Whether the full-screen re-auth gate is open. Detection only raises the
+  // non-blocking banner (authProblem); the gate opens deliberately when the user
+  // clicks Reconnect, so a dead token never hijacks the screen.
+  const [reauthOpen, setReauthOpen] = useState(false);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   // The active thread queued for deletion behind the ⌃X confirm popup (null = closed).
   const [pendingDelete, setPendingDelete] = useState<{ threadId: string; title: string } | null>(null);
@@ -215,6 +226,14 @@ export default function App() {
     () => (localStorage.getItem('stem.format') === 'md' ? 'md' : 'mdx')
   );
   const selectedModel = models.find((m) => m.id === modelId) ?? null;
+  // Ref mirrors so the (mount-only) backend-event handler can resolve the failed
+  // turn's provider from the latest models/selection without a stale closure.
+  const modelsRef = useRef(models);
+  modelsRef.current = models;
+  const modelIdRef = useRef(modelId);
+  modelIdRef.current = modelId;
+  const authProviderRef = useRef(authProvider);
+  authProviderRef.current = authProvider;
 
   // Escape-to-retract behavior (Settings → Input). Read from persisted settings;
   // re-read on window focus so a change in the Settings tab applies without a restart.
@@ -335,22 +354,48 @@ export default function App() {
   );
 
   useEffect(() => {
+    // Classify a failed turn (or a pi death during one) as an auth problem or not.
+    // status.ok can't flip by itself — an expired token still leaves auth.json — so
+    // this is how the re-sign-in screen gets raised. For OAuth providers we ask the
+    // authoritative getApiKey probe (does the credential still yield a key?); for
+    // API-key/local providers, which the probe can't validate server-side, we fall
+    // back to the error-text heuristic.
+    const handlePossibleAuthFailure = async (err: string | undefined, turnId?: string): Promise<void> => {
+      const modelForTurn = (turnId && turnMetaRef.current.get(turnId)?.model) || modelIdRef.current;
+      const provider = modelForTurn ? modelsRef.current.find((m) => m.id === modelForTurn)?.provider : undefined;
+      if (provider && (AUTH_PROVIDER_IDS as string[]).includes(provider)) {
+        try {
+          const { alive } = await window.stem.checkAuth(provider);
+          if (!alive) {
+            setAuthProblem(err ?? 'Your session has expired.');
+            setAuthProvider(provider as AuthProviderId);
+          }
+          return;
+        } catch {
+          // Probe unavailable — fall through to the heuristic below.
+        }
+      }
+      if (err && AUTH_ERROR_RE.test(err)) setAuthProblem(err);
+    };
+
     const applyEvent = (event: BackendEventEnvelope): void => {
       if (event.method === 'process/exit') {
-        // No threadId — the server died, so clear every thread's run state.
+        // No threadId — the server died, so clear every thread's run state. If a turn
+        // was in flight, a dead token may have killed pi at startup/stream (which never
+        // reaches turn/failed), so classify it too.
+        const wasRunning = Object.values(threadStatesRef.current).some((s) => s.running);
         setThreadStates((prev) => {
           const next: Record<string, ThreadState> = {};
           for (const [tid, s] of Object.entries(prev)) next[tid] = applyProcessExitToThread(s);
           return next;
         });
+        if (wasRunning) void handlePossibleAuthFailure(undefined);
         return;
       }
 
-      // A failed turn with an auth-looking error → surface the re-sign-in screen
-      // (status.ok can't flip by itself: an expired token still leaves auth.json).
       if (event.method === 'turn/failed') {
-        const err = (event.params as { error?: string } | undefined)?.error;
-        if (err && AUTH_ERROR_RE.test(err)) setAuthProblem(err);
+        const params = event.params as { error?: string; turn?: { id?: string } } | undefined;
+        void handlePossibleAuthFailure(params?.error, params?.turn?.id);
       }
 
       const threadId = backendEventThreadId(event);
@@ -602,9 +647,40 @@ export default function App() {
   // auth-failure gate so the app (re)mounts its normal effects.
   const onAuthenticated = useCallback((next: RuntimeStatus) => {
     setAuthProblem(null);
+    setAuthProvider(null);
+    setReauthOpen(false);
     setOnboardingCompleted(true);
     setStatus(next);
   }, []);
+
+  // Proactive liveness: probe the active model's OAuth provider on launch and when
+  // the window regains focus, so the "session expired" banner/dot appears before a
+  // send fails. Reactive detection (handlePossibleAuthFailure) is the other source.
+  const probeActiveAuth = useCallback(async () => {
+    const provider = modelsRef.current.find((m) => m.id === modelIdRef.current)?.provider;
+    if (!provider || !(AUTH_PROVIDER_IDS as string[]).includes(provider)) return;
+    try {
+      const { alive } = await window.stem.checkAuth(provider);
+      if (!alive) {
+        setAuthProblem((cur) => cur ?? `Your ${providerName(provider)} session has expired.`);
+        setAuthProvider(provider as AuthProviderId);
+      } else if (authProviderRef.current === provider) {
+        // Recovered (reconnected, or the earlier failure was transient) — clear the cue.
+        setAuthProblem(null);
+        setAuthProvider(null);
+      }
+    } catch {
+      // Probe unavailable — leave any existing cue as-is.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!models.length) return; // wait for models before the first probe
+    void probeActiveAuth();
+    const onFocus = () => void probeActiveAuth();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [models.length, probeActiveAuth]);
 
   const newConversation = useCallback(async (folderId: string | null = null) => {
     // Reset only the draft slice and switch to it — any chats running in the
@@ -940,24 +1016,37 @@ export default function App() {
     );
   }
 
-  if (authProblem) {
-    // Signed-in status but a turn failed with an auth-looking error (expired /
-    // revoked token). Re-auth screen with a way back — never trap the user.
+  if (reauthOpen) {
+    // The user clicked Reconnect (banner or Settings). Signed-in status but the
+    // token is dead; deep-link the gate to that provider, with a way back.
     return shell(
       <OnboardingGate
         variant="reauth"
         reauthMessage={authProblem}
+        initialProvider={authProvider ?? undefined}
         onAuthenticated={onAuthenticated}
-        onDismissReauth={() => setAuthProblem(null)}
+        onDismissReauth={() => setReauthOpen(false)}
       />
     );
   }
 
   return shell(
-    <div className={`app${showInspector ? '' : ' no-inspector'}`}>
-      <main className="conversation">
-        <ChatView
-          key={activeKey}
+    <>
+      {authProblem && (
+        <div className="auth-banner" role="alert">
+          <span className="auth-banner-msg">
+            {authProvider ? `Your ${providerName(authProvider)} session has expired.` : authProblem} Reconnect to
+            keep chatting.
+          </span>
+          <button className="auth-banner-btn" onClick={() => setReauthOpen(true)}>
+            Reconnect
+          </button>
+        </div>
+      )}
+      <div className={`app${showInspector ? '' : ' no-inspector'}`}>
+        <main className="conversation">
+          <ChatView
+            key={activeKey}
           ref={chatViewRef}
           messages={cur.messages}
           running={cur.running}
@@ -1010,6 +1099,7 @@ export default function App() {
             previewActive={previewActive}
             previewDraft={previewDraft}
             onTogglePreview={() => setPreviewActive((v) => !v)}
+            authDeadProvider={authProvider}
           />
         </aside>
       )}
@@ -1033,7 +1123,8 @@ export default function App() {
           onDismiss={() => setTaskAlert(null)}
         />
       )}
-    </div>,
+      </div>
+    </>,
     <>
       <button
         className="tbtn"

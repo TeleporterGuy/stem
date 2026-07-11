@@ -43,10 +43,11 @@ type WizardAction =
   | { type: 'authEvent'; event: AuthUiEvent }
   | { type: 'fail'; error: string };
 
-function initialState(variant: 'firstRun' | 'reauth'): WizardState {
+function initialState(variant: 'firstRun' | 'reauth', initialProvider?: AuthProviderId): WizardState {
   return {
     step: variant === 'firstRun' ? 'welcome' : 'chooseProvider',
-    provider: null,
+    // Seed the known-dead provider (reauth only) so chooseProvider can deep-link it.
+    provider: variant === 'reauth' ? initialProvider ?? null : null,
     authUrl: null,
     deviceCode: null,
     progress: null,
@@ -110,14 +111,22 @@ export interface OnboardingGateProps {
   variant: 'firstRun' | 'reauth';
   /** Why re-auth is needed (the failing turn's error); reauth variant only. */
   reauthMessage?: string | null;
+  /** The known-dead provider (reauth only) — deep-links chooseProvider to a one-click reconnect. */
+  initialProvider?: AuthProviderId;
   /** Sign-in finished — the parent swaps in the main app with this status. */
   onAuthenticated: (status: RuntimeStatus) => void;
   /** Reauth was a false alarm — go back to the chat. */
   onDismissReauth?: () => void;
 }
 
-export function OnboardingGate({ variant, reauthMessage, onAuthenticated, onDismissReauth }: OnboardingGateProps) {
-  const [state, dispatch] = useReducer(reduce, variant, initialState);
+export function OnboardingGate({
+  variant,
+  reauthMessage,
+  initialProvider,
+  onAuthenticated,
+  onDismissReauth
+}: OnboardingGateProps) {
+  const [state, dispatch] = useReducer(reduce, undefined, () => initialState(variant, initialProvider));
   // The finish path runs in async handlers after awaits — guard against unmount.
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -177,6 +186,8 @@ export function OnboardingGate({ variant, reauthMessage, onAuthenticated, onDism
   );
 
   const providerLabel = state.provider ? PROVIDER_LABELS[state.provider] : 'the provider';
+  // The deep-linked dead provider to emphasize on chooseProvider (reauth only).
+  const deepLink = variant === 'reauth' ? initialProvider ?? null : null;
 
   return (
     <div className="app gate">
@@ -201,20 +212,28 @@ export function OnboardingGate({ variant, reauthMessage, onAuthenticated, onDism
             <h1>{variant === 'reauth' ? 'Sign in again' : 'Sign in'}</h1>
             {variant === 'reauth' && (
               <p className="gate-sub">
-                {reauthMessage
-                  ? `Stem's connection to your AI account stopped working: ${reauthMessage}`
-                  : 'Stem needs you to sign in to your AI account again.'}
+                {deepLink
+                  ? `Your ${PROVIDER_LABELS[deepLink]} session expired. Reconnect to keep going.`
+                  : reauthMessage
+                    ? `Stem's connection to your AI account stopped working: ${reauthMessage}`
+                    : 'Stem needs you to sign in to your AI account again.'}
               </p>
             )}
             <div className="gate-providers">
-              <button className="primary" onClick={() => void startOAuth('openai-codex')}>
-                Continue with ChatGPT
+              <button
+                className={deepLink ? (deepLink === 'openai-codex' ? 'primary' : 'push') : 'primary'}
+                onClick={() => void startOAuth('openai-codex')}
+              >
+                {deepLink === 'openai-codex' ? 'Reconnect ChatGPT' : 'Continue with ChatGPT'}
               </button>
               <span className="gate-hint">
                 ChatGPT Plus or Pro subscription <span className="gate-rec">Recommended</span>
               </span>
-              <button className="push" onClick={() => void startOAuth('anthropic')}>
-                Continue with Claude
+              <button
+                className={deepLink === 'anthropic' ? 'primary' : 'push'}
+                onClick={() => void startOAuth('anthropic')}
+              >
+                {deepLink === 'anthropic' ? 'Reconnect Claude' : 'Continue with Claude'}
               </button>
               <span className="gate-hint">
                 Claude Pro or Max subscription. Heads up: using a Claude subscription in a

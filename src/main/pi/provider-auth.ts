@@ -20,6 +20,21 @@ interface ActiveLogin {
   pending: Map<string, { resolve: (value: string) => void; reject: (error: Error) => void }>;
 }
 
+// undici wraps connection-level failures as a terse `TypeError: fetch failed`
+// whose real reason (ENOTFOUND, EHOSTUNREACH, a TLS error, a socket address) lives
+// on `.cause`. Surface that so a failed OAuth token exchange is diagnosable instead
+// of an opaque "fetch failed".
+function describeError(e: unknown): string {
+  if (!(e instanceof Error)) return String(e);
+  const cause = (e as { cause?: unknown }).cause;
+  if (cause instanceof Error) {
+    const code = (cause as { code?: string }).code;
+    const detail = code && !cause.message.includes(code) ? `${code}: ${cause.message}` : cause.message;
+    return `${e.message} (${detail})`;
+  }
+  return e.message;
+}
+
 export class ProviderAuth {
   private active: ActiveLogin | null = null;
   private piModule: Promise<PiModule> | null = null;
@@ -64,7 +79,7 @@ export class ProviderAuth {
       this.emit({ kind: 'done', ok: true, provider: providerId });
       return { ok: true };
     } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
+      const error = describeError(e);
       this.emit({ kind: 'done', ok: false, provider: providerId, error });
       return { ok: false, error };
     } finally {
@@ -113,6 +128,22 @@ export class ProviderAuth {
   async listProviders(): Promise<string[]> {
     const { AuthStorage } = await this.loadPi();
     return AuthStorage.create(this.authPath).list();
+  }
+
+  /**
+   * Authoritative liveness check for a stored credential. AuthStorage.getApiKey
+   * refreshes an expired OAuth access token (with file locking, the same path pi
+   * uses) and returns a usable key — or `undefined` when the *refresh itself*
+   * fails, i.e. the refresh token is expired/revoked and the user is truly signed
+   * out. `includeFallback: false` keeps an env var from masking a dead stored
+   * credential. Caveat: a transient network error during refresh also yields
+   * `undefined` (false negative), which is acceptable because this only runs after
+   * a turn already failed and the re-auth screen has a "Back to chat" escape.
+   */
+  async isAlive(provider: string): Promise<boolean> {
+    const { AuthStorage } = await this.loadPi();
+    const key = await AuthStorage.create(this.authPath).getApiKey(provider, { includeFallback: false });
+    return !!key;
   }
 
   private awaitInput(active: ActiveLogin, message: string, placeholder?: string): Promise<string> {

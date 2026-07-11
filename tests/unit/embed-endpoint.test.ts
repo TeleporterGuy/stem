@@ -1,7 +1,7 @@
 // Embed-endpoint protocol: token gating, unavailable-client fast-fail, and the
 // vector roundtrip — over a real unix socket in tmpdir (pure node:net, fine in
 // the forks pool). The MCP-side consumer of this protocol is exercised by
-// scripts/recall-mcp-probe.mjs against the real mcp-server.mjs.
+// scripts/recall-mcp-probe.mjs against the real compiled MCP server.
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

@@ -41,7 +41,7 @@ While Stem works you see live **tool activity** — web searches, file reads, te
 
 ## Memory that compounds
 
-**Stem Recall** is a two-level memory. Every conversation is captured into a searchable episodic store, and the important parts are distilled into durable facts about you — reviewed, deduplicated, and tidied over time. You stay in control: preview which facts get injected, forget any of them, cap the storage, or switch memory off entirely.
+**Stem Recall** is a two-level memory. Every conversation is captured into a searchable episodic store, and the important parts are distilled into durable facts about you — with evidence, confidence, sensitivity, validity, and conflict history. You stay in control: preview which facts get injected, pin or confirm them, resolve contradictions, forget any of them permanently, cap the storage, or switch memory off entirely.
 
 <p align="center">
   <picture>
@@ -50,7 +50,7 @@ While Stem works you see live **tool activity** — web searches, file reads, te
   </picture>
 </p>
 
-Facts flow into every new chat: ask for weekend ideas and the suggestions already know your partner is vegetarian. Relevance ranking runs on **bundled local embeddings** (Multilingual-E5 or EmbeddingGemma, downloaded once, run on-device) — or an OpenAI-compatible endpoint, or plain keyword matching. Nothing leaves your machine by default and embedding never blocks a reply.
+Each turn receives only positively relevant active facts, plus up to five facts you explicitly pin; sensitive facts use a stricter relevance gate and conflicted, expired, or unconfirmed assistant claims stay out. Relevance ranking runs on **bundled local embeddings** (Multilingual-E5 or EmbeddingGemma, downloaded once, run on-device) — or an OpenAI-compatible endpoint, or plain keyword matching. Nothing leaves your machine by default and embedding never blocks a reply.
 
 ## Organized like you think
 
@@ -121,6 +121,8 @@ First run opens the onboarding wizard — pick a provider and sign in, and you'r
 | `npm run lint` | Lint with ESLint |
 | `npm test` | Run unit tests (Vitest) |
 | `npm run test:e2e` | Run end-to-end tests (Playwright) |
+| `npm run eval:retrieval` | Run the real local-embedding Recall retrieval gate |
+| `npm run eval:memory` | Run the real extraction gate against a configured OpenAI-compatible model |
 
 ## Tech stack
 

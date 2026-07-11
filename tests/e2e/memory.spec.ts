@@ -23,6 +23,7 @@ test('memory settings expose the expected shape and the episodic limit round-tri
   expect(typeof settings.enabled).toBe('boolean');
   expect(typeof settings.tidyThreshold).toBe('number');
   expect(typeof settings.episodicLimitBytes).toBe('number');
+  expect(settings.maxRelevantFacts).toBe(8);
 
   // A pure store-backed setting (no backend involved) persists + echoes back.
   const updated = await stem.setEpisodicLimit(mainWindow, 50 * 1024 * 1024);
@@ -45,4 +46,33 @@ test('a fresh workspace reports empty stored memory', async ({ mainWindow }) => 
 
   const stats = await stem.episodicStats(mainWindow);
   expect(stats.messageCount).toBe(0);
+});
+
+test('Recall v3 thread summaries round-trip through the bridge (list + delete)', async ({ mainWindow }) => {
+  const empty = await mainWindow.evaluate(() => (window as any).stem.getThreadSummaries());
+  expect(empty).toEqual([]);
+});
+
+test('Recall v2 trust and rebuild controls are exposed through the preload bridge', async ({ mainWindow }) => {
+  const methods = await mainWindow.evaluate(() => {
+    const api = (window as any).stem;
+    return [
+      'setFactPinned',
+      'confirmFact',
+      'getFactDetails',
+      'getMemoryConflicts',
+      'resolveMemoryConflict',
+      'restoreSupersededFact',
+      'getMemoryRebuildStatus',
+      'startMemoryRebuild',
+      'pauseMemoryRebuild',
+      'resumeMemoryRebuild',
+      'setMaxRelevantFacts',
+      'getThreadSummaries',
+      'deleteThreadSummary'
+    ].map((name) => [name, typeof api[name]]);
+  });
+  expect(methods.every(([, type]) => type === 'function')).toBe(true);
+  const status = await mainWindow.evaluate(() => (window as any).stem.getMemoryRebuildStatus());
+  expect(status.state).toBe('complete');
 });

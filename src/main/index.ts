@@ -14,6 +14,8 @@ import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import dns from 'node:dns';
+import net from 'node:net';
 import { createBackend, type ChatBackend } from './backend';
 import { ensureWorkspace } from './workspace/bootstrap';
 import { listSkills, setSkillEnabled } from './workspace/skills';
@@ -38,9 +40,11 @@ import {
   forgetFact,
   getMemorySettings,
   isRecallEnabled,
+  listThreadSummaries,
   readMemoryFiles,
+  removeThreadSummary,
   setEpisodicLimit,
-  setFactInjectThreshold,
+  setMaxRelevantFactCount,
   setMemoryEnabled,
   setTidyUpThreshold
 } from './workspace/memory';
@@ -51,15 +55,32 @@ import {
   getActiveFactIds,
   getFactsByIds,
   getFactsMissingVector,
+  getFactDetails,
+  getMemoryConflicts,
+  setFactPinned as storeSetFactPinned,
+  confirmFact as storeConfirmFact,
+  resolveMemoryConflict as storeResolveMemoryConflict,
+  restoreSupersededFact as storeRestoreSupersededFact,
   pruneMessageVectorsExceptModel,
+  pruneSummaryVectorsExceptModel,
   pruneVectorsExceptModel,
-  upsertFactVector
+  getSummariesMissingVector,
+  upsertFactVector,
+  upsertSummaryVector
 } from './recall/store';
 import { embedNewMessages } from './recall/embed-episodic';
+import { backfillSummaries, refreshRecentSummaries } from './recall/summarize';
 import { previewFacts } from './recall/inject';
 import type { ActiveFacts } from '../shared/types';
 import { distillNewMessages, shouldConsolidate } from './recall/distill';
 import { consolidateFacts } from './recall/consolidate';
+import {
+  getMemoryRebuildStatus,
+  pauseMemoryRebuild,
+  resumeMemoryRebuild,
+  runMemoryRebuildStep,
+  startMemoryRebuild
+} from './recall/rebuild';
 import { curateSkills } from './skills/curate';
 import { distillSkillsFromMessages, drainSkillDistill } from './skills/distill';
 import { getEmbeddingsClient, setRetrievalClients } from './recall/retrieval';
@@ -105,6 +126,7 @@ import type {
   ApiKeyProviderId,
   AuthProviderId,
   ChatListResult,
+  ConflictResolution,
   ConnectedFolderPatch,
   CustomInstructionsSettings,
   EscapeAction,
@@ -134,6 +156,18 @@ import type {
 } from '../shared/types';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
+
+// Prefer IPv4 for all main-process networking. auth.openai.com (and other OAuth
+// token endpoints) are dual-stack, but many networks have no working IPv6 route;
+// Electron's main-process fetch would then try an AAAA address and die with a bare
+// "fetch failed" (EHOSTUNREACH) instead of falling back — breaking the OAuth token
+// exchange right after the browser shows "authentication successful". Ordering
+// IPv4 first, plus enabling Happy Eyeballs (parallel v4/v6 with fallback), makes
+// the token exchange behave like curl and the system browser. Guarded for older
+// runtimes that lack the setters.
+dns.setDefaultResultOrder?.('ipv4first');
+net.setDefaultAutoSelectFamily?.(true);
+net.setDefaultAutoSelectFamilyAttemptTimeout?.(1000);
 
 // Brand the app rather than inheriting Electron's defaults. setName fixes the
 // app/process name and userData path; appIcon drives the dock (and, off macOS,
@@ -246,6 +280,7 @@ const runningMainThreads = new Set<string>();
 // When the user last started/stopped a turn (main or Quick Chat). Drives the
 // scheduler's isUserActive signal so scheduled runs defer while they're chatting.
 let lastInteractiveAt = 0;
+let scheduleMemoryRebuild: () => void = () => {};
 // How long after the last interaction the user still counts as "active".
 const USER_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 /** Who currently owns the shared pill, so Quick Chat and follow-me never stomp. */
@@ -804,6 +839,12 @@ function registerIpc(): void {
   ipcMain.handle('auth:respond', (_e, requestId: string, value: string) => {
     providerAuth?.respond(requestId, value);
   });
+  // Authoritative liveness probe for a stored credential — used reactively to
+  // classify a failed turn (expired/revoked OAuth token vs. a transient error).
+  ipcMain.handle('auth:check', async (_e, provider: string) => {
+    if (E2E) return { alive: true };
+    return { alive: await providerAuth!.isAlive(provider) };
+  });
   // ---- local providers (Ollama / LM Studio) + provider removal ----
   ipcMain.handle('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string) => {
     if (E2E) return { ok: true, models: ['stem-e2e-model'] };
@@ -973,9 +1014,41 @@ function registerIpc(): void {
     await forgetFact(id);
     return readMemoryFiles();
   });
+  ipcMain.handle('memory:setPinned', async (_e, id: number, pinned: boolean) => {
+    storeSetFactPinned(id, pinned);
+    return readMemoryFiles();
+  });
+  ipcMain.handle('memory:confirmFact', async (_e, id: number) => {
+    storeConfirmFact(id);
+    return readMemoryFiles();
+  });
+  ipcMain.handle('memory:factDetails', (_e, id: number) => getFactDetails(id));
+  ipcMain.handle('memory:conflicts', () => getMemoryConflicts());
+  ipcMain.handle('memory:resolveConflict', async (_e, id: number, resolution: ConflictResolution) => {
+    storeResolveMemoryConflict(id, resolution);
+    return readMemoryFiles();
+  });
+  ipcMain.handle('memory:restoreFact', async (_e, id: number) => {
+    storeRestoreSupersededFact(id);
+    return readMemoryFiles();
+  });
+  ipcMain.handle('memory:rebuildStatus', () => getMemoryRebuildStatus());
+  ipcMain.handle('memory:startRebuild', () => {
+    const status = startMemoryRebuild();
+    scheduleMemoryRebuild();
+    return status;
+  });
+  ipcMain.handle('memory:pauseRebuild', () => pauseMemoryRebuild());
+  ipcMain.handle('memory:resumeRebuild', () => {
+    const status = resumeMemoryRebuild();
+    scheduleMemoryRebuild();
+    return status;
+  });
   ipcMain.handle('memory:resetFacts', () => clearFactsMemory());
   ipcMain.handle('memory:resetEpisodic', () => clearEpisodicMemory());
   ipcMain.handle('memory:episodicStats', () => getEpisodicStats());
+  ipcMain.handle('memory:summaries', () => listThreadSummaries());
+  ipcMain.handle('memory:deleteSummary', (_e, id: number) => removeThreadSummary(id));
   ipcMain.handle('memory:embeddingStats', async () =>
     getEmbeddingCacheStats(effectiveEmbedModelKey((await readSettings()).retrieval.embeddings))
   );
@@ -997,16 +1070,28 @@ function registerIpc(): void {
     if (!threadId) return null;
     const rec = getActiveFactIds(threadId);
     if (!rec) return null;
-    const facts = getFactsByIds(rec.factIds).map((f) => ({ id: f.id, text: f.text, source: f.source }));
+    const facts = getFactsByIds(rec.factIds).map((f) => ({
+      id: f.id,
+      text: f.text,
+      source: f.source,
+      sensitivity: f.sensitivity,
+      reason: rec.reasons[f.id] ?? f.selectionReason
+    }));
     return { facts, tier: rec.tier };
   });
   ipcMain.handle('memory:previewFacts', async (_e, text: string): Promise<ActiveFacts> => {
     const { facts, tier } = await previewFacts(text ?? '');
-    return { facts: facts.map((f) => ({ id: f.id, text: f.text, source: f.source })), tier };
+    return { facts: facts.map((f) => ({
+      id: f.id,
+      text: f.text,
+      source: f.source,
+      sensitivity: f.sensitivity,
+      reason: f.selectionReason
+    })), tier };
   });
   ipcMain.handle('memory:setEpisodicLimit', (_e, bytes: number) => setEpisodicLimit(bytes));
   ipcMain.handle('memory:setTidyThreshold', (_e, n: number) => setTidyUpThreshold(n));
-  ipcMain.handle('memory:setFactThreshold', (_e, n: number) => setFactInjectThreshold(n));
+  ipcMain.handle('memory:setMaxRelevantFacts', (_e, n: number) => setMaxRelevantFactCount(n));
   ipcMain.handle('memory:consolidate', async () => {
     // Same hidden one-shot seam distillation uses; `force` bypasses the size floor
     // so a manual run always executes.
@@ -1413,6 +1498,22 @@ app.whenReady().then(async () => {
   const recallLlm: LlmClient = {
     complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).memory.model })
   };
+  let rebuildTimer: NodeJS.Timeout | null = null;
+  scheduleMemoryRebuild = (): void => {
+    if (rebuildTimer) clearTimeout(rebuildTimer);
+    if (getMemoryRebuildStatus().state !== 'running') return;
+    rebuildTimer = setTimeout(async () => {
+      // A confirmed rebuild is opportunistic and must yield to interactive work.
+      if (runningMainThreads.size > 0 || overlayTurnRunning || Date.now() - lastInteractiveAt < 30_000) {
+        scheduleMemoryRebuild();
+        return;
+      }
+      const status = await runMemoryRebuildStep(recallLlm);
+      mainWindow?.webContents.send('memory:rebuildStatus', status);
+      if (status.state === 'running') scheduleMemoryRebuild();
+    }, 2_000);
+  };
+  scheduleMemoryRebuild();
 
   // The skills curator gets its OWN model setting (separate from memory) — curation
   // can be a harder task than fact distillation, so it can be pointed at a stronger
@@ -1493,6 +1594,14 @@ app.whenReady().then(async () => {
           );
           batch.forEach((f, j) => upsertFactVector(f.id, key, vecs[j]));
         }
+        // Same hygiene + backfill for thread-summary vectors (Level 1.5 search).
+        pruneSummaryVectorsExceptModel(key);
+        const summariesMissing = getSummariesMissingVector(key);
+        for (let i = 0; i < summariesMissing.length; i += 64) {
+          const batch = summariesMissing.slice(i, i + 64);
+          const vecs = await localEmbeddings.embed(batch.map((s) => s.text), 'passage');
+          batch.forEach((s, j) => upsertSummaryVector(s.id, key, vecs[j]));
+        }
         // Same hygiene + backfill for the episodic message vectors (semantic
         // episodic search). Watermark-driven and self-guarding, so a concurrent
         // post-turn kick can't double-embed.
@@ -1529,6 +1638,10 @@ app.whenReady().then(async () => {
       distilling = true;
       try {
         await distillNewMessages(recallLlm);
+        // Rolling thread summaries (Level 1.5): revise the summaries of the
+        // just-active threads from the same new messages. Own watermark, so a
+        // failure here never blocks fact extraction (and vice versa).
+        await refreshRecentSummaries(recallLlm);
         // Once enough new facts have piled up, clean the set: merge reworded
         // duplicates, apply corrections, drop superseded facts. Same hidden
         // LlmClient seam, so it's invisible to the user like distillation.
@@ -1580,6 +1693,21 @@ app.whenReady().then(async () => {
   // A pass shortly after startup, then a low-frequency recurring pass while idle.
   setTimeout(() => void runCurate(), 90_000);
   setInterval(() => void runCurate(), 24 * 60 * 60_000);
+
+  // Summary backfill for dormant threads (history that predates summaries, or
+  // fell behind while the app was closed). Opportunistic like the rebuild pass:
+  // it must yield to any interactive work, so a skipped pass just waits for the
+  // next interval tick.
+  const runSummaryBackfill = async (): Promise<void> => {
+    if (runningMainThreads.size > 0 || overlayTurnRunning || Date.now() - lastInteractiveAt < 30_000) return;
+    try {
+      await backfillSummaries(recallLlm, 3);
+    } catch {
+      // non-fatal
+    }
+  };
+  setTimeout(() => void runSummaryBackfill(), 3 * 60_000);
+  setInterval(() => void runSummaryBackfill(), 30 * 60_000);
 
   // Forward backend events to the main window. Registered once (not per-window) so
   // recreating the window can't double-subscribe.

@@ -934,6 +934,70 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .pill { font-size: var(--fs-10); font-weight: 600; padding: 2px 8px; border-radius: var(--radius-pill); white-space: nowrap; }
 .pill.ok { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
 .pill.off { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
+.pill.danger { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
+
+/* A signed-in provider whose token has died: a clickable "reconnect" pill on its
+   Settings row. Reuses the danger pill; button reset so it sits inline. */
+.row-reconnect { flex: none; margin-left: auto; border: none; cursor: pointer; }
+.row-reconnect:hover { background: color-mix(in srgb, var(--danger) 30%, transparent); }
+
+/* Red dot over the Settings inspector-tab icon when a provider needs reconnecting. */
+.insp-seg button { position: relative; }
+.tab-alert-dot {
+  position: absolute;
+  top: 3px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  box-shadow: 0 0 0 1.5px var(--panel);
+}
+
+/* Recall v2 trust/provenance controls. */
+.memory-rebuild-card, .memory-conflicts { display: grid; gap: var(--sp-2); }
+.memory-conflict { padding: var(--sp-2); border: 0.5px solid var(--line); border-radius: var(--radius); }
+/* Each claim is its own labelled block — two bare paragraphs read as one run-on fact. */
+.memory-conflict-side { padding: var(--sp-3) 0; }
+.memory-conflict-side + .memory-conflict-side { border-top: 0.5px solid var(--line); }
+.memory-conflict-side p { margin: var(--sp-2) 0 var(--sp-1); }
+.memory-conflict-side .muted { font-size: var(--fs-11); }
+.memory-conflict em { display: block; margin-top: var(--sp-3); color: var(--muted); font-size: var(--fs-11); }
+.memory-statement { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+/* Conversation summaries run long — clamp until clicked (click shows the full text
+   inline, per the no-tooltip-hidden-text convention). */
+.summary-text.clamped { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.memory-note-actions { display: flex; align-items: flex-start; gap: var(--sp-1); }
+.memory-evidence { display: grid; gap: var(--sp-2); margin-top: var(--sp-3); color: var(--muted); font-size: var(--fs-10); }
+.memory-evidence blockquote { margin: 0; padding-left: var(--sp-4); border-left: 2px solid var(--line); white-space: normal; }
+.chip.sensitive { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+/* Non-blocking "session expired — reconnect" strip above the conversation. Stays
+   until the credential is restored; the button opens the deep-linked re-auth gate. */
+.auth-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-6);
+  background: color-mix(in srgb, var(--danger) 14%, var(--panel));
+  border-bottom: 0.5px solid color-mix(in srgb, var(--danger) 40%, var(--line));
+  color: var(--ink);
+  font-size: var(--fs-12);
+}
+.auth-banner-msg { flex: 1; min-width: 0; }
+.auth-banner-btn {
+  flex: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: var(--fs-12);
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--radius);
+  border: none;
+  background: var(--danger);
+  color: #fff;
+}
+.auth-banner-btn:hover { background: color-mix(in srgb, var(--danger) 85%, black); }
 
 /* Connection status dot — a quiet green circle says "running fine" without a pill. */
 .mcp-dot { flex: none; width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--success); }
@@ -1323,12 +1387,14 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   background: var(--surface-2, rgba(127, 127, 127, 0.05));
 }
 .memory-note-body { flex: 1; min-width: 0; }
-.memory-note-forget {
+/* Per-fact hover actions (pin / confirm / restore / forget) — calm reveals, like
+   .message-action. A pinned fact keeps its button lit so the state reads at rest. */
+.memory-note-action {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
+  padding: var(--sp-2);
   background: none;
   border: none;
   border-radius: var(--radius);
@@ -1337,13 +1403,15 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   opacity: 0;
   transition: opacity var(--motion-fast) ease, color var(--motion-fast) ease, background var(--motion-fast) ease;
 }
-.memory-note:hover .memory-note-forget { opacity: 1; }
-.memory-note-forget:hover { color: var(--danger, #e5484d); background: var(--sel); }
+.memory-note:hover .memory-note-action { opacity: 1; }
+.memory-note-action:hover { color: var(--accent); background: var(--sel); }
+.memory-note-action.on { opacity: 1; color: var(--accent); }
+.memory-note-action.danger:hover { color: var(--danger); background: var(--sel); }
 .memory-note .statement { margin: 0; font-size: var(--fs-13); line-height: 1.45; }
-.memory-note .chip {
+/* Metadata pill, shared by stored-memory rows and the conflict card. */
+.chip {
   display: inline-block;
-  margin-top: 6px;
-  padding: 1px 8px;
+  padding: 1px var(--sp-4);
   font-size: var(--fs-10);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1351,7 +1419,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   border: 0.5px solid var(--line);
   border-radius: var(--radius-pill);
 }
-.memory-note .chip + .chip { margin-left: 6px; }
+.memory-note .chip { margin-top: var(--sp-3); }
+.chip + .chip { margin-left: var(--sp-3); }
 
 /* Active facts: injected last turn (accent) or in the draft preview (warm). The
    left edge marks the row so the grouping reads at a glance when scrolling. */

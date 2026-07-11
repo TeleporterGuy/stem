@@ -40,8 +40,11 @@ try {
 if (!skipBuild) {
   rmSync(BUILD_DIR, { recursive: true, force: true });
   const files = [
-    'store.ts', 'search.ts', 'inject.ts', 'embeddings.ts', 'rerank.ts', 'retrieval.ts',
-    'vector.ts', 'capture.ts', 'distill.ts', 'consolidate.ts', 'embed-catalog.ts', 'embed-episodic.ts'
+    'store.ts', 'search.ts', 'search-core.ts', 'inject.ts', 'embeddings.ts', 'rerank.ts', 'retrieval.ts',
+    'vector.ts', 'capture.ts', 'distill.ts', 'consolidate.ts', 'embed-catalog.ts', 'embed-episodic.ts',
+    // Not used by the eval itself, but keeps the compiled MCP server available
+    // to scripts/recall-mcp-probe.mjs, which spawns it from .recall-build.
+    'mcp-server-main.ts'
   ].map((f) => `src/main/recall/${f}`);
   console.log('compiling recall modules → .recall-build/ …');
   const tsc = spawnSync(
@@ -167,13 +170,42 @@ if (phaseB) {
   console.log('semantic/hybrid tiers skipped (Phase B modules not present in the build)');
 }
 
-// facts — the embedding-ranked fact tier (previewFacts), threshold forced low so
-// ranking actually runs (the corpus fact count is under the production default).
-store.setFactThreshold(1);
+// facts — the embedding-ranked fact tier (previewFacts). (The v1 inject-all
+// threshold is gone; v2+ always relevance-ranks, so no knob needs forcing.)
 for (const q of factQueries) {
   const r = await inject.previewFacts(q.text);
   const ranked = r.facts.map((f) => lookup.factFixtureId(f.text) ?? `?${f.id}`);
   record(`facts-${r.tier}`, q, ranked);
+}
+
+// summaries — Recall v3 tier: fixture-authored English thread summaries searched
+// hybrid (FTS + cosine over summary_vectors, RRF-fused). This is the tier that
+// carries the sk->en gate: English-canonical summaries remove the passage-side
+// language penalty that capped raw-message hybrid at ~0.50 recall@5.
+const summaryQueries = fixture.queries.filter((q) => q.target === 'summaries');
+if (summaryQueries.length > 0 && typeof store.upsertSummaryVector === 'function') {
+  const core = require(join(BUILD, 'search-core.js'));
+  const model = await client.modelId();
+  const missingSummaries = store.getSummariesMissingVector(model);
+  for (const s of missingSummaries) {
+    const [vec] = await embed([s.text], 'passage');
+    store.upsertSummaryVector(s.id, model, vec);
+  }
+  console.log(`embedded ${missingSummaries.length} corpus summaries for the summaries tier`);
+  const db = store.dbHandle();
+  for (const q of summaryQueries) {
+    const fts = core.ftsSearchSummaries(db, q.text, { limit: 5 })
+      .map((h) => lookup.summaryFixtureId(h) ?? `?${h.id}`);
+    record('summaries-fts', q, fts);
+    const [qVec] = await embed([q.text], 'query');
+    const hyb = await core.hybridSearchSummaries(db, q.text, {
+      limit: 5,
+      embedQuery: async () => ({ vec: qVec, model })
+    });
+    record('summaries-hybrid', q, hyb.map((h) => lookup.summaryFixtureId(h) ?? `?${h.id}`));
+  }
+} else if (summaryQueries.length > 0) {
+  console.log('summaries tier skipped (v3 store functions not present in the build)');
 }
 
 // ---- 5. report ----

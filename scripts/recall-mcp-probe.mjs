@@ -16,7 +16,9 @@ import { createServer } from 'node:net';
 
 const require = createRequire(import.meta.url);
 const store = require(fileURLToPath(new URL('../.recall-build/main/recall/store.js', import.meta.url)));
-const serverPath = fileURLToPath(new URL('../src/main/recall/mcp-server.mjs', import.meta.url));
+// The server is TS since v3 (shares search-core.ts with main) — spawn the
+// compiled artifact from the same .recall-build the store came from.
+const serverPath = fileURLToPath(new URL('../.recall-build/main/recall/mcp-server-main.js', import.meta.url));
 
 const dbPath = process.env.STEM_RECALL_DB;
 if (!dbPath) {
@@ -132,6 +134,17 @@ try {
   plain.send({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
   const list = await plain.waitFor(2);
   check('tools/list includes search_past_chats', list.result?.tools?.some((t) => t.name === 'search_past_chats'));
+  check('tools/list includes search_chat_summaries (v3)', list.result?.tools?.some((t) => t.name === 'search_chat_summaries'));
+
+  // v3 summaries tool: graceful empty-state on a DB with no summaries.
+  plain.send({
+    jsonrpc: '2.0',
+    id: 20,
+    method: 'tools/call',
+    params: { name: 'search_chat_summaries', arguments: { query: 'cardiology appointment' } }
+  });
+  const sumEmpty = (await plain.waitFor(20)).result?.content?.[0]?.text ?? '';
+  check('summaries search degrades gracefully with no summaries', /No matching conversation summaries/.test(sumEmpty));
 
   const text = await callTool(plain, 3, 'UZ Gent cardiology appointment');
   check('keyword search returns the health snippet', /UZ Gent/.test(text));

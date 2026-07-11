@@ -10,6 +10,7 @@ import * as store from '../../src/main/recall/store';
 import * as search from '../../src/main/recall/search';
 import * as inject from '../../src/main/recall/inject';
 import * as retrieval from '../../src/main/recall/retrieval';
+import { ftsSearchSummaries } from '../../src/main/recall/search-core';
 import { aggregate, checkFloors, loadFixture, mrr, recallAtK, scoreRanking } from '../eval/score.mjs';
 import { seedCorpus } from '../eval/seed.mjs';
 
@@ -104,17 +105,44 @@ describe('retrieval eval — FTS tier over the golden corpus', () => {
   });
 });
 
+describe('retrieval eval — summaries FTS tier (Recall v3)', () => {
+  const summaryQueries = fixture.queries.filter((q: { target: string }) => q.target === 'summaries');
+
+  function summariesFtsRanking(queryText: string): string[] {
+    return ftsSearchSummaries(store.dbHandle(), queryText, { limit: 5 })
+      .map((h) => lookup.summaryFixtureId(h) ?? `unknown:${h.id}`);
+  }
+
+  it('every direct summary query is reachable by FTS (recall@5 = 1)', () => {
+    for (const q of summaryQueries.filter((q: { modes: string[] }) => q.modes.includes('direct'))) {
+      const r = recallAtK(summariesFtsRanking(q.text), q.expected, 5);
+      expect(r, `direct summary query ${q.id} ("${q.text}") missed via FTS`).toBe(1);
+    }
+  });
+
+  it('every lexOverlap:false summary query is unreachable by FTS — the semantic (sk→en) gap', () => {
+    for (const q of summaryQueries.filter((q: { lexOverlap: boolean }) => !q.lexOverlap)) {
+      const r = recallAtK(summariesFtsRanking(q.text), q.expected, 5);
+      expect(r, `summary query ${q.id} ("${q.text}") unexpectedly reachable by FTS — fix lexOverlap or the summary text`).toBe(0);
+    }
+  });
+
+  it('summaries FTS aggregate clears its fixture floor', () => {
+    const rows = summaryQueries.map((q: { text: string; expected: string[]; langPair: string }) => ({
+      tier: 'summaries-fts',
+      langPair: q.langPair,
+      metrics: scoreRanking(summariesFtsRanking(q.text), q.expected)
+    }));
+    const violations = checkFloors(aggregate(rows), fixture.floors);
+    expect(violations, JSON.stringify(violations)).toEqual([]);
+  });
+});
+
 describe('retrieval eval — facts lexical sanity', () => {
   it('a direct facts query surfaces its fact through the lexical tier', async () => {
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
-    const prevThreshold = store.getFactThreshold();
-    store.setFactThreshold(1); // force ranking (22 corpus facts ≤ default 40 would inject all)
-    try {
-      const r = await inject.previewFacts('what am I allergic to?');
-      expect(r.tier).toBe('lexical');
-      expect(r.facts.some((f) => /birch pollen/.test(f.text))).toBe(true);
-    } finally {
-      store.setFactThreshold(prevThreshold);
-    }
+    const r = await inject.previewFacts('what am I allergic to?');
+    expect(r.tier).toBe('lexical');
+    expect(r.facts.some((f) => /birch pollen/.test(f.text))).toBe(true);
   });
 });

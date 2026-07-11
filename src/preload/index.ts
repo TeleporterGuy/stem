@@ -16,6 +16,7 @@ import type {
   McpServerInput,
   McpServerStatus,
   MemoryModelSettings,
+  MemoryRebuildStatus,
   NativeWebSearchSettings,
   PartialRetrievalSettings,
   RetrievalStage,
@@ -48,6 +49,7 @@ const api: StemApi = {
   testLocalProvider: (id: LocalProviderId, baseUrl: string) =>
     ipcRenderer.invoke('providers:testLocal', id, baseUrl),
   disconnectProvider: (providerId: string) => ipcRenderer.invoke('providers:disconnect', providerId),
+  checkAuth: (provider: string) => ipcRenderer.invoke('auth:check', provider),
   completeOnboarding: () => ipcRenderer.invoke('auth:completeOnboarding'),
   onAuthEvent: (listener: (event: AuthUiEvent) => void) => {
     const handler = (_e: unknown, event: AuthUiEvent) => listener(event);
@@ -152,13 +154,30 @@ const api: StemApi = {
   getActiveFacts: (threadId: string | null) => ipcRenderer.invoke('memory:activeFacts', threadId),
   previewFacts: (text: string) => ipcRenderer.invoke('memory:previewFacts', text),
   forgetMemory: (id: number) => ipcRenderer.invoke('memory:forget', id),
+  setFactPinned: (id: number, pinned: boolean) => ipcRenderer.invoke('memory:setPinned', id, pinned),
+  confirmFact: (id: number) => ipcRenderer.invoke('memory:confirmFact', id),
+  getFactDetails: (id: number) => ipcRenderer.invoke('memory:factDetails', id),
+  getMemoryConflicts: () => ipcRenderer.invoke('memory:conflicts'),
+  resolveMemoryConflict: (id: number, resolution) => ipcRenderer.invoke('memory:resolveConflict', id, resolution),
+  restoreSupersededFact: (id: number) => ipcRenderer.invoke('memory:restoreFact', id),
+  getMemoryRebuildStatus: () => ipcRenderer.invoke('memory:rebuildStatus'),
+  startMemoryRebuild: () => ipcRenderer.invoke('memory:startRebuild'),
+  pauseMemoryRebuild: () => ipcRenderer.invoke('memory:pauseRebuild'),
+  resumeMemoryRebuild: () => ipcRenderer.invoke('memory:resumeRebuild'),
+  onMemoryRebuildStatus: (listener: (status: MemoryRebuildStatus) => void) => {
+    const handler = (_e: unknown, status: MemoryRebuildStatus): void => listener(status);
+    ipcRenderer.on('memory:rebuildStatus', handler);
+    return () => ipcRenderer.removeListener('memory:rebuildStatus', handler);
+  },
   resetFactsMemory: () => ipcRenderer.invoke('memory:resetFacts'),
   resetEpisodicMemory: () => ipcRenderer.invoke('memory:resetEpisodic'),
   consolidateMemory: () => ipcRenderer.invoke('memory:consolidate'),
   getEpisodicStats: () => ipcRenderer.invoke('memory:episodicStats'),
+  getThreadSummaries: () => ipcRenderer.invoke('memory:summaries'),
+  deleteThreadSummary: (id: number) => ipcRenderer.invoke('memory:deleteSummary', id),
   setEpisodicLimit: (bytes: number) => ipcRenderer.invoke('memory:setEpisodicLimit', bytes),
   setTidyThreshold: (n: number) => ipcRenderer.invoke('memory:setTidyThreshold', n),
-  setFactThreshold: (n: number) => ipcRenderer.invoke('memory:setFactThreshold', n),
+  setMaxRelevantFacts: (n: number) => ipcRenderer.invoke('memory:setMaxRelevantFacts', n),
 
   listChats: () => ipcRenderer.invoke('chats:list'),
   searchChatsFast: (query: string) => ipcRenderer.invoke('chats:searchFast', query),

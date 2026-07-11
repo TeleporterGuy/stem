@@ -46,6 +46,9 @@ vocabulary. Compose these — don't invent new layout.
 | `.muted` | Secondary helper text (`--fs-12`, muted) | One short explanatory line under a control. |
 | `.memory-view` | Section divided off by a top border | The "stored data" area of a memory tab (head + actions + body). |
 | `.memory-view-head` + `.memory-view-actions` + `.link-btn` | Section header with right-aligned text actions | "Stored memory" / "Episodic recall" headers with Refresh / Tidy up. |
+| `.memory-view-actions` + `.link-btn` (standalone) | Action row **inside** a `.formgroup` | Actions belonging to a card rather than a section header (Start rebuild / Pause, Keep newer / older / both). Same row, same text-link buttons — no bordered push-buttons. |
+| `.link-btn.icon-only` | Compact muted icon action with a hover label | Icon-only actions in a dense row; add `.on` for an active/toggled state, `data-label` for the hover label. |
+| `.memory-note-action` (`.danger`, `.on`) | Per-row hover action inside `.memory-note` | Pin / confirm / restore / forget on a single stored fact. Hidden until the row is hovered; `.on` keeps a toggled action (a pin) lit at rest. |
 | `.memory-view-toggle` | Chevron disclosure header (`ChevronRight` + `svg.open` rotate) | Collapsible section headers; show a count in the label when collapsed. Renders **recessive — muted color, normal weight (400)**, subtler than body text, brightening to `--ink` on hover. A disclosure is a quiet affordance, not a heading; never bold. |
 | `.memory-reset` / `.memory-reset-trigger` | Understated, bottom-tucked destructive action | Reset / erase, with an inline confirm step before acting. |
 
@@ -64,6 +67,17 @@ vocabulary. Compose these — don't invent new layout.
 5. **No raw paths / DB internals in the UI.** Memory is an opaque local store; don't
    surface filesystem paths to `recall.sqlite` etc.
 6. **Helper text is one muted line.** Plain language, no jargon.
+7. **Actions are text links, not push-buttons.** Every action in a settings surface is a
+   `.link-btn` (or `.link-btn.icon-only`) in a `.memory-view-actions` row — including
+   consequential ones like Tidy up, which spends model tokens. A bare `<button>` renders
+   with the browser's default chrome and appears nowhere else in Stem; `button.primary`
+   is reserved for the onboarding gate and MCP/instruction approval cards, where a
+   single call-to-action owns the surface. If an action feels too weighty for a text
+   link, give it an inline confirm step (`.memory-reset` / `.memory-reset-trigger`)
+   rather than a heavier button.
+8. **No Refresh buttons.** A panel that can go stale should subscribe to a main-process
+   push channel (`onSkillsChanged`, `onMemoryRebuildStatus`, …) and re-render itself. A
+   manual Refresh — or a `setInterval` poll — is a missing subscription, not a feature.
 
 ## Chat & composer
 

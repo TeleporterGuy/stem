@@ -7,8 +7,7 @@ import { fileURLToPath } from 'node:url';
 const rootDir = fileURLToPath(new URL('.', import.meta.url));
 const mainAssets = [
   ['src/main/pi/stem-mcp-extension.mjs', 'dist/main/pi/stem-mcp-extension.mjs'],
-  ['src/main/pi/pi-node-shim.mjs', 'dist/main/pi/pi-node-shim.mjs'],
-  ['src/main/recall/mcp-server.mjs', 'dist/main/recall/mcp-server.mjs']
+  ['src/main/pi/pi-node-shim.mjs', 'dist/main/pi/pi-node-shim.mjs']
 ] as const;
 
 function copyMainRuntimeAssets() {
@@ -32,7 +31,14 @@ export default defineConfig({
       rollupOptions: {
         // embed-worker is a second entry: it runs in its own utilityProcess
         // (utilityProcess.fork(dist/main/embed-worker.js) in embed-worker-host.ts).
-        input: { index: 'src/main/index.ts', 'embed-worker': 'src/main/recall/embed-worker.ts' },
+        // recall-mcp-server is a third: a standalone stdio MCP server spawned with
+        // ELECTRON_RUN_AS_NODE (see pi/mcp-config.ts); bundling it lets it share
+        // src/main/recall/search-core.ts with the main process.
+        input: {
+          index: 'src/main/index.ts',
+          'embed-worker': 'src/main/recall/embed-worker.ts',
+          'recall-mcp-server': 'src/main/recall/mcp-server-main.ts'
+        },
         // transformers.js must stay external: it lazily loads onnxruntime-node's
         // native .node binary, which cannot live inside a rollup bundle. Resolved
         // from node_modules at runtime instead.

@@ -62,8 +62,8 @@ describe('Stem Recall', () => {
 
   it('inject builds a context block with facts + relevant hits, excluding current thread', async () => {
     const ctx = (await inject.buildRecallContext('what is my UZ Gent cardiology appointment', { currentThreadId: 'B' })) ?? '';
-    expect(ctx).toMatch(/durable facts/i);
-    expect(ctx).toMatch(/UZ Gent/);
+    expect(ctx).toMatch(/stem_memory_data/i);
+    expect(ctx).toMatch(/UZ Gent/i);
     expect(ctx).toMatch(/search_past_chats/);
   });
 
@@ -101,6 +101,31 @@ describe('Stem Recall', () => {
     expect(clampMass.drop.length).toBe(0);
   });
 
+  it('clampOps lets merges retire most of a duplicate-heavy chunk but rejects runaway groups', () => {
+    // A migration-era store is ~2x duplicated: merging half the chunk away is the
+    // *correct* outcome and must survive the blast-radius guard (merges are
+    // content-preserving and reversible). Ten pairs → ten losers of twenty facts.
+    const pairs = Array.from({ length: 10 }, (_, i) => ({ ids: [i * 2 + 1, i * 2 + 2], text: `fact ${i}` }));
+    const ok = consolidate.clampOps({ merge: pairs, correct: [], drop: [] }, new Set(), 20);
+    expect(ok.merge).toHaveLength(10);
+    // One merge swallowing 20 ids is a model gone wild, not a duplicate cluster.
+    const wild = consolidate.clampOps(
+      { merge: [{ ids: Array.from({ length: 20 }, (_, i) => i + 1), text: 'everything' }], correct: [], drop: [] },
+      new Set(),
+      20
+    );
+    expect(wild.merge).toHaveLength(0);
+  });
+
+  it('consolidate reports chunks the model failed on instead of pretending a clean pass', async () => {
+    const res = await consolidate.consolidateFacts(
+      { complete: async () => { throw new Error('model down'); } },
+      { force: true }
+    );
+    expect(res.failedChunks).toBeGreaterThan(0);
+    expect(res.merged + res.corrected + res.dropped).toBe(0);
+  });
+
   it('consolidate merges reworded duplicates and never drops a protected fact', async () => {
     store.upsertFact('The user lives in Bratislava, Slovakia', 'distilled');
     store.upsertFact('The user is based in Bratislava', 'distilled'); // reworded duplicate
@@ -119,7 +144,8 @@ describe('Stem Recall', () => {
     };
     const res = await consolidate.consolidateFacts(consolidateLlm);
     const afterFacts = store.getAllFacts();
-    expect(afterFacts.filter((f) => /Bratislava/.test(f.text)).length).toBe(1);
+    expect(afterFacts.filter((f) => /Bratislava/.test(f.text) && f.status === 'active').length).toBe(1);
+    expect(afterFacts.some((f) => /Bratislava/.test(f.text) && f.status === 'superseded')).toBe(true);
     expect(res.merged).toBe(1);
     expect(afterFacts.some((f) => /HomeNet/.test(f.text))).toBe(true);
     expect(res.dropped).toBe(0);
@@ -181,10 +207,11 @@ describe('Stem Recall', () => {
 // stays offline. Shares the same DB as above; closeForTest runs in the file-level
 // afterAll. resetFacts() at the start of each test makes the fact set deterministic.
 describe('Stem Recall — fact relevance ranking', () => {
-  // These cases seed ~46 facts to exceed the inject-all ceiling; pin it at the old
-  // 40 so the suite stays independent of DEFAULT_FACT_THRESHOLD.
-  beforeAll(() => store.setFactThreshold(40));
-  afterAll(() => store.setFactThreshold(store.DEFAULT_FACT_THRESHOLD));
+  // These cases seed ~46 facts and assert that relevance — not recency — decides
+  // what survives the per-turn cap. Pin the cap so the suite stays independent of
+  // DEFAULT_MAX_RELEVANT_FACTS.
+  beforeAll(() => store.setMaxRelevantFacts(8));
+  afterAll(() => store.setMaxRelevantFacts(store.DEFAULT_MAX_RELEVANT_FACTS));
 
   // Keyword-encoding fake embedder: a text matching `key` maps to [1,0], else [0,1],
   // so the query and any fact sharing the keyword have cosine 1 and everything else 0.
@@ -210,7 +237,7 @@ describe('Stem Recall — fact relevance ranking', () => {
 
     store.upsertFact('The user once met a pangolin in Borneo', 'distilled'); // oldest → dropped by the recency cap
     for (let i = 0; i < 45; i++) store.upsertFact(`The user has misc preference ${i}`, 'distilled');
-    expect(store.getAllFacts().length).toBeGreaterThan(store.getFactThreshold());
+    expect(store.getAllFacts().length).toBeGreaterThan(store.getMaxRelevantFacts());
 
     const ctx = (await inject.buildRecallContext('tell me about the pangolin', {})) ?? '';
     expect(ctx).toMatch(/pangolin/); // relevance pulls the oldest fact back in
@@ -241,7 +268,7 @@ describe('Stem Recall — fact relevance ranking', () => {
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
   });
 
-  it('below the threshold injects every fact without calling embeddings', async () => {
+  it('always relevance-ranks facts, even for a small store', async () => {
     store.resetFacts();
     const emb = keywordEmbeddings(/anything/i);
     retrieval.setRetrievalClients({ embeddings: emb.client, rerank: null });
@@ -251,14 +278,14 @@ describe('Stem Recall — fact relevance ranking', () => {
     store.upsertFact('The user codes in TypeScript', 'distilled');
 
     const ctx = (await inject.buildRecallContext('where do I live', {})) ?? '';
-    expect(emb.calls()).toBe(0); // cheap path never touches the endpoint
+    expect(emb.calls()).toBe(2); // query + passage-vector backfill
     expect(ctx).toMatch(/Bratislava/);
     expect(ctx).toMatch(/Rex/);
     expect(ctx).toMatch(/TypeScript/);
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
   });
 
-  it('falls back to recency injection when embeddings error (never breaks a turn)', async () => {
+  it('does not inject recency filler when embeddings error and lexical search misses', async () => {
     store.resetFacts();
     retrieval.setRetrievalClients({
       embeddings: {
@@ -273,8 +300,7 @@ describe('Stem Recall — fact relevance ranking', () => {
     for (let i = 0; i < 50; i++) store.upsertFact(`The user holds opinion number ${i}`, 'distilled');
 
     const ctx = await inject.buildRecallContext('what do I think', {});
-    expect(ctx).not.toBeNull();
-    expect(ctx).toMatch(/durable facts/i); // facts still injected, via recency fallback
+    expect(ctx).toBeNull();
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
   });
 
@@ -332,21 +358,21 @@ describe('Stem Recall — fact relevance ranking', () => {
 
     store.upsertFact('The user once met a pangolin in Borneo', 'distilled'); // oldest → dropped by recency cap
     for (let i = 0; i < 45; i++) store.upsertFact(`The user has misc preference ${i}`, 'distilled');
-    expect(store.getAllFacts().length).toBeGreaterThan(store.getFactThreshold());
+    expect(store.getAllFacts().length).toBeGreaterThan(store.getMaxRelevantFacts());
 
     const ctx = (await inject.buildRecallContext('tell me about the pangolin', {})) ?? '';
-    expect(ctx).toMatch(/durable facts/i);
+    expect(ctx).toMatch(/stem_memory_data/i);
     expect(ctx).toMatch(/pangolin/); // lexical match pulls the buried oldest fact back in — no embeddings used
   });
 
-  it('lexical fallback degrades to plain recency when the query shares no terms with any fact', async () => {
+  it('lexical fallback returns no facts when the query shares no terms with any fact', async () => {
     store.resetFacts();
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
     for (let i = 0; i < 50; i++) store.upsertFact(`The user holds opinion number ${i}`, 'distilled');
 
     // "what do I think" → only searchable token is "think", which no fact contains.
     const ctx = (await inject.buildRecallContext('what do I think', {})) ?? '';
-    expect(ctx).toMatch(/durable facts/i); // still injected, via the recency floor
+    expect(ctx).toBe('');
   });
 
   it('trigram substring fallback recalls a partial-word match the term index misses', async () => {
@@ -362,21 +388,19 @@ describe('Stem Recall — fact relevance ranking', () => {
     expect(ctx).toMatch(/reranking stage/);
   });
 
-  it('subset tiers flag the facts as partial and point at search_facts; tier "all" does not', async () => {
+  it('v2 injection is structured, partial, and points at on-demand search', async () => {
     store.resetFacts();
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
     store.upsertFact('The user lives in Bratislava', 'distilled');
 
-    // Below the ceiling every fact is present — no gap to warn about.
     const all = (await inject.buildRecallContext('where do I live', {})) ?? '';
-    expect(all).not.toMatch(/search_facts/);
-    expect(all).not.toMatch(/relevance-selected subset/);
+    expect(all).toMatch(/stem_memory_data/);
+    expect(all).toMatch(/search_facts/);
 
     // Above it the injected set is partial: say so and point at the facts tool,
     // so off-topic-but-relevant context (family, vehicle) can still be found.
     for (let i = 0; i < 45; i++) store.upsertFact(`The user has misc preference ${i}`, 'distilled');
     const subset = (await inject.buildRecallContext('tell me about Bratislava', {})) ?? '';
-    expect(subset).toMatch(/relevance-selected subset/);
     expect(subset).toMatch(/search_facts/);
   });
 
@@ -442,7 +466,8 @@ describe('Stem Recall — fact relevance ranking', () => {
 
     // A naive id-order chunk would split the two zebras; clustering kept them together.
     expect(res.merged).toBe(1);
-    expect(store.getAllFacts().filter((f) => /zebra/i.test(f.text)).length).toBe(1);
+    expect(store.getAllFacts().filter((f) => /zebra/i.test(f.text) && f.status === 'active').length).toBe(1);
+    expect(store.getAllFacts().some((f) => /zebra/i.test(f.text) && f.status === 'superseded')).toBe(true);
 
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
     store.setConsolidateChunkSize(store.DEFAULT_CONSOLIDATE_CHUNK);
@@ -453,8 +478,8 @@ describe('Stem Recall — fact relevance ranking', () => {
 // produced it, and the per-thread store round-trips the injected ids (dropping any
 // since deleted). Shares the same DB; resetFacts() makes each case deterministic.
 describe('Stem Recall — active facts', () => {
-  beforeAll(() => store.setFactThreshold(40)); // ~46-fact seeds must exceed the ceiling
-  afterAll(() => store.setFactThreshold(store.DEFAULT_FACT_THRESHOLD));
+  beforeAll(() => store.setMaxRelevantFacts(8));
+  afterAll(() => store.setMaxRelevantFacts(store.DEFAULT_MAX_RELEVANT_FACTS));
 
   function keywordEmbeddings(key: RegExp) {
     return {
@@ -464,14 +489,14 @@ describe('Stem Recall — active facts', () => {
     };
   }
 
-  it('previewFacts reports tier "all" below the threshold and returns every fact', async () => {
+  it('previewFacts relevance-ranks even below the old threshold', async () => {
     store.resetFacts();
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
     store.upsertFact('The user lives in Bratislava', 'distilled');
     store.upsertFact('The user has a dog named Rex', 'distilled');
     const r = await inject.previewFacts('where do I live');
-    expect(r.tier).toBe('all');
-    expect(r.facts.length).toBe(2);
+    expect(r.tier).toBe('lexical');
+    expect(r.facts.map((f) => f.text)).toEqual(['The user lives in Bratislava']);
   });
 
   it('previewFacts reports tier "embedding" when ranking past the threshold', async () => {
@@ -495,13 +520,13 @@ describe('Stem Recall — active facts', () => {
     expect(r.facts.some((f) => /pangolin/i.test(f.text))).toBe(true);
   });
 
-  it('previewFacts reports tier "recency" when nothing matches lexically', async () => {
+  it('previewFacts reports tier "none" when nothing matches lexically', async () => {
     store.resetFacts();
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
     for (let i = 0; i < 50; i++) store.upsertFact(`The user holds opinion number ${i}`, 'distilled');
     const r = await inject.previewFacts('what do I think');
-    expect(r.tier).toBe('recency');
-    expect(r.facts.length).toBeGreaterThan(0);
+    expect(r.tier).toBe('none');
+    expect(r.facts).toHaveLength(0);
   });
 
   it('setActiveFacts/getActiveFactIds round-trip; getFactsByIds drops deleted ids in order', () => {
@@ -513,14 +538,14 @@ describe('Stem Recall — active facts', () => {
 
     store.setActiveFacts('THREAD-X', [b.id, missing, a.id], 'embedding');
     const rec = store.getActiveFactIds('THREAD-X');
-    expect(rec).toEqual({ factIds: [b.id, missing, a.id], tier: 'embedding' });
+    expect(rec).toEqual({ factIds: [b.id, missing, a.id], reasons: {}, tier: 'embedding' });
 
     const resolved = store.getFactsByIds(rec!.factIds);
     expect(resolved.map((f) => f.id)).toEqual([b.id, a.id]); // order preserved, missing dropped
 
     // Upsert replaces the row for the same thread.
     store.setActiveFacts('THREAD-X', [a.id], 'all');
-    expect(store.getActiveFactIds('THREAD-X')).toEqual({ factIds: [a.id], tier: 'all' });
+    expect(store.getActiveFactIds('THREAD-X')).toEqual({ factIds: [a.id], reasons: {}, tier: 'all' });
 
     expect(store.getActiveFactIds('NO-SUCH-THREAD')).toBeNull();
   });

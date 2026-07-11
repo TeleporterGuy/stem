@@ -25,6 +25,7 @@ import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bo
 import { readSettings } from '../workspace/settings';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
 import { buildRecallContext, type RecallTimings } from '../recall/inject';
+import { reconcileExplicitFact } from '../recall/reconcile';
 import { buildFilesContext } from '../files/inject';
 import { buildConnectedFoldersContext } from '../connected-folders/inject';
 import { getPrivateRoots } from '../workspace/connected-folders';
@@ -63,6 +64,7 @@ import {
   upsertTurnActivity,
   upsertTurnTiming,
   setActiveFacts,
+  recordTurnInjectedFacts,
   type Fact,
   type FactTier
 } from '../recall/store';
@@ -366,6 +368,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   async startTurn(input: StartTurnInput): Promise<StartTurnResult> {
     const memory = await captureMemoryFromUserInput(input.input);
     if (memory.shouldAcknowledge) {
+      if (memory.factId != null) {
+        // Reconciliation is deliberately off the acknowledgement path: the fact is
+        // durable the moment it's written, so a slow model never delays the reply
+        // and a failed one costs only the supersede/conflict links, not the memory.
+        setTimeout(() => void reconcileExplicitFact(memory.factId!, this), 0);
+      }
       return { handled: true, assistantMessage: "I'll remember that.", rememberedPath: memory.path };
     }
 
@@ -400,7 +408,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         await writeServiceTierGate(input.serviceTier ?? null).catch(() => undefined);
 
         const buildStart = Date.now();
-        const { message, images } = await this.buildMessage(input, threadId, turn.recall);
+        const { message, images } = await this.buildMessage(input, threadId, turn.recall, turnId);
         turn.buildMs = Date.now() - buildStart;
         // Anchor "send" at the write itself so send→firstToken is independent of how
         // pi acks the prompt command. The pre-first-event wait is attributed to no
@@ -1413,7 +1421,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private async buildMessage(
     input: StartTurnInput,
     threadId: string,
-    recallTimings?: RecallTimings
+    recallTimings?: RecallTimings,
+    turnId?: string
   ): Promise<{ message: string; images: PiImageContent[] }> {
     const blocks: string[] = [];
     // The user's standing custom instructions — an AUTHORITATIVE block, first and
@@ -1437,7 +1446,18 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       if (recall) blocks.push(recall);
       // Record what was injected so the Memory UI can show this chat's active facts.
       try {
-        setActiveFacts(threadId, chosen.facts.map((f) => f.id), chosen.tier);
+        setActiveFacts(
+          threadId,
+          chosen.facts.map((f) => ({ id: f.id, reason: f.selectionReason })),
+          chosen.tier
+        );
+        // Also log this turn's injected set for the distill pass to grade
+        // ("which of these facts did the reply actually use?") — the feedback
+        // signal behind usage-aware fact ranking. The captured user/assistant
+        // messages carry the same turnId, which is the join key.
+        if (turnId && chosen.facts.length > 0) {
+          recordTurnInjectedFacts(threadId, turnId, chosen.facts.map((f) => f.id));
+        }
       } catch {
         // Debug surface only — never let it break a turn.
       }

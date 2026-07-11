@@ -648,9 +648,8 @@ export interface MemorySettings {
   episodicLimitBytes: number;
   /** New-fact count that triggers an automatic tidy-up (0 = manual only). */
   tidyThreshold: number;
-  /** At or below this many facts, every fact is injected each turn; above it,
-   *  only the most relevant are selected per message. */
-  factThreshold: number;
+  /** Maximum non-pinned durable facts selected for one turn. */
+  maxRelevantFacts: number;
 }
 
 /** Metadata for the Level-2 episodic store, shown in the Memory → Recall sub-tab. */
@@ -677,6 +676,28 @@ export interface MemoryFile {
   statement?: string;
   /** Notes only: short human chip for how it was captured. */
   source?: string;
+  category?: FactCategory;
+  sensitivity?: FactSensitivity;
+  confidence?: number;
+  status?: FactStatus;
+  pinned?: boolean;
+  validUntil?: number | null;
+  evidenceCount?: number;
+  /** Notes only: turns this fact was injected into / visibly used by the reply. */
+  timesInjected?: number;
+  timesUsed?: number;
+  lastUsedAt?: number | null;
+}
+
+/** One thread's rolling episodic summary (Level 1.5), shown in Memory → Recall. */
+export interface ThreadSummary {
+  id: number;
+  threadId: string;
+  text: string;
+  firstTs: number;
+  lastTs: number;
+  messageCount: number;
+  updatedAt: number;
 }
 
 export interface MemoryContents {
@@ -686,11 +707,91 @@ export interface MemoryContents {
 }
 
 /** Which selection path chose a turn's durable facts (see chooseFacts in recall/inject). */
-export type FactTier = 'all' | 'embedding' | 'lexical' | 'recency';
+export type FactTier =
+  | 'hybrid'
+  | 'embedding'
+  | 'lexical'
+  | 'pinned-only'
+  | 'none'
+  // Recall v1 values remain readable on previously recorded active turns.
+  | 'all'
+  | 'recency';
+
+export type FactCategory =
+  | 'identity'
+  | 'preference'
+  | 'relationship'
+  | 'work'
+  | 'project'
+  | 'health'
+  | 'finance'
+  | 'location'
+  | 'schedule'
+  | 'other';
+export type FactSensitivity = 'standard' | 'sensitive';
+export type FactStatus = 'active' | 'conflicted' | 'superseded';
+export type FactSelectionReason = 'pinned' | 'semantic' | 'lexical';
+
+export interface FactEvidence {
+  id: number;
+  messageId: number | null;
+  threadId: string | null;
+  role: 'user' | 'assistant' | null;
+  timestamp: number;
+  excerpt: string;
+  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'legacy';
+}
+
+export interface FactDetails {
+  id: number;
+  text: string;
+  source: string;
+  category: FactCategory;
+  sensitivity: FactSensitivity;
+  confidence: number;
+  status: FactStatus;
+  pinned: boolean;
+  createdAt: number;
+  updatedAt: number;
+  validFrom: number | null;
+  validUntil: number | null;
+  supersededBy: number | null;
+  /** How many turns this fact was injected into (graded turns only). */
+  timesInjected: number;
+  /** How many of those turns the reply visibly drew on it. */
+  timesUsed: number;
+  lastUsedAt: number | null;
+  evidence: FactEvidence[];
+}
+
+export interface MemoryConflict {
+  id: number;
+  factA: FactDetails;
+  factB: FactDetails;
+  reason: string;
+  createdAt: number;
+}
+
+export type ConflictResolution = 'keep_newer' | 'keep_older' | 'keep_both';
+
+export interface MemoryRebuildStatus {
+  state: 'available' | 'running' | 'paused' | 'complete' | 'failed';
+  processedMessages: number;
+  totalMessages: number;
+  cursorMessageId: number;
+  cursorOffset: number;
+  lastError?: string;
+}
 
 /** The durable facts injected on a turn (last turn or a draft preview), plus their tier. */
 export interface ActiveFacts {
-  facts: Array<{ id: number; text: string; source: string }>;
+  facts: Array<{
+    id: number;
+    text: string;
+    source: string;
+    sensitivity?: FactSensitivity;
+    reason?: FactSelectionReason;
+  }>;
   tier: FactTier;
 }
 
@@ -699,6 +800,8 @@ export interface MemoryConsolidateResult {
   merged: number;
   corrected: number;
   dropped: number;
+  /** Chunks whose model call failed — those facts were never reviewed this pass. */
+  failedChunks: number;
   contents: MemoryContents;
 }
 
@@ -1072,6 +1175,12 @@ export interface StemApi {
   testLocalProvider(id: LocalProviderId, baseUrl: string): Promise<LocalProviderTestResult>;
   /** Remove a provider's credentials (or disable a local provider) and refresh the backend. */
   disconnectProvider(providerId: string): Promise<ProviderLoginResult>;
+  /**
+   * Authoritative liveness probe for a stored credential: refreshes an expired
+   * OAuth token and reports whether it can still produce a usable key. `false` =
+   * signed out (refresh token dead). Used to classify a failed turn.
+   */
+  checkAuth(provider: string): Promise<{ alive: boolean }>;
   /** Mark the first-run wizard as finished. */
   completeOnboarding(): Promise<AppSettings>;
   /** Provider-login progress pushes (auth-url opened, device code, done, …). */
@@ -1168,6 +1277,18 @@ export interface StemApi {
   previewFacts(text: string): Promise<ActiveFacts>;
   /** Delete one durable fact; returns the refreshed memory list. */
   forgetMemory(id: number): Promise<MemoryContents>;
+  setFactPinned(id: number, pinned: boolean): Promise<MemoryContents>;
+  confirmFact(id: number): Promise<MemoryContents>;
+  getFactDetails(id: number): Promise<FactDetails | null>;
+  resolveMemoryConflict(id: number, resolution: ConflictResolution): Promise<MemoryContents>;
+  restoreSupersededFact(id: number): Promise<MemoryContents>;
+  getMemoryConflicts(): Promise<MemoryConflict[]>;
+  getMemoryRebuildStatus(): Promise<MemoryRebuildStatus>;
+  startMemoryRebuild(): Promise<MemoryRebuildStatus>;
+  pauseMemoryRebuild(): Promise<MemoryRebuildStatus>;
+  resumeMemoryRebuild(): Promise<MemoryRebuildStatus>;
+  /** Fired after each rebuild step persists progress — the panel never polls. */
+  onMemoryRebuildStatus(listener: (status: MemoryRebuildStatus) => void): () => void;
   /** Wipe durable facts (Level 1); keeps episodic + toggle. Returns the empty fact list. */
   resetFactsMemory(): Promise<MemoryContents>;
   /** Wipe the episodic store (Level 2); keeps facts + toggle. Returns refreshed stats. */
@@ -1176,12 +1297,16 @@ export interface StemApi {
   consolidateMemory(): Promise<MemoryConsolidateResult>;
   /** Episodic-store metadata for the Memory → Recall sub-tab (count + size only). */
   getEpisodicStats(): Promise<EpisodicStats>;
+  /** Rolling thread summaries (Level 1.5) for the Memory → Recall sub-tab. */
+  getThreadSummaries(): Promise<ThreadSummary[]>;
+  /** Delete one thread summary; returns the refreshed list. */
+  deleteThreadSummary(id: number): Promise<ThreadSummary[]>;
   /** Set the episodic-store size cap (bytes; 0 = unlimited); returns refreshed settings. */
   setEpisodicLimit(bytes: number): Promise<MemorySettings>;
   /** Set the auto-tidy-up fact threshold (0 = manual only); returns refreshed settings. */
   setTidyThreshold(n: number): Promise<MemorySettings>;
-  /** Set the inject-all-facts threshold (above it, facts are relevance-ranked); returns refreshed settings. */
-  setFactThreshold(n: number): Promise<MemorySettings>;
+  /** Cap on relevance-ranked facts injected per turn (pinned facts are extra). */
+  setMaxRelevantFacts(n: number): Promise<MemorySettings>;
 
   // Chats + folders. Folder mutations return the fresh list (like addMcpServer);
   // chat rename/delete return void and the renderer re-fetches.

@@ -1,16 +1,19 @@
-import type { EpisodicStats, MemoryContents, MemorySettings } from '../../shared/types';
+import type { EpisodicStats, MemoryContents, MemorySettings, ThreadSummary } from '../../shared/types';
 import {
   deleteFact,
+  deleteThreadSummary,
   getAllFacts,
   getEpisodicLimitBytes,
   getEpisodicStats,
-  getFactThreshold,
+  getFactEvidenceCounts,
+  getMaxRelevantFacts,
   getMeta,
   getTidyThreshold,
+  listThreadSummaries as storeListThreadSummaries,
   resetEpisodic,
   resetFacts,
   setEpisodicLimitBytes,
-  setFactThreshold,
+  setMaxRelevantFacts,
   setMeta,
   setTidyThreshold,
   upsertFact
@@ -39,7 +42,7 @@ export async function getMemorySettings(): Promise<MemorySettings> {
     generateMemories: enabled,
     episodicLimitBytes: getEpisodicLimitBytes(),
     tidyThreshold: getTidyThreshold(),
-    factThreshold: getFactThreshold()
+    maxRelevantFacts: getMaxRelevantFacts()
   };
 }
 
@@ -55,9 +58,9 @@ export async function setTidyUpThreshold(n: number): Promise<MemorySettings> {
   return getMemorySettings();
 }
 
-/** Set the inject-all-facts threshold (above it, facts are relevance-ranked per message). */
-export async function setFactInjectThreshold(n: number): Promise<MemorySettings> {
-  setFactThreshold(n);
+/** Cap on relevance-ranked facts injected per turn (pinned facts are extra). */
+export async function setMaxRelevantFactCount(n: number): Promise<MemorySettings> {
+  setMaxRelevantFacts(n);
   return getMemorySettings();
 }
 
@@ -71,13 +74,20 @@ export async function setMemoryEnabled(enabled: boolean): Promise<MemorySettings
 interface MemoryCaptureResult {
   captured: boolean;
   shouldAcknowledge: boolean;
+  factId?: number;
   path?: string;
 }
 
 function isSensitiveMemoryText(text: string): boolean {
-  return /\b(?:password|passcode|pin|api[_ -]?key|token|secret|private key|seed phrase|recovery phrase|credit card|card number|ssn|social security)\b/i.test(
+  return /\b(?:password|passcode|pin|api[_ -]?key|token|secret|private key|seed phrase|recovery phrase|credit card|card number|cvv|ssn|social security|national id|government id|birth number)\b/i.test(
     text
   );
+}
+
+function explicitSensitivity(text: string): 'standard' | 'sensitive' {
+  return /\b(?:health|diagnos|allerg|medic|doctor|hospital|finance|salary|income|debt|mortgage|bank|address|phone|email|appointment|reservation)\b/i.test(text)
+    ? 'sensitive'
+    : 'standard';
 }
 
 function hasExplicitRememberIntent(text: string): boolean {
@@ -122,14 +132,28 @@ export async function captureMemoryFromUserInput(text: string): Promise<MemoryCa
     return { captured: false, shouldAcknowledge: false };
   }
 
-  upsertFact(statement, 'explicit');
-  return { captured: true, shouldAcknowledge: true };
+  const factId = upsertFact(statement, {
+    source: 'explicit',
+    confidence: 1,
+    sensitivity: explicitSensitivity(statement),
+    evidence: [{
+      messageId: null,
+      threadId: null,
+      role: 'user',
+      timestamp: Math.floor(Date.now() / 1000),
+      excerpt: text,
+      origin: 'explicit_user'
+    }]
+  });
+  return { captured: true, shouldAcknowledge: true, factId: factId ?? undefined };
 }
 
 // ---- Manage panel "Stored memory" view ----
 
 function sourceLabel(source: string): string {
-  return source === 'explicit' ? 'On request' : 'Learned';
+  if (source === 'explicit') return 'On request';
+  if (source === 'legacy') return 'Legacy';
+  return 'Learned';
 }
 
 /**
@@ -141,6 +165,7 @@ export async function readMemoryFiles(): Promise<MemoryContents> {
   // Browse view: show every fact (newest first), not just the most recent 100 —
   // the old cap silently hid older facts from the Manage panel.
   const facts = getAllFacts().sort((a, b) => b.updatedAt - a.updatedAt);
+  const evidenceCounts = getFactEvidenceCounts();
   const files = facts.map((f) => ({
     name: `fact-${f.id}`,
     label: 'Fact',
@@ -149,7 +174,17 @@ export async function readMemoryFiles(): Promise<MemoryContents> {
     kind: 'note' as const,
     id: f.id,
     statement: f.text,
-    source: sourceLabel(f.source)
+    source: sourceLabel(f.source),
+    category: f.category,
+    sensitivity: f.sensitivity,
+    confidence: f.confidence,
+    status: f.status,
+    pinned: f.pinned,
+    validUntil: f.validUntil,
+    evidenceCount: evidenceCounts.get(f.id) ?? 0,
+    timesInjected: f.timesInjected,
+    timesUsed: f.timesUsed,
+    lastUsedAt: f.lastUsedAt
   }));
   return {
     files,
@@ -160,6 +195,27 @@ export async function readMemoryFiles(): Promise<MemoryContents> {
 /** Exposed for a future "forget this" affordance in the UI. */
 export async function forgetFact(id: number): Promise<void> {
   deleteFact(id);
+}
+
+/** Rolling thread summaries for the Memory → Recall sub-tab (newest activity first). */
+export async function listThreadSummaries(): Promise<ThreadSummary[]> {
+  return storeListThreadSummaries().map((s) => ({
+    id: s.id,
+    threadId: s.threadId,
+    text: s.text,
+    firstTs: s.firstTs,
+    lastTs: s.lastTs,
+    messageCount: s.messageCount,
+    updatedAt: s.updatedAt
+  }));
+}
+
+/** Delete one thread summary (user affordance — summaries derive from private chats).
+ *  Returns the refreshed list. The thread resummarizes from scratch if it gets new
+ *  messages later, since the watermark dies with the row. */
+export async function removeThreadSummary(id: number): Promise<ThreadSummary[]> {
+  deleteThreadSummary(id);
+  return listThreadSummaries();
 }
 
 /** Wipe the episodic store (Level 2), keeping facts and the on/off toggle.

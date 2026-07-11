@@ -2,7 +2,9 @@ import type { EmbeddingsClient } from './embeddings';
 import {
   getMessageEmbedWatermark,
   getMessagesForEmbedding,
+  replaceMessageChunks,
   setMessageEmbedWatermark,
+  upsertMessageChunkVector,
   upsertMessageVector
 } from './store';
 
@@ -23,12 +25,52 @@ export const EPISODIC_EMBED_MIN_CHARS = 20;
  * topic. The stored text is untouched — this bounds only the embedding input.
  */
 export const EPISODIC_EMBED_MAX_CHARS = 1500;
+export const EPISODIC_CHUNK_TARGET_CHARS = 1200;
+export const EPISODIC_CHUNK_OVERLAP_CHARS = 200;
 
 /** Deterministic embedding input for a message; null = skip (too short). */
 export function episodicEmbedText(text: string): string | null {
   const t = text.trim();
   if (t.length < EPISODIC_EMBED_MIN_CHARS) return null;
   return t.slice(0, EPISODIC_EMBED_MAX_CHARS);
+}
+
+export interface EpisodicChunk {
+  chunkIndex: number;
+  startOffset: number;
+  endOffset: number;
+  text: string;
+}
+
+/** Sentence/paragraph-aware deterministic chunks for semantic episodic recall. */
+export function chunkEpisodicText(text: string): EpisodicChunk[] {
+  const source = text.trim();
+  if (source.length < EPISODIC_EMBED_MIN_CHARS) return [];
+  const chunks: EpisodicChunk[] = [];
+  let start = 0;
+  while (start < source.length) {
+    const hardEnd = Math.min(source.length, start + EPISODIC_EMBED_MAX_CHARS);
+    let end = Math.min(source.length, start + EPISODIC_CHUNK_TARGET_CHARS);
+    if (hardEnd < source.length) {
+      const floor = Math.min(hardEnd, start + 600);
+      let best = -1;
+      for (const sep of ['\n\n', '. ', '! ', '? ', '\n']) {
+        const before = source.lastIndexOf(sep, hardEnd - 1);
+        if (before >= floor) {
+          const candidate = before + sep.length;
+          if (best === -1 || Math.abs(candidate - end) < Math.abs(best - end)) best = candidate;
+        }
+      }
+      if (best !== -1) end = best;
+      else end = hardEnd;
+    } else {
+      end = source.length;
+    }
+    chunks.push({ chunkIndex: chunks.length, startOffset: start, endOffset: end, text: source.slice(start, end) });
+    if (end >= source.length) break;
+    start = Math.max(start + 1, end - EPISODIC_CHUNK_OVERLAP_CHARS);
+  }
+  return chunks;
 }
 
 // Overlapping kicks (ready-transition + post-turn debounce firing together) must
@@ -56,16 +98,23 @@ export async function embedNewMessages(
     for (;;) {
       const batch = getMessagesForEmbedding(getMessageEmbedWatermark(model), batchSize);
       if (batch.length === 0) break;
-      const embeddable = batch
-        .map((m) => ({ id: m.id, text: episodicEmbedText(m.text) }))
-        .filter((e): e is { id: number; text: string } => e.text !== null);
+      const embeddable = batch.flatMap((m) => {
+        const chunks = chunkEpisodicText(m.text);
+        replaceMessageChunks(m.id, chunks);
+        return chunks.map((chunk) => ({ messageId: m.id, ...chunk }));
+      });
       if (embeddable.length > 0) {
-        const vecs = await emb.embed(
-          embeddable.map((e) => e.text),
-          'passage'
-        );
-        embeddable.forEach((e, i) => upsertMessageVector(e.id, model, vecs[i]));
-        written += embeddable.length;
+        for (let i = 0; i < embeddable.length; i += 64) {
+          const slice = embeddable.slice(i, i + 64);
+          const vecs = await emb.embed(slice.map((e) => e.text), 'passage');
+          slice.forEach((e, j) => {
+            upsertMessageChunkVector(e.messageId, e.chunkIndex, model, vecs[j]);
+            // Keep the v1 lead-vector path populated until every consumer has
+            // completed its chunk-schema migration.
+            if (e.chunkIndex === 0) upsertMessageVector(e.messageId, model, vecs[j]);
+          });
+        }
+        written += new Set(embeddable.map((e) => e.messageId)).size;
       }
       setMessageEmbedWatermark(model, batch[batch.length - 1].id);
     }

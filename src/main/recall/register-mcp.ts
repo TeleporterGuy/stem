@@ -1,5 +1,3 @@
-import { app } from 'electron';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,17 +10,16 @@ export const RECALL_MCP_NAME = 'stem-recall';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
-function mainRuntimeAssetPath(rel: string): string {
-  const built = join(__dirname, rel);
-  return existsSync(built) ? built : join(app.getAppPath(), 'src', 'main', rel);
-}
-
 /**
- * Absolute path to the standalone server script. In dev, app.getAppPath() is the
- * repo root (same basis as the app icon in index.ts).
+ * Absolute path to the standalone server script. The server is bundled by
+ * electron-vite as its own entry (dist/main/recall-mcp-server.js, see
+ * electron.vite.config.ts) so it can share search-core.ts with the main
+ * process — unlike the copied .mjs runtime assets there is no runnable source
+ * fallback (a lone .ts file can't be spawned). At runtime this module executes
+ * from dist/main, so a sibling join resolves the built artifact.
  * TODO(packaging): when an electron-builder pipeline exists, this script must be
  * unpacked (extraResources/asarUnpack) — it can't be spawned from inside app.asar.
  */
 export function recallMcpServerPath(): string {
-  return mainRuntimeAssetPath(join('recall', 'mcp-server.mjs'));
+  return join(__dirname, 'recall-mcp-server.js');
 }

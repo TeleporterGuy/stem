@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Brain, Plug, Globe, HardDrive, Plus, Minus, ChevronRight, MessageSquare, Settings, X, Check, FolderOpen, FolderTree, Trash2, Wand2, CalendarClock, Play, Pause, ExternalLink, Eye, RefreshCw } from 'lucide-react';
+import { Brain, Plug, Globe, HardDrive, Plus, Minus, ChevronRight, MessageSquare, Settings, X, Check, FolderOpen, FolderTree, Trash2, Wand2, CalendarClock, Play, Pause, ExternalLink, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck } from 'lucide-react';
 import type {
   AuthProviderId,
   ApiKeyProviderId,
@@ -10,6 +10,7 @@ import type {
   McpTransport,
   EmbeddingCacheStats,
   EpisodicStats,
+  ThreadSummary,
   MemoryContents,
   MemorySettings,
   ConnectedFolder,
@@ -34,9 +35,12 @@ import type {
   RetrievalTestResult,
   SkillSummary,
   ActiveFacts,
-  FactTier
+  FactTier,
+  FactDetails,
+  MemoryConflict,
+  MemoryRebuildStatus
 } from '../../shared/types';
-import { API_KEY_PROVIDER_IDS, isLocalProviderId, providerName } from '../../shared/providers';
+import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerName } from '../../shared/providers';
 import { MdxView } from '../chat/MdxView';
 import { ChatList, type ChatListProps } from '../chats/ChatList';
 import { ModelPicker } from '../ui/ModelPicker';
@@ -71,14 +75,11 @@ const TIDY_PRESETS: { label: string; value: number; hint: string }[] = [
   { label: 'Manual', value: 0, hint: 'never automatically' }
 ];
 
-// Inject-all-facts ceiling: at or below this many stored facts every fact rides
-// along on each message; above it, only the most relevant are selected. Default
-// is 200 (see DEFAULT_FACT_THRESHOLD in the recall store).
 const FACT_INJECT_PRESETS: { label: string; value: number }[] = [
-  { label: '40', value: 40 },
-  { label: '200', value: 200 },
-  { label: '500', value: 500 },
-  { label: '1000', value: 1000 }
+  { label: '4', value: 4 },
+  { label: '8', value: 8 },
+  { label: '12', value: 12 },
+  { label: '16', value: 16 }
 ];
 
 // Episodic-store size caps. 0 = unlimited. Default is 100 MB (see the recall store).
@@ -126,7 +127,12 @@ interface ActiveFactsViewProps {
   onTogglePreview: () => void;
 }
 
-export type ManagePanelProps = ChatListProps & ModelTabProps & ActiveFactsViewProps;
+export type ManagePanelProps = ChatListProps &
+  ModelTabProps &
+  ActiveFactsViewProps & {
+    /** A signed-in provider whose credential is dead — flags Settings with a red dot. */
+    authDeadProvider?: string | null;
+  };
 
 export function ManagePanel({
   models,
@@ -137,6 +143,7 @@ export function ManagePanel({
   previewActive,
   previewDraft,
   onTogglePreview,
+  authDeadProvider,
   ...chatProps
 }: ManagePanelProps) {
   const activeFacts: ActiveFactsViewProps = {
@@ -155,11 +162,12 @@ export function ManagePanel({
             <button
               key={id}
               className={tab === id ? 'active' : ''}
-              title={label}
+              title={id === 'settings' && authDeadProvider ? `${label} — a provider needs reconnecting` : label}
               aria-label={label}
               onClick={() => setTab(id)}
             >
               <Icon size={16} />
+              {id === 'settings' && authDeadProvider && <span className="tab-alert-dot" />}
             </button>
           ))}
         </div>
@@ -171,7 +179,12 @@ export function ManagePanel({
         {tab === 'folders' && <FoldersTab />}
         {tab === 'tasks' && <TasksTab onOpenChat={chatProps.onOpen} />}
         {tab === 'settings' && (
-          <SettingsTab models={models} modelId={modelId} onSelectModel={onSelectModel} />
+          <SettingsTab
+            models={models}
+            modelId={modelId}
+            onSelectModel={onSelectModel}
+            deadProvider={authDeadProvider}
+          />
         )}
       </div>
     </div>
@@ -198,6 +211,17 @@ function MemoryTab({ models, activeFacts }: { models: ModelSummary[]; activeFact
   );
 }
 
+/**
+ * [newer, older] — the same ordering `resolveMemoryConflict` applies in the store,
+ * id as the tiebreak. "Keep newer" is unusable unless the card shows which is which.
+ */
+function orderedConflictFacts(c: MemoryConflict): [FactDetails, FactDetails] {
+  const aIsNewer =
+    c.factA.updatedAt > c.factB.updatedAt ||
+    (c.factA.updatedAt === c.factB.updatedAt && c.factA.id > c.factB.id);
+  return aIsNewer ? [c.factA, c.factB] : [c.factB, c.factA];
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ['KB', 'MB', 'GB'];
@@ -210,20 +234,72 @@ function formatBytes(bytes: number): string {
   return `${val.toFixed(1)} ${units[i]}`;
 }
 
+/** "May 3" or "May 3 – Jun 12" for a summary's covered window. */
+function summaryDateRange(firstTs: number, lastTs: number): string {
+  const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+  const first = new Date(firstTs * 1000).toLocaleDateString(undefined, opts);
+  const last = new Date(lastTs * 1000).toLocaleDateString(undefined, opts);
+  return first === last ? last : `${first} – ${last}`;
+}
+
+/** One conversation summary: date range + text (clamped until clicked), delete with confirm. */
+function SummaryRow({ summary, onDelete }: { summary: ThreadSummary; onDelete: (id: number) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="memory-note">
+      <div className="memory-note-body">
+        <button
+          className={`memory-statement summary-text${expanded ? '' : ' clamped'}`}
+          onClick={() => setExpanded((e) => !e)}
+          title={expanded ? 'Collapse' : 'Show the full summary'}
+        >
+          {summary.text}
+        </button>
+        <span className="chip">{summaryDateRange(summary.firstTs, summary.lastTs)}</span>
+        <span className="chip">{summary.messageCount} {summary.messageCount === 1 ? 'message' : 'messages'}</span>
+        {confirming && (
+          <span className="memory-reset-confirm">
+            <span className="muted">Delete this summary? The chat itself is kept.</span>
+            <button className="link-btn danger" onClick={() => onDelete(summary.id)}>Delete</button>
+            <button className="link-btn" onClick={() => setConfirming(false)}>Cancel</button>
+          </span>
+        )}
+      </div>
+      <div className="memory-note-actions">
+        <button
+          className="memory-note-action danger"
+          title="Delete this summary"
+          aria-label="Delete this conversation summary"
+          onClick={() => setConfirming(true)}
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function EpisodicTab() {
   const [stats, setStats] = useState<EpisodicStats | null>(null);
   const [settings, setSettings] = useState<MemorySettings | null>(null);
+  const [summaries, setSummaries] = useState<ThreadSummary[] | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [resetMsg, setResetMsg] = useState<string | null>(null);
 
   function load() {
     window.stem.getEpisodicStats().then(setStats);
+    window.stem.getThreadSummaries().then(setSummaries);
   }
   useEffect(() => {
     window.stem.getMemorySettings().then(setSettings);
     load();
   }, []);
+
+  async function deleteSummary(id: number) {
+    setSummaries(await window.stem.deleteThreadSummary(id));
+  }
 
   function selectLimit(bytes: number) {
     window.stem.setEpisodicLimit(bytes).then((s) => {
@@ -323,6 +399,26 @@ function EpisodicTab() {
             )}
           </div>
         )}
+      </div>
+
+      <div className="memory-view">
+        <div className="memory-view-head">
+          <strong>Conversation summaries</strong>
+          <span className="memory-view-actions">
+            <button className="link-btn" onClick={load}>Refresh</button>
+          </span>
+        </div>
+        <p className="muted">
+          A rolling English summary per chat — what was discussed, decided, and left
+          open. Stem recalls these before digging into verbatim messages.
+        </p>
+        {!summaries && <p className="muted">Loading…</p>}
+        {summaries && summaries.length === 0 && (
+          <p className="muted">Summaries build as you chat (and backfill for older chats while Stem is idle).</p>
+        )}
+        {summaries && summaries.map((s) => (
+          <SummaryRow key={s.id} summary={s} onDelete={(id) => void deleteSummary(id)} />
+        ))}
       </div>
     </div>
   );
@@ -644,6 +740,12 @@ function RerankerFields({
 /** Human label for a fact-selection tier, shown in the active-facts summary. */
 function tierLabel(t: FactTier): string {
   switch (t) {
+    case 'hybrid':
+      return 'semantic + lexical';
+    case 'pinned-only':
+      return 'pinned only';
+    case 'none':
+      return 'no match';
     case 'all':
       return 'all (under threshold)';
     case 'embedding':
@@ -660,6 +762,7 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
   const [settings, setSettings] = useState<MemorySettings | null>(null);
   const [contents, setContents] = useState<MemoryContents | null>(null);
   const [showTech, setShowTech] = useState(false);
+  const [showSuperseded, setShowSuperseded] = useState(false);
   const [showMemories, setShowMemories] = useState(false);
   // Durable facts injected on this chat's last turn, and (when toggled) the set the
   // current draft would inject. Both annotate + sort the stored-facts list below.
@@ -705,6 +808,10 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
   const [retrieval, setRetrieval] = useState<RetrievalSettings | null>(null);
   const [showRetrieval, setShowRetrieval] = useState(false);
   const [embStats, setEmbStats] = useState<EmbeddingCacheStats | null>(null);
+  const [rebuild, setRebuild] = useState<MemoryRebuildStatus | null>(null);
+  const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
+  const [details, setDetails] = useState<Record<number, FactDetails | null>>({});
+  const sensitivePinAcknowledged = useRef(false);
 
   const [refreshing, setRefreshing] = useState(false);
 
@@ -723,6 +830,10 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
   function loadEmbStats() {
     window.stem.getEmbeddingStats().then(setEmbStats);
   }
+  function loadTrustState() {
+    window.stem.getMemoryRebuildStatus().then(setRebuild);
+    window.stem.getMemoryConflicts().then(setConflicts);
+  }
 
   useEffect(() => {
     window.stem.getMemorySettings().then(setSettings);
@@ -732,6 +843,19 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
     });
     loadContents();
     loadEmbStats();
+    loadTrustState();
+  }, []);
+
+  // Main pushes a status after every rebuild step, so the panel follows along
+  // without a poll — and without a manual Refresh action to compensate for one.
+  useEffect(() => {
+    return window.stem.onMemoryRebuildStatus((next) => {
+      setRebuild(next);
+      if (next.state === 'complete') {
+        loadContents();
+        window.stem.getMemoryConflicts().then(setConflicts);
+      }
+    });
   }, []);
 
   function selectMemoryModel(id: string | null) {
@@ -752,7 +876,7 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
   }
 
   function selectFactThreshold(n: number) {
-    window.stem.setFactThreshold(n).then(setSettings);
+    window.stem.setMaxRelevantFacts(n).then(setSettings);
   }
 
   async function toggle() {
@@ -762,6 +886,37 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
 
   async function forget(id: number) {
     setContents(await window.stem.forgetMemory(id));
+    loadTrustState();
+  }
+
+  async function pinFact(id: number, pinned: boolean, sensitivity?: string) {
+    if (pinned && sensitivity === 'sensitive' && !sensitivePinAcknowledged.current) {
+      const accepted = window.confirm(
+        'Pinned memories are sent with every message. Pin this sensitive memory anyway?'
+      );
+      if (!accepted) return;
+      sensitivePinAcknowledged.current = true;
+    }
+    setContents(await window.stem.setFactPinned(id, pinned));
+  }
+
+  async function confirmFact(id: number) {
+    setContents(await window.stem.confirmFact(id));
+  }
+
+  async function restoreFact(id: number) {
+    setContents(await window.stem.restoreSupersededFact(id));
+  }
+
+  async function resolveConflict(id: number, resolution: 'keep_newer' | 'keep_older' | 'keep_both') {
+    setContents(await window.stem.resolveMemoryConflict(id, resolution));
+    loadTrustState();
+  }
+
+  async function toggleDetails(id: number) {
+    if (Object.prototype.hasOwnProperty.call(details, id)) return;
+    const value = await window.stem.getFactDetails(id);
+    setDetails((d) => ({ ...d, [id]: value }));
   }
 
   async function reset() {
@@ -789,10 +944,14 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
       const r = await holdFullSpin(window.stem.consolidateMemory());
       setContents(r.contents);
       const changed = r.merged + r.corrected + r.dropped;
-      setConsolidateMsg(
+      const outcome =
         changed === 0
-          ? 'No duplicates or stale facts found.'
-          : `Merged ${r.merged}, corrected ${r.corrected}, dropped ${r.dropped}.`
+          ? 'No duplicates or stale facts found'
+          : `Merged ${r.merged}, corrected ${r.corrected}, retired ${r.dropped} — retired facts move to Superseded below`;
+      setConsolidateMsg(
+        r.failedChunks > 0
+          ? `${outcome}. The memory model failed on ${r.failedChunks} ${r.failedChunks === 1 ? 'batch' : 'batches'} of facts — those weren't reviewed; try again.`
+          : `${outcome}.`
       );
     } catch {
       setConsolidateMsg('Consolidation failed — try again.');
@@ -803,7 +962,11 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
 
   if (!settings) return <p className="muted">Loading…</p>;
 
-  const notes = contents?.files.filter((f) => f.kind === 'note' && f.content.trim()) ?? [];
+  const allNotes = contents?.files.filter((f) => f.kind === 'note' && f.content.trim()) ?? [];
+  // Superseded facts are history, not memory: they never inject, so they don't
+  // belong in the live list or its count. They collapse into their own section.
+  const notes = allNotes.filter((f) => f.status !== 'superseded');
+  const supersededNotes = allNotes.filter((f) => f.status === 'superseded');
   const techFiles = contents?.files.filter((f) => f.kind === 'native' && f.exists && f.content.trim()) ?? [];
 
   // Which facts are "active": injected last turn, and (when preview is on) the set the
@@ -821,6 +984,89 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
     .map((f, i) => ({ f, i, g: groupOf(f.id) }))
     .sort((a, b) => a.g - b.g || a.i - b.i)
     .map((x) => x.f);
+
+  function renderNote(f: (typeof allNotes)[number]) {
+    const active = f.id != null && draftIds?.has(f.id) ? 'draft' : f.id != null && lastIds.has(f.id) ? 'injected' : null;
+    return (
+
+              <div key={f.name} className={`memory-note${active ? ' active' : ''}`}>
+                <div className="memory-note-body">
+                  {f.statement ? (
+                    <button className="memory-statement" onClick={() => f.id != null && void toggleDetails(f.id)}>
+                      {f.statement}
+                    </button>
+                  ) : <MdxView text={f.content} />}
+                  {active && <span className={`chip active-${active}`}>{active}</span>}
+                  {f.source && <span className="chip">{f.source}</span>}
+                  {f.category && <span className="chip">{f.category}</span>}
+                  {f.sensitivity === 'sensitive' && <span className="chip sensitive">sensitive</span>}
+                  {f.status && f.status !== 'active' && <span className="chip">{f.status}</span>}
+                  {f.pinned && <span className="chip"><Pin size={10} /> pinned</span>}
+                  {(f.timesInjected ?? 0) > 0 && (
+                    <span
+                      className="chip"
+                      title="How often this fact was sent with a message, and how often the reply visibly used it"
+                    >
+                      injected {f.timesInjected}× · used {f.timesUsed ?? 0}×
+                    </span>
+                  )}
+                  {f.id != null && details[f.id] && (
+                    <div className="memory-evidence">
+                      <span>Confidence {Math.round(details[f.id]!.confidence * 100)}%</span>
+                      {details[f.id]!.validUntil && <span>Valid until {new Date(details[f.id]!.validUntil! * 1000).toLocaleDateString()}</span>}
+                      {details[f.id]!.evidence.map((e) => (
+                        <blockquote key={e.id}>{new Date(e.timestamp * 1000).toLocaleDateString()} · {e.origin}: {e.excerpt}</blockquote>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {f.id != null && (
+                  <div className="memory-note-actions">
+                    {f.status === 'superseded' ? (
+                      <button
+                        className="memory-note-action"
+                        title="Restore"
+                        aria-label="Restore this memory"
+                        onClick={() => restoreFact(f.id!)}
+                      >
+                        <RotateCcw size={14} />
+                      </button>
+                    ) : (
+                      <>
+                        {f.source !== 'On request' && (f.confidence ?? 1) < 0.7 && (
+                          <button
+                            className="memory-note-action"
+                            title="Confirm"
+                            aria-label="Confirm this memory"
+                            onClick={() => confirmFact(f.id!)}
+                          >
+                            <ShieldCheck size={14} />
+                          </button>
+                        )}
+                        <button
+                          className={`memory-note-action${f.pinned ? ' on' : ''}`}
+                          title={f.pinned ? 'Unpin' : 'Pin for every message'}
+                          aria-label={f.pinned ? 'Unpin this memory' : 'Pin this memory'}
+                          aria-pressed={!!f.pinned}
+                          onClick={() => pinFact(f.id!, !f.pinned, f.sensitivity)}
+                        >
+                          <Pin size={14} fill={f.pinned ? 'currentColor' : 'none'} />
+                        </button>
+                      </>
+                    )}
+                    <button
+                      className="memory-note-action danger"
+                      title="Forget permanently"
+                      aria-label="Forget this memory permanently"
+                      onClick={() => forget(f.id!)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                )}
+              </div>
+    );
+  }
 
   return (
     <div>
@@ -869,6 +1115,70 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
         </div>
       </div>
 
+      {rebuild && rebuild.state !== 'complete' && (
+        <>
+          <div className="grp-head">Memory upgrade</div>
+          <div className="formgroup memory-rebuild-card">
+            <strong>Rebuild provenance for existing memory</strong>
+            <p className="muted">
+              {rebuild.totalMessages} stored messages can be reprocessed to attach evidence, sensitivity,
+              validity, and conflict information. This uses the selected memory model; a remote model sends
+              transcript segments to that provider and may incur usage costs. Existing memories remain usable.
+            </p>
+            {rebuild.state !== 'available' && (
+              <p className="muted">
+                {rebuild.processedMessages} of {rebuild.totalMessages} messages · {rebuild.state}
+                {rebuild.lastError ? ` · ${rebuild.lastError}` : ''}
+              </p>
+            )}
+            <div className="memory-view-actions">
+              {rebuild.state === 'available' && (
+                <button className="link-btn" onClick={() => window.stem.startMemoryRebuild().then(setRebuild)}>
+                  Start rebuild
+                </button>
+              )}
+              {rebuild.state === 'running' && (
+                <button className="link-btn" onClick={() => window.stem.pauseMemoryRebuild().then(setRebuild)}>
+                  Pause
+                </button>
+              )}
+              {(rebuild.state === 'paused' || rebuild.state === 'failed') && (
+                <button className="link-btn" onClick={() => window.stem.resumeMemoryRebuild().then(setRebuild)}>
+                  {rebuild.state === 'failed' ? 'Retry' : 'Resume'}
+                </button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {conflicts.length > 0 && (
+        <>
+          <div className="grp-head">Conflicts ({conflicts.length})</div>
+          <div className="formgroup memory-conflicts">
+            {conflicts.map((c) => (
+              <div key={c.id} className="memory-conflict">
+                {orderedConflictFacts(c).map((f, i) => (
+                  <div key={f.id} className="memory-conflict-side">
+                    <span className="chip">{i === 0 ? 'Newer' : 'Older'}</span>
+                    <p>{f.text}</p>
+                    <span className="muted">
+                      Learned {new Date(f.updatedAt * 1000).toLocaleDateString()}
+                    </span>
+                  </div>
+                ))}
+                <em>{c.reason}</em>
+                <div className="memory-view-actions">
+                  <button className="link-btn" onClick={() => resolveConflict(c.id, 'keep_newer')}>Keep newer</button>
+                  <button className="link-btn" onClick={() => resolveConflict(c.id, 'keep_older')}>Keep older</button>
+                  <button className="link-btn" onClick={() => resolveConflict(c.id, 'keep_both')}>Keep both</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
       {retrieval && (
         <>
           <div className="grp-head">
@@ -887,30 +1197,27 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
           {showRetrieval && (
             <div className="formgroup">
               <p className="muted">
-                With more than {settings.factThreshold} facts, Stem ranks them by relevance to each message
-                instead of injecting them all. The built-in model understands all languages and runs entirely
-                on this Mac; you can point Stem at your own embeddings server instead. While no model is
-                ready, facts are ranked by keywords/recency.
+                Stem always selects relevant active facts instead of sending the whole memory store. Sensitive
+                facts require a direct keyword match or a stronger semantic match; conflicted, expired, and
+                unconfirmed assistant claims are excluded.
               </p>
               <div className="set-block">
-                <span className="set-sub">Include all facts up to</span>
+                <span className="set-sub">Relevant facts per message</span>
                 <div className="seg-ctl">
                   {FACT_INJECT_PRESETS.map((p) => (
                     <button
                       key={p.label}
-                      className={settings.factThreshold === p.value ? 'active' : ''}
+                      className={settings.maxRelevantFacts === p.value ? 'active' : ''}
                       onClick={() => selectFactThreshold(p.value)}
-                      title={`Inject every fact while ${p.value} or fewer are stored; rank by relevance above that`}
+                      title={`Select at most ${p.value} relevant facts, plus up to five pinned facts`}
                     >
                       {p.label}
                     </button>
                   ))}
                 </div>
                 <p className="muted">
-                  Relevance ranking matches by topic, so it can miss facts that matter but aren't topically
-                  related to your message (e.g. your family when asking about travel insurance). Keeping this
-                  above your stored-fact count ({notes.length}) sends everything with every message — roughly
-                  25 facts per 1k tokens.
+                  Up to five facts can be pinned for every message. All other memories need a positive semantic
+                  or lexical match; there is no recency filler.
                 </p>
               </div>
               <EmbeddingsFields value={retrieval.embeddings} onPatch={patchEmbeddings} />
@@ -996,29 +1303,21 @@ function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts
         {showMemories && contents && notes.length === 0 && (
           <p className="muted">No memories stored yet — Stem builds these as you chat.</p>
         )}
-        {showMemories &&
-          orderedNotes.map((f) => {
-            const active = f.id != null && draftIds?.has(f.id) ? 'draft' : f.id != null && lastIds.has(f.id) ? 'injected' : null;
-            return (
-              <div key={f.name} className={`memory-note${active ? ' active' : ''}`}>
-                <div className="memory-note-body">
-                  {f.statement ? <p className="statement">{f.statement}</p> : <MdxView text={f.content} />}
-                  {active && <span className={`chip active-${active}`}>{active}</span>}
-                  {f.source && <span className="chip">{f.source}</span>}
-                </div>
-                {f.id != null && (
-                  <button
-                    className="memory-note-forget"
-                    title="Forget this"
-                    aria-label="Forget this memory"
-                    onClick={() => forget(f.id!)}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                )}
-              </div>
-            );
-          })}
+        {showMemories && orderedNotes.map(renderNote)}
+
+        {showMemories && supersededNotes.length > 0 && (
+          <div className="memory-tech">
+            <button
+              className="memory-tech-head"
+              aria-expanded={showSuperseded}
+              onClick={() => setShowSuperseded((v) => !v)}
+            >
+              <ChevronRight size={14} className={showSuperseded ? 'open' : ''} />
+              <span>Superseded ({supersededNotes.length})</span>
+            </button>
+            {showSuperseded && supersededNotes.map(renderNote)}
+          </div>
+        )}
 
         {techFiles.length > 0 && (
           <div className="memory-tech">
@@ -1562,7 +1861,7 @@ function providerKind(id: string): string {
  * an account / API key / local-server segmented choice. Runs against the same
  * auth IPC as the onboarding wizard.
  */
-function ProvidersSection() {
+function ProvidersSection({ deadProvider }: { deadProvider?: string | null }) {
   const [providers, setProviders] = useState<string[]>([]);
   const [local, setLocal] = useState<LocalProvidersSettings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1691,6 +1990,18 @@ function ProvidersSection() {
                 <strong>{providerName(row.id)}</strong>
                 <em>{row.detail}</em>
               </span>
+              {row.id === deadProvider && (
+                <button
+                  className="pill danger row-reconnect"
+                  title="Session expired — reconnect"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if ((AUTH_PROVIDER_IDS as string[]).includes(row.id)) void startOAuth(row.id as AuthProviderId);
+                  }}
+                >
+                  Session expired · Reconnect
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -1698,6 +2009,17 @@ function ProvidersSection() {
       <div className="gutter">
         <button title="Add provider" onClick={() => setAdding(true)}>
           <Plus size={15} />
+        </button>
+        <button
+          title="Reconnect selected"
+          onClick={() => {
+            if (selected && (AUTH_PROVIDER_IDS as string[]).includes(selected)) {
+              void startOAuth(selected as AuthProviderId);
+            }
+          }}
+          disabled={!selected || busy || !(AUTH_PROVIDER_IDS as string[]).includes(selected ?? '')}
+        >
+          <RefreshCw size={15} />
         </button>
         <button
           title="Disconnect selected"
@@ -2047,7 +2369,12 @@ function LocalServerAddForm({
   );
 }
 
-function SettingsTab({ models, modelId, onSelectModel }: ModelTabProps) {
+function SettingsTab({
+  models,
+  modelId,
+  onSelectModel,
+  deadProvider
+}: ModelTabProps & { deadProvider?: string | null }) {
   const [qc, setQc] = useState<QuickChatSettings | null>(null);
   const [nws, setNws] = useState<NativeWebSearchSettings>({ main: true, quickChat: true });
   const [escapeAction, setEscapeAction] = useState<EscapeAction>('off');
@@ -2145,7 +2472,7 @@ function SettingsTab({ models, modelId, onSelectModel }: ModelTabProps) {
         )}
       </div>
 
-      <ProvidersSection />
+      <ProvidersSection deadProvider={deadProvider} />
 
       <div className="grp-head">Files</div>
       <div className="formgroup">

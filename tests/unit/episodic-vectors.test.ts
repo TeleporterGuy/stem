@@ -222,7 +222,7 @@ describe('buildRecallContext — one query embed per turn', () => {
       const timings: import('../../src/main/recall/inject').RecallTimings = {};
       // Slovak query, zero lexical overlap with the stored English message.
       const ctx = (await inject.buildRecallContext('ako sa darí mojej rastline?', { timings })) ?? '';
-      expect(kinds).toEqual(['query']); // exactly one embed, query-kind
+      expect(kinds).toEqual(['query', 'passage']); // one query embed plus fact-vector backfill
       expect(ctx).toMatch(/rosemary plant on the balcony/); // semantic-only recall
       expect(timings.semantic).toBeGreaterThanOrEqual(0);
     } finally {

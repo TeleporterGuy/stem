@@ -8,7 +8,7 @@
 // mode, surfaces to Stem as an extension_ui_request it can render and answer.
 //
 // It is plain ESM with only node builtins so it needs no install and can be
-// spawned from the in-repo path (like recall/mcp-server.mjs).
+// spawned from the in-repo path (like the recall MCP server).
 
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -73,6 +73,15 @@ class McpStdioClient {
       }
     });
     this.proc.stderr.on('data', () => {});
+    // A missing/unspawnable binary (ENOENT etc.) emits 'error', which is FATAL to
+    // the whole pi process when unhandled — one broken user-configured server must
+    // never take down the backend. Treat it exactly like an exit: mark dead and
+    // fail this server's pending requests only.
+    this.proc.on('error', (err) => {
+      this.alive = false;
+      for (const p of this.pending.values()) p.reject(new Error(`${this.name} failed to start: ${err.message}`));
+      this.pending.clear();
+    });
     this.proc.on('exit', () => {
       this.alive = false;
       for (const p of this.pending.values()) p.reject(new Error(`${this.name} exited`));

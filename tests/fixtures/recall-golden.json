@@ -3,178 +3,1495 @@
   "version": 1,
   "corpus": {
     "messages": [
-      { "id": "m-llm-1", "threadId": "t-llm", "role": "user", "ts": 1736035200, "lang": "en", "text": "How do decoder-only LLMs differ from BERT-style encoders?" },
-      { "id": "m-llm-2", "threadId": "t-llm", "role": "assistant", "ts": 1736035800, "lang": "en", "text": "Decoder-only models are trained autoregressively with causal masking, while BERT-style encoders use bidirectional attention and masked-token objectives." },
-      { "id": "m-llm-3", "threadId": "t-llm", "role": "user", "ts": 1736036400, "lang": "en", "text": "And what about mixture-of-experts routing?" },
-      { "id": "m-llm-4", "threadId": "t-llm", "role": "assistant", "ts": 1736037000, "lang": "en", "text": "MoE layers route each token to a few expert MLPs, trading parameter count for compute efficiency." },
-
-      { "id": "m-mus-1", "threadId": "t-music", "role": "user", "ts": 1746921600, "lang": "en", "text": "Thinking about restringing my acoustic guitar with lighter strings." },
-      { "id": "m-mus-2", "threadId": "t-music", "role": "assistant", "ts": 1746922200, "lang": "en", "text": "Lighter gauge strings are easier on the fingers but you may need a truss-rod tweak to avoid fret buzz." },
-      { "id": "m-mus-3", "threadId": "t-music", "role": "assistant", "ts": 1746922800, "lang": "en", "text": "For a brighter tone with light strings, phosphor bronze holds up well." },
-
-      { "id": "m-health-1", "threadId": "t-health", "role": "user", "ts": 1749513600, "lang": "en", "text": "Can you check my email for anything about my hospital appointment?" },
-      { "id": "m-health-2", "threadId": "t-health", "role": "assistant", "ts": 1749514200, "lang": "en", "text": "Your UZ Gent cardiology appointment is on June 30 at 9:15; Dr. Janssens noted slightly elevated cholesterol and asked for a follow-up blood test." },
-      { "id": "m-health-3", "threadId": "t-health", "role": "user", "ts": 1749514800, "lang": "sk", "text": "Mám alergiu na peľ brezy, každú jar potrebujem antihistaminiká." },
-      { "id": "m-health-4", "threadId": "t-health", "role": "assistant", "ts": 1749515400, "lang": "sk", "text": "Poznačil som si: alergia na peľ brezy, sezóna zvyčajne od marca do mája." },
-      { "id": "m-health-5", "threadId": "t-health", "role": "user", "ts": 1751932800, "lang": "en", "text": "The follow-up blood test came back, cholesterol is down to 5.1." },
-
-      { "id": "m-home-1", "threadId": "t-home", "role": "user", "ts": 1751328000, "lang": "sk", "text": "Sťahujeme sa do nového bytu v Petržalke od septembra." },
-      { "id": "m-home-2", "threadId": "t-home", "role": "assistant", "ts": 1751328600, "lang": "sk", "text": "Pri sťahovaní odporúčam prepísať elektrinu a plyn aspoň dva týždne vopred." },
-      { "id": "m-home-3", "threadId": "t-home", "role": "user", "ts": 1751329200, "lang": "sk", "text": "Hypotéku sme nakoniec zobrali s fixáciou na päť rokov, úrok 3,8 percenta." },
-      { "id": "m-home-4", "threadId": "t-home", "role": "assistant", "ts": 1751329800, "lang": "sk", "text": "Fixácia na päť rokov pri 3,8 percenta je v dnešnej situácii rozumná voľba." },
-
-      { "id": "m-garden-1", "threadId": "t-garden", "role": "user", "ts": 1752537600, "lang": "en", "text": "My rosemary on the balcony is dying — the needles are turning brown from the bottom up." },
-      { "id": "m-garden-2", "threadId": "t-garden", "role": "assistant", "ts": 1752538200, "lang": "en", "text": "Brown needles from the bottom usually mean overwatering and root rot; rosemary wants sandy soil and a dry-out between waterings." },
-      { "id": "m-garden-3", "threadId": "t-garden", "role": "user", "ts": 1752538800, "lang": "en", "text": "I repotted the rosemary into a terracotta pot with drainage like you suggested." },
-      { "id": "m-garden-4", "threadId": "t-garden", "role": "assistant", "ts": 1752539400, "lang": "en", "text": "Terracotta breathes better; water only when the top five centimeters of soil are dry." },
-
-      { "id": "m-it-1", "threadId": "t-travel-it", "role": "user", "ts": 1755648000, "lang": "en", "text": "Booked four nights in Naples for October, mostly for the pizza honestly." },
-      { "id": "m-it-2", "threadId": "t-travel-it", "role": "assistant", "ts": 1755648600, "lang": "en", "text": "For Naples in October pack light layers; L'Antica Pizzeria da Michele usually has a queue before noon." },
-      { "id": "m-it-3", "threadId": "t-travel-it", "role": "user", "ts": 1755649200, "lang": "en", "text": "Also planning a day trip to Pompeii from Naples." },
-
-      { "id": "m-pets-1", "threadId": "t-pets", "role": "user", "ts": 1756771200, "lang": "en", "text": "Rex needs his rabies vaccination renewed before we travel." },
-      { "id": "m-pets-2", "threadId": "t-pets", "role": "assistant", "ts": 1756771800, "lang": "en", "text": "The vet clinic on Karadžičova has openings on Thursday; Rex's last rabies shot was in 2024, so the booster is due." },
-      { "id": "m-pets-3", "threadId": "t-pets", "role": "user", "ts": 1756772400, "lang": "en", "text": "Rex chewed through his leash again, ordering a chain one this time." },
-      { "id": "m-pets-4", "threadId": "t-pets", "role": "assistant", "ts": 1756773000, "lang": "en", "text": "A chain leash is heavy; a biothane one resists chewing and weighs less." },
-
-      { "id": "m-work-1", "threadId": "t-work", "role": "user", "ts": 1757894400, "lang": "en", "text": "We're migrating the billing service from Python to Rust this quarter." },
-      { "id": "m-work-2", "threadId": "t-work", "role": "assistant", "ts": 1757895000, "lang": "en", "text": "For the billing migration, start with the invoice-generation path — it's the most CPU-bound and benefits most from Rust." },
-      { "id": "m-work-3", "threadId": "t-work", "role": "user", "ts": 1757895600, "lang": "en", "text": "The billing migration deadline moved to the end of November." },
-      { "id": "m-work-4", "threadId": "t-work", "role": "assistant", "ts": 1757896200, "lang": "en", "text": "If the deadline is end of November, freeze the schema by mid-October." },
-
-      { "id": "m-cook-1", "threadId": "t-cook", "role": "user", "ts": 1759622400, "lang": "de", "text": "Mein Sauerteigbrot ist wieder zu dicht geworden, die Krume ist fast wie Kuchen." },
-      { "id": "m-cook-2", "threadId": "t-cook", "role": "assistant", "ts": 1759623000, "lang": "de", "text": "Eine dichte Krume liegt meist an zu kurzer Stockgare; versuche 75 Prozent Hydration und eine kalte Übernachtgare im Kühlschrank." },
-      { "id": "m-cook-3", "threadId": "t-cook", "role": "user", "ts": 1759623600, "lang": "de", "text": "Mit der kalten Übernachtgare ist das Brot endlich luftig geworden, danke." },
-      { "id": "m-cook-4", "threadId": "t-cook", "role": "user", "ts": 1759624200, "lang": "de", "text": "Nächstes Mal probiere ich Roggenmehl im Sauerteig." },
-
-      { "id": "m-car-1", "threadId": "t-car", "role": "user", "ts": 1760918400, "lang": "de", "text": "Ich muss noch einen Termin für die Winterreifen machen, am besten Anfang November." },
-      { "id": "m-car-2", "threadId": "t-car", "role": "assistant", "ts": 1760919000, "lang": "de", "text": "Die Werkstatt im Vlčie hrdlo hat am 4. November freie Termine für den Reifenwechsel." },
-      { "id": "m-car-3", "threadId": "t-car", "role": "user", "ts": 1760919600, "lang": "de", "text": "Termin am 4. November ist gebucht." },
-
-      { "id": "m-fin-1", "threadId": "t-finance", "role": "user", "ts": 1762128000, "lang": "sk", "text": "Chcem začať investovať do ETF, mesačne okolo dvesto eur." },
-      { "id": "m-fin-2", "threadId": "t-finance", "role": "assistant", "ts": 1762128600, "lang": "sk", "text": "Pri dvesto eurách mesačne dáva zmysel jeden široký svetový ETF a automatická trvalá objednávka." },
-      { "id": "m-fin-3", "threadId": "t-finance", "role": "user", "ts": 1762129200, "lang": "sk", "text": "Nastavil som trvalý príkaz na prvý deň v mesiaci." },
-
-      { "id": "m-mov-1", "threadId": "t-movies", "role": "user", "ts": 1764547200, "lang": "en", "text": "Any good sci-fi films from the last two years I might have missed?" },
-      { "id": "m-mov-2", "threadId": "t-movies", "role": "assistant", "ts": 1764547800, "lang": "en", "text": "If you liked slower-paced sci-fi, try the one about the generation ship losing its archive — reviewers compared it to early Tarkovsky." },
-
-      { "id": "m-dent-1", "threadId": "t-dentist", "role": "user", "ts": 1765756800, "lang": "en", "text": "My dentist said the lower left molar needs a crown, scheduled for January 12." },
-      { "id": "m-dent-2", "threadId": "t-dentist", "role": "assistant", "ts": 1765757400, "lang": "en", "text": "Noted — crown prep on January 12; they usually place a temporary crown for two weeks first." },
-      { "id": "m-dent-3", "threadId": "t-dentist", "role": "user", "ts": 1765758000, "lang": "en", "text": "The temporary crown feels a bit high when I bite." },
-
-      { "id": "m-rec-1", "threadId": "t-recipe", "role": "user", "ts": 1766188800, "lang": "sk", "text": "Robil som kapustnicu podľa babkinej receptúry, s údeným mäsom a hríbmi." },
-      { "id": "m-rec-2", "threadId": "t-recipe", "role": "assistant", "ts": 1766189400, "lang": "sk", "text": "Kapustnica chutí najlepšie na druhý deň; sušené hríby jej dodajú hlbšiu chuť." },
-      { "id": "m-rec-3", "threadId": "t-recipe", "role": "user", "ts": 1766190000, "lang": "sk", "text": "Nabudúce skúsim kapustnicu aj s klobásou." },
-
-      { "id": "m-jp-1", "threadId": "t-travel-jp", "role": "user", "ts": 1768003200, "lang": "sk", "text": "Plánujem cestu do Japonska v apríli, chcem stihnúť čerešňové kvety v Kjóte." },
-      { "id": "m-jp-2", "threadId": "t-travel-jp", "role": "assistant", "ts": 1768003800, "lang": "sk", "text": "V Kjóte kvitnú čerešne zvyčajne začiatkom apríla; odporúčam rezervovať ubytovanie aspoň tri mesiace vopred." },
-      { "id": "m-jp-3", "threadId": "t-travel-jp", "role": "user", "ts": 1768004400, "lang": "sk", "text": "Kúpil som si JR Pass na sedem dní, shinkansen z Tokia do Kjóta." },
-      { "id": "m-jp-4", "threadId": "t-travel-jp", "role": "assistant", "ts": 1768005000, "lang": "sk", "text": "Sedemdňový JR Pass sa oplatí, ak ideš aj do Hirošimy alebo Osaky." },
-
-      { "id": "m-fit-1", "threadId": "t-fitness", "role": "user", "ts": 1771027200, "lang": "sk", "text": "Trénujem na polmaratón v Košiciach, zatiaľ zvládnem pätnásť kilometrov." },
-      { "id": "m-fit-2", "threadId": "t-fitness", "role": "assistant", "ts": 1771027800, "lang": "sk", "text": "Do polmaratónu pridávaj maximálne desať percent objemu týždenne a jeden dlhý beh cez víkend." },
-      { "id": "m-fit-3", "threadId": "t-fitness", "role": "user", "ts": 1771028400, "lang": "sk", "text": "Dlhý beh v nedeľu bol osemnásť kilometrov, kolená v poriadku." },
-
-      { "id": "m-book-1", "threadId": "t-books", "role": "user", "ts": 1772323200, "lang": "de", "text": "Ich lese gerade einen Roman über den Zerfall Österreich-Ungarns, sehr atmosphärisch." },
-      { "id": "m-book-2", "threadId": "t-books", "role": "assistant", "ts": 1772323800, "lang": "de", "text": "Wenn dir das gefällt, könnte dir auch Joseph Roth gefallen, besonders der Radetzkymarsch." },
-      { "id": "m-book-3", "threadId": "t-books", "role": "user", "ts": 1772324400, "lang": "de", "text": "Radetzkymarsch habe ich bestellt." },
-
-      { "id": "m-bike-1", "threadId": "t-bike", "role": "user", "ts": 1775779200, "lang": "en", "text": "The rear derailleur on my gravel bike keeps skipping under load." },
-      { "id": "m-bike-2", "threadId": "t-bike", "role": "assistant", "ts": 1775779800, "lang": "en", "text": "Skipping under load is usually a worn cassette or a stretched chain — check chain wear with a gauge first." },
-      { "id": "m-bike-3", "threadId": "t-bike", "role": "user", "ts": 1775780400, "lang": "en", "text": "Chain gauge shows 0.75 wear, replacing the chain and the cassette together." }
+      {
+        "id": "m-llm-1",
+        "threadId": "t-llm",
+        "role": "user",
+        "ts": 1736035200,
+        "lang": "en",
+        "text": "How do decoder-only LLMs differ from BERT-style encoders?"
+      },
+      {
+        "id": "m-llm-2",
+        "threadId": "t-llm",
+        "role": "assistant",
+        "ts": 1736035800,
+        "lang": "en",
+        "text": "Decoder-only models are trained autoregressively with causal masking, while BERT-style encoders use bidirectional attention and masked-token objectives."
+      },
+      {
+        "id": "m-llm-3",
+        "threadId": "t-llm",
+        "role": "user",
+        "ts": 1736036400,
+        "lang": "en",
+        "text": "And what about mixture-of-experts routing?"
+      },
+      {
+        "id": "m-llm-4",
+        "threadId": "t-llm",
+        "role": "assistant",
+        "ts": 1736037000,
+        "lang": "en",
+        "text": "MoE layers route each token to a few expert MLPs, trading parameter count for compute efficiency."
+      },
+      {
+        "id": "m-mus-1",
+        "threadId": "t-music",
+        "role": "user",
+        "ts": 1746921600,
+        "lang": "en",
+        "text": "Thinking about restringing my acoustic guitar with lighter strings."
+      },
+      {
+        "id": "m-mus-2",
+        "threadId": "t-music",
+        "role": "assistant",
+        "ts": 1746922200,
+        "lang": "en",
+        "text": "Lighter gauge strings are easier on the fingers but you may need a truss-rod tweak to avoid fret buzz."
+      },
+      {
+        "id": "m-mus-3",
+        "threadId": "t-music",
+        "role": "assistant",
+        "ts": 1746922800,
+        "lang": "en",
+        "text": "For a brighter tone with light strings, phosphor bronze holds up well."
+      },
+      {
+        "id": "m-health-1",
+        "threadId": "t-health",
+        "role": "user",
+        "ts": 1749513600,
+        "lang": "en",
+        "text": "Can you check my email for anything about my hospital appointment?"
+      },
+      {
+        "id": "m-health-2",
+        "threadId": "t-health",
+        "role": "assistant",
+        "ts": 1749514200,
+        "lang": "en",
+        "text": "Your UZ Gent cardiology appointment is on June 30 at 9:15; Dr. Janssens noted slightly elevated cholesterol and asked for a follow-up blood test."
+      },
+      {
+        "id": "m-health-3",
+        "threadId": "t-health",
+        "role": "user",
+        "ts": 1749514800,
+        "lang": "sk",
+        "text": "Mám alergiu na peľ brezy, každú jar potrebujem antihistaminiká."
+      },
+      {
+        "id": "m-health-4",
+        "threadId": "t-health",
+        "role": "assistant",
+        "ts": 1749515400,
+        "lang": "sk",
+        "text": "Poznačil som si: alergia na peľ brezy, sezóna zvyčajne od marca do mája."
+      },
+      {
+        "id": "m-health-5",
+        "threadId": "t-health",
+        "role": "user",
+        "ts": 1751932800,
+        "lang": "en",
+        "text": "The follow-up blood test came back, cholesterol is down to 5.1."
+      },
+      {
+        "id": "m-home-1",
+        "threadId": "t-home",
+        "role": "user",
+        "ts": 1751328000,
+        "lang": "sk",
+        "text": "Sťahujeme sa do nového bytu v Petržalke od septembra."
+      },
+      {
+        "id": "m-home-2",
+        "threadId": "t-home",
+        "role": "assistant",
+        "ts": 1751328600,
+        "lang": "sk",
+        "text": "Pri sťahovaní odporúčam prepísať elektrinu a plyn aspoň dva týždne vopred."
+      },
+      {
+        "id": "m-home-3",
+        "threadId": "t-home",
+        "role": "user",
+        "ts": 1751329200,
+        "lang": "sk",
+        "text": "Hypotéku sme nakoniec zobrali s fixáciou na päť rokov, úrok 3,8 percenta."
+      },
+      {
+        "id": "m-home-4",
+        "threadId": "t-home",
+        "role": "assistant",
+        "ts": 1751329800,
+        "lang": "sk",
+        "text": "Fixácia na päť rokov pri 3,8 percenta je v dnešnej situácii rozumná voľba."
+      },
+      {
+        "id": "m-garden-1",
+        "threadId": "t-garden",
+        "role": "user",
+        "ts": 1752537600,
+        "lang": "en",
+        "text": "My rosemary on the balcony is dying — the needles are turning brown from the bottom up."
+      },
+      {
+        "id": "m-garden-2",
+        "threadId": "t-garden",
+        "role": "assistant",
+        "ts": 1752538200,
+        "lang": "en",
+        "text": "Brown needles from the bottom usually mean overwatering and root rot; rosemary wants sandy soil and a dry-out between waterings."
+      },
+      {
+        "id": "m-garden-3",
+        "threadId": "t-garden",
+        "role": "user",
+        "ts": 1752538800,
+        "lang": "en",
+        "text": "I repotted the rosemary into a terracotta pot with drainage like you suggested."
+      },
+      {
+        "id": "m-garden-4",
+        "threadId": "t-garden",
+        "role": "assistant",
+        "ts": 1752539400,
+        "lang": "en",
+        "text": "Terracotta breathes better; water only when the top five centimeters of soil are dry."
+      },
+      {
+        "id": "m-it-1",
+        "threadId": "t-travel-it",
+        "role": "user",
+        "ts": 1755648000,
+        "lang": "en",
+        "text": "Booked four nights in Naples for October, mostly for the pizza honestly."
+      },
+      {
+        "id": "m-it-2",
+        "threadId": "t-travel-it",
+        "role": "assistant",
+        "ts": 1755648600,
+        "lang": "en",
+        "text": "For Naples in October pack light layers; L'Antica Pizzeria da Michele usually has a queue before noon."
+      },
+      {
+        "id": "m-it-3",
+        "threadId": "t-travel-it",
+        "role": "user",
+        "ts": 1755649200,
+        "lang": "en",
+        "text": "Also planning a day trip to Pompeii from Naples."
+      },
+      {
+        "id": "m-pets-1",
+        "threadId": "t-pets",
+        "role": "user",
+        "ts": 1756771200,
+        "lang": "en",
+        "text": "Rex needs his rabies vaccination renewed before we travel."
+      },
+      {
+        "id": "m-pets-2",
+        "threadId": "t-pets",
+        "role": "assistant",
+        "ts": 1756771800,
+        "lang": "en",
+        "text": "The vet clinic on Karadžičova has openings on Thursday; Rex's last rabies shot was in 2024, so the booster is due."
+      },
+      {
+        "id": "m-pets-3",
+        "threadId": "t-pets",
+        "role": "user",
+        "ts": 1756772400,
+        "lang": "en",
+        "text": "Rex chewed through his leash again, ordering a chain one this time."
+      },
+      {
+        "id": "m-pets-4",
+        "threadId": "t-pets",
+        "role": "assistant",
+        "ts": 1756773000,
+        "lang": "en",
+        "text": "A chain leash is heavy; a biothane one resists chewing and weighs less."
+      },
+      {
+        "id": "m-work-1",
+        "threadId": "t-work",
+        "role": "user",
+        "ts": 1757894400,
+        "lang": "en",
+        "text": "We're migrating the billing service from Python to Rust this quarter."
+      },
+      {
+        "id": "m-work-2",
+        "threadId": "t-work",
+        "role": "assistant",
+        "ts": 1757895000,
+        "lang": "en",
+        "text": "For the billing migration, start with the invoice-generation path — it's the most CPU-bound and benefits most from Rust."
+      },
+      {
+        "id": "m-work-3",
+        "threadId": "t-work",
+        "role": "user",
+        "ts": 1757895600,
+        "lang": "en",
+        "text": "The billing migration deadline moved to the end of November."
+      },
+      {
+        "id": "m-work-4",
+        "threadId": "t-work",
+        "role": "assistant",
+        "ts": 1757896200,
+        "lang": "en",
+        "text": "If the deadline is end of November, freeze the schema by mid-October."
+      },
+      {
+        "id": "m-cook-1",
+        "threadId": "t-cook",
+        "role": "user",
+        "ts": 1759622400,
+        "lang": "de",
+        "text": "Mein Sauerteigbrot ist wieder zu dicht geworden, die Krume ist fast wie Kuchen."
+      },
+      {
+        "id": "m-cook-2",
+        "threadId": "t-cook",
+        "role": "assistant",
+        "ts": 1759623000,
+        "lang": "de",
+        "text": "Eine dichte Krume liegt meist an zu kurzer Stockgare; versuche 75 Prozent Hydration und eine kalte Übernachtgare im Kühlschrank."
+      },
+      {
+        "id": "m-cook-3",
+        "threadId": "t-cook",
+        "role": "user",
+        "ts": 1759623600,
+        "lang": "de",
+        "text": "Mit der kalten Übernachtgare ist das Brot endlich luftig geworden, danke."
+      },
+      {
+        "id": "m-cook-4",
+        "threadId": "t-cook",
+        "role": "user",
+        "ts": 1759624200,
+        "lang": "de",
+        "text": "Nächstes Mal probiere ich Roggenmehl im Sauerteig."
+      },
+      {
+        "id": "m-car-1",
+        "threadId": "t-car",
+        "role": "user",
+        "ts": 1760918400,
+        "lang": "de",
+        "text": "Ich muss noch einen Termin für die Winterreifen machen, am besten Anfang November."
+      },
+      {
+        "id": "m-car-2",
+        "threadId": "t-car",
+        "role": "assistant",
+        "ts": 1760919000,
+        "lang": "de",
+        "text": "Die Werkstatt im Vlčie hrdlo hat am 4. November freie Termine für den Reifenwechsel."
+      },
+      {
+        "id": "m-car-3",
+        "threadId": "t-car",
+        "role": "user",
+        "ts": 1760919600,
+        "lang": "de",
+        "text": "Termin am 4. November ist gebucht."
+      },
+      {
+        "id": "m-fin-1",
+        "threadId": "t-finance",
+        "role": "user",
+        "ts": 1762128000,
+        "lang": "sk",
+        "text": "Chcem začať investovať do ETF, mesačne okolo dvesto eur."
+      },
+      {
+        "id": "m-fin-2",
+        "threadId": "t-finance",
+        "role": "assistant",
+        "ts": 1762128600,
+        "lang": "sk",
+        "text": "Pri dvesto eurách mesačne dáva zmysel jeden široký svetový ETF a automatická trvalá objednávka."
+      },
+      {
+        "id": "m-fin-3",
+        "threadId": "t-finance",
+        "role": "user",
+        "ts": 1762129200,
+        "lang": "sk",
+        "text": "Nastavil som trvalý príkaz na prvý deň v mesiaci."
+      },
+      {
+        "id": "m-mov-1",
+        "threadId": "t-movies",
+        "role": "user",
+        "ts": 1764547200,
+        "lang": "en",
+        "text": "Any good sci-fi films from the last two years I might have missed?"
+      },
+      {
+        "id": "m-mov-2",
+        "threadId": "t-movies",
+        "role": "assistant",
+        "ts": 1764547800,
+        "lang": "en",
+        "text": "If you liked slower-paced sci-fi, try the one about the generation ship losing its archive — reviewers compared it to early Tarkovsky."
+      },
+      {
+        "id": "m-dent-1",
+        "threadId": "t-dentist",
+        "role": "user",
+        "ts": 1765756800,
+        "lang": "en",
+        "text": "My dentist said the lower left molar needs a crown, scheduled for January 12."
+      },
+      {
+        "id": "m-dent-2",
+        "threadId": "t-dentist",
+        "role": "assistant",
+        "ts": 1765757400,
+        "lang": "en",
+        "text": "Noted — crown prep on January 12; they usually place a temporary crown for two weeks first."
+      },
+      {
+        "id": "m-dent-3",
+        "threadId": "t-dentist",
+        "role": "user",
+        "ts": 1765758000,
+        "lang": "en",
+        "text": "The temporary crown feels a bit high when I bite."
+      },
+      {
+        "id": "m-rec-1",
+        "threadId": "t-recipe",
+        "role": "user",
+        "ts": 1766188800,
+        "lang": "sk",
+        "text": "Robil som kapustnicu podľa babkinej receptúry, s údeným mäsom a hríbmi."
+      },
+      {
+        "id": "m-rec-2",
+        "threadId": "t-recipe",
+        "role": "assistant",
+        "ts": 1766189400,
+        "lang": "sk",
+        "text": "Kapustnica chutí najlepšie na druhý deň; sušené hríby jej dodajú hlbšiu chuť."
+      },
+      {
+        "id": "m-rec-3",
+        "threadId": "t-recipe",
+        "role": "user",
+        "ts": 1766190000,
+        "lang": "sk",
+        "text": "Nabudúce skúsim kapustnicu aj s klobásou."
+      },
+      {
+        "id": "m-jp-1",
+        "threadId": "t-travel-jp",
+        "role": "user",
+        "ts": 1768003200,
+        "lang": "sk",
+        "text": "Plánujem cestu do Japonska v apríli, chcem stihnúť čerešňové kvety v Kjóte."
+      },
+      {
+        "id": "m-jp-2",
+        "threadId": "t-travel-jp",
+        "role": "assistant",
+        "ts": 1768003800,
+        "lang": "sk",
+        "text": "V Kjóte kvitnú čerešne zvyčajne začiatkom apríla; odporúčam rezervovať ubytovanie aspoň tri mesiace vopred."
+      },
+      {
+        "id": "m-jp-3",
+        "threadId": "t-travel-jp",
+        "role": "user",
+        "ts": 1768004400,
+        "lang": "sk",
+        "text": "Kúpil som si JR Pass na sedem dní, shinkansen z Tokia do Kjóta."
+      },
+      {
+        "id": "m-jp-4",
+        "threadId": "t-travel-jp",
+        "role": "assistant",
+        "ts": 1768005000,
+        "lang": "sk",
+        "text": "Sedemdňový JR Pass sa oplatí, ak ideš aj do Hirošimy alebo Osaky."
+      },
+      {
+        "id": "m-fit-1",
+        "threadId": "t-fitness",
+        "role": "user",
+        "ts": 1771027200,
+        "lang": "sk",
+        "text": "Trénujem na polmaratón v Košiciach, zatiaľ zvládnem pätnásť kilometrov."
+      },
+      {
+        "id": "m-fit-2",
+        "threadId": "t-fitness",
+        "role": "assistant",
+        "ts": 1771027800,
+        "lang": "sk",
+        "text": "Do polmaratónu pridávaj maximálne desať percent objemu týždenne a jeden dlhý beh cez víkend."
+      },
+      {
+        "id": "m-fit-3",
+        "threadId": "t-fitness",
+        "role": "user",
+        "ts": 1771028400,
+        "lang": "sk",
+        "text": "Dlhý beh v nedeľu bol osemnásť kilometrov, kolená v poriadku."
+      },
+      {
+        "id": "m-book-1",
+        "threadId": "t-books",
+        "role": "user",
+        "ts": 1772323200,
+        "lang": "de",
+        "text": "Ich lese gerade einen Roman über den Zerfall Österreich-Ungarns, sehr atmosphärisch."
+      },
+      {
+        "id": "m-book-2",
+        "threadId": "t-books",
+        "role": "assistant",
+        "ts": 1772323800,
+        "lang": "de",
+        "text": "Wenn dir das gefällt, könnte dir auch Joseph Roth gefallen, besonders der Radetzkymarsch."
+      },
+      {
+        "id": "m-book-3",
+        "threadId": "t-books",
+        "role": "user",
+        "ts": 1772324400,
+        "lang": "de",
+        "text": "Radetzkymarsch habe ich bestellt."
+      },
+      {
+        "id": "m-bike-1",
+        "threadId": "t-bike",
+        "role": "user",
+        "ts": 1775779200,
+        "lang": "en",
+        "text": "The rear derailleur on my gravel bike keeps skipping under load."
+      },
+      {
+        "id": "m-bike-2",
+        "threadId": "t-bike",
+        "role": "assistant",
+        "ts": 1775779800,
+        "lang": "en",
+        "text": "Skipping under load is usually a worn cassette or a stretched chain — check chain wear with a gauge first."
+      },
+      {
+        "id": "m-bike-3",
+        "threadId": "t-bike",
+        "role": "user",
+        "ts": 1775780400,
+        "lang": "en",
+        "text": "Chain gauge shows 0.75 wear, replacing the chain and the cassette together."
+      }
     ],
     "facts": [
-      { "id": "f-dog", "lang": "en", "text": "The user has a dog named Rex." },
-      { "id": "f-city", "lang": "en", "text": "The user lives in Bratislava, in the Petržalka district." },
-      { "id": "f-job", "lang": "en", "text": "The user works as a backend software engineer." },
-      { "id": "f-lang", "lang": "en", "text": "The user speaks Slovak, English, and German." },
-      { "id": "f-allergy", "lang": "en", "text": "The user is allergic to birch pollen." },
-      { "id": "f-run", "lang": "en", "text": "The user is training for a half marathon in Košice." },
-      { "id": "f-etf", "lang": "en", "text": "The user invests about 200 euros per month into a world ETF." },
-      { "id": "f-mortgage", "lang": "en", "text": "The user has a mortgage fixed for five years at 3.8 percent." },
-      { "id": "f-japan", "lang": "en", "text": "The user is planning a trip to Japan in April to see cherry blossoms in Kyoto." },
-      { "id": "f-bread", "lang": "en", "text": "The user bakes sourdough bread as a hobby." },
-      { "id": "f-guitar", "lang": "en", "text": "The user plays acoustic guitar." },
-      { "id": "f-bike", "lang": "en", "text": "The user rides a gravel bike." },
-      { "id": "f-veg", "lang": "en", "text": "The user prefers vegetarian food on weekdays." },
-      { "id": "f-coffee", "lang": "en", "text": "The user drinks coffee black, no sugar." },
-      { "id": "f-sister", "lang": "en", "text": "The user's sister is named Anna and lives in Vienna." },
-      { "id": "f-editor", "lang": "en", "text": "The user prefers dark mode in code editors." },
-      { "id": "f-rust", "lang": "en", "text": "The user's team is migrating a billing service from Python to Rust." },
-      { "id": "f-dentist", "lang": "en", "text": "The user has a dental crown appointment on January 12." },
-      { "id": "f-car", "lang": "en", "text": "The user drives a diesel station wagon." },
-      { "id": "f-plant", "lang": "en", "text": "The user keeps a rosemary plant on the balcony." },
-      { "id": "f-wifi", "lang": "en", "text": "The user's WiFi network at home is called HomeNet." },
-      { "id": "f-tea", "lang": "en", "text": "The user's partner prefers green tea over coffee." }
+      {
+        "id": "f-dog",
+        "lang": "en",
+        "text": "The user has a dog named Rex."
+      },
+      {
+        "id": "f-city",
+        "lang": "en",
+        "text": "The user lives in Bratislava, in the Petržalka district."
+      },
+      {
+        "id": "f-job",
+        "lang": "en",
+        "text": "The user works as a backend software engineer."
+      },
+      {
+        "id": "f-lang",
+        "lang": "en",
+        "text": "The user speaks Slovak, English, and German."
+      },
+      {
+        "id": "f-allergy",
+        "lang": "en",
+        "text": "The user is allergic to birch pollen."
+      },
+      {
+        "id": "f-run",
+        "lang": "en",
+        "text": "The user is training for a half marathon in Košice."
+      },
+      {
+        "id": "f-etf",
+        "lang": "en",
+        "text": "The user invests about 200 euros per month into a world ETF."
+      },
+      {
+        "id": "f-mortgage",
+        "lang": "en",
+        "text": "The user has a mortgage fixed for five years at 3.8 percent."
+      },
+      {
+        "id": "f-japan",
+        "lang": "en",
+        "text": "The user is planning a trip to Japan in April to see cherry blossoms in Kyoto."
+      },
+      {
+        "id": "f-bread",
+        "lang": "en",
+        "text": "The user bakes sourdough bread as a hobby."
+      },
+      {
+        "id": "f-guitar",
+        "lang": "en",
+        "text": "The user plays acoustic guitar."
+      },
+      {
+        "id": "f-bike",
+        "lang": "en",
+        "text": "The user rides a gravel bike."
+      },
+      {
+        "id": "f-veg",
+        "lang": "en",
+        "text": "The user prefers vegetarian food on weekdays."
+      },
+      {
+        "id": "f-coffee",
+        "lang": "en",
+        "text": "The user drinks coffee black, no sugar."
+      },
+      {
+        "id": "f-sister",
+        "lang": "en",
+        "text": "The user's sister is named Anna and lives in Vienna."
+      },
+      {
+        "id": "f-editor",
+        "lang": "en",
+        "text": "The user prefers dark mode in code editors."
+      },
+      {
+        "id": "f-rust",
+        "lang": "en",
+        "text": "The user's team is migrating a billing service from Python to Rust."
+      },
+      {
+        "id": "f-dentist",
+        "lang": "en",
+        "text": "The user has a dental crown appointment on January 12."
+      },
+      {
+        "id": "f-car",
+        "lang": "en",
+        "text": "The user drives a diesel station wagon."
+      },
+      {
+        "id": "f-plant",
+        "lang": "en",
+        "text": "The user keeps a rosemary plant on the balcony."
+      },
+      {
+        "id": "f-wifi",
+        "lang": "en",
+        "text": "The user's WiFi network at home is called HomeNet."
+      },
+      {
+        "id": "f-tea",
+        "lang": "en",
+        "text": "The user's partner prefers green tea over coffee."
+      }
+    ],
+    "summaries": [
+      {
+        "id": "s-llm",
+        "threadId": "t-llm",
+        "lang": "en",
+        "firstTs": 1736035200,
+        "lastTs": 1736037000,
+        "messageCount": 4,
+        "text": "Discussed LLM architecture fundamentals: decoder-only models train autoregressively with causal masking while BERT-style encoders use bidirectional attention, and mixture-of-experts layers route tokens to expert MLPs to trade parameters for compute."
+      },
+      {
+        "id": "s-health",
+        "threadId": "t-health",
+        "lang": "en",
+        "firstTs": 1749513600,
+        "lastTs": 1751932800,
+        "messageCount": 5,
+        "text": "Health thread: a UZ Gent cardiology appointment on June 30 at 9:15 with Dr. Janssens, who flagged slightly elevated cholesterol; the follow-up blood test later came back improved at 5.1. The user also has a birch pollen allergy and needs antihistamines every spring, roughly March to May."
+      },
+      {
+        "id": "s-home",
+        "threadId": "t-home",
+        "lang": "en",
+        "firstTs": 1751328000,
+        "lastTs": 1751329800,
+        "messageCount": 4,
+        "text": "The user is moving to a new apartment in Petrzalka from September; utilities (electricity and gas) should be transferred two weeks ahead. They took a mortgage with a five-year fixed rate at 3.8 percent."
+      },
+      {
+        "id": "s-garden",
+        "threadId": "t-garden",
+        "lang": "en",
+        "firstTs": 1752537600,
+        "lastTs": 1752539400,
+        "messageCount": 4,
+        "text": "Diagnosed the balcony rosemary turning brown from the bottom as overwatering and root rot; the user repotted it into a terracotta pot with drainage and now waters only when the top five centimeters of soil are dry."
+      },
+      {
+        "id": "s-travel-it",
+        "threadId": "t-travel-it",
+        "lang": "en",
+        "firstTs": 1755648000,
+        "lastTs": 1755649200,
+        "messageCount": 3,
+        "text": "The user booked four nights in Naples in October, mainly for the pizza, with a planned day trip to Pompeii; packing advice was light layers and an early visit to L'Antica Pizzeria da Michele."
+      },
+      {
+        "id": "s-pets",
+        "threadId": "t-pets",
+        "lang": "en",
+        "firstTs": 1756771200,
+        "lastTs": 1756773000,
+        "messageCount": 4,
+        "text": "Dog care thread about Rex: his rabies booster is due before travel (last shot 2024, vet clinic on Karadzicova has Thursday openings), and after he chewed through his leash again a biothane leash was recommended over a chain one."
+      },
+      {
+        "id": "s-work",
+        "threadId": "t-work",
+        "lang": "en",
+        "firstTs": 1757894400,
+        "lastTs": 1757896200,
+        "messageCount": 4,
+        "text": "Work thread: the billing service is being migrated from Python to Rust this quarter, starting with the CPU-bound invoice-generation path; the deadline moved to the end of November, so the schema should freeze by mid-October."
+      },
+      {
+        "id": "s-cook",
+        "threadId": "t-cook",
+        "lang": "en",
+        "firstTs": 1759622400,
+        "lastTs": 1759624200,
+        "messageCount": 4,
+        "text": "Sourdough baking thread: the user's bread was too dense; longer bulk fermentation, 75 percent hydration and a cold overnight proof in the fridge fixed it, and they plan to try rye flour in the starter next."
+      },
+      {
+        "id": "s-car",
+        "threadId": "t-car",
+        "lang": "en",
+        "firstTs": 1760918400,
+        "lastTs": 1760919600,
+        "messageCount": 3,
+        "text": "The user booked a winter tyre change appointment for November 4 at the workshop in Vlcie hrdlo."
+      },
+      {
+        "id": "s-finance",
+        "threadId": "t-finance",
+        "lang": "en",
+        "firstTs": 1762128000,
+        "lastTs": 1762129200,
+        "messageCount": 3,
+        "text": "Investing thread: the user wants to invest about two hundred euros monthly into ETFs; the plan settled on one broad world ETF with an automatic standing order on the first day of each month."
+      },
+      {
+        "id": "s-dentist",
+        "threadId": "t-dentist",
+        "lang": "en",
+        "firstTs": 1765756800,
+        "lastTs": 1765758000,
+        "messageCount": 3,
+        "text": "Dental thread: the lower left molar needs a crown, with prep scheduled for January 12; a temporary crown goes on first and currently feels a bit high when biting."
+      },
+      {
+        "id": "s-travel-jp",
+        "threadId": "t-travel-jp",
+        "lang": "en",
+        "firstTs": 1768003200,
+        "lastTs": 1768005000,
+        "messageCount": 4,
+        "text": "The user is planning an April trip to Japan to catch the cherry blossoms in Kyoto, booked accommodation early, and bought a seven-day JR Pass for the shinkansen from Tokyo to Kyoto, possibly extending to Hiroshima or Osaka."
+      },
+      {
+        "id": "s-fitness",
+        "threadId": "t-fitness",
+        "lang": "en",
+        "firstTs": 1771027200,
+        "lastTs": 1771028400,
+        "messageCount": 3,
+        "text": "The user is training for the Kosice half marathon, building weekly volume by at most ten percent with one long weekend run; the latest Sunday long run was eighteen kilometers with no knee problems."
+      }
     ]
   },
   "queries": [
-    { "id": "q1", "text": "what did the doctor say about my cholesterol at UZ Gent", "queryLang": "en", "target": "episodic", "expected": ["m-health-2", "m-health-5"], "langPair": "en->en", "modes": ["direct"], "lexOverlap": true },
-    { "id": "q2", "text": "kedy kvitnú čerešne v Kjóte", "queryLang": "sk", "target": "episodic", "expected": ["m-jp-1", "m-jp-2"], "langPair": "sk->sk", "modes": ["direct"], "lexOverlap": true },
-    { "id": "q3", "text": "Termin für die Winterreifen", "queryLang": "de", "target": "episodic", "expected": ["m-car-1", "m-car-2"], "langPair": "de->de", "modes": ["direct"], "lexOverlap": true },
-    { "id": "q4", "text": "rosemary turning brown balcony", "queryLang": "en", "target": "episodic", "expected": ["m-garden-1"], "langPair": "en->en", "modes": ["direct"], "lexOverlap": true },
-    { "id": "q5", "text": "aký mám úrok na hypotéke", "queryLang": "sk", "target": "episodic", "expected": ["m-home-3"], "langPair": "sk->sk", "modes": ["direct"], "lexOverlap": true },
-    { "id": "q6", "text": "Sauerteigbrot zu dicht", "queryLang": "de", "target": "episodic", "expected": ["m-cook-1"], "langPair": "de->de", "modes": ["direct"], "lexOverlap": true },
-    { "id": "q7", "text": "billing service migration deadline", "queryLang": "en", "target": "episodic", "expected": ["m-work-3", "m-work-1"], "langPair": "en->en", "modes": ["direct"], "lexOverlap": true },
-    { "id": "q8", "text": "polmaratón Košice tréning", "queryLang": "sk", "target": "episodic", "expected": ["m-fit-1"], "langPair": "sk->sk", "modes": ["direct"], "lexOverlap": true },
-    { "id": "q9", "text": "čo som hovoril o svojej rastline na balkóne", "queryLang": "sk", "target": "episodic", "expected": ["m-garden-1", "m-garden-2", "m-garden-3"], "langPair": "sk->en", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q10", "text": "what did I say about moving to the new apartment", "queryLang": "en", "target": "episodic", "expected": ["m-home-1", "m-home-2"], "langPair": "en->sk", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q11", "text": "kedy má pes očkovanie proti besnote", "queryLang": "sk", "target": "episodic", "expected": ["m-pets-1", "m-pets-2"], "langPair": "sk->en", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q12", "text": "when is my winter tyre change appointment", "queryLang": "en", "target": "episodic", "expected": ["m-car-1", "m-car-2"], "langPair": "en->de", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q13", "text": "Was habe ich über die Migration des Abrechnungsdienstes gesagt?", "queryLang": "de", "target": "episodic", "expected": ["m-work-1", "m-work-2", "m-work-3"], "langPair": "de->en", "modes": ["cross-language"], "lexOverlap": true },
-    { "id": "q14", "text": "how much do I invest monthly into index funds", "queryLang": "en", "target": "episodic", "expected": ["m-fin-1", "m-fin-2"], "langPair": "en->sk", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q15", "text": "recept na kváskový chlieb príliš hustý", "queryLang": "sk", "target": "episodic", "expected": ["m-cook-1", "m-cook-2"], "langPair": "sk->de", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q16", "text": "Wohin ziehe ich um, in welchen Stadtteil?", "queryLang": "de", "target": "episodic", "expected": ["m-home-1"], "langPair": "de->sk", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q17", "text": "what pace am I running, how far can I run now", "queryLang": "en", "target": "episodic", "expected": ["m-fit-1", "m-fit-3"], "langPair": "en->sk", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q18", "text": "bolí ma zub, čo s korunkou", "queryLang": "sk", "target": "episodic", "expected": ["m-dent-1", "m-dent-3"], "langPair": "sk->en", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q19", "text": "my herb plant on the terrace is wilting", "queryLang": "en", "target": "episodic", "expected": ["m-garden-1"], "langPair": "en->en", "modes": ["synonym"], "lexOverlap": false },
-    { "id": "q20", "text": "puppy vaccine schedule", "queryLang": "en", "target": "episodic", "expected": ["m-pets-1", "m-pets-2"], "langPair": "en->en", "modes": ["synonym"], "lexOverlap": false },
-    { "id": "q21", "text": "Brot zu kompakt geworden", "queryLang": "de", "target": "episodic", "expected": ["m-cook-1", "m-cook-3"], "langPair": "de->de", "modes": ["synonym"], "lexOverlap": true },
-    { "id": "q22", "text": "when did I mention my cardiology appointment", "queryLang": "en", "target": "episodic", "expected": ["m-health-2"], "langPair": "en->en", "modes": ["direct", "temporal"], "lexOverlap": true },
-    { "id": "q23", "text": "kedy mám ísť na kardiológiu", "queryLang": "sk", "target": "episodic", "expected": ["m-health-2"], "langPair": "sk->en", "modes": ["cross-language", "temporal"], "lexOverlap": false },
-    { "id": "q24", "text": "when is the tooth crown appointment", "queryLang": "en", "target": "episodic", "expected": ["m-dent-1"], "langPair": "en->en", "modes": ["direct", "temporal"], "lexOverlap": true },
-    { "id": "q25", "text": "tell me about the ship archive film", "queryLang": "en", "target": "episodic", "expected": ["m-mov-2"], "langPair": "en->en", "modes": ["direct", "distractor-heavy"], "lexOverlap": true },
-    { "id": "q26", "text": "how does mixture of experts routing work", "queryLang": "en", "target": "episodic", "expected": ["m-llm-3", "m-llm-4"], "langPair": "en->en", "modes": ["direct", "distractor-heavy"], "lexOverlap": true },
-    { "id": "q27", "text": "do I have any pets?", "queryLang": "en", "target": "facts", "expected": ["f-dog"], "langPair": "en->en", "modes": ["synonym"], "lexOverlap": false },
-    { "id": "q28", "text": "kde bývam?", "queryLang": "sk", "target": "facts", "expected": ["f-city"], "langPair": "sk->en", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q29", "text": "what am I allergic to?", "queryLang": "en", "target": "facts", "expected": ["f-allergy"], "langPair": "en->en", "modes": ["direct"], "lexOverlap": true },
-    { "id": "q30", "text": "aké mám auto?", "queryLang": "sk", "target": "facts", "expected": ["f-car"], "langPair": "sk->en", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q31", "text": "Wie heißt die Schwester des Nutzers und wo wohnt sie?", "queryLang": "de", "target": "facts", "expected": ["f-sister"], "langPair": "de->en", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q32", "text": "how do I take my coffee?", "queryLang": "en", "target": "facts", "expected": ["f-coffee"], "langPair": "en->en", "modes": ["direct"], "lexOverlap": true },
-    { "id": "q33", "text": "koľko mesačne investujem?", "queryLang": "sk", "target": "facts", "expected": ["f-etf"], "langPair": "sk->en", "modes": ["cross-language"], "lexOverlap": false },
-    { "id": "q34", "text": "which plant do I keep on the balcony?", "queryLang": "en", "target": "facts", "expected": ["f-plant"], "langPair": "en->en", "modes": ["direct"], "lexOverlap": true }
+    {
+      "id": "q1",
+      "text": "what did the doctor say about my cholesterol at UZ Gent",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-health-2",
+        "m-health-5"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q2",
+      "text": "kedy kvitnú čerešne v Kjóte",
+      "queryLang": "sk",
+      "target": "episodic",
+      "expected": [
+        "m-jp-1",
+        "m-jp-2"
+      ],
+      "langPair": "sk->sk",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q3",
+      "text": "Termin für die Winterreifen",
+      "queryLang": "de",
+      "target": "episodic",
+      "expected": [
+        "m-car-1",
+        "m-car-2"
+      ],
+      "langPair": "de->de",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q4",
+      "text": "rosemary turning brown balcony",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-garden-1"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q5",
+      "text": "aký mám úrok na hypotéke",
+      "queryLang": "sk",
+      "target": "episodic",
+      "expected": [
+        "m-home-3"
+      ],
+      "langPair": "sk->sk",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q6",
+      "text": "Sauerteigbrot zu dicht",
+      "queryLang": "de",
+      "target": "episodic",
+      "expected": [
+        "m-cook-1"
+      ],
+      "langPair": "de->de",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q7",
+      "text": "billing service migration deadline",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-work-3",
+        "m-work-1"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q8",
+      "text": "polmaratón Košice tréning",
+      "queryLang": "sk",
+      "target": "episodic",
+      "expected": [
+        "m-fit-1"
+      ],
+      "langPair": "sk->sk",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q9",
+      "text": "čo som hovoril o svojej rastline na balkóne",
+      "queryLang": "sk",
+      "target": "episodic",
+      "expected": [
+        "m-garden-1",
+        "m-garden-2",
+        "m-garden-3"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q10",
+      "text": "what did I say about moving to the new apartment",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-home-1",
+        "m-home-2"
+      ],
+      "langPair": "en->sk",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q11",
+      "text": "kedy má pes očkovanie proti besnote",
+      "queryLang": "sk",
+      "target": "episodic",
+      "expected": [
+        "m-pets-1",
+        "m-pets-2"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q12",
+      "text": "when is my winter tyre change appointment",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-car-1",
+        "m-car-2"
+      ],
+      "langPair": "en->de",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q13",
+      "text": "Was habe ich über die Migration des Abrechnungsdienstes gesagt?",
+      "queryLang": "de",
+      "target": "episodic",
+      "expected": [
+        "m-work-1",
+        "m-work-2",
+        "m-work-3"
+      ],
+      "langPair": "de->en",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q14",
+      "text": "how much do I invest monthly into index funds",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-fin-1",
+        "m-fin-2"
+      ],
+      "langPair": "en->sk",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q15",
+      "text": "recept na kváskový chlieb príliš hustý",
+      "queryLang": "sk",
+      "target": "episodic",
+      "expected": [
+        "m-cook-1",
+        "m-cook-2"
+      ],
+      "langPair": "sk->de",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q16",
+      "text": "Wohin ziehe ich um, in welchen Stadtteil?",
+      "queryLang": "de",
+      "target": "episodic",
+      "expected": [
+        "m-home-1"
+      ],
+      "langPair": "de->sk",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q17",
+      "text": "what pace am I running, how far can I run now",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-fit-1",
+        "m-fit-3"
+      ],
+      "langPair": "en->sk",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q18",
+      "text": "bolí ma zub, čo s korunkou",
+      "queryLang": "sk",
+      "target": "episodic",
+      "expected": [
+        "m-dent-1",
+        "m-dent-3"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q19",
+      "text": "my herb plant on the terrace is wilting",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-garden-1"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "synonym"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q20",
+      "text": "puppy vaccine schedule",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-pets-1",
+        "m-pets-2"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "synonym"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q21",
+      "text": "Brot zu kompakt geworden",
+      "queryLang": "de",
+      "target": "episodic",
+      "expected": [
+        "m-cook-1",
+        "m-cook-3"
+      ],
+      "langPair": "de->de",
+      "modes": [
+        "synonym"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q22",
+      "text": "when did I mention my cardiology appointment",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-health-2"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct",
+        "temporal"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q23",
+      "text": "kedy mám ísť na kardiológiu",
+      "queryLang": "sk",
+      "target": "episodic",
+      "expected": [
+        "m-health-2"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "cross-language",
+        "temporal"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q24",
+      "text": "when is the tooth crown appointment",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-dent-1"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct",
+        "temporal"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q25",
+      "text": "tell me about the ship archive film",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-mov-2"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct",
+        "distractor-heavy"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q26",
+      "text": "how does mixture of experts routing work",
+      "queryLang": "en",
+      "target": "episodic",
+      "expected": [
+        "m-llm-3",
+        "m-llm-4"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct",
+        "distractor-heavy"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q27",
+      "text": "do I have any pets?",
+      "queryLang": "en",
+      "target": "facts",
+      "expected": [
+        "f-dog"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "synonym"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q28",
+      "text": "kde bývam?",
+      "queryLang": "sk",
+      "target": "facts",
+      "expected": [
+        "f-city"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q29",
+      "text": "what am I allergic to?",
+      "queryLang": "en",
+      "target": "facts",
+      "expected": [
+        "f-allergy"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q30",
+      "text": "aké mám auto?",
+      "queryLang": "sk",
+      "target": "facts",
+      "expected": [
+        "f-car"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q31",
+      "text": "Wie heißt die Schwester des Nutzers und wo wohnt sie?",
+      "queryLang": "de",
+      "target": "facts",
+      "expected": [
+        "f-sister"
+      ],
+      "langPair": "de->en",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q32",
+      "text": "how do I take my coffee?",
+      "queryLang": "en",
+      "target": "facts",
+      "expected": [
+        "f-coffee"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "q33",
+      "text": "koľko mesačne investujem?",
+      "queryLang": "sk",
+      "target": "facts",
+      "expected": [
+        "f-etf"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "cross-language"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "q34",
+      "text": "which plant do I keep on the balcony?",
+      "queryLang": "en",
+      "target": "facts",
+      "expected": [
+        "f-plant"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "qs1",
+      "text": "what did the doctor conclude about my cholesterol follow-up",
+      "queryLang": "en",
+      "target": "summaries",
+      "expected": [
+        "s-health"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "qs2",
+      "text": "which chat covered the billing service rewrite deadline",
+      "queryLang": "en",
+      "target": "summaries",
+      "expected": [
+        "s-work"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    },
+    {
+      "id": "qs3",
+      "text": "what did we decide about my dying potted herb",
+      "queryLang": "en",
+      "target": "summaries",
+      "expected": [
+        "s-garden"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "paraphrase"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "qs4",
+      "text": "kedy mam vymenu pneumatik na zimu",
+      "queryLang": "sk",
+      "target": "summaries",
+      "expected": [
+        "s-car"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "paraphrase"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "qs5",
+      "text": "co sme sa dohodli o hypoteke a stahovani",
+      "queryLang": "sk",
+      "target": "summaries",
+      "expected": [
+        "s-home"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "paraphrase"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "qs6",
+      "text": "ockovanie psa proti besnote",
+      "queryLang": "sk",
+      "target": "summaries",
+      "expected": [
+        "s-pets"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "paraphrase"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "qs7",
+      "text": "kam idem v aprili pozerat ceresnove kvety",
+      "queryLang": "sk",
+      "target": "summaries",
+      "expected": [
+        "s-travel-jp"
+      ],
+      "langPair": "sk->en",
+      "modes": [
+        "paraphrase"
+      ],
+      "lexOverlap": false
+    },
+    {
+      "id": "qs8",
+      "text": "my sourdough crumb was dense, what fixed it",
+      "queryLang": "en",
+      "target": "summaries",
+      "expected": [
+        "s-cook"
+      ],
+      "langPair": "en->en",
+      "modes": [
+        "direct"
+      ],
+      "lexOverlap": true
+    }
   ],
   "duplicatePairs": [
-    { "a": "The user has a dog named Rex.", "b": "The user owns a dog called Rex.", "duplicate": true },
-    { "a": "The user has a dog named Rex.", "b": "Používateľ má psa menom Rex.", "duplicate": true, "crossLanguage": true },
-    { "a": "The user has a dog named Rex.", "b": "The user has a cat named Miša.", "duplicate": false },
-    { "a": "The user lives in Bratislava.", "b": "The user is based in Bratislava, Slovakia.", "duplicate": true },
-    { "a": "The user lives in Bratislava.", "b": "The user's sister lives in Vienna.", "duplicate": false },
-    { "a": "The user works as a backend software engineer.", "b": "The user is employed as a back-end developer.", "duplicate": true },
-    { "a": "The user works as a backend software engineer.", "b": "The user wants to learn frontend design.", "duplicate": false },
-    { "a": "The user is allergic to birch pollen.", "b": "Používateľ je alergický na peľ brezy.", "duplicate": true, "crossLanguage": true },
-    { "a": "The user is allergic to birch pollen.", "b": "The user is allergic to peanuts.", "duplicate": false },
-    { "a": "The user invests 200 euros monthly into a world ETF.", "b": "Each month the user puts about €200 into a global index ETF.", "duplicate": true },
-    { "a": "The user invests 200 euros monthly into a world ETF.", "b": "The user pays 200 euros monthly for rent.", "duplicate": false },
-    { "a": "The user drinks coffee black without sugar.", "b": "The user takes their coffee black, no sugar.", "duplicate": true },
-    { "a": "The user drinks coffee black without sugar.", "b": "The user's partner prefers green tea.", "duplicate": false },
-    { "a": "The user is training for a half marathon in Košice.", "b": "The user prepares for the Košice half-marathon.", "duplicate": true },
-    { "a": "The user is training for a half marathon in Košice.", "b": "The user ran a full marathon in Vienna in 2023.", "duplicate": false },
-    { "a": "The user bakes sourdough bread.", "b": "Der Nutzer backt Sauerteigbrot.", "duplicate": true, "crossLanguage": true },
-    { "a": "The user bakes sourdough bread.", "b": "The user dislikes rye bread.", "duplicate": false },
-    { "a": "The user's WiFi network is called HomeNet.", "b": "The home WiFi SSID of the user is HomeNet.", "duplicate": true },
-    { "a": "The user's WiFi network is called HomeNet.", "b": "The user's WiFi password was recently changed.", "duplicate": false },
-    { "a": "The user keeps a rosemary plant on the balcony.", "b": "On the balcony, the user grows rosemary.", "duplicate": true }
+    {
+      "a": "The user has a dog named Rex.",
+      "b": "The user owns a dog called Rex.",
+      "duplicate": true
+    },
+    {
+      "a": "The user has a dog named Rex.",
+      "b": "Používateľ má psa menom Rex.",
+      "duplicate": true,
+      "crossLanguage": true
+    },
+    {
+      "a": "The user has a dog named Rex.",
+      "b": "The user has a cat named Miša.",
+      "duplicate": false
+    },
+    {
+      "a": "The user lives in Bratislava.",
+      "b": "The user is based in Bratislava, Slovakia.",
+      "duplicate": true
+    },
+    {
+      "a": "The user lives in Bratislava.",
+      "b": "The user's sister lives in Vienna.",
+      "duplicate": false
+    },
+    {
+      "a": "The user works as a backend software engineer.",
+      "b": "The user is employed as a back-end developer.",
+      "duplicate": true
+    },
+    {
+      "a": "The user works as a backend software engineer.",
+      "b": "The user wants to learn frontend design.",
+      "duplicate": false
+    },
+    {
+      "a": "The user is allergic to birch pollen.",
+      "b": "Používateľ je alergický na peľ brezy.",
+      "duplicate": true,
+      "crossLanguage": true
+    },
+    {
+      "a": "The user is allergic to birch pollen.",
+      "b": "The user is allergic to peanuts.",
+      "duplicate": false
+    },
+    {
+      "a": "The user invests 200 euros monthly into a world ETF.",
+      "b": "Each month the user puts about €200 into a global index ETF.",
+      "duplicate": true
+    },
+    {
+      "a": "The user invests 200 euros monthly into a world ETF.",
+      "b": "The user pays 200 euros monthly for rent.",
+      "duplicate": false
+    },
+    {
+      "a": "The user drinks coffee black without sugar.",
+      "b": "The user takes their coffee black, no sugar.",
+      "duplicate": true
+    },
+    {
+      "a": "The user drinks coffee black without sugar.",
+      "b": "The user's partner prefers green tea.",
+      "duplicate": false
+    },
+    {
+      "a": "The user is training for a half marathon in Košice.",
+      "b": "The user prepares for the Košice half-marathon.",
+      "duplicate": true
+    },
+    {
+      "a": "The user is training for a half marathon in Košice.",
+      "b": "The user ran a full marathon in Vienna in 2023.",
+      "duplicate": false
+    },
+    {
+      "a": "The user bakes sourdough bread.",
+      "b": "Der Nutzer backt Sauerteigbrot.",
+      "duplicate": true,
+      "crossLanguage": true
+    },
+    {
+      "a": "The user bakes sourdough bread.",
+      "b": "The user dislikes rye bread.",
+      "duplicate": false
+    },
+    {
+      "a": "The user's WiFi network is called HomeNet.",
+      "b": "The home WiFi SSID of the user is HomeNet.",
+      "duplicate": true
+    },
+    {
+      "a": "The user's WiFi network is called HomeNet.",
+      "b": "The user's WiFi password was recently changed.",
+      "duplicate": false
+    },
+    {
+      "a": "The user keeps a rosemary plant on the balcony.",
+      "b": "On the balcony, the user grows rosemary.",
+      "duplicate": true
+    }
   ],
   "floors": {
-    "_note": "Aggregate regression floors per tier, set slightly below the values measured on 2026-07-04 with multilingual-e5-small (the default; e5-base measured no better): fts .538/.465, semantic .731/.660, hybrid .769/.670, facts-embedding 1.0/.938, hybrid sk->en recall@5 .50. The fts values also hold by construction (direct queries share exact tokens).",
-    "fts": { "recall@5": 0.4, "mrr": 0.25 },
-    "semantic": { "recall@5": 0.65, "mrr": 0.55 },
-    "hybrid": { "recall@5": 0.7, "mrr": 0.6 },
-    "facts-embedding": { "recall@5": 0.85, "mrr": 0.8 },
+    "_note": "Aggregate regression floors per tier, set slightly below the values measured on 2026-07-04 with multilingual-e5-small (the default; e5-base measured no better): fts .538/.465, semantic .731/.660, hybrid .769/.670, facts-embedding 1.0/.938, hybrid sk->en recall@5 .50. The fts values also hold by construction (direct queries share exact tokens). Summaries tiers measured 2026-07-10 (e5-small, summary min-cosine 0.78): summaries-hybrid 1.0/1.0 overall AND sk->en — English-canonical summaries close the cross-language gap that caps raw-message hybrid at .50; summaries-fts .375 by construction (5 of 8 queries are lexOverlap:false).",
+    "fts": {
+      "recall@5": 0.4,
+      "mrr": 0.25
+    },
+    "semantic": {
+      "recall@5": 0.65,
+      "mrr": 0.55
+    },
+    "hybrid": {
+      "recall@5": 0.7,
+      "mrr": 0.6
+    },
+    "facts-embedding": {
+      "recall@5": 0.85,
+      "mrr": 0.8
+    },
     "byLangPair": {
-      "sk->en": { "hybrid": { "recall@5": 0.45 } },
-      "en->en": { "hybrid": { "recall@5": 0.95 } }
+      "sk->en": {
+        "hybrid": {
+          "recall@5": 0.45
+        },
+        "summaries-hybrid": {
+          "recall@5": 0.7
+        }
+      },
+      "en->en": {
+        "hybrid": {
+          "recall@5": 0.95
+        },
+        "summaries-hybrid": {
+          "recall@5": 0.95
+        }
+      }
+    },
+    "summaries-fts": {
+      "recall@5": 0.3
+    },
+    "summaries-hybrid": {
+      "recall@5": 0.85,
+      "mrr": 0.8
     }
   }
 }
