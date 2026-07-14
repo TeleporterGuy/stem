@@ -1067,6 +1067,41 @@ export function setFactPinned(id: number, pinned: boolean): boolean {
     .run(pinned ? 1 : 0, nowSeconds(), id).changes as number) > 0;
 }
 
+/**
+ * Rewrite an active fact's text in place (note normalization). Returns the id of
+ * the surviving fact: `id` itself, the fact it merged into when the new text
+ * normalizes onto an existing claim, or null when nothing was written (missing
+ * or inactive fact, empty text).
+ */
+export function updateFactText(id: number, newText: string): number | null {
+  const clean = newText.trim();
+  if (!clean) return null;
+  const handle = open();
+  const row = handle.prepare(`SELECT text, norm, status FROM facts WHERE id = ?`).get(id) as
+    | { text: string; norm: string; status: string }
+    | undefined;
+  if (!row || row.status !== 'active') return null;
+  const norm = normalizeFact(clean);
+  if (row.text === clean && row.norm === norm) return id;
+  const existing = handle
+    .prepare(`SELECT id FROM facts WHERE norm = ? AND id <> ?`)
+    .get(norm, id) as { id: number } | undefined;
+  if (existing) {
+    // The rewrite lands on a claim we already hold: the user just re-asserted it,
+    // so ratchet the survivor to explicit, keep this note's provenance on it, and
+    // retire the duplicate instead of violating UNIQUE(norm).
+    confirmFact(existing.id);
+    handle.prepare(`UPDATE OR IGNORE fact_evidence SET fact_id = ? WHERE fact_id = ?`).run(existing.id, id);
+    supersedeFact(id, existing.id);
+    return existing.id;
+  }
+  // Same invalidation as upsertFact: the text changed, so any cached vector must
+  // be re-embedded on the next inject. FTS/trigram follow via the update triggers.
+  handle.prepare(`DELETE FROM fact_vectors WHERE fact_id = ?`).run(id);
+  handle.prepare(`UPDATE facts SET text = ?, norm = ?, updated_at = ? WHERE id = ?`).run(clean, norm, nowSeconds(), id);
+  return id;
+}
+
 export function confirmFact(id: number): boolean {
   return (open().prepare(
     `UPDATE facts SET source = 'explicit', confidence = 1, status = 'active', updated_at = ? WHERE id = ?`

@@ -806,6 +806,14 @@ export interface ActiveFacts {
   tier: FactTier;
 }
 
+/** Outcome of saving a composer quick note (`/note` / `//`) as a durable fact. */
+export interface MemoryNoteResult {
+  saved: boolean;
+  factId?: number;
+  /** Why the note was not saved. */
+  reason?: 'empty' | 'disabled' | 'secret';
+}
+
 /** Outcome of a manual consolidation pass, plus the refreshed memory list. */
 export interface MemoryConsolidateResult {
   merged: number;
@@ -1303,6 +1311,9 @@ export interface StemApi {
   getActiveFacts(threadId: string | null): Promise<ActiveFacts | null>;
   /** Facts that WOULD be injected for `text` right now (draft preview; no side effects). */
   previewFacts(text: string): Promise<ActiveFacts>;
+  /** Save a composer quick note as a durable explicit fact — instant, no chat turn.
+   *  A background pass canonicalizes + reconciles it when the model is reachable. */
+  addMemoryNote(text: string): Promise<MemoryNoteResult>;
   /** Delete one durable fact; returns the refreshed memory list. */
   forgetMemory(id: number): Promise<MemoryContents>;
   setFactPinned(id: number, pinned: boolean): Promise<MemoryContents>;

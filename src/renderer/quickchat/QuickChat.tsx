@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, SquarePen, PanelRight, Globe } from 'lucide-react';
+import { Sparkles, SquarePen, PanelRight, Globe, NotebookPen, Check } from 'lucide-react';
 import type {
   BackendEventEnvelope,
   MessageMeta,
@@ -15,6 +15,7 @@ import { EFFORT_LABELS } from '../modelLabels';
 import { interruptibleTurnId } from '../pendingTurn';
 import { McpApprovalCard } from '../manage/McpApprovalCard';
 import { InstructionsApprovalCard } from '../manage/InstructionsApprovalCard';
+import { NOTE_CONFIRM_MS, detectNoteTrigger, useNoteMode } from '../noteMode';
 import {
   EMPTY_STATE,
   appendSystemMessage,
@@ -46,6 +47,9 @@ export function QuickChat() {
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  // `/note` / `//` quick-note capture in the compact bar (the expanded panel gets
+  // its own instance inside ChatView).
+  const { noteMode, flash: noteFlash, enterNoteMode, exitNoteMode, toggleNoteMode, saveNote } = useNoteMode();
 
   // Refs so the event subscription (registered once) reads current values.
   const threadIdRef = useRef(threadId);
@@ -145,8 +149,9 @@ export function QuickChat() {
     setThreadId(null);
     updateChatState(EMPTY_STATE);
     setInput('');
+    exitNoteMode();
     if (models.length) window.stem.getSettings().then((s) => applyDefaults(s.quickChat, models));
-  }, [models, applyDefaults, updateChatState]);
+  }, [models, applyDefaults, updateChatState, exitNoteMode]);
 
   // Each summon: `reset` => start a fresh thread; otherwise keep showing the
   // existing session (the answer the user re-summoned to read). Always refocus.
@@ -473,6 +478,16 @@ export function QuickChat() {
   function submitCompact() {
     const text = input.trim();
     if (!text) return;
+    if (noteMode) {
+      // Saved locally, no turn — so don't go through quickchat:run (it would hide
+      // the overlay and flash the HUD). Show the ✓ here, then collapse ourselves.
+      void saveNote(text).then((saved) => {
+        if (!saved) return;
+        setInput('');
+        window.setTimeout(() => window.stem.hideQuickChat(), NOTE_CONFIRM_MS);
+      });
+      return;
+    }
     setInput('');
     onSend(text, []);
   }
@@ -544,6 +559,7 @@ export function QuickChat() {
             onChangeEffort={setEffort}
             onChangeSpeed={setServiceTier}
             onChangeFormat={setFormat}
+            onNoteSaved={() => window.stem.hideQuickChat()}
           />
         </div>
         <McpApprovalCard />
@@ -557,17 +573,31 @@ export function QuickChat() {
     <div className="qc-root">
       <div className="qc-card">
         <div className="qc-row">
-          <Sparkles className="qc-mark" size={22} />
+          {noteMode ? <NotebookPen className="qc-mark" size={22} /> : <Sparkles className="qc-mark" size={22} />}
           <input
             ref={inputRef}
             className="qc-input"
             value={input}
-            placeholder="Ask Stem anything…"
-            onChange={(e) => setInput(e.target.value)}
+            placeholder={noteMode ? 'Save a note to memory…' : 'Ask Stem anything…'}
+            onChange={(e) => {
+              const value = e.target.value;
+              const trigger = noteMode ? null : detectNoteTrigger(value);
+              if (trigger) {
+                enterNoteMode();
+                setInput(trigger.body);
+              } else {
+                setInput(value);
+              }
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 submitCompact();
+              } else if (e.key === 'Escape' && noteMode) {
+                // First Escape leaves note mode; the preventDefault keeps the
+                // window-level handler from hiding the overlay on this press.
+                e.preventDefault();
+                exitNoteMode();
               } else if (e.key === 'Escape') {
                 e.preventDefault();
                 window.stem.hideQuickChat();
@@ -600,10 +630,29 @@ export function QuickChat() {
             </div>
           )}
           {searchToggle('foot')}
+          <div className="seg-ctl compact" role="group" aria-label="Memory note">
+            <button
+              type="button"
+              className={noteMode ? 'active' : ''}
+              onClick={toggleNoteMode}
+              title="Save a note to memory — or type /note or //"
+            >
+              <NotebookPen size={13} /> Note
+            </button>
+          </div>
           <span className="qc-spacer" />
-          <span className="qc-hint">
-            <kbd>⏎</kbd> send
-          </span>
+          {noteFlash ? (
+            <span className={`note-flash${noteFlash === 'saved' ? ' ok' : ''}`} role="status" aria-live="polite">
+              {noteFlash === 'saved' && <><Check size={13} /> Saved to memory</>}
+              {noteFlash === 'off' && 'Memory is off — note not saved'}
+              {noteFlash === 'secret' && 'Looks like a credential — not saved'}
+              {noteFlash === 'error' && 'Couldn’t save the note — try restarting Stem'}
+            </span>
+          ) : (
+            <span className="qc-hint">
+              <kbd>⏎</kbd> {noteMode ? 'save note' : 'send'}
+            </span>
+          )}
         </div>
       </div>
       <McpApprovalCard />

@@ -108,7 +108,9 @@ function parseValidUntil(v: unknown): number | null {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
 
-export function parseClaims(output: string): DistilledClaim[] {
+// The default cap suits distilled single statements; the note-extraction path
+// passes a higher one because a coherent list kept as one fact runs longer.
+export function parseClaims(output: string, maxTextLength = 300): DistilledClaim[] {
   const trimmed = output.trim();
   const start = trimmed.indexOf('{');
   const end = trimmed.lastIndexOf('}');
@@ -131,7 +133,7 @@ export function parseClaims(output: string): DistilledClaim[] {
     const r = value as Record<string, unknown>;
     const text = typeof r.text === 'string' ? r.text.replace(/\s+/g, ' ').trim() : '';
     const key = text.toLowerCase();
-    if (text.length < 3 || text.length > 300 || SECRET_RE.test(text) || seen.has(key)) continue;
+    if (text.length < 3 || text.length > maxTextLength || SECRET_RE.test(text) || seen.has(key)) continue;
     seen.add(key);
     const category = CATEGORIES.has(r.category as FactCategory) ? r.category as FactCategory : 'other';
     const sensitiveByCategory = ['health', 'finance', 'location', 'schedule'].includes(category);

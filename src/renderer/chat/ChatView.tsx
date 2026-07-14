@@ -24,7 +24,8 @@ import {
   Check,
   Trash2,
   ChevronRight,
-  Clock
+  Clock,
+  NotebookPen
 } from 'lucide-react';
 import type { ActivityItem, ChatMessage, EscapeAction, ModelSummary, TurnAttachment, TurnTiming } from '../../shared/types';
 import { ActivityRows, SourcesList } from './ActivityRows';
@@ -36,6 +37,7 @@ import { MdxActionContext } from '../mdx/ActionContext';
 import { mdxFeatureLabels } from '../mdx/components';
 import { useAutoHideScroll } from '../hooks/useAutoHideScroll';
 import { EFFORT_LABELS } from '../modelLabels';
+import { NOTE_CONFIRM_MS, detectNoteTrigger, noteBodyValid, useNoteMode } from '../noteMode';
 
 const AVATAR: Record<ChatMessage['role'], { cls: string; icon: ReactNode; label: string }> = {
   user: { cls: 'you', icon: <User size={15} />, label: 'You' },
@@ -106,6 +108,9 @@ interface ChatViewProps {
    *  facts it would inject. Off by default; the normal compose path is unaffected. */
   reportDraft?: boolean;
   onDraftChange?: (text: string) => void;
+  /** Called after a memory note is saved and its confirmation flash has shown
+   *  (Quick Chat collapses the overlay here). */
+  onNoteSaved?: () => void;
 }
 
 // Build the inline meta label: "Claude Opus · Claude · High". Resolves the model
@@ -205,7 +210,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   onChangeSpeed,
   onChangeFormat,
   reportDraft = false,
-  onDraftChange
+  onDraftChange,
+  onNoteSaved
 }: ChatViewProps, ref) {
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<TurnAttachment[]>([]);
@@ -288,8 +294,21 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     onRestoreConsumed();
   }, [pendingRestore, draft, attachments, onRestoreConsumed]);
 
+  // `/note` / `//` quick-note capture: saves the draft straight to memory, no turn.
+  const { noteMode, flash: noteFlash, enterNoteMode, exitNoteMode, toggleNoteMode, saveNote } = useNoteMode();
+
   function submit() {
     const text = draft.trim();
+    if (noteMode) {
+      // A note save never touches the backend, so it's allowed mid-turn.
+      if (!noteBodyValid(text)) return;
+      void saveNote(text).then((saved) => {
+        if (!saved) return;
+        setDraft('');
+        if (onNoteSaved) window.setTimeout(onNoteSaved, NOTE_CONFIRM_MS);
+      });
+      return;
+    }
     if ((!text && attachments.length === 0) || running) return;
     setArmed(false);
     onSend(text, attachments);
@@ -694,10 +713,20 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
               MD
             </button>
           </div>
+          <div className="seg-ctl compact" role="group" aria-label="Memory note">
+            <button
+              type="button"
+              className={noteMode ? 'active' : ''}
+              onClick={toggleNoteMode}
+              title="Save a note to memory — or type /note or //"
+            >
+              <NotebookPen size={13} /> Note
+            </button>
+          </div>
           {showContextMeter && <ContextMeter messages={messages} model={model} />}
         </div>
         <div
-          className={`composer-field${dragOver ? ' drag-over' : ''}`}
+          className={`composer-field${dragOver ? ' drag-over' : ''}${noteMode ? ' note-mode' : ''}`}
           onDragOver={(e) => {
             e.preventDefault();
             setDragOver(true);
@@ -705,6 +734,32 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
           onDragLeave={() => setDragOver(false)}
           onDrop={onDrop}
         >
+          {noteMode && (
+            <div className="composer-attachments">
+              <span className="attachment-chip note-chip">
+                <NotebookPen size={13} />
+                <span className="attachment-name">Note to memory</span>
+                <button
+                  type="button"
+                  className="attachment-remove"
+                  title="Back to chat (Esc)"
+                  onClick={exitNoteMode}
+                >
+                  <X size={13} />
+                </button>
+              </span>
+            </div>
+          )}
+          {noteFlash && (
+            <div className="composer-attachments">
+              <span className={`note-flash${noteFlash === 'saved' ? ' ok' : ''}`} role="status" aria-live="polite">
+                {noteFlash === 'saved' && <><Check size={13} /> Saved to memory</>}
+                {noteFlash === 'off' && 'Memory is off — note not saved'}
+                {noteFlash === 'secret' && 'Looks like a credential — not saved'}
+                {noteFlash === 'error' && 'Couldn’t save the note — try restarting Stem'}
+              </span>
+            </div>
+          )}
           {attachments.length > 0 && (
             <div className="composer-attachments">
               {attachments.map((att, i) => (
@@ -732,7 +787,17 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
               ref={textareaRef}
               value={draft}
               onChange={(e) => {
-                setDraft(e.target.value);
+                const value = e.target.value;
+                // Typing `/note ` or `//` at the start flips into note mode; the
+                // prefix is consumed (the chip replaces it in the UI). Strip
+                // before setDraft so the fact preview never sees the prefix.
+                const trigger = noteMode ? null : detectNoteTrigger(value);
+                if (trigger) {
+                  enterNoteMode();
+                  setDraft(trigger.body);
+                } else {
+                  setDraft(value);
+                }
                 if (armed) setArmed(false); // any edit disarms the second-Escape retract
               }}
               onBlur={() => {
@@ -746,6 +811,13 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                   return;
                 }
                 if (e.key !== 'Escape') return;
+                if (noteMode) {
+                  // Back to chat mode. preventDefault also keeps Quick Chat's
+                  // window-level Escape from hiding the overlay on this press.
+                  e.preventDefault();
+                  exitNoteMode();
+                  return;
+                }
                 if (escapeAction === 'single') {
                   // One Escape stops the running turn and retracts the message.
                   if (running) {
@@ -768,10 +840,10 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                 }
                 // escapeAction === 'off' → leave Escape alone.
               }}
-              placeholder="Ask Stem…"
+              placeholder={noteMode ? 'Save a note to memory…' : 'Ask Stem…'}
               rows={1}
             />
-            {running ? (
+            {running && !noteMode ? (
               <button type="button" className="icon-btn stop" onClick={onInterrupt} title="Stop">
                 <Square size={16} />
               </button>
@@ -780,8 +852,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                 type="button"
                 className="icon-btn send"
                 onClick={submit}
-                disabled={!draft.trim() && attachments.length === 0}
-                title="Send"
+                disabled={noteMode ? !draft.trim() : !draft.trim() && attachments.length === 0}
+                title={noteMode ? 'Save note' : 'Send'}
               >
                 <ArrowUp size={16} />
                 <ShortcutHint id="send" placement="br" />

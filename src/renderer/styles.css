@@ -474,6 +474,18 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   padding: 2px;
 }
 .attachment-remove:hover { background: color-mix(in srgb, var(--ink) 10%, transparent); color: var(--ink); }
+/* Composer note mode (`/note` / `//`): the chip marks the draft as a memory note. */
+.composer-field.note-mode { border-color: var(--accent); }
+.note-chip { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.note-chip > svg { color: var(--accent); }
+/* Transient post-save feedback where the chip was ("Saved to memory" / why not). */
+.note-flash {
+  display: inline-flex; align-items: center; gap: var(--sp-3);
+  padding: 3px 2px;
+  font-size: var(--fs-12); color: var(--muted);
+}
+.note-flash.ok { color: var(--accent); }
+.note-flash > svg { flex: none; }
 /* Attachments shown inside a sent message bubble (thumbnails + file chips). */
 .message-attachments { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-top: 6px; }
 .message-image {

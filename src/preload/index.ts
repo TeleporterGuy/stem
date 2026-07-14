@@ -166,6 +166,7 @@ const api: StemApi = {
   readMemory: () => ipcRenderer.invoke('memory:read'),
   getActiveFacts: (threadId: string | null) => ipcRenderer.invoke('memory:activeFacts', threadId),
   previewFacts: (text: string) => ipcRenderer.invoke('memory:previewFacts', text),
+  addMemoryNote: (text: string) => ipcRenderer.invoke('memory:addNote', text),
   forgetMemory: (id: number) => ipcRenderer.invoke('memory:forget', id),
   setFactPinned: (id: number, pinned: boolean) => ipcRenderer.invoke('memory:setPinned', id, pinned),
   confirmFact: (id: number) => ipcRenderer.invoke('memory:confirmFact', id),

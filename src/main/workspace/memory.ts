@@ -1,4 +1,4 @@
-import type { EpisodicStats, MemoryContents, MemorySettings, ThreadSummary } from '../../shared/types';
+import type { EpisodicStats, MemoryContents, MemoryNoteResult, MemorySettings, ThreadSummary } from '../../shared/types';
 import {
   deleteFact,
   deleteThreadSummary,
@@ -160,6 +160,41 @@ export async function captureMemoryFromUserInput(text: string): Promise<MemoryCa
     }]
   });
   return { captured: true, shouldAcknowledge: true, factId: factId ?? undefined };
+}
+
+/** Longest note we store verbatim. Generous because a note may be a pasted wall
+ *  of text that the background pass splits into individual facts; the cap only
+ *  guards the store against runaway pastes. Truncate rather than refuse: unlike
+ *  the chat capture above (which guesses intent), a /note submission is
+ *  deliberate. */
+const MAX_NOTE_LENGTH = 20_000;
+
+/**
+ * Store a user-typed quick note (composer `/note` / `//`) as a durable explicit
+ * fact — no chat turn, no LLM on the save path. Never throws; the renderer gets
+ * a result object it can turn into inline feedback.
+ */
+export async function addMemoryNote(text: string): Promise<MemoryNoteResult> {
+  const statement = text.trim().slice(0, MAX_NOTE_LENGTH).trim();
+  if (!statement) return { saved: false, reason: 'empty' };
+  if (!isRecallEnabled()) return { saved: false, reason: 'disabled' };
+  if (isSensitiveMemoryText(statement)) return { saved: false, reason: 'secret' };
+
+  const factId = upsertFact(statement, {
+    source: 'explicit',
+    confidence: 1,
+    sensitivity: explicitSensitivity(statement),
+    evidence: [{
+      messageId: null,
+      threadId: null,
+      role: 'user',
+      timestamp: Math.floor(Date.now() / 1000),
+      excerpt: text,
+      origin: 'explicit_user'
+    }]
+  });
+  if (factId == null) return { saved: false, reason: 'empty' };
+  return { saved: true, factId };
 }
 
 // ---- Manage panel "Stored memory" view ----

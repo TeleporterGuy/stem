@@ -42,6 +42,7 @@ import { imagePreviewDataUrl } from './pi/attachments';
 import * as piMcp from './pi/mcp';
 import { ProviderAuth } from './pi/provider-auth';
 import {
+  addMemoryNote,
   clearEpisodicMemory,
   clearFactsMemory,
   forgetFact,
@@ -82,6 +83,7 @@ import { previewFacts } from './recall/inject';
 import type { ActiveFacts } from '../shared/types';
 import { distillNewMessages, shouldConsolidate } from './recall/distill';
 import { consolidateFacts } from './recall/consolidate';
+import { processExplicitNote } from './recall/note';
 import {
   getMemoryRebuildStatus,
   pauseMemoryRebuild,
@@ -1095,6 +1097,19 @@ function registerIpc(): void {
     return settings;
   });
   ipcMain.handle('memory:read', () => readMemoryFiles());
+  ipcMain.handle('memory:addNote', async (_e, text: string) => {
+    const result = await addMemoryNote(String(text ?? ''));
+    if (result.saved && result.factId != null) {
+      // Canonicalize + reconcile off the acknowledgement path (same hidden
+      // one-shot seam as distillation); the raw note is already durable.
+      const llm: LlmClient = {
+        complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).memory.model })
+      };
+      const factId = result.factId;
+      setTimeout(() => void processExplicitNote(factId, llm), 0);
+    }
+    return result;
+  });
   ipcMain.handle('memory:forget', async (_e, id: number) => {
     await forgetFact(id);
     return readMemoryFiles();
