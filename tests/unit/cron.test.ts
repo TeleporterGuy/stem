@@ -26,6 +26,13 @@ describe('cron parsing', () => {
     expect(isValidCron('a * * * *')).toBe(false);
     expect(isValidCron('*/0 * * * *')).toBe(false);
     expect(isValidCron('5-2 * * * *')).toBe(false); // inverted range
+    // Number() and loose range splitting used to reinterpret these typos as
+    // valid but different schedules.
+    expect(isValidCron('-1 * * * *')).toBe(false);
+    expect(isValidCron('1e1 * * * *')).toBe(false);
+    expect(isValidCron('+5 * * * *')).toBe(false);
+    expect(isValidCron('1-2-3 * * * *')).toBe(false);
+    expect(isValidCron('*/1e1 * * * *')).toBe(false);
   });
 
   it('parses 7 as Sunday alongside 0', () => {
@@ -70,5 +77,31 @@ describe('nextAfter', () => {
   it('returns null for an impossible expression', () => {
     // Feb 30 never exists.
     expect(nextAfter('0 0 30 2 *', at(2026, 1, 1, 0, 0))).toBeNull();
+  });
+
+  it('finds leap-day schedules within the bounded calendar search', () => {
+    expect(nextAfter('0 0 29 2 *', at(2026, 3, 1, 0, 0))).toEqual(at(2028, 2, 29, 0, 0));
+    // Gregorian century years are not leap years unless divisible by 400. The
+    // 2096 -> 2104 gap is eight years, so a shorter feasibility horizon rejects
+    // this valid recurring schedule as impossible.
+    expect(nextAfter('0 0 29 2 *', at(2097, 1, 1, 0, 0))).toEqual(at(2104, 2, 29, 0, 0));
+  });
+
+  it('returns the second repeated minute during a DST fall-back fold', () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      const betweenOccurrences = new Date('2026-11-01T01:45:00-04:00');
+      expect(nextAfter('30 1 * * *', betweenOccurrences)?.toISOString())
+        .toBe('2026-11-01T06:30:00.000Z'); // repeated 01:30 at UTC-05:00
+
+      // Instant order inside the fold is 01:30 EDT, 01:50 EDT, 01:30 EST…
+      // even though ordinary wall-clock sorting puts both 01:30s first.
+      expect(nextAfter('30,50 1 * * *', betweenOccurrences)?.toISOString())
+        .toBe('2026-11-01T05:50:00.000Z');
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
   });
 });

@@ -113,8 +113,10 @@ function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function dedupKey(threadId: string, role: string, text: string): string {
-  return createHash('sha256').update(`${threadId}|${role}|${text}`).digest('hex').slice(0, 32);
+function dedupKey(threadId: string, turnId: string | null | undefined, role: string, text: string): string {
+  // turnId distinguishes a legitimate repeated utterance from duplicate capture
+  // of the same turn. Older/no-turn import paths retain their idempotent behavior.
+  return createHash('sha256').update(`${threadId}|${turnId ?? ''}|${role}|${text}`).digest('hex').slice(0, 32);
 }
 
 // Normalize a fact for dedup: lowercase, collapse whitespace, strip trailing
@@ -497,9 +499,9 @@ function open(): DatabaseSync {
 }
 
 /**
- * Persist one message. Idempotent: re-capturing the same (thread, role, text) is
- * a no-op via the dedup_key UNIQUE constraint, so overlapping captures never
- * create duplicates.
+ * Persist one message. Idempotent per turn: re-capturing the same
+ * (thread, turn, role, text) is a no-op, while the user legitimately repeating
+ * the same text in a later turn creates a distinct episodic message.
  */
 export function recordMessage(input: RecordMessageInput): void {
   const text = input.text.trim();
@@ -517,7 +519,7 @@ export function recordMessage(input: RecordMessageInput): void {
       input.ts ?? nowSeconds(),
       input.cwd ?? null,
       text,
-      dedupKey(input.threadId, input.role, text)
+      dedupKey(input.threadId, input.turnId, input.role, text)
     );
 }
 
@@ -1095,7 +1097,8 @@ export function restoreSupersededFact(id: number): boolean {
   if (!row) return false;
   try {
     return (handle.prepare(
-      `UPDATE facts SET status = 'active', norm = ?, superseded_by = NULL, updated_at = ? WHERE id = ?`
+      `UPDATE facts SET status = 'active', norm = ?, superseded_by = NULL,
+              valid_until = NULL, updated_at = ? WHERE id = ?`
     ).run(normalizeFact(row.text), nowSeconds(), id).changes as number) > 0;
   } catch {
     return false; // an active fact already owns the same normalized claim
@@ -1284,6 +1287,29 @@ export function upsertFactVector(factId: number, model: string, vec: Float32Arra
        ON CONFLICT(fact_id, model) DO UPDATE SET dim = excluded.dim, vec = excluded.vec, updated_at = excluded.updated_at`
     )
     .run(factId, model, vec.length, buf, nowSeconds());
+}
+
+/**
+ * Cache an embedding only if the fact snapshot it was calculated from is still
+ * the same active row in the same reset generation. Embedding calls are async,
+ * while fact ids are reusable after reset; checking both epoch and text at this
+ * final synchronous write boundary prevents a stale vector attaching to a new
+ * fact that inherited the old integer id.
+ */
+export function upsertFactVectorForSnapshot(
+  factId: number,
+  expectedText: string,
+  expectedGeneration: number,
+  model: string,
+  vec: Float32Array
+): boolean {
+  if (getFactsGeneration() !== expectedGeneration) return false;
+  const current = open()
+    .prepare(`SELECT text FROM facts WHERE id = ? AND status = 'active'`)
+    .get(factId) as { text: string } | undefined;
+  if (!current || current.text !== expectedText) return false;
+  upsertFactVector(factId, model, vec);
+  return true;
 }
 
 /** Drop cached vectors for every model except `model` (hygiene after a model switch). */
@@ -1541,7 +1567,8 @@ export function deleteThreadSummary(id: number): void {
  */
 export function getThreadsNeedingSummary(
   limit: number,
-  order: 'newest' | 'oldest' = 'newest'
+  order: 'newest' | 'oldest' = 'newest',
+  minimum: { messages: number; chars: number } = { messages: 0, chars: 0 }
 ): Array<{ threadId: string; behindBy: number }> {
   if (limit <= 0) return [];
   const rows = open()
@@ -1551,10 +1578,14 @@ export function getThreadsNeedingSummary(
        LEFT JOIN summaries s ON s.thread_id = m.thread_id
        WHERE m.id > COALESCE(s.last_message_id, 0)
        GROUP BY m.thread_id
+       HAVING
+         (s.thread_id IS NULL AND SUM(LENGTH(m.text)) >= ?)
+         OR
+         (s.thread_id IS NOT NULL AND (COUNT(*) >= ? OR SUM(LENGTH(m.text)) >= ?))
        ORDER BY MAX(m.ts) ${order === 'newest' ? 'DESC' : 'ASC'}
        LIMIT ?`
     )
-    .all(limit) as Array<{ threadId: string; behindBy: number }>;
+    .all(minimum.chars, minimum.messages, minimum.chars, limit) as Array<{ threadId: string; behindBy: number }>;
   return rows;
 }
 
@@ -1640,6 +1671,8 @@ export function resetEpisodic(): void {
     handle.exec('DELETE FROM turn_injected_facts');
     handle.exec(`DELETE FROM meta WHERE key = 'distill_watermark'`);
     handle.exec(`DELETE FROM meta WHERE key = 'distill_cursor_v2'`);
+    handle.exec(`DELETE FROM meta WHERE key = 'skill_distill_watermark'`);
+    handle.exec(`DELETE FROM meta WHERE key = 'skill_distill_cursor_v2'`);
     handle.exec(`DELETE FROM meta WHERE key = 'memory_rebuild_v2'`);
     // Same rowid-reuse hazard as the distill watermark: after VACUUM, new
     // messages can reclaim old ids and would be skipped by a stale embed watermark.
@@ -1653,14 +1686,26 @@ export function resetEpisodic(): void {
   handle.exec('VACUUM');
 }
 
+const FACTS_GENERATION_KEY = 'facts_generation';
+
+/** Monotonic epoch used to invalidate asynchronous fact writers after a reset. */
+export function getFactsGeneration(): number {
+  return Number.parseInt(getMeta(FACTS_GENERATION_KEY) ?? '0', 10) || 0;
+}
+
 /**
  * Wipe durable facts (Level 1) + the consolidation dirty-counter. Leaves the
  * episodic store and the recall_enabled toggle untouched.
  */
 export function resetFacts(): void {
   const handle = open();
+  const nextGeneration = getFactsGeneration() + 1;
   handle.exec('BEGIN');
   try {
+    handle.prepare(
+      `INSERT INTO meta(key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(FACTS_GENERATION_KEY, String(nextGeneration));
     handle.exec('DELETE FROM fact_vectors');
     handle.exec('DELETE FROM fact_evidence');
     handle.exec('DELETE FROM fact_conflicts');
@@ -1668,6 +1713,9 @@ export function resetFacts(): void {
     // Fact ids in the per-turn injected log are now dangling — drop it too.
     handle.exec('DELETE FROM turn_injected_facts');
     handle.exec(`DELETE FROM meta WHERE key = 'consolidate_pending'`);
+    // Clearing facts is also a cancellation barrier for an active rebuild.
+    // Removing its progress returns it to the explicit-consent "available" state.
+    handle.exec(`DELETE FROM meta WHERE key = 'memory_rebuild_v2'`);
     handle.exec('COMMIT');
   } catch (err) {
     handle.exec('ROLLBACK');

@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import * as store from '../../src/main/recall/store';
 import * as search from '../../src/main/recall/search';
-import { parseSummary, refreshThreadSummary } from '../../src/main/recall/summarize';
+import { backfillSummaries, parseSummary, refreshThreadSummary } from '../../src/main/recall/summarize';
 import { buildRecallContext, previewFacts, usageRate } from '../../src/main/recall/inject';
 import { distillNewMessages, lexicalUsage, parseFactUsage } from '../../src/main/recall/distill';
 import { buildPrompt as buildConsolidationPrompt } from '../../src/main/recall/consolidate';
@@ -272,6 +272,24 @@ describe('rolling summary refresh (summarize.ts)', () => {
     store.recordMessage({ threadId: 'tiny-1', role: 'user', text: 'ok thanks' });
     expect(await refreshThreadSummary('tiny-1', { complete: async () => { throw new Error('must not be called'); } })).toBe(false);
     expect(store.getSummaryByThread('tiny-1')).toBeNull();
+  });
+
+  it('does not let old trivial threads starve dormant summary backfill', async () => {
+    store.resetEpisodic();
+    for (let i = 0; i < 5; i++) {
+      store.recordMessage({ threadId: `tiny-old-${i}`, role: 'user', text: 'ok', ts: 100 + i });
+    }
+    store.recordMessage({
+      threadId: 'substantial-newer',
+      role: 'user',
+      text: 'We planned the complete migration of the billing system, including data validation and a staged rollout.'.repeat(2),
+      ts: 1000
+    });
+    expect(await backfillSummaries(
+      llmReturning('Planned a staged billing-system migration with data validation and rollout safeguards.'),
+      1
+    )).toBe(1);
+    expect(store.getSummaryByThread('substantial-newer')).not.toBeNull();
   });
 });
 

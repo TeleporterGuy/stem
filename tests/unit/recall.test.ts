@@ -46,6 +46,13 @@ describe('Stem Recall', () => {
     expect(store.messageCount()).toBe(before);
   });
 
+  it('keeps identical messages from different turns', () => {
+    const before = store.messageCount();
+    store.recordMessage({ threadId: 'repeat', turnId: 'turn-1', role: 'user', text: 'yes, please' });
+    store.recordMessage({ threadId: 'repeat', turnId: 'turn-2', role: 'user', text: 'yes, please' });
+    expect(store.messageCount()).toBe(before + 2);
+  });
+
   it('Slovak query recalls Slovak content', () => {
     store.recordMessage({ threadId: 'C', turnId: 'c1', role: 'user', text: 'Mám kardiologické vyšetrenie v Gente budúci týždeň' });
     const sk = search.searchMemory('kardiologické vyšetrenie', { excludeThreadId: 'B', limit: 5 });
@@ -99,6 +106,47 @@ describe('Stem Recall', () => {
     expect(clampProt.merge.length + clampProt.correct.length + clampProt.drop.length).toBe(0);
     const clampMass = consolidate.clampOps({ merge: [], correct: [], drop: [1, 2, 3] }, new Set(), 4);
     expect(clampMass.drop.length).toBe(0);
+  });
+
+  it('clampOps rejects ids that were not present in the model prompt', () => {
+    const clamped = consolidate.clampOps(
+      {
+        merge: [{ ids: [1, 99], text: 'escaped merge' }],
+        correct: [{ id: 99, text: 'escaped correction' }],
+        drop: [2, 99]
+      },
+      new Set(),
+      3,
+      new Set([1, 2, 3])
+    );
+    expect(clamped).toEqual({ merge: [], correct: [], drop: [2] });
+  });
+
+  it('clampOps rejects malformed and overlapping merge groups atomically', () => {
+    const clamped = consolidate.clampOps(
+      {
+        merge: [
+          { ids: [1, 99, 2], text: 'contains an out-of-scope id' },
+          { ids: [3, 3, 4], text: 'contains a duplicate id' },
+          { ids: [5, 6], text: 'first valid merge' },
+          { ids: [6, 7], text: 'overlaps the first merge' }
+        ],
+        correct: [
+          { id: 5, text: 'overlaps the accepted merge' },
+          { id: 7, text: 'unclaimed after rejected merge' }
+        ],
+        drop: [6, 8, 8]
+      },
+      new Set(),
+      8,
+      new Set([1, 2, 3, 4, 5, 6, 7, 8])
+    );
+
+    expect(clamped).toEqual({
+      merge: [{ ids: [5, 6], text: 'first valid merge' }],
+      correct: [{ id: 7, text: 'unclaimed after rejected merge' }],
+      drop: [8]
+    });
   });
 
   it('clampOps lets merges retire most of a duplicate-heavy chunk but rejects runaway groups', () => {

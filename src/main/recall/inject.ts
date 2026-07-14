@@ -1,10 +1,11 @@
 import {
   dbHandle,
   getInjectableFacts,
+  getFactsGeneration,
   getFactsMissingVector,
   getFactVectors,
   getUsageWeight,
-  upsertFactVector,
+  upsertFactVectorForSnapshot,
   getMaxRelevantFacts,
   getFactCosineM,
   getFactRerankK,
@@ -146,9 +147,11 @@ async function selectRelevantFacts(
   userText: string,
   facts: Fact[],
   getQueryEmbedding: QueryEmbedGetter,
-  timings?: RecallTimings
+  timings: RecallTimings | undefined,
+  factsGeneration: number
 ): Promise<Fact[]> {
   const qe = await getQueryEmbedding();
+  if (getFactsGeneration() !== factsGeneration) throw new Error('facts reset during selection');
   if (!qe) throw new Error('embeddings unavailable');
   const { vec: qVec, model, client } = qe;
 
@@ -160,7 +163,8 @@ async function selectRelevantFacts(
       missing.map((f) => f.text),
       'passage'
     );
-    missing.forEach((f, i) => upsertFactVector(f.id, model, vecs[i]));
+    if (getFactsGeneration() !== factsGeneration) throw new Error('facts reset during selection');
+    missing.forEach((f, i) => upsertFactVectorForSnapshot(f.id, f.text, factsGeneration, model, vecs[i]));
   }
   if (timings) timings.embed = (timings.embed ?? 0) + (Date.now() - embStart);
 
@@ -170,9 +174,11 @@ async function selectRelevantFacts(
 
   const rr = getRerankClient();
   if (rr && candidates.length > 0 && (await rr.available())) {
+    if (getFactsGeneration() !== factsGeneration) throw new Error('facts reset during selection');
     const rrStart = Date.now();
     try {
       const ranked = await rr.rerank(userText, candidates.map((f) => f.text), k);
+      if (getFactsGeneration() !== factsGeneration) throw new Error('facts reset during selection');
       const picked = ranked.map((r) => candidates[r.index]).filter((f): f is Fact => !!f);
       if (timings) timings.rerank = Date.now() - rrStart;
       if (picked.length > 0) return picked;
@@ -194,7 +200,8 @@ async function selectRelevantFacts(
 async function chooseFacts(
   userText: string,
   getQueryEmbedding: QueryEmbedGetter,
-  timings?: RecallTimings
+  timings?: RecallTimings,
+  factsGeneration = getFactsGeneration()
 ): Promise<{ facts: Fact[]; tier: FactTier }> {
   const all = getInjectableFacts();
   const limit = getMaxRelevantFacts();
@@ -209,10 +216,13 @@ async function chooseFacts(
     .map((f) => ({ ...f, selectionReason: 'lexical' as const }));
   let semantic: Fact[] = [];
   try {
-    semantic = await selectRelevantFacts(userText, candidates, getQueryEmbedding, timings);
+    semantic = await selectRelevantFacts(userText, candidates, getQueryEmbedding, timings, factsGeneration);
   } catch {
     // Lexical results below remain the safe, model-free fallback.
   }
+  // A reset invalidates pinned, semantic, and lexical snapshots alike. Do not
+  // degrade to the old lexical snapshot or it would still inject cleared text.
+  if (getFactsGeneration() !== factsGeneration) return { facts: [], tier: 'none' };
   const relevant: Fact[] = [];
   const seen = new Set(pinned.map((f) => f.id));
   for (const fact of [...semantic, ...lexical]) {
@@ -264,17 +274,14 @@ export async function buildRecallContext(
 ): Promise<string | null> {
   const timings = options.timings;
   const totalStart = Date.now();
+  const factsGeneration = getFactsGeneration();
   // One memoized query embedding per turn, shared by fact ranking and the
   // episodic semantic leg — whichever needs it first pays the single embed.
   const getQueryEmbedding = makeQueryEmbedder(userText, timings);
 
   const factsStart = Date.now();
-  const { facts, tier } = await chooseFacts(userText, getQueryEmbedding, timings);
+  let { facts, tier } = await chooseFacts(userText, getQueryEmbedding, timings, factsGeneration);
   if (timings) timings.facts = Date.now() - factsStart;
-  if (options.chosen) {
-    options.chosen.facts = facts;
-    options.chosen.tier = tier;
-  }
 
   // Episodic recall, summaries first: rolling thread summaries carry what a
   // conversation covered and decided, which raw message snippets lose. Threads
@@ -308,6 +315,18 @@ export async function buildRecallContext(
   if (timings) {
     timings.search = Date.now() - searchStart;
     timings.total = Date.now() - totalStart;
+  }
+
+  // Episodic search above can outlive the fact-selection stage. Re-check at the
+  // final serialization boundary so Clear Facts during that later await still
+  // removes the stale fact snapshot while preserving independent chat history.
+  if (getFactsGeneration() !== factsGeneration) {
+    facts = [];
+    tier = 'none';
+  }
+  if (options.chosen) {
+    options.chosen.facts = facts;
+    options.chosen.tier = tier;
   }
 
   if (facts.length === 0 && summaries.length === 0 && userHits.length === 0) return null;

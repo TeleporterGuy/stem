@@ -4,7 +4,8 @@
 // is no separate database, so every mutation re-reads the directory. The agent's
 // read tools reach these files because the folder is inside its cwd.
 
-import { access, copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { basename, extname, join, relative, sep } from 'node:path';
 import { shell } from 'electron';
 import type { FileEntry, FilesListing } from '../../shared/types';
@@ -60,16 +61,22 @@ export async function listFiles(): Promise<FilesListing> {
 /** A monotonic suffix so two adds in the same millisecond don't collide. */
 let seq = 0;
 
-/** Return `dest` (or a numbered sibling) that does not yet exist in `dir`. */
-async function uniquePath(dir: string, name: string): Promise<string> {
+/**
+ * Copy to `name` (or a numbered sibling) without a check-then-copy race.
+ * COPYFILE_EXCL makes reserving the destination and copying one atomic
+ * operation from the perspective of concurrent addFiles calls.
+ */
+async function copyToUniquePath(src: string, dir: string, name: string): Promise<void> {
   const ext = extname(name);
   const stem = basename(name, ext);
   for (let i = 0; ; i++) {
     const candidate = join(dir, i === 0 ? name : `${stem}-${i}${ext}`);
     try {
-      await access(candidate);
-    } catch {
-      return candidate; // doesn't exist
+      await copyFile(src, candidate, constants.COPYFILE_EXCL);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw error;
     }
   }
 }
@@ -91,8 +98,7 @@ export async function addFiles(paths: string[], subdir = ''): Promise<FilesListi
   for (const src of paths) {
     if (!src) continue;
     try {
-      const dest = await uniquePath(destDir, basename(src) || `file-${Date.now()}-${seq++}`);
-      await copyFile(src, dest);
+      await copyToUniquePath(src, destDir, basename(src) || `file-${Date.now()}-${seq++}`);
     } catch {
       // Skip a single unreadable source rather than failing the whole drop.
     }

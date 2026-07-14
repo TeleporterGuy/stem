@@ -91,11 +91,25 @@ function explicitSensitivity(text: string): 'standard' | 'sensitive' {
 }
 
 function hasExplicitRememberIntent(text: string): boolean {
-  const normalized = text.trim();
+  // Normalize typographic apostrophes before matching contractions. User input
+  // commonly arrives with a curly apostrophe (for example, “Don’t remember”).
+  const normalized = text.trim().replace(/[\u2018\u2019]/g, "'");
   if (!normalized) return false;
+  // Flatten punctuation for intent grammar while retaining apostrophes used by
+  // contractions. This lets an imperative negation keep governing "remember"
+  // through scoped adverbials such as "Never, under any circumstances, remember"
+  // without making an unrelated earlier "never" negate a later request.
+  const intent = normalized
+    .replace(/[^\p{L}\p{N}']+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (/\b(?:do|did)\s+you\s+remember\b/i.test(normalized)) return false;
   if (/\bwhat\s+.*\bremember\b/i.test(normalized)) return false;
-  if (/\b(?:don't|do not|can't|cannot)\s+remember\b/i.test(normalized)) return false;
+  if (
+    /\b(?:never|don't|do not|can't|cannot)(?:\s+(?:(?:ever|again)|(?:under|in)\s+(?:any|no)\s+circumstances|in\s+(?:any|no)\s+(?:case|event)|for\s+(?:any|no)\s+reason|no\s+matter\s+what))*\s+remember\b/i.test(intent)
+  ) return false;
+  if (/\b(?:never|don't|do not)\s+want\s+(?:(?:you|stem)\s+)?to\s+(?:ever\s+)?remember\b/i.test(normalized)) return false;
+  if (/\b(?:never|don't|do not)\s+(?:ever\s+)?keep\s+(?:this\s+)?in\s+mind\b/i.test(normalized)) return false;
   return (
     /\bplease\s+remember(?:\s+that)?\b/i.test(normalized) ||
     /\bremember\s+that\b/i.test(normalized) ||

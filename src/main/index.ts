@@ -17,6 +17,13 @@ import { spawn } from 'node:child_process';
 import dns from 'node:dns';
 import net from 'node:net';
 import { createBackend, type ChatBackend } from './backend';
+import {
+  CHAT_SEARCH_COMPLETION_TIMEOUT_MS,
+  failQuickChatProcess,
+  QuickChatHandoffBarrier,
+  QuickChatResetBarrier,
+  RendererPushQueue
+} from './ui-lifecycle';
 import { ensureWorkspace } from './workspace/bootstrap';
 import { listSkills, setSkillEnabled } from './workspace/skills';
 import { addFiles, listFiles, removeFile, revealFiles } from './files/store';
@@ -54,6 +61,7 @@ import {
   getEpisodicStats,
   getActiveFactIds,
   getFactsByIds,
+  getFactsGeneration,
   getFactsMissingVector,
   getFactDetails,
   getMemoryConflicts,
@@ -65,7 +73,7 @@ import {
   pruneSummaryVectorsExceptModel,
   pruneVectorsExceptModel,
   getSummariesMissingVector,
-  upsertFactVector,
+  upsertFactVectorForSnapshot,
   upsertSummaryVector
 } from './recall/store';
 import { embedNewMessages } from './recall/embed-episodic';
@@ -125,6 +133,7 @@ import { activityLabel } from '../shared/activity';
 import type {
   ApiKeyProviderId,
   AuthProviderId,
+  BackendEventEnvelope,
   ChatListResult,
   ConflictResolution,
   ConnectedFolderPatch,
@@ -237,6 +246,7 @@ function installNavigationGuards(win: BrowserWindow): void {
 }
 
 let mainWindow: BrowserWindow | null = null;
+const mainPushQueue = new RendererPushQueue();
 let quickChatWindow: BrowserWindow | null = null;
 /** Bottom-left status pill shown while the overlay is hidden and a turn runs. */
 let hudWindow: BrowserWindow | null = null;
@@ -258,11 +268,15 @@ let newThreadTimeoutMs = 5 * 60_000;
 // `overlayHandedOff` so events route to the main window from then on.
 let overlayThreadId: string | null = null;
 let overlayHandedOff = false;
+const overlayHandoffBarrier = new QuickChatHandoffBarrier();
 /** Updated on each turn start/finish; drives the new-thread inactivity timeout. */
 let overlayLastActivityAt = 0;
 /** Whether the overlay's current turn is still running (so an idle-timeout summon
  *  never orphans a mid-stream thread by resetting ownership out from under it). */
 let overlayTurnRunning = false;
+/** A manual reset requested while the old overlay turn was still settling. Keep
+ * ownership long enough to route that turn's terminal event, then release it. */
+const overlayResetBarrier = new QuickChatResetBarrier();
 /** Whether the in-flight overlay turn has started streaming text (HUD phase). */
 let hudTextSeen = false;
 
@@ -310,6 +324,7 @@ function applyOverlayWorkspaceVisibility(): void {
 }
 
 function createWindow(): void {
+  mainPushQueue.reset();
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 820,
@@ -345,6 +360,7 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    mainPushQueue.reset();
   });
 
   // Follow-me pill: surface a running main-window thread's progress when you leave
@@ -527,6 +543,11 @@ function hideHud(): void {
   lastHudPhase = null;
 }
 
+function finishOverlayReset(): void {
+  overlayThreadId = null;
+  overlayResetBarrier.settle();
+}
+
 /**
  * HUD state machine, driven by the overlay-owned thread's event stream. Only runs
  * while the overlay is hidden (when it's visible the user is reading, no HUD):
@@ -535,9 +556,10 @@ function hideHud(): void {
  *   finished  -> once the turn completes
  */
 function driveHud(event: { method: string; params: unknown }): void {
-  if (quickChatWindow?.isVisible()) return;
+  const overlayVisible = quickChatWindow?.isVisible() ?? false;
   switch (event.method) {
     case 'item/started': {
+      if (overlayVisible) break;
       const item = (event.params as ItemEventParams)?.item;
       const type = item?.type;
       // Always update — tool calls and teed web searches mid-answer keep the
@@ -547,6 +569,7 @@ function driveHud(event: { method: string; params: unknown }): void {
       break;
     }
     case 'item/agentMessage/delta': {
+      if (overlayVisible) break;
       // Deltas arrive per token; only push when the label actually changes
       // (first token, or resuming the answer after a mid-answer tool call).
       if (!hudTextSeen || lastHudPhase !== 'answering') {
@@ -566,7 +589,16 @@ function driveHud(event: { method: string; params: unknown }): void {
             : 'Stopped';
       overlayTurnRunning = false;
       overlayLastActivityAt = Date.now();
-      showHud({ phase: 'finished', label }, 'quickchat');
+      // A reset must not release the old thread until this terminal event has
+      // been routed. Otherwise its trailing deltas can be mistaken for the next
+      // Quick Chat session.
+      if (overlayResetBarrier.pending) {
+        hudTextSeen = false;
+        if (hudOwner === 'quickchat') hideHud();
+        finishOverlayReset();
+      } else if (!overlayVisible) {
+        showHud({ phase: 'finished', label }, 'quickchat');
+      }
       break;
     }
     default:
@@ -705,18 +737,38 @@ function applyQuickChatShortcut(accelerator: string | null): boolean {
   }
 }
 
-/** Send to the main window, deferring until its renderer has loaded (it may have
- *  just been recreated by revealMainWindow, before the listeners are registered). */
+/** Send to the main window, deferring until React has registered its IPC
+ * subscriptions (a recreated BrowserWindow can finish loading before effects run). */
 function sendToMain(channel: string, payload: unknown): void {
   const win = mainWindow;
   if (!win || win.isDestroyed()) return;
-  if (win.webContents.isLoading()) {
-    win.webContents.once('did-finish-load', () => {
-      if (!win.isDestroyed()) win.webContents.send(channel, payload);
-    });
-  } else {
-    win.webContents.send(channel, payload);
+  for (const message of mainPushQueue.push({ channel, payload })) {
+    win.webContents.send(message.channel, message.payload);
   }
+}
+
+async function captureQuickChatHandoff(threadId: string): Promise<{
+  id: string;
+  snapshot: QuickChatHandoff;
+} | null> {
+  const win = quickChatWindow;
+  if (!win || win.isDestroyed()) return null;
+  const ticket = overlayHandoffBarrier.begin(threadId);
+  if (ticket.fresh) win.webContents.send('quickchat:handoffRequest', { id: ticket.id, threadId });
+  const timer = setTimeout(() => {
+    const buffered = overlayHandoffBarrier.cancel(ticket.id);
+    for (const event of buffered) {
+      if (!win.isDestroyed()) win.webContents.send('backend:event', event);
+      driveHud(event);
+    }
+  }, 30_000);
+  const snapshot = await ticket.promise;
+  clearTimeout(timer);
+  if (!snapshot) return null;
+  // Keep the barrier installed until the caller flips ownership. Otherwise an
+  // event can arrive between this await and chats:open marking the overlay as
+  // handed off, and be routed back to Quick Chat after its snapshot was taken.
+  return { id: ticket.id, snapshot };
 }
 
 /** Bring the main window to the front (recreating it if it was closed). */
@@ -798,6 +850,18 @@ async function onAuthenticated(): Promise<RuntimeStatus> {
 let embedManager: EmbedWorkerManager | null = null;
 
 function registerIpc(): void {
+  ipcMain.on('renderer:ready', (event) => {
+    const win = mainWindow;
+    if (!win || win.isDestroyed() || event.sender !== win.webContents) return;
+    for (const { channel, payload } of mainPushQueue.markReady()) win.webContents.send(channel, payload);
+  });
+
+  ipcMain.on('quickchat:handoffSnapshot', (event, id: string, payload: QuickChatHandoff) => {
+    const win = quickChatWindow;
+    if (!win || win.isDestroyed() || event.sender !== win.webContents) return;
+    overlayHandoffBarrier.supply(id, payload);
+  });
+
   ipcMain.handle('runtime:status', (): Promise<RuntimeStatus> | RuntimeStatus => {
     if (E2E) return e2eStatus();
     return runtime!.status();
@@ -984,16 +1048,37 @@ function registerIpc(): void {
     piMcp.setMcpServerEnabled(name, enabled)
   );
   ipcMain.handle('mcp:login', (_e, name: string) => runtime!.mcpLogin(name));
-  ipcMain.handle('mcp:adminDecision', (_e, id: number | string, accept: boolean) => {
-    runtime!.resolveAdminApproval(id, accept);
+  ipcMain.handle('mcp:adminDecision', async (_e, id: number | string, accept: boolean) => {
+    await runtime!.resolveAdminApproval(
+      id,
+      accept,
+      accept
+        ? async (proposal) => {
+            if (proposal.action === 'add') {
+              if (!proposal.input) throw new Error('The MCP add proposal is missing its server definition.');
+              await piMcp.addMcpServer(proposal.input);
+              return;
+            }
+            if (!proposal.name) throw new Error('The MCP remove proposal is missing its server name.');
+            await piMcp.removeMcpServer(proposal.name);
+          }
+        : undefined
+    );
   });
   ipcMain.handle(
     'instructions:resolveApproval',
     async (_e, id: number | string, accept: boolean, surface: 'main' | 'quickChat', text: string) => {
       // Main is the sole writer of settings.json: apply the card's final text BEFORE
       // releasing the held tool call, so the assistant only proceeds once it's persisted.
-      if (accept) await updateCustomInstructions({ [surface]: text });
-      runtime!.resolveInstructionsApproval(id, accept);
+      await runtime!.resolveInstructionsApproval(
+        id,
+        accept,
+        accept
+          ? async () => {
+              await updateCustomInstructions({ [surface]: text });
+            }
+          : undefined
+      );
     }
   );
   ipcMain.handle('runtime:restart', async () => {
@@ -1133,7 +1218,11 @@ function registerIpc(): void {
   ipcMain.handle('chats:search', (_e, query: string) => {
     // Reuse the hidden one-shot seam (on the memory model) for query expansion.
     const llm: LlmClient = {
-      complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).memory.model })
+      complete: async (prompt) =>
+        runtime!.complete(prompt, {
+          model: (await readSettings()).memory.model,
+          timeoutMs: CHAT_SEARCH_COMPLETION_TIMEOUT_MS
+        })
     };
     return searchChats(query, { llm, listChats: () => runtime!.listThreads() });
   });
@@ -1142,10 +1231,40 @@ function registerIpc(): void {
     // route its events to the main window and drop the overlay/HUD so the two
     // views don't diverge.
     if (threadId === overlayThreadId && !overlayHandedOff) {
-      overlayHandedOff = true;
-      overlayTurnRunning = false;
-      hideHud();
-      hideOverlayWindow();
+      const captured = await captureQuickChatHandoff(threadId);
+      if (!captured) {
+        // A simultaneous explicit Open-in-Stem action may already have completed
+        // the same transition and cancelled this sidebar request.
+        if (!overlayHandedOff) {
+          showQuickChat(false);
+          throw new Error('Quick Chat did not return a handoff snapshot. Try Open in Stem again.');
+        }
+      } else {
+        // Flip ownership before removing the event barrier. Events arriving
+        // before commit stay buffered; events arriving after it route directly
+        // to the main renderer.
+        const wasAlreadyHandedOff = overlayHandedOff;
+        overlayHandedOff = true;
+        const transition = overlayHandoffBarrier.commit(captured.id);
+        if (!transition) {
+          // An explicit handoff may have won while this handler was awaiting the
+          // snapshot. Only restore ownership when no other path completed it.
+          if (!wasAlreadyHandedOff) {
+            overlayHandedOff = false;
+            showQuickChat(false);
+            throw new Error('Quick Chat handoff was interrupted. Try Open in Stem again.');
+          }
+        } else {
+          overlayTurnRunning = false;
+          hideHud();
+          hideOverlayWindow();
+          sendToMain('quickchat:adopt', transition.snapshot);
+          for (const bufferedEvent of transition.events) {
+            sendToMain('backend:event', bufferedEvent);
+            noteMainThreadEvent(bufferedEvent.method, threadId);
+          }
+        }
+      }
     }
     // Read is a local file read and isn't gated, so the open returns immediately.
     // Pre-warm pi (switch_session) in the background — it's redundant for
@@ -1367,7 +1486,7 @@ function registerIpc(): void {
         overlayThreadId = threadId;
         overlayHandedOff = false;
         // Optimistic sidebar row so the quickchat thread shows immediately.
-        mainWindow?.webContents.send('quickchat:sessionStarted', {
+        sendToMain('quickchat:sessionStarted', {
           threadId,
           title: prompt.input.trim() || 'New chat'
         });
@@ -1389,6 +1508,20 @@ function registerIpc(): void {
         attachments: prompt.attachments
       });
       overlayLastActivityAt = Date.now();
+      if (overlayHandedOff && result.threadId && result.turnId) {
+        // The snapshot can be captured while startTurn is still preparing Recall.
+        // Publish the minted id as soon as prompt acceptance returns so Stop is
+        // interruptible even before the first real item event.
+        sendToMain('backend:event', {
+          method: 'item/started',
+          params: {
+            threadId: result.threadId,
+            turnId: result.turnId,
+            item: { id: `agent-${result.turnId}`, type: 'agentMessage' }
+          },
+          receivedAt: new Date().toISOString()
+        } satisfies BackendEventEnvelope);
+      }
       // The memory shortcut ("remember that …") completes with no stream — jump the
       // HUD straight to finished.
       if (result.handled) {
@@ -1400,29 +1533,51 @@ function registerIpc(): void {
       overlayTurnRunning = false;
       overlayLastActivityAt = Date.now();
       hideHud();
-      showQuickChat(false);
+      if (overlayResetBarrier.pending) finishOverlayReset();
+      if (overlayHandedOff && overlayThreadId) {
+        sendToMain('backend:event', {
+          method: 'turn/failed',
+          params: {
+            threadId: overlayThreadId,
+            turn: { id: `quick-start-${Date.now()}`, status: 'failed' },
+            error: e instanceof Error ? e.message : String(e)
+          },
+          receivedAt: new Date().toISOString()
+        } satisfies BackendEventEnvelope);
+      } else {
+        showQuickChat(false);
+      }
       throw e;
     }
   });
 
   // Forget the current overlay thread so the next prompt opens a fresh one.
   ipcMain.handle('quickchat:newThread', () => {
-    overlayThreadId = null;
     overlayHandedOff = false;
-    overlayTurnRunning = false;
     hudTextSeen = false;
     hideHud();
+    if (overlayTurnRunning) {
+      return overlayResetBarrier.wait();
+    } else {
+      finishOverlayReset();
+    }
   });
 
   // Hand the conversation off to the main window: route future events there,
   // reveal the main window, and have it adopt the thread as the active chat.
   ipcMain.handle('quickchat:handoff', (_e, payload: QuickChatHandoff) => {
+    const bufferedEvents = overlayHandoffBarrier.cancelCurrent();
     overlayHandedOff = true;
     overlayTurnRunning = false;
+    if (overlayResetBarrier.pending) finishOverlayReset();
     hideHud();
     hideOverlayWindow();
     revealMainWindow();
     sendToMain('quickchat:adopt', payload);
+    for (const bufferedEvent of bufferedEvents) {
+      sendToMain('backend:event', bufferedEvent);
+      noteMainThreadEvent(bufferedEvent.method, payload.threadId);
+    }
   });
 
   // Re-summon the overlay (HUD click). Same path as the shortcut.
@@ -1461,8 +1616,8 @@ app.whenReady().then(async () => {
     // gets a hermetic shim that settles turns instantly — letting e2e specs seed a
     // due task and observe it fire + clean up (see scheduler/e2e-backend.ts).
     runtime: E2E ? createE2ESchedulerBackend() : runtime,
-    onChange: (tasks) => mainWindow?.webContents.send('tasks:changed', tasks),
-    onRun: (run) => mainWindow?.webContents.send('tasks:run', run),
+    onChange: (tasks) => sendToMain('tasks:changed', tasks),
+    onRun: (run) => sendToMain('tasks:run', run),
     // Active = a turn in flight on either surface, or interaction in the last
     // couple of minutes. Scheduled runs defer while this holds and an in-flight
     // scheduled run yields (preemptForUser) when the user sends a message.
@@ -1484,7 +1639,7 @@ app.whenReady().then(async () => {
     notify: async ({ title, message }, threadId) => {
       revealMainWindow();
       app.dock?.bounce('critical');
-      mainWindow?.webContents.send('tasks:notify', {
+      sendToMain('tasks:notify', {
         threadId,
         title,
         message,
@@ -1584,15 +1739,20 @@ app.whenReady().then(async () => {
         const e = await getEmbedSettings();
         if (e.mode !== 'local' || e.localModel !== status.model) return;
         const key = localModelCacheKey(EMBED_CATALOG[e.localModel]);
+        const factsGeneration = getFactsGeneration();
         pruneVectorsExceptModel(key);
         const missing = getFactsMissingVector(key);
         for (let i = 0; i < missing.length; i += 64) {
+          if (getFactsGeneration() !== factsGeneration) break;
           const batch = missing.slice(i, i + 64);
           const vecs = await localEmbeddings.embed(
             batch.map((f) => f.text),
             'passage'
           );
-          batch.forEach((f, j) => upsertFactVector(f.id, key, vecs[j]));
+          if (getFactsGeneration() !== factsGeneration) break;
+          batch.forEach((f, j) =>
+            upsertFactVectorForSnapshot(f.id, f.text, factsGeneration, key, vecs[j])
+          );
         }
         // Same hygiene + backfill for thread-summary vectors (Level 1.5 search).
         pruneSummaryVectorsExceptModel(key);
@@ -1715,27 +1875,43 @@ app.whenReady().then(async () => {
     // Stem-internal MCP self-management signals: deliver to the windows on their
     // own channels (never as a backend thread event, and never captured into recall).
     if (event.method === 'mcp/admin/approvalRequest') {
-      mainWindow?.webContents.send('mcp:adminApproval', event.params);
+      const approvalThreadId = (event.params as { threadId?: string } | undefined)?.threadId;
+      // Quick Chat hides itself while a turn runs. Bring the originating surface
+      // back so mounting the card actually makes the confirmation visible.
+      if (approvalThreadId && approvalThreadId === overlayThreadId && !overlayHandedOff) showQuickChat(false);
+      sendToMain('mcp:adminApproval', event.params);
       quickChatWindow?.webContents.send('mcp:adminApproval', event.params);
       return;
     }
+    if (event.method === 'mcp/admin/approvalResolved') {
+      sendToMain('mcp:adminApprovalResolved', event.params);
+      quickChatWindow?.webContents.send('mcp:adminApprovalResolved', event.params);
+      return;
+    }
     if (event.method === 'instructions/approvalRequest') {
-      mainWindow?.webContents.send('instructions:approvalRequest', event.params);
+      const approvalThreadId = (event.params as { threadId?: string } | undefined)?.threadId;
+      if (approvalThreadId && approvalThreadId === overlayThreadId && !overlayHandedOff) showQuickChat(false);
+      sendToMain('instructions:approvalRequest', event.params);
       quickChatWindow?.webContents.send('instructions:approvalRequest', event.params);
       return;
     }
+    if (event.method === 'instructions/approvalResolved') {
+      sendToMain('instructions:approvalResolved', event.params);
+      quickChatWindow?.webContents.send('instructions:approvalResolved', event.params);
+      return;
+    }
     if (event.method === 'mcp/changed') {
-      mainWindow?.webContents.send('mcp:changed');
+      sendToMain('mcp:changed', undefined);
       quickChatWindow?.webContents.send('mcp:changed');
       return;
     }
     if (event.method === 'skills/changed') {
-      mainWindow?.webContents.send('skills:changed');
+      sendToMain('skills:changed', undefined);
       quickChatWindow?.webContents.send('skills:changed');
       return;
     }
     if (event.method === 'mcp/status') {
-      mainWindow?.webContents.send('mcp:status', event.params);
+      sendToMain('mcp:status', event.params);
       quickChatWindow?.webContents.send('mcp:status', event.params);
       return;
     }
@@ -1746,19 +1922,37 @@ app.whenReady().then(async () => {
     // overlay window (which renders the conversation) and the status HUD, NOT the
     // main window — otherwise the main window would build a phantom user-less slice.
     const overlayOwned = !!threadId && threadId === overlayThreadId && !overlayHandedOff;
-    if (overlayOwned) {
+    const handoffBuffered = !!threadId && overlayHandoffBarrier.buffer(threadId, event);
+    if (handoffBuffered) {
+      // captureQuickChatHandoff replays these immediately after the atomic snapshot.
+    } else if (overlayOwned) {
       quickChatWindow?.webContents.send('backend:event', event);
       driveHud(event);
     } else if (!threadId) {
       // Process-level events (e.g. process/exit) carry no threadId — let both
       // windows clear their run state, and clear the follow-me pill so a backend
       // crash never leaves a stuck "Working…" pill.
-      mainWindow?.webContents.send('backend:event', event);
+      const abandonedHandoffEvents = overlayHandoffBarrier.cancelCurrent();
+      for (const bufferedEvent of abandonedHandoffEvents) {
+        quickChatWindow?.webContents.send('backend:event', bufferedEvent);
+        driveHud(bufferedEvent);
+      }
+      sendToMain('backend:event', event);
       quickChatWindow?.webContents.send('backend:event', event);
       runningMainThreads.clear();
+      if (event.method === 'process/exit' && (overlayTurnRunning || overlayResetBarrier.pending)) {
+        const failed = failQuickChatProcess(Date.now(), overlayThreadId);
+        overlayThreadId = failed.threadId;
+        overlayHandedOff = failed.handedOff;
+        overlayTurnRunning = failed.turnRunning;
+        overlayLastActivityAt = failed.lastActivityAt;
+        hudTextSeen = failed.hudTextSeen;
+        if (hudOwner === 'quickchat') showHud({ phase: 'finished', label: 'Request failed' }, 'quickchat');
+        if (overlayResetBarrier.pending) finishOverlayReset();
+      }
       if (hudOwner === 'main') hideHud();
     } else {
-      mainWindow?.webContents.send('backend:event', event);
+      sendToMain('backend:event', event);
       noteMainThreadEvent(event.method, threadId);
     }
     if (isRecallEnabled()) {

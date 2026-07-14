@@ -67,6 +67,7 @@ describe('TaskScheduler.create', () => {
   it('rejects bad / ambiguous schedules', async () => {
     const { scheduler } = makeScheduler(new FakeRuntime());
     expect((await scheduler.create({ prompt: 'x', cron: 'nope' }, 't1')).ok).toBe(false);
+    expect((await scheduler.create({ prompt: 'x', cron: '0 0 30 2 *' }, 't1')).ok).toBe(false);
     expect((await scheduler.create({ prompt: 'x', cron: '0 8 * * *', at: '2030-01-01T00:00:00Z' }, 't1')).ok).toBe(false);
     expect((await scheduler.create({ prompt: 'x' }, 't1')).ok).toBe(false);
     expect((await scheduler.create({ prompt: '', cron: '0 8 * * *' }, 't1')).ok).toBe(false);
@@ -266,6 +267,50 @@ class HangingRuntime extends EventEmitter {
     this.emit('event', { method, params: { threadId: 't1', turn: { id: turnId } } });
   }
 }
+
+describe('TaskScheduler backend exit handling', () => {
+  it('settles an active run immediately when the backend process exits', async () => {
+    const runtime = new HangingRuntime();
+    const { scheduler } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'p', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await flush();
+    expect(runtime.starts).toHaveLength(1);
+
+    runtime.emit('event', { method: 'process/exit', params: { code: 1, signal: null } });
+    await flush();
+
+    expect(scheduler.snapshot().find((t) => t.id === res.task.id)?.lastStatus).toBe('failed');
+    expect((await readTasks())[0].lastStatus).toBe('failed');
+    scheduler.stop();
+  });
+
+  it('interrupts the backend turn when the run timeout expires', async () => {
+    vi.useFakeTimers();
+    const runtime = new HangingRuntime();
+    const interrupted: string[] = [];
+    const scheduler = new TaskScheduler({
+      runtime: runtime as never,
+      onChange: () => {},
+      onRun: () => {},
+      interrupt: async (turnId) => {
+        interrupted.push(turnId);
+      }
+    });
+    const res = await scheduler.create({ prompt: 'p', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await vi.advanceTimersByTimeAsync(5);
+    expect(runtime.starts).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000 + 5);
+
+    expect(interrupted).toEqual(['turn-1']);
+    expect(scheduler.snapshot().find((t) => t.id === res.task.id)?.lastStatus).toBe('failed');
+    scheduler.stop();
+  });
+});
 
 describe('TaskScheduler defer + preempt', () => {
   it('defers a run while the user is active and starts once idle', async () => {

@@ -153,7 +153,10 @@ export async function refreshThreadSummary(threadId: string, llm: LlmClient): Pr
 export async function refreshRecentSummaries(llm: LlmClient, maxThreads = 3): Promise<number> {
   if (!isRecallEnabled()) return 0;
   let written = 0;
-  for (const { threadId } of getThreadsNeedingSummary(maxThreads, 'newest')) {
+  for (const { threadId } of getThreadsNeedingSummary(maxThreads, 'newest', {
+    messages: MIN_NEW_MESSAGES,
+    chars: MIN_NEW_CHARS
+  })) {
     if (await refreshThreadSummary(threadId, llm)) written += 1;
   }
   return written;
@@ -167,7 +170,10 @@ export async function refreshRecentSummaries(llm: LlmClient, maxThreads = 3): Pr
 export async function backfillSummaries(llm: LlmClient, maxThreads = 3): Promise<number> {
   if (!isRecallEnabled()) return 0;
   let written = 0;
-  for (const { threadId } of getThreadsNeedingSummary(maxThreads, 'oldest')) {
+  for (const { threadId } of getThreadsNeedingSummary(maxThreads, 'oldest', {
+    messages: MIN_NEW_MESSAGES,
+    chars: MIN_NEW_CHARS
+  })) {
     if (await refreshThreadSummary(threadId, llm)) written += 1;
   }
   return written;

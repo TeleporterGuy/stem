@@ -6,11 +6,15 @@ import type {
   ModelSummary,
   NativeWebSearchSettings,
   QuickChatSettings,
+  StartTurnResult,
   TurnAttachment
 } from '../../shared/types';
 import { ChatView } from '../chat/ChatView';
-import { toMessageAttachments } from '../attachments';
+import { optimisticMessageAttachments, resendAttachments, toMessageAttachments } from '../attachments';
 import { EFFORT_LABELS } from '../modelLabels';
+import { interruptibleTurnId } from '../pendingTurn';
+import { McpApprovalCard } from '../manage/McpApprovalCard';
+import { InstructionsApprovalCard } from '../manage/InstructionsApprovalCard';
 import {
   EMPTY_STATE,
   appendSystemMessage,
@@ -38,6 +42,7 @@ export function QuickChat() {
   // One conversation's state (this overlay only ever holds one thread at a time).
   const [chatState, setChatState] = useState<ThreadState>(EMPTY_STATE);
   const [threadId, setThreadId] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -45,10 +50,58 @@ export function QuickChat() {
   // Refs so the event subscription (registered once) reads current values.
   const threadIdRef = useRef(threadId);
   threadIdRef.current = threadId;
+  const chatStateRef = useRef(chatState);
   const turnMetaRef = useRef(new Map<string, MessageMeta>());
+  const sendNonceRef = useRef(0);
+  const settledTurnIdsRef = useRef(new Set<string>());
+  const pendingStartRef = useRef<{
+    promise: Promise<StartTurnResult>;
+    turnId: string | null;
+    threadId: string | null;
+  } | null>(null);
+  // A manual New Thread aborts the old session while its final events are still
+  // routed here. Ignore those events so they cannot resurrect the cleared panel.
+  const ignoredThreadIdsRef = useRef(new Set<string>());
+
+  /** Keep an immediately-readable state mirror for main's handoff barrier. */
+  const updateChatState = useCallback((update: ThreadState | ((state: ThreadState) => ThreadState)) => {
+    const next = typeof update === 'function' ? update(chatStateRef.current) : update;
+    chatStateRef.current = next;
+    setChatState(next);
+  }, []);
 
   const selectedModel = models.find((m) => m.id === modelId) ?? null;
   const { messages, running, streamingId, activity, activeTurnId } = chatState;
+
+  useEffect(() => {
+    return window.stem.onQuickChatHandoffRequest(({ id, threadId: requestedThreadId }) => {
+      void (async () => {
+        const ownedThreadId = threadIdRef.current;
+        if (ownedThreadId && ownedThreadId !== requestedThreadId) return;
+        // A sidebar row appears as soon as main creates the Quick Chat thread,
+        // potentially before startTurn returns its interruptible id. Do not hand
+        // main an un-cancellable `running:true, activeTurnId:null` slice: wait for
+        // that already-running start promise, whose own continuation updates the
+        // synchronous state ref before this continuation runs.
+        const pending = pendingStartRef.current;
+        if (pending && !pending.turnId) await pending.promise.catch(() => undefined);
+        const state = chatStateRef.current;
+        window.stem.respondQuickChatHandoffRequest(id, {
+          threadId: requestedThreadId,
+          messages: state.messages,
+          running: state.running,
+          streamingId: state.streamingId,
+          activity: state.activity,
+          activities: state.activities,
+          activeTurnId: state.activeTurnId,
+          status: state.status,
+          model: modelId,
+          effort,
+          serviceTier
+        });
+      })();
+    });
+  }, [modelId, effort, serviceTier]);
 
   useEffect(() => {
     window.stem
@@ -86,11 +139,14 @@ export function QuickChat() {
   // Clear the live session and return to a fresh compact bar (New thread, or an
   // inactivity reset). Re-seed the pickers from the saved defaults.
   const resetSession = useCallback(() => {
+    pendingStartRef.current = null;
+    ignoredThreadIdsRef.current.clear();
+    threadIdRef.current = null;
     setThreadId(null);
-    setChatState(EMPTY_STATE);
+    updateChatState(EMPTY_STATE);
     setInput('');
     if (models.length) window.stem.getSettings().then((s) => applyDefaults(s.quickChat, models));
-  }, [models, applyDefaults]);
+  }, [models, applyDefaults, updateChatState]);
 
   // Each summon: `reset` => start a fresh thread; otherwise keep showing the
   // existing session (the answer the user re-summoned to read). Always refocus.
@@ -128,59 +184,122 @@ export function QuickChat() {
   useEffect(() => {
     return window.stem.onBackendEvent((event: BackendEventEnvelope) => {
       if (event.method === 'process/exit') {
-        setChatState((s) => applyProcessExitToThread(s));
+        pendingStartRef.current = null;
+        updateChatState((s) => applyProcessExitToThread(s));
         return;
       }
 
       const eventThreadId = backendEventThreadId(event);
+      const settled =
+        event.method === 'turn/completed' || event.method === 'turn/failed' || event.method === 'turn/aborted';
+      if (settled) {
+        const turnId = (event.params as { turn?: { id?: string } } | undefined)?.turn?.id;
+        if (turnId) {
+          settledTurnIdsRef.current.add(turnId);
+          if (settledTurnIdsRef.current.size > 32) {
+            const oldest = settledTurnIdsRef.current.values().next().value as string | undefined;
+            if (oldest) settledTurnIdsRef.current.delete(oldest);
+          }
+          if (pendingStartRef.current?.turnId === turnId) pendingStartRef.current = null;
+        }
+      }
+      if (eventThreadId && ignoredThreadIdsRef.current.has(eventThreadId)) {
+        if (settled) ignoredThreadIdsRef.current.delete(eventThreadId);
+        return;
+      }
       if (threadIdRef.current && eventThreadId && eventThreadId !== threadIdRef.current) return;
-      if (!threadIdRef.current && eventThreadId) setThreadId(eventThreadId);
-      setChatState((s) =>
+      if (!threadIdRef.current && eventThreadId) {
+        threadIdRef.current = eventThreadId;
+        setThreadId(eventThreadId);
+      }
+      updateChatState((s) =>
         applyBackendEventToThread(s, event, {
           turnMeta: turnMetaRef.current,
           settledStatus: () => 'idle'
         }) ?? s
       );
     });
-  }, []);
+  }, [updateChatState]);
 
   const pushSystem = useCallback((e: unknown) => {
-    setChatState((s) => appendSystemMessage(s, e));
-  }, []);
+    updateChatState((s) => appendSystemMessage(s, e));
+  }, [updateChatState]);
 
   const onSend = useCallback(
     async (text: string, attachments: TurnAttachment[] = []) => {
-      const msgAttachments = attachments.length ? await toMessageAttachments(attachments) : undefined;
-      const userMsgId = `user-${Date.now()}`;
-      setChatState((s) => ({
+      // Close the double-submit window before React commits `running`.
+      if (pendingStartRef.current || running) return;
+      const sentAttachments = attachments.map((att) => ({ ...att }));
+      const userMsgId = `user-${Date.now()}-${++sendNonceRef.current}`;
+      updateChatState((s) => ({
         ...s,
-        messages: [...s.messages, { id: userMsgId, role: 'user', content: text, attachments: msgAttachments }],
+        messages: [
+          ...s.messages,
+          {
+            id: userMsgId,
+            role: 'user',
+            content: text,
+            attachments: sentAttachments.length ? optimisticMessageAttachments(sentAttachments) : undefined,
+            turnAttachments: sentAttachments
+          }
+        ],
         running: true,
         activity: null,
         activities: [],
         status: 'running'
       }));
+      const startPromise = window.stem.runQuickChat({
+        input: text,
+        model: modelId,
+        effort,
+        serviceTier,
+        format,
+        threadId: threadId ?? undefined,
+        attachments: sentAttachments.length ? sentAttachments : undefined
+      });
+      const pending = { promise: startPromise, turnId: null as string | null, threadId: null as string | null };
+      pendingStartRef.current = pending;
+
+      if (sentAttachments.length) {
+        void toMessageAttachments(sentAttachments)
+          .then((displayAttachments) => {
+            updateChatState((state) => ({
+              ...state,
+              messages: state.messages.map((message) =>
+                message.id === userMsgId ? { ...message, attachments: displayAttachments } : message
+              )
+            }));
+          })
+          .catch(() => undefined);
+      }
+
       try {
-        const result = await window.stem.runQuickChat({
-          input: text,
-          model: modelId,
-          effort,
-          serviceTier,
-          format,
-          threadId: threadId ?? undefined,
-          attachments: attachments.length ? attachments : undefined
-        });
-        if (result.threadId) setThreadId(result.threadId);
+        const result = await startPromise;
+        pending.turnId = result.turnId ?? null;
+        pending.threadId = result.threadId ?? null;
+        const alreadySettled = result.turnId
+          ? settledTurnIdsRef.current.delete(result.turnId)
+          : false;
+        // New Thread / handoff may have reset this session while start was still
+        // pending. Populate the captured record for Stop's waiter, but never let
+        // the stale callback resurrect the cleared overlay state.
+        if (pendingStartRef.current !== pending) return;
+        if (result.threadId) {
+          threadIdRef.current = result.threadId;
+          setThreadId(result.threadId);
+        }
         if (result.turnId) {
           turnMetaRef.current.set(result.turnId, { model: modelId ?? undefined, effort: effort ?? undefined, serviceTier });
-          setChatState((s) => ({
+          updateChatState((s) => ({
             ...s,
-            activeTurnId: result.turnId ?? null,
+            activeTurnId: alreadySettled ? null : result.turnId ?? null,
             messages: s.messages.map((m) => (m.id === userMsgId ? { ...m, turnId: result.turnId } : m))
           }));
         }
+        if (alreadySettled) pendingStartRef.current = null;
         if (result.handled) {
-          setChatState((s) => ({
+          if (pendingStartRef.current === pending) pendingStartRef.current = null;
+          updateChatState((s) => ({
             ...s,
             messages: result.assistantMessage
               ? [...s.messages, { id: `assistant-${Date.now()}`, role: 'assistant', content: result.assistantMessage as string }]
@@ -191,16 +310,33 @@ export function QuickChat() {
           }));
         }
       } catch (e) {
-        pushSystem(e);
+        if (pendingStartRef.current === pending) {
+          pendingStartRef.current = null;
+          pushSystem(e);
+        }
       }
     },
-    [modelId, effort, serviceTier, format, threadId, pushSystem]
+    [modelId, effort, serviceTier, format, threadId, running, pushSystem, updateChatState]
   );
 
   const onInterrupt = useCallback(async () => {
-    if (activeTurnId) await window.stem.interruptTurn(activeTurnId);
-    setChatState((s) => ({ ...s, running: false, streamingId: null, activity: null, activities: [], activeTurnId: null, status: 'idle' }));
-  }, [activeTurnId]);
+    const pending = pendingStartRef.current;
+    const turnId = await interruptibleTurnId(activeTurnId, pending);
+    if (!turnId) return; // start failed/was handled; its own path already settled the UI
+    try {
+      await window.stem.interruptTurn(turnId);
+      updateChatState((s) => ({
+        ...s,
+        running: false,
+        streamingId: null,
+        activity: null,
+        activeTurnId: null,
+        status: 'idle'
+      }));
+    } catch (e) {
+      pushSystem(e);
+    }
+  }, [activeTurnId, pushSystem, updateChatState]);
 
   // Retry/Edit: roll the thread back to a turn and re-send. No-op while running.
   const rerunFromTurn = useCallback(
@@ -208,16 +344,17 @@ export function QuickChat() {
       if (!threadId || running) return;
       const userIdx = messages.findIndex((m) => m.turnId === turnId && m.role === 'user');
       if (userIdx === -1) return;
+      const originalAttachments = resendAttachments(messages[userIdx]);
       try {
         await window.stem.rollbackToTurn(threadId, turnId);
       } catch (e) {
         pushSystem(e);
         return;
       }
-      setChatState((s) => ({ ...s, messages: s.messages.slice(0, userIdx) }));
-      onSend(text, []);
+      updateChatState((s) => ({ ...s, messages: s.messages.slice(0, userIdx) }));
+      onSend(text, originalAttachments);
     },
-    [threadId, running, messages, onSend, pushSystem]
+    [threadId, running, messages, onSend, pushSystem, updateChatState]
   );
 
   const onRetry = useCallback(
@@ -256,9 +393,9 @@ export function QuickChat() {
         pushSystem(e);
         return;
       }
-      setChatState((s) => ({ ...s, messages: s.messages.slice(0, userIdx) }));
+      updateChatState((s) => ({ ...s, messages: s.messages.slice(0, userIdx) }));
     },
-    [threadId, running, messages, resetSession, pushSystem]
+    [threadId, running, messages, resetSession, pushSystem, updateChatState]
   );
   // Fork: branch the thread and continue the branch in the main app.
   const onFork = useCallback(
@@ -267,7 +404,19 @@ export function QuickChat() {
       try {
         const { threadId: newId } = await window.stem.forkThread(threadId, turnId);
         const history = await window.stem.openChat(newId);
-        window.stem.handoffQuickChat({ threadId: newId, messages: history.messages, model: modelId, effort, serviceTier });
+        await window.stem.handoffQuickChat({
+          threadId: newId,
+          messages: history.messages,
+          running: false,
+          streamingId: null,
+          activity: null,
+          activities: [],
+          activeTurnId: null,
+          status: 'idle',
+          model: modelId,
+          effort,
+          serviceTier
+        });
         resetSession();
       } catch (e) {
         pushSystem(e);
@@ -276,16 +425,49 @@ export function QuickChat() {
     [threadId, modelId, effort, serviceTier, resetSession, pushSystem]
   );
 
-  function newThread() {
-    window.stem.newQuickChatThread();
-    resetSession();
-    requestAnimationFrame(() => inputRef.current?.focus());
+  async function newThread() {
+    if (resetting) return;
+    setResetting(true);
+    const pending = pendingStartRef.current;
+    const oldThreadId = threadIdRef.current;
+    if (oldThreadId) ignoredThreadIdsRef.current.add(oldThreadId);
+    let resolvedOldId: string | null = oldThreadId;
+    try {
+      if (running) await onInterrupt();
+      resolvedOldId = oldThreadId ?? pending?.threadId ?? threadIdRef.current;
+      if (resolvedOldId) ignoredThreadIdsRef.current.add(resolvedOldId);
+      await window.stem.newQuickChatThread();
+      resetSession();
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } catch (e) {
+      if (oldThreadId) ignoredThreadIdsRef.current.delete(oldThreadId);
+      if (resolvedOldId) ignoredThreadIdsRef.current.delete(resolvedOldId);
+      pushSystem(e);
+    } finally {
+      setResetting(false);
+    }
   }
 
-  function openInStem() {
+  async function openInStem() {
     if (!threadId) return;
-    window.stem.handoffQuickChat({ threadId, messages, model: modelId, effort, serviceTier });
-    resetSession();
+    try {
+      await window.stem.handoffQuickChat({
+        threadId,
+        messages,
+        running: chatState.running,
+        streamingId: chatState.streamingId,
+        activity: chatState.activity,
+        activities: chatState.activities,
+        activeTurnId: chatState.activeTurnId,
+        status: chatState.status,
+        model: modelId,
+        effort,
+        serviceTier
+      });
+      resetSession();
+    } catch (e) {
+      pushSystem(e);
+    }
   }
 
   function submitCompact() {
@@ -326,10 +508,10 @@ export function QuickChat() {
             <Sparkles className="qc-mark" size={18} />
             {searchToggle('head')}
             <span className="qc-spacer" />
-            <button className="qc-act" title="New thread" onClick={newThread}>
+            <button className="qc-act" title="New thread" onClick={() => void newThread()} disabled={resetting}>
               <SquarePen size={15} />
             </button>
-            <button className="qc-act" title="Open in Stem" onClick={openInStem} disabled={!threadId}>
+            <button className="qc-act" title="Open in Stem" onClick={() => void openInStem()} disabled={!threadId}>
               <PanelRight size={15} />
             </button>
             <span className="qc-esc" onClick={() => window.stem.hideQuickChat()}>
@@ -364,6 +546,8 @@ export function QuickChat() {
             onChangeFormat={setFormat}
           />
         </div>
+        <McpApprovalCard />
+        <InstructionsApprovalCard />
       </div>
     );
   }
@@ -422,6 +606,8 @@ export function QuickChat() {
           </span>
         </div>
       </div>
+      <McpApprovalCard />
+      <InstructionsApprovalCard />
     </div>
   );
 }

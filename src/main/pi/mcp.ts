@@ -1,5 +1,14 @@
 import type { McpServerInput, McpServerSummary } from '../../shared/types';
-import { readMcpConfig, writeMcpConfig, deleteOAuthToken, readOAuthTokens } from './mcp-config';
+import {
+  readMcpConfig,
+  writeMcpConfig,
+  deleteOAuthToken,
+  readOAuthTokens,
+  mcpServerAuthIdentity,
+  oauthTokenMatchesServer,
+  withMcpStateMutation,
+  type PiMcpServer
+} from './mcp-config';
 import { RECALL_MCP_NAME } from '../recall/register-mcp';
 import { ADMIN_MCP_NAME } from '../admin/register-mcp';
 
@@ -31,7 +40,7 @@ export async function listMcpServers(): Promise<McpServerSummary[]> {
       // auth header both count as credentials-on-disk.
       const hasHeaderAuth = !!def.headers && Object.keys(def.headers).length > 0;
       const authStatus = url
-        ? oauth[name]
+        ? oauthTokenMatchesServer(oauth[name], def)
           ? 'o_auth'
           : hasHeaderAuth
             ? 'bearer_token'
@@ -57,7 +66,7 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
   assertValidName(name);
   if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
 
-  const config = await readMcpConfig();
+  let next: PiMcpServer;
   if (input.transport === 'http') {
     const url = input.url?.trim();
     if (!url) throw new Error('A remote MCP server requires a URL.');
@@ -70,7 +79,7 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
     const oauthScope = input.oauthScope?.trim() || undefined;
     // A user explicitly adding a server implies trust → its tools run without a
     // per-call confirmation (standard MCP-host behavior).
-    config.servers[name] = {
+    next = {
       url,
       ...(headers ? { headers } : {}),
       ...(oauthClientId ? { oauthClientId } : {}),
@@ -82,9 +91,20 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
     const command = input.command?.trim();
     if (!command) throw new Error('A local MCP server requires a command.');
     const env = input.env && Object.keys(input.env).length > 0 ? input.env : undefined;
-    config.servers[name] = { command, args: input.args ?? [], ...(env ? { env } : {}), trusted: true };
+    next = { command, args: input.args ?? [], ...(env ? { env } : {}), trusted: true };
   }
-  await writeMcpConfig(config);
+
+  await withMcpStateMutation(async () => {
+    const config = await readMcpConfig();
+    const previous = config.servers[name];
+    const identityChanged = !previous || mcpServerAuthIdentity(previous) !== mcpServerAuthIdentity(next);
+    // Revoke the name-keyed credential before exposing a new identity. If the
+    // config write then fails/crashes, the old server merely needs to sign in
+    // again; the secret can never become attached to the new URL.
+    if (identityChanged) await deleteOAuthToken(name);
+    config.servers[name] = next;
+    await writeMcpConfig(config);
+  });
   return listMcpServers();
 }
 
@@ -96,19 +116,26 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
  */
 export async function setMcpServerEnabled(name: string, enabled: boolean): Promise<McpServerSummary[]> {
   if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
-  const config = await readMcpConfig();
-  const def = config.servers[name];
-  if (!def) throw new Error(`No MCP server named "${name}".`);
-  if (enabled) delete def.disabled;
-  else def.disabled = true;
-  await writeMcpConfig(config);
+  await withMcpStateMutation(async () => {
+    const config = await readMcpConfig();
+    const def = config.servers[name];
+    if (!def) throw new Error(`No MCP server named "${name}".`);
+    if (enabled) delete def.disabled;
+    else def.disabled = true;
+    await writeMcpConfig(config);
+  });
   return listMcpServers();
 }
 
 export async function removeMcpServer(name: string): Promise<McpServerSummary[]> {
-  const config = await readMcpConfig();
-  delete config.servers[name];
-  await writeMcpConfig(config);
-  await deleteOAuthToken(name); // drop any stored OAuth token with the server
+  if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
+  await withMcpStateMutation(async () => {
+    const config = await readMcpConfig();
+    if (!config.servers[name]) throw new Error(`No MCP server named "${name}".`);
+    // Delete the credential first for the same fail-safe ordering as replacement.
+    await deleteOAuthToken(name);
+    delete config.servers[name];
+    await writeMcpConfig(config);
+  });
   return listMcpServers();
 }

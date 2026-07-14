@@ -432,8 +432,10 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
       m.role === 'assistant' && (!isStreaming || (format === 'md' && !!m.content));
     const metaText = m.role === 'assistant' ? metaTooltip(m.meta, models) : undefined;
     const isEditing = editingId === m.id;
-    // Retry/Edit/Fork need an authoritative turn id and a settled thread.
-    const canAct = !running && !!m.turnId && (m.role === 'user' || m.role === 'assistant');
+    // Retry/Edit/Fork need an authoritative turn id and a settled thread. Error
+    // bubbles (role system) carry their failed turn's id, so they can offer
+    // Copy + Retry — but not Edit/Fork/Delete, which belong to the real messages.
+    const canAct = !running && !!m.turnId;
     return (
       <div key={m.id} className={`message message-${m.role}`}>
         <div className={`msg-avatar ${a.cls}`}>{a.icon}</div>
@@ -529,11 +531,11 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
               >
                 {copiedId === m.id ? <Check size={13} /> : <Copy size={13} />}
               </button>
-              {m.role === 'assistant' && (
+              {(m.role === 'assistant' || m.role === 'system') && (
                 <button
                   type="button"
                   className="message-action"
-                  title="Retry — regenerate this reply"
+                  title={m.role === 'system' ? 'Retry — send the message again' : 'Retry — regenerate this reply'}
                   onClick={() => onRetry(m.turnId!)}
                 >
                   <RotateCcw size={13} />
@@ -549,37 +551,41 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                   <Pencil size={13} />
                 </button>
               )}
-              <button
-                type="button"
-                className="message-action"
-                title="Fork into a new chat from here"
-                onClick={() => onFork(m.turnId!)}
-              >
-                <GitBranch size={13} />
-              </button>
-              <button
-                type="button"
-                className={`message-action${confirmDeleteId === m.id ? ' danger' : ''}`}
-                title={
-                  confirmDeleteId === m.id
-                    ? 'Click again to delete this turn and everything after it'
-                    : 'Delete from here'
-                }
-                onClick={() => {
-                  if (confirmDeleteId === m.id) {
-                    setConfirmDeleteId(null);
-                    onDelete(m.turnId!);
-                  } else {
-                    setConfirmDeleteId(m.id);
-                    window.setTimeout(
-                      () => setConfirmDeleteId((c) => (c === m.id ? null : c)),
-                      2500
-                    );
-                  }
-                }}
-              >
-                <Trash2 size={13} />
-              </button>
+              {m.role !== 'system' && (
+                <>
+                  <button
+                    type="button"
+                    className="message-action"
+                    title="Fork into a new chat from here"
+                    onClick={() => onFork(m.turnId!)}
+                  >
+                    <GitBranch size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className={`message-action${confirmDeleteId === m.id ? ' danger' : ''}`}
+                    title={
+                      confirmDeleteId === m.id
+                        ? 'Click again to delete this turn and everything after it'
+                        : 'Delete from here'
+                    }
+                    onClick={() => {
+                      if (confirmDeleteId === m.id) {
+                        setConfirmDeleteId(null);
+                        onDelete(m.turnId!);
+                      } else {
+                        setConfirmDeleteId(m.id);
+                        window.setTimeout(
+                          () => setConfirmDeleteId((c) => (c === m.id ? null : c)),
+                          2500
+                        );
+                      }
+                    }}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>

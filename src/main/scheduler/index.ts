@@ -194,10 +194,17 @@ export class TaskScheduler {
     if (hasCron && hasAt) return { ok: false, error: 'Provide either a cron expression or a one-time datetime, not both.' };
     if (!hasCron && !hasAt) return { ok: false, error: 'Provide a cron expression (recurring) or an ISO datetime (one-time).' };
     if (hasCron) {
-      if (!isValidCron(req.cron!.trim())) {
+      const expr = req.cron!.trim();
+      if (!isValidCron(expr)) {
         return { ok: false, error: `Invalid cron expression "${req.cron}". Use 5 fields: minute hour day-of-month month day-of-week.` };
       }
-      return { ok: true, value: { kind: 'cron', expr: req.cron!.trim() } };
+      // Syntax alone is not enough: combinations such as February 30 can never
+      // produce an occurrence. Reject them rather than persisting an enabled task
+      // with nextRunAt:null that silently never fires.
+      if (!nextAfter(expr, new Date())) {
+        return { ok: false, error: `Cron expression "${req.cron}" has no reachable future occurrence.` };
+      }
+      return { ok: true, value: { kind: 'cron', expr } };
     }
     const at = new Date(req.at!.trim());
     if (Number.isNaN(at.getTime())) return { ok: false, error: `Invalid datetime "${req.at}". Use an ISO 8601 timestamp.` };
@@ -400,6 +407,13 @@ export class TaskScheduler {
         resolve(status);
       };
       const onEvent = (event: BackendEventEnvelope) => {
+        // Process exits are runtime-wide and intentionally carry no thread/turn
+        // identifiers. Handle them before the scoped match below or this branch
+        // is unreachable and the scheduler queue stays wedged until the 15m cap.
+        if (event.method === 'process/exit') {
+          finish('failed');
+          return;
+        }
         const p = event.params as { threadId?: string; turn?: { id?: string } } | undefined;
         // Turns serialize, so threadId alone is sufficient, but match the turn id
         // when present for precision.
@@ -407,9 +421,14 @@ export class TaskScheduler {
         if (!matches) return;
         if (event.method === 'turn/completed') finish('ok');
         else if (event.method === 'turn/failed' || event.method === 'turn/aborted') finish('failed');
-        else if (event.method === 'process/exit') finish('failed');
       };
-      const timeout = setTimeout(() => finish('failed'), RUN_TIMEOUT_MS);
+      const timeout = setTimeout(() => {
+        // Mark the run failed promptly, but also abort its backend turn so a hung
+        // agent does not keep the foreground gate occupied behind the scheduler's
+        // now-advanced queue.
+        if (this.opts.interrupt) void this.opts.interrupt(turnId).catch(() => undefined);
+        finish('failed');
+      }, RUN_TIMEOUT_MS);
       this.opts.runtime.on('event', onEvent);
     });
   }

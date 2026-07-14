@@ -92,6 +92,12 @@ export interface ChatMessage {
   content: string;
   /** User messages only: attachments shown as thumbnails/chips in the bubble. */
   attachments?: MessageAttachment[];
+  /**
+   * User messages only: the original sendable attachment inputs. Kept separately
+   * from the display-only `attachments` shape so Retry/Edit can faithfully rerun
+   * a live turn (paths for picked files, base64 for pasted images).
+   */
+  turnAttachments?: TurnAttachment[];
   /** Assistant messages only: which model/effort/speed produced the reply. */
   meta?: MessageMeta;
   /**
@@ -632,6 +638,11 @@ export interface InstructionsProposal {
   suggestedSurface?: 'main' | 'quickChat';
 }
 
+/** Main -> renderer: a pending approval was answered or expired. */
+export interface ApprovalResolvedPayload {
+  id: string;
+}
+
 /** `mcp/login/url` — the OAuth authorize URL, streamed mid-login as a fallback link. */
 export interface McpLoginUrlParams {
   name: string;
@@ -1135,10 +1146,23 @@ export interface QuickChatFocus {
   reset: boolean;
 }
 
+/** Main → overlay: capture an atomic state snapshot for an implicit handoff. */
+export interface QuickChatHandoffRequest {
+  id: string;
+  threadId: string;
+}
+
 /** Overlay → main: hand the live conversation off to the main window. */
 export interface QuickChatHandoff {
   threadId: string;
   messages: ChatMessage[];
+  /** Complete live state, transferred atomically when handing off mid-turn. */
+  running: boolean;
+  streamingId: string | null;
+  activity: string | null;
+  activities: ActivityItem[];
+  activeTurnId: string | null;
+  status: ThreadStatus;
   model: string | null;
   effort: string | null;
   serviceTier: string | null;
@@ -1156,6 +1180,8 @@ export interface QuickChatSessionStarted {
 // ---- Preload API surface exposed on window.stem ----
 
 export interface StemApi {
+  /** Signal that the main renderer has installed all push-event listeners. */
+  rendererReady(): void;
   runtimeStatus(): Promise<RuntimeStatus>;
   login(): Promise<RuntimeStatus>;
   /** Start an in-app OAuth sign-in for a provider (opens the system browser). */
@@ -1261,6 +1287,8 @@ export interface StemApi {
   restartRuntime(): Promise<RuntimeStatus>;
   /** Assistant proposed an MCP change; fired so the UI can show a confirm card. */
   onMcpAdminApproval(listener: (proposal: McpAdminProposal) => void): () => void;
+  /** Fired when an MCP approval is answered or expires, on every renderer surface. */
+  onMcpAdminApprovalResolved(listener: (payload: ApprovalResolvedPayload) => void): () => void;
   /** Approve/decline an assistant-proposed MCP change by its elicitation id. */
   respondMcpAdminApproval(id: number | string, accept: boolean): Promise<void>;
   /** Fired after an assistant-initiated MCP change is applied + hot-reloaded. */
@@ -1342,6 +1370,8 @@ export interface StemApi {
   updateCustomInstructions(patch: Partial<CustomInstructionsSettings>): Promise<AppSettings>;
   /** Assistant proposed a custom-instructions change; fired so the UI can show a card. */
   onInstructionsApproval(listener: (proposal: InstructionsProposal) => void): () => void;
+  /** Fired when an instructions approval is answered or expires. */
+  onInstructionsApprovalResolved(listener: (payload: ApprovalResolvedPayload) => void): () => void;
   /**
    * Apply/cancel an assistant-proposed custom-instructions change. On accept, main
    * writes `{ [surface]: text }` (the card's final full text) before releasing the tool.
@@ -1373,6 +1403,10 @@ export interface StemApi {
   newQuickChatThread(): Promise<void>;
   /** Overlay → main: hand the conversation off to the main window. */
   handoffQuickChat(payload: QuickChatHandoff): Promise<void>;
+  /** Overlay: main requests an atomic snapshot before changing event ownership. */
+  onQuickChatHandoffRequest(listener: (request: QuickChatHandoffRequest) => void): () => void;
+  /** Overlay → main: answer an atomic implicit-handoff snapshot request. */
+  respondQuickChatHandoffRequest(id: string, payload: QuickChatHandoff): void;
   /** Re-summon the overlay (same path as the global shortcut); used by the HUD. */
   revealQuickChat(): Promise<void>;
   /** Raise the main window; used by the follow-me HUD pill (reveal === 'main'). */

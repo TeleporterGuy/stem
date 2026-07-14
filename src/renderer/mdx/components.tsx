@@ -277,7 +277,10 @@ export function Chart({ type, title, data }: { type?: string; title?: string; da
   const min = Math.min(0, ...series.map((d) => d.value));
   const span = max - min || 1;
   const y = (v: number) => padT + ih - ((v - min) / span) * ih;
-  const baseline = y(min);
+  // The domain includes zero above, so every signed series has a true zero
+  // baseline. Using y(min) made the minimum negative bar disappear and made the
+  // remaining negative values look positive.
+  const baseline = y(0);
 
   // Line/area: points spread across the full width. Bars: centered in slots.
   const lineX = (i: number) => (n === 1 ? padL + iw / 2 : padL + (i / (n - 1)) * iw);

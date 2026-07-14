@@ -45,7 +45,10 @@ export function resolveProfileOverride(
   const requested = flagValue('profile') ?? env.STEM_PROFILE;
   if (requested && requested.trim()) {
     // Reduce to a safe basename: no path separators or traversal can escape the container.
-    const label = requested.trim().replace(/[^A-Za-z0-9._-]/g, '-');
+    const sanitized = requested.trim().replace(/[^A-Za-z0-9._-]/g, '-');
+    // `path.join(container, '..')` still traverses even though `..` contains no
+    // separator. Keep dot-only basenames literal by giving them a safe prefix.
+    const label = sanitized === '.' || sanitized === '..' ? `profile-${sanitized}` : sanitized;
     return { userDataDir: join(container, label), label };
   }
 
@@ -72,7 +75,7 @@ export function piSessionsDir(): string {
 
 /** The pi-mcp-adapter config (mcp.json) under the pi home; the config.toml analog. */
 export function piMcpConfigPath(): string {
-  return join(piHome(), 'mcp.json');
+  return process.env.STEM_PI_MCP_CONFIG ?? join(piHome(), 'mcp.json');
 }
 
 /**

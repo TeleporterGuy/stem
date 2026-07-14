@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path';
 import { skillsRoot } from '../workspace/paths';
 import { isRecallEnabled } from '../workspace/memory';
-import { getMessagesForDistill, getMeta, setMeta } from '../recall/store';
+import { getMessagesForDistillFrom, getMeta, setMeta, type StoredMessage } from '../recall/store';
 import { composeSkillMd, parseFront } from './curate';
 import type { LlmClient } from '../recall/llm';
 
@@ -22,8 +22,10 @@ import type { LlmClient } from '../recall/llm';
 // keeps that class of regression out.
 
 const WATERMARK = 'skill_distill_watermark';
+const CURSOR_KEY = 'skill_distill_cursor_v2';
 const MAX_MESSAGES_PER_RUN = 200;
 const MAX_TRANSCRIPT_CHARS = 24_000;
+const TRANSCRIPT_OVERLAP_CHARS = 256;
 // Skip the model call (and leave the watermark, accumulating) until the new
 // batch has enough substance to plausibly contain a worked-out procedure.
 const MIN_BATCH_CHARS = 2_000;
@@ -32,6 +34,53 @@ const MAX_SKILLS_PER_RUN = 2;
 // Mirrors SKILL_MAX_BYTES in stem-mcp-extension.mjs (manage_skill's create cap).
 const MAX_SKILL_BYTES = 15_000;
 const VALID_SLUG = /^[a-z0-9][a-z0-9-]*$/;
+
+interface SkillDistillCursor { messageId: number; offset: number }
+
+function readCursor(): SkillDistillCursor {
+  const raw = getMeta(CURSOR_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<SkillDistillCursor>;
+      if (Number.isInteger(parsed.messageId) && Number.isInteger(parsed.offset)) {
+        return { messageId: Math.max(1, parsed.messageId!), offset: Math.max(0, parsed.offset!) };
+      }
+    } catch {
+      // Fall through to the legacy whole-message watermark.
+    }
+  }
+  const watermark = Number.parseInt(getMeta(WATERMARK) ?? '0', 10) || 0;
+  return { messageId: watermark + 1, offset: 0 };
+}
+
+function buildTranscript(cursor: SkillDistillCursor): {
+  transcript: string;
+  messages: StoredMessage[];
+  nextCursor: SkillDistillCursor;
+} | null {
+  const source = getMessagesForDistillFrom(cursor.messageId, MAX_MESSAGES_PER_RUN);
+  if (source.length === 0) return null;
+  let transcript = '';
+  const messages: StoredMessage[] = [];
+  let nextCursor = cursor;
+  for (const message of source) {
+    const offset = message.id === cursor.messageId ? Math.min(cursor.offset, message.text.length) : 0;
+    const prefix = `${message.role === 'user' ? 'User' : 'Assistant'}: `;
+    const room = MAX_TRANSCRIPT_CHARS - transcript.length - prefix.length - 1;
+    if (room <= TRANSCRIPT_OVERLAP_CHARS && transcript) break;
+    const take = Math.max(1, Math.min(message.text.length - offset, room));
+    const end = offset + take;
+    transcript += `${transcript ? '\n' : ''}${prefix}${message.text.slice(offset, end)}`;
+    messages.push(message);
+    if (end < message.text.length) {
+      nextCursor = { messageId: message.id, offset: Math.max(offset + 1, end - TRANSCRIPT_OVERLAP_CHARS) };
+      break;
+    }
+    nextCursor = { messageId: message.id + 1, offset: 0 };
+    if (transcript.length >= MAX_TRANSCRIPT_CHARS) break;
+  }
+  return transcript ? { transcript, messages, nextCursor } : null;
+}
 
 const INSTRUCTIONS = `You review a transcript of chats between a user and their assistant, looking for reusable SKILLS the assistant should keep: multi-step procedures the ASSISTANT itself carried out and would plausibly repeat in future conversations.
 
@@ -151,17 +200,18 @@ function writeSkill(c: SkillCandidate): boolean {
  */
 export async function distillSkillsFromMessages(llm: LlmClient, opts: { force?: boolean } = {}): Promise<number> {
   if (!isRecallEnabled()) return 0;
-  const sinceId = Number.parseInt(getMeta(WATERMARK) ?? '0', 10) || 0;
-  const messages = getMessagesForDistill(sinceId, MAX_MESSAGES_PER_RUN);
-  if (messages.length === 0) return 0;
+  const cursor = readCursor();
+  const batch = buildTranscript(cursor);
+  if (!batch) return 0;
+  const { messages, transcript } = batch;
 
-  const totalChars = messages.reduce((n, m) => n + m.text.length, 0);
-  if (!opts.force && totalChars < MIN_BATCH_CHARS && messages.length < MAX_MESSAGES_PER_RUN) return 0;
-
-  const transcript = messages
-    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
-    .join('\n')
-    .slice(0, MAX_TRANSCRIPT_CHARS);
+  const totalChars = transcript.length;
+  // A tail is continuation of an already-substantive message, not a new tiny
+  // batch. Always finish it so the final characters cannot wait forever for a
+  // future chat to push them through the noise gate.
+  if (!opts.force && cursor.offset === 0 && totalChars < MIN_BATCH_CHARS && messages.length < MAX_MESSAGES_PER_RUN) {
+    return 0;
+  }
 
   const existing = listAllSkills();
   const existingBlock = existing.length
@@ -181,9 +231,9 @@ export async function distillSkillsFromMessages(llm: LlmClient, opts: { force?: 
   let written = 0;
   for (const c of candidates) if (writeSkill(c)) written += 1;
 
-  // Advance past everything considered (even if nothing was skill-worthy).
-  const maxId = messages.reduce((max, m) => Math.max(max, m.id), sinceId);
-  setMeta(WATERMARK, String(maxId));
+  // Advance through exactly the characters present in the successful prompt.
+  setMeta(CURSOR_KEY, JSON.stringify(batch.nextCursor));
+  setMeta(WATERMARK, String(Math.max(0, batch.nextCursor.messageId - 1)));
   return written;
 }
 
@@ -198,9 +248,9 @@ export async function distillSkillsFromMessages(llm: LlmClient, opts: { force?: 
 export async function drainSkillDistill(llm: LlmClient): Promise<number> {
   let total = 0;
   for (let i = 0; i < 10; i++) {
-    const before = getMeta(WATERMARK) ?? '0';
+    const before = getMeta(CURSOR_KEY) ?? getMeta(WATERMARK) ?? '0';
     total += await distillSkillsFromMessages(llm, { force: true });
-    if ((getMeta(WATERMARK) ?? '0') === before) break;
+    if ((getMeta(CURSOR_KEY) ?? getMeta(WATERMARK) ?? '0') === before) break;
   }
   return total;
 }

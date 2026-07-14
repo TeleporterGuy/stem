@@ -1,6 +1,7 @@
 import {
   createFactConflict,
   getFactDetails,
+  getFactsGeneration,
   getInjectableFacts,
   supersedeFact
 } from './store';
@@ -71,6 +72,7 @@ export async function reconcileExplicitFact(factId: number, llm: LlmClient): Pro
 }
 
 async function reconcile(factId: number, llm: LlmClient): Promise<void> {
+  const factsGeneration = getFactsGeneration();
   const fresh = getFactDetails(factId);
   if (!fresh || fresh.source !== 'explicit') return;
   const candidates = getInjectableFacts()
@@ -94,6 +96,7 @@ Return ONLY JSON {"supersedeIds":[],"conflictIds":[]}.
   let parsed: ReconcileReply;
   try {
     const raw = await llm.complete(prompt);
+    if (getFactsGeneration() !== factsGeneration) return;
     const start = raw.indexOf('{');
     const end = raw.lastIndexOf('}');
     if (start === -1 || end <= start) return;
@@ -101,7 +104,20 @@ Return ONLY JSON {"supersedeIds":[],"conflictIds":[]}.
   } catch {
     return;
   }
-  const valid = new Set(candidates.map((f) => f.id));
+  // Reset is a hard cancellation barrier and fact ids can be reused afterward.
+  // Re-check both the epoch and the authority of the initiating fact immediately
+  // before applying any model-proposed relationship.
+  if (getFactsGeneration() !== factsGeneration) return;
+  const currentFresh = getFactDetails(factId);
+  if (!currentFresh || currentFresh.status !== 'active' || currentFresh.source !== 'explicit') return;
+  const valid = new Set(
+    candidates
+      .filter((candidate) => {
+        const current = getFactDetails(candidate.id);
+        return current?.status === 'active' && current.text === candidate.text;
+      })
+      .map((candidate) => candidate.id)
+  );
   for (const id of ids(parsed.supersedeIds)) {
     if (valid.has(id)) supersedeFact(id, factId);
   }

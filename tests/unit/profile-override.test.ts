@@ -47,6 +47,13 @@ describe('resolveProfileOverride', () => {
     expect(r?.userDataDir.startsWith(CONTAINER)).toBe(true);
   });
 
+  it('keeps dot-only profile names inside the profile container', () => {
+    const parent = resolveProfileOverride(['node', 'app', '--profile=..'], NO_ENV, APPDATA, CLOCK);
+    const current = resolveProfileOverride(['node', 'app', '--profile=.'], NO_ENV, APPDATA, CLOCK);
+    expect(parent).toEqual({ label: 'profile-..', userDataDir: join(CONTAINER, 'profile-..') });
+    expect(current).toEqual({ label: 'profile-.', userDataDir: join(CONTAINER, 'profile-.') });
+  });
+
   it('fresh wins over a named profile (precedence)', () => {
     const r = resolveProfileOverride(
       ['node', 'app', '--fresh', '--profile=demo'],

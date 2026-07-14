@@ -1,9 +1,19 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import {
+  accessSync,
+  constants as fsConstants,
+  lstatSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  watch,
+  type FSWatcher
+} from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, parse, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type {
   ActivityItem,
   BackendEventEnvelope,
@@ -20,7 +30,12 @@ import type {
   StartTurnInput,
   StartTurnResult
 } from '../../shared/types';
-import { providerName } from '../../shared/providers';
+import {
+  API_KEY_PROVIDER_IDS,
+  AUTH_PROVIDER_IDS,
+  LOCAL_PROVIDER_IDS,
+  providerName
+} from '../../shared/providers';
 import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
@@ -35,10 +50,13 @@ import type { ChatBackend, TaskBridge } from '../backend/types';
 import {
   buildMcpCatalogContext,
   ensureMcpConfig,
+  mcpServerAuthIdentity,
+  migrateLegacyOAuthTokens,
   piExtensionPath,
+  piMcpOAuthPath,
   piMcpStatusPath,
   readMcpConfig,
-  saveOAuthToken,
+  saveOAuthTokenIfServerMatches,
   writeNativeSearchGate,
   writeServiceTierGate
 } from './mcp-config';
@@ -149,18 +167,122 @@ function readToolPath(ev: PiEvent): string | null {
     if (!src) return null;
     for (const key of TOOL_PATH_KEYS) {
       const v = src[key];
-      if (typeof v === 'string' && v.trim()) return v.trim();
+      if (typeof v === 'string' && v.trim()) return v;
     }
     return null;
   };
   return probe(ev as unknown as Record<string, unknown>) ?? probe(nested);
 }
 
+/**
+ * Resolve a policy-checked path through symlinks. `realpathSync()` handles an
+ * existing target directly; for a not-yet-created write target, walk upward to
+ * the nearest existing ancestor, canonicalize that, then append the missing
+ * suffix. This keeps aliases from bypassing connected-folder policy while still
+ * allowing checks before a new file exists.
+ */
+function resolvePolicyInput(target: string, cwd: string): string {
+  // Match pi's resolveToCwd normalization before applying Stem's policy. Without
+  // this, pi would expand `~/…`, `file://…`, or a leading `@` to a protected path
+  // while the guard checked an unrelated literal path below the workspace.
+  let normalized = target.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
+  if (normalized.startsWith('@')) normalized = normalized.slice(1);
+  if (normalized === '~') normalized = homedir();
+  else if (normalized.startsWith('~/') || (process.platform === 'win32' && normalized.startsWith('~\\'))) {
+    normalized = join(homedir(), normalized.slice(2));
+  }
+  if (/^file:\/\//.test(normalized)) {
+    try {
+      normalized = fileURLToPath(normalized);
+    } catch {
+      // Let the ordinary path resolver handle a malformed URL. pi will reject it
+      // too, and the policy check remains deterministic rather than throwing.
+    }
+  }
+
+  return resolve(cwd, normalized);
+}
+
+function canonicalizePolicyAbsolutePath(absolutePath: string): string {
+  let candidate = absolutePath;
+  // realpath is the cheap/common path for an existing target.
+  try {
+    return realpathSync(candidate);
+  } catch {
+    // A write target may not exist yet. Walk each existing component with lstat
+    // so a *dangling* symlink is still followed (realpath alone cannot resolve a
+    // leaf link whose destination has not been created). Restart after every link
+    // to cover chains and relative targets; bound the walk like the OS does.
+  }
+
+  for (let symlinks = 0; symlinks < 40; symlinks++) {
+    const root = parse(candidate).root;
+    const parts = candidate.slice(root.length).split(sep).filter(Boolean);
+    let cursor = root;
+    let followed = false;
+    for (let i = 0; i < parts.length; i++) {
+      const next = join(cursor, parts[i]);
+      let stat;
+      try {
+        stat = lstatSync(next);
+      } catch {
+        return resolve(cursor, ...parts.slice(i));
+      }
+      if (stat.isSymbolicLink()) {
+        const destination = readlinkSync(next);
+        candidate = resolve(dirname(next), destination, ...parts.slice(i + 1));
+        followed = true;
+        break;
+      }
+      cursor = next;
+    }
+    if (!followed) return candidate;
+  }
+  // A symlink cycle cannot lead to a successful write/read. Return the last
+  // resolved candidate rather than throwing from an event-policy hook.
+  return candidate;
+}
+
+export function canonicalPolicyPath(target: string, cwd: string): string {
+  return canonicalizePolicyAbsolutePath(resolvePolicyInput(target, cwd));
+}
+
+function policyPathExists(path: string): boolean {
+  try {
+    accessSync(path, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Mirror pi's resolveReadPath fallback order after resolveToCwd. Pi tolerates
+ * common macOS filename spelling variants; policy must check the same concrete
+ * path or an alias spelled with a straight quote/NFC/ordinary space can resolve
+ * into a private root only after Stem has authorized the wrong missing path.
+ */
+function canonicalPolicyReadPath(target: string, cwd: string): string {
+  const resolved = resolvePolicyInput(target, cwd);
+  if (policyPathExists(resolved)) return canonicalizePolicyAbsolutePath(resolved);
+  const narrowSpace = '\u202F';
+  const amPm = resolved.replace(/ (AM|PM)\./gi, `${narrowSpace}$1.`);
+  const nfd = resolved.normalize('NFD');
+  const curly = resolved.replace(/'/g, '\u2019');
+  const nfdCurly = nfd.replace(/'/g, '\u2019');
+  for (const candidate of [amPm, nfd, curly, nfdCurly]) {
+    if (candidate !== resolved && policyPathExists(candidate)) {
+      return canonicalizePolicyAbsolutePath(candidate);
+    }
+  }
+  return canonicalizePolicyAbsolutePath(resolved);
+}
+
 /** True when `target` (resolved against cwd if relative) is at/inside any of `roots`. */
-function pathInsideAny(target: string, roots: string[], cwd: string): boolean {
-  const abs = resolve(cwd, target);
+export function pathInsideAny(target: string, roots: string[], cwd: string): boolean {
+  const abs = canonicalPolicyReadPath(target, cwd);
   return roots.some((root) => {
-    const r = resolve(root);
+    const r = canonicalPolicyPath(root, cwd);
     return abs === r || abs.startsWith(r + sep);
   });
 }
@@ -237,6 +359,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private starting: Promise<void> | null = null;
   private foreground = new ForegroundSessionGate();
   private activeThreadId: string | null = null;
+  private mcpStatusWatcher: FSWatcher | null = null;
+  private mcpStatusDebounce: NodeJS.Timeout | null = null;
   /**
    * The model of the CURRENTLY active pi session, mirrored so `applyModel` can skip a
    * redundant `set_model` within one session. pi resolves the model per session — a new
@@ -278,8 +402,15 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private currentTurn: TurnContext | null = null;
   /** Pending stem-admin approvals, keyed by the bridge's extension_ui_request id. */
   private adminApprovals = new Set<string>();
+  /** Immutable proposal snapshot paired with each pending admin approval. */
+  private adminApprovalProposals = new Map<
+    string,
+    { proposal: McpAdminProposal; process: PiProcess | null }
+  >();
   /** Pending custom-instructions approvals, keyed by the bridge's extension_ui_request id. */
   private instructionsApprovals = new Set<string>();
+  /** Originating process for each held instructions request. */
+  private instructionsApprovalProcesses = new Map<string, PiProcess | null>();
   /** Wired by main to route the assistant's schedule_task/notify_user tools. */
   private taskBridge: TaskBridge | null = null;
   /** Set when an admin add/remove was approved; reloads MCP servers at turn end. */
@@ -308,7 +439,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
     await this.ensurePiHome();
     const providers = [...(await this.authProviders())];
-    const authed = await this.fileExists(join(this.options.piHome, 'auth.json'));
+    const authed = providers.length > 0;
     if (!authed) {
       return {
         ...base,
@@ -447,9 +578,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     });
   }
 
-  async interruptTurn(_turnId: string): Promise<void> {
-    if (!this.proc) return;
-    if (this.currentTurn) this.currentTurn.aborted = true;
+  async interruptTurn(turnId: string): Promise<void> {
+    // Ignore stale cancellation requests. In particular, the scheduler's timeout
+    // cleanup must never abort a newer interactive turn if its original turn has
+    // already settled without the scheduler observing the terminal event.
+    if (!this.proc || !this.currentTurn || this.currentTurn.turnId !== turnId) return;
+    this.currentTurn.aborted = true;
     this.proc.send({ type: 'abort' });
   }
 
@@ -701,7 +835,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     await this.foreground.run(async () => {
       await this.ensureStarted();
       await this.ensureActive(threadId);
-      await this.proc!.request({ type: 'set_session_name', name });
+      const renamed = await this.proc!.request({ type: 'set_session_name', name });
+      if (!renamed.success) throw new Error(renamed.error ?? `pi could not rename chat "${threadId}".`);
     });
   }
 
@@ -716,8 +851,14 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     await this.foreground.run(async () => {
       const file = await this.resolveSessionFile(threadId);
       if (this.activeThreadId === threadId) {
+        if (this.proc) {
+          const parked = await this.proc.request({ type: 'new_session' });
+          if (!parked.success) throw new Error(parked.error ?? 'pi could not leave the chat before deleting it.');
+          // A successful new_session resets all active-session mirrors.
+          this.currentModel = null;
+          this.currentThinking = null;
+        }
         this.activeThreadId = null;
-        if (this.proc) await this.proc.request({ type: 'new_session' }).catch(() => undefined);
       }
       this.sessionFiles.delete(threadId);
       this.unnamedThreads.delete(threadId);
@@ -743,9 +884,16 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const idx = lines.findIndex((l) => this.entryIdOf(l) === entryId);
       if (idx <= 0) throw new Error('Could not locate that message to edit. Reopen the chat and try again.');
       // Park the foreground off this file so the reload reads our truncated copy.
-      await this.proc!.request({ type: 'new_session' }).catch(() => undefined);
+      const parked = await this.proc!.request({ type: 'new_session' });
+      if (!parked.success) throw new Error(parked.error ?? 'pi could not park the active chat for editing.');
+      // The backend is now on a fresh parking session. Clear mirrors immediately;
+      // if truncation/reload fails, never claim that it is still on either chat.
+      this.currentModel = null;
+      this.currentThinking = null;
+      this.activeThreadId = null;
       await writeFile(file, lines.slice(0, idx).join('\n') + '\n');
-      await this.proc!.request({ type: 'switch_session', sessionPath: file });
+      const switched = await this.proc!.request({ type: 'switch_session', sessionPath: file });
+      if (!switched.success) throw new Error(switched.error ?? `pi could not reload chat "${threadId}" after editing.`);
       // Both RPCs above swap the active session's model/thinking out from under us.
       this.currentModel = null;
       this.currentThinking = null;
@@ -802,6 +950,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const server = config.servers[name];
       if (!server) return { ok: false, error: `No MCP server named "${name}".` };
       if (!server.url) return { ok: false, error: 'Only remote (http) servers use OAuth sign-in.' };
+      const authIdentity = mcpServerAuthIdentity(server)!;
       const token = await authorizeMcp(server.url, {
         onAuthUrl: (url) => this.emitEvent('mcp/login/url', { name, url }),
         // Static confidential-client credentials, when the server was configured
@@ -810,10 +959,39 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         clientSecret: server.oauthClientSecret,
         scope: server.oauthScope
       });
-      await saveOAuthToken(name, token);
+      // The browser flow can take minutes. Check and persist under the same
+      // cross-process state lock used by server replacement/removal, so a login
+      // can neither land on a new identity nor be deleted by a stale snapshot.
+      if (!(await saveOAuthTokenIfServerMatches(name, authIdentity, token))) {
+        return { ok: false, error: `MCP server "${name}" changed during sign-in. Start sign-in again.` };
+      }
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /**
+   * Push live MCP connection status to the renderer (`mcp/status`). The bridge
+   * connects routed servers in the BACKGROUND (pi readiness no longer waits for
+   * them) and rewrites mcp-status.json as each settles, so an open Manage panel
+   * must hear about starting→ready/failed transitions landing after startup.
+   */
+  private ensureMcpStatusWatcher(): void {
+    if (this.mcpStatusWatcher) return;
+    try {
+      // Watch the directory, not the file: the bridge may recreate the file, and a
+      // directory watch survives inode replacement.
+      this.mcpStatusWatcher = watch(this.options.piHome, (_event, filename) => {
+        if (filename !== 'mcp-status.json') return;
+        if (this.mcpStatusDebounce) clearTimeout(this.mcpStatusDebounce);
+        this.mcpStatusDebounce = setTimeout(() => {
+          this.mcpStatusDebounce = null;
+          this.emitEvent('mcp/status', this.getMcpStatus());
+        }, 50);
+      });
+    } catch {
+      // best-effort: the panel still fetches on open
     }
   }
 
@@ -834,13 +1012,38 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
   }
 
-  resolveAdminApproval(id: number | string, accept: boolean): void {
+  async resolveAdminApproval(
+    id: number | string,
+    accept: boolean,
+    beforeAccept?: (proposal: McpAdminProposal) => Promise<void>
+  ): Promise<boolean> {
     const key = String(id);
-    if (!this.adminApprovals.has(key)) return;
-    this.adminApprovals.delete(key);
-    this.proc?.send({ type: 'extension_ui_response', id: key, confirmed: accept });
-    // The bridge writes mcp.json on approval; reload at turn end to connect it.
-    if (accept) this.pendingMcpReload = true;
+    const pending = this.adminApprovalProposals.get(key);
+    // Claim the id before awaiting the config write. This keeps an expired or
+    // double-clicked card from mutating config, and makes the timeout harmless
+    // while the accepted write is in flight.
+    if (!pending || !this.adminApprovals.delete(key)) return false;
+    this.adminApprovalProposals.delete(key);
+    try {
+      if (accept && beforeAccept) await beforeAccept(pending.proposal);
+      pending.process?.send({ type: 'extension_ui_response', id: key, confirmed: accept });
+      if (accept) {
+        this.pendingMcpReload = true;
+        // A concurrent process exit/restart can settle the originating turn while
+        // main writes config. If idle now, reload immediately; otherwise the
+        // current turn's normal finish barrier will apply it safely.
+        if (!this.currentTurn) {
+          this.pendingMcpReload = false;
+          void this.configMcpServerReload().catch(() => undefined);
+        }
+      }
+      this.emitEvent('mcp/admin/approvalResolved', { id: key });
+      return true;
+    } catch (error) {
+      pending.process?.send({ type: 'extension_ui_response', id: key, confirmed: false });
+      this.emitEvent('mcp/admin/approvalResolved', { id: key });
+      throw error;
+    }
   }
 
   /**
@@ -848,11 +1051,47 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * already written settings.json (the IPC handler does it before calling this), so
    * there's nothing to reload — the next turn reads the instructions fresh.
    */
-  resolveInstructionsApproval(id: number | string, accept: boolean): void {
+  async resolveInstructionsApproval(
+    id: number | string,
+    accept: boolean,
+    beforeAccept?: () => Promise<void>
+  ): Promise<boolean> {
     const key = String(id);
-    if (!this.instructionsApprovals.has(key)) return;
-    this.instructionsApprovals.delete(key);
-    this.proc?.send({ type: 'extension_ui_response', id: key, confirmed: accept });
+    const requestProcess = this.instructionsApprovalProcesses.get(key);
+    // Claim the id before awaiting the settings write. This is the final
+    // authorization boundary: a proposal that already expired cannot mutate
+    // settings, and its timeout cannot race the accepted write.
+    if (!this.instructionsApprovals.delete(key)) return false;
+    this.instructionsApprovalProcesses.delete(key);
+    try {
+      if (accept && beforeAccept) await beforeAccept();
+      requestProcess?.send({ type: 'extension_ui_response', id: key, confirmed: accept });
+      this.emitEvent('instructions/approvalResolved', { id: key });
+      return true;
+    } catch (error) {
+      requestProcess?.send({ type: 'extension_ui_response', id: key, confirmed: false });
+      this.emitEvent('instructions/approvalResolved', { id: key });
+      throw error;
+    }
+  }
+
+  private settleAdminApproval(id: string): boolean {
+    if (!this.adminApprovals.delete(id)) return false;
+    this.adminApprovalProposals.delete(id);
+    this.emitEvent('mcp/admin/approvalResolved', { id });
+    return true;
+  }
+
+  private settleInstructionsApproval(id: string): boolean {
+    if (!this.instructionsApprovals.delete(id)) return false;
+    this.instructionsApprovalProcesses.delete(id);
+    this.emitEvent('instructions/approvalResolved', { id });
+    return true;
+  }
+
+  private settleAllApprovals(): void {
+    for (const id of [...this.adminApprovals]) this.settleAdminApproval(id);
+    for (const id of [...this.instructionsApprovals]) this.settleInstructionsApproval(id);
   }
 
   async configMcpServerReload(): Promise<void> {
@@ -947,6 +1186,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     const pi = await resolvePi();
     if (!pi) throw new Error('The pi backend could not be located.');
     await this.ensurePiHome();
+    this.ensureMcpStatusWatcher();
     // Refresh the local-provider catalog (models.json) before the spawn: pi's RPC
     // mode reads the file once at startup and never again.
     this.lastLocalSyncAt = Date.now();
@@ -992,6 +1232,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       this.proc = null;
       this.activeThreadId = null;
       this.currentTurn = null;
+      this.settleAllApprovals();
       this.foreground.finishTurn();
       this.emitEvent('process/exit', info);
     });
@@ -1307,11 +1548,26 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       input: proposal.input,
       name: proposal.name
     };
-    this.emitEvent('mcp/admin/approvalRequest', card);
+    // Keep the full mutation (including credentials) only in main-memory for the
+    // accepted writer. Renderer approval cards need presence/keys, never values.
+    const requestProcess = this.proc;
+    this.adminApprovalProposals.set(id, { proposal: card, process: requestProcess });
+    const displayInput = card.input
+      ? {
+          ...card.input,
+          ...(card.input.oauthClientSecret ? { oauthClientSecret: '********' } : {}),
+          ...(card.input.headers
+            ? { headers: Object.fromEntries(Object.keys(card.input.headers).map((key) => [key, '********'])) }
+            : {}),
+          ...(card.input.env
+            ? { env: Object.fromEntries(Object.keys(card.input.env).map((key) => [key, '********'])) }
+            : {})
+        }
+      : undefined;
+    this.emitEvent('mcp/admin/approvalRequest', { ...card, input: displayInput });
     setTimeout(() => {
-      if (this.adminApprovals.has(id)) {
-        this.adminApprovals.delete(id);
-        this.proc?.send({ type: 'extension_ui_response', id, confirmed: false });
+      if (this.settleAdminApproval(id)) {
+        requestProcess?.send({ type: 'extension_ui_response', id, confirmed: false });
       }
     }, 120_000);
   }
@@ -1335,6 +1591,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       return;
     }
     this.instructionsApprovals.add(id);
+    const requestProcess = this.proc;
+    this.instructionsApprovalProcesses.set(id, requestProcess);
     const card: InstructionsProposal = {
       id,
       threadId: this.currentTurn?.threadId ?? '',
@@ -1344,21 +1602,23 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     };
     this.emitEvent('instructions/approvalRequest', card);
     setTimeout(() => {
-      if (this.instructionsApprovals.has(id)) {
-        this.instructionsApprovals.delete(id);
-        this.proc?.send({ type: 'extension_ui_response', id, confirmed: false });
+      if (this.settleInstructionsApproval(id)) {
+        requestProcess?.send({ type: 'extension_ui_response', id, confirmed: false });
       }
     }, 120_000);
   }
 
   /** Start a fresh session on the foreground process; returns its sessionId. */
   private async newSession(): Promise<string> {
-    await this.proc!.request({ type: 'new_session' });
+    const created = await this.proc!.request({ type: 'new_session' });
+    if (!created.success) throw new Error(created.error ?? 'pi could not start a new chat.');
     // A fresh pi session resets the active model to the spawn default — invalidate the
     // mirrors so the next applyModel/setThinking re-issue their RPCs.
     this.currentModel = null;
     this.currentThinking = null;
+    this.activeThreadId = null;
     const state = await this.proc!.request({ type: 'get_state' });
+    if (!state.success) throw new Error(state.error ?? 'pi could not read the new chat state.');
     const id = this.recordState(state.data);
     if (!id) throw new Error('pi did not return a session id.');
     this.activeThreadId = id;
@@ -1375,7 +1635,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const id = await this.newSession();
       return id;
     }
-    await this.proc!.request({ type: 'switch_session', sessionPath: file });
+    const switched = await this.proc!.request({ type: 'switch_session', sessionPath: file });
+    if (!switched.success) throw new Error(switched.error ?? `pi could not switch to chat "${threadId}".`);
     // The loaded session restores its OWN persisted model/thinking — invalidate the mirrors.
     this.currentModel = null;
     this.currentThinking = null;
@@ -1387,7 +1648,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     if (model === this.currentModel) return;
     const { provider, modelId } = this.parseModel(model);
     const res = await this.proc!.request({ type: 'set_model', provider, modelId });
-    if (res.success) this.currentModel = model;
+    if (!res.success) throw new Error(res.error ?? `pi could not select model "${model}".`);
+    this.currentModel = model;
   }
 
   private async setThinking(effort: string): Promise<void> {
@@ -1686,8 +1948,40 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private async authProviders(): Promise<Set<string>> {
     try {
       const raw = await readFile(join(this.options.piHome, 'auth.json'), 'utf8');
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      return new Set(Object.keys(parsed));
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return new Set();
+      const providers = new Set<string>();
+      const apiKeyProviders = new Set<string>([...API_KEY_PROVIDER_IDS, ...LOCAL_PROVIDER_IDS]);
+      const oauthProviders = new Set<string>(AUTH_PROVIDER_IDS);
+      for (const [provider, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const credential = value as {
+          type?: unknown;
+          key?: unknown;
+          access?: unknown;
+          refresh?: unknown;
+          expires?: unknown;
+        };
+        const hasApiKey =
+          apiKeyProviders.has(provider) &&
+          credential.type === 'api_key' &&
+          typeof credential.key === 'string' &&
+          credential.key.trim().length > 0;
+        const accessUsable = typeof credential.access === 'string' && credential.access.trim().length > 0;
+        const refreshUsable = typeof credential.refresh === 'string' && credential.refresh.trim().length > 0;
+        const expiry = typeof credential.expires === 'number' && Number.isFinite(credential.expires)
+          ? credential.expires
+          : null;
+        const hasOAuth =
+          oauthProviders.has(provider) &&
+          credential.type === 'oauth' &&
+          accessUsable &&
+          typeof credential.refresh === 'string' &&
+          expiry !== null &&
+          (expiry > Date.now() || refreshUsable);
+        if (hasApiKey || hasOAuth) providers.add(provider);
+      }
+      return providers;
     } catch {
       return new Set();
     }
@@ -1709,6 +2003,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
     // Ensure mcp.json (with the reserved stem-recall entry) for the bridge extension.
     await ensureMcpConfig().catch(() => undefined);
+    // Stamp pre-identity-migration OAuth tokens before the bridge reads them, or
+    // every previously-signed-in remote server connects unauthenticated (401).
+    await migrateLegacyOAuthTokens().catch(() => undefined);
     // Prefer pi's SSE transport over its default WebSocket-first "auto".
     await this.ensurePiTransportDefault().catch(() => undefined);
   }
@@ -1772,6 +2069,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     env.PI_SKIP_VERSION_CHECK = '1';
     // Tell the bridge extension where Stem's MCP config lives.
     env.STEM_MCP_CONFIG = piMcpConfigPath();
+    env.STEM_PI_MCP_OAUTH = piMcpOAuthPath();
     // Tell the bridge extension where the assistant's self-authored skills live.
     env.STEM_SKILLS_DIR = skillsRoot();
     return env;

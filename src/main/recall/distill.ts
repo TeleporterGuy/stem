@@ -4,6 +4,7 @@ import {
   getFactDetails,
   getFactsByIds,
   getFactVectors,
+  getFactsGeneration,
   getMessagesForDistillFrom,
   getMeta,
   getTidyThreshold,
@@ -378,6 +379,13 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   if (!isRecallEnabled()) return 0;
   const batch = buildDistillBatch(readDistillCursor());
   if (!batch) return 0;
+  const factsGeneration = getFactsGeneration();
+
+  const advanceWithoutWriting = () => {
+    setMeta(CURSOR_KEY, JSON.stringify(batch.nextCursor));
+    setMeta(WATERMARK, String(Math.max(0, batch.nextCursor.messageId - 1)));
+    return 0;
+  };
 
   // Show the model what it already knows so it returns only new/corrected facts
   // (curbs reworded duplicates the norm-based dedup can't catch).
@@ -402,6 +410,9 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
     // (grading rides along: ungraded rows stay ungraded).
     return 0;
   }
+  // The user may have cleared facts while the model call was in flight. Treat
+  // the reviewed transcript as consumed, but never resurrect its facts.
+  if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
   applyUsageGrades(usageTurns, usageGrades);
 
   const byId = new Map(batch.messages.map((m) => [m.id, m]));
@@ -422,10 +433,12 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   // the dirty counter past the tidy threshold so consolidation adjudicates on
   // the very next debounce instead of waiting for more facts to pile up.
   const scored = await scoreCandidatesAgainstFacts(claims.map((c) => c.text));
+  if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
   const dupThreshold = getDupCosine();
   let dupSeen = false;
   let i = -1;
   for (const claim of claims) {
+    if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
     i += 1;
     const evidenceMessages = claim.evidenceMessageIds.map((id) => byId.get(id)).filter((m): m is StoredMessage => !!m);
     const directUser = evidenceMessages.some((m) => m.role === 'user');
@@ -458,6 +471,7 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
         // No authority to supersede — but the extractor's say-so isn't proof the two
         // facts disagree, so check before making the user adjudicate.
         else if (await contradicts(target.text, claim.text, llm)) {
+          if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
           createFactConflict(target.id, id, 'A newer memory may contradict this fact.');
         }
       }
@@ -468,6 +482,8 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
       }
     }
   }
+
+  if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
 
   // Mark new material for the consolidation pass to clean up later.
   if (claims.length > 0) {

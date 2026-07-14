@@ -2,10 +2,11 @@ import {
   applyConsolidation,
   getAllFacts,
   getConsolidateChunkSize,
+  getFactsGeneration,
   getFactsMissingVector,
   getFactVectors,
   setMeta,
-  upsertFactVector,
+  upsertFactVectorForSnapshot,
   type ConsolidationOps,
   type ConsolidationResult,
   type Fact
@@ -119,12 +120,43 @@ export function parseConsolidation(output: string): ConsolidationOps {
  * MAX_DROP_FRACTION of the set. `total` is the current fact count; `protectedIds`
  * the set the model must never touch.
  */
-export function clampOps(ops: ConsolidationOps, protectedIds: Set<number>, total: number): ConsolidationOps {
-  const merge = ops.merge
-    .map((m) => ({ ...m, ids: m.ids.filter((id) => !protectedIds.has(id)) }))
-    .filter((m) => m.ids.length >= 2 && m.ids.length <= MAX_MERGE_GROUP);
-  const correct = ops.correct.filter((c) => !protectedIds.has(c.id));
-  const drop = ops.drop.filter((id) => !protectedIds.has(id));
+export function clampOps(
+  ops: ConsolidationOps,
+  protectedIds: Set<number>,
+  total: number,
+  allowedIds?: Set<number>
+): ConsolidationOps {
+  const allowed = (id: number) => !protectedIds.has(id) && (!allowedIds || allowedIds.has(id));
+  const claimed = new Set<number>();
+  const merge: ConsolidationOps['merge'] = [];
+  for (const candidate of ops.merge) {
+    const uniqueIds = new Set(candidate.ids);
+    // Validate the group as one operation. Filtering a protected, unknown,
+    // duplicated, or already-claimed id could turn a malformed proposal into a
+    // different valid-looking merge that the model never actually requested.
+    if (
+      candidate.ids.length < 2 ||
+      candidate.ids.length > MAX_MERGE_GROUP ||
+      uniqueIds.size !== candidate.ids.length ||
+      candidate.ids.some((id) => !allowed(id) || claimed.has(id))
+    ) continue;
+    merge.push(candidate);
+    for (const id of candidate.ids) claimed.add(id);
+  }
+
+  const correct: ConsolidationOps['correct'] = [];
+  for (const candidate of ops.correct) {
+    if (!allowed(candidate.id) || claimed.has(candidate.id)) continue;
+    correct.push(candidate);
+    claimed.add(candidate.id);
+  }
+
+  const drop: number[] = [];
+  for (const id of ops.drop) {
+    if (!allowed(id) || claimed.has(id)) continue;
+    drop.push(id);
+    claimed.add(id);
+  }
 
   if (total > 0 && drop.length / total > MAX_DROP_FRACTION) return { ...EMPTY_OPS };
 
@@ -147,6 +179,26 @@ export function buildPrompt(facts: Fact[]): string {
 }
 
 const ZERO: ConsolidationResult = { merged: 0, corrected: 0, dropped: 0, failedChunks: 0 };
+
+// Manual tidy-up and the post-distill automatic pass can be requested at the
+// same time. Serialize their model snapshots through final apply so one pass can
+// never partially reinterpret a merge after the other retires a member.
+let consolidationQueue: Promise<void> = Promise.resolve();
+
+export function consolidateFacts(
+  llm: LlmClient,
+  opts: { force?: boolean } = {}
+): Promise<ConsolidationResult> {
+  const run = consolidationQueue.then(
+    () => runConsolidation(llm, opts),
+    () => runConsolidation(llm, opts)
+  );
+  consolidationQueue = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
 
 /** Even-sized chunk target so a large set splits into balanced chunks (no tiny tail). */
 function chunkTarget(total: number, max: number): number {
@@ -190,19 +242,26 @@ function greedyClusters(facts: Fact[], vectors: Map<number, Float32Array>, size:
 }
 
 /** Split facts into bounded chunks: similarity clusters when embeddings are available. */
-async function chunkFacts(facts: Fact[]): Promise<Fact[][]> {
+async function chunkFacts(facts: Fact[], factsGeneration: number): Promise<Fact[][]> {
   const size = chunkTarget(facts.length, getConsolidateChunkSize());
   const emb = getEmbeddingsClient();
   if (!emb || !(await emb.available())) return sizeChunks(facts, size);
+  if (getFactsGeneration() !== factsGeneration) return [];
   try {
     const model = (await emb.modelId()) ?? '';
+    if (getFactsGeneration() !== factsGeneration) return [];
     const missing = getFactsMissingVector(model);
     if (missing.length > 0) {
       const vecs = await emb.embed(
         missing.map((f) => f.text),
         'passage'
       );
-      missing.forEach((f, i) => upsertFactVector(f.id, model, vecs[i]));
+      // A reset may reuse integer fact ids. Never attach vectors calculated for
+      // the pre-reset rows to newly-created rows that happen to reuse those ids.
+      if (getFactsGeneration() !== factsGeneration) return [];
+      missing.forEach((f, i) =>
+        upsertFactVectorForSnapshot(f.id, f.text, factsGeneration, model, vecs[i])
+      );
     }
     return greedyClusters(facts, getFactVectors(model), size);
   } catch {
@@ -216,37 +275,82 @@ async function chunkFacts(facts: Fact[]): Promise<Fact[][]> {
  * no-change result doesn't re-trigger immediately), but NOT when the model call
  * threw — those messages should be retried next cycle.
  */
-export async function consolidateFacts(
+async function runConsolidation(
   llm: LlmClient,
   opts: { force?: boolean } = {}
 ): Promise<ConsolidationResult> {
   if (!isRecallEnabled()) return ZERO;
+  const factsGeneration = getFactsGeneration();
   const facts = getAllFacts().filter((f) => f.status === 'active');
   // The automatic pass skips small sets (nothing worth a model call); a manual
   // trigger (`force`) still needs at least two facts to merge anything.
   if (facts.length < (opts.force ? 2 : MIN_FACTS)) return ZERO;
 
   // One prompt while small; cluster into bounded chunks once the set is large.
-  const chunks = facts.length <= getConsolidateChunkSize() ? [facts] : await chunkFacts(facts);
+  const chunks = facts.length <= getConsolidateChunkSize() ? [facts] : await chunkFacts(facts, factsGeneration);
+  if (getFactsGeneration() !== factsGeneration) return ZERO;
   const protectedIds = new Set(facts.filter(isProtected).map((f) => f.id));
 
-  const combined: ConsolidationOps = { merge: [], correct: [], drop: [] };
+  const reviewedChunks: Array<{
+    ops: ConsolidationOps;
+    allowedIds: Set<number>;
+    expectedText: Map<number, string>;
+    total: number;
+  }> = [];
   let failedChunks = 0;
   for (const chunk of chunks) {
     let chunkOps: ConsolidationOps;
     try {
       chunkOps = parseConsolidation(await llm.complete(buildPrompt(chunk)));
     } catch {
+      if (getFactsGeneration() !== factsGeneration) return ZERO;
       failedChunks += 1; // leave this chunk for a later cycle
       continue;
     }
+    // Reset is a cancellation barrier. In particular, integer ids may already
+    // belong to new post-reset facts by the time this model reply arrives.
+    if (getFactsGeneration() !== factsGeneration) return ZERO;
     // Clamp per chunk against its own size: bounds the model's blast radius to
     // MAX_DROP_FRACTION of each chunk, which bounds the aggregate to the same
     // fraction of the whole set — no brittle all-or-nothing global rejection.
-    const clamped = clampOps(chunkOps, protectedIds, chunk.length);
-    combined.merge.push(...clamped.merge);
-    combined.correct.push(...clamped.correct);
-    combined.drop.push(...clamped.drop);
+    // Treat the prompt's ids as a capability boundary. A model must never be
+    // able to name and mutate a fact it was not shown in this chunk.
+    const allowedIds = new Set(chunk.map((fact) => fact.id));
+    const clamped = clampOps(chunkOps, protectedIds, chunk.length, allowedIds);
+    reviewedChunks.push({
+      ops: clamped,
+      allowedIds,
+      expectedText: new Map(chunk.map((fact) => [fact.id, fact.text])),
+      total: chunk.length
+    });
+  }
+
+  if (getFactsGeneration() !== factsGeneration) return ZERO;
+
+  // Protection can change while the model is thinking (for example, the user
+  // confirms a learned fact). Re-clamp each reviewed chunk at the final apply
+  // boundary against the live protected set. Keeping each chunk's original
+  // allowed-id set preserves both the prompt capability boundary and its local
+  // blast-radius calculation.
+  const currentFacts = getAllFacts();
+  const currentProtectedIds = new Set(currentFacts.filter(isProtected).map((fact) => fact.id));
+  const currentActiveById = new Map(currentFacts.filter((fact) => fact.status === 'active').map((fact) => [fact.id, fact]));
+  const combined: ConsolidationOps = { merge: [], correct: [], drop: [] };
+  for (const reviewed of reviewedChunks) {
+    // IDs alone are insufficient: another mutation can retire or rewrite a row
+    // without resetting the whole fact store. Restrict the final capability set
+    // to members that are all still active and text-identical to the prompt.
+    // clampOps rejects a merge atomically when even one member falls outside it.
+    const finalAllowedIds = new Set(
+      [...reviewed.allowedIds].filter((id) => {
+        const current = currentActiveById.get(id);
+        return !!current && current.text === reviewed.expectedText.get(id);
+      })
+    );
+    const revalidated = clampOps(reviewed.ops, currentProtectedIds, reviewed.total, finalAllowedIds);
+    combined.merge.push(...revalidated.merge);
+    combined.correct.push(...revalidated.correct);
+    combined.drop.push(...revalidated.drop);
   }
 
   const result = applyConsolidation(combined);

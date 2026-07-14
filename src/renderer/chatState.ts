@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   ItemEventParams,
   MessageMeta,
+  QuickChatHandoff,
   ThreadStatus,
   TurnCompletedParams,
   TurnSourcesParams,
@@ -40,6 +41,84 @@ export const EMPTY_STATE: ThreadState = {
   activeTurnId: null,
   status: 'idle'
 };
+
+/** Merge a newly-sent draft into a real thread whose early backend events may
+ * already have produced assistant messages before startTurn returned its id. */
+export function mergeDraftIntoReal(draft: ThreadState, live: ThreadState | undefined): ThreadState {
+  if (!live) return draft;
+  const ids = new Set(draft.messages.map((m) => m.id));
+  const extra = live.messages.filter((m) => !ids.has(m.id));
+  return { ...live, messages: [...draft.messages, ...extra] };
+}
+
+/**
+ * Combine a disk snapshot with events that landed while that snapshot was being
+ * read. ThreadState updates are immutable, so identity against `stateAtRequest`
+ * tells us whether the live slice changed even when a whole turn started and
+ * settled before the read completed (`running` is false again by then).
+ */
+export function mergeHydratedThread(
+  historyMessages: ChatMessage[],
+  live: ThreadState | undefined,
+  stateAtRequest: ThreadState | undefined
+): ThreadState {
+  const hydrated: ThreadState = { ...EMPTY_STATE, messages: historyMessages };
+  if (!live || (live === stateAtRequest && !live.running)) return hydrated;
+
+  // Disk supplies older transcript entries; newer in-memory versions win for
+  // matching ids, and event-only messages are appended rather than discarded.
+  const messages = [...historyMessages];
+  const claimed = new Set<number>();
+  let appendedNewTurn = false;
+  for (const liveMessage of live.messages) {
+    if (liveMessage.role === 'user') appendedNewTurn = false;
+    let index = messages.findIndex((message, i) => !claimed.has(i) && message.id === liveMessage.id);
+    const trailingUnansweredUser =
+      liveMessage.role === 'assistant' &&
+      messages.length > 0 &&
+      messages[messages.length - 1].role === 'user' &&
+      !claimed.has(messages.length - 1);
+    if (
+      index === -1 &&
+      !(appendedNewTurn && liveMessage.role === 'assistant') &&
+      !trailingUnansweredUser
+    ) {
+      // Runtime events identify a live assistant bubble with the minted turn id,
+      // while the persisted JSONL identifies the same bubble with its session-entry
+      // id. Reconcile an equivalent raced suffix logically, preferring the newest
+      // candidate so repeated prompts/replies keep their proper occurrence.
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const candidate = messages[i];
+        if (
+          !claimed.has(i) &&
+          candidate.role === liveMessage.role &&
+          candidate.content === liveMessage.content &&
+          candidate.scheduled?.at === liveMessage.scheduled?.at
+        ) {
+          index = i;
+          break;
+        }
+      }
+    }
+    if (index === -1) {
+      messages.push(liveMessage);
+      claimed.add(messages.length - 1);
+      if (liveMessage.role === 'user') appendedNewTurn = true;
+    } else {
+      messages[index] = liveMessage;
+      claimed.add(index);
+      if (liveMessage.role === 'user') appendedNewTurn = false;
+    }
+  }
+
+  return {
+    ...hydrated,
+    ...live,
+    messages,
+    // Opening the thread consumes its unread completion indicator.
+    status: live.status === 'done' ? 'idle' : live.status
+  };
+}
 
 type TurnSettledMethod = 'turn/completed' | 'turn/failed' | 'turn/aborted';
 
@@ -84,6 +163,34 @@ function runningLabel(activities: ActivityItem[]): string | null {
   return activityLabel(running[0].type, running[0].name, running[0].detail);
 }
 
+/**
+ * Build the main-window slice for a Quick Chat handoff. Events are rerouted before
+ * the adopt push is handled, so an `existing` slice can contain newer deltas or a
+ * settle event; those live fields win while the overlay snapshot supplies all
+ * earlier user messages that main never received.
+ */
+export function mergeQuickChatHandoff(
+  existing: ThreadState | undefined,
+  payload: QuickChatHandoff
+): ThreadState {
+  const transferred: ThreadState = {
+    messages: payload.messages,
+    running: payload.running,
+    streamingId: payload.streamingId,
+    activity: payload.activity,
+    activities: payload.activities,
+    activeTurnId: payload.activeTurnId,
+    status: payload.status
+  };
+  if (!existing) return transferred;
+
+  const newer = new Map(existing.messages.map((m) => [m.id, m]));
+  const messages = payload.messages.map((m) => newer.get(m.id) ?? m);
+  const known = new Set(messages.map((m) => m.id));
+  for (const m of existing.messages) if (!known.has(m.id)) messages.push(m);
+  return { ...transferred, ...existing, messages };
+}
+
 /** Copy the live activity list onto the turn's assistant bubble (if it exists yet). */
 function stampActivity(messages: ChatMessage[], turnId: string, activities: ActivityItem[]): ChatMessage[] {
   if (!activities.length) return messages;
@@ -113,6 +220,7 @@ export function applyBackendEventToThread(
         messages: stampActivity(messages, p.turnId, state.activities),
         running: true,
         streamingId: id,
+        activeTurnId: p.turnId,
         activity: null,
         status: 'running'
       };
@@ -120,9 +228,20 @@ export function applyBackendEventToThread(
     case 'item/started': {
       const p = event.params as ItemEventParams;
       const type = p.item?.type;
-      if (!type || type === 'agentMessage') return null;
+      if (!type) return null;
+      if (type === 'agentMessage') {
+        return { ...state, running: true, activeTurnId: p.turnId, status: 'running' };
+      }
       const label = activityLabel(type, p.item?.name, p.item?.detail);
-      if (type === 'reasoning') return { ...state, activity: label };
+      if (type === 'reasoning') {
+        return {
+          ...state,
+          running: true,
+          activeTurnId: p.turnId,
+          status: 'running',
+          activity: label
+        };
+      }
       // A tool call (or teed native web search) becomes an activity row.
       const itemId = p.item.id;
       const activities = state.activities.some((a) => a.id === itemId)
@@ -140,6 +259,9 @@ export function applyBackendEventToThread(
           ];
       return {
         ...state,
+        running: true,
+        activeTurnId: p.turnId,
+        status: 'running',
         activity: runningLabel(activities) ?? label,
         activities,
         messages: stampActivity(state.messages, p.turnId, activities)
@@ -219,7 +341,11 @@ export function applyBackendEventToThread(
       const p = event.params as TurnCompletedParams;
       const method = event.method as TurnSettledMethod;
       // A failed turn carries its failure text — surface it as a system bubble
-      // instead of silently stopping (auth expiry, provider errors, …).
+      // instead of silently stopping (auth expiry, provider errors, …). Stamp the
+      // turn id so the bubble can offer Retry — but only when a user message
+      // actually carries this turn (synthetic failures like the Quick Chat
+      // hand-off mint an id no message has; Retry could never map those back).
+      const canRetry = state.messages.some((m) => m.role === 'user' && m.turnId === p.turn.id);
       const settled =
         method === 'turn/failed'
           ? [
@@ -227,6 +353,7 @@ export function applyBackendEventToThread(
               {
                 id: `system-${p.turn.id}`,
                 role: 'system' as const,
+                ...(canRetry ? { turnId: p.turn.id } : {}),
                 content: turnFailureMessage(p.error)
               }
             ]

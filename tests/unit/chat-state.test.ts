@@ -27,7 +27,17 @@ describe('chatState reducer', () => {
     expect(second.messages[0]).toMatchObject({ id: 'assistant-turn1', role: 'assistant', content: 'Hello' });
     expect(second.running).toBe(true);
     expect(second.streamingId).toBe('assistant-turn1');
+    expect(second.activeTurnId).toBe('turn1');
     expect(second.status).toBe('running');
+  });
+
+  it('makes an agent-message start interruptible before its first delta', () => {
+    const next = applyBackendEventToThread(
+      EMPTY_STATE,
+      event('item/started', { threadId: 't1', turnId: 'turn1', item: { type: 'agentMessage', id: 'a1' } })
+    )!;
+
+    expect(next).toMatchObject({ running: true, activeTurnId: 'turn1', status: 'running' });
   });
 
   it('uses completed agent text as authoritative and preserves metadata', () => {
@@ -58,6 +68,18 @@ describe('chatState reducer', () => {
     )!;
 
     expect(next.activity).toBe('Searching the web…');
+    expect(next.running).toBe(true);
+    expect(next.activeTurnId).toBe('turn1');
+    expect(next.status).toBe('running');
+  });
+
+  it('marks reasoning-only starts as a live turn before any text delta', () => {
+    const next = applyBackendEventToThread(
+      EMPTY_STATE,
+      event('item/started', { threadId: 't1', turnId: 'turn1', item: { type: 'reasoning', id: 'r1' } })
+    )!;
+
+    expect(next).toMatchObject({ running: true, activeTurnId: 'turn1', status: 'running' });
   });
 
   it('clears running state for completed, failed, and aborted turns with caller status policy', () => {
@@ -112,6 +134,31 @@ describe('chatState reducer', () => {
       event('turn/completed', { threadId: 't1', turn: { id: 'turn1', status: 'completed' } })
     )!;
     expect(completed.messages).toHaveLength(0);
+  });
+
+  it('stamps the failed turn id on the error bubble only when its user message exists', () => {
+    // With a user bubble carrying the turn id, the error bubble is retryable.
+    const withUser = {
+      ...EMPTY_STATE,
+      messages: [{ id: 'user-1', role: 'user' as const, content: 'hi', turnId: 'turn1' }],
+      running: true,
+      activeTurnId: 'turn1',
+      status: 'running' as const
+    };
+    const failed = applyBackendEventToThread(
+      withUser,
+      event('turn/failed', { threadId: 't1', turn: { id: 'turn1', status: 'failed' }, error: 'boom' })
+    )!;
+    expect(failed.messages.at(-1)).toMatchObject({ role: 'system', turnId: 'turn1' });
+
+    // A synthetic failure (e.g. Quick Chat hand-off) mints a turn id no user
+    // message has — Retry could never map it back, so it must not be offered.
+    const synthetic = applyBackendEventToThread(
+      withUser,
+      event('turn/failed', { threadId: 't1', turn: { id: 'quick-start-99', status: 'failed' }, error: 'boom' })
+    )!;
+    expect(synthetic.messages.at(-1)!.role).toBe('system');
+    expect(synthetic.messages.at(-1)!.turnId).toBeUndefined();
   });
 
   it('turnFailureMessage rewrites transport drops but passes other errors through', () => {

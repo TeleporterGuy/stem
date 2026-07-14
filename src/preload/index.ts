@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
+  ApprovalResolvedPayload,
   ApiKeyProviderId,
   AuthProviderId,
   AuthUiEvent,
@@ -23,6 +24,7 @@ import type {
   QuickChatAdopt,
   QuickChatFocus,
   QuickChatHandoff,
+  QuickChatHandoffRequest,
   QuickChatPrompt,
   QuickChatSettings,
   QuickChatSessionStarted,
@@ -37,6 +39,7 @@ import type {
 } from '../shared/types';
 
 const api: StemApi = {
+  rendererReady: () => ipcRenderer.send('renderer:ready'),
   runtimeStatus: () => ipcRenderer.invoke('runtime:status'),
   login: () => ipcRenderer.invoke('runtime:login'),
   providerLogin: (provider: AuthProviderId) => ipcRenderer.invoke('auth:providerLogin', provider),
@@ -128,12 +131,22 @@ const api: StemApi = {
     ipcRenderer.on('mcp:adminApproval', handler);
     return () => ipcRenderer.removeListener('mcp:adminApproval', handler);
   },
+  onMcpAdminApprovalResolved: (listener: (payload: ApprovalResolvedPayload) => void) => {
+    const handler = (_e: unknown, payload: ApprovalResolvedPayload) => listener(payload);
+    ipcRenderer.on('mcp:adminApprovalResolved', handler);
+    return () => ipcRenderer.removeListener('mcp:adminApprovalResolved', handler);
+  },
   respondMcpAdminApproval: (id: number | string, accept: boolean) =>
     ipcRenderer.invoke('mcp:adminDecision', id, accept),
   onInstructionsApproval: (listener: (proposal: InstructionsProposal) => void) => {
     const handler = (_e: unknown, proposal: InstructionsProposal) => listener(proposal);
     ipcRenderer.on('instructions:approvalRequest', handler);
     return () => ipcRenderer.removeListener('instructions:approvalRequest', handler);
+  },
+  onInstructionsApprovalResolved: (listener: (payload: ApprovalResolvedPayload) => void) => {
+    const handler = (_e: unknown, payload: ApprovalResolvedPayload) => listener(payload);
+    ipcRenderer.on('instructions:approvalResolved', handler);
+    return () => ipcRenderer.removeListener('instructions:approvalResolved', handler);
   },
   respondInstructionsApproval: (id: number | string, accept: boolean, surface: 'main' | 'quickChat', text: string) =>
     ipcRenderer.invoke('instructions:resolveApproval', id, accept, surface, text),
@@ -225,6 +238,13 @@ const api: StemApi = {
   runQuickChat: (prompt: QuickChatPrompt) => ipcRenderer.invoke('quickchat:run', prompt),
   newQuickChatThread: () => ipcRenderer.invoke('quickchat:newThread'),
   handoffQuickChat: (payload: QuickChatHandoff) => ipcRenderer.invoke('quickchat:handoff', payload),
+  onQuickChatHandoffRequest: (listener: (request: QuickChatHandoffRequest) => void) => {
+    const handler = (_e: unknown, request: QuickChatHandoffRequest) => listener(request);
+    ipcRenderer.on('quickchat:handoffRequest', handler);
+    return () => ipcRenderer.removeListener('quickchat:handoffRequest', handler);
+  },
+  respondQuickChatHandoffRequest: (id: string, payload: QuickChatHandoff) =>
+    ipcRenderer.send('quickchat:handoffSnapshot', id, payload),
   revealQuickChat: () => ipcRenderer.invoke('quickchat:reveal'),
   revealMain: () => ipcRenderer.invoke('main:reveal'),
   hideQuickChat: () => ipcRenderer.invoke('quickchat:hide'),

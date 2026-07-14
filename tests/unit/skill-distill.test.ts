@@ -190,6 +190,24 @@ describe('distillSkillsFromMessages', () => {
     expect(existsSync(join(skillsDir, CANDIDATE.name, 'SKILL.md'))).toBe(true);
   });
 
+  it('does not advance past the unseen tail of a message truncated by the prompt budget', async () => {
+    const marker = 'TAIL_MARKER_MUST_BE_REVIEWED';
+    store.recordMessage({
+      threadId: 'T1',
+      turnId: 'huge',
+      role: 'assistant',
+      text: `${'worked procedure step '.repeat(1120)}${marker}`
+    });
+    const llm = fakeLlm('[]');
+
+    await distillSkillsFromMessages(llm);
+    expect(llm.prompts[0]).not.toContain(marker);
+    // The remaining tail is below the ordinary 2k noise gate, but must still be
+    // processed because it continues a message whose first chunk already ran.
+    await distillSkillsFromMessages(llm);
+    expect(llm.prompts[1]).toContain(marker);
+  });
+
   it('does nothing while memory is disabled', async () => {
     seedProcedureChat();
     store.setMeta('recall_enabled', 'false');

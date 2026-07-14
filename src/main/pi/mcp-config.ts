@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { embedSocketPath, piHome, piMcpConfigPath, recallDbPath } from '../workspace/paths';
@@ -132,7 +133,7 @@ export async function writeServiceTierGate(tier: string | null): Promise<void> {
  * bearer header and rewrites it when it refreshes an expired token.
  */
 export function piMcpOAuthPath(): string {
-  return join(piHome(), 'mcp-oauth.json');
+  return process.env.STEM_PI_MCP_OAUTH ?? join(piHome(), 'mcp-oauth.json');
 }
 
 export async function readOAuthTokens(): Promise<Record<string, OAuthToken>> {
@@ -160,23 +161,227 @@ export async function readOAuthTokens(): Promise<Record<string, OAuthToken>> {
  */
 async function writeSecretFile(path: string, data: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.tmp`;
-  await writeFile(tmp, data, { encoding: 'utf8', mode: 0o600 });
-  await chmod(tmp, 0o600);
-  await rename(tmp, path); // atomic on the same filesystem (same dir)
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, data, { encoding: 'utf8', mode: 0o600 });
+    await chmod(tmp, 0o600);
+    await rename(tmp, path); // atomic on the same filesystem (same dir)
+  } finally {
+    await rm(tmp, { force: true }).catch(() => undefined);
+  }
+}
+
+let oauthMutationTail: Promise<void> = Promise.resolve();
+let mcpStateMutationTail: Promise<void> = Promise.resolve();
+
+const FILE_LOCK_STALE_MS = 30_000;
+const FILE_LOCK_WAIT_MS = 15_000;
+
+/** Only one waiter may reap an abandoned lock. Without this tiny secondary
+ * lock, two waiters can both decide the old inode is stale and the slower one
+ * can accidentally unlink the faster waiter's newly-acquired lock. */
+async function reapAbandonedLock(lockPath: string): Promise<boolean> {
+  const reaperPath = `${lockPath}.reaper`;
+  let reaper: Awaited<ReturnType<typeof open>>;
+  try {
+    reaper = await open(reaperPath, 'wx', 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  }
+  try {
+    try {
+      if (Date.now() - statSync(lockPath).mtimeMs <= FILE_LOCK_STALE_MS) return false;
+    } catch {
+      return true;
+    }
+    await rm(lockPath, { force: true });
+    return true;
+  } finally {
+    await reaper.close().catch(() => undefined);
+    await rm(reaperPath, { force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Cross-process, owner-tagged lock used by main and the MCP bridge. The owner
+ * check matters when recovering an abandoned lock: an old owner must never
+ * unlink a successor's lock from its `finally` block.
+ */
+async function withOwnedFileLock<T>(
+  lockPath: string,
+  timeoutMessage: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + FILE_LOCK_WAIT_MS;
+  const owner = `${process.pid}:${randomUUID()}`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  while (!handle) {
+    try {
+      handle = await open(lockPath, 'wx', 0o600);
+      await handle.writeFile(owner, 'utf8');
+    } catch (error) {
+      if (handle) {
+        await handle.close().catch(() => undefined);
+        await rm(lockPath, { force: true }).catch(() => undefined);
+        handle = undefined;
+      }
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > FILE_LOCK_STALE_MS) {
+          if (await reapAbandonedLock(lockPath)) continue;
+        }
+      } catch {
+        continue; // it disappeared between open/stat; retry immediately
+      }
+      if (Date.now() >= deadline) throw new Error(timeoutMessage);
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    await handle.close().catch(() => undefined);
+    const currentOwner = await readFile(lockPath, 'utf8').catch(() => '');
+    if (currentOwner === owner) await rm(lockPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function withOAuthFileLock<T>(operation: () => Promise<T>): Promise<T> {
+  return withOwnedFileLock(
+    `${piMcpOAuthPath()}.lock`,
+    'Timed out waiting to update MCP OAuth credentials.',
+    operation
+  );
+}
+
+/**
+ * Serialize changes whose security invariant spans both mcp.json and its token
+ * map. The bridge uses the same `.state.lock` path before persisting refreshes.
+ */
+export async function withMcpStateMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = mcpStateMutationTail;
+  let release!: () => void;
+  mcpStateMutationTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await withOwnedFileLock(
+      `${piMcpConfigPath()}.state.lock`,
+      'Timed out waiting to update MCP configuration.',
+      operation
+    );
+  } finally {
+    release();
+  }
+}
+
+async function serializeOAuthMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = oauthMutationTail;
+  let release!: () => void;
+  oauthMutationTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await withOAuthFileLock(operation);
+  } finally {
+    release();
+  }
 }
 
 export async function saveOAuthToken(name: string, token: OAuthToken): Promise<void> {
-  const all = await readOAuthTokens();
-  all[name] = token;
-  await writeSecretFile(piMcpOAuthPath(), JSON.stringify(all, null, 2));
+  await serializeOAuthMutation(async () => {
+    const all = await readOAuthTokens();
+    all[name] = token;
+    await writeSecretFile(piMcpOAuthPath(), JSON.stringify(all, null, 2));
+  });
 }
 
 export async function deleteOAuthToken(name: string): Promise<void> {
-  const all = await readOAuthTokens();
-  if (!(name in all)) return;
-  delete all[name];
-  await writeSecretFile(piMcpOAuthPath(), JSON.stringify(all, null, 2));
+  await serializeOAuthMutation(async () => {
+    const all = await readOAuthTokens();
+    if (!(name in all)) return;
+    delete all[name];
+    await writeSecretFile(piMcpOAuthPath(), JSON.stringify(all, null, 2));
+  });
+}
+
+/** Delete only the credential snapshot the caller inspected, never a newer login. */
+export async function deleteOAuthTokenIfMatches(name: string, expected: OAuthToken): Promise<boolean> {
+  return serializeOAuthMutation(async () => {
+    const all = await readOAuthTokens();
+    if (!all[name] || JSON.stringify(all[name]) !== JSON.stringify(expected)) return false;
+    delete all[name];
+    await writeSecretFile(piMcpOAuthPath(), JSON.stringify(all, null, 2));
+    return true;
+  });
+}
+
+/** Stable identity determining whether a stored OAuth token may be reused. */
+export function mcpServerAuthIdentity(server: PiMcpServer | undefined): string | null {
+  if (!server?.url) return null;
+  const headers = server.headers
+    ? Object.fromEntries(Object.entries(server.headers).sort(([a], [b]) => a.localeCompare(b)))
+    : null;
+  const serialized = JSON.stringify([
+    server.url,
+    headers,
+    server.oauthClientId ?? null,
+    server.oauthClientSecret ?? null,
+    server.oauthScope ?? null
+  ]);
+  return createHash('sha256').update(serialized).digest('hex');
+}
+
+/** True only for identity-stamped tokens; legacy name-only records are unsafe. */
+export function oauthTokenMatchesServer(token: OAuthToken | undefined, server: PiMcpServer | undefined): boolean {
+  const identity = mcpServerAuthIdentity(server);
+  return !!identity && !!token?.serverIdentity && token.serverIdentity === identity;
+}
+
+/**
+ * One-time repair for tokens saved before the identity stamp existed: they lack
+ * `serverIdentity`, so the bridge (correctly) refuses to attach them and every
+ * previously-signed-in remote server comes up 401 until the user re-logs-in.
+ * Stamping them with the CURRENT identity of the server they're keyed to grants
+ * exactly the trust they had when saved — the name-keyed binding — without
+ * weakening the stamp check for anything saved afterwards. Tokens whose server no
+ * longer exists (or is stdio) are left untouched, as are already-stamped tokens,
+ * including mismatched ones (a repointed server must force a fresh login).
+ */
+export async function migrateLegacyOAuthTokens(): Promise<void> {
+  await withMcpStateMutation(async () => {
+    const config = await readMcpConfig();
+    await serializeOAuthMutation(async () => {
+      const all = await readOAuthTokens();
+      let changed = false;
+      for (const [name, token] of Object.entries(all)) {
+        if (token.serverIdentity) continue;
+        const identity = mcpServerAuthIdentity(config.servers[name]);
+        if (!identity) continue;
+        all[name] = { ...token, serverIdentity: identity };
+        changed = true;
+      }
+      if (changed) await writeSecretFile(piMcpOAuthPath(), JSON.stringify(all, null, 2));
+    });
+  });
+}
+
+/** Persist a completed browser login only if its server identity is still current. */
+export async function saveOAuthTokenIfServerMatches(
+  name: string,
+  expectedIdentity: string,
+  token: OAuthToken
+): Promise<boolean> {
+  return withMcpStateMutation(async () => {
+    const current = (await readMcpConfig()).servers[name];
+    if (mcpServerAuthIdentity(current) !== expectedIdentity) return false;
+    await saveOAuthToken(name, { ...token, serverIdentity: expectedIdentity });
+    return true;
+  });
 }
 
 /** The reserved stem-recall entry the bridge always spawns. */
@@ -233,15 +438,17 @@ export async function writeMcpConfig(config: PiMcpConfig): Promise<void> {
  * runs), preserving any user-added servers. Idempotent; called at bootstrap.
  */
 export async function ensureMcpConfig(): Promise<void> {
-  let config: PiMcpConfig;
-  try {
-    config = await readMcpConfig();
-  } catch {
-    // Corrupt mcp.json (already preserved as `.corrupt` by readMcpConfig). Start
-    // fresh so recall and the app keep working; the backup keeps any recoverable
-    // user servers around instead of erasing them without a trace.
-    config = { servers: {} };
-  }
-  config.servers[RECALL_MCP_NAME] = recallServerEntry();
-  await writeMcpConfig(config);
+  await withMcpStateMutation(async () => {
+    let config: PiMcpConfig;
+    try {
+      config = await readMcpConfig();
+    } catch {
+      // Corrupt mcp.json (already preserved as `.corrupt` by readMcpConfig). Start
+      // fresh so recall and the app keep working; the backup keeps any recoverable
+      // user servers around instead of erasing them without a trace.
+      config = { servers: {} };
+    }
+    config.servers[RECALL_MCP_NAME] = recallServerEntry();
+    await writeMcpConfig(config);
+  });
 }

@@ -86,7 +86,7 @@ function open(): DatabaseSync {
   return handle;
 }
 
-/** The updatedAt (Unix seconds) this thread was last indexed at, or null if never. */
+/** The backend updatedAt (Unix milliseconds) this thread was last indexed at, or null if never. */
 export function getIndexedWatermark(threadId: string): number | null {
   const handle = open();
   const row = handle
@@ -150,24 +150,35 @@ export function dropThread(threadId: string): void {
 /**
  * Search all indexed chat docs. `query` must already be a valid FTS5 MATCH expression
  * (build one safely from raw user text via search.ts / recall's buildMatchQuery). Rows
- * come back best-first; callers group by thread_id (the first row per thread is its
- * best-matching doc). `limit` bounds the row scan, not the thread count.
+ * come back best-first with at most one row per thread. `limit` therefore bounds
+ * distinct chats, not raw matching messages from a noisy chat. `offset` supports
+ * paging the ranked thread set when callers need to filter stale index entries.
  */
-export function searchChatDocs(query: string, limit = 200): ChatDocHit[] {
+export function searchChatDocs(query: string, limit = 200, offset = 0): ChatDocHit[] {
   if (!query.trim()) return [];
   const handle = open();
   const rows = handle
     .prepare(
-      `SELECT d.thread_id AS threadId, d.role AS role, d.ts AS ts,
-              snippet(chat_docs_fts, 0, '«', '»', '…', 12) AS snippet,
-              bm25(chat_docs_fts) AS score
-       FROM chat_docs_fts
-       JOIN chat_docs d ON d.id = chat_docs_fts.rowid
-       WHERE chat_docs_fts MATCH ?
-       ORDER BY score
-       LIMIT ?`
+      `WITH matches AS MATERIALIZED (
+         SELECT d.id AS docId, d.thread_id AS threadId, d.role AS role, d.ts AS ts,
+                snippet(chat_docs_fts, 0, '«', '»', '…', 12) AS snippet,
+                bm25(chat_docs_fts) AS score
+         FROM chat_docs_fts
+         JOIN chat_docs d ON d.id = chat_docs_fts.rowid
+         WHERE chat_docs_fts MATCH ?
+       ), ranked AS (
+         SELECT *, ROW_NUMBER() OVER (
+           PARTITION BY threadId ORDER BY score ASC, docId ASC
+         ) AS threadRank
+         FROM matches
+       )
+       SELECT threadId, role, ts, snippet, score
+       FROM ranked
+       WHERE threadRank = 1
+       ORDER BY score ASC, docId ASC
+       LIMIT ? OFFSET ?`
     )
-    .all(query, limit) as Array<Record<string, unknown>>;
+    .all(query, limit, offset) as Array<Record<string, unknown>>;
   return rows.map((r) => ({
     threadId: r.threadId as string,
     role: r.role as string,
@@ -175,4 +186,10 @@ export function searchChatDocs(query: string, limit = 200): ChatDocHit[] {
     snippet: r.snippet as string,
     score: r.score as number
   }));
+}
+
+/** Test-only lifecycle seam. */
+export function closeForTest(): void {
+  db?.close();
+  db = null;
 }

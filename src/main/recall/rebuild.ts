@@ -2,6 +2,7 @@ import type { MemoryRebuildStatus } from '../../shared/types';
 import {
   createFactConflict,
   getFactDetails,
+  getFactsGeneration,
   getMeta,
   messageCount,
   setMeta,
@@ -78,6 +79,7 @@ function evidenceFor(ids: number[], messages: Map<number, StoredMessage>) {
 export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuildStatus> {
   const status = getMemoryRebuildStatus();
   if (status.state !== 'running') return status;
+  const factsGeneration = getFactsGeneration();
   const cursor: DistillCursor = { messageId: status.cursorMessageId, offset: status.cursorOffset };
   const batch = buildDistillBatch(cursor);
   if (!batch) return save({ ...status, state: 'complete', processedMessages: status.totalMessages });
@@ -87,9 +89,11 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
       `${DISTILL_INSTRUCTIONS}\n\nToday's date: ${new Date().toISOString().slice(0, 10)}.` +
       `${knownFactsBlock()}\n\nTranscript:\n${batch.transcript}`
     );
+    if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
     const claims = parseClaims(reply);
     const messages = new Map(batch.messages.map((m) => [m.id, m]));
     for (const claim of claims) {
+      if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
       const validIds = claim.evidenceMessageIds.filter((id) => messages.has(id));
       const fallback = batch.messages.filter((m) => m.role === 'user').map((m) => m.id);
       const evidenceMessages = evidenceFor(validIds.length ? validIds : fallback, messages);
@@ -118,6 +122,7 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
         // "supersedes" links land overwhelmingly on restatements of the same fact.
         // Only a checked contradiction is worth a user-facing conflict.
         else if (await contradicts(target.text, claim.text, llm)) {
+          if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
           createFactConflict(targetId, factId, 'Rebuilt evidence may contradict this fact.');
         }
       }
@@ -127,6 +132,7 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
         }
       }
     }
+    if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
     const completedMessages = batch.messages.filter((m) => m.id < batch.nextCursor.messageId).length;
     // Re-read: the model call above takes seconds, and the user may have paused
     // meanwhile. Persist this batch's progress, but never resurrect 'running' over
@@ -140,6 +146,9 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
       lastError: undefined
     });
   } catch (error) {
+    // A reset invalidates the in-flight model call and clears rebuild progress.
+    // Its rejection must not recreate that progress as a stale failed run.
+    if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
     const latest = getMemoryRebuildStatus();
     return save({
       ...latest,

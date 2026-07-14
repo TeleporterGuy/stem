@@ -1,33 +1,49 @@
 import { useEffect, useState } from 'react';
 import { Plug, Globe, HardDrive } from 'lucide-react';
 import type { McpAdminProposal } from '../../shared/types';
+import { enqueueApproval, removeApproval } from './approvalQueue';
 
 // A modal confirm card shown when the chat assistant proposes adding or removing
 // an MCP server (the `stem-admin` self-management tools). Nothing is written to
 // config until the user approves — the backend holds the tool call open until then.
 export function McpApprovalCard() {
-  const [proposal, setProposal] = useState<McpAdminProposal | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [queue, setQueue] = useState<McpAdminProposal[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const proposal = queue[0] ?? null;
+  const busy = !!proposal && busyId === String(proposal.id);
 
   useEffect(() => {
-    // Show the latest proposal. Concurrent proposals are vanishingly rare (one
-    // assistant turn at a time); the newest simply replaces any prior card.
-    return window.stem.onMcpAdminApproval((p) => {
-      setProposal(p);
-      setBusy(false);
+    const offProposal = window.stem.onMcpAdminApproval((p) => {
+      setQueue((q) => enqueueApproval(q, p));
     });
+    const offResolved = window.stem.onMcpAdminApprovalResolved(({ id }) => {
+      setQueue((q) => removeApproval(q, id));
+      setBusyId((cur) => (cur === String(id) ? null : cur));
+    });
+    return () => {
+      offProposal();
+      offResolved();
+    };
   }, []);
 
   if (!proposal) return null;
 
   async function decide(accept: boolean) {
     if (!proposal || busy) return;
-    setBusy(true);
+    const id = proposal.id;
+    const key = String(id);
+    setBusyId(key);
+    setError(null);
     try {
-      await window.stem.respondMcpAdminApproval(proposal.id, accept);
+      await window.stem.respondMcpAdminApproval(id, accept);
+      // The broadcast removes this card from every renderer. Remove locally too
+      // so the queue advances even if this window closes before receiving it.
+      setQueue((q) => removeApproval(q, id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setProposal(null);
-      setBusy(false);
+      setBusyId((cur) => (cur === key ? null : cur));
     }
   }
 
@@ -97,6 +113,8 @@ export function McpApprovalCard() {
         {!remote && proposal.action === 'add' && (
           <p className="muted">A local server runs this command on your machine when reloaded. Approve only if you trust it.</p>
         )}
+
+        {error && <p className="error">{error}</p>}
 
         <div className="mcp-approval-actions">
           <button className="push" onClick={() => decide(false)} disabled={busy}>

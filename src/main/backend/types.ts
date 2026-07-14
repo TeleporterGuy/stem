@@ -2,6 +2,7 @@ import type { EventEmitter } from 'node:events';
 import type {
   ChatMessage,
   ChatSummary,
+  McpAdminProposal,
   McpLoginResult,
   ModelSummary,
   RuntimeStatus,
@@ -86,9 +87,22 @@ export interface ChatBackend extends EventEmitter {
   // MCP
   mcpLogin(name: string): Promise<McpLoginResult>;
   getMcpStatus(): Record<string, { status: string; error: string | null }>;
-  resolveAdminApproval(id: number | string, accept: boolean): void;
+  /**
+   * Release an assistant-proposed MCP mutation. Main performs the accepted
+   * mutation through its serialized config writer before the held tool call is
+   * allowed to continue.
+   */
+  resolveAdminApproval(
+    id: number | string,
+    accept: boolean,
+    beforeAccept?: (proposal: McpAdminProposal) => Promise<void>
+  ): Promise<boolean>;
   /** Release a held custom-instructions approval (main has already written settings). */
-  resolveInstructionsApproval(id: number | string, accept: boolean): void;
+  resolveInstructionsApproval(
+    id: number | string,
+    accept: boolean,
+    beforeAccept?: () => Promise<void>
+  ): Promise<boolean>;
   configMcpServerReload(): Promise<void>;
 
   // Skills: apply out-of-band skill changes (the background curator) by reloading

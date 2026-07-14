@@ -26,6 +26,9 @@ export function stemOAuthRedirectUri(): string {
 }
 
 export interface OAuthToken {
+  /** Hash of the MCP server identity this token was issued for. Legacy records
+   * without it are deliberately not attached after the BUG-010 migration. */
+  serverIdentity?: string;
   /** The MCP resource URL these credentials are scoped to (RFC 8707). */
   resource: string;
   /** Token endpoint, for the bridge's refresh. */
@@ -62,8 +65,39 @@ function base64url(buf: Buffer): string {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function fetchJson(url: string): Promise<Record<string, unknown>> {
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('MCP authorization was cancelled.');
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw abortError(signal);
+}
+
+/** Race a non-abort-aware promise (the loopback callback) against an AbortSignal. */
+function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortError(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(abortError(signal));
+    };
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      }
+    );
+  });
+}
+
+async function fetchJson(url: string, signal: AbortSignal): Promise<Record<string, unknown>> {
+  const res = await fetch(url, { headers: { Accept: 'application/json' }, signal });
   if (!res.ok) throw new Error(`GET ${url} → HTTP ${res.status}`);
   return (await res.json()) as Record<string, unknown>;
 }
@@ -73,7 +107,7 @@ async function fetchJson(url: string): Promise<Record<string, unknown>> {
  * `resource_metadata` URL the server advertises in its 401 WWW-Authenticate
  * header; falls back to the RFC 9728 well-known path, then to the URL's origin.
  */
-async function discoverProtectedResource(mcpUrl: string): Promise<ProtectedResource> {
+async function discoverProtectedResource(mcpUrl: string, signal: AbortSignal): Promise<ProtectedResource> {
   const u = new URL(mcpUrl);
   let resourceMetaUrl: string | undefined;
   try {
@@ -85,12 +119,14 @@ async function discoverProtectedResource(mcpUrl: string): Promise<ProtectedResou
         id: 1,
         method: 'initialize',
         params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'stem', version: '1.0' } }
-      })
+      }),
+      signal
     });
     const wwwAuth = probe.headers.get('www-authenticate');
     const m = wwwAuth?.match(/resource_metadata="([^"]+)"/);
     if (m) resourceMetaUrl = m[1];
   } catch {
+    throwIfAborted(signal);
     // fall through to the well-known path
   }
   if (!resourceMetaUrl) resourceMetaUrl = `${u.origin}/.well-known/oauth-protected-resource${u.pathname}`;
@@ -99,26 +135,28 @@ async function discoverProtectedResource(mcpUrl: string): Promise<ProtectedResou
   let authServer = u.origin;
   let scopes: string[] | undefined;
   try {
-    const prm = await fetchJson(resourceMetaUrl);
+    const prm = await fetchJson(resourceMetaUrl, signal);
     if (typeof prm.resource === 'string') resource = prm.resource;
     const servers = prm.authorization_servers;
     if (Array.isArray(servers) && typeof servers[0] === 'string') authServer = servers[0];
     if (Array.isArray(prm.scopes_supported)) scopes = prm.scopes_supported as string[];
   } catch {
+    throwIfAborted(signal);
     // some servers skip RFC 9728 — assume the AS lives at the resource origin
   }
   return { resource, authServer, scopes };
 }
 
-async function discoverAuthServer(issuer: string): Promise<AsMetadata> {
+async function discoverAuthServer(issuer: string, signal: AbortSignal): Promise<AsMetadata> {
   const candidates = [
     `${issuer}/.well-known/oauth-authorization-server`,
     `${issuer}/.well-known/openid-configuration`
   ];
   for (const url of candidates) {
     try {
-      return (await fetchJson(url)) as AsMetadata;
+      return (await fetchJson(url, signal)) as AsMetadata;
     } catch {
+      throwIfAborted(signal);
       // try the next well-known location
     }
   }
@@ -136,7 +174,12 @@ function chooseScope(prmScopes: string[] | undefined, asScopes: string[] | undef
   return scopes.join(' ');
 }
 
-async function registerClient(endpoint: string, redirectUri: string, scope: string): Promise<string> {
+async function registerClient(
+  endpoint: string,
+  redirectUri: string,
+  scope: string,
+  signal: AbortSignal
+): Promise<string> {
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -147,7 +190,8 @@ async function registerClient(endpoint: string, redirectUri: string, scope: stri
       response_types: ['code'],
       token_endpoint_auth_method: 'none',
       scope
-    })
+    }),
+    signal
   });
   if (!res.ok) {
     throw new Error(`Dynamic client registration failed: HTTP ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`);
@@ -208,11 +252,16 @@ function startLoopback(port = 0): Promise<Loopback> {
   });
 }
 
-async function exchangeCode(tokenEndpoint: string, params: Record<string, string>): Promise<Record<string, unknown>> {
+async function exchangeCode(
+  tokenEndpoint: string,
+  params: Record<string, string>,
+  signal: AbortSignal
+): Promise<Record<string, unknown>> {
   const res = await fetch(tokenEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-    body: new URLSearchParams(params).toString()
+    body: new URLSearchParams(params).toString(),
+    signal
   });
   if (!res.ok) {
     throw new Error(`Token exchange failed: HTTP ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`);
@@ -256,30 +305,41 @@ export interface AuthorizeOptions {
  * redirect delivers the code and the exchange succeeds.
  */
 export async function authorizeMcp(mcpUrl: string, opts: AuthorizeOptions = {}): Promise<OAuthToken> {
-  const pr = await discoverProtectedResource(mcpUrl);
-  const asMeta = await discoverAuthServer(pr.authServer);
-  if (!asMeta.authorization_endpoint || !asMeta.token_endpoint) {
-    throw new Error('The authorization server is missing its authorize/token endpoints.');
-  }
-  // A pre-registered (static) client sidesteps dynamic client registration, which
-  // servers like Slack don't offer.
-  const staticClient = !!opts.clientId;
-  if (!staticClient && !asMeta.registration_endpoint) {
-    throw new Error(
-      "This server has no dynamic client registration endpoint. Register an app with the provider and add its OAuth Client ID (and secret) to this server's settings, then sign in again."
-    );
-  }
-
-  // A static client may carry its own scope (matching what's enabled on the
-  // provider app); otherwise fall back to discovery-derived scopes.
-  const scope = opts.scope?.trim() || chooseScope(pr.scopes, asMeta.scopes_supported);
-  // Static (confidential) clients must use the fixed, pre-registered redirect URL.
-  const loop = await startLoopback(staticClient ? STEM_OAUTH_REDIRECT_PORT : 0);
-  const timeout = setTimeout(() => loop.close(), opts.timeoutMs ?? 300_000);
+  const timeoutMs = opts.timeoutMs ?? 300_000;
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(new Error(`MCP authorization timed out after ${timeoutMs}ms.`)),
+    timeoutMs
+  );
+  timeout.unref?.();
+  let loop: Loopback | null = null;
   try {
+    // The deadline covers discovery, registration, the browser round-trip, and
+    // token exchange. Every fetch receives the same signal, while `withAbort`
+    // makes the loopback callback wait abort-aware too.
+    const pr = await discoverProtectedResource(mcpUrl, controller.signal);
+    const asMeta = await discoverAuthServer(pr.authServer, controller.signal);
+    if (!asMeta.authorization_endpoint || !asMeta.token_endpoint) {
+      throw new Error('The authorization server is missing its authorize/token endpoints.');
+    }
+    // A pre-registered (static) client sidesteps dynamic client registration, which
+    // servers like Slack don't offer.
+    const staticClient = !!opts.clientId;
+    if (!staticClient && !asMeta.registration_endpoint) {
+      throw new Error(
+        "This server has no dynamic client registration endpoint. Register an app with the provider and add its OAuth Client ID (and secret) to this server's settings, then sign in again."
+      );
+    }
+
+    // A static client may carry its own scope (matching what's enabled on the
+    // provider app); otherwise fall back to discovery-derived scopes.
+    const scope = opts.scope?.trim() || chooseScope(pr.scopes, asMeta.scopes_supported);
+    // Static (confidential) clients must use the fixed, pre-registered redirect URL.
+    loop = await startLoopback(staticClient ? STEM_OAUTH_REDIRECT_PORT : 0);
+    throwIfAborted(controller.signal);
     const clientId = staticClient
       ? opts.clientId!
-      : await registerClient(asMeta.registration_endpoint!, loop.redirectUri, scope);
+      : await registerClient(asMeta.registration_endpoint!, loop.redirectUri, scope, controller.signal);
 
     const verifier = base64url(randomBytes(32));
     const challenge = base64url(createHash('sha256').update(verifier).digest());
@@ -296,22 +356,26 @@ export async function authorizeMcp(mcpUrl: string, opts: AuthorizeOptions = {}):
     authUrl.searchParams.set('resource', pr.resource);
 
     opts.onAuthUrl?.(authUrl.toString());
-    await shell.openExternal(authUrl.toString());
+    await withAbort(shell.openExternal(authUrl.toString()), controller.signal);
 
-    const { code, state: returnedState } = await loop.codePromise;
+    const { code, state: returnedState } = await withAbort(loop.codePromise, controller.signal);
     if (!code) throw new Error('No authorization code was returned.');
     if (returnedState !== state) throw new Error('OAuth state mismatch — aborting for safety.');
 
     const tok = normalizeTokenResponse(
-      await exchangeCode(asMeta.token_endpoint, {
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: loop.redirectUri,
-        client_id: clientId,
-        code_verifier: verifier,
-        resource: pr.resource,
-        ...(opts.clientSecret ? { client_secret: opts.clientSecret } : {})
-      })
+      await exchangeCode(
+        asMeta.token_endpoint,
+        {
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: loop.redirectUri,
+          client_id: clientId,
+          code_verifier: verifier,
+          resource: pr.resource,
+          ...(opts.clientSecret ? { client_secret: opts.clientSecret } : {})
+        },
+        controller.signal
+      )
     );
     if (typeof tok.access_token !== 'string') throw new Error('The token response had no access_token.');
 
@@ -327,6 +391,6 @@ export async function authorizeMcp(mcpUrl: string, opts: AuthorizeOptions = {}):
     };
   } finally {
     clearTimeout(timeout);
-    loop.close();
+    loop?.close();
   }
 }

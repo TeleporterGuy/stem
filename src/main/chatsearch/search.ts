@@ -19,31 +19,38 @@ export interface ChatSearchDeps {
 /** Run an already-chosen term set against the index and shape the hits. */
 async function runMatch(terms: string[], deps: ChatSearchDeps, limit: number): Promise<ChatSearchHit[]> {
   const match = buildMatchQuery(terms.join(' '));
-  if (!match) return [];
-
-  let rows;
-  try {
-    rows = searchChatDocs(match, 200);
-  } catch {
-    // A malformed index / unexpected SQL error must never surface as a broken search.
-    return [];
-  }
-  if (rows.length === 0) return [];
-
-  // Rows come back best-first, so the first row seen per thread is that chat's best hit.
-  const best = new Map<string, (typeof rows)[number]>();
-  for (const r of rows) {
-    if (!best.has(r.threadId)) best.set(r.threadId, r);
-    if (best.size >= limit) break;
-  }
+  const requestedLimit = Math.floor(limit);
+  if (!match || requestedLimit <= 0) return [];
 
   const titles = new Map((await deps.listChats()).map((c) => [c.threadId, c.title]));
   const hits: ChatSearchHit[] = [];
-  for (const [threadId, r] of best) {
-    // Drop threads that vanished between indexing and now (deleted chat) — no title.
-    const title = titles.get(threadId);
-    if (title === undefined) continue;
-    hits.push({ threadId, title, snippet: r.snippet, score: r.score, ts: r.ts });
+  const seen = new Set<string>();
+  const pageSize = Math.max(requestedLimit, 64);
+  let offset = 0;
+
+  while (hits.length < requestedLimit) {
+    let rows;
+    try {
+      rows = searchChatDocs(match, pageSize, offset);
+    } catch {
+      // A malformed index / unexpected SQL error must never surface as a broken search.
+      return hits;
+    }
+    if (rows.length === 0) break;
+
+    for (const r of rows) {
+      if (seen.has(r.threadId)) continue;
+      seen.add(r.threadId);
+
+      // Drop threads that vanished between indexing and now (deleted chat) — no title.
+      const title = titles.get(r.threadId);
+      if (title === undefined) continue;
+      hits.push({ threadId: r.threadId, title, snippet: r.snippet, score: r.score, ts: r.ts });
+      if (hits.length >= requestedLimit) break;
+    }
+
+    if (rows.length < pageSize) break;
+    offset += rows.length;
   }
   return hits;
 }

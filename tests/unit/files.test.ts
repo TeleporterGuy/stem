@@ -45,6 +45,20 @@ describe('Files place', () => {
     expect(listing.files.some((f) => f.rel === 'a-1.txt')).toBe(true);
   });
 
+  it('does not overwrite files added concurrently with the same basename', async () => {
+    const sources = Array.from({ length: 20 }, (_, i) => {
+      const dir = join(stage, `concurrent-${i}`);
+      mkdirSync(dir, { recursive: true });
+      const source = join(dir, 'same.txt');
+      writeFileSync(source, `source-${i}`);
+      return source;
+    });
+
+    await Promise.all(sources.map((source) => store.addFiles([source])));
+    const matches = (await store.listFiles()).files.filter((file) => /^same(?:-\d+)?\.txt$/.test(file.rel));
+    expect(matches).toHaveLength(sources.length);
+  });
+
   it('builds a context that lists names (with files/ prefix) but never contents', async () => {
     const ctx = await inject.buildFilesContext();
     expect(ctx).toBeTruthy();

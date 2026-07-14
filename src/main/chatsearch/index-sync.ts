@@ -19,10 +19,6 @@ export interface IndexRuntime {
   }>;
 }
 
-function nowSeconds(): number {
-  return Math.floor(Date.now() / 1000);
-}
-
 /** ISO timestamp → Unix seconds, or null when absent/unparseable. */
 function toSeconds(iso: string | undefined): number | null {
   if (!iso) return null;
@@ -37,7 +33,7 @@ async function reindexOne(rt: IndexRuntime, threadId: string, updatedAt: number)
   for (const m of messages) {
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     if (!m.content || !m.content.trim()) continue;
-    docs.push({ role: m.role, text: m.content, ts: toSeconds(m.createdAt) ?? updatedAt });
+    docs.push({ role: m.role, text: m.content, ts: toSeconds(m.createdAt) ?? Math.floor(updatedAt / 1000) });
   }
   reindexThread(threadId, title, docs, updatedAt);
 }
@@ -45,7 +41,9 @@ async function reindexOne(rt: IndexRuntime, threadId: string, updatedAt: number)
 /** Re-index one chat now (after a turn completes or a rename). Best-effort. */
 export async function reindexChatThread(rt: IndexRuntime, threadId: string): Promise<void> {
   try {
-    await reindexOne(rt, threadId, nowSeconds());
+    // listThreads.updatedAt is milliseconds. Store the live watermark in the
+    // same unit so launch backfill does not re-read every just-indexed thread.
+    await reindexOne(rt, threadId, Date.now());
   } catch {
     // A single failed reindex must never break the turn/rename that triggered it.
   }

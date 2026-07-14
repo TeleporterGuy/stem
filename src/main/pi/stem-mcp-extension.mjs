@@ -11,8 +11,12 @@
 // spawned from the in-repo path (like the recall MCP server).
 
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { open, rm } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join, parse, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Stem's internal recall server stays EAGER (its one tool is used every turn);
 // every other server goes behind the lazy router (invoke_tool/describe_tool) so
@@ -25,21 +29,154 @@ const RECALL_SERVER_NAME = 'stem-recall';
  * other users. The explicit chmod also tightens a file that already exists with
  * looser perms (the `mode` create-option is ignored on truncate).
  *
- * Atomic: data is written to a sibling temp file and renamed over the target, so
- * a crash mid-write can only leave a stray `.tmp`, never a truncated file. This
- * matters because both this bridge and Stem's main process write mcp.json; a
- * half-written file used to read back as corrupt and get reset to an empty
- * server list, silently dropping every user-added server.
+ * Atomic: data is written to a unique sibling temp file and renamed over the
+ * target, so a crash mid-write can only leave a stray `.tmp`, never a truncated
+ * credential map. Main owns mcp.json; this bridge writes only refreshed OAuth
+ * tokens after the identity/CAS checks below.
  */
 function writeSecretSync(path, data) {
-  const tmp = `${path}.tmp`;
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(tmp, data, { mode: 0o600 });
   try {
     chmodSync(tmp, 0o600);
   } catch {
     // best-effort on platforms without POSIX perms
   }
-  renameSync(tmp, path); // atomic on the same filesystem (same dir)
+  try {
+    renameSync(tmp, path); // atomic on the same filesystem (same dir)
+  } finally {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // renamed or best-effort cleanup
+    }
+  }
+}
+
+const FILE_LOCK_STALE_MS = 30_000;
+const FILE_LOCK_WAIT_MS = 15_000;
+
+/** Serialize stale-lock recovery so a second reaper cannot unlink a successor. */
+async function reapAbandonedLock(lockPath) {
+  const reaperPath = `${lockPath}.reaper`;
+  let reaper;
+  try {
+    reaper = await open(reaperPath, 'wx', 0o600);
+  } catch (error) {
+    if (error && error.code === 'EEXIST') return false;
+    throw error;
+  }
+  try {
+    try {
+      if (Date.now() - statSync(lockPath).mtimeMs <= FILE_LOCK_STALE_MS) return false;
+    } catch {
+      return true;
+    }
+    await rm(lockPath, { force: true });
+    return true;
+  } finally {
+    await reaper.close().catch(() => undefined);
+    await rm(reaperPath, { force: true }).catch(() => undefined);
+  }
+}
+
+/** Owner-tagged cross-process lock; mirrors mcp-config.ts. */
+async function withOwnedFileLock(lockPath, timeoutMessage, operation) {
+  mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + FILE_LOCK_WAIT_MS;
+  const owner = `${process.pid}:${randomUUID()}`;
+  let handle;
+  while (!handle) {
+    try {
+      handle = await open(lockPath, 'wx', 0o600);
+      await handle.writeFile(owner, 'utf8');
+    } catch (error) {
+      if (handle) {
+        await handle.close().catch(() => undefined);
+        await rm(lockPath, { force: true }).catch(() => undefined);
+        handle = undefined;
+      }
+      if (!error || error.code !== 'EEXIST') throw error;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > FILE_LOCK_STALE_MS) {
+          if (await reapAbandonedLock(lockPath)) continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(timeoutMessage);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    await handle.close().catch(() => undefined);
+    let currentOwner = '';
+    try {
+      currentOwner = readFileSync(lockPath, 'utf8');
+    } catch {
+      // already recovered/removed
+    }
+    if (currentOwner === owner) await rm(lockPath, { force: true }).catch(() => undefined);
+  }
+}
+
+function serverAuthIdentity(server) {
+  if (!server || !server.url) return null;
+  const headers = server.headers
+    ? Object.fromEntries(Object.entries(server.headers).sort(([a], [b]) => a.localeCompare(b)))
+    : null;
+  const serialized = JSON.stringify([
+    server.url,
+    headers,
+    server.oauthClientId ?? null,
+    server.oauthClientSecret ?? null,
+    server.oauthScope ?? null
+  ]);
+  return createHash('sha256').update(serialized).digest('hex');
+}
+
+/** Legacy name-only tokens are never attached after the identity-stamp migration. */
+export function bridgeOAuthTokenForServer(server, token) {
+  const identity = serverAuthIdentity(server);
+  return identity && token && token.serverIdentity === identity ? token : null;
+}
+
+/**
+ * Persist one refreshed token only if both the config identity and token snapshot
+ * refreshed by this client are still current. This prevents an old bridge from
+ * overwriting a newer browser login or resurrecting credentials after removal.
+ */
+export async function persistBridgeOAuthToken(
+  oauthPath,
+  configPath,
+  name,
+  expectedAuth,
+  expectedIdentity,
+  auth
+) {
+  return withOwnedFileLock(`${configPath}.state.lock`, 'Timed out waiting to update MCP configuration.', async () => {
+    let config;
+    try {
+      config = JSON.parse(readFileSync(configPath, 'utf8')) || {};
+    } catch {
+      return false;
+    }
+    if (serverAuthIdentity(config.servers && config.servers[name]) !== expectedIdentity) return false;
+    return withOwnedFileLock(`${oauthPath}.lock`, 'Timed out waiting to update MCP OAuth credentials.', async () => {
+      let all = {};
+      try {
+        all = JSON.parse(readFileSync(oauthPath, 'utf8')) || {};
+      } catch {
+        return false;
+      }
+      if (!all[name] || JSON.stringify(all[name]) !== JSON.stringify(expectedAuth)) return false;
+      all[name] = { ...auth, serverIdentity: expectedIdentity };
+      writeSecretSync(oauthPath, JSON.stringify(all, null, 2));
+      return true;
+    });
+  });
 }
 
 /** Minimal MCP stdio client: newline-delimited JSON-RPC 2.0 over the child's stdio. */
@@ -161,7 +298,7 @@ class McpStdioClient {
 /** Refresh an expired OAuth access token in place. Confidential clients (with a
  * stored clientSecret, e.g. Slack) send it via client_secret_post; public clients
  * just send the client_id. No PKCE on refresh either way. */
-async function refreshOAuth(auth) {
+async function refreshOAuth(auth, signal) {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: auth.refreshToken,
@@ -172,7 +309,8 @@ async function refreshOAuth(auth) {
   const res = await fetch(auth.tokenEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-    body: body.toString()
+    body: body.toString(),
+    signal
   });
   if (!res.ok) throw new Error(`token refresh failed: HTTP ${res.status}`);
   const raw = await res.json();
@@ -194,7 +332,9 @@ async function refreshOAuth(auth) {
  * comes back 401. Handles both `application/json` and `text/event-stream`
  * responses and carries the `Mcp-Session-Id` the server returns on initialize.
  */
-class McpHttpClient {
+export const MCP_HTTP_REQUEST_TIMEOUT_MS = 30_000;
+
+export class McpHttpClient {
   constructor(name, spec, auth, persist) {
     this.name = name;
     this.url = spec.url;
@@ -204,23 +344,29 @@ class McpHttpClient {
     this.sessionId = null;
     this.nextId = 1;
     this.tools = [];
-    // Stateless (each call is a fresh fetch), so a cached HTTP client never goes
-    // stale — always alive for the connection-cache liveness check.
+    // Stateless (each call is a fresh fetch), so a successfully initialized HTTP
+    // client stays live in the cache. `stop()` flips this false for failed/stale
+    // entries so the next session factory knows it must reconnect.
     this.alive = true;
   }
 
-  start() {}
+  start() {
+    this.alive = true;
+  }
 
   /** No persistent resource to tear down; present for parity with the stdio client. */
-  stop() {}
+  stop() {
+    this.alive = false;
+  }
 
-  async authHeaders() {
+  async authHeaders(signal) {
     if (!this.auth) return {};
     // Proactively refresh if we know the token is within a minute of expiring.
     if (this.auth.refreshToken && this.auth.expiresAt && Date.now() > this.auth.expiresAt - 60000) {
       try {
-        await refreshOAuth(this.auth);
-        this.persist(this.auth);
+        const expectedAuth = { ...this.auth };
+        await refreshOAuth(this.auth, signal);
+        await this.persist(this.auth, expectedAuth);
       } catch {
         // fall through with the (possibly stale) token; a 401 retry may recover
       }
@@ -232,40 +378,60 @@ class McpHttpClient {
     const body = notify
       ? { jsonrpc: '2.0', method, params }
       : { jsonrpc: '2.0', id: this.nextId++, method, params };
-    const res = await fetch(this.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream',
-        ...(this.sessionId ? { 'Mcp-Session-Id': this.sessionId } : {}),
-        ...this.headers,
-        ...(await this.authHeaders())
-      },
-      body: JSON.stringify(body)
-    });
-    const sid = res.headers.get('mcp-session-id');
-    if (sid) this.sessionId = sid;
-    // A rejected token → refresh once and retry before surfacing the failure.
-    if (res.status === 401 && this.auth && this.auth.refreshToken && !retried) {
-      try {
-        await refreshOAuth(this.auth);
-        this.persist(this.auth);
-        return this.rpc(method, params, notify, true);
-      } catch {
-        // fall through to the error below
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error(`${this.name} ${method} timed out after ${MCP_HTTP_REQUEST_TIMEOUT_MS}ms`)),
+      MCP_HTTP_REQUEST_TIMEOUT_MS
+    );
+    timer.unref?.();
+    try {
+      const res = await fetch(this.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          ...(this.sessionId ? { 'Mcp-Session-Id': this.sessionId } : {}),
+          ...this.headers,
+          ...(await this.authHeaders(controller.signal))
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      const sid = res.headers.get('mcp-session-id');
+      if (sid) this.sessionId = sid;
+      // A rejected token → refresh once and retry before surfacing the failure.
+      if (res.status === 401 && this.auth && this.auth.refreshToken && !retried) {
+        try {
+          const expectedAuth = { ...this.auth };
+          await refreshOAuth(this.auth, controller.signal);
+          await this.persist(this.auth, expectedAuth);
+          return this.rpc(method, params, notify, true);
+        } catch {
+          if (controller.signal.aborted) throw controller.signal.reason;
+          // fall through to the error below
+        }
       }
+      if (notify) return null;
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${text.slice(0, 200)}`);
+      }
+      const ct = res.headers.get('content-type') || '';
+      const msg = ct.includes('text/event-stream')
+        ? parseSseResult(await res.text(), body.id)
+        : await res.json();
+      if (msg && msg.error) throw new Error(msg.error.message || 'MCP error');
+      return msg ? msg.result : null;
+    } catch (e) {
+      if (controller.signal.aborted) {
+        throw controller.signal.reason instanceof Error
+          ? controller.signal.reason
+          : new Error(`${this.name} ${method} timed out after ${MCP_HTTP_REQUEST_TIMEOUT_MS}ms`);
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
     }
-    if (notify) return null;
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status} ${text.slice(0, 200)}`);
-    }
-    const ct = res.headers.get('content-type') || '';
-    const msg = ct.includes('text/event-stream')
-      ? parseSseResult(await res.text(), body.id)
-      : await res.json();
-    if (msg && msg.error) throw new Error(msg.error.message || 'MCP error');
-    return msg ? msg.result : null;
   }
 
   async handshake() {
@@ -378,13 +544,70 @@ export function makeProtectedRootsGate(prPath) {
   };
 }
 
-/** True when `target` is at or inside `root` (lexical containment, both absolute). */
-// Exported for scripts/cfolders-verify.mjs (and makeProtectedRootsGate below); pi
-// only consumes the default export, so these named exports are inert at load time.
+/**
+ * Canonicalize an existing path, or a not-yet-created path through its nearest
+ * existing ancestor. The latter matters for `write`: the target file may not
+ * exist yet, while a parent directory can still be a symlink into a protected
+ * connected folder.
+ */
+export function canonicalPolicyPath(target, cwd = process.cwd()) {
+  // Match pi's resolveToCwd input normalization. The tool itself expands these
+  // forms, so checking their unexpanded spelling would authorize a different path.
+  let normalized = target.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
+  if (normalized.startsWith('@')) normalized = normalized.slice(1);
+  if (normalized === '~') normalized = homedir();
+  else if (normalized.startsWith('~/') || (process.platform === 'win32' && normalized.startsWith('~\\'))) {
+    normalized = join(homedir(), normalized.slice(2));
+  }
+  if (/^file:\/\//.test(normalized)) {
+    try {
+      normalized = fileURLToPath(normalized);
+    } catch {
+      // A malformed URL is rejected by the tool; keep the policy hook non-fatal.
+    }
+  }
+
+  let candidate = resolve(cwd, normalized);
+  try {
+    return realpathSync(candidate);
+  } catch {
+    // Resolve component-by-component below. lstat is essential here: unlike
+    // realpath, it can see and follow a dangling symlink whose destination is a
+    // not-yet-created write target inside a protected root.
+  }
+
+  for (let symlinks = 0; symlinks < 40; symlinks++) {
+    const root = parse(candidate).root;
+    const parts = candidate.slice(root.length).split(sep).filter(Boolean);
+    let cursor = root;
+    let followed = false;
+    for (let i = 0; i < parts.length; i++) {
+      const next = join(cursor, parts[i]);
+      let stat;
+      try {
+        stat = lstatSync(next);
+      } catch {
+        return resolve(cursor, ...parts.slice(i));
+      }
+      if (stat.isSymbolicLink()) {
+        candidate = resolve(dirname(next), readlinkSync(next), ...parts.slice(i + 1));
+        followed = true;
+        break;
+      }
+      cursor = next;
+    }
+    if (!followed) return candidate;
+  }
+  return candidate;
+}
+
+/** True when `target` is at or inside `root`, after resolving symlink aliases. */
+// Exported for scripts/cfolders-verify.mjs; pi only consumes the default export,
+// so these named exports are inert at load time.
 export function isInside(target, root) {
-  const rel = resolve(root) + sep;
-  const t = resolve(target);
-  return t === resolve(root) || t.startsWith(rel);
+  const r = canonicalPolicyPath(root);
+  const t = canonicalPolicyPath(target);
+  return t === r || t.startsWith(r + sep);
 }
 
 /**
@@ -749,36 +972,114 @@ function installProviderTee() {
 // then on each subsequent session only re-register the (cheap, no-network) tools
 // on that session's fresh `pi`. Module state persists because pi caches the
 // extension factory function across sessions (loadExtensionsCached).
-let sharedConn = null; // { key, clients: Map, recall: [{name,spec,client,tools}], status }
+let sharedConn = null; // { key, clients: Map, recall: [...], failed: [...], status, stale, recallReady, settled }
 
-/** Connect every configured server once; split recall (eager) from routed servers. */
-async function connectServers(servers, oauthTokens, persistAuth) {
-  const clients = new Map(); // name -> { client, spec, tools } (routed via meta-tools)
-  const recall = []; // [{ name, spec, client, tools }] (eager, registered natively)
-  const status = {};
+/** Connect one configured server (remote HTTP/OAuth or local stdio). Never throws. */
+async function connectOneServer(name, spec, oauthTokens, persistAuth) {
+  // Remote (Streamable HTTP — static header or OAuth) or local (stdio); both
+  // expose the same handshake()/callTool() surface.
+  const client = spec.url
+    ? new McpHttpClient(name, spec, bridgeOAuthTokenForServer(spec, oauthTokens[name]), (auth, expectedAuth) =>
+        persistAuth(name, spec, auth, expectedAuth))
+    : new McpStdioClient(name, spec);
+  try {
+    client.start();
+    const tools = await client.handshake();
+    return { ok: true, name, spec, client, tools };
+  } catch (e) {
+    try {
+      client.stop();
+    } catch {
+      // best-effort
+    }
+    return { ok: false, name, client, error: String((e && e.message) || e) };
+  }
+}
+
+/**
+ * Kick off every configured server's connection WITHOUT blocking the caller on
+ * the slow ones. pi awaits the extension factory before it answers any RPC, so a
+ * handshake awaited there delays the whole app's readiness — Stem's spawn-time
+ * get_state probe (20s) was timing out behind e.g. chrome-devtools launching a
+ * browser, and the serial loop paid the SUM of all handshakes. Only stem-recall
+ * is awaited by the factory (`recallReady`: a fast local stdio spawn whose native
+ * tools must exist before the first turn); routed servers connect in parallel and
+ * merge into the shared connection as they settle, republishing status + catalog
+ * so tools become available on the next turn. Until a server settles, its status
+ * is 'starting' (the Manage panel shows it as pending).
+ */
+function startConnections(servers, oauthTokens, persistAuth, publish) {
+  const conn = {
+    key: JSON.stringify(servers),
+    clients: new Map(), // name -> { client, spec, tools } (routed via meta-tools)
+    recall: [], // [{ name, spec, client, tools }] (eager, registered natively)
+    failed: [], // retained as alive:false so a later session retries them
+    status: {},
+    stale: false, // flipped when a rebuild supersedes this entry mid-connect
+    recallReady: Promise.resolve(),
+    settled: Promise.resolve()
+  };
+  const jobs = [];
   for (const [name, spec] of Object.entries(servers)) {
     if (spec.disabled) continue;
-    // Remote (Streamable HTTP — static header or OAuth) or local (stdio); both
-    // expose the same handshake()/callTool() surface.
-    const client = spec.url
-      ? new McpHttpClient(name, spec, oauthTokens[name], (auth) => persistAuth(name, auth))
-      : new McpStdioClient(name, spec);
-    try {
-      client.start();
-      const tools = await client.handshake();
-      if (name === RECALL_SERVER_NAME) recall.push({ name, spec, client, tools });
-      else clients.set(name, { client, spec, tools });
-      status[name] = { status: 'ready', error: null };
-    } catch (e) {
-      status[name] = { status: 'failed', error: String((e && e.message) || e) };
-    }
+    conn.status[name] = { status: 'starting', error: null };
+    const job = connectOneServer(name, spec, oauthTokens, persistAuth).then((res) => {
+      if (conn.stale) {
+        // A rebuild replaced this entry while we were handshaking — don't leak the child.
+        try {
+          res.client.stop();
+        } catch {
+          // best-effort
+        }
+        return;
+      }
+      if (res.ok) {
+        if (res.name === RECALL_SERVER_NAME) conn.recall.push(res);
+        else conn.clients.set(res.name, { client: res.client, spec: res.spec, tools: res.tools });
+        conn.status[res.name] = { status: 'ready', error: null };
+      } else {
+        // A discarded failure makes an empty/success-only cache look healthy
+        // forever. Keep a stopped client in the cache so the same liveness check
+        // used for later crashes forces a reconnect on the next session factory.
+        conn.failed.push(res.client);
+        conn.status[res.name] = { status: 'failed', error: res.error };
+      }
+      publish(conn);
+    });
+    if (name === RECALL_SERVER_NAME) conn.recallReady = job;
+    jobs.push(job);
   }
-  return { clients, recall, status };
+  conn.settled = Promise.all(jobs).then(() => conn);
+  return conn;
 }
 
 /** Every connected client in a cached connection (recall + routed). */
 function connClients(conn) {
-  return [...conn.recall.map((r) => r.client), ...[...conn.clients.values()].map((e) => e.client)];
+  return [
+    ...conn.recall.map((r) => r.client),
+    ...[...conn.clients.values()].map((e) => e.client),
+    ...(conn.failed ?? [])
+  ];
+}
+
+/** Test seam: clear module-level connections between focused bridge tests. */
+export function resetMcpConnectionCacheForTests() {
+  if (sharedConn) {
+    sharedConn.stale = true; // in-flight background connects must discard themselves
+    for (const client of connClients(sharedConn)) {
+      try {
+        client.stop();
+      } catch {
+        // best-effort
+      }
+    }
+  }
+  sharedConn = null;
+}
+
+/** Test seam: resolves once every in-flight background connect has settled. */
+export function mcpConnectionsSettledForTests() {
+  return sharedConn ? sharedConn.settled : Promise.resolve(null);
 }
 
 export default async function stemMcpBridge(pi) {
@@ -794,23 +1095,44 @@ export default async function stemMcpBridge(pi) {
 
   // OAuth tokens (from Stem's browser sign-in) live next to mcp.json; the bridge
   // injects them as bearer headers and rewrites the file when it refreshes one.
-  const oauthPath = join(dirname(cfgPath), 'mcp-oauth.json');
+  const oauthPath = process.env.STEM_PI_MCP_OAUTH || join(dirname(cfgPath), 'mcp-oauth.json');
   let oauthTokens = {};
   try {
     oauthTokens = JSON.parse(readFileSync(oauthPath, 'utf8')) || {};
   } catch {
     // none yet
   }
-  const persistAuth = (name, auth) => {
-    let all = {};
+  const persistAuth = async (name, spec, auth, expectedAuth) => {
     try {
-      all = JSON.parse(readFileSync(oauthPath, 'utf8')) || {};
+      return await persistBridgeOAuthToken(
+        oauthPath,
+        cfgPath,
+        name,
+        expectedAuth,
+        serverAuthIdentity(spec),
+        auth
+      );
     } catch {
-      // start fresh
+      // best-effort
+      return false;
     }
-    all[name] = auth;
+  };
+
+  // Publish connection status (getMcpStatus) and the names+signatures catalog the
+  // main process injects each turn (cheap discovery; full schemas come from
+  // describe_tool). Rewritten as each background connect settles; the catalog is
+  // always written so an empty object clears a stale one when nothing is routed.
+  const publish = (conn) => {
     try {
-      writeSecretSync(oauthPath, JSON.stringify(all, null, 2));
+      writeFileSync(join(dirname(cfgPath), 'mcp-status.json'), JSON.stringify(conn.status, null, 2));
+    } catch {
+      // best-effort
+    }
+    try {
+      writeFileSync(
+        join(dirname(cfgPath), 'mcp-catalog.json'),
+        JSON.stringify({ text: buildCatalogText(conn.clients) }, null, 2)
+      );
     } catch {
       // best-effort
     }
@@ -818,45 +1140,36 @@ export default async function stemMcpBridge(pi) {
 
   // (Re)connect only when there's no cache yet, the server set changed (defensive —
   // server changes go through a full process restart), or a cached child crashed.
-  // Otherwise reuse the live connections and skip the ~2s of handshakes entirely.
+  // Otherwise reuse the live connections and skip the handshakes entirely.
   const key = JSON.stringify(servers);
   if (!sharedConn || sharedConn.key !== key || !connClients(sharedConn).every((c) => c.alive !== false)) {
-    if (sharedConn) for (const c of connClients(sharedConn)) {
-      try {
-        c.stop();
-      } catch {
-        // best-effort teardown of the stale connection
+    if (sharedConn) {
+      sharedConn.stale = true; // in-flight connects from the old entry must discard themselves
+      for (const c of connClients(sharedConn)) {
+        try {
+          c.stop();
+        } catch {
+          // best-effort teardown of the stale connection
+        }
       }
     }
-    sharedConn = { key, ...(await connectServers(servers, oauthTokens, persistAuth)) };
+    sharedConn = startConnections(servers, oauthTokens, persistAuth, publish);
+    publish(sharedConn); // 'starting' placeholders + cleared catalog, visible immediately
   }
-  const { clients, recall, status } = sharedConn;
+  // Recall's native tools are needed from the very first turn, and its handshake is
+  // a fast local stdio spawn — the only connection the factory (and therefore pi's
+  // readiness) waits for.
+  await sharedConn.recallReady;
+  const { clients, recall } = sharedConn;
 
   // Register tools on THIS session's pi (cheap, no network). Recall stays eager
   // (native tools, used every turn); everything else is behind the router.
   for (const r of recall) for (const tool of r.tools) registerNativeMcpTool(pi, r.name, r.spec, r.client, tool);
 
-  // Register the router meta-tools over the connected servers.
+  // Register the router meta-tools over the connected servers. `clients` fills in
+  // live as background connects land, so their tools become invokable without
+  // re-running this factory.
   registerRouterTools(pi, clients);
-
-  // Publish connection status so Stem's main process can surface it (getMcpStatus).
-  try {
-    writeFileSync(join(dirname(cfgPath), 'mcp-status.json'), JSON.stringify(status, null, 2));
-  } catch {
-    // best-effort
-  }
-
-  // Publish the names+signatures catalog so the main process can inject it each
-  // turn (cheap discovery; full schemas come from describe_tool). Always written —
-  // an empty object clears a stale catalog when no routed servers are connected.
-  try {
-    writeFileSync(
-      join(dirname(cfgPath), 'mcp-catalog.json'),
-      JSON.stringify({ text: buildCatalogText(clients) }, null, 2)
-    );
-  } catch {
-    // best-effort
-  }
 
   // Stem self-management tools (list/add/remove MCP servers). Always available.
   registerAdminTools(pi, cfgPath);
@@ -939,9 +1252,8 @@ export default async function stemMcpBridge(pi) {
       if (!event || (event.toolName !== 'write' && event.toolName !== 'edit')) return undefined;
       const p = event.input && typeof event.input.path === 'string' ? event.input.path : null;
       if (!p) return undefined;
-      const abs = isAbsolute(p) ? p : resolve(process.cwd(), p);
       const roots = protectedRoots();
-      if (roots.some((root) => isInside(abs, root))) {
+      if (roots.some((root) => isInside(p, root))) {
         return { block: true, reason: 'This folder is connected to Stem read-only — editing it is not allowed. Ask the user to switch it to read & write in the Folders tab.' };
       }
       return undefined;
@@ -973,7 +1285,7 @@ export default async function stemMcpBridge(pi) {
   }
 }
 
-// ---- Stem admin: assistant self-manages MCP servers (edits mcp.json) ----
+// ---- Stem admin: assistant proposes MCP changes for main to apply ----
 
 const ADMIN_RESERVED = new Set(['stem-recall', 'stem-admin']);
 // Sentinel title so PiRuntime can distinguish an admin add/remove approval from
@@ -981,10 +1293,9 @@ const ADMIN_RESERVED = new Set(['stem-recall', 'stem-admin']);
 const ADMIN_APPROVAL_TITLE = 'stem-admin-approval';
 const ADMIN_VALID_NAME = /^[A-Za-z0-9_.-]+$/;
 
-// Read mcp.json for the admin tools. A genuinely missing file is a fresh config;
-// a file that exists but is corrupt must NOT be treated as empty — the add/remove
-// tools read-modify-write it, so an empty fallback would persist a wipe of every
-// user server. Preserve the bytes to a `.corrupt` sibling and throw instead.
+// Read mcp.json for list/remove validation. A genuinely missing file is a fresh
+// config; preserve corrupt bytes for diagnosis instead of silently treating them
+// as an empty server list.
 function readMcpJson(cfgPath) {
   let raw;
   try {
@@ -1089,8 +1400,8 @@ function buildServerEntry(params) {
       ...(oauthScope ? { oauthScope } : {})
     };
     const entry = { url, ...(headers ? { headers } : {}), ...oauth, trusted: true };
-    // `input` is shown on the approval card — carry the client id/scope so the
-    // user can verify them, but never surface the secret (show presence only).
+    // Runtime keeps this complete mutation payload private and emits a separately
+    // redacted approval card. Main needs the true secret if the user accepts.
     const input = {
       name,
       transport,
@@ -1098,7 +1409,7 @@ function buildServerEntry(params) {
       ...(headers ? { headers } : {}),
       ...(oauthClientId ? { oauthClientId } : {}),
       ...(oauthScope ? { oauthScope } : {}),
-      ...(oauthClientSecret ? { oauthClientSecret: '********' } : {})
+      ...(oauthClientSecret ? { oauthClientSecret } : {})
     };
     return { name, entry, input };
   }
@@ -1172,15 +1483,9 @@ function registerAdminTools(pi, cfgPath) {
       }
       const approved = await requestAdminApproval(ctx, { action: 'add', name: built.name, input: built.input });
       if (!approved) return { content: [{ type: 'text', text: `The user declined adding "${built.name}".` }], details: {} };
-      let config;
-      try {
-        config = readMcpJson(cfgPath);
-      } catch (e) {
-        return { content: [{ type: 'text', text: `Cannot update MCP config: ${e.message}` }], details: {}, isError: true };
-      }
-      config.servers = config.servers || {};
-      config.servers[built.name] = built.entry;
-      writeSecretSync(cfgPath, JSON.stringify(config, null, 2));
+      // The main process applies the accepted proposal through its serialized
+      // config writer before replying `true`. Keeping this extension read-only
+      // avoids stale read/modify/write snapshots clobbering concurrent UI edits.
       return { content: [{ type: 'text', text: `Added MCP server "${built.name}". It will be active after Stem reloads.` }], details: {} };
     }
   });
@@ -1210,8 +1515,8 @@ function registerAdminTools(pi, cfgPath) {
         return { content: [{ type: 'text', text: `No MCP server named "${name}" is configured.` }], details: {}, isError: true };
       const approved = await requestAdminApproval(ctx, { action: 'remove', name });
       if (!approved) return { content: [{ type: 'text', text: `The user declined removing "${name}".` }], details: {} };
-      delete config.servers[name];
-      writeSecretSync(cfgPath, JSON.stringify(config, null, 2));
+      // Main has already removed the server and its name-keyed OAuth token before
+      // approving this held request. Do not write the pre-approval config snapshot.
       return { content: [{ type: 'text', text: `Removed MCP server "${name}". It will stop being available after Stem reloads.` }], details: {} };
     }
   });

@@ -160,6 +160,16 @@ describe('Recall v2 authority and lifecycle', () => {
     expect(store.getFactDetails(id)?.status).toBe('superseded');
     expect(store.getAllFacts().some((f) => f.id === id)).toBe(true);
   });
+
+  it('restoring an expired fact clears the date that would immediately expire it again', () => {
+    const id = store.upsertFact('The user had an expiring reservation', {
+      validUntil: Math.floor(Date.now() / 1000) - 60
+    })!;
+    store.expireFacts();
+    expect(store.restoreSupersededFact(id)).toBe(true);
+    expect(store.getInjectableFacts().some((fact) => fact.id === id)).toBe(true);
+    expect(store.getFactDetails(id)?.validUntil).toBeNull();
+  });
 });
 
 describe('Recall v2 injection trust boundary', () => {

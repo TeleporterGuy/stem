@@ -8,6 +8,7 @@ import type {
   RuntimeStatus
 } from '../../shared/types';
 import { API_KEY_PROVIDER_IDS, providerName } from '../../shared/providers';
+import { RequestGate } from '../requestGate';
 
 // First-run / re-auth gate: the wizard shown instead of the app until Stem holds
 // working provider credentials. Drives the main-process ProviderAuth over IPC:
@@ -386,22 +387,43 @@ function LocalServerForm({
   const [test, setTest] = useState<LocalProviderTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const testGateRef = useRef(new RequestGate());
+  const configRef = useRef({ server, baseUrl });
+  configRef.current = { server, baseUrl };
+
+  function invalidateTest() {
+    testGateRef.current.invalidate();
+    setTest(null);
+    setTesting(false);
+  }
 
   function pickServer(id: LocalProviderId) {
+    invalidateTest();
     setServer(id);
-    setTest(null);
     setBaseUrl((cur) => (cur === LOCAL_SERVER_DEFAULTS.ollama || cur === LOCAL_SERVER_DEFAULTS.lmstudio ? LOCAL_SERVER_DEFAULTS[id] : cur));
   }
 
   async function runTest() {
+    const request = testGateRef.current.begin();
+    const tested = { server, baseUrl: baseUrl.trim() };
     setTesting(true);
     setTest(null);
     try {
-      setTest(await window.stem.testLocalProvider(server, baseUrl));
+      const result = await window.stem.testLocalProvider(tested.server, tested.baseUrl);
+      const current = configRef.current;
+      if (
+        testGateRef.current.isCurrent(request) &&
+        current.server === tested.server &&
+        current.baseUrl.trim() === tested.baseUrl
+      ) {
+        setTest(result);
+      }
     } catch {
-      setTest({ ok: false, error: 'The server could not be reached.' });
+      if (testGateRef.current.isCurrent(request)) {
+        setTest({ ok: false, error: 'The server could not be reached.' });
+      }
     } finally {
-      setTesting(false);
+      if (testGateRef.current.isCurrent(request)) setTesting(false);
     }
   }
 
@@ -446,8 +468,8 @@ function LocalServerForm({
           aria-label="Server URL"
           value={baseUrl}
           onChange={(e) => {
+            invalidateTest();
             setBaseUrl(e.target.value);
-            setTest(null);
           }}
         />
         {test && (
