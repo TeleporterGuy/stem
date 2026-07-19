@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process';
 import dns from 'node:dns';
 import net from 'node:net';
 import { createBackend, type ChatBackend } from './backend';
+import { handleIpc } from './ipc';
 import { log } from './log';
 import {
   CHAT_SEARCH_COMPLETION_TIMEOUT_MS,
@@ -859,8 +860,8 @@ function registerIpc(): void {
     overlayHandoffBarrier.supply(id, payload);
   });
 
-  ipcMain.handle('runtime:status', (): Promise<RuntimeStatus> => runtime!.status());
-  ipcMain.handle('runtime:login', async () => {
+  handleIpc('runtime:status', (): Promise<RuntimeStatus> => runtime!.status());
+  handleIpc('runtime:login', async () => {
     const status = await runtime!.login();
     // Signing in mid-session: start the scheduler now (idempotent) so tasks load and
     // catch-up runs without waiting for a restart.
@@ -869,7 +870,7 @@ function registerIpc(): void {
   });
 
   // ---- provider sign-in (onboarding wizard) ----
-  ipcMain.handle('auth:providerLogin', async (_e, provider: AuthProviderId) => {
+  handleIpc('auth:providerLogin', async (_e, provider: AuthProviderId) => {
     if (E2E) {
       // Scripted fake: surface the URL step, then complete, so the wizard's
       // whole state machine is exercised without a browser or network. The
@@ -884,7 +885,7 @@ function registerIpc(): void {
     if (!res.ok) return res;
     return { ok: true, status: await onAuthenticated() };
   });
-  ipcMain.handle('auth:setApiKey', async (_e, provider: ApiKeyProviderId, key: string) => {
+  handleIpc('auth:setApiKey', async (_e, provider: ApiKeyProviderId, key: string) => {
     if (E2E) {
       const status = await runtime!.login();
       void scheduler?.start(); // mirror onAuthenticated()
@@ -897,21 +898,21 @@ function registerIpc(): void {
     }
     return { ok: true, status: await onAuthenticated() };
   });
-  ipcMain.handle('auth:respond', (_e, requestId: string, value: string) => {
+  handleIpc('auth:respond', (_e, requestId: string, value: string) => {
     providerAuth?.respond(requestId, value);
   });
   // Authoritative liveness probe for a stored credential — used reactively to
   // classify a failed turn (expired/revoked OAuth token vs. a transient error).
-  ipcMain.handle('auth:check', async (_e, provider: string) => {
+  handleIpc('auth:check', async (_e, provider: string) => {
     if (E2E) return { alive: true };
     return { alive: await providerAuth!.isAlive(provider) };
   });
   // ---- local providers (Ollama / LM Studio) + provider removal ----
-  ipcMain.handle('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string) => {
+  handleIpc('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string) => {
     if (E2E) return { ok: true, models: ['stem-e2e-model'] };
     return probeLocalProvider(baseUrl);
   });
-  ipcMain.handle('providers:updateLocal', async (_e, id: LocalProviderId, patch: Partial<LocalProviderSettings>) => {
+  handleIpc('providers:updateLocal', async (_e, id: LocalProviderId, patch: Partial<LocalProviderSettings>) => {
     if (E2E) return { ok: true, status: await runtime!.login() };
     try {
       const settings = await updateLocalProvider(id, patch);
@@ -928,7 +929,7 @@ function registerIpc(): void {
     }
     return { ok: true, status: await onAuthenticated() };
   });
-  ipcMain.handle('providers:disconnect', async (_e, providerId: string) => {
+  handleIpc('providers:disconnect', async (_e, providerId: string) => {
     if (E2E) return { ok: true, status: await runtime!.status() };
     try {
       await providerAuth!.removeProvider(providerId);
@@ -942,11 +943,11 @@ function registerIpc(): void {
     }
     return { ok: true, status: await onAuthenticated() };
   });
-  ipcMain.handle('auth:cancel', () => {
+  handleIpc('auth:cancel', () => {
     providerAuth?.cancel();
   });
-  ipcMain.handle('auth:completeOnboarding', () => markOnboardingCompleted());
-  ipcMain.handle('backend:startTurn', async (_e, input: StartTurnInput) => {
+  handleIpc('auth:completeOnboarding', () => markOnboardingCompleted());
+  handleIpc('backend:startTurn', async (_e, input: StartTurnInput) => {
     // The user is actively chatting: yield any scheduler-owned turn (frees the
     // foreground gate) and hold scheduled runs off for a while.
     lastInteractiveAt = Date.now();
@@ -962,21 +963,21 @@ function registerIpc(): void {
       instructions: settings.customInstructions.main
     });
   });
-  ipcMain.handle('backend:interruptTurn', (_e, turnId: string) => {
+  handleIpc('backend:interruptTurn', (_e, turnId: string) => {
     lastInteractiveAt = Date.now();
     return runtime!.interruptTurn(turnId);
   });
-  ipcMain.handle('backend:newConversation', () => runtime!.newConversation());
-  ipcMain.handle('dialog:openFiles', () =>
+  handleIpc('backend:newConversation', () => runtime!.newConversation());
+  handleIpc('dialog:openFiles', () =>
     dialog
       .showOpenDialog(mainWindow!, { properties: ['openFile', 'multiSelections'] })
       .then((r) => (r.canceled ? [] : r.filePaths))
   );
-  ipcMain.handle('backend:listModels', () => runtime!.listModels());
+  handleIpc('backend:listModels', () => runtime!.listModels());
 
-  ipcMain.handle('skills:list', () => listSkills());
-  ipcMain.handle('skills:setEnabled', (_e, slug: string, enabled: boolean) => setSkillEnabled(slug, enabled));
-  ipcMain.handle('skills:curate', async () => {
+  handleIpc('skills:list', () => listSkills());
+  handleIpc('skills:setEnabled', (_e, slug: string, enabled: boolean) => setSkillEnabled(slug, enabled));
+  handleIpc('skills:curate', async () => {
     // Same hidden one-shot seam the curator uses; `force` bypasses the size floor
     // so a manual "Tidy up" always runs. Reload so pi rescans the updated skills.
     const llm: LlmClient = {
@@ -986,7 +987,7 @@ function registerIpc(): void {
     await runtime!.requestSkillReload();
     return listSkills();
   });
-  ipcMain.handle('skills:distillNow', async () => {
+  handleIpc('skills:distillNow', async () => {
     // Manual "collect now": drain the whole message backlog through the skill
     // distiller (force bypasses the min-batch gate), then reload so any new
     // skill activates immediately.
@@ -998,51 +999,51 @@ function registerIpc(): void {
     return listSkills();
   });
 
-  ipcMain.handle('files:list', () => listFiles());
-  ipcMain.handle('files:add', (_e, paths: string[], subdir?: string) => addFiles(paths, subdir));
-  ipcMain.handle('files:remove', (_e, rel: string) => removeFile(rel));
-  ipcMain.handle('files:reveal', () => revealFiles());
-  ipcMain.handle('files:preview', (_e, path: string) => imagePreviewDataUrl(path));
+  handleIpc('files:list', () => listFiles());
+  handleIpc('files:add', (_e, paths: string[], subdir?: string) => addFiles(paths, subdir));
+  handleIpc('files:remove', (_e, rel: string) => removeFile(rel));
+  handleIpc('files:reveal', () => revealFiles());
+  handleIpc('files:preview', (_e, path: string) => imagePreviewDataUrl(path));
 
   // ---- connected folders (external folders the assistant reads in place) ----
   // Distinct `cfolders:*` namespace — `folders:*` is the chat-folder tree above.
-  ipcMain.handle('cfolders:list', () => listConnectedFolders());
-  ipcMain.handle('cfolders:add', (_e, paths: string[]) => addConnectedFolders(paths));
-  ipcMain.handle('cfolders:update', (_e, id: string, patch: ConnectedFolderPatch) =>
+  handleIpc('cfolders:list', () => listConnectedFolders());
+  handleIpc('cfolders:add', (_e, paths: string[]) => addConnectedFolders(paths));
+  handleIpc('cfolders:update', (_e, id: string, patch: ConnectedFolderPatch) =>
     updateConnectedFolder(id, patch)
   );
-  ipcMain.handle('cfolders:remove', (_e, id: string) => removeConnectedFolder(id));
-  ipcMain.handle('cfolders:reveal', async (_e, id: string) => {
+  handleIpc('cfolders:remove', (_e, id: string) => removeConnectedFolder(id));
+  handleIpc('cfolders:reveal', async (_e, id: string) => {
     const path = await connectedFolderPath(id);
     if (path) await shell.openPath(path);
   });
-  ipcMain.handle('cfolders:revealWorkspace', () => shell.openPath(workspaceRoot()));
+  handleIpc('cfolders:revealWorkspace', () => shell.openPath(workspaceRoot()));
 
   // Scheduled tasks. Mutations return the fresh list (like the cfolders handlers).
-  ipcMain.handle('tasks:list', (): ScheduledTask[] => scheduler?.snapshot() ?? []);
-  ipcMain.handle('tasks:setEnabled', (_e, id: string, enabled: boolean) =>
+  handleIpc('tasks:list', (): ScheduledTask[] => scheduler?.snapshot() ?? []);
+  handleIpc('tasks:setEnabled', (_e, id: string, enabled: boolean) =>
     scheduler ? scheduler.setEnabled(id, enabled) : []
   );
-  ipcMain.handle('tasks:runNow', (_e, id: string) => scheduler?.runNow(id) ?? []);
-  ipcMain.handle('tasks:delete', (_e, id: string) => (scheduler ? scheduler.remove(id) : []));
-  ipcMain.handle('tasks:updateSchedule', (_e, id: string, patch: TaskSchedulePatch) =>
+  handleIpc('tasks:runNow', (_e, id: string) => scheduler?.runNow(id) ?? []);
+  handleIpc('tasks:delete', (_e, id: string) => (scheduler ? scheduler.remove(id) : []));
+  handleIpc('tasks:updateSchedule', (_e, id: string, patch: TaskSchedulePatch) =>
     scheduler ? scheduler.updateSchedule(id, patch.schedule) : []
   );
-  ipcMain.handle('dialog:openDirectory', () =>
+  handleIpc('dialog:openDirectory', () =>
     dialog
       .showOpenDialog(mainWindow!, { properties: ['openDirectory', 'multiSelections'] })
       .then((r) => (r.canceled ? [] : r.filePaths))
   );
 
-  ipcMain.handle('mcp:list', () => piMcp.listMcpServers());
-  ipcMain.handle('mcp:status', () => runtime!.getMcpStatus());
-  ipcMain.handle('mcp:add', (_e, input: McpServerInput) => piMcp.addMcpServer(input));
-  ipcMain.handle('mcp:remove', (_e, name: string) => piMcp.removeMcpServer(name));
-  ipcMain.handle('mcp:setEnabled', (_e, name: string, enabled: boolean) =>
+  handleIpc('mcp:list', () => piMcp.listMcpServers());
+  handleIpc('mcp:status', () => runtime!.getMcpStatus());
+  handleIpc('mcp:add', (_e, input: McpServerInput) => piMcp.addMcpServer(input));
+  handleIpc('mcp:remove', (_e, name: string) => piMcp.removeMcpServer(name));
+  handleIpc('mcp:setEnabled', (_e, name: string, enabled: boolean) =>
     piMcp.setMcpServerEnabled(name, enabled)
   );
-  ipcMain.handle('mcp:login', (_e, name: string) => runtime!.mcpLogin(name));
-  ipcMain.handle('mcp:adminDecision', async (_e, id: number | string, accept: boolean) => {
+  handleIpc('mcp:login', (_e, name: string) => runtime!.mcpLogin(name));
+  handleIpc('mcp:adminDecision', async (_e, id: number | string, accept: boolean) => {
     await runtime!.resolveAdminApproval(
       id,
       accept,
@@ -1059,7 +1060,7 @@ function registerIpc(): void {
         : undefined
     );
   });
-  ipcMain.handle(
+  handleIpc(
     'instructions:resolveApproval',
     async (_e, id: number | string, accept: boolean, surface: 'main' | 'quickChat', text: string) => {
       // Main is the sole writer of settings.json: apply the card's final text BEFORE
@@ -1075,20 +1076,20 @@ function registerIpc(): void {
       );
     }
   );
-  ipcMain.handle('runtime:restart', async () => {
+  handleIpc('runtime:restart', async () => {
     await runtime!.restart();
     return runtime!.status();
   });
 
-  ipcMain.handle('memory:get', () => getMemorySettings());
-  ipcMain.handle('memory:setEnabled', async (_e, enabled: boolean) => {
+  handleIpc('memory:get', () => getMemorySettings());
+  handleIpc('memory:setEnabled', async (_e, enabled: boolean) => {
     const settings = await setMemoryEnabled(enabled);
     // Restart applies the recall-MCP change to the live backend (no-op on the fake).
     await runtime!.restart();
     return settings;
   });
-  ipcMain.handle('memory:read', () => readMemoryFiles());
-  ipcMain.handle('memory:addNote', async (_e, text: string) => {
+  handleIpc('memory:read', () => readMemoryFiles());
+  handleIpc('memory:addNote', async (_e, text: string) => {
     const result = await addMemoryNote(String(text ?? ''));
     if (result.saved && result.factId != null) {
       // Canonicalize + reconcile off the acknowledgement path (same hidden
@@ -1101,49 +1102,49 @@ function registerIpc(): void {
     }
     return result;
   });
-  ipcMain.handle('memory:forget', async (_e, id: number) => {
+  handleIpc('memory:forget', async (_e, id: number) => {
     await forgetFact(id);
     return readMemoryFiles();
   });
-  ipcMain.handle('memory:setPinned', async (_e, id: number, pinned: boolean) => {
+  handleIpc('memory:setPinned', async (_e, id: number, pinned: boolean) => {
     storeSetFactPinned(id, pinned);
     return readMemoryFiles();
   });
-  ipcMain.handle('memory:confirmFact', async (_e, id: number) => {
+  handleIpc('memory:confirmFact', async (_e, id: number) => {
     storeConfirmFact(id);
     return readMemoryFiles();
   });
-  ipcMain.handle('memory:factDetails', (_e, id: number) => getFactDetails(id));
-  ipcMain.handle('memory:conflicts', () => getMemoryConflicts());
-  ipcMain.handle('memory:resolveConflict', async (_e, id: number, resolution: ConflictResolution) => {
+  handleIpc('memory:factDetails', (_e, id: number) => getFactDetails(id));
+  handleIpc('memory:conflicts', () => getMemoryConflicts());
+  handleIpc('memory:resolveConflict', async (_e, id: number, resolution: ConflictResolution) => {
     storeResolveMemoryConflict(id, resolution);
     return readMemoryFiles();
   });
-  ipcMain.handle('memory:restoreFact', async (_e, id: number) => {
+  handleIpc('memory:restoreFact', async (_e, id: number) => {
     storeRestoreSupersededFact(id);
     return readMemoryFiles();
   });
-  ipcMain.handle('memory:rebuildStatus', () => getMemoryRebuildStatus());
-  ipcMain.handle('memory:startRebuild', () => {
+  handleIpc('memory:rebuildStatus', () => getMemoryRebuildStatus());
+  handleIpc('memory:startRebuild', () => {
     const status = startMemoryRebuild();
     scheduleMemoryRebuild();
     return status;
   });
-  ipcMain.handle('memory:pauseRebuild', () => pauseMemoryRebuild());
-  ipcMain.handle('memory:resumeRebuild', () => {
+  handleIpc('memory:pauseRebuild', () => pauseMemoryRebuild());
+  handleIpc('memory:resumeRebuild', () => {
     const status = resumeMemoryRebuild();
     scheduleMemoryRebuild();
     return status;
   });
-  ipcMain.handle('memory:resetFacts', () => clearFactsMemory());
-  ipcMain.handle('memory:resetEpisodic', () => clearEpisodicMemory());
-  ipcMain.handle('memory:episodicStats', () => getEpisodicStats());
-  ipcMain.handle('memory:summaries', () => listThreadSummaries());
-  ipcMain.handle('memory:deleteSummary', (_e, id: number) => removeThreadSummary(id));
-  ipcMain.handle('memory:embeddingStats', async () =>
+  handleIpc('memory:resetFacts', () => clearFactsMemory());
+  handleIpc('memory:resetEpisodic', () => clearEpisodicMemory());
+  handleIpc('memory:episodicStats', () => getEpisodicStats());
+  handleIpc('memory:summaries', () => listThreadSummaries());
+  handleIpc('memory:deleteSummary', (_e, id: number) => removeThreadSummary(id));
+  handleIpc('memory:embeddingStats', async () =>
     getEmbeddingCacheStats(effectiveEmbedModelKey((await readSettings()).retrieval.embeddings))
   );
-  ipcMain.handle('embeddings:localStatus', async (): Promise<LocalEmbedStatus> => {
+  handleIpc('embeddings:localStatus', async (): Promise<LocalEmbedStatus> => {
     // Opening the panel doubles as a kick (idempotent while healthy), so someone
     // who goes straight to Memory → advanced right after launch sees the worker
     // start immediately instead of an idle state until the startup timer lands.
@@ -1151,13 +1152,13 @@ function registerIpc(): void {
     if (!E2E && e.mode === 'local') embedManager?.ensure(EMBED_CATALOG[e.localModel]);
     return embedManager?.status() ?? { model: 'multilingual-e5-small', state: 'idle' };
   });
-  ipcMain.handle('reranker:localStatus', async (): Promise<LocalRerankStatus> => {
+  handleIpc('reranker:localStatus', async (): Promise<LocalRerankStatus> => {
     // Same panel-open kick as embeddings:localStatus, for the reranker model.
     const r = (await readSettings()).retrieval.reranker;
     if (!E2E && r.mode === 'local') embedManager?.ensureRerank(RERANK_CATALOG[r.localModel]);
     return embedManager?.rerankStatus() ?? { model: DEFAULT_LOCAL_RERANK_MODEL, state: 'idle' };
   });
-  ipcMain.handle('memory:activeFacts', (_e, threadId: string | null): ActiveFacts | null => {
+  handleIpc('memory:activeFacts', (_e, threadId: string | null): ActiveFacts | null => {
     if (!threadId) return null;
     const rec = getActiveFactIds(threadId);
     if (!rec) return null;
@@ -1170,7 +1171,7 @@ function registerIpc(): void {
     }));
     return { facts, tier: rec.tier };
   });
-  ipcMain.handle('memory:previewFacts', async (_e, text: string): Promise<ActiveFacts> => {
+  handleIpc('memory:previewFacts', async (_e, text: string): Promise<ActiveFacts> => {
     const { facts, tier } = await previewFacts(text ?? '');
     return { facts: facts.map((f) => ({
       id: f.id,
@@ -1180,10 +1181,10 @@ function registerIpc(): void {
       reason: f.selectionReason
     })), tier };
   });
-  ipcMain.handle('memory:setEpisodicLimit', (_e, bytes: number) => setEpisodicLimit(bytes));
-  ipcMain.handle('memory:setTidyThreshold', (_e, n: number) => setTidyUpThreshold(n));
-  ipcMain.handle('memory:setMaxRelevantFacts', (_e, n: number) => setMaxRelevantFactCount(n));
-  ipcMain.handle('memory:consolidate', async () => {
+  handleIpc('memory:setEpisodicLimit', (_e, bytes: number) => setEpisodicLimit(bytes));
+  handleIpc('memory:setTidyThreshold', (_e, n: number) => setTidyUpThreshold(n));
+  handleIpc('memory:setMaxRelevantFacts', (_e, n: number) => setMaxRelevantFactCount(n));
+  handleIpc('memory:consolidate', async () => {
     // Same hidden one-shot seam distillation uses; `force` bypasses the size floor
     // so a manual run always executes.
     const llm: LlmClient = {
@@ -1211,17 +1212,17 @@ function registerIpc(): void {
     return { chats, folders };
   };
 
-  ipcMain.handle('chats:list', () => chatList());
+  handleIpc('chats:list', () => chatList());
   // Cross-language chat search: expand the query across Slovak+English (via the same
   // hidden LlmClient seam as recall), then match the dedicated FTS5 chat index. The
   // LLM is used regardless of the memory toggle — this is a foreground, user-initiated
   // search, not background capture — and degrades to same-language search if it fails.
   // Instant same-language results (no LLM) — the renderer shows these first, then swaps
   // in the cross-language superset from chats:search when expansion resolves.
-  ipcMain.handle('chats:searchFast', (_e, query: string) =>
+  handleIpc('chats:searchFast', (_e, query: string) =>
     searchChatsLexical(query, { llm: null, listChats: () => runtime!.listThreads() })
   );
-  ipcMain.handle('chats:search', (_e, query: string) => {
+  handleIpc('chats:search', (_e, query: string) => {
     // Reuse the hidden one-shot seam (on the memory model) for query expansion.
     const llm: LlmClient = {
       complete: async (prompt) =>
@@ -1232,7 +1233,7 @@ function registerIpc(): void {
     };
     return searchChats(query, { llm, listChats: () => runtime!.listThreads() });
   });
-  ipcMain.handle('chats:open', async (_e, threadId: string) => {
+  handleIpc('chats:open', async (_e, threadId: string) => {
     // Opening the overlay's live thread from the sidebar is an implicit hand-off:
     // route its events to the main window and drop the overlay/HUD so the two
     // views don't diverge.
@@ -1281,18 +1282,18 @@ function registerIpc(): void {
     const { title, messages } = await runtime!.readThread(threadId);
     return { threadId, title, messages };
   });
-  ipcMain.handle('chats:rollbackToTurn', (_e, threadId: string, turnId: string) =>
+  handleIpc('chats:rollbackToTurn', (_e, threadId: string, turnId: string) =>
     runtime!.rollbackToTurn(threadId, turnId)
   );
-  ipcMain.handle('chats:forkThread', (_e, threadId: string, turnId: string) =>
+  handleIpc('chats:forkThread', (_e, threadId: string, turnId: string) =>
     runtime!.forkThread(threadId, turnId)
   );
-  ipcMain.handle('chats:rename', async (_e, threadId: string, name: string) => {
+  handleIpc('chats:rename', async (_e, threadId: string, name: string) => {
     await runtime!.renameThread(threadId, name);
     // The title is indexed for search too — reflect the new name right away.
     void reindexChatThread(runtime!, threadId);
   });
-  ipcMain.handle('chats:delete', async (_e, threadId: string) => {
+  handleIpc('chats:delete', async (_e, threadId: string) => {
     // Independent stores (pi session file vs. folder-assignment JSON) — run concurrently.
     // Also drop any scheduled tasks bound to this chat (they'd otherwise run into a
     // missing thread; the scheduler guards against that too, but cleaning up is tidier).
@@ -1303,31 +1304,31 @@ function registerIpc(): void {
     ]);
     dropChatThread(threadId); // forget it from the search index
   });
-  ipcMain.handle('chats:setFolder', async (_e, threadId: string, folderId: string | null) => {
+  handleIpc('chats:setFolder', async (_e, threadId: string, folderId: string | null) => {
     await setChatFolder(threadId, folderId);
     return chatList();
   });
 
-  ipcMain.handle('folders:create', async (_e, name: string, parentId: string | null) => {
+  handleIpc('folders:create', async (_e, name: string, parentId: string | null) => {
     await createFolder(name, parentId);
     return chatList();
   });
-  ipcMain.handle('folders:rename', async (_e, folderId: string, name: string) => {
+  handleIpc('folders:rename', async (_e, folderId: string, name: string) => {
     await renameFolder(folderId, name);
     return chatList();
   });
-  ipcMain.handle('folders:delete', async (_e, folderId: string) => {
+  handleIpc('folders:delete', async (_e, folderId: string) => {
     await deleteFolder(folderId);
     return chatList();
   });
-  ipcMain.handle('folders:move', async (_e, folderId: string, parentId: string | null) => {
+  handleIpc('folders:move', async (_e, folderId: string, parentId: string | null) => {
     await moveFolder(folderId, parentId);
     return chatList();
   });
 
   // ---- settings + quick chat ----
-  ipcMain.handle('settings:get', () => readSettings());
-  ipcMain.handle('settings:updateQuickChat', async (_e, patch: Partial<QuickChatSettings>) => {
+  handleIpc('settings:get', () => readSettings());
+  handleIpc('settings:updateQuickChat', async (_e, patch: Partial<QuickChatSettings>) => {
     const next = await updateQuickChat(patch);
     // Apply the side effects the renderer can't: re-bind the global shortcut and
     // re-apply all-displays visibility to the live overlay window.
@@ -1344,32 +1345,32 @@ function registerIpc(): void {
     if ('finishSound' in patch) finishSound = next.quickChat.finishSound;
     return next;
   });
-  ipcMain.handle('settings:updateNativeWebSearch', async (_e, patch: Partial<NativeWebSearchSettings>) => {
+  handleIpc('settings:updateNativeWebSearch', async (_e, patch: Partial<NativeWebSearchSettings>) => {
     // Just persist — the value is applied per turn (the runtime writes the gate the
     // bridge reads, based on the originating context), so no restart/file write here.
     return updateNativeWebSearch(patch);
   });
-  ipcMain.handle('settings:updateEscapeAction', async (_e, action: EscapeAction) => {
+  handleIpc('settings:updateEscapeAction', async (_e, action: EscapeAction) => {
     // Just persist — the renderer reads escapeAction fresh from settings (mount +
     // window focus) and acts on it locally in the composer.
     return updateEscapeAction(action);
   });
-  ipcMain.handle('settings:updateMemory', async (_e, patch: Partial<MemoryModelSettings>) => {
+  handleIpc('settings:updateMemory', async (_e, patch: Partial<MemoryModelSettings>) => {
     // Just persist — the LlmClient closures read the model fresh from settings on
     // each memory turn, so the change applies to the next distill/tidy-up.
     return updateMemorySettings(patch);
   });
-  ipcMain.handle('settings:updateSkills', async (_e, patch: Partial<SkillsModelSettings>) => {
+  handleIpc('settings:updateSkills', async (_e, patch: Partial<SkillsModelSettings>) => {
     // Just persist — the curator's LlmClient reads the model fresh from settings on
     // each pass, so the change applies to the next curation run.
     return updateSkillsSettings(patch);
   });
-  ipcMain.handle('settings:updateCustomInstructions', async (_e, patch: Partial<CustomInstructionsSettings>) => {
+  handleIpc('settings:updateCustomInstructions', async (_e, patch: Partial<CustomInstructionsSettings>) => {
     // Just persist — startTurn/quickchat:run read the instructions fresh per turn, so
     // the change applies to the next turn with no restart.
     return updateCustomInstructions(patch);
   });
-  ipcMain.handle('settings:updateRetrieval', async (_e, patch: PartialRetrievalSettings) => {
+  handleIpc('settings:updateRetrieval', async (_e, patch: PartialRetrievalSettings) => {
     // Persist — the embeddings/rerank clients read their config fresh from settings
     // on each turn, so the change applies to the next fact-ranking pass. The local
     // worker is the one stateful piece: kick it immediately on a mode/model change
@@ -1394,7 +1395,7 @@ function registerIpc(): void {
     }
     return next;
   });
-  ipcMain.handle('settings:testRetrieval', async (_e, stage: RetrievalStage): Promise<RetrievalTestResult> => {
+  handleIpc('settings:testRetrieval', async (_e, stage: RetrievalStage): Promise<RetrievalTestResult> => {
     // Live one-shot probe of the configured backend so the user can confirm it
     // actually responds (the fact-ranking path is otherwise silent).
     const retrieval = (await readSettings()).retrieval;
@@ -1467,7 +1468,7 @@ function registerIpc(): void {
   // Run a prompt in the overlay's own thread. For a fresh session we pre-create
   // the thread (so its events route correctly from the very first event), then
   // hide the overlay and raise the HUD — the disappear→HUD half of the cycle.
-  ipcMain.handle('quickchat:run', async (_e, prompt: QuickChatPrompt): Promise<StartTurnResult> => {
+  handleIpc('quickchat:run', async (_e, prompt: QuickChatPrompt): Promise<StartTurnResult> => {
     // Quick Chat is the latency-sensitive surface — yield any scheduler-owned turn.
     lastInteractiveAt = Date.now();
     scheduler?.preemptForUser();
@@ -1558,7 +1559,7 @@ function registerIpc(): void {
   });
 
   // Forget the current overlay thread so the next prompt opens a fresh one.
-  ipcMain.handle('quickchat:newThread', () => {
+  handleIpc('quickchat:newThread', () => {
     overlayHandedOff = false;
     hudTextSeen = false;
     hideHud();
@@ -1571,7 +1572,7 @@ function registerIpc(): void {
 
   // Hand the conversation off to the main window: route future events there,
   // reveal the main window, and have it adopt the thread as the active chat.
-  ipcMain.handle('quickchat:handoff', (_e, payload: QuickChatHandoff) => {
+  handleIpc('quickchat:handoff', (_e, payload: QuickChatHandoff) => {
     const bufferedEvents = overlayHandoffBarrier.cancelCurrent();
     overlayHandedOff = true;
     overlayTurnRunning = false;
@@ -1587,15 +1588,15 @@ function registerIpc(): void {
   });
 
   // Re-summon the overlay (HUD click). Same path as the shortcut.
-  ipcMain.handle('quickchat:reveal', () => {
+  handleIpc('quickchat:reveal', () => {
     if (!quickChatWindow?.isVisible()) toggleQuickChat();
   });
 
   // Raise the main window (follow-me pill click). Returning focus to the main
   // window fires the 'focus' handler, which hides the pill.
-  ipcMain.handle('main:reveal', () => revealMainWindow());
+  handleIpc('main:reveal', () => revealMainWindow());
 
-  ipcMain.handle('quickchat:hide', () => {
+  handleIpc('quickchat:hide', () => {
     dismissQuickChat();
   });
 }

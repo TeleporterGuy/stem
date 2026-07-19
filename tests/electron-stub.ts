@@ -11,6 +11,25 @@ export const app = {
   getAppPath: () => process.cwd()
 };
 
+// ipc.ts registers invoke handlers through this fake; tests drive them via
+// _invoke to exercise the sender/args guard end-to-end.
+type IpcHandler = (event: unknown, ...args: unknown[]) => unknown;
+const ipcHandlers = new Map<string, IpcHandler>();
+export const ipcMain = {
+  handle: (channel: string, handler: IpcHandler) => {
+    ipcHandlers.set(channel, handler);
+  },
+  removeHandler: (channel: string) => {
+    ipcHandlers.delete(channel);
+  },
+  on: (_channel: string, _handler: IpcHandler) => {},
+  _invoke: (channel: string, event: unknown, ...args: unknown[]): unknown => {
+    const handler = ipcHandlers.get(channel);
+    if (!handler) throw new Error(`no handler for ${channel}`);
+    return handler(event, ...args);
+  }
+};
+
 export const shell = {
   showItemInFolder: () => {},
   openPath: async () => '',
@@ -31,4 +50,4 @@ export const safeStorage = {
   }
 };
 
-export default { app, shell, safeStorage };
+export default { app, ipcMain, shell, safeStorage };
