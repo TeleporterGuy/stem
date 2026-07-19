@@ -167,10 +167,14 @@ describe('normalizeExplicitNote / processExplicitNote', () => {
 describe('long notes: extractNoteFacts', () => {
   // A wall of text long enough to cross the split threshold.
   const wall = `Trip notes. ${'Flight details and packing thoughts. '.repeat(20)}We fly to Ghent on 17 July, staying at Hotel Harmony, booking ref GH-4411. Miriam is vegetarian.`;
+  // validUntil must lie in the future: expireFacts() retires past-dated facts on
+  // every store read. (A hardcoded date here once turned into a time bomb — the
+  // suite started failing the day the fixture's trip dates passed.)
+  const tripDay = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
   const claimsReply = JSON.stringify({
     claims: [
-      { text: 'The user flies to Ghent on 2026-07-17.', category: 'schedule', sensitivity: 'sensitive', validUntil: '2026-07-17' },
-      { text: 'The user is staying at Hotel Harmony in Ghent, booking ref GH-4411.', category: 'schedule', sensitivity: 'sensitive', validUntil: '2026-07-17' },
+      { text: `The user flies to Ghent on ${tripDay}.`, category: 'schedule', sensitivity: 'sensitive', validUntil: tripDay },
+      { text: 'The user is staying at Hotel Harmony in Ghent, booking ref GH-4411.', category: 'schedule', sensitivity: 'sensitive', validUntil: tripDay },
       { text: "The user's companion Miriam is vegetarian.", category: 'relationship', sensitivity: 'standard', validUntil: null }
     ]
   });
