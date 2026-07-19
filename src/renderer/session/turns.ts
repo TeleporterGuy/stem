@@ -1,0 +1,435 @@
+// Shared turn-lifecycle orchestration for the main window and the Quick Chat
+// overlay. Before this module each window hand-maintained its own copy of the
+// streaming state machine (event application, settled-turn race guards, pending
+// send bookkeeping, interrupt/rerun flows) and the copies had drifted. The parts
+// that genuinely differ between the windows — draft→real-thread migration in
+// main, thread adoption in the overlay — stay host-side, injected via callbacks.
+
+import type {
+  BackendEventEnvelope,
+  ChatMessage,
+  MessageMeta,
+  StartTurnResult,
+  ThreadStatus,
+  TurnAttachment
+} from '../../shared/types';
+import {
+  EMPTY_STATE,
+  appendSystemMessage,
+  applyBackendEventToThread,
+  applyProcessExitToThread,
+  backendEventThreadId,
+  type ThreadState
+} from '../chatState';
+import { createEventBatcher } from '../eventBatcher';
+import { optimisticMessageAttachments, resendAttachments, toMessageAttachments } from '../attachments';
+import { deletePendingIfCurrent, interruptibleTurnId, pendingStartBlocksSend } from '../pendingTurn';
+import { SessionStore } from './store';
+
+/** Bound on the defensive settled-turn race set. Entries normally disappear when
+ * their matching start response arrives a moment later. */
+export const SETTLED_TURN_CAP = 256;
+
+export type TurnSettledMethod = 'turn/completed' | 'turn/failed' | 'turn/aborted';
+
+function isSettledMethod(method: string): method is TurnSettledMethod {
+  return method === 'turn/completed' || method === 'turn/failed' || method === 'turn/aborted';
+}
+
+/** Terminal events can beat the start-turn IPC response on very fast turns.
+ * Remember them briefly so the late response cannot resurrect activeTurnId. */
+export class SettledTurns {
+  private ids = new Set<string>();
+
+  note(turnId: string): void {
+    this.ids.add(turnId);
+    if (this.ids.size > SETTLED_TURN_CAP) {
+      const oldest = this.ids.values().next().value as string | undefined;
+      if (oldest) this.ids.delete(oldest);
+    }
+  }
+
+  /** True (and forgets the id) when this turn already settled — i.e. its terminal
+   * event beat the start IPC response. */
+  consume(turnId: string | null | undefined): boolean {
+    return turnId ? this.ids.delete(turnId) : false;
+  }
+}
+
+/** An in-flight send, kept so Escape-to-retract/Stop can recover the turn id (and
+ * the original text/attachments) even before startTurn resolves. Keyed by state
+ * key (thread id, the main window's DRAFT sentinel, or the overlay's key). */
+export interface PendingSend {
+  promise: Promise<StartTurnResult>;
+  turnId: string | null;
+  /** Real thread id, set on resolution (refs lag a commit behind the await). */
+  threadId: string | null;
+  /** Marks a send that created the chat, so retract deletes it instead of rolling back. */
+  isNewChat: boolean;
+  text: string;
+  attachments: TurnAttachment[];
+  /** DRAFT generation this start belongs to; absent for real threads. */
+  draftGeneration?: number;
+  /** Sent draft snapshot, retained even if the visible DRAFT is replaced. */
+  draftMessages?: ChatMessage[];
+}
+
+export interface SessionCore {
+  store: SessionStore;
+  /** turnId → which model/effort/speed produced that turn's reply (avatar
+   * tooltip). Turn ids are unique across threads, so one map serves every slice. */
+  turnMeta: Map<string, MessageMeta>;
+  settledTurns: SettledTurns;
+  pendingSends: Map<string, PendingSend>;
+  nextSendNonce(): number;
+}
+
+export function createSessionCore(): SessionCore {
+  let nonce = 0;
+  return {
+    store: new SessionStore(),
+    turnMeta: new Map(),
+    settledTurns: new SettledTurns(),
+    pendingSends: new Map(),
+    nextSendNonce: () => ++nonce
+  };
+}
+
+// ---- Backend event pipeline ----
+
+export interface TurnEventHost {
+  /** Map an event's thread id to the state key it applies to; null drops it.
+   * Hosts do their filtering here (deleted threads in main, the ignore set and
+   * thread-id adoption in the overlay). `threadId` is undefined for thread-less
+   * events (process/exit is handled before routing and never reaches this). */
+  routeEvent(threadId: string | undefined, event: BackendEventEnvelope): string | null;
+  /** Status the slice settles into (drives the chat row's dot). */
+  settledStatus(method: TurnSettledMethod, threadId: string): ThreadStatus;
+  /** Every turn/failed, before routing — main classifies auth-looking failures. */
+  onTurnFailed?(error: string | undefined, turnId: string | undefined): void;
+  /** After process-exit state is applied; wasRunning = some slice was mid-turn. */
+  onProcessExit?(wasRunning: boolean): void;
+}
+
+export interface AttachedEvents {
+  detach(): void;
+  /** Synchronously apply buffered deltas (see EventBatcher.flush). */
+  flush(): void;
+}
+
+interface AttachOptions {
+  /** Injectable for tests; defaults to the preload bridge subscription. */
+  subscribe?(handler: (event: BackendEventEnvelope) => void): () => void;
+  /** Injectable for tests (the real batcher touches rAF/document). */
+  makeBatcher?: typeof createEventBatcher;
+}
+
+/**
+ * Install the batched backend-event subscription: deltas are coalesced to one
+ * state update per animation frame; everything else applies immediately, after
+ * flushing that thread's buffered delta so ordering is preserved exactly.
+ */
+export function attachBackendEvents(
+  core: SessionCore,
+  host: TurnEventHost,
+  opts: AttachOptions = {}
+): AttachedEvents {
+  const { store } = core;
+
+  const applyEvent = (event: BackendEventEnvelope): void => {
+    if (event.method === 'process/exit') {
+      // The backend died: every in-flight turn is gone. Reset all slices, drop
+      // pending sends (their start promises reject, or their turns will never
+      // settle), and let the host classify a possible auth-death.
+      const wasRunning = Object.values(store.snapshot()).some((s) => s.running);
+      store.update((prev) => {
+        const next: Record<string, ThreadState> = {};
+        for (const [key, s] of Object.entries(prev)) next[key] = applyProcessExitToThread(s);
+        return next;
+      });
+      core.pendingSends.clear();
+      host.onProcessExit?.(wasRunning);
+      return;
+    }
+
+    const threadId = backendEventThreadId(event);
+    if (event.method === 'turn/failed') {
+      const params = event.params as { error?: string; turn?: { id?: string } } | undefined;
+      host.onTurnFailed?.(params?.error, params?.turn?.id);
+    }
+    if (isSettledMethod(event.method)) {
+      const turnId = (event.params as { turn?: { id?: string } } | undefined)?.turn?.id;
+      if (turnId) {
+        // Global bookkeeping happens before routing so a dropped (deleted/
+        // ignored) thread still clears its pending record and the settled-race
+        // guard still sees the terminal event.
+        core.settledTurns.note(turnId);
+        for (const [key, pending] of core.pendingSends) {
+          if (pending.turnId === turnId) core.pendingSends.delete(key);
+        }
+      }
+    }
+
+    const key = host.routeEvent(threadId, event);
+    if (!key) return;
+    store.update((prev) => {
+      const next = applyBackendEventToThread(prev[key] ?? EMPTY_STATE, event, {
+        turnMeta: core.turnMeta,
+        settledStatus: (method, id) => host.settledStatus(method, id)
+      });
+      return next ? { ...prev, [key]: next } : prev;
+    });
+  };
+
+  const batcher = (opts.makeBatcher ?? createEventBatcher)(applyEvent);
+  const subscribe = opts.subscribe ?? ((handler) => window.stem.onBackendEvent(handler));
+  const unsubscribe = subscribe((event) => batcher.push(event));
+  return {
+    detach: unsubscribe,
+    flush: () => batcher.flush()
+  };
+}
+
+// ---- Sending a turn ----
+
+export interface SendSpec {
+  /** State key the optimistic bubble and run state live under. */
+  key: string;
+  text: string;
+  attachments: TurnAttachment[];
+  /** Stamped into turnMeta so the reply's avatar tooltip knows what produced it. */
+  meta: MessageMeta;
+  /** This send creates the chat (retract must delete it, not roll back). */
+  isNewChat: boolean;
+  /** DRAFT generation this send belongs to (main-window drafts only). Presence
+   * also switches the double-send guard to per-generation blocking. */
+  draftGeneration?: number;
+  /** Capture the sent slice for a later draft→real migration (main window). */
+  captureDraftMessages?: boolean;
+  start(input: { text: string; attachments: TurnAttachment[] }): Promise<StartTurnResult>;
+  /** Host continuation for a real (non-handled) start: draft→real migration in
+   * main, thread adoption in the overlay. Runs regardless of ownership — hosts
+   * do their own ownership checks (main still migrates a superseded draft's turn
+   * under its real id; the overlay bails out). */
+  onStarted?(
+    result: StartTurnResult,
+    ctx: { pending: PendingSend; alreadySettled: boolean; userMsgId: string }
+  ): void;
+  /** After a handled (no-turn) result is applied; only called for the key's owner. */
+  onHandled?(result: StartTurnResult): void;
+}
+
+/**
+ * The shared optimistic-send skeleton: double-send guard, optimistic user bubble,
+ * pending-send registration, async attachment-thumbnail upgrade, settled-race
+ * handling, handled-result application, and the ownership-guarded error path.
+ */
+export async function sendTurn(core: SessionCore, spec: SendSpec): Promise<void> {
+  const { store, pendingSends } = core;
+  const { key } = spec;
+  // Registration below is synchronous, so this closes the double-click window
+  // before the store commits `running`. A key — especially the main window's
+  // shared DRAFT sentinel — must never own two unresolved starts.
+  if (
+    pendingStartBlocksSend(pendingSends.get(key), spec.draftGeneration !== undefined, spec.draftGeneration ?? 0) ||
+    store.getThread(key)?.running
+  ) {
+    return;
+  }
+
+  const sentAttachments = spec.attachments.map((att) => ({ ...att }));
+  const userMsgId = `user-${Date.now()}-${core.nextSendNonce()}`;
+  const optimisticMessage: ChatMessage = {
+    id: userMsgId,
+    role: 'user',
+    content: spec.text,
+    attachments: sentAttachments.length ? optimisticMessageAttachments(sentAttachments) : undefined,
+    turnAttachments: sentAttachments,
+    createdAt: new Date().toISOString()
+  };
+  const draftMessages = spec.captureDraftMessages
+    ? [...(store.getThread(key)?.messages ?? []), optimisticMessage]
+    : undefined;
+  store.patch(key, (s) => ({
+    messages: [...s.messages, optimisticMessage],
+    running: true,
+    activity: null,
+    activities: [],
+    status: 'running'
+  }));
+
+  const startPromise = Promise.resolve().then(() =>
+    spec.start({ text: spec.text, attachments: sentAttachments })
+  );
+  const pending: PendingSend = {
+    promise: startPromise,
+    turnId: null,
+    threadId: null,
+    isNewChat: spec.isNewChat,
+    text: spec.text,
+    attachments: sentAttachments,
+    ...(spec.draftGeneration !== undefined ? { draftGeneration: spec.draftGeneration } : {}),
+    ...(draftMessages ? { draftMessages } : {})
+  };
+  pendingSends.set(key, pending);
+
+  // Upgrade on-disk image chips to thumbnails independently of turn startup.
+  // Failure is display-only; the backend still receives the original inputs. The
+  // bubble is looked up across every slice because a draft may migrate to its
+  // real thread while the preview read is in flight.
+  if (sentAttachments.length) {
+    void toMessageAttachments(sentAttachments)
+      .then((displayAttachments) => {
+        store.update((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const [k, state] of Object.entries(prev)) {
+            if (!state.messages.some((m) => m.id === userMsgId)) continue;
+            next[k] = {
+              ...state,
+              messages: state.messages.map((m) =>
+                m.id === userMsgId ? { ...m, attachments: displayAttachments } : m
+              )
+            };
+            changed = true;
+          }
+          return changed ? next : prev;
+        });
+      })
+      .catch(() => undefined);
+  }
+
+  try {
+    const result = await startPromise;
+    pending.turnId = result.turnId ?? null;
+    pending.threadId = result.threadId ?? null;
+    const alreadySettled = core.settledTurns.consume(result.turnId);
+    if (result.turnId) core.turnMeta.set(result.turnId, spec.meta);
+    if (result.handled) {
+      // An older abandoned start may finish after a newer one replaced it. Only
+      // the key's current owner may settle this slice.
+      if (!deletePendingIfCurrent(pendingSends, key, pending)) return;
+      store.patch(key, (s) => ({
+        messages: result.assistantMessage
+          ? [
+              ...s.messages,
+              {
+                id: `assistant-${Date.now()}`,
+                role: 'assistant' as const,
+                content: result.assistantMessage
+              }
+            ]
+          : s.messages,
+        running: false,
+        activeTurnId: null,
+        status: 'idle'
+      }));
+      spec.onHandled?.(result);
+      return;
+    }
+    spec.onStarted?.(result, { pending, alreadySettled, userMsgId });
+  } catch (e) {
+    // A stale failure belongs to the abandoned send, not to whichever newer send
+    // now occupies the key.
+    if (deletePendingIfCurrent(pendingSends, key, pending)) {
+      store.patch(key, (s) => appendSystemMessage(s, e));
+    }
+  }
+}
+
+// ---- Turn actions shared by both windows ----
+
+interface InterruptOptions {
+  /** Key the pending send and activeTurnId are looked up under. */
+  pendingKey: string;
+  /** Where the stopped patch lands; defaults to pendingKey. Main resolves the
+   * real thread id here (a draft's send may have migrated mid-flight). */
+  resolveTargetKey?(pending: PendingSend | undefined): string;
+  /** Injectable for tests; defaults to the preload bridge. */
+  interrupt?(turnId: string): Promise<void>;
+}
+
+/** Stop the visible chat's running turn. If the start IPC has not returned yet,
+ * wait for it to learn the interruptible turn id instead of pretending the turn
+ * stopped locally while the backend continues. */
+export async function interruptActiveTurn(core: SessionCore, opts: InterruptOptions): Promise<void> {
+  const pending = core.pendingSends.get(opts.pendingKey);
+  const turnId = await interruptibleTurnId(core.store.getThread(opts.pendingKey)?.activeTurnId, pending);
+  if (!turnId) return; // handled/rejected starts settle through their own send path
+  const targetKey = opts.resolveTargetKey?.(pending) ?? opts.pendingKey;
+  const doInterrupt = opts.interrupt ?? ((id: string) => window.stem.interruptTurn(id));
+  try {
+    await doInterrupt(turnId);
+    core.store.patch(targetKey, () => ({
+      running: false,
+      streamingId: null,
+      activity: null,
+      activities: [],
+      activeTurnId: null,
+      status: 'idle' as const
+    }));
+  } catch (e) {
+    core.store.patch(targetKey, (s) => appendSystemMessage(s, e));
+  }
+}
+
+interface RerunOptions {
+  key: string;
+  /** Backend thread the rollback applies to (the overlay's key isn't a thread id). */
+  threadId: string;
+  turnId: string;
+  text: string;
+  send(text: string, attachments: TurnAttachment[]): void;
+  rollback?(threadId: string, turnId: string): Promise<void>;
+}
+
+/** Roll back to (and including) a turn on the backend, drop that turn and
+ * everything after it from the visible slice, then re-send `text` as a fresh
+ * turn. Shared by retry (same text) and edit (new text). No-op while running. */
+export async function rerunFromTurn(core: SessionCore, opts: RerunOptions): Promise<void> {
+  const slice = core.store.getThread(opts.key);
+  if (!slice || slice.running) return;
+  const userIdx = slice.messages.findIndex((m) => m.turnId === opts.turnId && m.role === 'user');
+  if (userIdx === -1) return;
+  const originalAttachments = resendAttachments(slice.messages[userIdx]);
+  const doRollback = opts.rollback ?? ((t: string, id: string) => window.stem.rollbackToTurn(t, id));
+  try {
+    await doRollback(opts.threadId, opts.turnId);
+  } catch (e) {
+    core.store.patch(opts.key, (s) => appendSystemMessage(s, e));
+    return;
+  }
+  // Truncate to before this turn's user message; `send` re-appends + streams.
+  core.store.patch(opts.key, (s) => ({ messages: s.messages.slice(0, userIdx) }));
+  opts.send(opts.text, originalAttachments);
+}
+
+interface DeleteFromTurnOptions {
+  key: string;
+  threadId: string;
+  turnId: string;
+  /** Deleting the first turn would hit rollback's "no earlier history" guard, so
+   * that case removes the whole chat — how is host-specific. */
+  onDeleteFirstTurn(): void | Promise<void>;
+  rollback?(threadId: string, turnId: string): Promise<void>;
+}
+
+/** Delete this turn and everything after it (same JSONL trim as retry, no re-send). */
+export async function deleteFromTurn(core: SessionCore, opts: DeleteFromTurnOptions): Promise<void> {
+  const slice = core.store.getThread(opts.key);
+  if (!slice || slice.running) return;
+  const userIdx = slice.messages.findIndex((m) => m.turnId === opts.turnId && m.role === 'user');
+  if (userIdx === -1) return;
+  if (userIdx === 0) {
+    await opts.onDeleteFirstTurn();
+    return;
+  }
+  const doRollback = opts.rollback ?? ((t: string, id: string) => window.stem.rollbackToTurn(t, id));
+  try {
+    await doRollback(opts.threadId, opts.turnId);
+  } catch (e) {
+    core.store.patch(opts.key, (s) => appendSystemMessage(s, e));
+    return;
+  }
+  core.store.patch(opts.key, (s) => ({ messages: s.messages.slice(0, userIdx) }));
+}

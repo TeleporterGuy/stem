@@ -14,6 +14,10 @@ interface DeltaBuffer {
 
 export interface EventBatcher {
   push(event: BackendEventEnvelope): void;
+  /** Synchronously apply every buffered delta — used before reading a state
+   * snapshot that must include everything already delivered (e.g. the Quick
+   * Chat handoff), since a delta can sit buffered for up to one frame. */
+  flush(): void;
 }
 
 export function createEventBatcher(apply: (event: BackendEventEnvelope) => void): EventBatcher {
@@ -90,6 +94,9 @@ export function createEventBatcher(apply: (event: BackendEventEnvelope) => void)
       if (threadId) flushThread(threadId);
       else flushAll();
       apply(event);
+    },
+    flush(): void {
+      flushAll();
     }
   };
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Brain, Plug, Globe, HardDrive, Plus, Minus, ChevronRight, MessageSquare, Settings, X, Check, FolderOpen, FolderTree, Trash2, Wand2, CalendarClock, Play, Pause, ExternalLink, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck } from 'lucide-react';
 import type {
   AuthProviderId,
@@ -134,7 +134,7 @@ export type ManagePanelProps = ChatListProps &
     authDeadProvider?: string | null;
   };
 
-export function ManagePanel({
+function ManagePanelImpl({
   models,
   modelId,
   onSelectModel,
@@ -190,6 +190,12 @@ export function ManagePanel({
     </div>
   );
 }
+
+// Memoized: App re-renders on every streamed frame (thread state lives there),
+// and this panel is the whole right-hand side. Its props are kept referentially
+// stable at streaming time (see threadStatuses/useShallowStable in App), so the
+// memo actually holds during a reply.
+export const ManagePanel = memo(ManagePanelImpl);
 
 // Memory lives under the Brain icon as two sub-tabs: durable facts (Level 1) and
 // the episodic recall store (Level 2, shown as metadata only — it's searched, not

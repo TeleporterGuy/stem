@@ -4,20 +4,17 @@ import type {
   AuthProviderId,
   ChatListResult,
   ChatSummary,
-  BackendEventEnvelope,
-  ChatMessage,
   EscapeAction,
   MessageMeta,
   ModelSummary,
   RuntimeStatus,
   ScheduledTask,
-  StartTurnResult,
   TaskNotifyPayload,
   TurnAttachment,
   ThreadStatus
 } from '../shared/types';
 import { AUTH_PROVIDER_IDS, providerName } from '../shared/providers';
-import { optimisticMessageAttachments, resendAttachments, toMessageAttachments } from './attachments';
+import { resendAttachments } from './attachments';
 import { ChatView, type ChatViewHandle } from './chat/ChatView';
 import { OnboardingGate } from './onboarding/OnboardingGate';
 import { ShortcutHint, useShortcut } from './shortcuts';
@@ -28,24 +25,26 @@ import { DeleteThreadDialog } from './DeleteThreadDialog';
 import { TaskAlertModal } from './TaskAlertModal';
 import { DropOverlay } from './files/DropOverlay';
 import { useAutoHideScroll } from './hooks/useAutoHideScroll';
+import { useShallowStable } from './hooks/useShallowStable';
 import {
   EMPTY_STATE,
   appendSystemMessage,
-  applyBackendEventToThread,
-  applyProcessExitToThread,
-  backendEventThreadId,
   mergeDraftIntoReal,
   mergeHydratedThread,
   mergeQuickChatHandoff,
   type ThreadState
 } from './chatState';
-import { createEventBatcher } from './eventBatcher';
 import {
-  deletePendingIfCurrent,
-  interruptibleTurnId,
-  pendingStartBlocksSend,
-  rekeyPendingIfCurrent
-} from './pendingTurn';
+  attachBackendEvents,
+  createSessionCore,
+  deleteFromTurn,
+  interruptActiveTurn,
+  rerunFromTurn as rerunFromTurnShared,
+  sendTurn,
+  type SessionCore
+} from './session/turns';
+import { useThreadStates } from './session/store';
+import { deletePendingIfCurrent, rekeyPendingIfCurrent } from './pendingTurn';
 import { RequestGate } from './requestGate';
 import { dismissTaskAlert, enqueueTaskAlert } from './taskAlerts';
 
@@ -64,9 +63,14 @@ const AUTH_ERROR_RE =
 export default function App() {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   // Per-thread run/conversation state, keyed by thread id (or DRAFT for a new,
-  // uncreated chat). This is what lets several chats run concurrently — each has
-  // its own messages/running/streaming slice that events route into by threadId.
-  const [threadStates, setThreadStates] = useState<Record<string, ThreadState>>({});
+  // uncreated chat), owned by the shared session core. This is what lets several
+  // chats run concurrently — each has its own messages/running/streaming slice
+  // that events route into by threadId. The store reads synchronously, so async
+  // continuations (startTurn resolution, openChat, events) never see stale state.
+  const coreRef = useRef<SessionCore | null>(null);
+  if (!coreRef.current) coreRef.current = createSessionCore();
+  const core = coreRef.current;
+  const threadStates = useThreadStates(core.store);
   const [showInspector, setShowInspector] = useState(true);
   // First-run wizard state (null until settings load). Completed=false + not
   // authenticated → the full welcome wizard; completed=true → the compact
@@ -108,15 +112,8 @@ export default function App() {
   // ("Add to this conversation") into its composer.
   const chatViewRef = useRef<ChatViewHandle>(null);
   const onDropToChat = useCallback((files: File[]) => chatViewRef.current?.addAttachments(files), []);
-  // turnId -> which model/effort/speed produced that turn's reply (for the
-  // avatar tooltip). Populated at send time; read when the message is built.
-  // Global on purpose: turn ids are unique across threads.
-  const turnMetaRef = useRef(new Map<string, MessageMeta>());
 
-  // Ref mirrors so async callbacks (startTurn resolution, openChat, events) read
-  // the latest values without being re-created on every state change.
-  const threadStatesRef = useRef(threadStates);
-  threadStatesRef.current = threadStates;
+  // Navigation state the event pipeline and IPC continuations need synchronously.
   const activeThreadIdRef = useRef(activeThreadId);
   activeThreadIdRef.current = activeThreadId;
   // Threads whose next open must reload from disk: a scheduled run streamed into a
@@ -129,10 +126,6 @@ export default function App() {
   // the draft it was sent for is still the current one — otherwise the user has
   // moved on to a fresh draft and we must not steal focus into the old thread.
   const draftSeqRef = useRef(0);
-  const sendNonceRef = useRef(0);
-  // Terminal events can beat the start-turn IPC response on very fast turns.
-  // Remember them briefly so the late response cannot resurrect activeTurnId.
-  const settledTurnIdsRef = useRef(new Set<string>());
   // Only the latest asynchronous sidebar open may select/replace a chat.
   const openGateRef = useRef(new RequestGate());
   // Folder a pending new draft should land in once its real thread is created
@@ -141,29 +134,6 @@ export default function App() {
   // Threads deleted this session — late backend events for them are ignored so a
   // dying turn can't resurrect a removed chat's slice.
   const deletedThreadsRef = useRef(new Set<string>());
-  // The most recent send per thread key, kept so Escape-to-retract can recover the
-  // turn id (and the original text/attachments) even before startTurn resolves —
-  // the id/activeTurnId aren't known until then. Keyed by thread key (DRAFT for a
-  // new chat, re-keyed to the real id once it's assigned). `isNewChat` marks a send
-  // that created the chat, so retract knows to delete it rather than roll back.
-  const pendingSendsRef = useRef(
-    new Map<
-      string,
-      {
-        promise: Promise<StartTurnResult>;
-        turnId: string | null;
-        /** Real thread id, set on resolution (refs lag a commit behind the await). */
-        threadId: string | null;
-        isNewChat: boolean;
-        text: string;
-        attachments: TurnAttachment[];
-        /** DRAFT generation this start belongs to; absent for real threads. */
-        draftGeneration?: number;
-        /** Sent draft snapshot, retained even if the visible DRAFT is replaced. */
-        draftMessages?: ChatMessage[];
-      }
-    >()
-  );
 
   // The currently visible slice. DRAFT when no real thread is open yet.
   const activeKey = activeThreadId ?? DRAFT;
@@ -171,24 +141,23 @@ export default function App() {
 
   // Patch one thread's slice (functional, so concurrent updates never clobber).
   const setThread = useCallback(
-    (key: string, patch: (s: ThreadState) => Partial<ThreadState>) => {
-      setThreadStates((prev) => {
-        const base = prev[key] ?? EMPTY_STATE;
-        return { ...prev, [key]: { ...base, ...patch(base) } };
-      });
-    },
-    []
+    (key: string, patch: (s: ThreadState) => Partial<ThreadState>) => core.store.patch(key, patch),
+    [core]
   );
 
-  // Status-dot map for the chat rows, derived from the per-thread slices.
-  const threadStatuses = useMemo(() => {
-    const out: Record<string, ThreadStatus> = {};
-    for (const [tid, s] of Object.entries(threadStates)) {
-      if (tid === DRAFT) continue;
-      out[tid] = s.status;
-    }
-    return out;
-  }, [threadStates]);
+  // Status-dot map for the chat rows, derived from the per-thread slices. Shallow-
+  // stabilized so streaming deltas (new slice objects, same statuses) don't defeat
+  // ManagePanel's memo.
+  const threadStatuses = useShallowStable(
+    useMemo(() => {
+      const out: Record<string, ThreadStatus> = {};
+      for (const [tid, s] of Object.entries(threadStates)) {
+        if (tid === DRAFT) continue;
+        out[tid] = s.status;
+      }
+      return out;
+    }, [threadStates])
+  );
 
   // Once the backend's list includes an optimistic chat, drop our stand-in for it so the
   // authoritative title/folder takes over (and we don't render a duplicate).
@@ -365,15 +334,15 @@ export default function App() {
     [models]
   );
 
-  useEffect(() => {
-    // Classify a failed turn (or a pi death during one) as an auth problem or not.
-    // status.ok can't flip by itself — an expired token still leaves auth.json — so
-    // this is how the re-sign-in screen gets raised. For OAuth providers we ask the
-    // authoritative getApiKey probe (does the credential still yield a key?); for
-    // API-key/local providers, which the probe can't validate server-side, we fall
-    // back to the error-text heuristic.
-    const handlePossibleAuthFailure = async (err: string | undefined, turnId?: string): Promise<void> => {
-      const modelForTurn = (turnId && turnMetaRef.current.get(turnId)?.model) || modelIdRef.current;
+  // Classify a failed turn (or a pi death during one) as an auth problem or not.
+  // status.ok can't flip by itself — an expired token still leaves auth.json — so
+  // this is how the re-sign-in screen gets raised. For OAuth providers we ask the
+  // authoritative getApiKey probe (does the credential still yield a key?); for
+  // API-key/local providers, which the probe can't validate server-side, we fall
+  // back to the error-text heuristic.
+  const handlePossibleAuthFailure = useCallback(
+    async (err: string | undefined, turnId?: string): Promise<void> => {
+      const modelForTurn = (turnId && core.turnMeta.get(turnId)?.model) || modelIdRef.current;
       const provider = modelForTurn ? modelsRef.current.find((m) => m.id === modelForTurn)?.provider : undefined;
       if (provider && (AUTH_PROVIDER_IDS as string[]).includes(provider)) {
         try {
@@ -388,68 +357,34 @@ export default function App() {
         }
       }
       if (err && AUTH_ERROR_RE.test(err)) setAuthProblem(err);
-    };
+    },
+    [core]
+  );
 
-    const applyEvent = (event: BackendEventEnvelope): void => {
-      if (event.method === 'process/exit') {
-        // No threadId — the server died, so clear every thread's run state. If a turn
-        // was in flight, a dead token may have killed pi at startup/stream (which never
-        // reaches turn/failed), so classify it too.
-        const wasRunning = Object.values(threadStatesRef.current).some((s) => s.running);
-        setThreadStates((prev) => {
-          const next: Record<string, ThreadState> = {};
-          for (const [tid, s] of Object.entries(prev)) next[tid] = applyProcessExitToThread(s);
-          return next;
-        });
-        if (wasRunning) void handlePossibleAuthFailure(undefined);
-        return;
-      }
-
-      if (event.method === 'turn/failed') {
-        const params = event.params as { error?: string; turn?: { id?: string } } | undefined;
-        void handlePossibleAuthFailure(params?.error, params?.turn?.id);
-      }
-
-      const threadId = backendEventThreadId(event);
-      if (!threadId || deletedThreadsRef.current.has(threadId)) return;
-      if (
-        event.method === 'turn/completed' ||
-        event.method === 'turn/failed' ||
-        event.method === 'turn/aborted'
-      ) {
-        const turnId = (event.params as { turn?: { id?: string } } | undefined)?.turn?.id;
-        if (turnId) {
-          settledTurnIdsRef.current.add(turnId);
-          // Bound the defensive race set; entries normally disappear when their
-          // matching start response arrives a moment later.
-          if (settledTurnIdsRef.current.size > 256) {
-            const oldest = settledTurnIdsRef.current.values().next().value as string | undefined;
-            if (oldest) settledTurnIdsRef.current.delete(oldest);
-          }
-          const pending = pendingSendsRef.current.get(threadId);
-          if (pending?.turnId === turnId) deletePendingIfCurrent(pendingSendsRef.current, threadId, pending);
+  // Install the shared backend-event pipeline: deltas coalesced to one state
+  // update per frame, settled-turn/pending bookkeeping handled by the core; this
+  // host supplies routing (drop deleted threads) and the status-dot policy.
+  useEffect(() => {
+    const events = attachBackendEvents(core, {
+      routeEvent: (threadId) =>
+        threadId && !deletedThreadsRef.current.has(threadId) ? threadId : null,
+      settledStatus: (method, id) => {
+        if (method === 'turn/failed') return 'error';
+        if (method === 'turn/completed') {
+          // Mark unread (a solid dot) if it finished while another chat was open.
+          return id === activeThreadIdRef.current ? 'idle' : 'done';
         }
+        return 'idle';
+      },
+      onTurnFailed: (error, turnId) => void handlePossibleAuthFailure(error, turnId),
+      // If a turn was in flight when pi died, a dead token may have killed it at
+      // startup/stream (which never reaches turn/failed), so classify it too.
+      onProcessExit: (wasRunning) => {
+        if (wasRunning) void handlePossibleAuthFailure(undefined);
       }
-      setThreadStates((prev) => {
-        const nextState = applyBackendEventToThread(prev[threadId] ?? EMPTY_STATE, event, {
-          turnMeta: turnMetaRef.current,
-          settledStatus: (method, id) => {
-            if (method === 'turn/failed') return 'error';
-            if (method === 'turn/completed') {
-              // Mark unread (a solid dot) if it finished while another chat was open.
-              return id === activeThreadIdRef.current ? 'idle' : 'done';
-            }
-            return 'idle';
-          }
-        });
-        return nextState ? { ...prev, [threadId]: nextState } : prev;
-      });
-    };
-    // Deltas are coalesced to one state update per frame; everything else applies
-    // immediately (flushing that thread's buffered delta first, keeping order).
-    const batcher = createEventBatcher(applyEvent);
-    return window.stem.onBackendEvent((event: BackendEventEnvelope) => batcher.push(event));
-  }, []);
+    });
+    return events.detach;
+  }, [core, handlePossibleAuthFailure]);
 
   // Scheduled tasks: keep the list in sync (drives chat badges + the Tasks tab),
   // insert a collapsed run row into an open thread when a run starts, and raise the
@@ -461,7 +396,7 @@ export default function App() {
       // If the thread isn't loaded, don't seed a partial slice from background events —
       // mark it so the next open reloads the full transcript from disk (where the run
       // is persisted with its collapse marker).
-      if (!threadStatesRef.current[run.threadId]) {
+      if (!core.store.getThread(run.threadId)) {
         forceReloadRef.current.add(run.threadId);
         return;
       }
@@ -486,212 +421,126 @@ export default function App() {
       offRun();
       offNotify();
     };
-  }, [setThread]);
+  }, [core, setThread]);
 
   const onSend = useCallback(
     async (text: string, attachments: TurnAttachment[] = []) => {
       // Where this turn's state lives: the open thread, or DRAFT for a new chat.
       const sendKey = activeThreadIdRef.current ?? DRAFT;
-      // Registration below is synchronous, so this closes the double-click
-      // window before React commits `running`. A thread—especially the shared
-      // DRAFT sentinel—must never own two unresolved starts.
-      const pendingAtKey = pendingSendsRef.current.get(sendKey);
-      if (
-        pendingStartBlocksSend(pendingAtKey, sendKey === DRAFT, draftSeqRef.current) ||
-        threadStatesRef.current[sendKey]?.running
-      ) return;
-      // Capture ownership BEFORE any asynchronous preview work. A disk-image read
-      // must not let navigation reclassify this send as belonging to a newer draft.
+      // Capture ownership BEFORE any asynchronous work. A disk-image read must
+      // not let navigation reclassify this send as belonging to a newer draft.
       const sendSeq = draftSeqRef.current;
       const sendFolder = pendingDraftFolderRef.current;
-      const sentAttachments = attachments.map((att) => ({ ...att }));
+      const meta: MessageMeta = { model: modelId ?? undefined, effort: effort ?? undefined, serviceTier };
       // The draft is consumed — drop back to showing this chat's last injected set.
       setPreviewActive(false);
-      // Capture the bubble id so we can stamp its backend turn id once startTurn
-      // resolves — that's what makes Edit/Fork work on a just-sent user message.
-      const userMsgId = `user-${Date.now()}-${++sendNonceRef.current}`;
-      const optimisticMessage: ChatMessage = {
-        id: userMsgId,
-        role: 'user',
-        content: text,
-        attachments: sentAttachments.length ? optimisticMessageAttachments(sentAttachments) : undefined,
-        turnAttachments: sentAttachments,
-        createdAt: new Date().toISOString()
-      };
-      const draftMessages = [...(threadStatesRef.current[sendKey]?.messages ?? []), optimisticMessage];
-      setThread(sendKey, (s) => ({
-        messages: [...s.messages, optimisticMessage],
-        running: true,
-        activity: null,
-        status: 'running'
-      }));
-      // Register this send so Escape-to-retract can find its turn id (and the
-      // original text/attachments) even before startTurn resolves. Held under the
-      // send key, re-keyed to the real id on a new-chat migration below.
-      const startPromise = Promise.resolve().then(() =>
-        window.stem.startTurn({
-          input: text,
-          threadId: sendKey === DRAFT ? undefined : sendKey,
-          model: modelId ?? undefined,
-          effort: effort ?? undefined,
-          serviceTier,
-          format,
-          attachments: sentAttachments.length ? sentAttachments : undefined
-        })
-      );
-      const pending = {
-        promise: startPromise,
-        turnId: null as string | null,
-        threadId: null as string | null,
-        isNewChat: sendKey === DRAFT,
+      await sendTurn(core, {
+        key: sendKey,
         text,
-        attachments: sentAttachments,
-        ...(sendKey === DRAFT ? { draftGeneration: sendSeq } : {}),
-        ...(sendKey === DRAFT ? { draftMessages } : {})
-      };
-      pendingSendsRef.current.set(sendKey, pending);
-
-      // Upgrade on-disk image chips to thumbnails independently of turn startup.
-      // Failure is display-only; the backend still receives the original inputs.
-      if (sentAttachments.length) {
-        void toMessageAttachments(sentAttachments)
-          .then((displayAttachments) => {
-            setThreadStates((prev) => {
-              let changed = false;
+        attachments,
+        meta,
+        isNewChat: sendKey === DRAFT,
+        ...(sendKey === DRAFT ? { draftGeneration: sendSeq, captureDraftMessages: true } : {}),
+        start: (input) =>
+          window.stem.startTurn({
+            input: input.text,
+            threadId: sendKey === DRAFT ? undefined : sendKey,
+            model: modelId ?? undefined,
+            effort: effort ?? undefined,
+            serviceTier,
+            format,
+            attachments: input.attachments.length ? input.attachments : undefined
+          }),
+        onStarted: (result, { pending, alreadySettled, userMsgId }) => {
+          if (sendKey === DRAFT && result.threadId) {
+            // First turn of a new chat. Adopt the real id only if this draft is
+            // still the current one — i.e. the user hasn't opened another chat and
+            // hasn't pressed New chat again since we sent.
+            const realId = result.threadId;
+            // Follow the slice onto the real id so a retract keyed by the active
+            // thread id (now realId) still finds this send.
+            pending.threadId = realId;
+            if (!rekeyPendingIfCurrent(core.pendingSends, DRAFT, realId, pending)) {
+              // A newer DRAFT replaced this key; keep it intact while retaining the
+              // older background turn under its now-known real identity.
+              core.pendingSends.set(realId, pending);
+            }
+            if (alreadySettled) deletePendingIfCurrent(core.pendingSends, realId, pending);
+            const stillMine = draftSeqRef.current === sendSeq && activeThreadIdRef.current === null;
+            core.store.update((prev) => {
               const next = { ...prev };
-              for (const [key, state] of Object.entries(prev)) {
-                if (!state.messages.some((message) => message.id === userMsgId)) continue;
-                next[key] = {
-                  ...state,
-                  messages: state.messages.map((message) =>
-                    message.id === userMsgId ? { ...message, attachments: displayAttachments } : message
-                  )
-                };
-                changed = true;
+              const draftSnapshot: ThreadState = {
+                ...EMPTY_STATE,
+                messages: pending.draftMessages ?? [],
+                running: !alreadySettled,
+                activeTurnId: alreadySettled ? null : result.turnId ?? null,
+                status: alreadySettled ? 'idle' : 'running'
+              };
+              const live = prev[realId];
+              const draftSource = stillMine ? prev[DRAFT] ?? draftSnapshot : draftSnapshot;
+              // Always move the sent snapshot to its real thread. Only focus/DRAFT
+              // deletion are conditional on this still being the visible draft.
+              const merged = mergeDraftIntoReal(draftSource, live);
+              if (stillMine) {
+                delete next[DRAFT];
               }
-              return changed ? next : prev;
+              const messages = merged.messages.map((m) => {
+                if (m.id === userMsgId) return { ...m, turnId: result.turnId ?? undefined };
+                if (result.turnId && m.id === `assistant-${result.turnId}` && !m.meta) {
+                  return { ...m, meta: core.turnMeta.get(result.turnId) };
+                }
+                return m;
+              });
+              next[realId] = live
+                ? { ...merged, messages }
+                : {
+                    ...merged,
+                    messages,
+                    running: !alreadySettled,
+                    activeTurnId: alreadySettled ? null : result.turnId ?? null,
+                    status: alreadySettled ? 'idle' : 'running'
+                  };
+              return next;
             });
-          })
-          .catch(() => undefined);
-      }
-
-      try {
-        const result = await startPromise;
-        if (result.handled) {
-          // An older abandoned DRAFT may finish after a newer one has started.
-          // Only its current owner may settle this slice or delete its Stop record.
-          if (!deletePendingIfCurrent(pendingSendsRef.current, sendKey, pending)) return;
-          setThread(sendKey, (s) => ({
-            messages: result.assistantMessage
-              ? [...s.messages, { id: `assistant-${Date.now()}`, role: 'assistant', content: result.assistantMessage as string }]
-              : s.messages,
-            running: false,
-            activeTurnId: null,
-            status: 'idle'
-          }));
-          return;
-        }
-        pending.turnId = result.turnId ?? null;
-        const alreadySettled = result.turnId
-          ? settledTurnIdsRef.current.delete(result.turnId)
-          : false;
-        if (result.turnId) {
-          turnMetaRef.current.set(result.turnId, { model: modelId ?? undefined, effort: effort ?? undefined, serviceTier });
-        }
-        if (sendKey === DRAFT && result.threadId) {
-          // First turn of a new chat. Adopt the real id only if this draft is
-          // still the current one — i.e. the user hasn't opened another chat and
-          // hasn't pressed New chat again since we sent.
-          const realId = result.threadId;
-          // Follow the slice onto the real id so a retract keyed by the active
-          // thread id (now realId) still finds this send.
-          pending.threadId = realId;
-          if (!rekeyPendingIfCurrent(pendingSendsRef.current, DRAFT, realId, pending)) {
-            // A newer DRAFT replaced this key; keep it intact while retaining the
-            // older background turn under its now-known real identity.
-            pendingSendsRef.current.set(realId, pending);
-          }
-          if (alreadySettled) deletePendingIfCurrent(pendingSendsRef.current, realId, pending);
-          const stillMine = draftSeqRef.current === sendSeq && activeThreadIdRef.current === null;
-          setThreadStates((prev) => {
-            const next = { ...prev };
-            const draftSnapshot: ThreadState = {
-              ...EMPTY_STATE,
-              messages: pending.draftMessages ?? [],
-              running: !alreadySettled,
-              activeTurnId: alreadySettled ? null : result.turnId ?? null,
-              status: alreadySettled ? 'idle' : 'running'
-            };
-            const live = prev[realId];
-            const draftSource = stillMine ? prev[DRAFT] ?? draftSnapshot : draftSnapshot;
-            // Always move the sent snapshot to its real thread. Only focus/DRAFT
-            // deletion are conditional on this still being the visible draft.
-            const merged = mergeDraftIntoReal(draftSource, live);
             if (stillMine) {
-              delete next[DRAFT];
+              // Keep imperative handlers (notably Escape/Stop) on the real key in
+              // the brief gap before React commits this state transition.
+              activeThreadIdRef.current = realId;
+              setActiveThreadId(realId);
+              pendingDraftFolderRef.current = null;
             }
-            const messages = merged.messages.map((m) => {
-              if (m.id === userMsgId) return { ...m, turnId: result.turnId ?? undefined };
-              if (result.turnId && m.id === `assistant-${result.turnId}` && !m.meta) {
-                return { ...m, meta: turnMetaRef.current.get(result.turnId) };
+            // Show a sidebar row immediately — the backend won't list this thread until its
+            // first turn persists, so without this the chat (and its highlight) is
+            // invisible mid-turn and the user can't switch back to it.
+            setPendingChats((p) => ({
+              ...p,
+              [realId]: {
+                threadId: realId,
+                title: text.trim() || 'New chat',
+                folderId: sendFolder ?? null,
+                createdAt: Date.now(),
+                updatedAt: Date.now()
               }
-              return m;
-            });
-            next[realId] = live
-              ? { ...merged, messages }
-              : {
-                  ...merged,
-                  messages,
-                  running: !alreadySettled,
-                  activeTurnId: alreadySettled ? null : result.turnId ?? null,
-                  status: alreadySettled ? 'idle' : 'running'
-                };
-            return next;
-          });
-          if (stillMine) {
-            // Keep imperative handlers (notably Escape/Stop) on the real key in
-            // the brief gap before React commits this state transition.
-            activeThreadIdRef.current = realId;
-            setActiveThreadId(realId);
-            pendingDraftFolderRef.current = null;
+            }));
+            // Persist the folder assignment (if any) so it survives once the backend lists
+            // the thread; otherwise just refresh the list.
+            if (sendFolder) window.stem.setChatFolder(realId, sendFolder).then(setChatList);
+            else refreshChats();
+          } else {
+            // Existing thread: record the turn id and stamp it onto the user bubble.
+            pending.threadId = sendKey;
+            if (alreadySettled) deletePendingIfCurrent(core.pendingSends, sendKey, pending);
+            setThread(sendKey, (s) => ({
+              activeTurnId: alreadySettled ? null : result.turnId ?? null,
+              messages: s.messages.map((m) =>
+                m.id === userMsgId ? { ...m, turnId: result.turnId ?? undefined } : m
+              )
+            }));
           }
-          // Show a sidebar row immediately — the backend won't list this thread until its
-          // first turn persists, so without this the chat (and its highlight) is
-          // invisible mid-turn and the user can't switch back to it.
-          setPendingChats((p) => ({
-            ...p,
-            [realId]: {
-              threadId: realId,
-              title: text.trim() || 'New chat',
-              folderId: sendFolder ?? null,
-              createdAt: Date.now(),
-              updatedAt: Date.now()
-            }
-          }));
-          // Persist the folder assignment (if any) so it survives once the backend lists
-          // the thread; otherwise just refresh the list.
-          if (sendFolder) window.stem.setChatFolder(realId, sendFolder).then(setChatList);
-          else refreshChats();
-        } else {
-          // Existing thread: record the turn id and stamp it onto the user bubble.
-          pending.threadId = sendKey;
-          if (alreadySettled) deletePendingIfCurrent(pendingSendsRef.current, sendKey, pending);
-          setThread(sendKey, (s) => ({
-            activeTurnId: alreadySettled ? null : result.turnId ?? null,
-            messages: s.messages.map((m) =>
-              m.id === userMsgId ? { ...m, turnId: result.turnId ?? undefined } : m
-            )
-          }));
         }
-      } catch (e) {
-        // A stale DRAFT failure belongs to the abandoned send, not to whichever
-        // newer draft now occupies the sentinel key.
-        if (deletePendingIfCurrent(pendingSendsRef.current, sendKey, pending)) {
-          setThread(sendKey, (s) => appendSystemMessage(s, e));
-        }
-      }
+      });
     },
-    [refreshChats, modelId, effort, serviceTier, format, setThread]
+    [core, refreshChats, modelId, effort, serviceTier, format, setThread]
   );
 
   // Quick Chat hand-off → main window: adopt the overlay's conversation as the
@@ -715,15 +564,15 @@ export default function App() {
       openGateRef.current.invalidate();
       deletedThreadsRef.current.delete(threadId);
       const activeId = transferredTurnId ?? [...adopted].reverse().find((m) => m.turnId)?.turnId ?? null;
-      if (activeId) turnMetaRef.current.set(activeId, { model: model ?? undefined, effort: aEffort ?? undefined, serviceTier: aTier });
-      setThreadStates((prev) => {
+      if (activeId) core.turnMeta.set(activeId, { model: model ?? undefined, effort: aEffort ?? undefined, serviceTier: aTier });
+      core.store.update((prev) => {
         const existing = prev[threadId];
         return { ...prev, [threadId]: mergeQuickChatHandoff(existing, payload) };
       });
       if (transferredRunning && transferredTurnId) {
         const lastUser = [...adopted].reverse().find((m) => m.role === 'user');
         if (lastUser) {
-          pendingSendsRef.current.set(threadId, {
+          core.pendingSends.set(threadId, {
             promise: Promise.resolve({ threadId, turnId: transferredTurnId }),
             turnId: transferredTurnId,
             threadId,
@@ -746,7 +595,7 @@ export default function App() {
       }));
       refreshChats();
     });
-  }, [refreshChats]);
+  }, [core, refreshChats]);
 
   // Quick Chat session started → show the thread in the sidebar immediately
   // (the backend won't list it until its first turn persists), reusing the optimistic
@@ -770,23 +619,11 @@ export default function App() {
   const onInterrupt = useCallback(async () => {
     // Stops only the chat you're viewing; background chats keep running.
     const key = activeThreadIdRef.current ?? DRAFT;
-    const pending = pendingSendsRef.current.get(key);
-    const turnId = await interruptibleTurnId(threadStatesRef.current[key]?.activeTurnId, pending);
-    if (!turnId) return; // handled/rejected starts settle through their own send path
-    const targetKey = pending?.threadId ?? activeThreadIdRef.current ?? key;
-    try {
-      await window.stem.interruptTurn(turnId);
-      setThread(targetKey, () => ({
-        running: false,
-        streamingId: null,
-        activity: null,
-        activeTurnId: null,
-        status: 'idle'
-      }));
-    } catch (e) {
-      setThread(targetKey, (s) => appendSystemMessage(s, e));
-    }
-  }, [setThread]);
+    await interruptActiveTurn(core, {
+      pendingKey: key,
+      resolveTargetKey: (pending) => pending?.threadId ?? activeThreadIdRef.current ?? key
+    });
+  }, [core]);
 
   // Sign-in finished (wizard or re-auth): adopt the fresh status and clear any
   // auth-failure gate so the app (re)mounts its normal effects.
@@ -835,9 +672,9 @@ export default function App() {
     openGateRef.current.invalidate();
     pendingDraftFolderRef.current = folderId;
     setDraftFolderId(folderId);
-    setThreadStates((prev) => ({ ...prev, [DRAFT]: EMPTY_STATE }));
+    core.store.replace(DRAFT, EMPTY_STATE);
     setActiveThreadId(null);
-  }, []);
+  }, [core]);
 
   // ⌘N / ⌘\ — mirror the titlebar buttons. (Composer shortcuts live in ChatView.)
   useShortcut('new-conversation', () => newConversation());
@@ -850,7 +687,7 @@ export default function App() {
       draftSeqRef.current += 1;
       const request = openGateRef.current.begin();
       if (deletedThreadsRef.current.has(threadId)) return;
-      const existing = threadStatesRef.current[threadId];
+      const existing = core.store.getThread(threadId);
       // A scheduled run streamed into this thread while it was never open → its slice
       // is partial. Reload from disk unless a turn is actively streaming (which we'd
       // clobber); clear the flag once consumed.
@@ -866,7 +703,7 @@ export default function App() {
       }
       const history = await window.stem.openChat(threadId);
       if (!openGateRef.current.isCurrent(request) || deletedThreadsRef.current.has(threadId)) return;
-      setThreadStates((prev) => ({
+      core.store.update((prev) => ({
         ...prev,
         // An entire turn can start and settle while the disk read is pending, so
         // `running` alone cannot identify a raced live slice. Compare against the
@@ -876,7 +713,7 @@ export default function App() {
       if (forceReload) forceReloadRef.current.delete(threadId);
       setActiveThreadId(history.threadId);
     },
-    [setThread]
+    [core, setThread]
   );
 
   // Folder mutations return the fresh list; apply it directly.
@@ -911,11 +748,7 @@ export default function App() {
     // would leave the row on screen for seconds. The IPC never meaningfully
     // rejects (unlink/new_session/removeChat all swallow errors) and the ref above
     // guards against resurrection, so fire-and-forget is safe.
-    setThreadStates((prev) => {
-      const next = { ...prev };
-      delete next[threadId];
-      return next;
-    });
+    core.store.remove(threadId);
     setPendingChats((prev) => {
       if (!prev[threadId]) return prev;
       const next = { ...prev };
@@ -930,7 +763,7 @@ export default function App() {
       chats: prev.chats.filter((c) => c.threadId !== threadId)
     }));
     window.stem.deleteChat(threadId).catch(() => {});
-  }, []);
+  }, [core]);
 
   // ⌃X — confirm-then-delete the active thread. Reuses onDeleteChat; reading
   // pendingDelete via the updater keeps the ⌃X-again confirm path free of stale
@@ -960,32 +793,18 @@ export default function App() {
     async (turnId: string, text: string) => {
       const threadId = activeThreadIdRef.current;
       if (!threadId) return;
-      const slice = threadStatesRef.current[threadId];
-      if (!slice || slice.running) return;
-      const userIdx = slice.messages.findIndex((m) => m.turnId === turnId && m.role === 'user');
-      if (userIdx === -1) return;
-      const originalAttachments = resendAttachments(slice.messages[userIdx]);
-      try {
-        await window.stem.rollbackToTurn(threadId, turnId);
-      } catch (e) {
-        setThread(threadId, (s) => appendSystemMessage(s, e));
-        return;
-      }
-      // Truncate to before this turn's user message; onSend re-appends + streams.
-      // Both functional updates compose, so the bubble lands after the slice.
-      setThread(threadId, (s) => ({ messages: s.messages.slice(0, userIdx) }));
-      onSend(text, originalAttachments);
+      await rerunFromTurnShared(core, { key: threadId, threadId, turnId, text, send: onSend });
     },
-    [onSend, setThread]
+    [core, onSend]
   );
 
   const onRetry = useCallback(
     (turnId: string) => {
-      const slice = threadStatesRef.current[activeThreadIdRef.current ?? ''];
+      const slice = core.store.getThread(activeThreadIdRef.current ?? '');
       const userMsg = slice?.messages.find((m) => m.turnId === turnId && m.role === 'user');
       if (userMsg) rerunFromTurn(turnId, userMsg.content);
     },
-    [rerunFromTurn]
+    [core, rerunFromTurn]
   );
 
   const onEditMessage = useCallback(
@@ -1021,23 +840,14 @@ export default function App() {
     async (turnId: string) => {
       const threadId = activeThreadIdRef.current;
       if (!threadId) return;
-      const slice = threadStatesRef.current[threadId];
-      if (!slice || slice.running) return;
-      const userIdx = slice.messages.findIndex((m) => m.turnId === turnId && m.role === 'user');
-      if (userIdx === -1) return;
-      if (userIdx === 0) {
-        onDeleteChat(threadId);
-        return;
-      }
-      try {
-        await window.stem.rollbackToTurn(threadId, turnId);
-      } catch (e) {
-        setThread(threadId, (s) => appendSystemMessage(s, e));
-        return;
-      }
-      setThread(threadId, (s) => ({ messages: s.messages.slice(0, userIdx) }));
+      await deleteFromTurn(core, {
+        key: threadId,
+        threadId,
+        turnId,
+        onDeleteFirstTurn: () => onDeleteChat(threadId)
+      });
     },
-    [onDeleteChat, setThread]
+    [core, onDeleteChat]
   );
 
   // Escape-to-retract: stop the running turn and pull the just-sent message back
@@ -1048,8 +858,8 @@ export default function App() {
   // fall back to awaiting the in-flight send to learn it (and the real thread id).
   const onRetractActiveTurn = useCallback(async () => {
     const key = activeThreadIdRef.current ?? DRAFT;
-    const pending = pendingSendsRef.current.get(key);
-    let turnId = threadStatesRef.current[key]?.activeTurnId ?? pending?.turnId ?? null;
+    const pending = core.pendingSends.get(key);
+    let turnId = core.store.getThread(key)?.activeTurnId ?? pending?.turnId ?? null;
     if (!turnId && pending) {
       // Escape beat startTurn's resolution — wait for it to learn the turn id.
       await pending.promise.catch(() => undefined);
@@ -1060,7 +870,7 @@ export default function App() {
     const restore = pending
       ? { text: pending.text, attachments: pending.attachments }
       : (() => {
-          const slice = threadStatesRef.current[key];
+          const slice = core.store.getThread(key);
           const last = slice ? [...slice.messages].reverse().find((m) => m.role === 'user') : undefined;
           return last ? { text: last.content, attachments: resendAttachments(last) } : null;
         })();
@@ -1075,12 +885,12 @@ export default function App() {
     // whole chat (which also aborts it backend-side) and return to a fresh draft.
     if (pending?.isNewChat) {
       const realId = pending.threadId ?? activeThreadIdRef.current;
-      pendingSendsRef.current.delete(key);
+      core.pendingSends.delete(key);
       if (realId) {
-        pendingSendsRef.current.delete(realId);
+        core.pendingSends.delete(realId);
         onDeleteChat(realId);
       } else {
-        setThread(DRAFT, () => ({ ...EMPTY_STATE }));
+        core.store.replace(DRAFT, EMPTY_STATE);
       }
       queueRestore();
       return;
@@ -1090,7 +900,7 @@ export default function App() {
     if (!threadId || !turnId) {
       // No backend turn to roll back; just stop locally and restore the text.
       setThread(key, () => ({ running: false, streamingId: null, activity: null, activeTurnId: null, status: 'idle' }));
-      pendingSendsRef.current.delete(key);
+      core.pendingSends.delete(key);
       queueRestore();
       return;
     }
@@ -1102,7 +912,7 @@ export default function App() {
       return;
     }
     // Drop the user message + its partial reply from the visible slice.
-    setThreadStates((prev) => {
+    core.store.update((prev) => {
       const slice = prev[threadId];
       if (!slice) return prev;
       const idx = slice.messages.findIndex((m) => m.turnId === turnId && m.role === 'user');
@@ -1114,9 +924,12 @@ export default function App() {
         [threadId]: { ...slice, messages: slice.messages.slice(0, idx), running: false, streamingId: null, activity: null, activeTurnId: null, status: 'idle' }
       };
     });
-    pendingSendsRef.current.delete(threadId);
+    core.pendingSends.delete(threadId);
     queueRestore();
-  }, [onDeleteChat, setThread]);
+  }, [core, onDeleteChat, setThread]);
+
+  // Stable callbacks for ManagePanel — inline closures here would defeat its memo.
+  const onTogglePreview = useCallback(() => setPreviewActive((v) => !v), []);
 
   // Unified draggable toolbar wraps every view (window has no native title bar).
   // `toolbar` lets each view supply its own controls; gate/loading show just the title.
@@ -1245,7 +1058,7 @@ export default function App() {
             modelId={modelId}
             onSelectModel={onSelectModel}
             onOpen={openChat}
-            onNewChat={(folderId) => newConversation(folderId)}
+            onNewChat={newConversation}
             onCreateFolder={onCreateFolder}
             onRenameFolder={onRenameFolder}
             onDeleteFolder={onDeleteFolder}
@@ -1256,7 +1069,7 @@ export default function App() {
             activeRunning={cur.running}
             previewActive={previewActive}
             previewDraft={previewDraft}
-            onTogglePreview={() => setPreviewActive((v) => !v)}
+            onTogglePreview={onTogglePreview}
             authDeadProvider={authProvider}
           />
         </aside>
