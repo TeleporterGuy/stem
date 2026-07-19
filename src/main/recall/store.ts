@@ -386,7 +386,14 @@ function open(): DatabaseSync {
       last_ts         INTEGER NOT NULL,
       message_count   INTEGER NOT NULL DEFAULT 0,
       last_message_id INTEGER NOT NULL,
-      updated_at      INTEGER NOT NULL
+      updated_at      INTEGER NOT NULL,
+      -- Rolling revisions since the summary was last re-derived from its
+      -- segments; drives the periodic anti-drift rebuild in summarize.ts.
+      revisions_since_rebuild INTEGER NOT NULL DEFAULT 0,
+      -- Sticky: set once any revision lands without its per-window segment.
+      -- Segment coverage is then incomplete, so rebuilding from segments would
+      -- silently drop that window — the rebuild disables itself instead.
+      segments_gap    INTEGER NOT NULL DEFAULT 0
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
       text,
@@ -404,6 +411,24 @@ function open(): DatabaseSync {
       INSERT INTO summaries_fts(summaries_fts, rowid, text) VALUES ('delete', old.id, old.text);
       INSERT INTO summaries_fts(rowid, text) VALUES (new.id, new.text);
     END;
+
+    -- Append-only per-window mini-summaries, each derived ONCE from raw
+    -- messages. They anchor the periodic drift rebuild of the rolling thread
+    -- summary (summarize.ts): the rolling text is re-derived from these instead
+    -- of from itself, so every summary stays at most two compression hops from
+    -- the raw transcript. Internal scaffolding only — not searched, not injected.
+    CREATE TABLE IF NOT EXISTS summary_segments (
+      id              INTEGER PRIMARY KEY,
+      thread_id       TEXT NOT NULL,
+      text            TEXT NOT NULL,
+      first_ts        INTEGER NOT NULL,
+      last_ts         INTEGER NOT NULL,
+      message_count   INTEGER NOT NULL DEFAULT 0,
+      last_message_id INTEGER NOT NULL,
+      created_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_summary_segments_thread
+      ON summary_segments(thread_id, first_ts, id);
 
     -- Cached embedding per (summary, model). Same contract as fact_vectors:
     -- model-keyed, invalidated whenever the summary text changes.
@@ -443,6 +468,18 @@ function open(): DatabaseSync {
   ];
   for (const [name, ddl] of additions) {
     if (!factColumns.has(name)) handle.exec(`ALTER TABLE facts ADD COLUMN ${name} ${ddl}`);
+  }
+  // Same additive pattern for the summaries table (segment-rebuild bookkeeping,
+  // added after the table shipped). Defaults must match the CREATE TABLE above.
+  const summaryColumns = new Set(
+    (handle.prepare(`PRAGMA table_info(summaries)`).all() as Array<{ name: string }>).map((r) => r.name)
+  );
+  const summaryAdditions: Array<[string, string]> = [
+    ['revisions_since_rebuild', 'INTEGER NOT NULL DEFAULT 0'],
+    ['segments_gap', 'INTEGER NOT NULL DEFAULT 0']
+  ];
+  for (const [name, ddl] of summaryAdditions) {
+    if (!summaryColumns.has(name)) handle.exec(`ALTER TABLE summaries ADD COLUMN ${name} ${ddl}`);
   }
   // Existing v1 rows predate the external-content FTS table. Populate it before
   // the metadata backfill below fires the UPDATE trigger; deleting an absent FTS
@@ -1527,10 +1564,15 @@ export interface ThreadSummaryRow {
   messageCount: number;
   lastMessageId: number;
   updatedAt: number;
+  /** Rolling revisions since the last rebuild-from-segments (or since creation). */
+  revisionsSinceRebuild: number;
+  /** True once segment coverage broke (a revision landed without its segment). */
+  segmentsGap: boolean;
 }
 
 const SUMMARY_SELECT = `id, thread_id AS threadId, text, first_ts AS firstTs, last_ts AS lastTs,
-  message_count AS messageCount, last_message_id AS lastMessageId, updated_at AS updatedAt`;
+  message_count AS messageCount, last_message_id AS lastMessageId, updated_at AS updatedAt,
+  revisions_since_rebuild AS revisionsSinceRebuild, segments_gap AS segmentsGap`;
 
 function mapSummary(r: Record<string, unknown>): ThreadSummaryRow {
   return {
@@ -1541,7 +1583,9 @@ function mapSummary(r: Record<string, unknown>): ThreadSummaryRow {
     lastTs: r.lastTs as number,
     messageCount: r.messageCount as number,
     lastMessageId: r.lastMessageId as number,
-    updatedAt: r.updatedAt as number
+    updatedAt: r.updatedAt as number,
+    revisionsSinceRebuild: (r.revisionsSinceRebuild as number) || 0,
+    segmentsGap: !!(r.segmentsGap as number)
   };
 }
 
@@ -1560,6 +1604,10 @@ export function upsertSummary(input: {
   lastTs: number;
   newMessageCount: number;
   lastMessageId: number;
+  /** True when the text was re-derived from segments — resets the drift counter. */
+  rebuilt?: boolean;
+  /** False when this revision has no per-window segment → coverage gap (sticky). */
+  segmentStored?: boolean;
 }): number | null {
   const text = input.text.trim().slice(0, MAX_SUMMARY_CHARS);
   if (!text) return null;
@@ -1567,17 +1615,22 @@ export function upsertSummary(input: {
   handle.prepare(
     `DELETE FROM summary_vectors WHERE summary_id IN (SELECT id FROM summaries WHERE thread_id = ?)`
   ).run(input.threadId);
+  const rebuilt = input.rebuilt === true;
+  const gap = !rebuilt && input.segmentStored === false ? 1 : 0;
   const row = handle
     .prepare(
-      `INSERT INTO summaries (thread_id, text, first_ts, last_ts, message_count, last_message_id, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO summaries (thread_id, text, first_ts, last_ts, message_count, last_message_id, updated_at,
+                              revisions_since_rebuild, segments_gap)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(thread_id) DO UPDATE SET
          text = excluded.text,
          first_ts = MIN(summaries.first_ts, excluded.first_ts),
          last_ts = MAX(summaries.last_ts, excluded.last_ts),
          message_count = summaries.message_count + excluded.message_count,
          last_message_id = MAX(summaries.last_message_id, excluded.last_message_id),
-         updated_at = excluded.updated_at
+         updated_at = excluded.updated_at,
+         revisions_since_rebuild = CASE WHEN ? THEN 0 ELSE summaries.revisions_since_rebuild + 1 END,
+         segments_gap = MAX(summaries.segments_gap, excluded.segments_gap)
        RETURNING id`
     )
     .get(
@@ -1587,9 +1640,17 @@ export function upsertSummary(input: {
       input.lastTs,
       input.newMessageCount,
       input.lastMessageId,
-      nowSeconds()
+      nowSeconds(),
+      rebuilt ? 0 : 1,
+      gap,
+      rebuilt ? 1 : 0
     ) as { id: number } | undefined;
   return row?.id ?? null;
+}
+
+/** Reset the drift counter without touching the text (rebuild skipped as moot). */
+export function markSummaryRebuilt(threadId: string): void {
+  open().prepare(`UPDATE summaries SET revisions_since_rebuild = 0 WHERE thread_id = ?`).run(threadId);
 }
 
 export function getSummaryByThread(threadId: string): ThreadSummaryRow | null {
@@ -1606,8 +1667,98 @@ export function listThreadSummaries(): ThreadSummaryRow[] {
 
 export function deleteThreadSummary(id: number): void {
   const handle = open();
+  // Segments die with the summary: the watermark dies with the row, so the
+  // thread resummarizes from scratch — a stale seed would pollute the rebuild.
+  const row = handle.prepare(`SELECT thread_id AS threadId FROM summaries WHERE id = ?`).get(id) as
+    | { threadId: string }
+    | undefined;
+  if (row) handle.prepare(`DELETE FROM summary_segments WHERE thread_id = ?`).run(row.threadId);
   handle.prepare(`DELETE FROM summary_vectors WHERE summary_id = ?`).run(id);
   handle.prepare(`DELETE FROM summaries WHERE id = ?`).run(id);
+}
+
+// ---- summary segments (anti-drift anchors for the rolling summaries) ----
+
+export interface SummarySegmentRow {
+  id: number;
+  threadId: string;
+  text: string;
+  firstTs: number;
+  lastTs: number;
+  messageCount: number;
+  lastMessageId: number;
+  createdAt: number;
+}
+
+const SEGMENT_SELECT = `id, thread_id AS threadId, text, first_ts AS firstTs, last_ts AS lastTs,
+  message_count AS messageCount, last_message_id AS lastMessageId, created_at AS createdAt`;
+
+/** Hard cap on stored segment text (merged compaction segments may be longer). */
+export const MAX_SEGMENT_CHARS = 700;
+export const MAX_MERGED_SEGMENT_CHARS = 1400;
+
+export function addSummarySegment(input: {
+  threadId: string;
+  text: string;
+  firstTs: number;
+  lastTs: number;
+  messageCount: number;
+  lastMessageId: number;
+  maxChars?: number;
+}): number | null {
+  const text = input.text.trim().slice(0, input.maxChars ?? MAX_SEGMENT_CHARS);
+  if (!text) return null;
+  const row = open()
+    .prepare(
+      `INSERT INTO summary_segments (thread_id, text, first_ts, last_ts, message_count, last_message_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`
+    )
+    .get(input.threadId, text, input.firstTs, input.lastTs, input.messageCount, input.lastMessageId, nowSeconds()) as
+    | { id: number }
+    | undefined;
+  return row?.id ?? null;
+}
+
+/** A thread's segments in chronological order (merged rows keep their range's first_ts). */
+export function getSummarySegments(threadId: string): SummarySegmentRow[] {
+  const rows = open()
+    .prepare(`SELECT ${SEGMENT_SELECT} FROM summary_segments WHERE thread_id = ? ORDER BY first_ts ASC, id ASC`)
+    .all(threadId) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: r.id as number,
+    threadId: r.threadId as string,
+    text: r.text as string,
+    firstTs: r.firstTs as number,
+    lastTs: r.lastTs as number,
+    messageCount: r.messageCount as number,
+    lastMessageId: r.lastMessageId as number,
+    createdAt: r.createdAt as number
+  }));
+}
+
+/**
+ * Compaction: atomically replace a set of (oldest) segments with one merged
+ * segment carrying their combined range. Used when a long thread's segments
+ * outgrow the rebuild input budget.
+ */
+export function replaceSummarySegments(
+  threadId: string,
+  ids: number[],
+  merged: { text: string; firstTs: number; lastTs: number; messageCount: number; lastMessageId: number }
+): number | null {
+  if (ids.length === 0) return null;
+  const handle = open();
+  handle.exec('BEGIN');
+  try {
+    const del = handle.prepare(`DELETE FROM summary_segments WHERE thread_id = ? AND id = ?`);
+    for (const id of ids) del.run(threadId, id);
+    const inserted = addSummarySegment({ threadId, ...merged, maxChars: MAX_MERGED_SEGMENT_CHARS });
+    handle.exec('COMMIT');
+    return inserted;
+  } catch (err) {
+    handle.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 /**
@@ -1644,7 +1795,8 @@ export function getSummariesMissingVector(model: string): ThreadSummaryRow[] {
   const rows = open()
     .prepare(
       `SELECT s.id, s.thread_id AS threadId, s.text, s.first_ts AS firstTs, s.last_ts AS lastTs,
-              s.message_count AS messageCount, s.last_message_id AS lastMessageId, s.updated_at AS updatedAt
+              s.message_count AS messageCount, s.last_message_id AS lastMessageId, s.updated_at AS updatedAt,
+              s.revisions_since_rebuild AS revisionsSinceRebuild, s.segments_gap AS segmentsGap
        FROM summaries s
        LEFT JOIN summary_vectors v ON v.summary_id = s.id AND v.model = ?
        WHERE v.summary_id IS NULL
@@ -1717,6 +1869,7 @@ export function resetEpisodic(options: { skipVacuum?: boolean } = {}): void {
     // would be corrupted by message-id reuse after the VACUUM below. The
     // per-turn injected-facts log references turn ids of deleted messages.
     handle.exec('DELETE FROM summaries');
+    handle.exec('DELETE FROM summary_segments');
     handle.exec('DELETE FROM summary_vectors');
     handle.exec('DELETE FROM turn_injected_facts');
     handle.exec(`DELETE FROM meta WHERE key = 'distill_watermark'`);

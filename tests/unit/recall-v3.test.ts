@@ -2,7 +2,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import * as store from '../../src/main/recall/store';
 import * as search from '../../src/main/recall/search';
-import { backfillSummaries, parseSummary, refreshThreadSummary } from '../../src/main/recall/summarize';
+import {
+  backfillSummaries,
+  parseDualSummary,
+  parseSummary,
+  refreshThreadSummary,
+  REBUILD_EVERY
+} from '../../src/main/recall/summarize';
 import { buildRecallContext, previewFacts, usageRate } from '../../src/main/recall/inject';
 import {
   CURSOR_KEY,
@@ -298,6 +304,169 @@ describe('rolling summary refresh (summarize.ts)', () => {
       1
     )).toBe(1);
     expect(store.getSummaryByThread('substantial-newer')).not.toBeNull();
+  });
+});
+
+describe('summary drift control (segments + periodic rebuild)', () => {
+  const dualLlm = (segment: string, summary: string) => ({
+    complete: async () => JSON.stringify({ segment, summary })
+  });
+  const seedThread = (threadId: string, i: number) => {
+    store.recordMessage({ threadId, role: 'user', text: `Milestone ${i}: we finalized phase ${i} of the warehouse automation project with a dedicated budget line.` });
+    store.recordMessage({ threadId, role: 'assistant', text: `Phase ${i} recorded with its budget line and owner; next checkpoint scheduled.` });
+  };
+
+  it('parseDualSummary extracts both parts, tolerates summary-only and prose replies', () => {
+    expect(parseDualSummary('{"segment":"Discussed warehouse phase one budget.","summary":"Warehouse project: phase one budget finalized."}'))
+      .toEqual({ segment: 'Discussed warehouse phase one budget.', summary: 'Warehouse project: phase one budget finalized.' });
+    expect(parseDualSummary('{"summary":"Warehouse project: phase one budget finalized."}'))
+      .toEqual({ segment: null, summary: 'Warehouse project: phase one budget finalized.' });
+    expect(parseDualSummary('The team planned the warehouse automation rollout across four phases.'))
+      .toEqual({ segment: null, summary: 'The team planned the warehouse automation rollout across four phases.' });
+    expect(parseDualSummary('{broken')).toEqual({ segment: null, summary: null });
+  });
+
+  it('stores an immutable segment per window and counts rolling revisions', async () => {
+    store.resetEpisodic();
+    seedThread('seg-1', 1);
+    expect(await refreshThreadSummary('seg-1', dualLlm('Phase one finalized with budget.', 'Warehouse automation: phase one finalized with budget.'))).toBe(true);
+    seedThread('seg-1', 2);
+    expect(await refreshThreadSummary('seg-1', dualLlm('Phase two finalized with budget.', 'Warehouse automation: phases one and two finalized.'))).toBe(true);
+
+    const segments = store.getSummarySegments('seg-1');
+    expect(segments.map((s) => s.text)).toEqual(['Phase one finalized with budget.', 'Phase two finalized with budget.']);
+    const row = store.getSummaryByThread('seg-1')!;
+    expect(row.revisionsSinceRebuild).toBe(2);
+    expect(row.segmentsGap).toBe(false);
+  });
+
+  it('rebuilds the summary from segments after REBUILD_EVERY revisions and resets the counter', async () => {
+    store.resetEpisodic();
+    const prompts: string[] = [];
+    for (let i = 1; i <= REBUILD_EVERY; i++) {
+      seedThread('reb-1', i);
+      const llm = {
+        complete: async (prompt: string) => {
+          prompts.push(prompt);
+          // The rebuild pass asks over the mini-summaries, not the transcript.
+          if (prompt.includes('Mini-summaries:')) {
+            return JSON.stringify({ summary: 'REBUILT: warehouse automation covered phases one through eight from segments.' });
+          }
+          return JSON.stringify({ segment: `Phase ${i} finalized with budget.`, summary: `Rolling summary after phase ${i}.` });
+        }
+      };
+      expect(await refreshThreadSummary('reb-1', llm)).toBe(true);
+    }
+    const row = store.getSummaryByThread('reb-1')!;
+    expect(row.text).toContain('REBUILT');
+    expect(row.revisionsSinceRebuild).toBe(0);
+    const rebuildPrompt = prompts.find((p) => p.includes('Mini-summaries:'))!;
+    // Every stored segment fed the rebuild.
+    expect(rebuildPrompt).toContain('Phase 1 finalized');
+    expect(rebuildPrompt).toContain(`Phase ${REBUILD_EVERY} finalized`);
+    // Watermark untouched by the rebuild write.
+    expect(store.getSummarySegments('reb-1')).toHaveLength(REBUILD_EVERY);
+  });
+
+  it('a summary-only revision breaks segment coverage and disables the rebuild (no silent drops)', async () => {
+    store.resetEpisodic();
+    seedThread('gap-1', 1);
+    // Weak-model reply: rolling summary only, no segment.
+    expect(await refreshThreadSummary('gap-1', { complete: async () => JSON.stringify({ summary: 'Warehouse automation: phase one finalized (no segment emitted).' }) })).toBe(true);
+    expect(store.getSummaryByThread('gap-1')!.segmentsGap).toBe(true);
+
+    for (let i = 2; i <= REBUILD_EVERY + 2; i++) {
+      seedThread('gap-1', i);
+      const llm = {
+        complete: async (prompt: string) => {
+          if (prompt.includes('Mini-summaries:')) throw new Error('rebuild must not run with broken coverage');
+          return JSON.stringify({ segment: `Phase ${i} finalized.`, summary: `Rolling summary after phase ${i}.` });
+        }
+      };
+      expect(await refreshThreadSummary('gap-1', llm)).toBe(true);
+    }
+    expect(store.getSummaryByThread('gap-1')!.text).toContain(`phase ${REBUILD_EVERY + 2}`);
+  });
+
+  it('adopts a legacy rolling summary as the seed segment on first refresh', async () => {
+    store.resetEpisodic();
+    seedThread('legacy-1', 1);
+    // Pre-segment era: a summary row exists but no segments (simulated direct write).
+    store.upsertSummary({
+      threadId: 'legacy-1',
+      text: 'Legacy era: the warehouse project was scoped and phase zero approved.',
+      firstTs: 100,
+      lastTs: 200,
+      newMessageCount: 2,
+      lastMessageId: 0
+    });
+    expect(await refreshThreadSummary('legacy-1', dualLlm('Phase one finalized.', 'Warehouse project: phase zero approved, phase one finalized.'))).toBe(true);
+    const segs = store.getSummarySegments('legacy-1');
+    expect(segs[0].text).toContain('Legacy era');
+    expect(segs[1].text).toBe('Phase one finalized.');
+  });
+
+  it('compacts the oldest segments when they outgrow the rebuild input budget', async () => {
+    store.resetEpisodic();
+    seedThread('cmp-1', 1);
+    // Force a large corpus of long segments directly, then one refresh that
+    // crosses the rebuild threshold.
+    for (let i = 0; i < 30; i++) {
+      store.addSummarySegment({
+        threadId: 'cmp-1',
+        text: `Segment ${i}: ${'warehouse automation details, vendors, budget lines and dates. '.repeat(9)}`,
+        firstTs: 1000 + i,
+        lastTs: 1001 + i,
+        messageCount: 2,
+        lastMessageId: i + 1
+      });
+    }
+    const before = store.getSummarySegments('cmp-1');
+    const beforeChars = before.reduce((n, s) => n + s.text.length, 0);
+    expect(beforeChars).toBeGreaterThan(12_000);
+
+    // Push the revision counter to the threshold so this refresh rebuilds.
+    for (let i = 0; i < REBUILD_EVERY - 1; i++) {
+      store.upsertSummary({ threadId: 'cmp-1', text: `Rolling ${i} of the warehouse thread summary.`, firstTs: 1000, lastTs: 2000, newMessageCount: 0, lastMessageId: 0 });
+    }
+    let mergeCalls = 0;
+    const llm = {
+      complete: async (prompt: string) => {
+        if (prompt.includes('condensing the OLDEST')) {
+          mergeCalls += 1;
+          return JSON.stringify({ summary: 'MERGED: early warehouse phases condensed into one overview segment.' });
+        }
+        if (prompt.includes('Mini-summaries:')) {
+          return JSON.stringify({ summary: 'REBUILT from compacted segments: full warehouse project overview.' });
+        }
+        return JSON.stringify({ segment: 'Final phase recorded.', summary: 'Rolling: final phase recorded.' });
+      }
+    };
+    expect(await refreshThreadSummary('cmp-1', llm)).toBe(true);
+    expect(mergeCalls).toBe(1);
+    const after = store.getSummarySegments('cmp-1');
+    const afterChars = after.reduce((n, s) => n + s.text.length, 0);
+    expect(after.length).toBeLessThan(before.length);
+    expect(afterChars).toBeLessThan(beforeChars);
+    expect(after.some((s) => s.text.startsWith('MERGED'))).toBe(true);
+    // Chronological position preserved: the merged row leads.
+    expect(after[0].text).toContain('MERGED');
+    expect(store.getSummaryByThread('cmp-1')!.text).toContain('REBUILT');
+  });
+
+  it('segments die with their summary row and with resetEpisodic', async () => {
+    store.resetEpisodic();
+    seedThread('del-1', 1);
+    expect(await refreshThreadSummary('del-1', dualLlm('Phase one finalized with budget.', 'Warehouse automation: phase one finalized with budget.'))).toBe(true);
+    const row = store.getSummaryByThread('del-1')!;
+    expect(store.getSummarySegments('del-1')).toHaveLength(1);
+    store.deleteThreadSummary(row.id);
+    expect(store.getSummarySegments('del-1')).toHaveLength(0);
+
+    seedThread('del-2', 1);
+    expect(await refreshThreadSummary('del-2', dualLlm('Phase one finalized with budget.', 'Warehouse automation: phase one finalized with budget.'))).toBe(true);
+    store.resetEpisodic();
+    expect(store.getSummarySegments('del-2')).toHaveLength(0);
   });
 });
 
