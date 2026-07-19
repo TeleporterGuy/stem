@@ -36,50 +36,20 @@ import {
 } from './ui-lifecycle';
 import { ensureWorkspace } from './workspace/bootstrap';
 import { publishProtectedRootsNow } from './workspace/connected-folders';
-import {
-  embedModelsDir,
-  embedSocketPath,
-  piHome,
-  recallDbPath,
-  resolveProfileOverride
-} from './workspace/paths';
-import { TaskScheduler } from './scheduler';
+import { piHome, resolveProfileOverride } from './workspace/paths';
+import type { TaskScheduler } from './scheduler';
+import { initTaskScheduler } from './startup/scheduler';
+import { initRetrieval } from './startup/retrieval';
+import { initRecallTasks } from './startup/recall-tasks';
 import { ProviderAuth } from './pi/provider-auth';
 import { isRecallEnabled } from './workspace/memory';
 import { captureFromEvent } from './recall/capture';
-import {
-  getFactsGeneration,
-  getFactsMissingVector,
-  pruneMessageVectorsExceptModel,
-  pruneSummaryVectorsExceptModel,
-  pruneVectorsExceptModel,
-  getSummariesMissingVector,
-  upsertFactVectorForSnapshot,
-  upsertSummaryVector
-} from './recall/store';
-import { embedNewMessages } from './recall/embed-episodic';
-import { backfillSummaries, refreshRecentSummaries } from './recall/summarize';
-import { distillNewMessages, shouldConsolidate } from './recall/distill';
-import { consolidateFacts } from './recall/consolidate';
-import { getMemoryRebuildStatus, runMemoryRebuildStep } from './recall/rebuild';
-import { curateSkills } from './skills/curate';
-import { distillSkillsFromMessages } from './skills/distill';
-import { getEmbeddingsClient, setRetrievalClients } from './recall/retrieval';
-import { startEmbedEndpoint } from './recall/embed-endpoint';
 import { createHttpEmbeddingsClient } from './recall/embeddings';
 import { createHttpRerankClient } from './recall/rerank';
-import { EMBED_CATALOG, localModelCacheKey } from './recall/embed-catalog';
-import { createEmbedWorkerManager } from './recall/embed-manager';
+import { EMBED_CATALOG } from './recall/embed-catalog';
 import type { EmbedWorkerManager } from './recall/embed-manager';
-import { createEmbeddingsRouter, createLocalEmbeddingsClient } from './recall/embed-local';
 import { RERANK_CATALOG } from './recall/rerank-catalog';
-import { createLocalRerankClient, createRerankRouter } from './recall/rerank-local';
-import { spawnEmbedWorker } from './recall/embed-worker-host';
-import { createScanWorkerManager } from './recall/scan-manager';
 import type { ScanWorkerManager } from './recall/scan-manager';
-import { spawnScanWorker } from './recall/scan-worker-host';
-import { setScanWorkerManager } from './recall/scan';
-import type { LlmClient } from './recall/llm';
 import { backfillChatIndex, reindexChatThread } from './chatsearch/index-sync';
 import {
   markOnboardingCompleted,
@@ -1178,268 +1148,39 @@ app.whenReady().then(async () => {
   // auth.json the pi subprocess reads; progress is pushed to the renderer.
   providerAuth = new ProviderAuth(join(piHome(), 'auth.json'), (event) => sendToMain('auth:event', event));
 
-  // Scheduled tasks: re-run a chat's prompt as an autonomous turn on a cron/once
-  // schedule. The scheduler owns timing + execution; the backend routes the
-  // assistant's schedule_task/notify_user tools to it via the TaskBridge below.
-  scheduler = new TaskScheduler({
+  // True while a turn runs on either surface or the user interacted within
+  // `idleMs`. Drives the scheduler's defer/preempt signal and lets the recall
+  // background passes yield to interactive work.
+  const busyWithin = (idleMs: number): boolean =>
+    runningMainThreads.size > 0 || overlay.turnRunning || Date.now() - lastInteractiveAt < idleMs;
+
+  scheduler = initTaskScheduler({
     runtime,
-    onChange: (tasks) => sendToMain('tasks:changed', tasks),
-    onRun: (run) => sendToMain('tasks:run', run),
-    // Active = a turn in flight on either surface, or interaction in the last
-    // couple of minutes. Scheduled runs defer while this holds and an in-flight
-    // scheduled run yields (preemptForUser) when the user sends a message.
-    isUserActive: () =>
-      runningMainThreads.size > 0 || overlay.turnRunning || Date.now() - lastInteractiveAt < USER_ACTIVE_WINDOW_MS,
-    interrupt: (turnId) => runtime!.interruptTurn(turnId)
-  });
-  runtime.setTaskBridge({
-    schedule: (req, threadId) => scheduler!.create(req, threadId),
-    listForThread: async (threadId) => scheduler!.listForThread(threadId),
-    cancel: async (taskId) => {
-      const before = scheduler!.snapshot().length;
-      await scheduler!.remove(taskId);
-      return scheduler!.snapshot().length < before ? { ok: true } : { ok: false, error: 'No such task.' };
-    },
-    // notify_user: surface a prominent in-app alert — raise + focus the main window,
-    // bounce the dock, and show the alert modal. Native OS notifications were judged
-    // not prominent enough for watch-style tasks.
-    notify: async ({ title, message }, threadId) => {
-      revealMainWindow();
-      app.dock?.bounce('critical');
-      sendToMain('tasks:notify', {
-        threadId,
-        title,
-        message,
-        at: new Date().toISOString()
-      });
-    }
+    sendToMain,
+    isUserActive: () => busyWithin(USER_ACTIVE_WINDOW_MS),
+    revealMainWindow
   });
 
-  // Stem Recall: distill durable facts via a hidden backend turn (the swappable
-  // LlmClient seam). Debounced so it runs ~after the user goes idle.
-  const recallLlm: LlmClient = {
-    complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).memory.model })
-  };
-  let rebuildTimer: NodeJS.Timeout | null = null;
-  scheduleMemoryRebuild = (): void => {
-    if (rebuildTimer) clearTimeout(rebuildTimer);
-    if (getMemoryRebuildStatus().state !== 'running') return;
-    rebuildTimer = setTimeout(async () => {
-      // A confirmed rebuild is opportunistic and must yield to interactive work.
-      if (runningMainThreads.size > 0 || overlay.turnRunning || Date.now() - lastInteractiveAt < 30_000) {
-        scheduleMemoryRebuild();
-        return;
-      }
-      const status = await runMemoryRebuildStep(recallLlm);
-      mainWindow?.webContents.send('memory:rebuildStatus', status);
-      if (status.state === 'running') scheduleMemoryRebuild();
-    }, 2_000);
-  };
-  scheduleMemoryRebuild();
-
-  // The skills curator gets its OWN model setting (separate from memory) — curation
-  // can be a harder task than fact distillation, so it can be pointed at a stronger
-  // model. Read fresh each pass so a Settings change applies to the next run.
-  const skillsLlm: LlmClient = {
-    complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).skills.model })
-  };
-
-  // Stem Recall relevance ranking. Embeddings route per the settings mode: the
-  // bundled local model (in a utility process; the out-of-box default) or the
-  // user's own HTTP endpoint. Config is read fresh each turn, so switching mode
-  // or repointing endpoints in Settings takes effect on the next fact-ranking
-  // pass with no restart. Off/not-ready → the clients report unavailable and
-  // inject falls back to lexical/recency selection — a chat turn never waits on
-  // a model download.
-  embedManager = createEmbedWorkerManager({ spawn: spawnEmbedWorker, cacheDir: embedModelsDir });
-  // Recall's O(N) cosine scans and episodic VACUUMs run in their own utility
-  // process so they never block the main event loop; everything degrades to the
-  // in-process implementations if the worker is unavailable (see recall/scan.ts).
-  scanManager = createScanWorkerManager({ spawn: spawnScanWorker, dbPath: () => recallDbPath() });
-  setScanWorkerManager(scanManager);
-  const getEmbedSettings = async () => (await readSettings()).retrieval.embeddings;
-  const getRerankSettings = async () => (await readSettings()).retrieval.reranker;
-  const localEmbeddings = createLocalEmbeddingsClient(getEmbedSettings, embedManager);
-  setRetrievalClients({
-    embeddings: createEmbeddingsRouter({
-      getMode: async () => (await getEmbedSettings()).mode,
-      local: localEmbeddings,
-      remote: createHttpEmbeddingsClient(async () => {
-        const e = await getEmbedSettings();
-        return e.mode === 'remote' && e.baseUrl && e.model
-          ? { baseUrl: e.baseUrl, model: e.model, apiKey: e.apiKey }
-          : null;
-      })
-    }),
-    // Precision rerank stage: the bundled cross-encoder (co-hosted in the embed
-    // worker) or the user's own Cohere/Jina-style /rerank endpoint (llama.cpp
-    // --reranking, vLLM, Infinity, TEI — note Ollama can't serve one). Off/not
-    // ready → inject degrades to the cosine ranking.
-    rerank: createRerankRouter({
-      getMode: async () => (await getRerankSettings()).mode,
-      local: createLocalRerankClient(getRerankSettings, embedManager),
-      remote: createHttpRerankClient(async () => {
-        const r = await getRerankSettings();
-        return r.mode === 'remote' && r.baseUrl && r.model
-          ? { baseUrl: r.baseUrl, model: r.model, apiKey: r.apiKey }
-          : null;
-      })
-    })
+  // Stem Recall relevance ranking + background workers: embed/scan utility
+  // processes, retrieval clients (settings-mode routed), and the MCP embed
+  // endpoint. See startup/retrieval.ts.
+  const retrieval = initRetrieval({
+    e2e: E2E,
+    sendToMainWindow: (channel, payload) => mainWindow?.webContents.send(channel, payload)
   });
-  // Serve query embeddings to the stem-recall MCP server over a local unix
-  // socket, so search_past_chats gets the same hybrid (semantic) retrieval as
-  // auto-inject. Listen failures are logged and non-fatal (tool stays FTS-only).
-  const embedEndpoint = startEmbedEndpoint({
-    socketPath: embedSocketPath(),
-    getClient: getEmbeddingsClient
-  });
-  app.on('will-quit', () => {
-    void embedEndpoint.close();
-  });
-  embedManager.onRerankStatus((status) => {
-    mainWindow?.webContents.send('reranker:localStatus', status);
-  });
-  embedManager.onStatus((status) => {
-    mainWindow?.webContents.send('embeddings:localStatus', status);
-    // The model just came up: prune vectors from previously-used models (local
-    // vectors are cheap to regenerate; keeps recall.sqlite tidy) and backfill any
-    // facts missing a vector in the background. Without this, inject would embed
-    // the entire fact set inline in the first semantic turn — many seconds on CPU.
-    if (status.state !== 'ready') return;
-    void (async () => {
-      try {
-        const e = await getEmbedSettings();
-        if (e.mode !== 'local' || e.localModel !== status.model) return;
-        const key = localModelCacheKey(EMBED_CATALOG[e.localModel]);
-        const factsGeneration = getFactsGeneration();
-        pruneVectorsExceptModel(key);
-        const missing = getFactsMissingVector(key);
-        for (let i = 0; i < missing.length; i += 64) {
-          if (getFactsGeneration() !== factsGeneration) break;
-          const batch = missing.slice(i, i + 64);
-          const vecs = await localEmbeddings.embed(
-            batch.map((f) => f.text),
-            'passage'
-          );
-          if (getFactsGeneration() !== factsGeneration) break;
-          batch.forEach((f, j) =>
-            upsertFactVectorForSnapshot(f.id, f.text, factsGeneration, key, vecs[j])
-          );
-        }
-        // Same hygiene + backfill for thread-summary vectors (Level 1.5 search).
-        pruneSummaryVectorsExceptModel(key);
-        const summariesMissing = getSummariesMissingVector(key);
-        for (let i = 0; i < summariesMissing.length; i += 64) {
-          const batch = summariesMissing.slice(i, i + 64);
-          const vecs = await localEmbeddings.embed(batch.map((s) => s.text), 'passage');
-          batch.forEach((s, j) => upsertSummaryVector(s.id, key, vecs[j]));
-        }
-        // Same hygiene + backfill for the episodic message vectors (semantic
-        // episodic search). Watermark-driven and self-guarding, so a concurrent
-        // post-turn kick can't double-embed.
-        pruneMessageVectorsExceptModel(key);
-        await embedNewMessages(localEmbeddings);
-      } catch {
-        // non-fatal: inject tops up lazily on the next semantic turn
-      }
-    })();
-  });
-  // Kick the download/load shortly after launch (instead of on the first turn
-  // that needs it) so the model is usually ready before the user accumulates
-  // enough facts to matter. The delay only yields the window/backend startup
-  // burst — keep it short, or the Manage panel shows a misleading idle state
-  // ("not downloaded yet") on every restart until the kick lands. Skipped under
-  // E2E: hermetic runs must not hit the network.
-  if (!E2E) {
-    setTimeout(() => {
-      void getEmbedSettings().then((e) => {
-        if (e.mode === 'local') embedManager?.ensure(EMBED_CATALOG[e.localModel]);
-      });
-      void getRerankSettings().then((r) => {
-        if (r.mode === 'local') embedManager?.ensureRerank(RERANK_CATALOG[r.localModel]);
-      });
-    }, 1_500);
-  }
-  let distilling = false;
-  let distillTimer: NodeJS.Timeout | null = null;
-  const scheduleDistill = (delayMs = 15_000): void => {
-    if (!isRecallEnabled()) return;
-    if (distillTimer) clearTimeout(distillTimer);
-    distillTimer = setTimeout(async () => {
-      if (distilling) return;
-      distilling = true;
-      try {
-        await distillNewMessages(recallLlm);
-        // Rolling thread summaries (Level 1.5): revise the summaries of the
-        // just-active threads from the same new messages. Own watermark, so a
-        // failure here never blocks fact extraction (and vice versa).
-        await refreshRecentSummaries(recallLlm);
-        // Once enough new facts have piled up, clean the set: merge reworded
-        // duplicates, apply corrections, drop superseded facts. Same hidden
-        // LlmClient seam, so it's invisible to the user like distillation.
-        if (shouldConsolidate()) await consolidateFacts(recallLlm);
-        // Skills acquisition: a separate single-purpose pass over the same new
-        // messages (own watermark) — the in-turn manage_skill nudge alone never
-        // fires. Uses the skills model; a write reloads pi so the skill activates.
-        const newSkills = await distillSkillsFromMessages(skillsLlm);
-        if (newSkills > 0) await runtime!.requestSkillReload();
-      } catch {
-        // non-fatal
-      } finally {
-        distilling = false;
-      }
-    }, delayMs);
-  };
+  embedManager = retrieval.embedManager;
+  scanManager = retrieval.scanManager;
 
-  // Episodic embed pass: keep message vectors current for semantic recall.
-  // Debounced off turn/completed (plus one startup pass) and routed through the
-  // settings-aware router client, so remote-mode users backfill too — the
-  // ready-transition hook above only covers the local worker coming up.
-  let episodicEmbedTimer: NodeJS.Timeout | null = null;
-  const scheduleEpisodicEmbed = (delayMs = 10_000): void => {
-    if (!isRecallEnabled()) return;
-    if (episodicEmbedTimer) clearTimeout(episodicEmbedTimer);
-    episodicEmbedTimer = setTimeout(() => {
-      const client = getEmbeddingsClient();
-      if (client) void embedNewMessages(client);
-    }, delayMs);
-  };
-
-  // Skills curator: the Level-2 cleanup of self-authored skills (merge duplicates,
-  // patch sloppy bodies, archive stale ones), mirroring fact consolidation. Uses the
-  // same hidden LlmClient seam, and is gated by the memory toggle since it's the same
-  // kind of background self-improvement pass. On any change, reload so pi rescans skills.
-  let curating = false;
-  const runCurate = async (): Promise<void> => {
-    if (curating || !isRecallEnabled()) return;
-    curating = true;
-    try {
-      const res = await curateSkills(skillsLlm);
-      if (res.merged || res.patched || res.archived) await runtime!.requestSkillReload();
-    } catch {
-      // non-fatal
-    } finally {
-      curating = false;
-    }
-  };
-  // A pass shortly after startup, then a low-frequency recurring pass while idle.
-  setTimeout(() => void runCurate(), 90_000);
-  setInterval(() => void runCurate(), 24 * 60 * 60_000);
-
-  // Summary backfill for dormant threads (history that predates summaries, or
-  // fell behind while the app was closed). Opportunistic like the rebuild pass:
-  // it must yield to any interactive work, so a skipped pass just waits for the
-  // next interval tick.
-  const runSummaryBackfill = async (): Promise<void> => {
-    if (runningMainThreads.size > 0 || overlay.turnRunning || Date.now() - lastInteractiveAt < 30_000) return;
-    try {
-      await backfillSummaries(recallLlm, 3);
-    } catch {
-      // non-fatal
-    }
-  };
-  setTimeout(() => void runSummaryBackfill(), 3 * 60_000);
-  setInterval(() => void runSummaryBackfill(), 30 * 60_000);
+  // Stem Recall's background passes (distillation, summaries, consolidation,
+  // skills, confirmed rebuild, dormant backfill) — see startup/recall-tasks.ts.
+  // They yield to interactive work via busyWithin.
+  const recallTasks = initRecallTasks({
+    runtime: () => runtime!,
+    busyWithin,
+    sendToMainWindow: (channel, payload) => mainWindow?.webContents.send(channel, payload)
+  });
+  scheduleMemoryRebuild = recallTasks.scheduleMemoryRebuild;
+  const { scheduleDistill, scheduleEpisodicEmbed } = recallTasks;
 
   // Forward backend events to the main window. Registered once (not per-window) so
   // recreating the window can't double-subscribe.
@@ -1542,12 +1283,6 @@ app.whenReady().then(async () => {
       void reindexChatThread(runtime!, threadId);
     }
   });
-
-  // Kick off a distillation pass shortly after startup so any messages captured
-  // before the app last quit get turned into durable facts. The episodic embed
-  // pass runs too, covering remote embeddings mode (no ready-transition there).
-  scheduleDistill(20_000);
-  scheduleEpisodicEmbed(25_000);
 
   // Backfill the chat-search index in the background a little after startup (never
   // blocking it). The per-thread watermark makes this a near no-op on every relaunch —
