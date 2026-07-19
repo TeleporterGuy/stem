@@ -22,6 +22,8 @@ import { RequestGate } from '../../src/renderer/requestGate';
 import { dismissTaskAlert, enqueueTaskAlert } from '../../src/renderer/taskAlerts';
 import {
   failQuickChatProcess,
+  HudPill,
+  OverlaySession,
   QuickChatHandoffBarrier,
   QuickChatResetBarrier,
   RendererPushQueue
@@ -180,6 +182,63 @@ describe('main-to-renderer lifecycle regressions', () => {
     expect(barrier.buffer('quick-1', after)).toBe(true);
     expect(barrier.commit(ticket.id)).toEqual({ snapshot, events: [before, after] });
     expect(barrier.buffer('quick-1', after)).toBe(false);
+  });
+
+  it('walks the overlay session through summon → turn → handoff without desync', () => {
+    const overlay = new OverlaySession();
+    // Fresh install: nothing owned, first summon starts fresh.
+    expect(overlay.shouldStartFresh(1_000, 300_000)).toBe(true);
+
+    overlay.beginTurn(1_000);
+    overlay.adoptThread('qc-1');
+    expect(overlay.owns('qc-1')).toBe(true);
+    expect(overlay.owns('other')).toBe(false);
+    expect(overlay.turnRunning).toBe(true);
+
+    // Mid-turn, an idle-timeout summon must NOT reset (never orphan a stream)…
+    expect(overlay.shouldStartFresh(10_000_000, 300_000)).toBe(false);
+    // …but once the turn settles and the timeout elapses, it does.
+    overlay.settleTurn(10_000_000);
+    expect(overlay.shouldStartFresh(10_000_000 + 300_001, 300_000)).toBe(true);
+    // Timeout 0 disables the idle reset entirely.
+    expect(overlay.shouldStartFresh(10_000_000 + 300_001, 0)).toBe(false);
+
+    // Handoff claim/revert: only the caller that flipped the flag may revert it.
+    expect(overlay.claimHandoff()).toBe(true);
+    expect(overlay.claimHandoff()).toBe(false); // already handed off
+    expect(overlay.owns('qc-1')).toBe(false);
+    overlay.revertHandoff();
+    expect(overlay.owns('qc-1')).toBe(true);
+
+    // Manual reset keeps the thread until the barrier releases it.
+    overlay.prepareManualReset();
+    expect(overlay.threadId).toBe('qc-1');
+    overlay.releaseThread();
+    expect(overlay.threadId).toBeNull();
+
+    // Crash restore keeps the thread for resume but settles the live-turn state.
+    overlay.adoptThread('qc-2');
+    overlay.beginTurn(5_000);
+    overlay.restore(failQuickChatProcess(6_000, overlay.threadId));
+    expect(overlay.threadId).toBe('qc-2');
+    expect(overlay.turnRunning).toBe(false);
+    expect(overlay.hudTextSeen).toBe(false);
+  });
+
+  it('chimes exactly once per entry into finished and tracks pill ownership', () => {
+    const hud = new HudPill();
+    expect(hud.owner).toBe('none');
+    expect(hud.notePush('quickchat', 'working')).toBe(false);
+    expect(hud.notePush('quickchat', 'answering')).toBe(false);
+    expect(hud.owner).toBe('quickchat');
+    expect(hud.notePush('quickchat', 'finished')).toBe(true); // the chime moment
+    expect(hud.notePush('quickchat', 'finished')).toBe(false); // no repeat chime
+    hud.noteHidden();
+    expect(hud.owner).toBe('none');
+    expect(hud.lastPhase).toBeNull();
+    // After hiding, a fresh finish chimes again.
+    expect(hud.notePush('main', 'finished')).toBe(true);
+    expect(hud.owner).toBe('main');
   });
 
   it('keeps scheduled task alerts FIFO until each one is acknowledged', () => {

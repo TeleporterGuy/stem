@@ -22,6 +22,8 @@ import { log } from './log';
 import {
   CHAT_SEARCH_COMPLETION_TIMEOUT_MS,
   failQuickChatProcess,
+  HudPill,
+  OverlaySession,
   QuickChatHandoffBarrier,
   QuickChatResetBarrier,
   RendererPushQueue
@@ -170,7 +172,6 @@ import type {
   QuickChatPrompt,
   QuickChatSettings,
   QuickChatStatus,
-  QuickChatStatusPhase,
   RuntimeStatus,
   ScheduledTask,
   StartTurnInput,
@@ -278,21 +279,14 @@ let newThreadTimeoutMs = 5 * 60_000;
 //
 // The overlay owns one live conversation at a time. While it owns a thread, that
 // thread's backend events route to the overlay (not the main window) and drive the
-// status HUD. Hand-off (button, or opening the thread from the sidebar) flips
-// `overlayHandedOff` so events route to the main window from then on.
-let overlayThreadId: string | null = null;
-let overlayHandedOff = false;
+// status HUD. Hand-off (button, or opening the thread from the sidebar) routes
+// events to the main window from then on. All of that state lives in `overlay`
+// (see OverlaySession) — every mutation is a named transition, never a bare flag.
+const overlay = new OverlaySession();
 const overlayHandoffBarrier = new QuickChatHandoffBarrier();
-/** Updated on each turn start/finish; drives the new-thread inactivity timeout. */
-let overlayLastActivityAt = 0;
-/** Whether the overlay's current turn is still running (so an idle-timeout summon
- *  never orphans a mid-stream thread by resetting ownership out from under it). */
-let overlayTurnRunning = false;
 /** A manual reset requested while the old overlay turn was still settling. Keep
  * ownership long enough to route that turn's terminal event, then release it. */
 const overlayResetBarrier = new QuickChatResetBarrier();
-/** Whether the in-flight overlay turn has started streaming text (HUD phase). */
-let hudTextSeen = false;
 
 // ---- Follow-me status pill (main-window threads) ----
 //
@@ -311,10 +305,8 @@ let lastInteractiveAt = 0;
 let scheduleMemoryRebuild: () => void = () => {};
 // How long after the last interaction the user still counts as "active".
 const USER_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
-/** Who currently owns the shared pill, so Quick Chat and follow-me never stomp. */
-let hudOwner: 'none' | 'quickchat' | 'main' = 'none';
-/** Last phase pushed to the pill, so the chime fires only on entering 'finished'. */
-let lastHudPhase: QuickChatStatusPhase | null = null;
+/** Ownership + last phase of the shared pill (chime edge detection) — see HudPill. */
+const hud = new HudPill();
 
 // True for the brief window around summoning the overlay. Showing the overlay
 // activates the app, which fires `app.on('activate')`; without this guard that
@@ -381,7 +373,7 @@ function createWindow(): void {
   // the main window (switch Spaces/apps), and dismiss it when you return.
   mainWindow.on('blur', syncMainHud);
   mainWindow.on('focus', () => {
-    if (hudOwner === 'main') hideHud();
+    if (hud.owner === 'main') hideHud();
   });
 
   const devUrl = process.env.ELECTRON_RENDERER_URL;
@@ -544,21 +536,19 @@ function showHud(status: QuickChatStatus, owner: 'quickchat' | 'main'): void {
     });
     win.showInactive(); // show without stealing focus
   }
-  hudOwner = owner;
+  const enteredFinished = hud.notePush(owner, status.phase);
   // Stamp the live accelerator so the pill prompts the real summon key, not Enter.
   win.webContents.send('quickchat:status', { ...status, shortcut: currentShortcut });
-  if (status.phase === 'finished' && lastHudPhase !== 'finished' && finishSound) playFinishChime();
-  lastHudPhase = status.phase;
+  if (enteredFinished && finishSound) playFinishChime();
 }
 
 function hideHud(): void {
   if (hudWindow && !hudWindow.isDestroyed() && hudWindow.isVisible()) hudWindow.hide();
-  hudOwner = 'none';
-  lastHudPhase = null;
+  hud.noteHidden();
 }
 
 function finishOverlayReset(): void {
-  overlayThreadId = null;
+  overlay.releaseThread();
   overlayResetBarrier.settle();
 }
 
@@ -586,8 +576,8 @@ function driveHud(event: { method: string; params: unknown }): void {
       if (overlayVisible) break;
       // Deltas arrive per token; only push when the label actually changes
       // (first token, or resuming the answer after a mid-answer tool call).
-      if (!hudTextSeen || lastHudPhase !== 'answering') {
-        hudTextSeen = true;
+      if (!overlay.hudTextSeen || hud.lastPhase !== 'answering') {
+        overlay.noteAnswerText();
         showHud({ phase: 'answering', label: 'Answering…' }, 'quickchat');
       }
       break;
@@ -601,14 +591,13 @@ function driveHud(event: { method: string; params: unknown }): void {
           : event.method === 'turn/failed'
             ? 'Request failed'
             : 'Stopped';
-      overlayTurnRunning = false;
-      overlayLastActivityAt = Date.now();
+      overlay.settleTurn(Date.now());
       // A reset must not release the old thread until this terminal event has
       // been routed. Otherwise its trailing deltas can be mistaken for the next
       // Quick Chat session.
       if (overlayResetBarrier.pending) {
-        hudTextSeen = false;
-        if (hudOwner === 'quickchat') hideHud();
+        overlay.resetHudText();
+        if (hud.owner === 'quickchat') hideHud();
         finishOverlayReset();
       } else if (!overlayVisible) {
         showHud({ phase: 'finished', label }, 'quickchat');
@@ -627,10 +616,10 @@ function driveHud(event: { method: string; params: unknown }): void {
  */
 function syncMainHud(): void {
   if (!followAcrossSpaces) {
-    if (hudOwner === 'main') hideHud();
+    if (hud.owner === 'main') hideHud();
     return;
   }
-  if (hudOwner === 'quickchat') return;
+  if (hud.owner === 'quickchat') return;
   const blurred = !!mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused();
   const running = runningMainThreads.size > 0;
   if (running && blurred) {
@@ -641,7 +630,7 @@ function syncMainHud(): void {
 /**
  * Track which main-window threads are running and drive the follow-me pill. The
  * 'finished' transition (and its chime) only fires when the pill is already
- * shown for the main app (hudOwner === 'main') — i.e. the user is away.
+ * shown for the main app (hud.owner === 'main') — i.e. the user is away.
  */
 function noteMainThreadEvent(method: string, threadId: string): void {
   if (method === 'item/started' || method === 'item/agentMessage/delta') {
@@ -649,7 +638,7 @@ function noteMainThreadEvent(method: string, threadId: string): void {
     syncMainHud(); // handles a thread that starts while you're already away
   } else if (method === 'turn/completed' || method === 'turn/failed' || method === 'turn/aborted') {
     runningMainThreads.delete(threadId);
-    if (hudOwner === 'main' && runningMainThreads.size === 0) {
+    if (hud.owner === 'main' && runningMainThreads.size === 0) {
       const label =
         method === 'turn/completed' ? 'Answer ready' : method === 'turn/failed' ? 'Request failed' : 'Stopped';
       showHud({ phase: 'finished', label, reveal: 'main' }, 'main');
@@ -720,18 +709,8 @@ function toggleQuickChat(): void {
   // Decide continue-vs-fresh: no live session, already handed off, or idle past
   // the configured timeout => start a new thread. Clear ownership up front so the
   // old thread's events stop routing to the (now reset) overlay.
-  const idleMs = Date.now() - overlayLastActivityAt;
-  const reset =
-    !overlayThreadId ||
-    overlayHandedOff ||
-    // Only auto-reset once the previous turn has finished — never orphan a
-    // mid-stream thread by handing its events off to the main window.
-    (!overlayTurnRunning && newThreadTimeoutMs > 0 && idleMs > newThreadTimeoutMs);
-  if (reset) {
-    overlayThreadId = null;
-    overlayHandedOff = false;
-    hudTextSeen = false;
-  }
+  const reset = overlay.shouldStartFresh(Date.now(), newThreadTimeoutMs);
+  if (reset) overlay.clearForFreshSession();
   showQuickChat(reset);
 }
 
@@ -1237,12 +1216,12 @@ function registerIpc(): void {
     // Opening the overlay's live thread from the sidebar is an implicit hand-off:
     // route its events to the main window and drop the overlay/HUD so the two
     // views don't diverge.
-    if (threadId === overlayThreadId && !overlayHandedOff) {
+    if (overlay.owns(threadId)) {
       const captured = await captureQuickChatHandoff(threadId);
       if (!captured) {
         // A simultaneous explicit Open-in-Stem action may already have completed
         // the same transition and cancelled this sidebar request.
-        if (!overlayHandedOff) {
+        if (!overlay.handedOff) {
           showQuickChat(false);
           throw new Error('Quick Chat did not return a handoff snapshot. Try Open in Stem again.');
         }
@@ -1250,19 +1229,18 @@ function registerIpc(): void {
         // Flip ownership before removing the event barrier. Events arriving
         // before commit stay buffered; events arriving after it route directly
         // to the main renderer.
-        const wasAlreadyHandedOff = overlayHandedOff;
-        overlayHandedOff = true;
+        const flippedHere = overlay.claimHandoff();
         const transition = overlayHandoffBarrier.commit(captured.id);
         if (!transition) {
           // An explicit handoff may have won while this handler was awaiting the
           // snapshot. Only restore ownership when no other path completed it.
-          if (!wasAlreadyHandedOff) {
-            overlayHandedOff = false;
+          if (flippedHere) {
+            overlay.revertHandoff();
             showQuickChat(false);
             throw new Error('Quick Chat handoff was interrupted. Try Open in Stem again.');
           }
         } else {
-          overlayTurnRunning = false;
+          overlay.stopTurn();
           hideHud();
           hideOverlayWindow();
           sendToMain('quickchat:adopt', transition.snapshot);
@@ -1340,7 +1318,7 @@ function registerIpc(): void {
     if ('newThreadTimeoutMs' in patch) newThreadTimeoutMs = next.quickChat.newThreadTimeoutMs;
     if ('followAcrossSpaces' in patch) {
       followAcrossSpaces = next.quickChat.followAcrossSpaces;
-      if (!followAcrossSpaces && hudOwner === 'main') hideHud();
+      if (!followAcrossSpaces && hud.owner === 'main') hideHud();
     }
     if ('finishSound' in patch) finishSound = next.quickChat.finishSound;
     return next;
@@ -1474,9 +1452,7 @@ function registerIpc(): void {
     scheduler?.preemptForUser();
     // Start the disappear→HUD half of the cycle immediately — before the (async)
     // thread creation — so the overlay never flashes the half-laid-out panel.
-    hudTextSeen = false;
-    overlayTurnRunning = true;
-    overlayLastActivityAt = Date.now();
+    overlay.beginTurn(Date.now());
     // Hide just the overlay (NOT app.hide — that would also hide the HUD we're
     // about to show, and re-showing the HUD would reactivate the app and surface
     // the main window). The overlay is a non-activating panel, so hiding it does
@@ -1486,12 +1462,11 @@ function registerIpc(): void {
     showHud({ phase: 'working', label: 'Working…' }, 'quickchat');
 
     try {
-      const continuing = !!prompt.threadId && prompt.threadId === overlayThreadId && !overlayHandedOff;
-      let threadId = continuing ? overlayThreadId! : null;
+      const continuing = overlay.owns(prompt.threadId);
+      let threadId = continuing ? overlay.threadId! : null;
       if (!threadId) {
         threadId = await runtime!.createThread(prompt.model ?? undefined);
-        overlayThreadId = threadId;
-        overlayHandedOff = false;
+        overlay.adoptThread(threadId);
         // Optimistic sidebar row so the quickchat thread shows immediately.
         sendToMain('quickchat:sessionStarted', {
           threadId,
@@ -1514,8 +1489,8 @@ function registerIpc(): void {
         instructions: [ci.main, ci.quickChat].map((s) => s.trim()).filter(Boolean).join('\n'),
         attachments: prompt.attachments
       });
-      overlayLastActivityAt = Date.now();
-      if (overlayHandedOff && result.threadId && result.turnId) {
+      overlay.noteActivity(Date.now());
+      if (overlay.handedOff && result.threadId && result.turnId) {
         // The snapshot can be captured while startTurn is still preparing Recall.
         // Publish the minted id as soon as prompt acceptance returns so Stop is
         // interruptible even before the first real item event.
@@ -1532,20 +1507,19 @@ function registerIpc(): void {
       // The memory shortcut ("remember that …") completes with no stream — jump the
       // HUD straight to finished.
       if (result.handled) {
-        overlayTurnRunning = false;
+        overlay.stopTurn();
         showHud({ phase: 'finished', label: 'Answer ready' }, 'quickchat');
       }
       return result;
     } catch (e) {
-      overlayTurnRunning = false;
-      overlayLastActivityAt = Date.now();
+      overlay.settleTurn(Date.now());
       hideHud();
       if (overlayResetBarrier.pending) finishOverlayReset();
-      if (overlayHandedOff && overlayThreadId) {
+      if (overlay.handedOff && overlay.threadId) {
         sendToMain('backend:event', {
           method: 'turn/failed',
           params: {
-            threadId: overlayThreadId,
+            threadId: overlay.threadId,
             turn: { id: `quick-start-${Date.now()}`, status: 'failed' },
             error: e instanceof Error ? e.message : String(e)
           },
@@ -1560,10 +1534,9 @@ function registerIpc(): void {
 
   // Forget the current overlay thread so the next prompt opens a fresh one.
   handleIpc('quickchat:newThread', () => {
-    overlayHandedOff = false;
-    hudTextSeen = false;
+    overlay.prepareManualReset();
     hideHud();
-    if (overlayTurnRunning) {
+    if (overlay.turnRunning) {
       return overlayResetBarrier.wait();
     } else {
       finishOverlayReset();
@@ -1574,8 +1547,8 @@ function registerIpc(): void {
   // reveal the main window, and have it adopt the thread as the active chat.
   handleIpc('quickchat:handoff', (_e, payload: QuickChatHandoff) => {
     const bufferedEvents = overlayHandoffBarrier.cancelCurrent();
-    overlayHandedOff = true;
-    overlayTurnRunning = false;
+    overlay.claimHandoff();
+    overlay.stopTurn();
     if (overlayResetBarrier.pending) finishOverlayReset();
     hideHud();
     hideOverlayWindow();
@@ -1639,7 +1612,7 @@ app.whenReady().then(async () => {
     // couple of minutes. Scheduled runs defer while this holds and an in-flight
     // scheduled run yields (preemptForUser) when the user sends a message.
     isUserActive: () =>
-      runningMainThreads.size > 0 || overlayTurnRunning || Date.now() - lastInteractiveAt < USER_ACTIVE_WINDOW_MS,
+      runningMainThreads.size > 0 || overlay.turnRunning || Date.now() - lastInteractiveAt < USER_ACTIVE_WINDOW_MS,
     interrupt: (turnId) => runtime!.interruptTurn(turnId)
   });
   runtime.setTaskBridge({
@@ -1676,7 +1649,7 @@ app.whenReady().then(async () => {
     if (getMemoryRebuildStatus().state !== 'running') return;
     rebuildTimer = setTimeout(async () => {
       // A confirmed rebuild is opportunistic and must yield to interactive work.
-      if (runningMainThreads.size > 0 || overlayTurnRunning || Date.now() - lastInteractiveAt < 30_000) {
+      if (runningMainThreads.size > 0 || overlay.turnRunning || Date.now() - lastInteractiveAt < 30_000) {
         scheduleMemoryRebuild();
         return;
       }
@@ -1881,7 +1854,7 @@ app.whenReady().then(async () => {
   // it must yield to any interactive work, so a skipped pass just waits for the
   // next interval tick.
   const runSummaryBackfill = async (): Promise<void> => {
-    if (runningMainThreads.size > 0 || overlayTurnRunning || Date.now() - lastInteractiveAt < 30_000) return;
+    if (runningMainThreads.size > 0 || overlay.turnRunning || Date.now() - lastInteractiveAt < 30_000) return;
     try {
       await backfillSummaries(recallLlm, 3);
     } catch {
@@ -1900,7 +1873,7 @@ app.whenReady().then(async () => {
       const approvalThreadId = (event.params as { threadId?: string } | undefined)?.threadId;
       // Quick Chat hides itself while a turn runs. Bring the originating surface
       // back so mounting the card actually makes the confirmation visible.
-      if (approvalThreadId && approvalThreadId === overlayThreadId && !overlayHandedOff) showQuickChat(false);
+      if (approvalThreadId && overlay.owns(approvalThreadId)) showQuickChat(false);
       sendToMain('mcp:adminApproval', event.params);
       quickChatWindow?.webContents.send('mcp:adminApproval', event.params);
       return;
@@ -1912,7 +1885,7 @@ app.whenReady().then(async () => {
     }
     if (event.method === 'instructions/approvalRequest') {
       const approvalThreadId = (event.params as { threadId?: string } | undefined)?.threadId;
-      if (approvalThreadId && approvalThreadId === overlayThreadId && !overlayHandedOff) showQuickChat(false);
+      if (approvalThreadId && overlay.owns(approvalThreadId)) showQuickChat(false);
       sendToMain('instructions:approvalRequest', event.params);
       quickChatWindow?.webContents.send('instructions:approvalRequest', event.params);
       return;
@@ -1943,7 +1916,7 @@ app.whenReady().then(async () => {
     // The overlay owns its live thread until hand-off: route its events to the
     // overlay window (which renders the conversation) and the status HUD, NOT the
     // main window — otherwise the main window would build a phantom user-less slice.
-    const overlayOwned = !!threadId && threadId === overlayThreadId && !overlayHandedOff;
+    const overlayOwned = overlay.owns(threadId);
     const handoffBuffered = !!threadId && overlayHandoffBarrier.buffer(threadId, event);
     if (handoffBuffered) {
       // captureQuickChatHandoff replays these immediately after the atomic snapshot.
@@ -1962,17 +1935,12 @@ app.whenReady().then(async () => {
       sendToMain('backend:event', event);
       quickChatWindow?.webContents.send('backend:event', event);
       runningMainThreads.clear();
-      if (event.method === 'process/exit' && (overlayTurnRunning || overlayResetBarrier.pending)) {
-        const failed = failQuickChatProcess(Date.now(), overlayThreadId);
-        overlayThreadId = failed.threadId;
-        overlayHandedOff = failed.handedOff;
-        overlayTurnRunning = failed.turnRunning;
-        overlayLastActivityAt = failed.lastActivityAt;
-        hudTextSeen = failed.hudTextSeen;
-        if (hudOwner === 'quickchat') showHud({ phase: 'finished', label: 'Request failed' }, 'quickchat');
+      if (event.method === 'process/exit' && (overlay.turnRunning || overlayResetBarrier.pending)) {
+        overlay.restore(failQuickChatProcess(Date.now(), overlay.threadId));
+        if (hud.owner === 'quickchat') showHud({ phase: 'finished', label: 'Request failed' }, 'quickchat');
         if (overlayResetBarrier.pending) finishOverlayReset();
       }
-      if (hudOwner === 'main') hideHud();
+      if (hud.owner === 'main') hideHud();
     } else {
       sendToMain('backend:event', event);
       noteMainThreadEvent(event.method, threadId);
