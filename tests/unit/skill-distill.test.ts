@@ -10,7 +10,7 @@ const skillsDir = join(tmpdir(), `stem-skill-distill-${process.pid}`);
 process.env.STEM_SKILLS_DIR = skillsDir;
 
 import { distillSkillsFromMessages, drainSkillDistill, parseSkillCandidates, slugifySkill } from '../../src/main/skills/distill';
-import * as store from '../../src/main/recall/store';
+import { recallStore as store } from '../../src/main/recall/store';
 import type { LlmClient } from '../../src/main/recall/llm';
 
 const WATERMARK = 'skill_distill_watermark';
@@ -75,7 +75,7 @@ beforeEach(() => {
 });
 afterAll(() => {
   rmSync(skillsDir, { recursive: true, force: true });
-  store.closeForTest();
+  store.close();
 });
 
 describe('parseSkillCandidates', () => {

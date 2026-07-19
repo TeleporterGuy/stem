@@ -1,24 +1,8 @@
 import type { EpisodicStats, MemoryContents, MemoryNoteResult, MemorySettings, ThreadSummary } from '../../shared/types';
-import {
-  deleteFact,
-  deleteThreadSummary,
-  getAllFacts,
-  getEpisodicLimitBytes,
-  getEpisodicStats,
-  getFactEvidenceCounts,
-  getMaxRelevantFacts,
-  getMeta,
-  getTidyThreshold,
-  listThreadSummaries as storeListThreadSummaries,
-  resetEpisodic,
-  resetFacts,
-  setEpisodicLimitBytes,
-  setMaxRelevantFacts,
-  setMeta,
-  setTidyThreshold,
-  upsertFact
-} from '../recall/store';
+
 import { vacuumRecallDb } from '../recall/scan';
+import { recallStore } from '../recall/store';
+const { deleteFact, deleteThreadSummary, getAllFacts, getEpisodicLimitBytes, getEpisodicStats, getFactEvidenceCounts, getMaxRelevantFacts, getMeta, getTidyThreshold, listThreadSummaries: storeListThreadSummaries, resetEpisodic, resetFacts, setEpisodicLimitBytes, setMaxRelevantFacts, setMeta, setTidyThreshold, upsertFact } = recallStore;
 
 // Stem's memory control surface, backed entirely by Stem Recall (recall.sqlite).
 //

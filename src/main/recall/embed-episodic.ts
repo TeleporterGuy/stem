@@ -1,12 +1,6 @@
 import type { EmbeddingsClient } from './embeddings';
-import {
-  getMessageEmbedWatermark,
-  getMessagesForEmbedding,
-  replaceMessageChunks,
-  setMessageEmbedWatermark,
-  upsertMessageChunkVector,
-  upsertMessageVector
-} from './store';
+import { recallStore } from './store';
+const { getMessageEmbedWatermark, getMessagesForEmbedding, replaceMessageChunks, setMessageEmbedWatermark, upsertMessageChunkVector, upsertMessageVector } = recallStore;
 
 // Background embedding of captured messages for semantic episodic search.
 // Watermark-driven (meta key, model-tagged) and always off the turn path: the

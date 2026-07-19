@@ -1,9 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import * as store from '../../src/main/recall/store';
+import { recallStore as store } from '../../src/main/recall/store';
 import { LONG_NOTE_THRESHOLD, extractNoteFacts, normalizeExplicitNote, processExplicitNote } from '../../src/main/recall/note';
 import { addMemoryNote, setMemoryEnabled } from '../../src/main/workspace/memory';
 
-afterAll(() => store.closeForTest());
+afterAll(() => store.close());
 beforeEach(async () => {
   store.resetFacts();
   await setMemoryEnabled(true);

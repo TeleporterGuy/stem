@@ -77,16 +77,7 @@ import {
   type TurnContext,
   type TurnTimingBreakdown
 } from './normalize';
-import {
-  getTurnActivitiesByThread,
-  getTurnTimingsByThread,
-  upsertTurnActivity,
-  upsertTurnTiming,
-  setActiveFacts,
-  recordTurnInjectedFacts,
-  type Fact,
-  type FactTier
-} from '../recall/store';
+
 import { ForegroundSessionGate } from './session-gate';
 import { secretKeyHex } from './secrets';
 import {
@@ -102,6 +93,8 @@ import {
   toolArgsOf,
   WEB_SEARCH_TEE_KEY
 } from './protocol';
+import { recallStore, type Fact, type FactTier } from '../recall/store';
+const { getTurnActivitiesByThread, getTurnTimingsByThread, upsertTurnActivity, upsertTurnTiming, setActiveFacts, recordTurnInjectedFacts } = recallStore;
 
 // Default provider/model. openai-codex is the user's working ChatGPT subscription
 // (verified streaming in the Phase-0 spike); Anthropic/Claude Max is selectable

@@ -1,22 +1,9 @@
-import {
-  addSummarySegment,
-  getSummaryByThread,
-  getSummarySegments,
-  getThreadMessagesAfter,
-  getThreadsNeedingSummary,
-  markSummaryRebuilt,
-  replaceSummarySegments,
-  upsertSummary,
-  upsertSummaryVector,
-  MAX_MERGED_SEGMENT_CHARS,
-  MAX_SEGMENT_CHARS,
-  MAX_SUMMARY_CHARS,
-  type StoredMessage,
-  type SummarySegmentRow
-} from './store';
+
 import { getEmbeddingsClient } from './retrieval';
 import { isRecallEnabled } from '../workspace/memory';
 import type { LlmClient } from './llm';
+import { recallStore, MAX_MERGED_SEGMENT_CHARS, MAX_SEGMENT_CHARS, MAX_SUMMARY_CHARS, type StoredMessage, type SummarySegmentRow } from './store';
+const { addSummarySegment, getSummaryByThread, getSummarySegments, getThreadMessagesAfter, getThreadsNeedingSummary, markSummaryRebuilt, replaceSummarySegments, upsertSummary, upsertSummaryVector } = recallStore;
 
 // Level 1.5: one rolling English summary per thread — what the conversation
 // covered, decided and left open — revised whenever the distill debounce finds

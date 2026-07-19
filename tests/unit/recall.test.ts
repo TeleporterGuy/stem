@@ -3,14 +3,14 @@
 // throwaway DB from tests/setup-unit.ts. Tests are stateful and ORDER-DEPENDENT
 // (they share one DB, mirroring the original probe), so keep them sequential.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import * as store from '../../src/main/recall/store';
+import { recallStore as store, DEFAULT_CONSOLIDATE_CHUNK, DEFAULT_MAX_RELEVANT_FACTS } from '../../src/main/recall/store';
 import * as search from '../../src/main/recall/search';
 import * as inject from '../../src/main/recall/inject';
 import * as retrieval from '../../src/main/recall/retrieval';
 import * as distill from '../../src/main/recall/distill';
 import * as consolidate from '../../src/main/recall/consolidate';
 
-afterAll(() => store.closeForTest());
+afterAll(() => store.close());
 
 describe('Stem Recall', () => {
   it('seeds episodic messages across threads', () => {
@@ -259,7 +259,7 @@ describe('Stem Recall — fact relevance ranking', () => {
   // what survives the per-turn cap. Pin the cap so the suite stays independent of
   // DEFAULT_MAX_RELEVANT_FACTS.
   beforeAll(() => store.setMaxRelevantFacts(8));
-  afterAll(() => store.setMaxRelevantFacts(store.DEFAULT_MAX_RELEVANT_FACTS));
+  afterAll(() => store.setMaxRelevantFacts(DEFAULT_MAX_RELEVANT_FACTS));
 
   // Keyword-encoding fake embedder: a text matching `key` maps to [1,0], else [0,1],
   // so the query and any fact sharing the keyword have cosine 1 and everything else 0.
@@ -518,7 +518,7 @@ describe('Stem Recall — fact relevance ranking', () => {
     expect(store.getAllFacts().some((f) => /zebra/i.test(f.text) && f.status === 'superseded')).toBe(true);
 
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
-    store.setConsolidateChunkSize(store.DEFAULT_CONSOLIDATE_CHUNK);
+    store.setConsolidateChunkSize(DEFAULT_CONSOLIDATE_CHUNK);
   });
 });
 
@@ -527,7 +527,7 @@ describe('Stem Recall — fact relevance ranking', () => {
 // since deleted). Shares the same DB; resetFacts() makes each case deterministic.
 describe('Stem Recall — active facts', () => {
   beforeAll(() => store.setMaxRelevantFacts(8));
-  afterAll(() => store.setMaxRelevantFacts(store.DEFAULT_MAX_RELEVANT_FACTS));
+  afterAll(() => store.setMaxRelevantFacts(DEFAULT_MAX_RELEVANT_FACTS));
 
   function keywordEmbeddings(key: RegExp) {
     return {

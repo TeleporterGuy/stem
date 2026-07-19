@@ -6,7 +6,7 @@
 //  - lexOverlap:false queries are NOT (the gap semantic retrieval must close).
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import * as store from '../../src/main/recall/store';
+import { recallStore as store } from '../../src/main/recall/store';
 import * as search from '../../src/main/recall/search';
 import * as inject from '../../src/main/recall/inject';
 import * as retrieval from '../../src/main/recall/retrieval';
@@ -23,7 +23,7 @@ let lookup: ReturnType<typeof seedCorpus>;
 beforeAll(() => {
   lookup = seedCorpus(store, fixture);
 });
-afterAll(() => store.closeForTest());
+afterAll(() => store.close());
 
 /** FTS-tier ranking for one episodic query, as fixture ids (rank order preserved). */
 function ftsRanking(queryText: string): string[] {

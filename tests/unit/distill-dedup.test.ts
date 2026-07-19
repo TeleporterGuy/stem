@@ -4,11 +4,11 @@
 // threshold calibration itself lives in scripts/recall-eval.mjs (duplicatePairs).
 // Stateful, order-dependent (shared per-process DB) like the sibling suites.
 import { afterAll, describe, expect, it } from 'vitest';
-import * as store from '../../src/main/recall/store';
+import { recallStore as store } from '../../src/main/recall/store';
 import * as distill from '../../src/main/recall/distill';
 import * as retrieval from '../../src/main/recall/retrieval';
 
-afterAll(() => store.closeForTest());
+afterAll(() => store.close());
 
 const MODEL = 'fake-model';
 let seq = 0;

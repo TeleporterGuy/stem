@@ -1,16 +1,7 @@
 import { app } from 'electron';
 import { readSettings } from '../workspace/settings';
 import { embedModelsDir, embedSocketPath, recallDbPath } from '../workspace/paths';
-import {
-  getFactsGeneration,
-  getFactsMissingVector,
-  pruneMessageVectorsExceptModel,
-  pruneSummaryVectorsExceptModel,
-  pruneVectorsExceptModel,
-  getSummariesMissingVector,
-  upsertFactVectorForSnapshot,
-  upsertSummaryVector
-} from '../recall/store';
+
 import { embedNewMessages } from '../recall/embed-episodic';
 import { getEmbeddingsClient, setRetrievalClients } from '../recall/retrieval';
 import { startEmbedEndpoint } from '../recall/embed-endpoint';
@@ -25,6 +16,8 @@ import { spawnEmbedWorker } from '../recall/embed-worker-host';
 import { createScanWorkerManager, type ScanWorkerManager } from '../recall/scan-manager';
 import { spawnScanWorker } from '../recall/scan-worker-host';
 import { setScanWorkerManager } from '../recall/scan';
+import { recallStore } from '../recall/store';
+const { getFactsGeneration, getFactsMissingVector, pruneMessageVectorsExceptModel, pruneSummaryVectorsExceptModel, pruneVectorsExceptModel, getSummariesMissingVector, upsertFactVectorForSnapshot, upsertSummaryVector } = recallStore;
 
 export interface RetrievalRuntime {
   embedManager: EmbedWorkerManager;

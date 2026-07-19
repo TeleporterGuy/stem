@@ -14,18 +14,7 @@ import {
   setMemoryEnabled,
   setTidyUpThreshold
 } from '../workspace/memory';
-import {
-  getEmbeddingCacheStats,
-  getEpisodicStats,
-  getActiveFactIds,
-  getFactsByIds,
-  getFactDetails,
-  getMemoryConflicts,
-  setFactPinned as storeSetFactPinned,
-  confirmFact as storeConfirmFact,
-  resolveMemoryConflict as storeResolveMemoryConflict,
-  restoreSupersededFact as storeRestoreSupersededFact
-} from '../recall/store';
+
 import {
   getMemoryRebuildStatus,
   pauseMemoryRebuild,
@@ -45,6 +34,8 @@ import type {
   LocalEmbedStatus,
   LocalRerankStatus
 } from '../../shared/types';
+import { recallStore } from '../recall/store';
+const { getEmbeddingCacheStats, getEpisodicStats, getActiveFactIds, getFactsByIds, getFactDetails, getMemoryConflicts, setFactPinned: storeSetFactPinned, confirmFact: storeConfirmFact, resolveMemoryConflict: storeResolveMemoryConflict, restoreSupersededFact: storeRestoreSupersededFact } = recallStore;
 
 /** The Memory tab's surface: facts, episodic store, rebuild, and retrieval status. */
 export function registerMemoryIpc(deps: IpcDeps): void {

@@ -1,12 +1,4 @@
-import {
-  search as storeSearch,
-  dbHandle,
-  factTermSearch,
-  factTrigramSearch,
-  type SearchHit,
-  type SearchOptions,
-  type Fact
-} from './store';
+
 import {
   buildMatchQuery as coreBuildMatchQuery,
   buildTrigramQuery,
@@ -15,6 +7,8 @@ import {
   type QueryEmbedding
 } from './search-core';
 import { scanMessagesOffThread } from './scan';
+import { recallStore, type SearchHit, type SearchOptions, type Fact } from './store';
+const { search: storeSearch, dbHandle, factTermSearch, factTrigramSearch } = recallStore;
 
 // The stable retrieval interface. Everything in the MAIN process that recalls
 // past conversation goes through here; the mechanics live in search-core.ts,

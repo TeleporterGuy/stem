@@ -1,7 +1,9 @@
-import { recordMessage } from './store';
+
 import { requestEpisodicMaintenance } from './scan';
 import type { BackendEventEnvelope, ItemEventParams } from '../../shared/types';
 import { agentMessageText } from '../../shared/types';
+import { recallStore } from './store';
+const { recordMessage } = recallStore;
 
 // Captures conversation into Stem's own store (Level 2). The runtime taps user
 // text (in startTurn) and assistant text (from the item/completed event) and

@@ -13,7 +13,8 @@ import {
   setScanWorkerManager,
   vacuumRecallDb
 } from '../../src/main/recall/scan';
-import { recordMessage } from '../../src/main/recall/store';
+import { recallStore } from '../../src/main/recall/store';
+const { recordMessage } = recallStore;
 
 interface FakeWorker extends WorkerTransport {
   sent: Array<Record<string, unknown>>;

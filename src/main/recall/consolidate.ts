@@ -1,21 +1,11 @@
-import {
-  applyConsolidation,
-  getAllFacts,
-  getConsolidateChunkSize,
-  getFactsGeneration,
-  getFactsMissingVector,
-  getFactVectors,
-  setMeta,
-  upsertFactVectorForSnapshot,
-  type ConsolidationOps,
-  type ConsolidationResult,
-  type Fact
-} from './store';
+
 import { isRecallEnabled } from '../workspace/memory';
 import { PENDING_KEY } from './distill';
 import { getEmbeddingsClient } from './retrieval';
 import { cosineSim } from './vector';
 import type { LlmClient } from './llm';
+import { recallStore, type ConsolidationOps, type ConsolidationResult, type Fact } from './store';
+const { applyConsolidation, getAllFacts, getConsolidateChunkSize, getFactsGeneration, getFactsMissingVector, getFactVectors, setMeta, upsertFactVectorForSnapshot } = recallStore;
 
 // Level 1 cleanup: the consolidation pass. Distillation only ever ADDS facts and
 // can only dedup byte-for-byte (normalizeFact), so over time the set accumulates

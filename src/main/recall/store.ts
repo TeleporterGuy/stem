@@ -42,6 +42,7 @@ import type {
 
 export type MessageRole = 'user' | 'assistant';
 
+
 export interface RecordMessageInput {
   threadId: string;
   turnId?: string | null;
@@ -51,6 +52,7 @@ export interface RecordMessageInput {
   /** Unix seconds. Defaults to now. */
   ts?: number;
 }
+
 
 export interface SearchHit {
   id: number;
@@ -71,11 +73,13 @@ export interface SearchHit {
   cosine?: number;
 }
 
+
 export interface SearchOptions {
   limit?: number;
   /** Exclude hits from this thread (the current chat — its history is already in context). */
   excludeThreadId?: string | null;
 }
+
 
 export interface Fact {
   id: number;
@@ -99,6 +103,7 @@ export interface Fact {
   selectionReason?: FactSelectionReason;
 }
 
+
 export interface FactWriteOptions {
   source?: string;
   category?: FactCategory;
@@ -111,468 +116,19 @@ export interface FactWriteOptions {
   evidence?: Omit<FactEvidence, 'id'>[];
 }
 
-let db: DatabaseSync | null = null;
-// Whether the optional facts_trigram index was created successfully (see open()).
-let factsTrigram = false;
-
-function nowSeconds(): number {
-  return Math.floor(Date.now() / 1000);
-}
-
-function dedupKey(threadId: string, turnId: string | null | undefined, role: string, text: string): string {
-  // turnId distinguishes a legitimate repeated utterance from duplicate capture
-  // of the same turn. Older/no-turn import paths retain their idempotent behavior.
-  return createHash('sha256').update(`${threadId}|${turnId ?? ''}|${role}|${text}`).digest('hex').slice(0, 32);
-}
-
-// Normalize a fact for dedup: lowercase, collapse whitespace, strip trailing
-// punctuation. Two facts that normalize equal are treated as the same fact.
-function normalizeFact(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/[.!?,;:\s]+$/g, '')
-    .trim();
-}
 
 const FACT_SELECT = `id, text, source, category, sensitivity, confidence, status, pinned,
   created_at AS createdAt, updated_at AS updatedAt, valid_from AS validFrom,
   valid_until AS validUntil, superseded_by AS supersededBy,
   times_injected AS timesInjected, times_used AS timesUsed, last_used_at AS lastUsedAt,
   last_graded_at AS lastGradedAt`;
+
 const FACT_SELECT_F = `f.id, f.text, f.source, f.category, f.sensitivity, f.confidence, f.status, f.pinned,
   f.created_at AS createdAt, f.updated_at AS updatedAt, f.valid_from AS validFrom,
   f.valid_until AS validUntil, f.superseded_by AS supersededBy,
   f.times_injected AS timesInjected, f.times_used AS timesUsed, f.last_used_at AS lastUsedAt,
   f.last_graded_at AS lastGradedAt`;
 
-function mapFact(r: Record<string, unknown>): Fact {
-  return {
-    id: r.id as number,
-    text: r.text as string,
-    source: (r.source as string) || 'legacy',
-    category: ((r.category as FactCategory) || 'other'),
-    sensitivity: ((r.sensitivity as FactSensitivity) || 'standard'),
-    confidence: typeof r.confidence === 'number' ? r.confidence : 0.8,
-    status: ((r.status as FactStatus) || 'active'),
-    pinned: Boolean(r.pinned),
-    createdAt: (r.createdAt as number) || (r.updatedAt as number) || 0,
-    updatedAt: (r.updatedAt as number) || 0,
-    validFrom: (r.validFrom as number | null) ?? null,
-    validUntil: (r.validUntil as number | null) ?? null,
-    supersededBy: (r.supersededBy as number | null) ?? null,
-    timesInjected: (r.timesInjected as number) || 0,
-    timesUsed: (r.timesUsed as number) || 0,
-    lastUsedAt: (r.lastUsedAt as number | null) ?? null,
-    lastGradedAt: (r.lastGradedAt as number | null) ?? null
-  };
-}
-
-function open(): DatabaseSync {
-  if (db) return db;
-  const handle = new DatabaseSync(recallDbPath());
-  handle.exec('PRAGMA journal_mode = WAL;');
-  // The scan worker (scan-worker.ts) VACUUMs on its own connection; a main-process
-  // write landing in that brief exclusive window must wait, not throw SQLITE_BUSY.
-  handle.exec('PRAGMA busy_timeout = 5000;');
-  handle.exec(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id        INTEGER PRIMARY KEY,
-      thread_id TEXT NOT NULL,
-      turn_id   TEXT,
-      role      TEXT NOT NULL,
-      ts        INTEGER NOT NULL,
-      cwd       TEXT,
-      text      TEXT NOT NULL,
-      dedup_key TEXT UNIQUE
-    );
-    CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
-
-    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-      text,
-      content='messages',
-      content_rowid='id',
-      tokenize='unicode61'
-    );
-
-    -- Keep the FTS index in lockstep with the messages table.
-    CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-      INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
-    END;
-    CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-      INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
-    END;
-
-    CREATE TABLE IF NOT EXISTS facts (
-      id            INTEGER PRIMARY KEY,
-      text          TEXT NOT NULL,
-      norm          TEXT UNIQUE,
-      source        TEXT,
-      category      TEXT NOT NULL DEFAULT 'other',
-      sensitivity   TEXT NOT NULL DEFAULT 'standard',
-      confidence    REAL NOT NULL DEFAULT 0.8,
-      status        TEXT NOT NULL DEFAULT 'active',
-      pinned        INTEGER NOT NULL DEFAULT 0,
-      created_at    INTEGER NOT NULL DEFAULT 0,
-      updated_at    INTEGER NOT NULL,
-      valid_from    INTEGER,
-      valid_until   INTEGER,
-      superseded_by INTEGER,
-      times_injected INTEGER NOT NULL DEFAULT 0,
-      times_used     INTEGER NOT NULL DEFAULT 0,
-      last_used_at   INTEGER,
-      last_graded_at INTEGER
-    );
-
-    -- Lexical (BM25) index over facts: the no-embeddings relevance tier. Mirrors
-    -- messages_fts so fact ranking is query-aware with zero model/network. Kept in
-    -- lockstep with facts via triggers — and because facts mutate (corrections,
-    -- consolidation), an UPDATE trigger is needed too, unlike append-mostly messages.
-    CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
-      text,
-      content='facts',
-      content_rowid='id',
-      tokenize='unicode61'
-    );
-    CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
-      INSERT INTO facts_fts(rowid, text) VALUES (new.id, new.text);
-    END;
-    CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
-      INSERT INTO facts_fts(facts_fts, rowid, text) VALUES ('delete', old.id, old.text);
-    END;
-    CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
-      INSERT INTO facts_fts(facts_fts, rowid, text) VALUES ('delete', old.id, old.text);
-      INSERT INTO facts_fts(rowid, text) VALUES (new.id, new.text);
-    END;
-
-    -- Cached embedding per (fact, model) for relevance ranking at inject time.
-    -- Keyed by model so swapping the embeddings model just recomputes; stale rows
-    -- under an old model are never read. Vectors are invalidated (deleted) whenever
-    -- a fact's text changes, so a cached vector always matches its current text.
-    CREATE TABLE IF NOT EXISTS fact_vectors (
-      fact_id    INTEGER NOT NULL,
-      model      TEXT NOT NULL,
-      dim        INTEGER NOT NULL,
-      vec        BLOB NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (fact_id, model)
-    );
-
-    -- Cached embedding per (message, model) for semantic episodic search. Same
-    -- contract as fact_vectors: model-keyed, pruned on model switch. Messages are
-    -- append-only so vectors never go stale from edits, but deletions (episodic
-    -- pruning / reset) must clean this table by hand — no FK cascade.
-    CREATE TABLE IF NOT EXISTS message_vectors (
-      message_id INTEGER NOT NULL,
-      model      TEXT NOT NULL,
-      dim        INTEGER NOT NULL,
-      vec        BLOB NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (message_id, model)
-    );
-
-    CREATE TABLE IF NOT EXISTS meta (
-      key   TEXT PRIMARY KEY,
-      value TEXT
-    );
-
-    -- Per-turn answer-time breakdown, surfaced on the assistant message. Keyed by
-    -- the FINAL assistant entry id (pi's session entry id) so readThread can attach
-    -- it to the rebuilt assistant bubble on reopen. Independent of recall capture.
-    CREATE TABLE IF NOT EXISTS turn_timings (
-      turn_entry_id TEXT PRIMARY KEY,
-      thread_id     TEXT NOT NULL,
-      total_ms      INTEGER,
-      thinking_ms   INTEGER NOT NULL,
-      tool_ms       INTEGER NOT NULL,
-      answer_ms     INTEGER NOT NULL,
-      ttft_ms       INTEGER,
-      build_ms      INTEGER,
-      recall_ms     INTEGER,
-      created_at    INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_turn_timings_thread ON turn_timings(thread_id);
-
-    -- Per-turn tool-call activity + web sources, surfaced as collapsible rows on
-    -- the assistant message. Same keying discipline as turn_timings: the FINAL
-    -- assistant entry id, so readThread can attach it on reopen. payload is a JSON
-    -- { activity: ActivityItem[], sources: SourceRef[] } blob.
-    CREATE TABLE IF NOT EXISTS turn_activities (
-      turn_entry_id TEXT PRIMARY KEY,
-      thread_id     TEXT NOT NULL,
-      payload       TEXT NOT NULL,
-      created_at    INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_turn_activities_thread ON turn_activities(thread_id);
-
-    -- The durable facts injected on a thread's most recent turn — surfaced in the
-    -- Memory UI so you can see what the model actually "knew about you". Keyed by
-    -- thread so reopening an old chat still shows its last injected set. fact_ids is
-    -- a JSON array (injected order); tier records which selection path chose them.
-    CREATE TABLE IF NOT EXISTS active_facts (
-      thread_id  TEXT PRIMARY KEY,
-      fact_ids   TEXT NOT NULL,
-      tier       TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS fact_evidence (
-      id         INTEGER PRIMARY KEY,
-      fact_id    INTEGER NOT NULL,
-      message_id INTEGER,
-      thread_id  TEXT,
-      role       TEXT,
-      ts         INTEGER NOT NULL,
-      excerpt    TEXT NOT NULL,
-      origin     TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_fact_evidence_fact ON fact_evidence(fact_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_evidence_unique
-      ON fact_evidence(fact_id, IFNULL(message_id, -1), origin, excerpt);
-
-    CREATE TABLE IF NOT EXISTS fact_conflicts (
-      id          INTEGER PRIMARY KEY,
-      fact_a      INTEGER NOT NULL,
-      fact_b      INTEGER NOT NULL,
-      reason      TEXT NOT NULL,
-      status      TEXT NOT NULL DEFAULT 'open',
-      created_at  INTEGER NOT NULL,
-      resolved_at INTEGER,
-      resolution  TEXT
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_conflict_pair
-      ON fact_conflicts(MIN(fact_a, fact_b), MAX(fact_a, fact_b)) WHERE status = 'open';
-
-    CREATE TABLE IF NOT EXISTS message_chunks (
-      message_id  INTEGER NOT NULL,
-      chunk_index INTEGER NOT NULL,
-      start_offset INTEGER NOT NULL,
-      end_offset   INTEGER NOT NULL,
-      text         TEXT NOT NULL,
-      PRIMARY KEY(message_id, chunk_index)
-    );
-    CREATE TABLE IF NOT EXISTS message_chunk_vectors (
-      message_id  INTEGER NOT NULL,
-      chunk_index INTEGER NOT NULL,
-      model       TEXT NOT NULL,
-      dim         INTEGER NOT NULL,
-      vec         BLOB NOT NULL,
-      updated_at  INTEGER NOT NULL,
-      PRIMARY KEY(message_id, chunk_index, model)
-    );
-
-    -- The facts injected on EACH turn (append-style, unlike active_facts which
-    -- keeps only a thread's latest set for the UI). The distill pass reads
-    -- ungraded rows to ask the model which facts actually informed the reply,
-    -- then flips graded so a row is counted exactly once.
-    CREATE TABLE IF NOT EXISTS turn_injected_facts (
-      thread_id  TEXT NOT NULL,
-      turn_id    TEXT NOT NULL,
-      fact_ids   TEXT NOT NULL,
-      graded     INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (thread_id, turn_id)
-    );
-
-    -- Level 1.5: one rolling English summary per thread, revised by the distill
-    -- pass as new messages arrive. last_message_id is the summary's own watermark,
-    -- independent of distill_cursor_v2 — a failed summary refresh retries without
-    -- blocking fact extraction, and vice versa.
-    CREATE TABLE IF NOT EXISTS summaries (
-      id              INTEGER PRIMARY KEY,
-      thread_id       TEXT NOT NULL UNIQUE,
-      text            TEXT NOT NULL,
-      first_ts        INTEGER NOT NULL,
-      last_ts         INTEGER NOT NULL,
-      message_count   INTEGER NOT NULL DEFAULT 0,
-      last_message_id INTEGER NOT NULL,
-      updated_at      INTEGER NOT NULL,
-      -- Rolling revisions since the summary was last re-derived from its
-      -- segments; drives the periodic anti-drift rebuild in summarize.ts.
-      revisions_since_rebuild INTEGER NOT NULL DEFAULT 0,
-      -- Sticky: set once any revision lands without its per-window segment.
-      -- Segment coverage is then incomplete, so rebuilding from segments would
-      -- silently drop that window — the rebuild disables itself instead.
-      segments_gap    INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
-      text,
-      content='summaries',
-      content_rowid='id',
-      tokenize='unicode61'
-    );
-    CREATE TRIGGER IF NOT EXISTS summaries_ai AFTER INSERT ON summaries BEGIN
-      INSERT INTO summaries_fts(rowid, text) VALUES (new.id, new.text);
-    END;
-    CREATE TRIGGER IF NOT EXISTS summaries_ad AFTER DELETE ON summaries BEGIN
-      INSERT INTO summaries_fts(summaries_fts, rowid, text) VALUES ('delete', old.id, old.text);
-    END;
-    CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON summaries BEGIN
-      INSERT INTO summaries_fts(summaries_fts, rowid, text) VALUES ('delete', old.id, old.text);
-      INSERT INTO summaries_fts(rowid, text) VALUES (new.id, new.text);
-    END;
-
-    -- Append-only per-window mini-summaries, each derived ONCE from raw
-    -- messages. They anchor the periodic drift rebuild of the rolling thread
-    -- summary (summarize.ts): the rolling text is re-derived from these instead
-    -- of from itself, so every summary stays at most two compression hops from
-    -- the raw transcript. Internal scaffolding only — not searched, not injected.
-    CREATE TABLE IF NOT EXISTS summary_segments (
-      id              INTEGER PRIMARY KEY,
-      thread_id       TEXT NOT NULL,
-      text            TEXT NOT NULL,
-      first_ts        INTEGER NOT NULL,
-      last_ts         INTEGER NOT NULL,
-      message_count   INTEGER NOT NULL DEFAULT 0,
-      last_message_id INTEGER NOT NULL,
-      created_at      INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_summary_segments_thread
-      ON summary_segments(thread_id, first_ts, id);
-
-    -- Cached embedding per (summary, model). Same contract as fact_vectors:
-    -- model-keyed, invalidated whenever the summary text changes.
-    CREATE TABLE IF NOT EXISTS summary_vectors (
-      summary_id INTEGER NOT NULL,
-      model      TEXT NOT NULL,
-      dim        INTEGER NOT NULL,
-      vec        BLOB NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (summary_id, model)
-    );
-  `);
-
-  // Recall v2 is an additive migration. SQLite has no ADD COLUMN IF NOT EXISTS,
-  // so inspect the old v1 table and add only what is missing. Existing rows stay
-  // active and usable; provenance is rebuilt later only after user confirmation.
-  const factColumns = new Set(
-    (handle.prepare(`PRAGMA table_info(facts)`).all() as Array<{ name: string }>).map((r) => r.name)
-  );
-  const migratingV1Facts = !factColumns.has('confidence');
-  // Defaults must match the CREATE TABLE above: an upgraded store and a fresh one
-  // have to gate identically, or the same fact recalls differently on two machines.
-  const additions: Array<[string, string]> = [
-    ['category', `TEXT NOT NULL DEFAULT 'other'`],
-    ['sensitivity', `TEXT NOT NULL DEFAULT 'standard'`],
-    ['confidence', `REAL NOT NULL DEFAULT 0.8`],
-    ['status', `TEXT NOT NULL DEFAULT 'active'`],
-    ['pinned', `INTEGER NOT NULL DEFAULT 0`],
-    ['created_at', `INTEGER NOT NULL DEFAULT 0`],
-    ['valid_from', 'INTEGER'],
-    ['valid_until', 'INTEGER'],
-    ['superseded_by', 'INTEGER'],
-    ['times_injected', 'INTEGER NOT NULL DEFAULT 0'],
-    ['times_used', 'INTEGER NOT NULL DEFAULT 0'],
-    ['last_used_at', 'INTEGER'],
-    ['last_graded_at', 'INTEGER']
-  ];
-  for (const [name, ddl] of additions) {
-    if (!factColumns.has(name)) handle.exec(`ALTER TABLE facts ADD COLUMN ${name} ${ddl}`);
-  }
-  // Same additive pattern for the summaries table (segment-rebuild bookkeeping,
-  // added after the table shipped). Defaults must match the CREATE TABLE above.
-  const summaryColumns = new Set(
-    (handle.prepare(`PRAGMA table_info(summaries)`).all() as Array<{ name: string }>).map((r) => r.name)
-  );
-  const summaryAdditions: Array<[string, string]> = [
-    ['revisions_since_rebuild', 'INTEGER NOT NULL DEFAULT 0'],
-    ['segments_gap', 'INTEGER NOT NULL DEFAULT 0']
-  ];
-  for (const [name, ddl] of summaryAdditions) {
-    if (!summaryColumns.has(name)) handle.exec(`ALTER TABLE summaries ADD COLUMN ${name} ${ddl}`);
-  }
-  // Existing v1 rows predate the external-content FTS table. Populate it before
-  // the metadata backfill below fires the UPDATE trigger; deleting an absent FTS
-  // row from that trigger can otherwise report a malformed index.
-  if (migratingV1Facts) {
-    try {
-      handle.exec(`INSERT INTO facts_fts(facts_fts) VALUES('rebuild')`);
-    } catch {
-      // The later guarded rebuild retries; schema migration itself remains usable.
-    }
-    handle.prepare(`UPDATE facts SET source = 'legacy' WHERE source IS NULL OR source = 'distilled'`).run();
-  }
-  handle.prepare(`UPDATE facts SET created_at = updated_at WHERE created_at = 0`).run();
-  handle.prepare(
-    `INSERT INTO meta(key, value) VALUES('recall_schema_version', '3')
-     ON CONFLICT(key) DO UPDATE SET value = '3'`
-  ).run();
-
-  // Optional trigram index over facts: a substring/morphology recall booster for
-  // the lexical tier (catches inflected SK/DE forms and partial words the unicode61
-  // term index misses). Created separately and guarded because the trigram tokenizer
-  // needs a recent SQLite/FTS5 build; if it's unavailable we silently run term-only.
-  try {
-    handle.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS facts_trigram USING fts5(
-        text,
-        content='facts',
-        content_rowid='id',
-        tokenize='trigram'
-      );
-      CREATE TRIGGER IF NOT EXISTS facts_trig_ai AFTER INSERT ON facts BEGIN
-        INSERT INTO facts_trigram(rowid, text) VALUES (new.id, new.text);
-      END;
-      CREATE TRIGGER IF NOT EXISTS facts_trig_ad AFTER DELETE ON facts BEGIN
-        INSERT INTO facts_trigram(facts_trigram, rowid, text) VALUES ('delete', old.id, old.text);
-      END;
-      CREATE TRIGGER IF NOT EXISTS facts_trig_au AFTER UPDATE ON facts BEGIN
-        INSERT INTO facts_trigram(facts_trigram, rowid, text) VALUES ('delete', old.id, old.text);
-        INSERT INTO facts_trigram(rowid, text) VALUES (new.id, new.text);
-      END;
-    `);
-    factsTrigram = true;
-  } catch {
-    factsTrigram = false;
-  }
-
-  // One-time backfill: rows that predate the fact indexes aren't in them yet
-  // (triggers only fire on future mutations). Rebuild once, gated by a meta flag so
-  // it never runs on a populated, already-indexed DB. The flag is read/written via
-  // the local handle to avoid re-entering open() before `db` is assigned.
-  const built = handle.prepare(`SELECT value FROM meta WHERE key = 'facts_index_built'`).get() as
-    | { value: string }
-    | undefined;
-  if (built?.value !== '1') {
-    try {
-      handle.exec(`INSERT INTO facts_fts(facts_fts) VALUES('rebuild')`);
-      if (factsTrigram) handle.exec(`INSERT INTO facts_trigram(facts_trigram) VALUES('rebuild')`);
-    } catch {
-      // A rebuild failure must never block startup; triggers still keep new facts synced.
-    }
-    handle
-      .prepare(`INSERT INTO meta(key, value) VALUES('facts_index_built', '1') ON CONFLICT(key) DO UPDATE SET value = '1'`)
-      .run();
-  }
-
-  db = handle;
-  return handle;
-}
-
-/**
- * Persist one message. Idempotent per turn: re-capturing the same
- * (thread, turn, role, text) is a no-op, while the user legitimately repeating
- * the same text in a later turn creates a distinct episodic message.
- */
-export function recordMessage(input: RecordMessageInput): void {
-  const text = input.text.trim();
-  if (!text) return;
-  const handle = open();
-  handle
-    .prepare(
-      `INSERT OR IGNORE INTO messages (thread_id, turn_id, role, ts, cwd, text, dedup_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      input.threadId,
-      input.turnId ?? null,
-      input.role,
-      input.ts ?? nowSeconds(),
-      input.cwd ?? null,
-      text,
-      dedupKey(input.threadId, input.turnId, input.role, text)
-    );
-}
 
 export interface TurnTimingRecord {
   /** pi's final assistant entry id for the turn — the persistence key. */
@@ -587,72 +143,6 @@ export interface TurnTimingRecord {
   recallMs: number | null;
 }
 
-/** Persist (or replace) a turn's answer-time breakdown. Best-effort; keyed by entry id. */
-export function upsertTurnTiming(rec: TurnTimingRecord): void {
-  const handle = open();
-  handle
-    .prepare(
-      `INSERT INTO turn_timings
-         (turn_entry_id, thread_id, total_ms, thinking_ms, tool_ms, answer_ms, ttft_ms, build_ms, recall_ms, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(turn_entry_id) DO UPDATE SET
-         thread_id = excluded.thread_id,
-         total_ms = excluded.total_ms,
-         thinking_ms = excluded.thinking_ms,
-         tool_ms = excluded.tool_ms,
-         answer_ms = excluded.answer_ms,
-         ttft_ms = excluded.ttft_ms,
-         build_ms = excluded.build_ms,
-         recall_ms = excluded.recall_ms`
-    )
-    .run(
-      rec.turnEntryId,
-      rec.threadId,
-      rec.totalMs,
-      rec.thinkingMs,
-      rec.toolMs,
-      rec.answerMs,
-      rec.ttftMs,
-      rec.buildMs,
-      rec.recallMs,
-      nowSeconds()
-    );
-}
-
-/** Load a thread's persisted turn timings, keyed by final assistant entry id. */
-export function getTurnTimingsByThread(threadId: string): Map<string, TurnTiming> {
-  const handle = open();
-  const rows = handle
-    .prepare(
-      `SELECT turn_entry_id AS entryId, total_ms AS totalMs, thinking_ms AS thinkingMs,
-              tool_ms AS toolMs, answer_ms AS answerMs, ttft_ms AS ttftMs,
-              build_ms AS buildMs, recall_ms AS recallMs
-       FROM turn_timings WHERE thread_id = ?`
-    )
-    .all(threadId) as Array<{
-    entryId: string;
-    totalMs: number | null;
-    thinkingMs: number;
-    toolMs: number;
-    answerMs: number;
-    ttftMs: number | null;
-    buildMs: number | null;
-    recallMs: number | null;
-  }>;
-  const out = new Map<string, TurnTiming>();
-  for (const r of rows) {
-    out.set(r.entryId, {
-      totalMs: r.totalMs,
-      thinkingMs: r.thinkingMs,
-      toolMs: r.toolMs,
-      answerMs: r.answerMs,
-      ttftMs: r.ttftMs,
-      buildMs: r.buildMs,
-      recallMs: r.recallMs
-    });
-  }
-  return out;
-}
 
 /** A turn's persisted tool activity + web sources (see turn_activities). */
 export interface TurnActivityPayload {
@@ -660,119 +150,10 @@ export interface TurnActivityPayload {
   sources: SourceRef[];
 }
 
-/** Persist (or replace) a turn's tool activity + sources. Best-effort; keyed by entry id. */
-export function upsertTurnActivity(rec: {
-  turnEntryId: string;
-  threadId: string;
-  payload: TurnActivityPayload;
-}): void {
-  const handle = open();
-  handle
-    .prepare(
-      `INSERT INTO turn_activities (turn_entry_id, thread_id, payload, created_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(turn_entry_id) DO UPDATE SET
-         thread_id = excluded.thread_id,
-         payload = excluded.payload`
-    )
-    .run(rec.turnEntryId, rec.threadId, JSON.stringify(rec.payload), nowSeconds());
-}
-
-/** Load a thread's persisted turn activities, keyed by final assistant entry id. */
-export function getTurnActivitiesByThread(threadId: string): Map<string, TurnActivityPayload> {
-  const handle = open();
-  const rows = handle
-    .prepare(`SELECT turn_entry_id AS entryId, payload FROM turn_activities WHERE thread_id = ?`)
-    .all(threadId) as Array<{ entryId: string; payload: string }>;
-  const out = new Map<string, TurnActivityPayload>();
-  for (const r of rows) {
-    try {
-      const parsed = JSON.parse(r.payload) as TurnActivityPayload;
-      out.set(r.entryId, {
-        activity: Array.isArray(parsed.activity) ? parsed.activity : [],
-        sources: Array.isArray(parsed.sources) ? parsed.sources : []
-      });
-    } catch {
-      // Malformed row — skip; the message just renders without rows.
-    }
-  }
-  return out;
-}
 
 /** Which selection path chose a turn's facts (see chooseFacts in inject.ts). */
 export type FactTier = import('../../shared/types').FactTier;
 
-/** Record the durable facts injected on `threadId`'s latest turn. Best-effort. */
-export function setActiveFacts(
-  threadId: string,
-  facts: Array<number | { id: number; reason?: FactSelectionReason }>,
-  tier: FactTier
-): void {
-  const handle = open();
-  handle
-    .prepare(
-      `INSERT INTO active_facts (thread_id, fact_ids, tier, updated_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(thread_id) DO UPDATE SET
-         fact_ids = excluded.fact_ids,
-         tier = excluded.tier,
-         updated_at = excluded.updated_at`
-    )
-    .run(threadId, JSON.stringify(facts), tier, nowSeconds());
-}
-
-/** Read a thread's last injected fact ids + tier, or null if none recorded. */
-export function getActiveFactIds(threadId: string): {
-  factIds: number[];
-  reasons: Record<number, FactSelectionReason | undefined>;
-  tier: FactTier;
-} | null {
-  const handle = open();
-  const row = handle
-    .prepare(`SELECT fact_ids AS factIds, tier FROM active_facts WHERE thread_id = ?`)
-    .get(threadId) as { factIds: string; tier: string } | undefined;
-  if (!row) return null;
-  let factIds: number[] = [];
-  const reasons: Record<number, FactSelectionReason | undefined> = {};
-  try {
-    const parsed = JSON.parse(row.factIds);
-    if (Array.isArray(parsed)) {
-      for (const value of parsed) {
-        if (typeof value === 'number') factIds.push(value);
-        else if (value && typeof value === 'object' && typeof value.id === 'number') {
-          factIds.push(value.id);
-          reasons[value.id] = value.reason;
-        }
-      }
-    }
-  } catch {
-    // Corrupt JSON — treat as no recorded set rather than throwing.
-  }
-  return { factIds, reasons, tier: row.tier as FactTier };
-}
-
-// ---- per-turn injected-facts log (usage grading source) ----
-
-/**
- * Append the fact ids injected on one turn. Unlike setActiveFacts (latest set
- * per thread, for the UI) this keeps every turn until graded, so a distill batch
- * spanning several turns can grade each reply against what it actually saw.
- * Best-effort: prunes rows older than 30 days so an abandoned thread's ungraded
- * rows don't accumulate forever.
- */
-export function recordTurnInjectedFacts(threadId: string, turnId: string, factIds: number[]): void {
-  if (!turnId || factIds.length === 0) return;
-  const handle = open();
-  const now = nowSeconds();
-  handle
-    .prepare(
-      `INSERT INTO turn_injected_facts (thread_id, turn_id, fact_ids, graded, created_at)
-       VALUES (?, ?, ?, 0, ?)
-       ON CONFLICT(thread_id, turn_id) DO UPDATE SET fact_ids = excluded.fact_ids`
-    )
-    .run(threadId, turnId, JSON.stringify(factIds), now);
-  handle.prepare(`DELETE FROM turn_injected_facts WHERE created_at < ?`).run(now - 30 * 24 * 3600);
-}
 
 export interface TurnInjectedFacts {
   threadId: string;
@@ -780,105 +161,6 @@ export interface TurnInjectedFacts {
   factIds: number[];
 }
 
-/** Ungraded injected-fact rows for the given turn ids (a distill batch's turns). */
-export function getUngradedTurnFacts(turnIds: string[]): TurnInjectedFacts[] {
-  if (turnIds.length === 0) return [];
-  const placeholders = turnIds.map(() => '?').join(',');
-  const rows = open()
-    .prepare(
-      `SELECT thread_id AS threadId, turn_id AS turnId, fact_ids AS factIds
-       FROM turn_injected_facts WHERE graded = 0 AND turn_id IN (${placeholders})`
-    )
-    .all(...turnIds) as Array<{ threadId: string; turnId: string; factIds: string }>;
-  return rows.flatMap((r) => {
-    try {
-      const ids = JSON.parse(r.factIds);
-      return Array.isArray(ids)
-        ? [{ threadId: r.threadId, turnId: r.turnId, factIds: ids.filter((v): v is number => typeof v === 'number') }]
-        : [];
-    } catch {
-      return [];
-    }
-  });
-}
-
-export function markTurnFactsGraded(threadId: string, turnId: string): void {
-  open().prepare(`UPDATE turn_injected_facts SET graded = 1 WHERE thread_id = ? AND turn_id = ?`)
-    .run(threadId, turnId);
-}
-
-/**
- * Apply one graded turn: every injected fact gains an injection count; the used
- * subset also gains a use count + last-used stamp. Deliberately does NOT touch
- * confidence — usage only reorders ranking, never crosses the injection gate.
- */
-export function recordFactUsage(injectedIds: number[], usedIds: number[], ts = nowSeconds()): void {
-  if (injectedIds.length === 0) return;
-  const handle = open();
-  const used = new Set(usedIds);
-  const bump = handle.prepare(
-    `UPDATE facts SET times_injected = times_injected + 1,
-            times_used = times_used + ?,
-            last_used_at = CASE WHEN ? = 1 THEN ? ELSE last_used_at END,
-            last_graded_at = ?
-     WHERE id = ?`
-  );
-  for (const id of injectedIds) {
-    const wasUsed = used.has(id) ? 1 : 0;
-    bump.run(wasUsed, wasUsed, ts, ts, id);
-  }
-}
-
-/**
- * Resolve fact ids to their current rows, preserving the given order and silently
- * dropping ids whose fact has since been deleted or merged away by consolidation.
- */
-export function getFactsByIds(ids: number[]): Fact[] {
-  if (ids.length === 0) return [];
-  const handle = open();
-  const placeholders = ids.map(() => '?').join(',');
-  const rows = handle
-    .prepare(`SELECT ${FACT_SELECT} FROM facts WHERE id IN (${placeholders})`)
-    .all(...ids) as Array<Record<string, unknown>>;
-  const byId = new Map<number, Fact>();
-  for (const r of rows) byId.set(r.id as number, mapFact(r));
-  return ids.map((id) => byId.get(id)).filter((f): f is Fact => !!f);
-}
-
-/**
- * Episodic search over all captured messages. `query` must already be a valid
- * FTS5 MATCH expression (use search.ts to build one safely from raw user text).
- */
-export function search(query: string, options: SearchOptions = {}): SearchHit[] {
-  if (!query.trim()) return [];
-  const limit = options.limit ?? 5;
-  const exclude = options.excludeThreadId ?? null;
-  const handle = open();
-  const rows = handle
-    .prepare(
-      `SELECT m.id AS id, m.thread_id AS threadId, m.turn_id AS turnId, m.role AS role,
-              m.ts AS ts, m.text AS text,
-              snippet(messages_fts, 0, '«', '»', '…', 12) AS snippet,
-              bm25(messages_fts) AS score
-       FROM messages_fts
-       JOIN messages m ON m.id = messages_fts.rowid
-       WHERE messages_fts MATCH ?
-         AND (? IS NULL OR m.thread_id <> ?)
-       ORDER BY score
-       LIMIT ?`
-    )
-    .all(query, exclude, exclude, limit) as Array<Record<string, unknown>>;
-  return rows.map((r) => ({
-    id: r.id as number,
-    threadId: r.threadId as string,
-    turnId: (r.turnId as string | null) ?? null,
-    role: r.role as MessageRole,
-    ts: r.ts as number,
-    text: r.text as string,
-    snippet: r.snippet as string,
-    score: r.score as number
-  }));
-}
 
 export interface StoredMessage {
   id: number;
@@ -889,373 +171,8 @@ export interface StoredMessage {
   text: string;
 }
 
-function mapStoredMessage(r: Record<string, unknown>): StoredMessage {
-  return {
-    id: r.id as number,
-    threadId: r.threadId as string,
-    turnId: (r.turnId as string | null) ?? null,
-    role: r.role as MessageRole,
-    ts: r.ts as number,
-    text: r.text as string
-  };
-}
-
-/**
- * Messages with id greater than `sinceId`, oldest first — the distillation pass
- * uses this to process only what's new since its last run (the id is a monotonic
- * autoincrement, so it doubles as a watermark).
- */
-export function getMessagesForDistill(sinceId: number, limit = 200): StoredMessage[] {
-  const handle = open();
-  const rows = handle
-    .prepare(
-      `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
-       FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?`
-    )
-    .all(sinceId, limit) as Array<Record<string, unknown>>;
-  return rows.map(mapStoredMessage);
-}
-
-/** Cursor-v2 read: `fromId` is inclusive because a long message may resume mid-text. */
-export function getMessagesForDistillFrom(fromId: number, limit = 200): StoredMessage[] {
-  const rows = open()
-    .prepare(
-      `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
-       FROM messages WHERE id >= ? ORDER BY id ASC LIMIT ?`
-    )
-    .all(fromId, limit) as Array<Record<string, unknown>>;
-  return rows.map(mapStoredMessage);
-}
-
-/**
- * One thread's messages with id greater than `afterId`, oldest first — the
- * rolling-summary refresh walks these against the summary's own watermark.
- */
-export function getThreadMessagesAfter(threadId: string, afterId: number, limit = 200): StoredMessage[] {
-  const rows = open()
-    .prepare(
-      `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
-       FROM messages WHERE thread_id = ? AND id > ? ORDER BY id ASC LIMIT ?`
-    )
-    .all(threadId, afterId, limit) as Array<Record<string, unknown>>;
-  return rows.map(mapStoredMessage);
-}
-
-export function getMessageById(id: number): StoredMessage | null {
-  const r = open().prepare(
-    `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text FROM messages WHERE id = ?`
-  ).get(id) as Record<string, unknown> | undefined;
-  return r ? mapStoredMessage(r) : null;
-}
-
-/**
- * Insert or refresh a durable fact (Level 1). Correction-aware via the norm key.
- * Returns the fact's row id (insert or conflict-update alike; null on empty text)
- * so callers holding a fresh embedding can cache it without a lookup.
- */
-export function upsertFact(
-  text: string,
-  sourceOrOptions: string | FactWriteOptions = 'distilled',
-  extra: FactWriteOptions = {}
-): number | null {
-  const clean = text.trim();
-  if (!clean) return null;
-  const handle = open();
-  const norm = normalizeFact(clean);
-  const opts: FactWriteOptions = typeof sourceOrOptions === 'string'
-    ? { ...extra, source: sourceOrOptions }
-    : sourceOrOptions;
-  const source = opts.source ?? 'distilled';
-  const now = nowSeconds();
-  const confidence = Math.min(1, Math.max(0, opts.confidence ?? (source === 'explicit' ? 1 : 0.9)));
-  // A correction can change the text under an existing norm — drop any cached
-  // vector so it's re-embedded against the new text on the next inject.
-  handle.prepare(`DELETE FROM fact_vectors WHERE fact_id IN (SELECT id FROM facts WHERE norm = ?)`).run(norm);
-  const row = handle
-    .prepare(
-      `INSERT INTO facts
-         (text, norm, source, category, sensitivity, confidence, status, pinned,
-          created_at, updated_at, valid_from, valid_until, superseded_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-       ON CONFLICT(norm) DO UPDATE SET
-         text = excluded.text,
-         source = CASE WHEN facts.source = 'explicit' AND excluded.source <> 'explicit'
-                       THEN facts.source ELSE excluded.source END,
-         category = CASE WHEN excluded.category = 'other' THEN facts.category ELSE excluded.category END,
-         -- Sensitivity only ratchets up: once a claim is classified sensitive, a later
-         -- reworded write must not quietly loosen its stricter relevance gate. Safe
-         -- because nothing seeds 'sensitive' by default — only a classifier decision does.
-         sensitivity = CASE WHEN facts.sensitivity = 'sensitive' THEN facts.sensitivity ELSE excluded.sensitivity END,
-         confidence = MAX(facts.confidence, excluded.confidence),
-         status = CASE WHEN facts.status = 'superseded' THEN excluded.status ELSE facts.status END,
-         pinned = MAX(facts.pinned, excluded.pinned),
-         updated_at = excluded.updated_at,
-         valid_from = COALESCE(excluded.valid_from, facts.valid_from),
-         valid_until = COALESCE(excluded.valid_until, facts.valid_until)
-       RETURNING id`
-    )
-    .get(
-      clean,
-      norm,
-      source,
-      opts.category ?? 'other',
-      opts.sensitivity ?? 'standard',
-      confidence,
-      opts.status ?? 'active',
-      opts.pinned ? 1 : 0,
-      now,
-      now,
-      opts.validFrom ?? null,
-      opts.validUntil ?? null
-    ) as { id: number } | undefined;
-  const id = row?.id ?? null;
-  if (id != null && opts.evidence?.length) addFactEvidence(id, opts.evidence);
-  return id;
-}
-
-export function getFacts(limit = 100): Fact[] {
-  expireFacts();
-  const handle = open();
-  const rows = handle
-    .prepare(`SELECT ${FACT_SELECT} FROM facts WHERE status = 'active' ORDER BY updated_at DESC LIMIT ?`)
-    .all(limit) as Array<Record<string, unknown>>;
-  return rows.map(mapFact);
-}
-
-/**
- * Every fact, uncapped — for the consolidation pass, which must reason over the
- * whole set to merge/correct/drop. `getFacts` keeps its 100-row cap for inject/UI.
- */
-export function getAllFacts(): Fact[] {
-  expireFacts();
-  const handle = open();
-  const rows = handle
-    .prepare(`SELECT ${FACT_SELECT} FROM facts ORDER BY id ASC`)
-    .all() as Array<Record<string, unknown>>;
-  return rows.map(mapFact);
-}
-
-export function getInjectableFacts(): Fact[] {
-  expireFacts();
-  const rows = open()
-    .prepare(
-      // A pin is an explicit user override — it outranks the confidence floor that
-      // otherwise holds back unconfirmed assistant-derived claims.
-      `SELECT ${FACT_SELECT} FROM facts
-       WHERE status = 'active' AND (valid_until IS NULL OR valid_until >= ?)
-         AND (pinned = 1 OR confidence >= 0.7 OR source IN ('explicit', 'legacy'))
-       ORDER BY id ASC`
-    )
-    .all(nowSeconds()) as Array<Record<string, unknown>>;
-  return rows.map(mapFact);
-}
-
-export function expireFacts(now = nowSeconds()): number {
-  return open()
-    .prepare(
-      `UPDATE facts SET status = 'superseded', pinned = 0, updated_at = ?
-       WHERE status = 'active' AND valid_until IS NOT NULL AND valid_until < ?`
-    )
-    .run(now, now).changes as number;
-}
-
-export function addFactEvidence(factId: number, evidence: Omit<FactEvidence, 'id'>[]): void {
-  if (evidence.length === 0) return;
-  const stmt = open().prepare(
-    `INSERT OR IGNORE INTO fact_evidence
-       (fact_id, message_id, thread_id, role, ts, excerpt, origin)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  );
-  for (const e of evidence) {
-    stmt.run(factId, e.messageId, e.threadId, e.role, e.timestamp, e.excerpt.slice(0, 1000), e.origin);
-  }
-}
-
-export function getFactEvidence(factId: number): FactEvidence[] {
-  const rows = open()
-    .prepare(
-      `SELECT id, message_id AS messageId, thread_id AS threadId, role, ts AS timestamp, excerpt, origin
-       FROM fact_evidence WHERE fact_id = ? ORDER BY ts ASC, id ASC`
-    )
-    .all(factId) as Array<Record<string, unknown>>;
-  return rows.map((r) => ({
-    id: r.id as number,
-    messageId: (r.messageId as number | null) ?? null,
-    threadId: (r.threadId as string | null) ?? null,
-    role: (r.role as FactEvidence['role']) ?? null,
-    timestamp: r.timestamp as number,
-    excerpt: r.excerpt as string,
-    origin: r.origin as FactEvidence['origin']
-  }));
-}
-
-/** Evidence-row counts for every fact that has any, keyed by fact id. */
-export function getFactEvidenceCounts(): Map<number, number> {
-  const rows = open()
-    .prepare(`SELECT fact_id AS factId, COUNT(*) AS n FROM fact_evidence GROUP BY fact_id`)
-    .all() as Array<{ factId: number; n: number }>;
-  return new Map(rows.map((r) => [r.factId, r.n]));
-}
-
-function toFactDetails(fact: Fact): FactDetails {
-  return { ...fact, evidence: getFactEvidence(fact.id) };
-}
-
-export function getFactDetails(id: number): FactDetails | null {
-  const row = open().prepare(`SELECT ${FACT_SELECT} FROM facts WHERE id = ?`).get(id) as
-    | Record<string, unknown>
-    | undefined;
-  return row ? toFactDetails(mapFact(row)) : null;
-}
 
 export const MAX_PINNED_FACTS = 5;
-export function setFactPinned(id: number, pinned: boolean): boolean {
-  const handle = open();
-  if (pinned) {
-    const count = (handle.prepare(`SELECT COUNT(*) AS n FROM facts WHERE pinned = 1 AND status = 'active'`).get() as { n: number }).n;
-    if (count >= MAX_PINNED_FACTS) return false;
-  }
-  return (handle.prepare(`UPDATE facts SET pinned = ?, updated_at = ? WHERE id = ? AND status = 'active'`)
-    .run(pinned ? 1 : 0, nowSeconds(), id).changes as number) > 0;
-}
-
-/**
- * Rewrite an active fact's text in place (note normalization). Returns the id of
- * the surviving fact: `id` itself, the fact it merged into when the new text
- * normalizes onto an existing claim, or null when nothing was written (missing
- * or inactive fact, empty text).
- */
-export function updateFactText(id: number, newText: string): number | null {
-  const clean = newText.trim();
-  if (!clean) return null;
-  const handle = open();
-  const row = handle.prepare(`SELECT text, norm, status FROM facts WHERE id = ?`).get(id) as
-    | { text: string; norm: string; status: string }
-    | undefined;
-  if (!row || row.status !== 'active') return null;
-  const norm = normalizeFact(clean);
-  if (row.text === clean && row.norm === norm) return id;
-  const existing = handle
-    .prepare(`SELECT id FROM facts WHERE norm = ? AND id <> ?`)
-    .get(norm, id) as { id: number } | undefined;
-  if (existing) {
-    // The rewrite lands on a claim we already hold: the user just re-asserted it,
-    // so ratchet the survivor to explicit, keep this note's provenance on it, and
-    // retire the duplicate instead of violating UNIQUE(norm).
-    confirmFact(existing.id);
-    handle.prepare(`UPDATE OR IGNORE fact_evidence SET fact_id = ? WHERE fact_id = ?`).run(existing.id, id);
-    supersedeFact(id, existing.id);
-    return existing.id;
-  }
-  // Same invalidation as upsertFact: the text changed, so any cached vector must
-  // be re-embedded on the next inject. FTS/trigram follow via the update triggers.
-  handle.prepare(`DELETE FROM fact_vectors WHERE fact_id = ?`).run(id);
-  handle.prepare(`UPDATE facts SET text = ?, norm = ?, updated_at = ? WHERE id = ?`).run(clean, norm, nowSeconds(), id);
-  return id;
-}
-
-export function confirmFact(id: number): boolean {
-  return (open().prepare(
-    `UPDATE facts SET source = 'explicit', confidence = 1, status = 'active', updated_at = ? WHERE id = ?`
-  ).run(nowSeconds(), id).changes as number) > 0;
-}
-
-export function supersedeFact(id: number, supersededBy: number | null = null): boolean {
-  const handle = open();
-  const changed = (handle.prepare(
-    `UPDATE facts SET status = 'superseded', pinned = 0, superseded_by = ?,
-            norm = CASE WHEN norm LIKE '__superseded__%' THEN norm ELSE '__superseded__' || id || ':' || norm END,
-            updated_at = ? WHERE id = ?`
-  ).run(supersededBy, nowSeconds(), id).changes as number) > 0;
-  if (changed) {
-    handle.prepare(
-      `UPDATE fact_conflicts SET status = 'resolved', resolved_at = ?, resolution = 'superseded'
-       WHERE status = 'open' AND (fact_a = ? OR fact_b = ?)`
-    ).run(nowSeconds(), id, id);
-  }
-  return changed;
-}
-
-export function restoreSupersededFact(id: number): boolean {
-  const handle = open();
-  const row = handle.prepare(`SELECT text FROM facts WHERE id = ? AND status = 'superseded'`).get(id) as
-    | { text: string }
-    | undefined;
-  if (!row) return false;
-  try {
-    return (handle.prepare(
-      `UPDATE facts SET status = 'active', norm = ?, superseded_by = NULL,
-              valid_until = NULL, updated_at = ? WHERE id = ?`
-    ).run(normalizeFact(row.text), nowSeconds(), id).changes as number) > 0;
-  } catch {
-    return false; // an active fact already owns the same normalized claim
-  }
-}
-
-export function createFactConflict(factA: number, factB: number, reason: string): number | null {
-  if (factA === factB) return null;
-  const handle = open();
-  handle.prepare(`UPDATE facts SET status = 'conflicted', pinned = 0 WHERE id IN (?, ?)`).run(factA, factB);
-  const row = handle.prepare(
-    `INSERT OR IGNORE INTO fact_conflicts(fact_a, fact_b, reason, status, created_at)
-     VALUES (?, ?, ?, 'open', ?) RETURNING id`
-  ).get(factA, factB, reason.slice(0, 500), nowSeconds()) as { id: number } | undefined;
-  return row?.id ?? null;
-}
-
-export function getMemoryConflicts(): MemoryConflict[] {
-  const rows = open().prepare(
-    `SELECT id, fact_a AS factA, fact_b AS factB, reason, created_at AS createdAt
-     FROM fact_conflicts WHERE status = 'open' ORDER BY created_at DESC`
-  ).all() as Array<{ id: number; factA: number; factB: number; reason: string; createdAt: number }>;
-  return rows.flatMap((r) => {
-    const factA = getFactDetails(r.factA);
-    const factB = getFactDetails(r.factB);
-    return factA && factB ? [{ ...r, factA, factB }] : [];
-  });
-}
-
-export function resolveMemoryConflict(id: number, resolution: ConflictResolution): boolean {
-  const handle = open();
-  const row = handle.prepare(
-    `SELECT fact_a AS factA, fact_b AS factB FROM fact_conflicts WHERE id = ? AND status = 'open'`
-  ).get(id) as { factA: number; factB: number } | undefined;
-  if (!row) return false;
-  const a = getFactDetails(row.factA);
-  const b = getFactDetails(row.factB);
-  if (!a || !b) return false;
-  let loserId: number | null = null;
-  if (resolution !== 'keep_both') {
-    const newer = a.updatedAt > b.updatedAt || (a.updatedAt === b.updatedAt && a.id > b.id) ? a : b;
-    const older = newer.id === a.id ? b : a;
-    const keep = resolution === 'keep_newer' ? newer : older;
-    const lose = keep.id === a.id ? b : a;
-    loserId = lose.id;
-    supersedeFact(lose.id, keep.id);
-  }
-  handle.prepare(
-    `UPDATE fact_conflicts SET status = 'resolved', resolved_at = ?, resolution = ? WHERE id = ?`
-  ).run(nowSeconds(), resolution, id);
-  for (const factId of [a.id, b.id]) {
-    if (factId === loserId) continue;
-    const stillConflicted = (handle.prepare(
-      `SELECT EXISTS(SELECT 1 FROM fact_conflicts WHERE status = 'open' AND (fact_a = ? OR fact_b = ?)) AS n`
-    ).get(factId, factId) as { n: number }).n === 1;
-    handle.prepare(`UPDATE facts SET status = ? WHERE id = ? AND status <> 'superseded'`)
-      .run(stillConflicted ? 'conflicted' : 'active', factId);
-  }
-  return true;
-}
-
-export function deleteFact(id: number): void {
-  const handle = open();
-  // No FK cascade (foreign_keys isn't globally enabled), so drop the vector by hand.
-  handle.prepare(`DELETE FROM fact_vectors WHERE fact_id = ?`).run(id);
-  handle.prepare(`DELETE FROM fact_evidence WHERE fact_id = ?`).run(id);
-  handle.prepare(`DELETE FROM fact_conflicts WHERE fact_a = ? OR fact_b = ?`).run(id, id);
-  handle.prepare(`UPDATE facts SET superseded_by = NULL WHERE superseded_by = ?`).run(id);
-  handle.prepare(`DELETE FROM facts WHERE id = ?`).run(id);
-}
 
 // ---- lexical fact ranking (Level 1 no-embeddings fallback tier) ----
 
@@ -1264,65 +181,6 @@ export interface ScoredFact extends Fact {
   score: number;
 }
 
-/** True when the optional trigram fact index is available this session. */
-export function factsTrigramAvailable(): boolean {
-  open();
-  return factsTrigram;
-}
-
-function mapScoredFact(r: Record<string, unknown>): ScoredFact {
-  return { ...mapFact(r), score: r.score as number };
-}
-
-/**
- * BM25 term ranking of facts for a prebuilt FTS5 MATCH expression. Returns up to
- * `limit`, best (most-negative bm25) first, with the raw score so callers can blend
- * in recency. Empty on no match or malformed query — search.ts builds the MATCH.
- */
-export function factTermSearch(match: string, limit: number): ScoredFact[] {
-  if (!match.trim() || limit <= 0) return [];
-  const handle = open();
-  try {
-    const rows = handle
-      .prepare(
-        `SELECT ${FACT_SELECT_F},
-                bm25(facts_fts) AS score
-         FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
-         WHERE facts_fts MATCH ? AND f.status = 'active'
-         ORDER BY score
-         LIMIT ?`
-      )
-      .all(match, limit) as Array<Record<string, unknown>>;
-    return rows.map(mapScoredFact);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Trigram substring match of facts (morphology/partial-word recall the term index
- * misses). Guarded: returns [] when the trigram index isn't available. Ordered by
- * recency since bm25 over trigram carries little ranking signal; score is left 0.
- */
-export function factTrigramSearch(match: string, limit: number): ScoredFact[] {
-  if (!factsTrigram || !match.trim() || limit <= 0) return [];
-  const handle = open();
-  try {
-    const rows = handle
-      .prepare(
-        `SELECT ${FACT_SELECT_F},
-                0 AS score
-         FROM facts_trigram JOIN facts f ON f.id = facts_trigram.rowid
-         WHERE facts_trigram MATCH ? AND f.status = 'active'
-         ORDER BY f.updated_at DESC
-         LIMIT ?`
-      )
-      .all(match, limit) as Array<Record<string, unknown>>;
-    return rows.map(mapScoredFact);
-  } catch {
-    return [];
-  }
-}
 
 // ---- embedding cache (Level 1 relevance ranking) ----
 
@@ -1330,123 +188,13 @@ export function factTrigramSearch(match: string, limit: number): ScoredFact[] {
 // unaligned row buffer before viewing it as floats).
 const bytesToFloat32 = coreBytesToFloat32;
 
-/**
- * The live handle, for hand-off to the shared retrieval core (search-core.ts),
- * which is handle-parameterized so the recall MCP server can run the same code
- * on its own read-only connection. Not for ad-hoc SQL elsewhere — everything
- * else goes through this module's functions.
- */
-export function dbHandle(): DatabaseSync {
-  return open();
-}
-
-/** Facts with no cached vector for `model` (need embedding before ranking). */
-export function getFactsMissingVector(model: string): Fact[] {
-  const rows = open()
-    .prepare(
-      `SELECT ${FACT_SELECT_F}
-         FROM facts f
-         LEFT JOIN fact_vectors v ON v.fact_id = f.id AND v.model = ?
-        WHERE v.fact_id IS NULL AND f.status = 'active'
-        ORDER BY f.id ASC`
-    )
-    .all(model) as Array<Record<string, unknown>>;
-  return rows.map(mapFact);
-}
-
-/** All cached vectors for `model`, keyed by fact id. */
-export function getFactVectors(model: string): Map<number, Float32Array> {
-  const rows = open()
-    .prepare(`SELECT fact_id AS factId, vec FROM fact_vectors WHERE model = ?`)
-    .all(model) as Array<{ factId: number; vec: Uint8Array }>;
-  const out = new Map<number, Float32Array>();
-  for (const r of rows) out.set(r.factId, bytesToFloat32(r.vec));
-  return out;
-}
-
-/** Cache a fact's embedding for `model` (replaces any prior vector). */
-export function upsertFactVector(factId: number, model: string, vec: Float32Array): void {
-  const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
-  open()
-    .prepare(
-      `INSERT INTO fact_vectors (fact_id, model, dim, vec, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(fact_id, model) DO UPDATE SET dim = excluded.dim, vec = excluded.vec, updated_at = excluded.updated_at`
-    )
-    .run(factId, model, vec.length, buf, nowSeconds());
-}
-
-/**
- * Cache an embedding only if the fact snapshot it was calculated from is still
- * the same active row in the same reset generation. Embedding calls are async,
- * while fact ids are reusable after reset; checking both epoch and text at this
- * final synchronous write boundary prevents a stale vector attaching to a new
- * fact that inherited the old integer id.
- */
-export function upsertFactVectorForSnapshot(
-  factId: number,
-  expectedText: string,
-  expectedGeneration: number,
-  model: string,
-  vec: Float32Array
-): boolean {
-  if (getFactsGeneration() !== expectedGeneration) return false;
-  const current = open()
-    .prepare(`SELECT text FROM facts WHERE id = ? AND status = 'active'`)
-    .get(factId) as { text: string } | undefined;
-  if (!current || current.text !== expectedText) return false;
-  upsertFactVector(factId, model, vec);
-  return true;
-}
-
-/** Drop cached vectors for every model except `model` (hygiene after a model switch). */
-export function pruneVectorsExceptModel(model: string): void {
-  open().prepare(`DELETE FROM fact_vectors WHERE model <> ?`).run(model);
-}
-
-/** How many facts have a cached vector for `model` (plus total facts + vector dim). */
-export function getEmbeddingCacheStats(model: string): EmbeddingCacheStats {
-  const handle = open();
-  const factCount = (handle.prepare(`SELECT COUNT(*) AS n FROM facts WHERE status = 'active'`).get() as { n: number }).n;
-  const row = handle
-    .prepare(
-      `SELECT COUNT(*) AS n, MAX(v.dim) AS dim FROM fact_vectors v
-       JOIN facts f ON f.id = v.fact_id WHERE v.model = ? AND f.status = 'active'`
-    )
-    .get(model) as { n: number; dim: number | null };
-  return { factCount, embeddedCount: row.n, dim: row.n > 0 ? (row.dim ?? null) : null };
-}
 
 // ---- message embedding cache (Level 2 semantic episodic search) ----
 
 const LEGACY_MESSAGE_EMBED_WATERMARK_KEY = 'message_embed_watermark';
+
 const MESSAGE_EMBED_WATERMARK_KEY = 'message_chunk_embed_watermark_v2';
 
-/**
- * Messages with id greater than `afterId`, oldest first — the episodic embed
- * pass walks these in batches, watermark-style (mirrors getMessagesForDistill).
- */
-export function getMessagesForEmbedding(afterId: number, limit = 200): StoredMessage[] {
-  const rows = open()
-    .prepare(
-      `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
-       FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?`
-    )
-    .all(afterId, limit) as Array<Record<string, unknown>>;
-  return rows.map(mapStoredMessage);
-}
-
-/** Cache a message's embedding for `model` (replaces any prior vector). */
-export function upsertMessageVector(messageId: number, model: string, vec: Float32Array): void {
-  const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
-  open()
-    .prepare(
-      `INSERT INTO message_vectors (message_id, model, dim, vec, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(message_id, model) DO UPDATE SET dim = excluded.dim, vec = excluded.vec, updated_at = excluded.updated_at`
-    )
-    .run(messageId, model, vec.length, buf, nowSeconds());
-}
 
 export interface StoredMessageChunk {
   messageId: number;
@@ -1456,102 +204,12 @@ export interface StoredMessageChunk {
   text: string;
 }
 
-export function replaceMessageChunks(
-  messageId: number,
-  chunks: Array<Omit<StoredMessageChunk, 'messageId'>>
-): void {
-  const handle = open();
-  handle.prepare(`DELETE FROM message_chunks WHERE message_id = ?`).run(messageId);
-  handle.prepare(`DELETE FROM message_chunk_vectors WHERE message_id = ?`).run(messageId);
-  const stmt = handle.prepare(
-    `INSERT INTO message_chunks(message_id, chunk_index, start_offset, end_offset, text)
-     VALUES (?, ?, ?, ?, ?)`
-  );
-  for (const c of chunks) stmt.run(messageId, c.chunkIndex, c.startOffset, c.endOffset, c.text);
-}
-
-export function getMessageChunks(messageId: number): StoredMessageChunk[] {
-  const rows = open().prepare(
-    `SELECT message_id AS messageId, chunk_index AS chunkIndex, start_offset AS startOffset,
-            end_offset AS endOffset, text
-     FROM message_chunks WHERE message_id = ? ORDER BY chunk_index`
-  ).all(messageId) as Array<Record<string, unknown>>;
-  return rows.map((r) => ({
-    messageId: r.messageId as number,
-    chunkIndex: r.chunkIndex as number,
-    startOffset: r.startOffset as number,
-    endOffset: r.endOffset as number,
-    text: r.text as string
-  }));
-}
-
-export function upsertMessageChunkVector(
-  messageId: number,
-  chunkIndex: number,
-  model: string,
-  vec: Float32Array
-): void {
-  const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
-  open().prepare(
-    `INSERT INTO message_chunk_vectors(message_id, chunk_index, model, dim, vec, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(message_id, chunk_index, model) DO UPDATE SET
-       dim = excluded.dim, vec = excluded.vec, updated_at = excluded.updated_at`
-  ).run(messageId, chunkIndex, model, vec.length, buf, nowSeconds());
-}
-
-/** Drop cached message vectors for every model except `model` (after a model switch). */
-export function pruneMessageVectorsExceptModel(model: string): void {
-  const handle = open();
-  handle.prepare(`DELETE FROM message_vectors WHERE model <> ?`).run(model);
-  handle.prepare(`DELETE FROM message_chunk_vectors WHERE model <> ?`).run(model);
-}
-
-/**
- * Last message id the episodic embed pass has processed for `model` (embedded OR
- * deliberately skipped). A watermark recorded under a different model — the
- * embeddings model changed — reads as 0, restarting the backfill.
- */
-export function getMessageEmbedWatermark(model: string): number {
-  const raw = getMeta(MESSAGE_EMBED_WATERMARK_KEY);
-  if (!raw) return 0;
-  try {
-    const parsed = JSON.parse(raw) as { model?: string; id?: number };
-    return parsed.model === model && typeof parsed.id === 'number' ? parsed.id : 0;
-  } catch {
-    return 0;
-  }
-}
-
-export function setMessageEmbedWatermark(model: string, id: number): void {
-  setMeta(MESSAGE_EMBED_WATERMARK_KEY, JSON.stringify({ model, id }));
-  // Keep the v1 cursor current while the old lead-vector table remains as a
-  // downgrade/fallback path. A pre-v2 cursor is never read as chunk progress.
-  setMeta(LEGACY_MESSAGE_EMBED_WATERMARK_KEY, JSON.stringify({ model, id }));
-}
 
 /** An episodic hit produced by cosine ranking; `score` carries the cosine too. */
 export interface SemanticHit extends SearchHit {
   cosine: number;
 }
 
-/**
- * Brute-force cosine top-N over the cached message vectors for `model`. Streams
- * rows instead of materializing a full id→vector map — unlike facts, the message
- * set can reach tens of thousands of rows, and a per-turn multi-MB allocation is
- * the thing to avoid; the arithmetic itself is cheap. Rows with a dim mismatch
- * (stale model collision) are skipped.
- */
-export function semanticSearchMessages(
-  qVec: Float32Array,
-  model: string,
-  opts: { limit: number; minCosine: number; excludeThreadId?: string | null }
-): SemanticHit[] {
-  return semanticSearchMessagesCore(open(), qVec, model, {
-    ...opts,
-    snippetChars: 400
-  }).map((h) => ({ ...h, role: h.role as MessageRole, cosine: h.cosine ?? h.score }));
-}
 
 // ---- thread summaries (Level 1.5: rolling episodic summaries) ----
 
@@ -1570,112 +228,15 @@ export interface ThreadSummaryRow {
   segmentsGap: boolean;
 }
 
+
 const SUMMARY_SELECT = `id, thread_id AS threadId, text, first_ts AS firstTs, last_ts AS lastTs,
   message_count AS messageCount, last_message_id AS lastMessageId, updated_at AS updatedAt,
   revisions_since_rebuild AS revisionsSinceRebuild, segments_gap AS segmentsGap`;
 
-function mapSummary(r: Record<string, unknown>): ThreadSummaryRow {
-  return {
-    id: r.id as number,
-    threadId: r.threadId as string,
-    text: r.text as string,
-    firstTs: r.firstTs as number,
-    lastTs: r.lastTs as number,
-    messageCount: r.messageCount as number,
-    lastMessageId: r.lastMessageId as number,
-    updatedAt: r.updatedAt as number,
-    revisionsSinceRebuild: (r.revisionsSinceRebuild as number) || 0,
-    segmentsGap: !!(r.segmentsGap as number)
-  };
-}
 
 /** Hard cap on stored summary text — rolling revisions must not grow unbounded. */
 export const MAX_SUMMARY_CHARS = 2000;
 
-/**
- * Insert or revise a thread's rolling summary and advance its watermark. The
- * cached vector is invalidated on every write since the text always changes.
- * Returns the summary row id, or null on empty text.
- */
-export function upsertSummary(input: {
-  threadId: string;
-  text: string;
-  firstTs: number;
-  lastTs: number;
-  newMessageCount: number;
-  lastMessageId: number;
-  /** True when the text was re-derived from segments — resets the drift counter. */
-  rebuilt?: boolean;
-  /** False when this revision has no per-window segment → coverage gap (sticky). */
-  segmentStored?: boolean;
-}): number | null {
-  const text = input.text.trim().slice(0, MAX_SUMMARY_CHARS);
-  if (!text) return null;
-  const handle = open();
-  handle.prepare(
-    `DELETE FROM summary_vectors WHERE summary_id IN (SELECT id FROM summaries WHERE thread_id = ?)`
-  ).run(input.threadId);
-  const rebuilt = input.rebuilt === true;
-  const gap = !rebuilt && input.segmentStored === false ? 1 : 0;
-  const row = handle
-    .prepare(
-      `INSERT INTO summaries (thread_id, text, first_ts, last_ts, message_count, last_message_id, updated_at,
-                              revisions_since_rebuild, segments_gap)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(thread_id) DO UPDATE SET
-         text = excluded.text,
-         first_ts = MIN(summaries.first_ts, excluded.first_ts),
-         last_ts = MAX(summaries.last_ts, excluded.last_ts),
-         message_count = summaries.message_count + excluded.message_count,
-         last_message_id = MAX(summaries.last_message_id, excluded.last_message_id),
-         updated_at = excluded.updated_at,
-         revisions_since_rebuild = CASE WHEN ? THEN 0 ELSE summaries.revisions_since_rebuild + 1 END,
-         segments_gap = MAX(summaries.segments_gap, excluded.segments_gap)
-       RETURNING id`
-    )
-    .get(
-      input.threadId,
-      text,
-      input.firstTs,
-      input.lastTs,
-      input.newMessageCount,
-      input.lastMessageId,
-      nowSeconds(),
-      rebuilt ? 0 : 1,
-      gap,
-      rebuilt ? 1 : 0
-    ) as { id: number } | undefined;
-  return row?.id ?? null;
-}
-
-/** Reset the drift counter without touching the text (rebuild skipped as moot). */
-export function markSummaryRebuilt(threadId: string): void {
-  open().prepare(`UPDATE summaries SET revisions_since_rebuild = 0 WHERE thread_id = ?`).run(threadId);
-}
-
-export function getSummaryByThread(threadId: string): ThreadSummaryRow | null {
-  const row = open().prepare(`SELECT ${SUMMARY_SELECT} FROM summaries WHERE thread_id = ?`)
-    .get(threadId) as Record<string, unknown> | undefined;
-  return row ? mapSummary(row) : null;
-}
-
-export function listThreadSummaries(): ThreadSummaryRow[] {
-  const rows = open().prepare(`SELECT ${SUMMARY_SELECT} FROM summaries ORDER BY last_ts DESC`)
-    .all() as Array<Record<string, unknown>>;
-  return rows.map(mapSummary);
-}
-
-export function deleteThreadSummary(id: number): void {
-  const handle = open();
-  // Segments die with the summary: the watermark dies with the row, so the
-  // thread resummarizes from scratch — a stale seed would pollute the rebuild.
-  const row = handle.prepare(`SELECT thread_id AS threadId FROM summaries WHERE id = ?`).get(id) as
-    | { threadId: string }
-    | undefined;
-  if (row) handle.prepare(`DELETE FROM summary_segments WHERE thread_id = ?`).run(row.threadId);
-  handle.prepare(`DELETE FROM summary_vectors WHERE summary_id = ?`).run(id);
-  handle.prepare(`DELETE FROM summaries WHERE id = ?`).run(id);
-}
 
 // ---- summary segments (anti-drift anchors for the rolling summaries) ----
 
@@ -1690,243 +251,19 @@ export interface SummarySegmentRow {
   createdAt: number;
 }
 
+
 const SEGMENT_SELECT = `id, thread_id AS threadId, text, first_ts AS firstTs, last_ts AS lastTs,
   message_count AS messageCount, last_message_id AS lastMessageId, created_at AS createdAt`;
 
+
 /** Hard cap on stored segment text (merged compaction segments may be longer). */
 export const MAX_SEGMENT_CHARS = 700;
+
 export const MAX_MERGED_SEGMENT_CHARS = 1400;
 
-export function addSummarySegment(input: {
-  threadId: string;
-  text: string;
-  firstTs: number;
-  lastTs: number;
-  messageCount: number;
-  lastMessageId: number;
-  maxChars?: number;
-}): number | null {
-  const text = input.text.trim().slice(0, input.maxChars ?? MAX_SEGMENT_CHARS);
-  if (!text) return null;
-  const row = open()
-    .prepare(
-      `INSERT INTO summary_segments (thread_id, text, first_ts, last_ts, message_count, last_message_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`
-    )
-    .get(input.threadId, text, input.firstTs, input.lastTs, input.messageCount, input.lastMessageId, nowSeconds()) as
-    | { id: number }
-    | undefined;
-  return row?.id ?? null;
-}
-
-/** A thread's segments in chronological order (merged rows keep their range's first_ts). */
-export function getSummarySegments(threadId: string): SummarySegmentRow[] {
-  const rows = open()
-    .prepare(`SELECT ${SEGMENT_SELECT} FROM summary_segments WHERE thread_id = ? ORDER BY first_ts ASC, id ASC`)
-    .all(threadId) as Array<Record<string, unknown>>;
-  return rows.map((r) => ({
-    id: r.id as number,
-    threadId: r.threadId as string,
-    text: r.text as string,
-    firstTs: r.firstTs as number,
-    lastTs: r.lastTs as number,
-    messageCount: r.messageCount as number,
-    lastMessageId: r.lastMessageId as number,
-    createdAt: r.createdAt as number
-  }));
-}
-
-/**
- * Compaction: atomically replace a set of (oldest) segments with one merged
- * segment carrying their combined range. Used when a long thread's segments
- * outgrow the rebuild input budget.
- */
-export function replaceSummarySegments(
-  threadId: string,
-  ids: number[],
-  merged: { text: string; firstTs: number; lastTs: number; messageCount: number; lastMessageId: number }
-): number | null {
-  if (ids.length === 0) return null;
-  const handle = open();
-  handle.exec('BEGIN');
-  try {
-    const del = handle.prepare(`DELETE FROM summary_segments WHERE thread_id = ? AND id = ?`);
-    for (const id of ids) del.run(threadId, id);
-    const inserted = addSummarySegment({ threadId, ...merged, maxChars: MAX_MERGED_SEGMENT_CHARS });
-    handle.exec('COMMIT');
-    return inserted;
-  } catch (err) {
-    handle.exec('ROLLBACK');
-    throw err;
-  }
-}
-
-/**
- * Threads that have captured messages beyond their summary's watermark (or no
- * summary at all). Newest activity first for the post-turn refresh (the chat
- * the user just used); oldest first for the dormant backfill's work queue.
- */
-export function getThreadsNeedingSummary(
-  limit: number,
-  order: 'newest' | 'oldest' = 'newest',
-  minimum: { messages: number; chars: number } = { messages: 0, chars: 0 }
-): Array<{ threadId: string; behindBy: number }> {
-  if (limit <= 0) return [];
-  const rows = open()
-    .prepare(
-      `SELECT m.thread_id AS threadId, COUNT(*) AS behindBy
-       FROM messages m
-       LEFT JOIN summaries s ON s.thread_id = m.thread_id
-       WHERE m.id > COALESCE(s.last_message_id, 0)
-       GROUP BY m.thread_id
-       HAVING
-         (s.thread_id IS NULL AND SUM(LENGTH(m.text)) >= ?)
-         OR
-         (s.thread_id IS NOT NULL AND (COUNT(*) >= ? OR SUM(LENGTH(m.text)) >= ?))
-       ORDER BY MAX(m.ts) ${order === 'newest' ? 'DESC' : 'ASC'}
-       LIMIT ?`
-    )
-    .all(minimum.chars, minimum.messages, minimum.chars, limit) as Array<{ threadId: string; behindBy: number }>;
-  return rows;
-}
-
-/** Summaries with no cached vector for `model` (need embedding before search). */
-export function getSummariesMissingVector(model: string): ThreadSummaryRow[] {
-  const rows = open()
-    .prepare(
-      `SELECT s.id, s.thread_id AS threadId, s.text, s.first_ts AS firstTs, s.last_ts AS lastTs,
-              s.message_count AS messageCount, s.last_message_id AS lastMessageId, s.updated_at AS updatedAt,
-              s.revisions_since_rebuild AS revisionsSinceRebuild, s.segments_gap AS segmentsGap
-       FROM summaries s
-       LEFT JOIN summary_vectors v ON v.summary_id = s.id AND v.model = ?
-       WHERE v.summary_id IS NULL
-       ORDER BY s.id ASC`
-    )
-    .all(model) as Array<Record<string, unknown>>;
-  return rows.map(mapSummary);
-}
-
-/** Cache a summary's embedding for `model` (replaces any prior vector). */
-export function upsertSummaryVector(summaryId: number, model: string, vec: Float32Array): void {
-  const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
-  open()
-    .prepare(
-      `INSERT INTO summary_vectors (summary_id, model, dim, vec, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(summary_id, model) DO UPDATE SET dim = excluded.dim, vec = excluded.vec, updated_at = excluded.updated_at`
-    )
-    .run(summaryId, model, vec.length, buf, nowSeconds());
-}
-
-/** Drop cached summary vectors for every model except `model` (after a model switch). */
-export function pruneSummaryVectorsExceptModel(model: string): void {
-  open().prepare(`DELETE FROM summary_vectors WHERE model <> ?`).run(model);
-}
-
-/**
- * True when ANY message vector is cached (any model). The hybrid search uses
- * this as a pre-embed gate: with an empty table there is nothing to scan, so
- * the query embed would be pure waste (e.g. embeddings just turned on, backfill
- * not yet run — or a fact-only turn on a fresh DB).
- */
-export function hasMessageVectors(): boolean {
-  return hasMessageVectorsCore(open());
-}
-
-/** How many messages have a cached vector for `model`, vs total messages. */
-export function getEpisodicVectorStats(model: string): { messageCount: number; embeddedCount: number } {
-  const handle = open();
-  const embedded = handle
-    .prepare(
-      `SELECT COUNT(DISTINCT message_id) AS n FROM (
-         SELECT message_id FROM message_chunk_vectors WHERE model = ?
-         UNION SELECT message_id FROM message_vectors WHERE model = ?
-       )`
-    )
-    .get(model, model) as { n: number };
-  return { messageCount: messageCount(), embeddedCount: embedded.n };
-}
-
-/**
- * Wipe the episodic store (Level 2): all messages + their FTS index, and the
- * distill watermark — message ids can be reused after a VACUUM, so a stale
- * watermark would make distillation skip freshly captured messages. VACUUM runs
- * after the delete (it can't run inside a transaction) to reclaim disk pages.
- *
- * Deleting from `messages` fires the messages_ad trigger per row, so the FTS
- * index is cleared in lockstep — no separate messages_fts delete needed.
- * Leaves facts and the recall_enabled toggle untouched.
- */
-export function resetEpisodic(options: { skipVacuum?: boolean } = {}): void {
-  const handle = open();
-  handle.exec('BEGIN');
-  try {
-    handle.exec('DELETE FROM messages');
-    handle.exec('DELETE FROM message_vectors');
-    handle.exec('DELETE FROM message_chunk_vectors');
-    handle.exec('DELETE FROM message_chunks');
-    // Summaries are derived from messages, and their last_message_id watermarks
-    // would be corrupted by message-id reuse after the VACUUM below. The
-    // per-turn injected-facts log references turn ids of deleted messages.
-    handle.exec('DELETE FROM summaries');
-    handle.exec('DELETE FROM summary_segments');
-    handle.exec('DELETE FROM summary_vectors');
-    handle.exec('DELETE FROM turn_injected_facts');
-    handle.exec(`DELETE FROM meta WHERE key = 'distill_watermark'`);
-    handle.exec(`DELETE FROM meta WHERE key = 'distill_cursor_v2'`);
-    handle.exec(`DELETE FROM meta WHERE key = 'skill_distill_watermark'`);
-    handle.exec(`DELETE FROM meta WHERE key = 'skill_distill_cursor_v2'`);
-    handle.exec(`DELETE FROM meta WHERE key = 'memory_rebuild_v2'`);
-    // Same rowid-reuse hazard as the distill watermark: after VACUUM, new
-    // messages can reclaim old ids and would be skipped by a stale embed watermark.
-    handle.exec(`DELETE FROM meta WHERE key = '${MESSAGE_EMBED_WATERMARK_KEY}'`);
-    handle.exec(`DELETE FROM meta WHERE key = '${LEGACY_MESSAGE_EMBED_WATERMARK_KEY}'`);
-    handle.exec('COMMIT');
-  } catch (err) {
-    handle.exec('ROLLBACK');
-    throw err;
-  }
-  // Callers that can VACUUM off-thread (workspace/memory.ts via scan.ts) skip
-  // the inline one; everyone else keeps the synchronous reclaim.
-  if (!options.skipVacuum) handle.exec('VACUUM');
-}
 
 const FACTS_GENERATION_KEY = 'facts_generation';
 
-/** Monotonic epoch used to invalidate asynchronous fact writers after a reset. */
-export function getFactsGeneration(): number {
-  return Number.parseInt(getMeta(FACTS_GENERATION_KEY) ?? '0', 10) || 0;
-}
-
-/**
- * Wipe durable facts (Level 1) + the consolidation dirty-counter. Leaves the
- * episodic store and the recall_enabled toggle untouched.
- */
-export function resetFacts(): void {
-  const handle = open();
-  const nextGeneration = getFactsGeneration() + 1;
-  handle.exec('BEGIN');
-  try {
-    handle.prepare(
-      `INSERT INTO meta(key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-    ).run(FACTS_GENERATION_KEY, String(nextGeneration));
-    handle.exec('DELETE FROM fact_vectors');
-    handle.exec('DELETE FROM fact_evidence');
-    handle.exec('DELETE FROM fact_conflicts');
-    handle.exec('DELETE FROM facts');
-    // Fact ids in the per-turn injected log are now dangling — drop it too.
-    handle.exec('DELETE FROM turn_injected_facts');
-    handle.exec(`DELETE FROM meta WHERE key = 'consolidate_pending'`);
-    // Clearing facts is also a cancellation barrier for an active rebuild.
-    // Removing its progress returns it to the explicit-consent "available" state.
-    handle.exec(`DELETE FROM meta WHERE key = 'memory_rebuild_v2'`);
-    handle.exec('COMMIT');
-  } catch (err) {
-    handle.exec('ROLLBACK');
-    throw err;
-  }
-}
 
 // ---- consolidation (Level 1 cleanup) ----
 
@@ -1935,16 +272,19 @@ export interface MergeOp {
   ids: number[];
   text: string;
 }
+
 /** Rewrite a single fact's text in place (a correction). */
 export interface CorrectOp {
   id: number;
   text: string;
 }
+
 export interface ConsolidationOps {
   merge: MergeOp[];
   correct: CorrectOp[];
   drop: number[];
 }
+
 export interface ConsolidationResult {
   merged: number;
   corrected: number;
@@ -1953,194 +293,49 @@ export interface ConsolidationResult {
   failedChunks: number;
 }
 
-/**
- * Apply a batch of consolidation operations in a single transaction. Default
- * posture is KEEP: only ids named in an op are touched; unknown ids are ignored.
- *
- * Order matters for the `norm` UNIQUE constraint: all deletes run first (merge
- * losers + explicit drops), so a survivor/correction can safely take text whose
- * norm previously belonged to a now-deleted row. Text writes that would still
- * collide with another surviving row (two survivors normalizing equal) are
- * skipped per-row rather than aborting the whole batch.
- */
-export function applyConsolidation(ops: ConsolidationOps): ConsolidationResult {
-  const handle = open();
-  const existing = new Set(getAllFacts().filter((f) => f.status === 'active').map((f) => f.id));
-
-  // Resolve text writes (merge survivors + corrections) and the ids each removes.
-  const dropIds = new Set<number>(); // explicit drops
-  const mergeLoserIds = new Set<number>(); // losers folded into a survivor
-  const textWrites: Array<{ id: number; text: string; kind: 'merge' | 'correct' }> = [];
-
-  for (const m of ops.merge) {
-    const present = m.ids.filter((id) => existing.has(id));
-    const text = m.text.trim();
-    if (present.length === 0 || !text) continue;
-    const survivor = Math.min(...present);
-    for (const id of present) if (id !== survivor) mergeLoserIds.add(id);
-    textWrites.push({ id: survivor, text, kind: 'merge' });
-  }
-  for (const c of ops.correct) {
-    const text = c.text.trim();
-    if (existing.has(c.id) && text) textWrites.push({ id: c.id, text, kind: 'correct' });
-  }
-  for (const id of ops.drop) if (existing.has(id)) dropIds.add(id);
-  // A survivor/corrected row must never be deleted by an overlapping op.
-  for (const w of textWrites) {
-    dropIds.delete(w.id);
-    mergeLoserIds.delete(w.id);
-  }
-
-  let merged = 0;
-  let dropped = 0;
-  let corrected = 0;
-  handle.exec('BEGIN');
-  try {
-    // Supersede first so a survivor/correction can reclaim a loser's normalized
-    // key without erasing its text/evidence/history.
-    const retire = handle.prepare(
-      `UPDATE facts SET status = 'superseded', pinned = 0, superseded_by = ?,
-              norm = '__superseded__' || id || ':' || norm, updated_at = ?
-       WHERE id = ? AND status = 'active'`
-    );
-    const delVec = handle.prepare(`DELETE FROM fact_vectors WHERE fact_id = ?`);
-    const mergeSurvivor = new Map<number, number>();
-    for (const m of ops.merge) {
-      const present = m.ids.filter((id) => existing.has(id));
-      if (present.length < 2) continue;
-      const survivor = Math.min(...present);
-      for (const id of present) if (id !== survivor) mergeSurvivor.set(id, survivor);
-    }
-    for (const id of mergeLoserIds) {
-      merged += retire.run(mergeSurvivor.get(id) ?? null, nowSeconds(), id).changes as number;
-    }
-    for (const id of dropIds) {
-      dropped += retire.run(null, nowSeconds(), id).changes as number;
-    }
-    // Survivors/corrections keep their row but get new text — invalidate their vectors.
-    for (const w of textWrites) delVec.run(w.id);
-
-    const upd = handle.prepare(`UPDATE facts SET text = ?, norm = ?, updated_at = ? WHERE id = ?`);
-    for (const w of textWrites) {
-      try {
-        if ((upd.run(w.text, normalizeFact(w.text), nowSeconds(), w.id).changes as number) > 0) {
-          if (w.kind === 'correct') corrected += 1;
-        }
-      } catch {
-        // norm UNIQUE collision with another surviving row — leave this fact as-is.
-      }
-    }
-    handle.exec('COMMIT');
-  } catch (err) {
-    handle.exec('ROLLBACK');
-    throw err;
-  }
-
-  return { merged, corrected, dropped, failedChunks: 0 };
-}
-
-export function getMeta(key: string): string | null {
-  const handle = open();
-  const row = handle.prepare(`SELECT value FROM meta WHERE key = ?`).get(key) as { value?: string } | undefined;
-  return row?.value ?? null;
-}
-
-export function setMeta(key: string, value: string): void {
-  open()
-    .prepare(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
-    .run(key, value);
-}
-
-/** Count of captured messages — used by tests/diagnostics. */
-export function messageCount(): number {
-  const row = open().prepare(`SELECT COUNT(*) AS n FROM messages`).get() as { n: number };
-  return row.n;
-}
-
-/** On-disk footprint of recall.sqlite + its WAL sidecar (uncheckpointed writes). */
-function dbSizeBytes(): number {
-  return dbSizeBytesFor(recallDbPath());
-}
-
-/**
- * Metadata for the Level-2 episodic store: how many messages are captured and how
- * much disk recall.sqlite occupies.
- */
-export function getEpisodicStats(): EpisodicStats {
-  return { messageCount: messageCount(), sizeBytes: dbSizeBytes() };
-}
 
 // ---- tunable limits (stored in meta so the backend can read them synchronously) ----
 
 const EPISODIC_MAX_KEY = 'episodic_max_bytes';
+
 const TIDY_THRESHOLD_KEY = 'consolidate_threshold';
+
 // The default (and the limit's meta key) live in maintenance-core.ts so the scan
 // worker enforces the same cap without importing this electron-bound module.
 export { DEFAULT_EPISODIC_MAX_BYTES } from './maintenance-core';
+
 /** Run a tidy-up once this many new facts have accumulated (0 = manual only). */
 export const DEFAULT_TIDY_THRESHOLD = 5;
 
-/** Max on-disk size for the episodic store in bytes; 0 = unlimited. */
-export function getEpisodicLimitBytes(): number {
-  const raw = Number.parseInt(getMeta(EPISODIC_MAX_KEY) ?? '', 10);
-  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_EPISODIC_MAX_BYTES;
-}
-export function setEpisodicLimitBytes(bytes: number): void {
-  setMeta(EPISODIC_MAX_KEY, String(Math.max(0, Math.floor(bytes))));
-}
-
-/** New-fact count that triggers an automatic tidy-up; 0 = manual only. */
-export function getTidyThreshold(): number {
-  const raw = Number.parseInt(getMeta(TIDY_THRESHOLD_KEY) ?? '', 10);
-  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_TIDY_THRESHOLD;
-}
-export function setTidyThreshold(n: number): void {
-  setMeta(TIDY_THRESHOLD_KEY, String(Math.max(0, Math.floor(n))));
-}
 
 // ---- fact-ranking tunables (inject-time relevance selection) ----
 
 const FACT_THRESHOLD_KEY = 'recall_fact_threshold'; // v1, read once for migration only
+
 const MAX_RELEVANT_FACTS_KEY = 'recall_max_relevant_facts';
+
 const FACT_COSINE_M_KEY = 'recall_cosine_m';
+
 const FACT_RERANK_K_KEY = 'recall_rerank_k';
+
 /**
  * How many relevance-ranked facts a turn may receive, on top of any pinned ones.
  * Every injected fact must also clear its sensitivity's cosine gate, so a turn
  * often gets fewer. Tunable in Memory → Facts.
  */
 export const DEFAULT_MAX_RELEVANT_FACTS = 8;
+
 /** Embedding-cosine shortlist size handed to the reranker. */
 export const DEFAULT_FACT_COSINE_M = 20;
+
 /** Facts actually injected after reranking (or cosine top-K when no reranker). */
 export const DEFAULT_FACT_RERANK_K = 8;
 
-function getMetaPositiveInt(key: string, fallback: number): number {
-  const raw = Number.parseInt(getMeta(key) ?? '', 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-}
-
-export function getMaxRelevantFacts(): number {
-  const current = getMeta(MAX_RELEVANT_FACTS_KEY);
-  if (current != null) return getMetaPositiveInt(MAX_RELEVANT_FACTS_KEY, DEFAULT_MAX_RELEVANT_FACTS);
-  // Do not reinterpret the v1 inject-all threshold as a v2 result count. Record
-  // the new safe default once so future reads are stable.
-  if (getMeta(FACT_THRESHOLD_KEY) != null) setMeta(MAX_RELEVANT_FACTS_KEY, String(DEFAULT_MAX_RELEVANT_FACTS));
-  return DEFAULT_MAX_RELEVANT_FACTS;
-}
-export function setMaxRelevantFacts(n: number): void {
-  setMeta(MAX_RELEVANT_FACTS_KEY, String(Math.max(1, Math.min(32, Math.floor(n)))));
-}
-export function getFactCosineM(): number {
-  return getMetaPositiveInt(FACT_COSINE_M_KEY, DEFAULT_FACT_COSINE_M);
-}
-export function getFactRerankK(): number {
-  return getMetaPositiveInt(FACT_RERANK_K_KEY, DEFAULT_FACT_RERANK_K);
-}
 
 // ---- episodic semantic tunable ----
 
 const SEMANTIC_MIN_COSINE_KEY = 'recall_semantic_min_cosine';
+
 /**
  * Floor for semantic-only episodic hits. e5-family similarities squash into
  * roughly [0.7, 1.0], so 0.82 sits above unrelated-content noise while keeping
@@ -2148,15 +343,9 @@ const SEMANTIC_MIN_COSINE_KEY = 'recall_semantic_min_cosine';
  */
 export const DEFAULT_SEMANTIC_MIN_COSINE = 0.82;
 
-export function getSemanticMinCosine(): number {
-  const raw = Number.parseFloat(getMeta(SEMANTIC_MIN_COSINE_KEY) ?? '');
-  return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_SEMANTIC_MIN_COSINE;
-}
-export function setSemanticMinCosine(v: number): void {
-  setMeta(SEMANTIC_MIN_COSINE_KEY, String(Math.min(1, Math.max(0, v))));
-}
 
 const USAGE_WEIGHT_KEY = 'recall_usage_weight';
+
 /**
  * Weight of the usage term blended into fact relevance ranking:
  * blended = cosine + W * (usageRate - 0.5), with a Laplace-smoothed usage rate
@@ -2166,15 +355,9 @@ const USAGE_WEIGHT_KEY = 'recall_usage_weight';
  */
 export const DEFAULT_USAGE_WEIGHT = 0.1;
 
-export function getUsageWeight(): number {
-  const raw = Number.parseFloat(getMeta(USAGE_WEIGHT_KEY) ?? '');
-  return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_USAGE_WEIGHT;
-}
-export function setUsageWeight(v: number): void {
-  setMeta(USAGE_WEIGHT_KEY, String(Math.min(1, Math.max(0, v))));
-}
 
 const DUP_COSINE_KEY = 'recall_dup_cosine';
+
 /**
  * Write-time duplicate-fact threshold (passage↔passage cosine). Calibrated by
  * scripts/recall-eval.mjs on 2026-07-04 with e5-small: same-language duplicates
@@ -2185,38 +368,2029 @@ const DUP_COSINE_KEY = 'recall_dup_cosine';
  */
 export const DEFAULT_DUP_COSINE = 0.94;
 
-export function getDupCosine(): number {
-  const raw = Number.parseFloat(getMeta(DUP_COSINE_KEY) ?? '');
-  return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_DUP_COSINE;
-}
-export function setDupCosine(v: number): void {
-  setMeta(DUP_COSINE_KEY, String(Math.min(1, Math.max(0, v))));
-}
 
 const CONSOLIDATE_CHUNK_KEY = 'consolidate_chunk_size';
+
 /** Max facts per consolidation prompt; larger sets are clustered into chunks. */
 export const DEFAULT_CONSOLIDATE_CHUNK = 50;
 
-export function getConsolidateChunkSize(): number {
-  // Floor of 2 so a "chunk" can always hold a mergeable pair.
-  return Math.max(2, getMetaPositiveInt(CONSOLIDATE_CHUNK_KEY, DEFAULT_CONSOLIDATE_CHUNK));
-}
-export function setConsolidateChunkSize(n: number): void {
-  setMeta(CONSOLIDATE_CHUNK_KEY, String(Math.max(2, Math.floor(n))));
-}
 
 /**
- * Trim the episodic store back under its size limit (prune oldest + VACUUM).
- * Synchronous in-process pass — the capture path normally routes this through
- * the scan worker instead (see scan.ts); the mechanics live in maintenance-core
- * so both run the same code.
+ * Stem Recall's storage layer as an injectable unit: one instance owns one
+ * SQLite handle over the path returned by `dbPath` (re-read on every (re)open,
+ * so tests can close + repoint). Methods are bound arrow properties: call
+ * sites may destructure them off an instance and pass them around as
+ * callbacks without losing `this`.
  */
-export function enforceEpisodicLimit(): number {
-  return enforceEpisodicLimitCore(open(), recallDbPath());
+export class RecallStore {
+  private db: DatabaseSync | null = null;
+  /** Whether this SQLite build supports the optional trigram FTS index. */
+  private factsTrigram = false;
+
+  constructor(private readonly dbPath: () => string) {}
+
+  private nowSeconds = (): number => {
+    return Math.floor(Date.now() / 1000);
+  };
+
+
+  private dedupKey = (threadId: string, turnId: string | null | undefined, role: string, text: string): string => {
+    // turnId distinguishes a legitimate repeated utterance from duplicate capture
+    // of the same turn. Older/no-turn import paths retain their idempotent behavior.
+    return createHash('sha256').update(`${threadId}|${turnId ?? ''}|${role}|${text}`).digest('hex').slice(0, 32);
+  };
+
+
+  // Normalize a fact for dedup: lowercase, collapse whitespace, strip trailing
+  // punctuation. Two facts that normalize equal are treated as the same fact.
+  private normalizeFact = (text: string): string => {
+    return text
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[.!?,;:\s]+$/g, '')
+      .trim();
+  };
+
+
+  private mapFact = (r: Record<string, unknown>): Fact => {
+    return {
+      id: r.id as number,
+      text: r.text as string,
+      source: (r.source as string) || 'legacy',
+      category: ((r.category as FactCategory) || 'other'),
+      sensitivity: ((r.sensitivity as FactSensitivity) || 'standard'),
+      confidence: typeof r.confidence === 'number' ? r.confidence : 0.8,
+      status: ((r.status as FactStatus) || 'active'),
+      pinned: Boolean(r.pinned),
+      createdAt: (r.createdAt as number) || (r.updatedAt as number) || 0,
+      updatedAt: (r.updatedAt as number) || 0,
+      validFrom: (r.validFrom as number | null) ?? null,
+      validUntil: (r.validUntil as number | null) ?? null,
+      supersededBy: (r.supersededBy as number | null) ?? null,
+      timesInjected: (r.timesInjected as number) || 0,
+      timesUsed: (r.timesUsed as number) || 0,
+      lastUsedAt: (r.lastUsedAt as number | null) ?? null,
+      lastGradedAt: (r.lastGradedAt as number | null) ?? null
+    };
+  };
+
+
+  private open = (): DatabaseSync => {
+    if (this.db) return this.db;
+    const handle = new DatabaseSync(this.dbPath());
+    handle.exec('PRAGMA journal_mode = WAL;');
+    // The scan worker (scan-worker.ts) VACUUMs on its own connection; a main-process
+    // write landing in that brief exclusive window must wait, not throw SQLITE_BUSY.
+    handle.exec('PRAGMA busy_timeout = 5000;');
+    handle.exec(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id        INTEGER PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        turn_id   TEXT,
+        role      TEXT NOT NULL,
+        ts        INTEGER NOT NULL,
+        cwd       TEXT,
+        text      TEXT NOT NULL,
+        dedup_key TEXT UNIQUE
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+        text,
+        content='messages',
+        content_rowid='id',
+        tokenize='unicode61'
+      );
+
+      -- Keep the FTS index in lockstep with the messages table.
+      CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+        INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
+      END;
+
+      CREATE TABLE IF NOT EXISTS facts (
+        id            INTEGER PRIMARY KEY,
+        text          TEXT NOT NULL,
+        norm          TEXT UNIQUE,
+        source        TEXT,
+        category      TEXT NOT NULL DEFAULT 'other',
+        sensitivity   TEXT NOT NULL DEFAULT 'standard',
+        confidence    REAL NOT NULL DEFAULT 0.8,
+        status        TEXT NOT NULL DEFAULT 'active',
+        pinned        INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL,
+        valid_from    INTEGER,
+        valid_until   INTEGER,
+        superseded_by INTEGER,
+        times_injected INTEGER NOT NULL DEFAULT 0,
+        times_used     INTEGER NOT NULL DEFAULT 0,
+        last_used_at   INTEGER,
+        last_graded_at INTEGER
+      );
+
+      -- Lexical (BM25) index over facts: the no-embeddings relevance tier. Mirrors
+      -- messages_fts so fact ranking is query-aware with zero model/network. Kept in
+      -- lockstep with facts via triggers — and because facts mutate (corrections,
+      -- consolidation), an UPDATE trigger is needed too, unlike append-mostly messages.
+      CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+        text,
+        content='facts',
+        content_rowid='id',
+        tokenize='unicode61'
+      );
+      CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
+        INSERT INTO facts_fts(rowid, text) VALUES (new.id, new.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
+        INSERT INTO facts_fts(facts_fts, rowid, text) VALUES ('delete', old.id, old.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
+        INSERT INTO facts_fts(facts_fts, rowid, text) VALUES ('delete', old.id, old.text);
+        INSERT INTO facts_fts(rowid, text) VALUES (new.id, new.text);
+      END;
+
+      -- Cached embedding per (fact, model) for relevance ranking at inject time.
+      -- Keyed by model so swapping the embeddings model just recomputes; stale rows
+      -- under an old model are never read. Vectors are invalidated (deleted) whenever
+      -- a fact's text changes, so a cached vector always matches its current text.
+      CREATE TABLE IF NOT EXISTS fact_vectors (
+        fact_id    INTEGER NOT NULL,
+        model      TEXT NOT NULL,
+        dim        INTEGER NOT NULL,
+        vec        BLOB NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (fact_id, model)
+      );
+
+      -- Cached embedding per (message, model) for semantic episodic this.search. Same
+      -- contract as fact_vectors: model-keyed, pruned on model switch. Messages are
+      -- append-only so vectors never go stale from edits, but deletions (episodic
+      -- pruning / reset) must clean this table by hand — no FK cascade.
+      CREATE TABLE IF NOT EXISTS message_vectors (
+        message_id INTEGER NOT NULL,
+        model      TEXT NOT NULL,
+        dim        INTEGER NOT NULL,
+        vec        BLOB NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (message_id, model)
+      );
+
+      CREATE TABLE IF NOT EXISTS meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+      );
+
+      -- Per-turn answer-time breakdown, surfaced on the assistant message. Keyed by
+      -- the FINAL assistant entry id (pi's session entry id) so readThread can attach
+      -- it to the rebuilt assistant bubble on reopen. Independent of recall capture.
+      CREATE TABLE IF NOT EXISTS turn_timings (
+        turn_entry_id TEXT PRIMARY KEY,
+        thread_id     TEXT NOT NULL,
+        total_ms      INTEGER,
+        thinking_ms   INTEGER NOT NULL,
+        tool_ms       INTEGER NOT NULL,
+        answer_ms     INTEGER NOT NULL,
+        ttft_ms       INTEGER,
+        build_ms      INTEGER,
+        recall_ms     INTEGER,
+        created_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_turn_timings_thread ON turn_timings(thread_id);
+
+      -- Per-turn tool-call activity + web sources, surfaced as collapsible rows on
+      -- the assistant message. Same keying discipline as turn_timings: the FINAL
+      -- assistant entry id, so readThread can attach it on reopen. payload is a JSON
+      -- { activity: ActivityItem[], sources: SourceRef[] } blob.
+      CREATE TABLE IF NOT EXISTS turn_activities (
+        turn_entry_id TEXT PRIMARY KEY,
+        thread_id     TEXT NOT NULL,
+        payload       TEXT NOT NULL,
+        created_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_turn_activities_thread ON turn_activities(thread_id);
+
+      -- The durable facts injected on a thread's most recent turn — surfaced in the
+      -- Memory UI so you can see what the model actually "knew about you". Keyed by
+      -- thread so reopening an old chat still shows its last injected set. fact_ids is
+      -- a JSON array (injected order); tier records which selection path chose them.
+      CREATE TABLE IF NOT EXISTS active_facts (
+        thread_id  TEXT PRIMARY KEY,
+        fact_ids   TEXT NOT NULL,
+        tier       TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS fact_evidence (
+        id         INTEGER PRIMARY KEY,
+        fact_id    INTEGER NOT NULL,
+        message_id INTEGER,
+        thread_id  TEXT,
+        role       TEXT,
+        ts         INTEGER NOT NULL,
+        excerpt    TEXT NOT NULL,
+        origin     TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_fact_evidence_fact ON fact_evidence(fact_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_evidence_unique
+        ON fact_evidence(fact_id, IFNULL(message_id, -1), origin, excerpt);
+
+      CREATE TABLE IF NOT EXISTS fact_conflicts (
+        id          INTEGER PRIMARY KEY,
+        fact_a      INTEGER NOT NULL,
+        fact_b      INTEGER NOT NULL,
+        reason      TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'this.open',
+        created_at  INTEGER NOT NULL,
+        resolved_at INTEGER,
+        resolution  TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_conflict_pair
+        ON fact_conflicts(MIN(fact_a, fact_b), MAX(fact_a, fact_b)) WHERE status = 'this.open';
+
+      CREATE TABLE IF NOT EXISTS message_chunks (
+        message_id  INTEGER NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        start_offset INTEGER NOT NULL,
+        end_offset   INTEGER NOT NULL,
+        text         TEXT NOT NULL,
+        PRIMARY KEY(message_id, chunk_index)
+      );
+      CREATE TABLE IF NOT EXISTS message_chunk_vectors (
+        message_id  INTEGER NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        model       TEXT NOT NULL,
+        dim         INTEGER NOT NULL,
+        vec         BLOB NOT NULL,
+        updated_at  INTEGER NOT NULL,
+        PRIMARY KEY(message_id, chunk_index, model)
+      );
+
+      -- The facts injected on EACH turn (append-style, unlike active_facts which
+      -- keeps only a thread's latest set for the UI). The distill pass reads
+      -- ungraded rows to ask the model which facts actually informed the reply,
+      -- then flips graded so a row is counted exactly once.
+      CREATE TABLE IF NOT EXISTS turn_injected_facts (
+        thread_id  TEXT NOT NULL,
+        turn_id    TEXT NOT NULL,
+        fact_ids   TEXT NOT NULL,
+        graded     INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (thread_id, turn_id)
+      );
+
+      -- Level 1.5: one rolling English summary per thread, revised by the distill
+      -- pass as new messages arrive. last_message_id is the summary's own watermark,
+      -- independent of distill_cursor_v2 — a failed summary refresh retries without
+      -- blocking fact extraction, and vice versa.
+      CREATE TABLE IF NOT EXISTS summaries (
+        id              INTEGER PRIMARY KEY,
+        thread_id       TEXT NOT NULL UNIQUE,
+        text            TEXT NOT NULL,
+        first_ts        INTEGER NOT NULL,
+        last_ts         INTEGER NOT NULL,
+        message_count   INTEGER NOT NULL DEFAULT 0,
+        last_message_id INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL,
+        -- Rolling revisions since the summary was last re-derived from its
+        -- segments; drives the periodic anti-drift rebuild in summarize.ts.
+        revisions_since_rebuild INTEGER NOT NULL DEFAULT 0,
+        -- Sticky: set once any revision lands without its per-window segment.
+        -- Segment coverage is then incomplete, so rebuilding from segments would
+        -- silently drop that window — the rebuild disables itself instead.
+        segments_gap    INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
+        text,
+        content='summaries',
+        content_rowid='id',
+        tokenize='unicode61'
+      );
+      CREATE TRIGGER IF NOT EXISTS summaries_ai AFTER INSERT ON summaries BEGIN
+        INSERT INTO summaries_fts(rowid, text) VALUES (new.id, new.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS summaries_ad AFTER DELETE ON summaries BEGIN
+        INSERT INTO summaries_fts(summaries_fts, rowid, text) VALUES ('delete', old.id, old.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON summaries BEGIN
+        INSERT INTO summaries_fts(summaries_fts, rowid, text) VALUES ('delete', old.id, old.text);
+        INSERT INTO summaries_fts(rowid, text) VALUES (new.id, new.text);
+      END;
+
+      -- Append-only per-window mini-summaries, each derived ONCE from raw
+      -- messages. They anchor the periodic drift rebuild of the rolling thread
+      -- summary (summarize.ts): the rolling text is re-derived from these instead
+      -- of from itself, so every summary stays at most two compression hops from
+      -- the raw transcript. Internal scaffolding only — not searched, not injected.
+      CREATE TABLE IF NOT EXISTS summary_segments (
+        id              INTEGER PRIMARY KEY,
+        thread_id       TEXT NOT NULL,
+        text            TEXT NOT NULL,
+        first_ts        INTEGER NOT NULL,
+        last_ts         INTEGER NOT NULL,
+        message_count   INTEGER NOT NULL DEFAULT 0,
+        last_message_id INTEGER NOT NULL,
+        created_at      INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_summary_segments_thread
+        ON summary_segments(thread_id, first_ts, id);
+
+      -- Cached embedding per (summary, model). Same contract as fact_vectors:
+      -- model-keyed, invalidated whenever the summary text changes.
+      CREATE TABLE IF NOT EXISTS summary_vectors (
+        summary_id INTEGER NOT NULL,
+        model      TEXT NOT NULL,
+        dim        INTEGER NOT NULL,
+        vec        BLOB NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (summary_id, model)
+      );
+    `);
+
+    // Recall v2 is an additive migration. SQLite has no ADD COLUMN IF NOT EXISTS,
+    // so inspect the old v1 table and add only what is missing. Existing rows stay
+    // active and usable; provenance is rebuilt later only after user confirmation.
+    const factColumns = new Set(
+      (handle.prepare(`PRAGMA table_info(facts)`).all() as Array<{ name: string }>).map((r) => r.name)
+    );
+    const migratingV1Facts = !factColumns.has('confidence');
+    // Defaults must match the CREATE TABLE above: an upgraded store and a fresh one
+    // have to gate identically, or the same fact recalls differently on two machines.
+    const additions: Array<[string, string]> = [
+      ['category', `TEXT NOT NULL DEFAULT 'other'`],
+      ['sensitivity', `TEXT NOT NULL DEFAULT 'standard'`],
+      ['confidence', `REAL NOT NULL DEFAULT 0.8`],
+      ['status', `TEXT NOT NULL DEFAULT 'active'`],
+      ['pinned', `INTEGER NOT NULL DEFAULT 0`],
+      ['created_at', `INTEGER NOT NULL DEFAULT 0`],
+      ['valid_from', 'INTEGER'],
+      ['valid_until', 'INTEGER'],
+      ['superseded_by', 'INTEGER'],
+      ['times_injected', 'INTEGER NOT NULL DEFAULT 0'],
+      ['times_used', 'INTEGER NOT NULL DEFAULT 0'],
+      ['last_used_at', 'INTEGER'],
+      ['last_graded_at', 'INTEGER']
+    ];
+    for (const [name, ddl] of additions) {
+      if (!factColumns.has(name)) handle.exec(`ALTER TABLE facts ADD COLUMN ${name} ${ddl}`);
+    }
+    // Same additive pattern for the summaries table (segment-rebuild bookkeeping,
+    // added after the table shipped). Defaults must match the CREATE TABLE above.
+    const summaryColumns = new Set(
+      (handle.prepare(`PRAGMA table_info(summaries)`).all() as Array<{ name: string }>).map((r) => r.name)
+    );
+    const summaryAdditions: Array<[string, string]> = [
+      ['revisions_since_rebuild', 'INTEGER NOT NULL DEFAULT 0'],
+      ['segments_gap', 'INTEGER NOT NULL DEFAULT 0']
+    ];
+    for (const [name, ddl] of summaryAdditions) {
+      if (!summaryColumns.has(name)) handle.exec(`ALTER TABLE summaries ADD COLUMN ${name} ${ddl}`);
+    }
+    // Existing v1 rows predate the external-content FTS table. Populate it before
+    // the metadata backfill below fires the UPDATE trigger; deleting an absent FTS
+    // row from that trigger can otherwise report a malformed index.
+    if (migratingV1Facts) {
+      try {
+        handle.exec(`INSERT INTO facts_fts(facts_fts) VALUES('rebuild')`);
+      } catch {
+        // The later guarded rebuild retries; schema migration itself remains usable.
+      }
+      handle.prepare(`UPDATE facts SET source = 'legacy' WHERE source IS NULL OR source = 'distilled'`).run();
+    }
+    handle.prepare(`UPDATE facts SET created_at = updated_at WHERE created_at = 0`).run();
+    handle.prepare(
+      `INSERT INTO meta(key, value) VALUES('recall_schema_version', '3')
+       ON CONFLICT(key) DO UPDATE SET value = '3'`
+    ).run();
+
+    // Optional trigram index over facts: a substring/morphology recall booster for
+    // the lexical tier (catches inflected SK/DE forms and partial words the unicode61
+    // term index misses). Created separately and guarded because the trigram tokenizer
+    // needs a recent SQLite/FTS5 build; if it's unavailable we silently run term-only.
+    try {
+      handle.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS facts_trigram USING fts5(
+          text,
+          content='facts',
+          content_rowid='id',
+          tokenize='trigram'
+        );
+        CREATE TRIGGER IF NOT EXISTS facts_trig_ai AFTER INSERT ON facts BEGIN
+          INSERT INTO facts_trigram(rowid, text) VALUES (new.id, new.text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS facts_trig_ad AFTER DELETE ON facts BEGIN
+          INSERT INTO facts_trigram(facts_trigram, rowid, text) VALUES ('delete', old.id, old.text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS facts_trig_au AFTER UPDATE ON facts BEGIN
+          INSERT INTO facts_trigram(facts_trigram, rowid, text) VALUES ('delete', old.id, old.text);
+          INSERT INTO facts_trigram(rowid, text) VALUES (new.id, new.text);
+        END;
+      `);
+      this.factsTrigram = true;
+    } catch {
+      this.factsTrigram = false;
+    }
+
+    // One-time backfill: rows that predate the fact indexes aren't in them yet
+    // (triggers only fire on future mutations). Rebuild once, gated by a meta flag so
+    // it never runs on a populated, already-indexed DB. The flag is read/written via
+    // the local handle to avoid re-entering open() before `db` is assigned.
+    const built = handle.prepare(`SELECT value FROM meta WHERE key = 'facts_index_built'`).get() as
+      | { value: string }
+      | undefined;
+    if (built?.value !== '1') {
+      try {
+        handle.exec(`INSERT INTO facts_fts(facts_fts) VALUES('rebuild')`);
+        if (this.factsTrigram) handle.exec(`INSERT INTO facts_trigram(facts_trigram) VALUES('rebuild')`);
+      } catch {
+        // A rebuild failure must never block startup; triggers still keep new facts synced.
+      }
+      handle
+        .prepare(`INSERT INTO meta(key, value) VALUES('facts_index_built', '1') ON CONFLICT(key) DO UPDATE SET value = '1'`)
+        .run();
+    }
+
+    this.db = handle;
+    return handle;
+  };
+
+
+  /**
+   * Persist one message. Idempotent per turn: re-capturing the same
+   * (thread, turn, role, text) is a no-op, while the user legitimately repeating
+   * the same text in a later turn creates a distinct episodic message.
+   */
+  recordMessage = (input: RecordMessageInput): void => {
+    const text = input.text.trim();
+    if (!text) return;
+    const handle = this.open();
+    handle
+      .prepare(
+        `INSERT OR IGNORE INTO messages (thread_id, turn_id, role, ts, cwd, text, dedup_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.threadId,
+        input.turnId ?? null,
+        input.role,
+        input.ts ?? this.nowSeconds(),
+        input.cwd ?? null,
+        text,
+        this.dedupKey(input.threadId, input.turnId, input.role, text)
+      );
+  };
+
+
+  /** Persist (or replace) a turn's answer-time breakdown. Best-effort; keyed by entry id. */
+  upsertTurnTiming = (rec: TurnTimingRecord): void => {
+    const handle = this.open();
+    handle
+      .prepare(
+        `INSERT INTO turn_timings
+           (turn_entry_id, thread_id, total_ms, thinking_ms, tool_ms, answer_ms, ttft_ms, build_ms, recall_ms, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(turn_entry_id) DO UPDATE SET
+           thread_id = excluded.thread_id,
+           total_ms = excluded.total_ms,
+           thinking_ms = excluded.thinking_ms,
+           tool_ms = excluded.tool_ms,
+           answer_ms = excluded.answer_ms,
+           ttft_ms = excluded.ttft_ms,
+           build_ms = excluded.build_ms,
+           recall_ms = excluded.recall_ms`
+      )
+      .run(
+        rec.turnEntryId,
+        rec.threadId,
+        rec.totalMs,
+        rec.thinkingMs,
+        rec.toolMs,
+        rec.answerMs,
+        rec.ttftMs,
+        rec.buildMs,
+        rec.recallMs,
+        this.nowSeconds()
+      );
+  };
+
+
+  /** Load a thread's persisted turn timings, keyed by final assistant entry id. */
+  getTurnTimingsByThread = (threadId: string): Map<string, TurnTiming> => {
+    const handle = this.open();
+    const rows = handle
+      .prepare(
+        `SELECT turn_entry_id AS entryId, total_ms AS totalMs, thinking_ms AS thinkingMs,
+                tool_ms AS toolMs, answer_ms AS answerMs, ttft_ms AS ttftMs,
+                build_ms AS buildMs, recall_ms AS recallMs
+         FROM turn_timings WHERE thread_id = ?`
+      )
+      .all(threadId) as Array<{
+      entryId: string;
+      totalMs: number | null;
+      thinkingMs: number;
+      toolMs: number;
+      answerMs: number;
+      ttftMs: number | null;
+      buildMs: number | null;
+      recallMs: number | null;
+    }>;
+    const out = new Map<string, TurnTiming>();
+    for (const r of rows) {
+      out.set(r.entryId, {
+        totalMs: r.totalMs,
+        thinkingMs: r.thinkingMs,
+        toolMs: r.toolMs,
+        answerMs: r.answerMs,
+        ttftMs: r.ttftMs,
+        buildMs: r.buildMs,
+        recallMs: r.recallMs
+      });
+    }
+    return out;
+  };
+
+
+  /** Persist (or replace) a turn's tool activity + sources. Best-effort; keyed by entry id. */
+  upsertTurnActivity = (rec: {
+    turnEntryId: string;
+    threadId: string;
+    payload: TurnActivityPayload;
+  }): void => {
+    const handle = this.open();
+    handle
+      .prepare(
+        `INSERT INTO turn_activities (turn_entry_id, thread_id, payload, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(turn_entry_id) DO UPDATE SET
+           thread_id = excluded.thread_id,
+           payload = excluded.payload`
+      )
+      .run(rec.turnEntryId, rec.threadId, JSON.stringify(rec.payload), this.nowSeconds());
+  };
+
+
+  /** Load a thread's persisted turn activities, keyed by final assistant entry id. */
+  getTurnActivitiesByThread = (threadId: string): Map<string, TurnActivityPayload> => {
+    const handle = this.open();
+    const rows = handle
+      .prepare(`SELECT turn_entry_id AS entryId, payload FROM turn_activities WHERE thread_id = ?`)
+      .all(threadId) as Array<{ entryId: string; payload: string }>;
+    const out = new Map<string, TurnActivityPayload>();
+    for (const r of rows) {
+      try {
+        const parsed = JSON.parse(r.payload) as TurnActivityPayload;
+        out.set(r.entryId, {
+          activity: Array.isArray(parsed.activity) ? parsed.activity : [],
+          sources: Array.isArray(parsed.sources) ? parsed.sources : []
+        });
+      } catch {
+        // Malformed row — skip; the message just renders without rows.
+      }
+    }
+    return out;
+  };
+
+
+  /** Record the durable facts injected on `threadId`'s latest turn. Best-effort. */
+  setActiveFacts = (
+    threadId: string,
+    facts: Array<number | { id: number; reason?: FactSelectionReason }>,
+    tier: FactTier
+  ): void => {
+    const handle = this.open();
+    handle
+      .prepare(
+        `INSERT INTO active_facts (thread_id, fact_ids, tier, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(thread_id) DO UPDATE SET
+           fact_ids = excluded.fact_ids,
+           tier = excluded.tier,
+           updated_at = excluded.updated_at`
+      )
+      .run(threadId, JSON.stringify(facts), tier, this.nowSeconds());
+  };
+
+
+  /** Read a thread's last injected fact ids + tier, or null if none recorded. */
+  getActiveFactIds = (threadId: string): {
+    factIds: number[];
+    reasons: Record<number, FactSelectionReason | undefined>;
+    tier: FactTier;
+  } | null => {
+    const handle = this.open();
+    const row = handle
+      .prepare(`SELECT fact_ids AS factIds, tier FROM active_facts WHERE thread_id = ?`)
+      .get(threadId) as { factIds: string; tier: string } | undefined;
+    if (!row) return null;
+    let factIds: number[] = [];
+    const reasons: Record<number, FactSelectionReason | undefined> = {};
+    try {
+      const parsed = JSON.parse(row.factIds);
+      if (Array.isArray(parsed)) {
+        for (const value of parsed) {
+          if (typeof value === 'number') factIds.push(value);
+          else if (value && typeof value === 'object' && typeof value.id === 'number') {
+            factIds.push(value.id);
+            reasons[value.id] = value.reason;
+          }
+        }
+      }
+    } catch {
+      // Corrupt JSON — treat as no recorded set rather than throwing.
+    }
+    return { factIds, reasons, tier: row.tier as FactTier };
+  };
+
+
+  // ---- per-turn injected-facts log (usage grading source) ----
+
+  /**
+   * Append the fact ids injected on one turn. Unlike setActiveFacts (latest set
+   * per thread, for the UI) this keeps every turn until graded, so a distill batch
+   * spanning several turns can grade each reply against what it actually saw.
+   * Best-effort: prunes rows older than 30 days so an abandoned thread's ungraded
+   * rows don't accumulate forever.
+   */
+  recordTurnInjectedFacts = (threadId: string, turnId: string, factIds: number[]): void => {
+    if (!turnId || factIds.length === 0) return;
+    const handle = this.open();
+    const now = this.nowSeconds();
+    handle
+      .prepare(
+        `INSERT INTO turn_injected_facts (thread_id, turn_id, fact_ids, graded, created_at)
+         VALUES (?, ?, ?, 0, ?)
+         ON CONFLICT(thread_id, turn_id) DO UPDATE SET fact_ids = excluded.fact_ids`
+      )
+      .run(threadId, turnId, JSON.stringify(factIds), now);
+    handle.prepare(`DELETE FROM turn_injected_facts WHERE created_at < ?`).run(now - 30 * 24 * 3600);
+  };
+
+
+  /** Ungraded injected-fact rows for the given turn ids (a distill batch's turns). */
+  getUngradedTurnFacts = (turnIds: string[]): TurnInjectedFacts[] => {
+    if (turnIds.length === 0) return [];
+    const placeholders = turnIds.map(() => '?').join(',');
+    const rows = this.open()
+      .prepare(
+        `SELECT thread_id AS threadId, turn_id AS turnId, fact_ids AS factIds
+         FROM turn_injected_facts WHERE graded = 0 AND turn_id IN (${placeholders})`
+      )
+      .all(...turnIds) as Array<{ threadId: string; turnId: string; factIds: string }>;
+    return rows.flatMap((r) => {
+      try {
+        const ids = JSON.parse(r.factIds);
+        return Array.isArray(ids)
+          ? [{ threadId: r.threadId, turnId: r.turnId, factIds: ids.filter((v): v is number => typeof v === 'number') }]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+  };
+
+
+  markTurnFactsGraded = (threadId: string, turnId: string): void => {
+    this.open().prepare(`UPDATE turn_injected_facts SET graded = 1 WHERE thread_id = ? AND turn_id = ?`)
+      .run(threadId, turnId);
+  };
+
+
+  /**
+   * Apply one graded turn: every injected fact gains an injection count; the used
+   * subset also gains a use count + last-used stamp. Deliberately does NOT touch
+   * confidence — usage only reorders ranking, never crosses the injection gate.
+   */
+  recordFactUsage = (injectedIds: number[], usedIds: number[], ts = this.nowSeconds()): void => {
+    if (injectedIds.length === 0) return;
+    const handle = this.open();
+    const used = new Set(usedIds);
+    const bump = handle.prepare(
+      `UPDATE facts SET times_injected = times_injected + 1,
+              times_used = times_used + ?,
+              last_used_at = CASE WHEN ? = 1 THEN ? ELSE last_used_at END,
+              last_graded_at = ?
+       WHERE id = ?`
+    );
+    for (const id of injectedIds) {
+      const wasUsed = used.has(id) ? 1 : 0;
+      bump.run(wasUsed, wasUsed, ts, ts, id);
+    }
+  };
+
+
+  /**
+   * Resolve fact ids to their current rows, preserving the given order and silently
+   * dropping ids whose fact has since been deleted or merged away by consolidation.
+   */
+  getFactsByIds = (ids: number[]): Fact[] => {
+    if (ids.length === 0) return [];
+    const handle = this.open();
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = handle
+      .prepare(`SELECT ${FACT_SELECT} FROM facts WHERE id IN (${placeholders})`)
+      .all(...ids) as Array<Record<string, unknown>>;
+    const byId = new Map<number, Fact>();
+    for (const r of rows) byId.set(r.id as number, this.mapFact(r));
+    return ids.map((id) => byId.get(id)).filter((f): f is Fact => !!f);
+  };
+
+
+  /**
+   * Episodic search over all captured messages. `query` must already be a valid
+   * FTS5 MATCH expression (use search.ts to build one safely from raw user text).
+   */
+  search = (query: string, options: SearchOptions = {}): SearchHit[] => {
+    if (!query.trim()) return [];
+    const limit = options.limit ?? 5;
+    const exclude = options.excludeThreadId ?? null;
+    const handle = this.open();
+    const rows = handle
+      .prepare(
+        `SELECT m.id AS id, m.thread_id AS threadId, m.turn_id AS turnId, m.role AS role,
+                m.ts AS ts, m.text AS text,
+                snippet(messages_fts, 0, '«', '»', '…', 12) AS snippet,
+                bm25(messages_fts) AS score
+         FROM messages_fts
+         JOIN messages m ON m.id = messages_fts.rowid
+         WHERE messages_fts MATCH ?
+           AND (? IS NULL OR m.thread_id <> ?)
+         ORDER BY score
+         LIMIT ?`
+      )
+      .all(query, exclude, exclude, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as number,
+      threadId: r.threadId as string,
+      turnId: (r.turnId as string | null) ?? null,
+      role: r.role as MessageRole,
+      ts: r.ts as number,
+      text: r.text as string,
+      snippet: r.snippet as string,
+      score: r.score as number
+    }));
+  };
+
+
+  private mapStoredMessage = (r: Record<string, unknown>): StoredMessage => {
+    return {
+      id: r.id as number,
+      threadId: r.threadId as string,
+      turnId: (r.turnId as string | null) ?? null,
+      role: r.role as MessageRole,
+      ts: r.ts as number,
+      text: r.text as string
+    };
+  };
+
+
+  /**
+   * Messages with id greater than `sinceId`, oldest first — the distillation pass
+   * uses this to process only what's new since its last run (the id is a monotonic
+   * autoincrement, so it doubles as a watermark).
+   */
+  getMessagesForDistill = (sinceId: number, limit = 200): StoredMessage[] => {
+    const handle = this.open();
+    const rows = handle
+      .prepare(
+        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
+         FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?`
+      )
+      .all(sinceId, limit) as Array<Record<string, unknown>>;
+    return rows.map(this.mapStoredMessage);
+  };
+
+
+  /** Cursor-v2 read: `fromId` is inclusive because a long message may resume mid-text. */
+  getMessagesForDistillFrom = (fromId: number, limit = 200): StoredMessage[] => {
+    const rows = this.open()
+      .prepare(
+        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
+         FROM messages WHERE id >= ? ORDER BY id ASC LIMIT ?`
+      )
+      .all(fromId, limit) as Array<Record<string, unknown>>;
+    return rows.map(this.mapStoredMessage);
+  };
+
+
+  /**
+   * One thread's messages with id greater than `afterId`, oldest first — the
+   * rolling-summary refresh walks these against the summary's own watermark.
+   */
+  getThreadMessagesAfter = (threadId: string, afterId: number, limit = 200): StoredMessage[] => {
+    const rows = this.open()
+      .prepare(
+        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
+         FROM messages WHERE thread_id = ? AND id > ? ORDER BY id ASC LIMIT ?`
+      )
+      .all(threadId, afterId, limit) as Array<Record<string, unknown>>;
+    return rows.map(this.mapStoredMessage);
+  };
+
+
+  getMessageById = (id: number): StoredMessage | null => {
+    const r = this.open().prepare(
+      `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text FROM messages WHERE id = ?`
+    ).get(id) as Record<string, unknown> | undefined;
+    return r ? this.mapStoredMessage(r) : null;
+  };
+
+
+  /**
+   * Insert or refresh a durable fact (Level 1). Correction-aware via the norm key.
+   * Returns the fact's row id (insert or conflict-update alike; null on empty text)
+   * so callers holding a fresh embedding can cache it without a lookup.
+   */
+  upsertFact = (
+    text: string,
+    sourceOrOptions: string | FactWriteOptions = 'distilled',
+    extra: FactWriteOptions = {}
+  ): number | null => {
+    const clean = text.trim();
+    if (!clean) return null;
+    const handle = this.open();
+    const norm = this.normalizeFact(clean);
+    const opts: FactWriteOptions = typeof sourceOrOptions === 'string'
+      ? { ...extra, source: sourceOrOptions }
+      : sourceOrOptions;
+    const source = opts.source ?? 'distilled';
+    const now = this.nowSeconds();
+    const confidence = Math.min(1, Math.max(0, opts.confidence ?? (source === 'explicit' ? 1 : 0.9)));
+    // A correction can change the text under an existing norm — drop any cached
+    // vector so it's re-embedded against the new text on the next inject.
+    handle.prepare(`DELETE FROM fact_vectors WHERE fact_id IN (SELECT id FROM facts WHERE norm = ?)`).run(norm);
+    const row = handle
+      .prepare(
+        `INSERT INTO facts
+           (text, norm, source, category, sensitivity, confidence, status, pinned,
+            created_at, updated_at, valid_from, valid_until, superseded_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+         ON CONFLICT(norm) DO UPDATE SET
+           text = excluded.text,
+           source = CASE WHEN facts.source = 'explicit' AND excluded.source <> 'explicit'
+                         THEN facts.source ELSE excluded.source END,
+           category = CASE WHEN excluded.category = 'other' THEN facts.category ELSE excluded.category END,
+           -- Sensitivity only ratchets up: once a claim is classified sensitive, a later
+           -- reworded write must not quietly loosen its stricter relevance gate. Safe
+           -- because nothing seeds 'sensitive' by default — only a classifier decision does.
+           sensitivity = CASE WHEN facts.sensitivity = 'sensitive' THEN facts.sensitivity ELSE excluded.sensitivity END,
+           confidence = MAX(facts.confidence, excluded.confidence),
+           status = CASE WHEN facts.status = 'superseded' THEN excluded.status ELSE facts.status END,
+           pinned = MAX(facts.pinned, excluded.pinned),
+           updated_at = excluded.updated_at,
+           valid_from = COALESCE(excluded.valid_from, facts.valid_from),
+           valid_until = COALESCE(excluded.valid_until, facts.valid_until)
+         RETURNING id`
+      )
+      .get(
+        clean,
+        norm,
+        source,
+        opts.category ?? 'other',
+        opts.sensitivity ?? 'standard',
+        confidence,
+        opts.status ?? 'active',
+        opts.pinned ? 1 : 0,
+        now,
+        now,
+        opts.validFrom ?? null,
+        opts.validUntil ?? null
+      ) as { id: number } | undefined;
+    const id = row?.id ?? null;
+    if (id != null && opts.evidence?.length) this.addFactEvidence(id, opts.evidence);
+    return id;
+  };
+
+
+  getFacts = (limit = 100): Fact[] => {
+    this.expireFacts();
+    const handle = this.open();
+    const rows = handle
+      .prepare(`SELECT ${FACT_SELECT} FROM facts WHERE status = 'active' ORDER BY updated_at DESC LIMIT ?`)
+      .all(limit) as Array<Record<string, unknown>>;
+    return rows.map(this.mapFact);
+  };
+
+
+  /**
+   * Every fact, uncapped — for the consolidation pass, which must reason over the
+   * whole set to merge/correct/drop. `getFacts` keeps its 100-row cap for inject/UI.
+   */
+  getAllFacts = (): Fact[] => {
+    this.expireFacts();
+    const handle = this.open();
+    const rows = handle
+      .prepare(`SELECT ${FACT_SELECT} FROM facts ORDER BY id ASC`)
+      .all() as Array<Record<string, unknown>>;
+    return rows.map(this.mapFact);
+  };
+
+
+  getInjectableFacts = (): Fact[] => {
+    this.expireFacts();
+    const rows = this.open()
+      .prepare(
+        // A pin is an explicit user override — it outranks the confidence floor that
+        // otherwise holds back unconfirmed assistant-derived claims.
+        `SELECT ${FACT_SELECT} FROM facts
+         WHERE status = 'active' AND (valid_until IS NULL OR valid_until >= ?)
+           AND (pinned = 1 OR confidence >= 0.7 OR source IN ('explicit', 'legacy'))
+         ORDER BY id ASC`
+      )
+      .all(this.nowSeconds()) as Array<Record<string, unknown>>;
+    return rows.map(this.mapFact);
+  };
+
+
+  expireFacts = (now = this.nowSeconds()): number => {
+    return this.open()
+      .prepare(
+        `UPDATE facts SET status = 'superseded', pinned = 0, updated_at = ?
+         WHERE status = 'active' AND valid_until IS NOT NULL AND valid_until < ?`
+      )
+      .run(now, now).changes as number;
+  };
+
+
+  addFactEvidence = (factId: number, evidence: Omit<FactEvidence, 'id'>[]): void => {
+    if (evidence.length === 0) return;
+    const stmt = this.open().prepare(
+      `INSERT OR IGNORE INTO fact_evidence
+         (fact_id, message_id, thread_id, role, ts, excerpt, origin)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const e of evidence) {
+      stmt.run(factId, e.messageId, e.threadId, e.role, e.timestamp, e.excerpt.slice(0, 1000), e.origin);
+    }
+  };
+
+
+  getFactEvidence = (factId: number): FactEvidence[] => {
+    const rows = this.open()
+      .prepare(
+        `SELECT id, message_id AS messageId, thread_id AS threadId, role, ts AS timestamp, excerpt, origin
+         FROM fact_evidence WHERE fact_id = ? ORDER BY ts ASC, id ASC`
+      )
+      .all(factId) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as number,
+      messageId: (r.messageId as number | null) ?? null,
+      threadId: (r.threadId as string | null) ?? null,
+      role: (r.role as FactEvidence['role']) ?? null,
+      timestamp: r.timestamp as number,
+      excerpt: r.excerpt as string,
+      origin: r.origin as FactEvidence['origin']
+    }));
+  };
+
+
+  /** Evidence-row counts for every fact that has any, keyed by fact id. */
+  getFactEvidenceCounts = (): Map<number, number> => {
+    const rows = this.open()
+      .prepare(`SELECT fact_id AS factId, COUNT(*) AS n FROM fact_evidence GROUP BY fact_id`)
+      .all() as Array<{ factId: number; n: number }>;
+    return new Map(rows.map((r) => [r.factId, r.n]));
+  };
+
+
+  private toFactDetails = (fact: Fact): FactDetails => {
+    return { ...fact, evidence: this.getFactEvidence(fact.id) };
+  };
+
+
+  getFactDetails = (id: number): FactDetails | null => {
+    const row = this.open().prepare(`SELECT ${FACT_SELECT} FROM facts WHERE id = ?`).get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? this.toFactDetails(this.mapFact(row)) : null;
+  };
+
+
+  setFactPinned = (id: number, pinned: boolean): boolean => {
+    const handle = this.open();
+    if (pinned) {
+      const count = (handle.prepare(`SELECT COUNT(*) AS n FROM facts WHERE pinned = 1 AND status = 'active'`).get() as { n: number }).n;
+      if (count >= MAX_PINNED_FACTS) return false;
+    }
+    return (handle.prepare(`UPDATE facts SET pinned = ?, updated_at = ? WHERE id = ? AND status = 'active'`)
+      .run(pinned ? 1 : 0, this.nowSeconds(), id).changes as number) > 0;
+  };
+
+
+  /**
+   * Rewrite an active fact's text in place (note normalization). Returns the id of
+   * the surviving fact: `id` itself, the fact it merged into when the new text
+   * normalizes onto an existing claim, or null when nothing was written (missing
+   * or inactive fact, empty text).
+   */
+  updateFactText = (id: number, newText: string): number | null => {
+    const clean = newText.trim();
+    if (!clean) return null;
+    const handle = this.open();
+    const row = handle.prepare(`SELECT text, norm, status FROM facts WHERE id = ?`).get(id) as
+      | { text: string; norm: string; status: string }
+      | undefined;
+    if (!row || row.status !== 'active') return null;
+    const norm = this.normalizeFact(clean);
+    if (row.text === clean && row.norm === norm) return id;
+    const existing = handle
+      .prepare(`SELECT id FROM facts WHERE norm = ? AND id <> ?`)
+      .get(norm, id) as { id: number } | undefined;
+    if (existing) {
+      // The rewrite lands on a claim we already hold: the user just re-asserted it,
+      // so ratchet the survivor to explicit, keep this note's provenance on it, and
+      // retire the duplicate instead of violating UNIQUE(norm).
+      this.confirmFact(existing.id);
+      handle.prepare(`UPDATE OR IGNORE fact_evidence SET fact_id = ? WHERE fact_id = ?`).run(existing.id, id);
+      this.supersedeFact(id, existing.id);
+      return existing.id;
+    }
+    // Same invalidation as upsertFact: the text changed, so any cached vector must
+    // be re-embedded on the next inject. FTS/trigram follow via the update triggers.
+    handle.prepare(`DELETE FROM fact_vectors WHERE fact_id = ?`).run(id);
+    handle.prepare(`UPDATE facts SET text = ?, norm = ?, updated_at = ? WHERE id = ?`).run(clean, norm, this.nowSeconds(), id);
+    return id;
+  };
+
+
+  confirmFact = (id: number): boolean => {
+    return (this.open().prepare(
+      `UPDATE facts SET source = 'explicit', confidence = 1, status = 'active', updated_at = ? WHERE id = ?`
+    ).run(this.nowSeconds(), id).changes as number) > 0;
+  };
+
+
+  supersedeFact = (id: number, supersededBy: number | null = null): boolean => {
+    const handle = this.open();
+    const changed = (handle.prepare(
+      `UPDATE facts SET status = 'superseded', pinned = 0, superseded_by = ?,
+              norm = CASE WHEN norm LIKE '__superseded__%' THEN norm ELSE '__superseded__' || id || ':' || norm END,
+              updated_at = ? WHERE id = ?`
+    ).run(supersededBy, this.nowSeconds(), id).changes as number) > 0;
+    if (changed) {
+      handle.prepare(
+        `UPDATE fact_conflicts SET status = 'resolved', resolved_at = ?, resolution = 'superseded'
+         WHERE status = 'this.open' AND (fact_a = ? OR fact_b = ?)`
+      ).run(this.nowSeconds(), id, id);
+    }
+    return changed;
+  };
+
+
+  restoreSupersededFact = (id: number): boolean => {
+    const handle = this.open();
+    const row = handle.prepare(`SELECT text FROM facts WHERE id = ? AND status = 'superseded'`).get(id) as
+      | { text: string }
+      | undefined;
+    if (!row) return false;
+    try {
+      return (handle.prepare(
+        `UPDATE facts SET status = 'active', norm = ?, superseded_by = NULL,
+                valid_until = NULL, updated_at = ? WHERE id = ?`
+      ).run(this.normalizeFact(row.text), this.nowSeconds(), id).changes as number) > 0;
+    } catch {
+      return false; // an active fact already owns the same normalized claim
+    }
+  };
+
+
+  createFactConflict = (factA: number, factB: number, reason: string): number | null => {
+    if (factA === factB) return null;
+    const handle = this.open();
+    handle.prepare(`UPDATE facts SET status = 'conflicted', pinned = 0 WHERE id IN (?, ?)`).run(factA, factB);
+    const row = handle.prepare(
+      `INSERT OR IGNORE INTO fact_conflicts(fact_a, fact_b, reason, status, created_at)
+       VALUES (?, ?, ?, 'this.open', ?) RETURNING id`
+    ).get(factA, factB, reason.slice(0, 500), this.nowSeconds()) as { id: number } | undefined;
+    return row?.id ?? null;
+  };
+
+
+  getMemoryConflicts = (): MemoryConflict[] => {
+    const rows = this.open().prepare(
+      `SELECT id, fact_a AS factA, fact_b AS factB, reason, created_at AS createdAt
+       FROM fact_conflicts WHERE status = 'this.open' ORDER BY created_at DESC`
+    ).all() as Array<{ id: number; factA: number; factB: number; reason: string; createdAt: number }>;
+    return rows.flatMap((r) => {
+      const factA = this.getFactDetails(r.factA);
+      const factB = this.getFactDetails(r.factB);
+      return factA && factB ? [{ ...r, factA, factB }] : [];
+    });
+  };
+
+
+  resolveMemoryConflict = (id: number, resolution: ConflictResolution): boolean => {
+    const handle = this.open();
+    const row = handle.prepare(
+      `SELECT fact_a AS factA, fact_b AS factB FROM fact_conflicts WHERE id = ? AND status = 'this.open'`
+    ).get(id) as { factA: number; factB: number } | undefined;
+    if (!row) return false;
+    const a = this.getFactDetails(row.factA);
+    const b = this.getFactDetails(row.factB);
+    if (!a || !b) return false;
+    let loserId: number | null = null;
+    if (resolution !== 'keep_both') {
+      const newer = a.updatedAt > b.updatedAt || (a.updatedAt === b.updatedAt && a.id > b.id) ? a : b;
+      const older = newer.id === a.id ? b : a;
+      const keep = resolution === 'keep_newer' ? newer : older;
+      const lose = keep.id === a.id ? b : a;
+      loserId = lose.id;
+      this.supersedeFact(lose.id, keep.id);
+    }
+    handle.prepare(
+      `UPDATE fact_conflicts SET status = 'resolved', resolved_at = ?, resolution = ? WHERE id = ?`
+    ).run(this.nowSeconds(), resolution, id);
+    for (const factId of [a.id, b.id]) {
+      if (factId === loserId) continue;
+      const stillConflicted = (handle.prepare(
+        `SELECT EXISTS(SELECT 1 FROM fact_conflicts WHERE status = 'this.open' AND (fact_a = ? OR fact_b = ?)) AS n`
+      ).get(factId, factId) as { n: number }).n === 1;
+      handle.prepare(`UPDATE facts SET status = ? WHERE id = ? AND status <> 'superseded'`)
+        .run(stillConflicted ? 'conflicted' : 'active', factId);
+    }
+    return true;
+  };
+
+
+  deleteFact = (id: number): void => {
+    const handle = this.open();
+    // No FK cascade (foreign_keys isn't globally enabled), so drop the vector by hand.
+    handle.prepare(`DELETE FROM fact_vectors WHERE fact_id = ?`).run(id);
+    handle.prepare(`DELETE FROM fact_evidence WHERE fact_id = ?`).run(id);
+    handle.prepare(`DELETE FROM fact_conflicts WHERE fact_a = ? OR fact_b = ?`).run(id, id);
+    handle.prepare(`UPDATE facts SET superseded_by = NULL WHERE superseded_by = ?`).run(id);
+    handle.prepare(`DELETE FROM facts WHERE id = ?`).run(id);
+  };
+
+
+  /** True when the optional trigram fact index is available this session. */
+  factsTrigramAvailable = (): boolean => {
+    this.open();
+    return this.factsTrigram;
+  };
+
+
+  private mapScoredFact = (r: Record<string, unknown>): ScoredFact => {
+    return { ...this.mapFact(r), score: r.score as number };
+  };
+
+
+  /**
+   * BM25 term ranking of facts for a prebuilt FTS5 MATCH expression. Returns up to
+   * `limit`, best (most-negative bm25) first, with the raw score so callers can blend
+   * in recency. Empty on no match or malformed query — search.ts builds the MATCH.
+   */
+  factTermSearch = (match: string, limit: number): ScoredFact[] => {
+    if (!match.trim() || limit <= 0) return [];
+    const handle = this.open();
+    try {
+      const rows = handle
+        .prepare(
+          `SELECT ${FACT_SELECT_F},
+                  bm25(facts_fts) AS score
+           FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
+           WHERE facts_fts MATCH ? AND f.status = 'active'
+           ORDER BY score
+           LIMIT ?`
+        )
+        .all(match, limit) as Array<Record<string, unknown>>;
+      return rows.map(this.mapScoredFact);
+    } catch {
+      return [];
+    }
+  };
+
+
+  /**
+   * Trigram substring match of facts (morphology/partial-word recall the term index
+   * misses). Guarded: returns [] when the trigram index isn't available. Ordered by
+   * recency since bm25 over trigram carries little ranking signal; score is left 0.
+   */
+  factTrigramSearch = (match: string, limit: number): ScoredFact[] => {
+    if (!this.factsTrigram || !match.trim() || limit <= 0) return [];
+    const handle = this.open();
+    try {
+      const rows = handle
+        .prepare(
+          `SELECT ${FACT_SELECT_F},
+                  0 AS score
+           FROM facts_trigram JOIN facts f ON f.id = facts_trigram.rowid
+           WHERE facts_trigram MATCH ? AND f.status = 'active'
+           ORDER BY f.updated_at DESC
+           LIMIT ?`
+        )
+        .all(match, limit) as Array<Record<string, unknown>>;
+      return rows.map(this.mapScoredFact);
+    } catch {
+      return [];
+    }
+  };
+
+
+  /**
+   * The live handle, for hand-off to the shared retrieval core (search-core.ts),
+   * which is handle-parameterized so the recall MCP server can run the same code
+   * on its own read-only connection. Not for ad-hoc SQL elsewhere — everything
+   * else goes through this module's functions.
+   */
+  dbHandle = (): DatabaseSync => {
+    return this.open();
+  };
+
+
+  /** Facts with no cached vector for `model` (need embedding before ranking). */
+  getFactsMissingVector = (model: string): Fact[] => {
+    const rows = this.open()
+      .prepare(
+        `SELECT ${FACT_SELECT_F}
+           FROM facts f
+           LEFT JOIN fact_vectors v ON v.fact_id = f.id AND v.model = ?
+          WHERE v.fact_id IS NULL AND f.status = 'active'
+          ORDER BY f.id ASC`
+      )
+      .all(model) as Array<Record<string, unknown>>;
+    return rows.map(this.mapFact);
+  };
+
+
+  /** All cached vectors for `model`, keyed by fact id. */
+  getFactVectors = (model: string): Map<number, Float32Array> => {
+    const rows = this.open()
+      .prepare(`SELECT fact_id AS factId, vec FROM fact_vectors WHERE model = ?`)
+      .all(model) as Array<{ factId: number; vec: Uint8Array }>;
+    const out = new Map<number, Float32Array>();
+    for (const r of rows) out.set(r.factId, bytesToFloat32(r.vec));
+    return out;
+  };
+
+
+  /** Cache a fact's embedding for `model` (replaces any prior vector). */
+  upsertFactVector = (factId: number, model: string, vec: Float32Array): void => {
+    const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+    this.open()
+      .prepare(
+        `INSERT INTO fact_vectors (fact_id, model, dim, vec, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(fact_id, model) DO UPDATE SET dim = excluded.dim, vec = excluded.vec, updated_at = excluded.updated_at`
+      )
+      .run(factId, model, vec.length, buf, this.nowSeconds());
+  };
+
+
+  /**
+   * Cache an embedding only if the fact snapshot it was calculated from is still
+   * the same active row in the same reset generation. Embedding calls are async,
+   * while fact ids are reusable after reset; checking both epoch and text at this
+   * final synchronous write boundary prevents a stale vector attaching to a new
+   * fact that inherited the old integer id.
+   */
+  upsertFactVectorForSnapshot = (
+    factId: number,
+    expectedText: string,
+    expectedGeneration: number,
+    model: string,
+    vec: Float32Array
+  ): boolean => {
+    if (this.getFactsGeneration() !== expectedGeneration) return false;
+    const current = this.open()
+      .prepare(`SELECT text FROM facts WHERE id = ? AND status = 'active'`)
+      .get(factId) as { text: string } | undefined;
+    if (!current || current.text !== expectedText) return false;
+    this.upsertFactVector(factId, model, vec);
+    return true;
+  };
+
+
+  /** Drop cached vectors for every model except `model` (hygiene after a model switch). */
+  pruneVectorsExceptModel = (model: string): void => {
+    this.open().prepare(`DELETE FROM fact_vectors WHERE model <> ?`).run(model);
+  };
+
+
+  /** How many facts have a cached vector for `model` (plus total facts + vector dim). */
+  getEmbeddingCacheStats = (model: string): EmbeddingCacheStats => {
+    const handle = this.open();
+    const factCount = (handle.prepare(`SELECT COUNT(*) AS n FROM facts WHERE status = 'active'`).get() as { n: number }).n;
+    const row = handle
+      .prepare(
+        `SELECT COUNT(*) AS n, MAX(v.dim) AS dim FROM fact_vectors v
+         JOIN facts f ON f.id = v.fact_id WHERE v.model = ? AND f.status = 'active'`
+      )
+      .get(model) as { n: number; dim: number | null };
+    return { factCount, embeddedCount: row.n, dim: row.n > 0 ? (row.dim ?? null) : null };
+  };
+
+
+  /**
+   * Messages with id greater than `afterId`, oldest first — the episodic embed
+   * pass walks these in batches, watermark-style (mirrors getMessagesForDistill).
+   */
+  getMessagesForEmbedding = (afterId: number, limit = 200): StoredMessage[] => {
+    const rows = this.open()
+      .prepare(
+        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
+         FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?`
+      )
+      .all(afterId, limit) as Array<Record<string, unknown>>;
+    return rows.map(this.mapStoredMessage);
+  };
+
+
+  /** Cache a message's embedding for `model` (replaces any prior vector). */
+  upsertMessageVector = (messageId: number, model: string, vec: Float32Array): void => {
+    const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+    this.open()
+      .prepare(
+        `INSERT INTO message_vectors (message_id, model, dim, vec, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(message_id, model) DO UPDATE SET dim = excluded.dim, vec = excluded.vec, updated_at = excluded.updated_at`
+      )
+      .run(messageId, model, vec.length, buf, this.nowSeconds());
+  };
+
+
+  replaceMessageChunks = (
+    messageId: number,
+    chunks: Array<Omit<StoredMessageChunk, 'messageId'>>
+  ): void => {
+    const handle = this.open();
+    handle.prepare(`DELETE FROM message_chunks WHERE message_id = ?`).run(messageId);
+    handle.prepare(`DELETE FROM message_chunk_vectors WHERE message_id = ?`).run(messageId);
+    const stmt = handle.prepare(
+      `INSERT INTO message_chunks(message_id, chunk_index, start_offset, end_offset, text)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+    for (const c of chunks) stmt.run(messageId, c.chunkIndex, c.startOffset, c.endOffset, c.text);
+  };
+
+
+  getMessageChunks = (messageId: number): StoredMessageChunk[] => {
+    const rows = this.open().prepare(
+      `SELECT message_id AS messageId, chunk_index AS chunkIndex, start_offset AS startOffset,
+              end_offset AS endOffset, text
+       FROM message_chunks WHERE message_id = ? ORDER BY chunk_index`
+    ).all(messageId) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      messageId: r.messageId as number,
+      chunkIndex: r.chunkIndex as number,
+      startOffset: r.startOffset as number,
+      endOffset: r.endOffset as number,
+      text: r.text as string
+    }));
+  };
+
+
+  upsertMessageChunkVector = (
+    messageId: number,
+    chunkIndex: number,
+    model: string,
+    vec: Float32Array
+  ): void => {
+    const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+    this.open().prepare(
+      `INSERT INTO message_chunk_vectors(message_id, chunk_index, model, dim, vec, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(message_id, chunk_index, model) DO UPDATE SET
+         dim = excluded.dim, vec = excluded.vec, updated_at = excluded.updated_at`
+    ).run(messageId, chunkIndex, model, vec.length, buf, this.nowSeconds());
+  };
+
+
+  /** Drop cached message vectors for every model except `model` (after a model switch). */
+  pruneMessageVectorsExceptModel = (model: string): void => {
+    const handle = this.open();
+    handle.prepare(`DELETE FROM message_vectors WHERE model <> ?`).run(model);
+    handle.prepare(`DELETE FROM message_chunk_vectors WHERE model <> ?`).run(model);
+  };
+
+
+  /**
+   * Last message id the episodic embed pass has processed for `model` (embedded OR
+   * deliberately skipped). A watermark recorded under a different model — the
+   * embeddings model changed — reads as 0, restarting the backfill.
+   */
+  getMessageEmbedWatermark = (model: string): number => {
+    const raw = this.getMeta(MESSAGE_EMBED_WATERMARK_KEY);
+    if (!raw) return 0;
+    try {
+      const parsed = JSON.parse(raw) as { model?: string; id?: number };
+      return parsed.model === model && typeof parsed.id === 'number' ? parsed.id : 0;
+    } catch {
+      return 0;
+    }
+  };
+
+
+  setMessageEmbedWatermark = (model: string, id: number): void => {
+    this.setMeta(MESSAGE_EMBED_WATERMARK_KEY, JSON.stringify({ model, id }));
+    // Keep the v1 cursor current while the old lead-vector table remains as a
+    // downgrade/fallback path. A pre-v2 cursor is never read as chunk progress.
+    this.setMeta(LEGACY_MESSAGE_EMBED_WATERMARK_KEY, JSON.stringify({ model, id }));
+  };
+
+
+  /**
+   * Brute-force cosine top-N over the cached message vectors for `model`. Streams
+   * rows instead of materializing a full id→vector map — unlike facts, the message
+   * set can reach tens of thousands of rows, and a per-turn multi-MB allocation is
+   * the thing to avoid; the arithmetic itself is cheap. Rows with a dim mismatch
+   * (stale model collision) are skipped.
+   */
+  semanticSearchMessages = (
+    qVec: Float32Array,
+    model: string,
+    opts: { limit: number; minCosine: number; excludeThreadId?: string | null }
+  ): SemanticHit[] => {
+    return semanticSearchMessagesCore(this.open(), qVec, model, {
+      ...opts,
+      snippetChars: 400
+    }).map((h) => ({ ...h, role: h.role as MessageRole, cosine: h.cosine ?? h.score }));
+  };
+
+
+  private mapSummary = (r: Record<string, unknown>): ThreadSummaryRow => {
+    return {
+      id: r.id as number,
+      threadId: r.threadId as string,
+      text: r.text as string,
+      firstTs: r.firstTs as number,
+      lastTs: r.lastTs as number,
+      messageCount: r.messageCount as number,
+      lastMessageId: r.lastMessageId as number,
+      updatedAt: r.updatedAt as number,
+      revisionsSinceRebuild: (r.revisionsSinceRebuild as number) || 0,
+      segmentsGap: !!(r.segmentsGap as number)
+    };
+  };
+
+
+  /**
+   * Insert or revise a thread's rolling summary and advance its watermark. The
+   * cached vector is invalidated on every write since the text always changes.
+   * Returns the summary row id, or null on empty text.
+   */
+  upsertSummary = (input: {
+    threadId: string;
+    text: string;
+    firstTs: number;
+    lastTs: number;
+    newMessageCount: number;
+    lastMessageId: number;
+    /** True when the text was re-derived from segments — resets the drift counter. */
+    rebuilt?: boolean;
+    /** False when this revision has no per-window segment → coverage gap (sticky). */
+    segmentStored?: boolean;
+  }): number | null => {
+    const text = input.text.trim().slice(0, MAX_SUMMARY_CHARS);
+    if (!text) return null;
+    const handle = this.open();
+    handle.prepare(
+      `DELETE FROM summary_vectors WHERE summary_id IN (SELECT id FROM summaries WHERE thread_id = ?)`
+    ).run(input.threadId);
+    const rebuilt = input.rebuilt === true;
+    const gap = !rebuilt && input.segmentStored === false ? 1 : 0;
+    const row = handle
+      .prepare(
+        `INSERT INTO summaries (thread_id, text, first_ts, last_ts, message_count, last_message_id, updated_at,
+                                revisions_since_rebuild, segments_gap)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(thread_id) DO UPDATE SET
+           text = excluded.text,
+           first_ts = MIN(summaries.first_ts, excluded.first_ts),
+           last_ts = MAX(summaries.last_ts, excluded.last_ts),
+           message_count = summaries.message_count + excluded.message_count,
+           last_message_id = MAX(summaries.last_message_id, excluded.last_message_id),
+           updated_at = excluded.updated_at,
+           revisions_since_rebuild = CASE WHEN ? THEN 0 ELSE summaries.revisions_since_rebuild + 1 END,
+           segments_gap = MAX(summaries.segments_gap, excluded.segments_gap)
+         RETURNING id`
+      )
+      .get(
+        input.threadId,
+        text,
+        input.firstTs,
+        input.lastTs,
+        input.newMessageCount,
+        input.lastMessageId,
+        this.nowSeconds(),
+        rebuilt ? 0 : 1,
+        gap,
+        rebuilt ? 1 : 0
+      ) as { id: number } | undefined;
+    return row?.id ?? null;
+  };
+
+
+  /** Reset the drift counter without touching the text (rebuild skipped as moot). */
+  markSummaryRebuilt = (threadId: string): void => {
+    this.open().prepare(`UPDATE summaries SET revisions_since_rebuild = 0 WHERE thread_id = ?`).run(threadId);
+  };
+
+
+  getSummaryByThread = (threadId: string): ThreadSummaryRow | null => {
+    const row = this.open().prepare(`SELECT ${SUMMARY_SELECT} FROM summaries WHERE thread_id = ?`)
+      .get(threadId) as Record<string, unknown> | undefined;
+    return row ? this.mapSummary(row) : null;
+  };
+
+
+  listThreadSummaries = (): ThreadSummaryRow[] => {
+    const rows = this.open().prepare(`SELECT ${SUMMARY_SELECT} FROM summaries ORDER BY last_ts DESC`)
+      .all() as Array<Record<string, unknown>>;
+    return rows.map(this.mapSummary);
+  };
+
+
+  deleteThreadSummary = (id: number): void => {
+    const handle = this.open();
+    // Segments die with the summary: the watermark dies with the row, so the
+    // thread resummarizes from scratch — a stale seed would pollute the rebuild.
+    const row = handle.prepare(`SELECT thread_id AS threadId FROM summaries WHERE id = ?`).get(id) as
+      | { threadId: string }
+      | undefined;
+    if (row) handle.prepare(`DELETE FROM summary_segments WHERE thread_id = ?`).run(row.threadId);
+    handle.prepare(`DELETE FROM summary_vectors WHERE summary_id = ?`).run(id);
+    handle.prepare(`DELETE FROM summaries WHERE id = ?`).run(id);
+  };
+
+
+  addSummarySegment = (input: {
+    threadId: string;
+    text: string;
+    firstTs: number;
+    lastTs: number;
+    messageCount: number;
+    lastMessageId: number;
+    maxChars?: number;
+  }): number | null => {
+    const text = input.text.trim().slice(0, input.maxChars ?? MAX_SEGMENT_CHARS);
+    if (!text) return null;
+    const row = this.open()
+      .prepare(
+        `INSERT INTO summary_segments (thread_id, text, first_ts, last_ts, message_count, last_message_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`
+      )
+      .get(input.threadId, text, input.firstTs, input.lastTs, input.messageCount, input.lastMessageId, this.nowSeconds()) as
+      | { id: number }
+      | undefined;
+    return row?.id ?? null;
+  };
+
+
+  /** A thread's segments in chronological order (merged rows keep their range's first_ts). */
+  getSummarySegments = (threadId: string): SummarySegmentRow[] => {
+    const rows = this.open()
+      .prepare(`SELECT ${SEGMENT_SELECT} FROM summary_segments WHERE thread_id = ? ORDER BY first_ts ASC, id ASC`)
+      .all(threadId) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as number,
+      threadId: r.threadId as string,
+      text: r.text as string,
+      firstTs: r.firstTs as number,
+      lastTs: r.lastTs as number,
+      messageCount: r.messageCount as number,
+      lastMessageId: r.lastMessageId as number,
+      createdAt: r.createdAt as number
+    }));
+  };
+
+
+  /**
+   * Compaction: atomically replace a set of (oldest) segments with one merged
+   * segment carrying their combined range. Used when a long thread's segments
+   * outgrow the rebuild input budget.
+   */
+  replaceSummarySegments = (
+    threadId: string,
+    ids: number[],
+    merged: { text: string; firstTs: number; lastTs: number; messageCount: number; lastMessageId: number }
+  ): number | null => {
+    if (ids.length === 0) return null;
+    const handle = this.open();
+    handle.exec('BEGIN');
+    try {
+      const del = handle.prepare(`DELETE FROM summary_segments WHERE thread_id = ? AND id = ?`);
+      for (const id of ids) del.run(threadId, id);
+      const inserted = this.addSummarySegment({ threadId, ...merged, maxChars: MAX_MERGED_SEGMENT_CHARS });
+      handle.exec('COMMIT');
+      return inserted;
+    } catch (err) {
+      handle.exec('ROLLBACK');
+      throw err;
+    }
+  };
+
+
+  /**
+   * Threads that have captured messages beyond their summary's watermark (or no
+   * summary at all). Newest activity first for the post-turn refresh (the chat
+   * the user just used); oldest first for the dormant backfill's work queue.
+   */
+  getThreadsNeedingSummary = (
+    limit: number,
+    order: 'newest' | 'oldest' = 'newest',
+    minimum: { messages: number; chars: number } = { messages: 0, chars: 0 }
+  ): Array<{ threadId: string; behindBy: number }> => {
+    if (limit <= 0) return [];
+    const rows = this.open()
+      .prepare(
+        `SELECT m.thread_id AS threadId, COUNT(*) AS behindBy
+         FROM messages m
+         LEFT JOIN summaries s ON s.thread_id = m.thread_id
+         WHERE m.id > COALESCE(s.last_message_id, 0)
+         GROUP BY m.thread_id
+         HAVING
+           (s.thread_id IS NULL AND SUM(LENGTH(m.text)) >= ?)
+           OR
+           (s.thread_id IS NOT NULL AND (COUNT(*) >= ? OR SUM(LENGTH(m.text)) >= ?))
+         ORDER BY MAX(m.ts) ${order === 'newest' ? 'DESC' : 'ASC'}
+         LIMIT ?`
+      )
+      .all(minimum.chars, minimum.messages, minimum.chars, limit) as Array<{ threadId: string; behindBy: number }>;
+    return rows;
+  };
+
+
+  /** Summaries with no cached vector for `model` (need embedding before search). */
+  getSummariesMissingVector = (model: string): ThreadSummaryRow[] => {
+    const rows = this.open()
+      .prepare(
+        `SELECT s.id, s.thread_id AS threadId, s.text, s.first_ts AS firstTs, s.last_ts AS lastTs,
+                s.message_count AS messageCount, s.last_message_id AS lastMessageId, s.updated_at AS updatedAt,
+                s.revisions_since_rebuild AS revisionsSinceRebuild, s.segments_gap AS segmentsGap
+         FROM summaries s
+         LEFT JOIN summary_vectors v ON v.summary_id = s.id AND v.model = ?
+         WHERE v.summary_id IS NULL
+         ORDER BY s.id ASC`
+      )
+      .all(model) as Array<Record<string, unknown>>;
+    return rows.map(this.mapSummary);
+  };
+
+
+  /** Cache a summary's embedding for `model` (replaces any prior vector). */
+  upsertSummaryVector = (summaryId: number, model: string, vec: Float32Array): void => {
+    const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+    this.open()
+      .prepare(
+        `INSERT INTO summary_vectors (summary_id, model, dim, vec, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(summary_id, model) DO UPDATE SET dim = excluded.dim, vec = excluded.vec, updated_at = excluded.updated_at`
+      )
+      .run(summaryId, model, vec.length, buf, this.nowSeconds());
+  };
+
+
+  /** Drop cached summary vectors for every model except `model` (after a model switch). */
+  pruneSummaryVectorsExceptModel = (model: string): void => {
+    this.open().prepare(`DELETE FROM summary_vectors WHERE model <> ?`).run(model);
+  };
+
+
+  /**
+   * True when ANY message vector is cached (any model). The hybrid search uses
+   * this as a pre-embed gate: with an empty table there is nothing to scan, so
+   * the query embed would be pure waste (e.g. embeddings just turned on, backfill
+   * not yet run — or a fact-only turn on a fresh DB).
+   */
+  hasMessageVectors = (): boolean => {
+    return hasMessageVectorsCore(this.open());
+  };
+
+
+  /** How many messages have a cached vector for `model`, vs total messages. */
+  getEpisodicVectorStats = (model: string): { messageCount: number; embeddedCount: number } => {
+    const handle = this.open();
+    const embedded = handle
+      .prepare(
+        `SELECT COUNT(DISTINCT message_id) AS n FROM (
+           SELECT message_id FROM message_chunk_vectors WHERE model = ?
+           UNION SELECT message_id FROM message_vectors WHERE model = ?
+         )`
+      )
+      .get(model, model) as { n: number };
+    return { messageCount: this.messageCount(), embeddedCount: embedded.n };
+  };
+
+
+  /**
+   * Wipe the episodic store (Level 2): all messages + their FTS index, and the
+   * distill watermark — message ids can be reused after a VACUUM, so a stale
+   * watermark would make distillation skip freshly captured messages. VACUUM runs
+   * after the delete (it can't run inside a transaction) to reclaim disk pages.
+   *
+   * Deleting from `messages` fires the messages_ad trigger per row, so the FTS
+   * index is cleared in lockstep — no separate messages_fts delete needed.
+   * Leaves facts and the recall_enabled toggle untouched.
+   */
+  resetEpisodic = (options: { skipVacuum?: boolean } = {}): void => {
+    const handle = this.open();
+    handle.exec('BEGIN');
+    try {
+      handle.exec('DELETE FROM messages');
+      handle.exec('DELETE FROM message_vectors');
+      handle.exec('DELETE FROM message_chunk_vectors');
+      handle.exec('DELETE FROM message_chunks');
+      // Summaries are derived from messages, and their last_message_id watermarks
+      // would be corrupted by message-id reuse after the VACUUM below. The
+      // per-turn injected-facts log references turn ids of deleted messages.
+      handle.exec('DELETE FROM summaries');
+      handle.exec('DELETE FROM summary_segments');
+      handle.exec('DELETE FROM summary_vectors');
+      handle.exec('DELETE FROM turn_injected_facts');
+      handle.exec(`DELETE FROM meta WHERE key = 'distill_watermark'`);
+      handle.exec(`DELETE FROM meta WHERE key = 'distill_cursor_v2'`);
+      handle.exec(`DELETE FROM meta WHERE key = 'skill_distill_watermark'`);
+      handle.exec(`DELETE FROM meta WHERE key = 'skill_distill_cursor_v2'`);
+      handle.exec(`DELETE FROM meta WHERE key = 'memory_rebuild_v2'`);
+      // Same rowid-reuse hazard as the distill watermark: after VACUUM, new
+      // messages can reclaim old ids and would be skipped by a stale embed watermark.
+      handle.exec(`DELETE FROM meta WHERE key = '${MESSAGE_EMBED_WATERMARK_KEY}'`);
+      handle.exec(`DELETE FROM meta WHERE key = '${LEGACY_MESSAGE_EMBED_WATERMARK_KEY}'`);
+      handle.exec('COMMIT');
+    } catch (err) {
+      handle.exec('ROLLBACK');
+      throw err;
+    }
+    // Callers that can VACUUM off-thread (workspace/memory.ts via scan.ts) skip
+    // the inline one; everyone else keeps the synchronous reclaim.
+    if (!options.skipVacuum) handle.exec('VACUUM');
+  };
+
+
+  /** Monotonic epoch used to invalidate asynchronous fact writers after a reset. */
+  getFactsGeneration = (): number => {
+    return Number.parseInt(this.getMeta(FACTS_GENERATION_KEY) ?? '0', 10) || 0;
+  };
+
+
+  /**
+   * Wipe durable facts (Level 1) + the consolidation dirty-counter. Leaves the
+   * episodic store and the recall_enabled toggle untouched.
+   */
+  resetFacts = (): void => {
+    const handle = this.open();
+    const nextGeneration = this.getFactsGeneration() + 1;
+    handle.exec('BEGIN');
+    try {
+      handle.prepare(
+        `INSERT INTO meta(key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+      ).run(FACTS_GENERATION_KEY, String(nextGeneration));
+      handle.exec('DELETE FROM fact_vectors');
+      handle.exec('DELETE FROM fact_evidence');
+      handle.exec('DELETE FROM fact_conflicts');
+      handle.exec('DELETE FROM facts');
+      // Fact ids in the per-turn injected log are now dangling — drop it too.
+      handle.exec('DELETE FROM turn_injected_facts');
+      handle.exec(`DELETE FROM meta WHERE key = 'consolidate_pending'`);
+      // Clearing facts is also a cancellation barrier for an active rebuild.
+      // Removing its progress returns it to the explicit-consent "available" state.
+      handle.exec(`DELETE FROM meta WHERE key = 'memory_rebuild_v2'`);
+      handle.exec('COMMIT');
+    } catch (err) {
+      handle.exec('ROLLBACK');
+      throw err;
+    }
+  };
+
+
+  /**
+   * Apply a batch of consolidation operations in a single transaction. Default
+   * posture is KEEP: only ids named in an op are touched; unknown ids are ignored.
+   *
+   * Order matters for the `norm` UNIQUE constraint: all deletes run first (merge
+   * losers + explicit drops), so a survivor/correction can safely take text whose
+   * norm previously belonged to a now-deleted row. Text writes that would still
+   * collide with another surviving row (two survivors normalizing equal) are
+   * skipped per-row rather than aborting the whole batch.
+   */
+  applyConsolidation = (ops: ConsolidationOps): ConsolidationResult => {
+    const handle = this.open();
+    const existing = new Set(this.getAllFacts().filter((f) => f.status === 'active').map((f) => f.id));
+
+    // Resolve text writes (merge survivors + corrections) and the ids each removes.
+    const dropIds = new Set<number>(); // explicit drops
+    const mergeLoserIds = new Set<number>(); // losers folded into a survivor
+    const textWrites: Array<{ id: number; text: string; kind: 'merge' | 'correct' }> = [];
+
+    for (const m of ops.merge) {
+      const present = m.ids.filter((id) => existing.has(id));
+      const text = m.text.trim();
+      if (present.length === 0 || !text) continue;
+      const survivor = Math.min(...present);
+      for (const id of present) if (id !== survivor) mergeLoserIds.add(id);
+      textWrites.push({ id: survivor, text, kind: 'merge' });
+    }
+    for (const c of ops.correct) {
+      const text = c.text.trim();
+      if (existing.has(c.id) && text) textWrites.push({ id: c.id, text, kind: 'correct' });
+    }
+    for (const id of ops.drop) if (existing.has(id)) dropIds.add(id);
+    // A survivor/corrected row must never be deleted by an overlapping op.
+    for (const w of textWrites) {
+      dropIds.delete(w.id);
+      mergeLoserIds.delete(w.id);
+    }
+
+    let merged = 0;
+    let dropped = 0;
+    let corrected = 0;
+    handle.exec('BEGIN');
+    try {
+      // Supersede first so a survivor/correction can reclaim a loser's normalized
+      // key without erasing its text/evidence/history.
+      const retire = handle.prepare(
+        `UPDATE facts SET status = 'superseded', pinned = 0, superseded_by = ?,
+                norm = '__superseded__' || id || ':' || norm, updated_at = ?
+         WHERE id = ? AND status = 'active'`
+      );
+      const delVec = handle.prepare(`DELETE FROM fact_vectors WHERE fact_id = ?`);
+      const mergeSurvivor = new Map<number, number>();
+      for (const m of ops.merge) {
+        const present = m.ids.filter((id) => existing.has(id));
+        if (present.length < 2) continue;
+        const survivor = Math.min(...present);
+        for (const id of present) if (id !== survivor) mergeSurvivor.set(id, survivor);
+      }
+      for (const id of mergeLoserIds) {
+        merged += retire.run(mergeSurvivor.get(id) ?? null, this.nowSeconds(), id).changes as number;
+      }
+      for (const id of dropIds) {
+        dropped += retire.run(null, this.nowSeconds(), id).changes as number;
+      }
+      // Survivors/corrections keep their row but get new text — invalidate their vectors.
+      for (const w of textWrites) delVec.run(w.id);
+
+      const upd = handle.prepare(`UPDATE facts SET text = ?, norm = ?, updated_at = ? WHERE id = ?`);
+      for (const w of textWrites) {
+        try {
+          if ((upd.run(w.text, this.normalizeFact(w.text), this.nowSeconds(), w.id).changes as number) > 0) {
+            if (w.kind === 'correct') corrected += 1;
+          }
+        } catch {
+          // norm UNIQUE collision with another surviving row — leave this fact as-is.
+        }
+      }
+      handle.exec('COMMIT');
+    } catch (err) {
+      handle.exec('ROLLBACK');
+      throw err;
+    }
+
+    return { merged, corrected, dropped, failedChunks: 0 };
+  };
+
+
+  getMeta = (key: string): string | null => {
+    const handle = this.open();
+    const row = handle.prepare(`SELECT value FROM meta WHERE key = ?`).get(key) as { value?: string } | undefined;
+    return row?.value ?? null;
+  };
+
+
+  setMeta = (key: string, value: string): void => {
+    this.open()
+      .prepare(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+      .run(key, value);
+  };
+
+
+  /** Count of captured messages — used by tests/diagnostics. */
+  messageCount = (): number => {
+    const row = this.open().prepare(`SELECT COUNT(*) AS n FROM messages`).get() as { n: number };
+    return row.n;
+  };
+
+
+  /** On-disk footprint of recall.sqlite + its WAL sidecar (uncheckpointed writes). */
+  private dbSizeBytes = (): number => {
+    return dbSizeBytesFor(this.dbPath());
+  };
+
+
+  /**
+   * Metadata for the Level-2 episodic store: how many messages are captured and how
+   * much disk recall.sqlite occupies.
+   */
+  getEpisodicStats = (): EpisodicStats => {
+    return { messageCount: this.messageCount(), sizeBytes: this.dbSizeBytes() };
+  };
+
+
+  /** Max on-disk size for the episodic store in bytes; 0 = unlimited. */
+  getEpisodicLimitBytes = (): number => {
+    const raw = Number.parseInt(this.getMeta(EPISODIC_MAX_KEY) ?? '', 10);
+    return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_EPISODIC_MAX_BYTES;
+  };
+
+  setEpisodicLimitBytes = (bytes: number): void => {
+    this.setMeta(EPISODIC_MAX_KEY, String(Math.max(0, Math.floor(bytes))));
+  };
+
+
+  /** New-fact count that triggers an automatic tidy-up; 0 = manual only. */
+  getTidyThreshold = (): number => {
+    const raw = Number.parseInt(this.getMeta(TIDY_THRESHOLD_KEY) ?? '', 10);
+    return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_TIDY_THRESHOLD;
+  };
+
+  setTidyThreshold = (n: number): void => {
+    this.setMeta(TIDY_THRESHOLD_KEY, String(Math.max(0, Math.floor(n))));
+  };
+
+
+  private getMetaPositiveInt = (key: string, fallback: number): number => {
+    const raw = Number.parseInt(this.getMeta(key) ?? '', 10);
+    return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+  };
+
+
+  getMaxRelevantFacts = (): number => {
+    const current = this.getMeta(MAX_RELEVANT_FACTS_KEY);
+    if (current != null) return this.getMetaPositiveInt(MAX_RELEVANT_FACTS_KEY, DEFAULT_MAX_RELEVANT_FACTS);
+    // Do not reinterpret the v1 inject-all threshold as a v2 result count. Record
+    // the new safe default once so future reads are stable.
+    if (this.getMeta(FACT_THRESHOLD_KEY) != null) this.setMeta(MAX_RELEVANT_FACTS_KEY, String(DEFAULT_MAX_RELEVANT_FACTS));
+    return DEFAULT_MAX_RELEVANT_FACTS;
+  };
+
+  setMaxRelevantFacts = (n: number): void => {
+    this.setMeta(MAX_RELEVANT_FACTS_KEY, String(Math.max(1, Math.min(32, Math.floor(n)))));
+  };
+
+  getFactCosineM = (): number => {
+    return this.getMetaPositiveInt(FACT_COSINE_M_KEY, DEFAULT_FACT_COSINE_M);
+  };
+
+  getFactRerankK = (): number => {
+    return this.getMetaPositiveInt(FACT_RERANK_K_KEY, DEFAULT_FACT_RERANK_K);
+  };
+
+
+  getSemanticMinCosine = (): number => {
+    const raw = Number.parseFloat(this.getMeta(SEMANTIC_MIN_COSINE_KEY) ?? '');
+    return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_SEMANTIC_MIN_COSINE;
+  };
+
+  setSemanticMinCosine = (v: number): void => {
+    this.setMeta(SEMANTIC_MIN_COSINE_KEY, String(Math.min(1, Math.max(0, v))));
+  };
+
+
+  getUsageWeight = (): number => {
+    const raw = Number.parseFloat(this.getMeta(USAGE_WEIGHT_KEY) ?? '');
+    return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_USAGE_WEIGHT;
+  };
+
+  setUsageWeight = (v: number): void => {
+    this.setMeta(USAGE_WEIGHT_KEY, String(Math.min(1, Math.max(0, v))));
+  };
+
+
+  getDupCosine = (): number => {
+    const raw = Number.parseFloat(this.getMeta(DUP_COSINE_KEY) ?? '');
+    return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_DUP_COSINE;
+  };
+
+  setDupCosine = (v: number): void => {
+    this.setMeta(DUP_COSINE_KEY, String(Math.min(1, Math.max(0, v))));
+  };
+
+
+  getConsolidateChunkSize = (): number => {
+    // Floor of 2 so a "chunk" can always hold a mergeable pair.
+    return Math.max(2, this.getMetaPositiveInt(CONSOLIDATE_CHUNK_KEY, DEFAULT_CONSOLIDATE_CHUNK));
+  };
+
+  setConsolidateChunkSize = (n: number): void => {
+    this.setMeta(CONSOLIDATE_CHUNK_KEY, String(Math.max(2, Math.floor(n))));
+  };
+
+
+  /**
+   * Trim the episodic store back under its size limit (prune oldest + VACUUM).
+   * Synchronous in-process pass — the capture path normally routes this through
+   * the scan worker instead (see scan.ts); the mechanics live in maintenance-core
+   * so both run the same code.
+   */
+  enforceEpisodicLimit = (): number => {
+    return enforceEpisodicLimitCore(this.open(), this.dbPath());
+  };
+
+
+  /** Close the handle; the next call re-opens over the current dbPath(). */
+  close = (): void => {
+    this.db?.close();
+    this.db = null;
+  };
 }
 
-/** Test hook: close the handle so a fresh path can be opened. */
+/** The app-wide store over recall.sqlite (see workspace/paths). */
+export const recallStore = new RecallStore(() => recallDbPath());
+
+/** Test hook: close the default handle so a fresh path can be opened. */
 export function closeForTest(): void {
-  db?.close();
-  db = null;
+  recallStore.close();
 }

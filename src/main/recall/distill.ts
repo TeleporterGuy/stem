@@ -1,24 +1,4 @@
-import {
-  getDupCosine,
-  getFacts,
-  getFactDetails,
-  getFactsByIds,
-  getFactVectors,
-  getFactsGeneration,
-  getMessagesForDistillFrom,
-  getMeta,
-  getTidyThreshold,
-  getUngradedTurnFacts,
-  markTurnFactsGraded,
-  recordFactUsage,
-  setMeta,
-  supersedeFact,
-  createFactConflict,
-  upsertFact,
-  upsertFactVector,
-  type StoredMessage,
-  type TurnInjectedFacts
-} from './store';
+
 import { lexTokens } from './search-core';
 import { getEmbeddingsClient } from './retrieval';
 import { cosineSim } from './vector';
@@ -26,6 +6,8 @@ import { isRecallEnabled } from '../workspace/memory';
 import { contradicts } from './reconcile';
 import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
+import { recallStore, type StoredMessage, type TurnInjectedFacts } from './store';
+const { getDupCosine, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUngradedTurnFacts, markTurnFactsGraded, recordFactUsage, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
 
 // Level 1: the reflection pass. Periodically reads conversation that's new since
 // its last run and distills durable, stable facts about the user into the facts

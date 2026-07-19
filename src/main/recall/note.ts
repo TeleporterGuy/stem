@@ -1,7 +1,9 @@
-import { getFactDetails, getFactsGeneration, getInjectableFacts, supersedeFact, updateFactText, upsertFact } from './store';
+
 import { reconcileExplicitFact } from './reconcile';
 import { parseClaims } from './distill';
 import type { LlmClient } from './llm';
+import { recallStore } from './store';
+const { getFactDetails, getFactsGeneration, getInjectableFacts, supersedeFact, updateFactText, upsertFact } = recallStore;
 
 // Post-processing for user-typed quick notes (composer `/note` / `//`). The note
 // is already durable before anything here runs — this pass only improves it:

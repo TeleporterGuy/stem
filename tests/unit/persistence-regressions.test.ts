@@ -6,7 +6,7 @@ import { buildRecallContext } from '../../src/main/recall/inject';
 import { reconcileExplicitFact } from '../../src/main/recall/reconcile';
 import { setRetrievalClients } from '../../src/main/recall/retrieval';
 import { runMemoryRebuildStep, startMemoryRebuild } from '../../src/main/recall/rebuild';
-import * as store from '../../src/main/recall/store';
+import { recallStore as store } from '../../src/main/recall/store';
 
 beforeEach(() => {
   store.resetEpisodic();
@@ -17,7 +17,7 @@ beforeEach(() => {
 
 afterAll(() => {
   setRetrievalClients({ embeddings: null, rerank: null });
-  store.closeForTest();
+  store.close();
 });
 
 describe('persistence regressions', () => {

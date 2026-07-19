@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { beforeAll, describe, expect, it } from 'vitest';
-import * as store from '../../src/main/recall/store';
+import { recallStore as store } from '../../src/main/recall/store';
 
 beforeAll(() => {
   const path = process.env.STEM_RECALL_DB!;
@@ -72,7 +72,7 @@ describe('Recall v3 additive migration', () => {
   });
 
   it('is idempotent on a second open', () => {
-    store.closeForTest();
+    store.close();
     expect(store.getFactDetails(7)?.text).toBe('The user lives in Rome');
     expect(store.getMeta('recall_schema_version')).toBe('3');
   });

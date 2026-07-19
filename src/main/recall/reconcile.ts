@@ -1,11 +1,7 @@
-import {
-  createFactConflict,
-  getFactDetails,
-  getFactsGeneration,
-  getInjectableFacts,
-  supersedeFact
-} from './store';
+
 import type { LlmClient } from './llm';
+import { recallStore } from './store';
+const { createFactConflict, getFactDetails, getFactsGeneration, getInjectableFacts, supersedeFact } = recallStore;
 
 interface ReconcileReply {
   supersedeIds?: unknown;

@@ -1,15 +1,5 @@
 import type { MemoryRebuildStatus } from '../../shared/types';
-import {
-  createFactConflict,
-  getFactDetails,
-  getFactsGeneration,
-  getMeta,
-  messageCount,
-  setMeta,
-  supersedeFact,
-  upsertFact,
-  type StoredMessage
-} from './store';
+
 import {
   buildDistillBatch,
   DISTILL_INSTRUCTIONS,
@@ -19,6 +9,8 @@ import {
 } from './distill';
 import { contradicts } from './reconcile';
 import type { LlmClient } from './llm';
+import { recallStore, type StoredMessage } from './store';
+const { createFactConflict, getFactDetails, getFactsGeneration, getMeta, messageCount, setMeta, supersedeFact, upsertFact } = recallStore;
 
 const REBUILD_KEY = 'memory_rebuild_v2';
 

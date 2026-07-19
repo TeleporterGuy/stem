@@ -4,7 +4,7 @@
 // quality is scored by scripts/recall-eval.mjs. Stateful and order-dependent
 // (shared per-process DB, mirroring recall.test.ts); tests reset what they need.
 import { afterAll, describe, expect, it } from 'vitest';
-import * as store from '../../src/main/recall/store';
+import { recallStore as store } from '../../src/main/recall/store';
 import * as search from '../../src/main/recall/search';
 import * as inject from '../../src/main/recall/inject';
 import * as retrieval from '../../src/main/recall/retrieval';
@@ -15,7 +15,7 @@ import {
   episodicEmbedText
 } from '../../src/main/recall/embed-episodic';
 
-afterAll(() => store.closeForTest());
+afterAll(() => store.close());
 
 const MODEL = 'test-model';
 

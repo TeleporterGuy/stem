@@ -2,9 +2,11 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path';
 import { skillsRoot } from '../workspace/paths';
 import { isRecallEnabled } from '../workspace/memory';
-import { getMessagesForDistillFrom, getMeta, setMeta, type StoredMessage } from '../recall/store';
+
 import { composeSkillMd, parseFront } from './curate';
 import type { LlmClient } from '../recall/llm';
+import { recallStore, type StoredMessage } from '../recall/store';
+const { getMessagesForDistillFrom, getMeta, setMeta } = recallStore;
 
 // The skills acquisition pass, mirroring recall/distill.ts for durable facts.
 // The in-turn manage_skill instruction alone produces nothing (98 live sessions,

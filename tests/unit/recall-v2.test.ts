@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import * as store from '../../src/main/recall/store';
+import { recallStore as store } from '../../src/main/recall/store';
 import * as distill from '../../src/main/recall/distill';
 import * as inject from '../../src/main/recall/inject';
 import * as retrieval from '../../src/main/recall/retrieval';
@@ -18,7 +18,7 @@ import {
   startMemoryRebuild
 } from '../../src/main/recall/rebuild';
 
-afterAll(() => store.closeForTest());
+afterAll(() => store.close());
 beforeEach(() => {
   retrieval.setRetrievalClients({ embeddings: null, rerank: null });
   store.resetFacts();

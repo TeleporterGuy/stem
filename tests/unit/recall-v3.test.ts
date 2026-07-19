@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import * as store from '../../src/main/recall/store';
+import { recallStore as store, MAX_SUMMARY_CHARS } from '../../src/main/recall/store';
 import * as search from '../../src/main/recall/search';
 import {
   backfillSummaries,
@@ -127,7 +127,7 @@ describe('thread summaries store', () => {
       newMessageCount: 1,
       lastMessageId: 1
     });
-    expect(store.getSummaryByThread('sum-long')!.text.length).toBe(store.MAX_SUMMARY_CHARS);
+    expect(store.getSummaryByThread('sum-long')!.text.length).toBe(MAX_SUMMARY_CHARS);
   });
 
   it('searches summaries hybrid: FTS leg, semantic leg, and RRF fusion', async () => {

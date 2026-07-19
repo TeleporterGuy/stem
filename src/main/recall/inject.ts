@@ -1,24 +1,12 @@
-import {
-  dbHandle,
-  getInjectableFacts,
-  getFactsGeneration,
-  getFactsMissingVector,
-  getFactVectors,
-  getUsageWeight,
-  upsertFactVectorForSnapshot,
-  getMaxRelevantFacts,
-  getFactCosineM,
-  getFactRerankK,
-  MAX_PINNED_FACTS,
-  type Fact,
-  type FactTier
-} from './store';
+
 import { searchMemoryHybrid, rankFactsLexically } from './search';
 import { hybridSearchSummaries } from './search-core';
 import { scanSummariesOffThread } from './scan';
 import { getEmbeddingsClient, getRerankClient } from './retrieval';
 import type { EmbeddingsClient } from './embeddings';
 import { dot, magnitude } from './vector';
+import { recallStore, MAX_PINNED_FACTS, type Fact, type FactTier } from './store';
+const { dbHandle, getInjectableFacts, getFactsGeneration, getFactsMissingVector, getFactVectors, getUsageWeight, upsertFactVectorForSnapshot, getMaxRelevantFacts, getFactCosineM, getFactRerankK } = recallStore;
 
 // Builds the per-turn recall context Stem prepends to the user's message.
 // Two parts: Level-1 durable facts and Level-2 episodic hits relevant to the

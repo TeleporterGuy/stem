@@ -7,7 +7,8 @@ import {
   type CoreSummaryHit,
   type QueryEmbedding
 } from './search-core';
-import { dbHandle, enforceEpisodicLimit } from './store';
+import { recallStore } from './store';
+const { dbHandle, enforceEpisodicLimit } = recallStore;
 
 // App-global registry for the recall scan worker (mirrors retrieval.ts for the
 // embedding clients). Set once from main at startup; read by the episodic
