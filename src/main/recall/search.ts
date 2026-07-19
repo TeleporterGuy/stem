@@ -14,6 +14,7 @@ import {
   type EmbedQueryFn,
   type QueryEmbedding
 } from './search-core';
+import { scanMessagesOffThread } from './scan';
 
 // The stable retrieval interface. Everything in the MAIN process that recalls
 // past conversation goes through here; the mechanics live in search-core.ts,
@@ -128,6 +129,9 @@ export async function searchMemoryHybrid(rawQuery: string, options: HybridOption
     limit: options.limit ?? 5,
     excludeThreadId: options.excludeThreadId,
     embedQuery: options.getQueryEmbedding as EmbedQueryFn | undefined,
+    // The O(N) cosine scan runs in the scan worker when available, keeping the
+    // chat-turn hot path off the main event loop (in-process fallback inside).
+    semanticScan: scanMessagesOffThread,
     timingSink: options.timingSink
   });
 }

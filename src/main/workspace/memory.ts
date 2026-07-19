@@ -18,6 +18,7 @@ import {
   setTidyThreshold,
   upsertFact
 } from '../recall/store';
+import { vacuumRecallDb } from '../recall/scan';
 
 // Stem's memory control surface, backed entirely by Stem Recall (recall.sqlite).
 //
@@ -270,7 +271,11 @@ export async function removeThreadSummary(id: number): Promise<ThreadSummary[]> 
 /** Wipe the episodic store (Level 2), keeping facts and the on/off toggle.
  *  Returns the refreshed (empty) episodic stats for the Recall sub-tab. */
 export async function clearEpisodicMemory(): Promise<EpisodicStats> {
-  resetEpisodic();
+  // The deletes stay transactional on this thread; the multi-second VACUUM runs
+  // in the scan worker when available (awaited, so the stats below reflect the
+  // reclaimed file), inline otherwise.
+  resetEpisodic({ skipVacuum: true });
+  await vacuumRecallDb();
   return getEpisodicStats();
 }
 

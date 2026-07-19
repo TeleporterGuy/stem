@@ -372,8 +372,22 @@ export function hasMessageVectorsCore(db: DatabaseSync): boolean {
   }
 }
 
+/** Resolved options for one cosine-leg scan (minCosine already read from meta). */
+export interface SemanticScanOptions {
+  limit: number;
+  minCosine: number;
+  excludeThreadId: string | null;
+  snippetChars?: number;
+}
+
 export interface HybridMessageOptions extends MessageSearchOptions {
   embedQuery?: EmbedQueryFn;
+  /**
+   * Override for the cosine leg — e.g. run the O(N) scan in a worker process
+   * instead of on the caller's event loop. Defaults to the in-process scan.
+   * A throw degrades to FTS-only, same as a failed embed.
+   */
+  semanticScan?: (qe: QueryEmbedding, opts: SemanticScanOptions) => Promise<CoreSearchHit[]>;
   /** Optional sink: wall time of the semantic leg (cosine scan + fusion), ms. */
   timingSink?: { semantic?: number };
 }
@@ -402,12 +416,15 @@ export async function hybridSearchMessages(
     try {
       const qe = await opts.embedQuery();
       if (qe) {
-        sem = semanticSearchMessagesCore(db, qe.vec, qe.model, {
+        const scanOpts: SemanticScanOptions = {
           limit: SEMANTIC_CANDIDATES,
           minCosine: readSemanticMinCosine(db),
-          excludeThreadId: opts.excludeThreadId,
+          excludeThreadId: opts.excludeThreadId ?? null,
           snippetChars: opts.snippetChars
-        });
+        };
+        sem = opts.semanticScan
+          ? await opts.semanticScan(qe, scanOpts)
+          : semanticSearchMessagesCore(db, qe.vec, qe.model, scanOpts);
       }
     } catch {
       // The semantic leg is optional; a dead embedder must never break a turn.
@@ -522,6 +539,8 @@ export interface SummarySearchOptions {
   limit?: number;
   excludeThreadId?: string | null;
   embedQuery?: EmbedQueryFn;
+  /** Same contract as HybridMessageOptions.semanticScan, for the summary leg. */
+  semanticScan?: (qe: QueryEmbedding, opts: SemanticScanOptions) => Promise<CoreSummaryHit[]>;
 }
 
 /** bm25-gated FTS leg over thread summaries. [] on a pre-v3 DB without the table. */
@@ -636,11 +655,14 @@ export async function hybridSearchSummaries(
     try {
       const qe = await opts.embedQuery();
       if (qe) {
-        sem = semanticSearchSummariesCore(db, qe.vec, qe.model, {
+        const scanOpts: SemanticScanOptions = {
           limit: SEMANTIC_CANDIDATES,
           minCosine: readSummaryMinCosine(db),
-          excludeThreadId: opts.excludeThreadId
-        });
+          excludeThreadId: opts.excludeThreadId ?? null
+        };
+        sem = opts.semanticScan
+          ? await opts.semanticScan(qe, scanOpts)
+          : semanticSearchSummariesCore(db, qe.vec, qe.model, scanOpts);
       }
     } catch {
       // Semantic leg optional.

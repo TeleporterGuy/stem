@@ -1,12 +1,16 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { statSync } from 'node:fs';
 import { recallDbPath } from '../workspace/paths';
 import {
   bytesToFloat32 as coreBytesToFloat32,
   hasMessageVectorsCore,
   semanticSearchMessagesCore
 } from './search-core';
+import {
+  DEFAULT_EPISODIC_MAX_BYTES,
+  dbSizeBytesFor,
+  enforceEpisodicLimitCore
+} from './maintenance-core';
 import type {
   ActivityItem,
   ConflictResolution,
@@ -163,6 +167,9 @@ function open(): DatabaseSync {
   if (db) return db;
   const handle = new DatabaseSync(recallDbPath());
   handle.exec('PRAGMA journal_mode = WAL;');
+  // The scan worker (scan-worker.ts) VACUUMs on its own connection; a main-process
+  // write landing in that brief exclusive window must wait, not throw SQLITE_BUSY.
+  handle.exec('PRAGMA busy_timeout = 5000;');
   handle.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id        INTEGER PRIMARY KEY,
@@ -1690,7 +1697,7 @@ export function getEpisodicVectorStats(model: string): { messageCount: number; e
  * index is cleared in lockstep — no separate messages_fts delete needed.
  * Leaves facts and the recall_enabled toggle untouched.
  */
-export function resetEpisodic(): void {
+export function resetEpisodic(options: { skipVacuum?: boolean } = {}): void {
   const handle = open();
   handle.exec('BEGIN');
   try {
@@ -1718,7 +1725,9 @@ export function resetEpisodic(): void {
     handle.exec('ROLLBACK');
     throw err;
   }
-  handle.exec('VACUUM');
+  // Callers that can VACUUM off-thread (workspace/memory.ts via scan.ts) skip
+  // the inline one; everyone else keeps the synchronous reclaim.
+  if (!options.skipVacuum) handle.exec('VACUUM');
 }
 
 const FACTS_GENERATION_KEY = 'facts_generation';
@@ -1889,16 +1898,7 @@ export function messageCount(): number {
 
 /** On-disk footprint of recall.sqlite + its WAL sidecar (uncheckpointed writes). */
 function dbSizeBytes(): number {
-  const path = recallDbPath();
-  let total = 0;
-  for (const p of [path, `${path}-wal`]) {
-    try {
-      total += statSync(p).size;
-    } catch {
-      // sidecar (or db) not on disk yet — counts as 0.
-    }
-  }
-  return total;
+  return dbSizeBytesFor(recallDbPath());
 }
 
 /**
@@ -1913,8 +1913,9 @@ export function getEpisodicStats(): EpisodicStats {
 
 const EPISODIC_MAX_KEY = 'episodic_max_bytes';
 const TIDY_THRESHOLD_KEY = 'consolidate_threshold';
-/** 100 MB of chat text is effectively a safety ceiling, not a routine cap. */
-export const DEFAULT_EPISODIC_MAX_BYTES = 100 * 1024 * 1024;
+// The default (and the limit's meta key) live in maintenance-core.ts so the scan
+// worker enforces the same cap without importing this electron-bound module.
+export { DEFAULT_EPISODIC_MAX_BYTES } from './maintenance-core';
 /** Run a tidy-up once this many new facts have accumulated (0 = manual only). */
 export const DEFAULT_TIDY_THRESHOLD = 5;
 
@@ -2044,49 +2045,13 @@ export function setConsolidateChunkSize(n: number): void {
 }
 
 /**
- * Trim the episodic store back under its size limit by deleting the oldest
- * messages, then VACUUM to actually reclaim the disk pages (SQLite keeps freed
- * pages otherwise, so the file — and the reported size — wouldn't shrink). Prunes
- * to ~85% of the limit so a steady trickle of new messages doesn't re-trigger a
- * VACUUM on every capture. Returns how many messages were removed.
- *
- * The messages_ad trigger keeps the FTS index in lockstep as rows are deleted.
+ * Trim the episodic store back under its size limit (prune oldest + VACUUM).
+ * Synchronous in-process pass — the capture path normally routes this through
+ * the scan worker instead (see scan.ts); the mechanics live in maintenance-core
+ * so both run the same code.
  */
 export function enforceEpisodicLimit(): number {
-  const max = getEpisodicLimitBytes();
-  if (max <= 0) return 0; // unlimited
-  if (dbSizeBytes() <= max) return 0;
-
-  const handle = open();
-  const target = Math.floor(max * 0.85);
-  let deleted = 0;
-  // Bounded loop: the size estimate can under-shoot (fixed facts/meta overhead),
-  // so re-measure after each VACUUM and prune again if still over.
-  for (let i = 0; i < 8; i++) {
-    const rows = messageCount();
-    if (rows === 0) break;
-    const size = dbSizeBytes();
-    if (size <= target) break;
-    const dropFraction = Math.min(0.9, 1 - target / size);
-    const dropCount = Math.max(1, Math.ceil(rows * dropFraction));
-    const cutoff = handle
-      .prepare(`SELECT id FROM messages ORDER BY id ASC LIMIT 1 OFFSET ?`)
-      .get(dropCount) as { id?: number } | undefined;
-    // No FK cascade — drop the pruned messages' cached vectors in the same pass.
-    if (cutoff?.id == null) {
-      handle.prepare(`DELETE FROM message_vectors`).run();
-      handle.prepare(`DELETE FROM message_chunk_vectors`).run();
-      handle.prepare(`DELETE FROM message_chunks`).run();
-      deleted += handle.prepare(`DELETE FROM messages`).run().changes as number;
-    } else {
-      handle.prepare(`DELETE FROM message_vectors WHERE message_id < ?`).run(cutoff.id);
-      handle.prepare(`DELETE FROM message_chunk_vectors WHERE message_id < ?`).run(cutoff.id);
-      handle.prepare(`DELETE FROM message_chunks WHERE message_id < ?`).run(cutoff.id);
-      deleted += handle.prepare(`DELETE FROM messages WHERE id < ?`).run(cutoff.id).changes as number;
-    }
-    handle.exec('VACUUM');
-  }
-  return deleted;
+  return enforceEpisodicLimitCore(open(), recallDbPath());
 }
 
 /** Test hook: close the handle so a fresh path can be opened. */

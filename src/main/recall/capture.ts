@@ -1,4 +1,5 @@
-import { enforceEpisodicLimit, recordMessage } from './store';
+import { recordMessage } from './store';
+import { requestEpisodicMaintenance } from './scan';
 import type { BackendEventEnvelope, ItemEventParams } from '../../shared/types';
 import { agentMessageText } from '../../shared/types';
 
@@ -24,15 +25,16 @@ function isSyntheticText(text: string): boolean {
 }
 
 // Pruning the episodic store VACUUMs the db, so we don't want to do it on every
-// message. Check the size limit only every Nth capture; the actual prune is also
-// gated behind a cheap size comparison and runs only when genuinely over.
+// message. Check the size limit only every Nth capture; the actual prune runs in
+// the scan worker (fire-and-forget) so a multi-second VACUUM never blocks the
+// main event loop, and is gated behind a cheap size comparison there.
 const ENFORCE_EVERY = 20;
 let sinceEnforce = 0;
 function maybeEnforceEpisodicLimit(): void {
   if (++sinceEnforce < ENFORCE_EVERY) return;
   sinceEnforce = 0;
   try {
-    enforceEpisodicLimit();
+    requestEpisodicMaintenance();
   } catch {
     // Pruning must never break capture.
   }

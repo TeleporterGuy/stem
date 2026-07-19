@@ -15,6 +15,7 @@ import {
 } from './store';
 import { searchMemoryHybrid, rankFactsLexically } from './search';
 import { hybridSearchSummaries } from './search-core';
+import { scanSummariesOffThread } from './scan';
 import { getEmbeddingsClient, getRerankClient } from './retrieval';
 import type { EmbeddingsClient } from './embeddings';
 import { dot, magnitude } from './vector';
@@ -293,7 +294,9 @@ export async function buildRecallContext(
     const summaryHits = await hybridSearchSummaries(dbHandle(), userText, {
       limit: MAX_HITS,
       excludeThreadId: options.currentThreadId ?? null,
-      embedQuery: getQueryEmbedding
+      embedQuery: getQueryEmbedding,
+      // Cosine scan off the main event loop when the scan worker is up.
+      semanticScan: scanSummariesOffThread
     });
     summaries = summaryHits.map((h) => ({
       date: formatDate(h.lastTs),

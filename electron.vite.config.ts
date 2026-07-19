@@ -34,10 +34,13 @@ export default defineConfig({
         // recall-mcp-server is a third: a standalone stdio MCP server spawned with
         // ELECTRON_RUN_AS_NODE (see pi/mcp-config.ts); bundling it lets it share
         // src/main/recall/search-core.ts with the main process.
+        // scan-worker is a fourth: the recall cosine-scan + VACUUM utilityProcess
+        // (see scan-worker-host.ts), sharing search-core/maintenance-core.
         input: {
           index: 'src/main/index.ts',
           'embed-worker': 'src/main/recall/embed-worker.ts',
-          'recall-mcp-server': 'src/main/recall/mcp-server-main.ts'
+          'recall-mcp-server': 'src/main/recall/mcp-server-main.ts',
+          'scan-worker': 'src/main/recall/scan-worker.ts'
         },
         // transformers.js must stay external: it lazily loads onnxruntime-node's
         // native .node binary, which cannot live inside a rollup bundle. Resolved

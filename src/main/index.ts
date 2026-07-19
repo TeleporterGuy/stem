@@ -35,7 +35,14 @@ import {
   removeConnectedFolder,
   updateConnectedFolder
 } from './workspace/connected-folders';
-import { embedModelsDir, embedSocketPath, piHome, resolveProfileOverride, workspaceRoot } from './workspace/paths';
+import {
+  embedModelsDir,
+  embedSocketPath,
+  piHome,
+  recallDbPath,
+  resolveProfileOverride,
+  workspaceRoot
+} from './workspace/paths';
 import { TaskScheduler } from './scheduler';
 import { imagePreviewDataUrl } from './pi/attachments';
 import * as piMcp from './pi/mcp';
@@ -103,6 +110,10 @@ import { createEmbeddingsRouter, createLocalEmbeddingsClient } from './recall/em
 import { DEFAULT_LOCAL_RERANK_MODEL, RERANK_CATALOG } from './recall/rerank-catalog';
 import { createLocalRerankClient, createRerankRouter } from './recall/rerank-local';
 import { spawnEmbedWorker } from './recall/embed-worker-host';
+import { createScanWorkerManager } from './recall/scan-manager';
+import type { ScanWorkerManager } from './recall/scan-manager';
+import { spawnScanWorker } from './recall/scan-worker-host';
+import { setScanWorkerManager } from './recall/scan';
 import type { LlmClient } from './recall/llm';
 import { searchChats, searchChatsLexical } from './chatsearch/search';
 import { backfillChatIndex, reindexChatThread, dropChatThread } from './chatsearch/index-sync';
@@ -830,6 +841,9 @@ async function onAuthenticated(): Promise<RuntimeStatus> {
 // Local embedding worker manager (created in the whenReady bootstrap; null until
 // then and under E2E, where downloading model weights would break hermeticity).
 let embedManager: EmbedWorkerManager | null = null;
+// Recall scan worker manager (cosine scans + episodic VACUUM off the main event
+// loop). Created in the whenReady bootstrap; the worker itself spawns lazily.
+let scanManager: ScanWorkerManager | null = null;
 
 function registerIpc(): void {
   ipcMain.on('renderer:ready', (event) => {
@@ -1673,6 +1687,11 @@ app.whenReady().then(async () => {
   // inject falls back to lexical/recency selection — a chat turn never waits on
   // a model download.
   embedManager = createEmbedWorkerManager({ spawn: spawnEmbedWorker, cacheDir: embedModelsDir });
+  // Recall's O(N) cosine scans and episodic VACUUMs run in their own utility
+  // process so they never block the main event loop; everything degrades to the
+  // in-process implementations if the worker is unavailable (see recall/scan.ts).
+  scanManager = createScanWorkerManager({ spawn: spawnScanWorker, dbPath: () => recallDbPath() });
+  setScanWorkerManager(scanManager);
   const getEmbedSettings = async () => (await readSettings()).retrieval.embeddings;
   const getRerankSettings = async () => (await readSettings()).retrieval.reranker;
   const localEmbeddings = createLocalEmbeddingsClient(getEmbedSettings, embedManager);
@@ -2052,6 +2071,7 @@ app.on('before-quit', (event) => {
   quitting = true;
   scheduler?.stop();
   embedManager?.dispose();
+  scanManager?.dispose();
   runtime.shutdown().finally(() => app.exit(0));
 });
 

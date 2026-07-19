@@ -43,6 +43,8 @@ function open(): DatabaseSync {
   if (db) return db;
   if (!DB_PATH) throw new Error('STEM_RECALL_DB is not set');
   db = new DatabaseSync(DB_PATH, { readOnly: true });
+  // A scan-worker VACUUM briefly locks even readers out — wait, don't throw.
+  db.exec('PRAGMA busy_timeout = 5000;');
   return db;
 }
 
