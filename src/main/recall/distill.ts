@@ -34,6 +34,12 @@ import type { LlmClient } from './llm';
 
 const WATERMARK = 'distill_watermark';
 export const CURSOR_KEY = 'distill_cursor_v2';
+// Strike counter for replies that parse to nothing recognizable at the current
+// cursor. The segment is retried (cursor unmoved) until MAX_PARSE_STRIKES, then
+// abandoned — bounded, visible-in-meta loss instead of either silent loss on the
+// first bad reply or a poison segment wedging distillation forever.
+export const PARSE_STRIKES_KEY = 'distill_parse_strikes';
+export const MAX_PARSE_STRIKES = 3;
 const MAX_MESSAGES_PER_RUN = 200;
 export const MAX_TRANSCRIPT_CHARS = 16000;
 export const DISTILL_OVERLAP_CHARS = 256;
@@ -108,23 +114,48 @@ function parseValidUntil(v: unknown): number | null {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
 
+/** parseClaims plus whether the reply was structurally recognizable at all. */
+export interface ParsedDistillOutput {
+  claims: DistilledClaim[];
+  /**
+   * True when the reply contained a parseable {"claims":[...]} object (even an
+   * empty one) or the legacy bullet/JSON-array fallback matched. False means
+   * the model returned garbage — "no new facts" is always representable as
+   * {"claims":[]}, so an unrecognizable reply is a model failure, not an empty
+   * segment, and the caller must not consume the transcript on its strength.
+   */
+  recognized: boolean;
+}
+
 // The default cap suits distilled single statements; the note-extraction path
 // passes a higher one because a coherent list kept as one fact runs longer.
 export function parseClaims(output: string, maxTextLength = 300): DistilledClaim[] {
+  return parseDistillOutput(output, maxTextLength).claims;
+}
+
+export function parseDistillOutput(output: string, maxTextLength = 300): ParsedDistillOutput {
   const trimmed = output.trim();
   const start = trimmed.indexOf('{');
   const end = trimmed.lastIndexOf('}');
   let raw: unknown[] = [];
+  let recognized = false;
   if (start !== -1 && end > start) {
     try {
       const obj = JSON.parse(trimmed.slice(start, end + 1)) as { claims?: unknown };
-      if (Array.isArray(obj.claims)) raw = obj.claims;
+      if (Array.isArray(obj.claims)) {
+        raw = obj.claims;
+        recognized = true;
+      }
     } catch {
       // Legacy/bullet fallback below.
     }
   }
   if (raw.length === 0) {
-    raw = parseFacts(output).map((text) => ({ text }));
+    const fallback = parseFacts(output).map((text) => ({ text }));
+    if (fallback.length > 0) {
+      raw = fallback;
+      recognized = true;
+    }
   }
   const seen = new Set<string>();
   const out: DistilledClaim[] = [];
@@ -147,7 +178,7 @@ export function parseClaims(output: string, maxTextLength = 300): DistilledClaim
       conflictsWithFactIds: cleanIds(r.conflictsWithFactIds)
     });
   }
-  return out;
+  return { claims: out, recognized };
 }
 
 /** One graded assistant reply: which injected facts it visibly used. */
@@ -198,6 +229,13 @@ export function lexicalUsage(factText: string, replyText: string): boolean {
 /** Cap grading work per distill call — a huge backlog converges over passes. */
 const MAX_GRADED_TURNS_PER_RUN = 8;
 
+// The lexical fallback abstains on replies shorter than this: against a "Done."
+// -class acknowledgement it would mark every injected fact unused, piling
+// noise-driven penalties onto whatever facts happen to be injected often. An
+// abstained row stays ungraded (no signal either way) and ages out via the
+// 30-day prune. Model grades are exempt — they can judge short replies.
+export const MIN_LEXICAL_GRADE_REPLY_CHARS = 60;
+
 /**
  * The ungraded injected-fact rows whose assistant reply appears in this batch,
  * paired with that reply. Only fully known pairs are gradable.
@@ -240,6 +278,7 @@ function applyUsageGrades(
   const byMessageId = new Map(grades.map((g) => [g.messageId, g]));
   for (const { row, reply } of turns) {
     const graded = byMessageId.get(reply.id);
+    if (!graded && reply.text.length < MIN_LEXICAL_GRADE_REPLY_CHARS) continue;
     const injected = new Set(row.factIds);
     const used = graded
       ? graded.usedFactIds.filter((id) => injected.has(id))
@@ -295,6 +334,21 @@ export function parseFacts(output: string): string[] {
 export function knownFactsBlock(): string {
   const known = getFacts(100).map((f) => `- [fact:${f.id} source:${f.source}] ${f.text}`).join('\n');
   return known ? `\n\nKnown facts (do not restate these):\n${known}` : '';
+}
+
+/** Parse strikes recorded for exactly this cursor position; anything else → 0. */
+function readParseStrikes(cursor: DistillCursor): number {
+  const raw = getMeta(PARSE_STRIKES_KEY);
+  if (!raw) return 0;
+  try {
+    const p = JSON.parse(raw) as Partial<DistillCursor & { count: number }>;
+    if (p.messageId === cursor.messageId && p.offset === cursor.offset && Number.isInteger(p.count)) {
+      return Math.max(0, p.count!);
+    }
+  } catch {
+    // Stale/corrupt → no strikes.
+  }
+  return 0;
 }
 
 export function readDistillCursor(): DistillCursor {
@@ -379,7 +433,8 @@ async function scoreCandidatesAgainstFacts(
  */
 export async function distillNewMessages(llm: LlmClient): Promise<number> {
   if (!isRecallEnabled()) return 0;
-  const batch = buildDistillBatch(readDistillCursor());
+  const cursor = readDistillCursor();
+  const batch = buildDistillBatch(cursor);
   if (!batch) return 0;
   const factsGeneration = getFactsGeneration();
 
@@ -405,7 +460,21 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
     const reply = await llm.complete(
       `${DISTILL_INSTRUCTIONS}\n\nToday's date: ${today}.${knownBlock}${usageBlock}\n\nTranscript:\n${batch.transcript}`
     );
-    claims = parseClaims(reply);
+    const parsed = parseDistillOutput(reply);
+    if (!parsed.recognized) {
+      // Garbage reply. Retry this exact segment on a later run (grading rides
+      // along: ungraded rows stay ungraded) — but only MAX_PARSE_STRIKES times,
+      // then give the segment up so it can't wedge distillation forever.
+      const strikes = readParseStrikes(cursor) + 1;
+      if (strikes < MAX_PARSE_STRIKES) {
+        setMeta(PARSE_STRIKES_KEY, JSON.stringify({ ...cursor, count: strikes }));
+        return 0;
+      }
+      setMeta(PARSE_STRIKES_KEY, '');
+      return advanceWithoutWriting();
+    }
+    setMeta(PARSE_STRIKES_KEY, '');
+    claims = parsed.claims;
     usageGrades = parseFactUsage(reply);
   } catch {
     // Leave the cursor unmoved so a later run retries this exact segment

@@ -94,6 +94,8 @@ export interface Fact {
   timesInjected: number;
   timesUsed: number;
   lastUsedAt: number | null;
+  /** Last time this fact's injection was graded (used or not) — see usageRate. */
+  lastGradedAt: number | null;
   selectionReason?: FactSelectionReason;
 }
 
@@ -136,11 +138,13 @@ function normalizeFact(text: string): string {
 const FACT_SELECT = `id, text, source, category, sensitivity, confidence, status, pinned,
   created_at AS createdAt, updated_at AS updatedAt, valid_from AS validFrom,
   valid_until AS validUntil, superseded_by AS supersededBy,
-  times_injected AS timesInjected, times_used AS timesUsed, last_used_at AS lastUsedAt`;
+  times_injected AS timesInjected, times_used AS timesUsed, last_used_at AS lastUsedAt,
+  last_graded_at AS lastGradedAt`;
 const FACT_SELECT_F = `f.id, f.text, f.source, f.category, f.sensitivity, f.confidence, f.status, f.pinned,
   f.created_at AS createdAt, f.updated_at AS updatedAt, f.valid_from AS validFrom,
   f.valid_until AS validUntil, f.superseded_by AS supersededBy,
-  f.times_injected AS timesInjected, f.times_used AS timesUsed, f.last_used_at AS lastUsedAt`;
+  f.times_injected AS timesInjected, f.times_used AS timesUsed, f.last_used_at AS lastUsedAt,
+  f.last_graded_at AS lastGradedAt`;
 
 function mapFact(r: Record<string, unknown>): Fact {
   return {
@@ -159,7 +163,8 @@ function mapFact(r: Record<string, unknown>): Fact {
     supersededBy: (r.supersededBy as number | null) ?? null,
     timesInjected: (r.timesInjected as number) || 0,
     timesUsed: (r.timesUsed as number) || 0,
-    lastUsedAt: (r.lastUsedAt as number | null) ?? null
+    lastUsedAt: (r.lastUsedAt as number | null) ?? null,
+    lastGradedAt: (r.lastGradedAt as number | null) ?? null
   };
 }
 
@@ -215,7 +220,8 @@ function open(): DatabaseSync {
       superseded_by INTEGER,
       times_injected INTEGER NOT NULL DEFAULT 0,
       times_used     INTEGER NOT NULL DEFAULT 0,
-      last_used_at   INTEGER
+      last_used_at   INTEGER,
+      last_graded_at INTEGER
     );
 
     -- Lexical (BM25) index over facts: the no-embeddings relevance tier. Mirrors
@@ -432,7 +438,8 @@ function open(): DatabaseSync {
     ['superseded_by', 'INTEGER'],
     ['times_injected', 'INTEGER NOT NULL DEFAULT 0'],
     ['times_used', 'INTEGER NOT NULL DEFAULT 0'],
-    ['last_used_at', 'INTEGER']
+    ['last_used_at', 'INTEGER'],
+    ['last_graded_at', 'INTEGER']
   ];
   for (const [name, ddl] of additions) {
     if (!factColumns.has(name)) handle.exec(`ALTER TABLE facts ADD COLUMN ${name} ${ddl}`);
@@ -775,12 +782,13 @@ export function recordFactUsage(injectedIds: number[], usedIds: number[], ts = n
   const bump = handle.prepare(
     `UPDATE facts SET times_injected = times_injected + 1,
             times_used = times_used + ?,
-            last_used_at = CASE WHEN ? = 1 THEN ? ELSE last_used_at END
+            last_used_at = CASE WHEN ? = 1 THEN ? ELSE last_used_at END,
+            last_graded_at = ?
      WHERE id = ?`
   );
   for (const id of injectedIds) {
     const wasUsed = used.has(id) ? 1 : 0;
-    bump.run(wasUsed, wasUsed, ts, id);
+    bump.run(wasUsed, wasUsed, ts, ts, id);
   }
 }
 

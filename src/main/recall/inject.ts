@@ -105,13 +105,31 @@ function makeQueryEmbedder(userText: string, timings?: RecallTimings): QueryEmbe
   };
 }
 
+/** Days for a fact's usage signal to fade halfway back to neutral. */
+export const USAGE_HALF_LIFE_DAYS = 14;
+
 /**
  * Laplace-smoothed usage rate in (0,1): 0.5 for a never-injected fact (neutral),
  * →0 for one repeatedly injected but never visibly used, →1 for one used every
  * time. Fed by the distill pass's usage grading (see distill.ts).
+ *
+ * The signal decays toward neutral with time since the last grading observation
+ * (half-life above). Without decay the loop is self-reinforcing: a deprioritized
+ * fact stops being injected, its counters freeze, and the penalty — possibly
+ * minted by the noisy lexical fallback — becomes permanent. Decay lets a buried
+ * fact drift back into rotation and earn a fresh grade; a genuinely unused one
+ * is simply re-buried. Legacy rows without a grading stamp anchor on
+ * lastUsedAt/updatedAt so they too age out instead of staying frozen.
  */
-export function usageRate(fact: Pick<Fact, 'timesInjected' | 'timesUsed'>): number {
-  return (fact.timesUsed + 1) / (fact.timesInjected + 2);
+export function usageRate(
+  fact: Pick<Fact, 'timesInjected' | 'timesUsed' | 'lastGradedAt' | 'lastUsedAt' | 'updatedAt'>,
+  nowSeconds = Date.now() / 1000
+): number {
+  const raw = (fact.timesUsed + 1) / (fact.timesInjected + 2);
+  const anchor = fact.lastGradedAt ?? fact.lastUsedAt ?? fact.updatedAt;
+  if (!anchor) return raw;
+  const ageDays = Math.max(0, (nowSeconds - anchor) / 86_400);
+  return 0.5 + (raw - 0.5) * Math.pow(0.5, ageDays / USAGE_HALF_LIFE_DAYS);
 }
 
 /**

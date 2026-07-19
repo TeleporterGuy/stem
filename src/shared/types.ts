@@ -772,6 +772,8 @@ export interface FactDetails {
   /** How many of those turns the reply visibly drew on it. */
   timesUsed: number;
   lastUsedAt: number | null;
+  /** Last time an injection of this fact was graded (used or not). */
+  lastGradedAt: number | null;
   evidence: FactEvidence[];
 }
 

@@ -4,7 +4,15 @@ import * as store from '../../src/main/recall/store';
 import * as search from '../../src/main/recall/search';
 import { backfillSummaries, parseSummary, refreshThreadSummary } from '../../src/main/recall/summarize';
 import { buildRecallContext, previewFacts, usageRate } from '../../src/main/recall/inject';
-import { distillNewMessages, lexicalUsage, parseFactUsage } from '../../src/main/recall/distill';
+import {
+  CURSOR_KEY,
+  distillNewMessages,
+  lexicalUsage,
+  MAX_PARSE_STRIKES,
+  parseDistillOutput,
+  parseFactUsage
+} from '../../src/main/recall/distill';
+import { USAGE_HALF_LIFE_DAYS } from '../../src/main/recall/inject';
 import { buildPrompt as buildConsolidationPrompt } from '../../src/main/recall/consolidate';
 import * as retrieval from '../../src/main/recall/retrieval';
 import {
@@ -375,6 +383,48 @@ describe('usage grading through the distill pass', () => {
     expect(store.getFactDetails(unusedId)!.timesInjected).toBe(1);
   });
 
+  it('abstains from lexical grading on a trivially short reply', async () => {
+    store.resetFacts();
+    store.resetEpisodic();
+    const factId = store.upsertFact('The user drives a Škoda Octavia estate', 'distilled', { confidence: 0.9 })!;
+    store.recordMessage({ threadId: 'g-3', turnId: 'g-turn-3', role: 'user', text: 'Thanks!' });
+    store.recordMessage({ threadId: 'g-3', turnId: 'g-turn-3', role: 'assistant', text: 'You are welcome!' });
+    store.recordTurnInjectedFacts('g-3', 'g-turn-3', [factId]);
+
+    await distillNewMessages({ complete: async () => '{"claims":[]}' });
+    // No counters moved and the row stays ungraded — no signal either way.
+    const f = store.getFactDetails(factId)!;
+    expect([f.timesInjected, f.timesUsed]).toEqual([0, 0]);
+    expect(store.getUngradedTurnFacts(['g-turn-3'])).toHaveLength(1);
+  });
+
+  it('retries the segment on an unrecognizable reply, abandoning it after the strike cap', async () => {
+    store.resetFacts();
+    store.resetEpisodic();
+    store.recordMessage({ threadId: 'p-1', role: 'user', text: 'I moved to Ghent last month and my new landlord is called Peeters.' });
+    const cursorBefore = () => JSON.parse(store.getMeta(CURSOR_KEY) ?? 'null');
+
+    const garbage = { complete: async () => 'I could not process this transcript, sorry.' };
+    await distillNewMessages(garbage);
+    const stuck = cursorBefore();
+    for (let strike = 2; strike < MAX_PARSE_STRIKES; strike++) {
+      await distillNewMessages(garbage);
+      expect(cursorBefore()).toEqual(stuck);
+    }
+    // Final strike gives the segment up so a poison batch can't wedge distillation.
+    await distillNewMessages(garbage);
+    expect(await distillNewMessages(garbage)).toBe(0);
+    expect(cursorBefore()).not.toEqual(stuck);
+
+    // A recognized-empty reply, by contrast, consumes its segment on the spot.
+    store.recordMessage({ threadId: 'p-1', role: 'user', text: 'Also my cat is called Miso.' });
+    const before = cursorBefore();
+    await distillNewMessages({ complete: async () => '{"claims":[]}' });
+    expect(cursorBefore()).not.toEqual(before);
+    expect(parseDistillOutput('{"claims":[]}').recognized).toBe(true);
+    expect(parseDistillOutput('total nonsense').recognized).toBe(false);
+  });
+
   it('parseFactUsage tolerates junk; lexicalUsage matches on content tokens', () => {
     expect(parseFactUsage('no json here')).toEqual([]);
     expect(parseFactUsage('{"claims":[],"factUsage":[{"messageId":"x","usedFactIds":[1]}]}')).toEqual([]);
@@ -383,6 +433,24 @@ describe('usage grading through the distill pass', () => {
     ]);
     expect(lexicalUsage('The user drives a Škoda Octavia', 'the škoda octavia fits a roof box')).toBe(true);
     expect(lexicalUsage('The user grows tomatoes on the balcony', 'the škoda octavia fits a roof box')).toBe(false);
+  });
+});
+
+describe('usage-rate staleness decay', () => {
+  it('fades a buried fact back toward neutral so it can re-enter rotation', () => {
+    const now = Math.floor(Date.now() / 1000);
+    const dead = { timesInjected: 10, timesUsed: 0, lastGradedAt: now, lastUsedAt: null, updatedAt: now };
+    // Fresh grade: full penalty. One half-life: half of it. Months: ~neutral.
+    expect(usageRate(dead, now)).toBeCloseTo(1 / 12, 5);
+    expect(usageRate(dead, now + USAGE_HALF_LIFE_DAYS * 86_400)).toBeCloseTo(0.5 - (0.5 - 1 / 12) / 2, 5);
+    expect(usageRate(dead, now + 180 * 86_400)).toBeCloseTo(0.5, 3);
+    // Decay is symmetric — a positive signal fades the same way.
+    const live = { ...dead, timesUsed: 10, lastUsedAt: now };
+    expect(usageRate(live, now)).toBeCloseTo(11 / 12, 5);
+    expect(usageRate(live, now + 180 * 86_400)).toBeCloseTo(0.5, 3);
+    // Legacy rows without a grading stamp anchor on updatedAt and age out too.
+    const legacy = { timesInjected: 10, timesUsed: 0, lastGradedAt: null, lastUsedAt: null, updatedAt: now - 180 * 86_400 };
+    expect(usageRate(legacy, now)).toBeCloseTo(0.5, 3);
   });
 });
 
@@ -401,11 +469,13 @@ describe('usage blend in fact ranking', () => {
     const liveId = store.upsertFact('The user runs a homelab server rack', 'distilled', { confidence: 0.9 })!;
     // Below-gate fact ([0,1] → cosine 0 against the query) with perfect usage.
     const gatedId = store.upsertFact('The user owns a submarine poster', 'distilled', { confidence: 0.9 })!;
-    // deadId: injected 10×, never used. liveId: used every time. gatedId: perfect usage.
+    // deadId: injected 10×, never used. liveId: used every time. gatedId: perfect
+    // usage. Recent timestamps — staleness decay must not soften these grades.
+    const now = Math.floor(Date.now() / 1000);
     for (let i = 0; i < 10; i++) {
-      store.recordFactUsage([deadId], [], 1000 + i);
-      store.recordFactUsage([liveId], [liveId], 1000 + i);
-      store.recordFactUsage([gatedId], [gatedId], 1000 + i);
+      store.recordFactUsage([deadId], [], now - 10 + i);
+      store.recordFactUsage([liveId], [liveId], now - 10 + i);
+      store.recordFactUsage([gatedId], [gatedId], now - 10 + i);
     }
     expect(usageRate(store.getFactDetails(deadId)!)).toBeLessThan(0.1);
     expect(usageRate(store.getFactDetails(liveId)!)).toBeGreaterThan(0.9);
