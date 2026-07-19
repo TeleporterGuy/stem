@@ -18,4 +18,17 @@ export const shell = {
   openExternal: async () => {}
 };
 
-export default { app, shell };
+// Reversible fake for pi/secrets.ts: real safeStorage wraps via the OS keychain;
+// the stub just tags the plaintext so tests exercise the full encrypted-at-rest
+// code path (key wrap/unwrap, envelope files, field ciphertexts) deterministically.
+export const safeStorage = {
+  isEncryptionAvailable: () => true,
+  encryptString: (plain: string) => Buffer.from(`stub-wrapped:${plain}`, 'utf8'),
+  decryptString: (wrapped: Buffer) => {
+    const text = wrapped.toString('utf8');
+    if (!text.startsWith('stub-wrapped:')) throw new Error('not stub-wrapped ciphertext');
+    return text.slice('stub-wrapped:'.length);
+  }
+};
+
+export default { app, shell, safeStorage };

@@ -8,7 +8,14 @@ import { embedSocketPath, piHome, piMcpConfigPath, recallDbPath } from '../works
 import { RECALL_MCP_NAME, recallMcpServerPath } from '../recall/register-mcp';
 import { getEmbedEndpointToken } from '../recall/embed-endpoint';
 import type { OAuthToken } from './oauth';
-import { ENV_MCP_OAUTH, MCP_OAUTH_FILE, NATIVE_SEARCH_GATE_FILE, SERVICE_TIER_GATE_FILE } from './protocol';
+import {
+  ENV_MCP_OAUTH,
+  MCP_OAUTH_FILE,
+  NATIVE_SEARCH_GATE_FILE,
+  SECRET_ENVELOPE_KEY,
+  SERVICE_TIER_GATE_FILE
+} from './protocol';
+import { decryptSecretValue, encryptSecretValue, secretKeyAvailable } from './secrets';
 
 // Stem's MCP config for the pi backend (mcp.json). Consumed by the bridge
 // extension (stem-mcp-extension.mjs), which pi loads via `-e`. Stem owns this file
@@ -138,13 +145,44 @@ export function piMcpOAuthPath(): string {
 }
 
 export async function readOAuthTokens(): Promise<Record<string, OAuthToken>> {
+  return (await readOAuthTokensWithFormat()).tokens;
+}
+
+/**
+ * Read the token map, reporting whether it was already encrypted at rest so the
+ * boot migration can rewrite legacy plaintext files. An encrypted envelope that
+ * no longer decrypts (lost/rotated key) reads as empty: the affected servers
+ * come up 401 and the user signs in again — never a crash, never ciphertext
+ * sent upstream as a bearer token.
+ */
+async function readOAuthTokensWithFormat(): Promise<{
+  tokens: Record<string, OAuthToken>;
+  encryptedAtRest: boolean;
+}> {
   try {
-    const parsed = JSON.parse(await readFile(piMcpOAuthPath(), 'utf8')) as Record<string, OAuthToken>;
-    if (parsed && typeof parsed === 'object') return parsed;
+    const parsed = JSON.parse(await readFile(piMcpOAuthPath(), 'utf8')) as Record<string, unknown>;
+    if (parsed && typeof parsed === 'object') {
+      const envelope = parsed[SECRET_ENVELOPE_KEY];
+      if (typeof envelope === 'string') {
+        const plain = decryptSecretValue(envelope);
+        if (plain === null) return { tokens: {}, encryptedAtRest: true };
+        const inner = JSON.parse(plain) as Record<string, OAuthToken>;
+        return { tokens: inner && typeof inner === 'object' ? inner : {}, encryptedAtRest: true };
+      }
+      return { tokens: parsed as unknown as Record<string, OAuthToken>, encryptedAtRest: false };
+    }
   } catch {
     // missing/corrupt → none
   }
-  return {};
+  return { tokens: {}, encryptedAtRest: false };
+}
+
+/** Persist the token map, encrypted as a whole-file envelope when the key exists. */
+async function writeOAuthTokensFile(all: Record<string, OAuthToken>): Promise<void> {
+  const data = secretKeyAvailable()
+    ? JSON.stringify({ [SECRET_ENVELOPE_KEY]: encryptSecretValue(JSON.stringify(all)) }, null, 2)
+    : JSON.stringify(all, null, 2);
+  await writeSecretFile(piMcpOAuthPath(), data);
 }
 
 /**
@@ -297,7 +335,7 @@ export async function saveOAuthToken(name: string, token: OAuthToken): Promise<v
   await serializeOAuthMutation(async () => {
     const all = await readOAuthTokens();
     all[name] = token;
-    await writeSecretFile(piMcpOAuthPath(), JSON.stringify(all, null, 2));
+    await writeOAuthTokensFile(all);
   });
 }
 
@@ -306,7 +344,7 @@ export async function deleteOAuthToken(name: string): Promise<void> {
     const all = await readOAuthTokens();
     if (!(name in all)) return;
     delete all[name];
-    await writeSecretFile(piMcpOAuthPath(), JSON.stringify(all, null, 2));
+    await writeOAuthTokensFile(all);
   });
 }
 
@@ -316,7 +354,7 @@ export async function deleteOAuthTokenIfMatches(name: string, expected: OAuthTok
     const all = await readOAuthTokens();
     if (!all[name] || JSON.stringify(all[name]) !== JSON.stringify(expected)) return false;
     delete all[name];
-    await writeSecretFile(piMcpOAuthPath(), JSON.stringify(all, null, 2));
+    await writeOAuthTokensFile(all);
     return true;
   });
 }
@@ -357,8 +395,10 @@ export async function migrateLegacyOAuthTokens(): Promise<void> {
   await withMcpStateMutation(async () => {
     const config = await readMcpConfig();
     await serializeOAuthMutation(async () => {
-      const all = await readOAuthTokens();
-      let changed = false;
+      const { tokens: all, encryptedAtRest } = await readOAuthTokensWithFormat();
+      // A plaintext legacy file gets rewritten encrypted even when no stamp
+      // changes — this is the one-time encrypt-at-rest migration.
+      let changed = !encryptedAtRest && Object.keys(all).length > 0 && secretKeyAvailable();
       for (const [name, token] of Object.entries(all)) {
         if (token.serverIdentity) continue;
         const identity = mcpServerAuthIdentity(config.servers[name]);
@@ -366,7 +406,7 @@ export async function migrateLegacyOAuthTokens(): Promise<void> {
         all[name] = { ...token, serverIdentity: identity };
         changed = true;
       }
-      if (changed) await writeSecretFile(piMcpOAuthPath(), JSON.stringify(all, null, 2));
+      if (changed) await writeOAuthTokensFile(all);
     });
   });
 }
@@ -405,6 +445,48 @@ function recallServerEntry(): PiMcpServer {
 }
 
 /**
+ * Field-level secrets in mcp.json: header values (bearer tokens), stdio env
+ * values (API keys, the embed-endpoint token), and the static OAuth client
+ * secret are encrypted on write and decrypted on read, so the parsed config in
+ * memory is always plaintext — mcpServerAuthIdentity therefore hashes the same
+ * bytes it always has, keeping existing token identity stamps valid. A value
+ * that no longer decrypts is dropped (the server re-auths) rather than sent
+ * upstream as ciphertext.
+ */
+function encryptServerSecrets(server: PiMcpServer): PiMcpServer {
+  const out = { ...server };
+  if (out.headers) {
+    out.headers = Object.fromEntries(Object.entries(out.headers).map(([k, v]) => [k, encryptSecretValue(v)]));
+  }
+  if (out.env) {
+    out.env = Object.fromEntries(Object.entries(out.env).map(([k, v]) => [k, encryptSecretValue(v)]));
+  }
+  if (out.oauthClientSecret) out.oauthClientSecret = encryptSecretValue(out.oauthClientSecret);
+  return out;
+}
+
+function decryptRecord(record: Record<string, string>): Record<string, string> {
+  const entries: Array<[string, string]> = [];
+  for (const [k, v] of Object.entries(record)) {
+    const plain = decryptSecretValue(v);
+    if (plain !== null) entries.push([k, plain]);
+  }
+  return Object.fromEntries(entries);
+}
+
+function decryptServerSecrets(server: PiMcpServer): PiMcpServer {
+  const out = { ...server };
+  if (out.headers) out.headers = decryptRecord(out.headers);
+  if (out.env) out.env = decryptRecord(out.env);
+  if (out.oauthClientSecret) {
+    const plain = decryptSecretValue(out.oauthClientSecret);
+    if (plain === null) delete out.oauthClientSecret;
+    else out.oauthClientSecret = plain;
+  }
+  return out;
+}
+
+/**
  * Read mcp.json, distinguishing a genuinely missing file (legitimate first run →
  * fresh config) from one that exists but is corrupt/unparseable. The corrupt case
  * MUST NOT be silently treated as empty: callers that read-modify-write (notably
@@ -421,7 +503,13 @@ export async function readMcpConfig(): Promise<PiMcpConfig> {
   }
   try {
     const parsed = JSON.parse(raw) as Partial<PiMcpConfig>;
-    if (parsed && typeof parsed === 'object' && parsed.servers) return { servers: parsed.servers };
+    if (parsed && typeof parsed === 'object' && parsed.servers) {
+      return {
+        servers: Object.fromEntries(
+          Object.entries(parsed.servers).map(([name, server]) => [name, decryptServerSecrets(server)])
+        )
+      };
+    }
     throw new Error('mcp.json has no "servers" object');
   } catch (e) {
     await writeFile(`${piMcpConfigPath()}.corrupt`, raw, { encoding: 'utf8', mode: 0o600 }).catch(() => undefined);
@@ -430,8 +518,12 @@ export async function readMcpConfig(): Promise<PiMcpConfig> {
 }
 
 export async function writeMcpConfig(config: PiMcpConfig): Promise<void> {
-  // mcp.json can carry remote-server auth headers (e.g. `Authorization: Bearer …`).
-  await writeSecretFile(piMcpConfigPath(), JSON.stringify(config, null, 2));
+  // mcp.json can carry remote-server auth headers (e.g. `Authorization: Bearer …`)
+  // and stdio env tokens; those fields go to disk encrypted (see above).
+  const servers = Object.fromEntries(
+    Object.entries(config.servers).map(([name, server]) => [name, encryptServerSecrets(server)])
+  );
+  await writeSecretFile(piMcpConfigPath(), JSON.stringify({ servers }, null, 2));
 }
 
 /**

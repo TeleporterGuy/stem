@@ -87,10 +87,12 @@ import {
   type FactTier
 } from '../recall/store';
 import { ForegroundSessionGate } from './session-gate';
+import { secretKeyHex } from './secrets';
 import {
   ADMIN_APPROVAL_TITLE,
   ENV_MCP_CONFIG,
   ENV_MCP_OAUTH,
+  ENV_SECRET_KEY,
   ENV_SKILLS_DIR,
   INSTRUCTIONS_APPROVAL_TITLE,
   parseWebSearchTee,
@@ -2056,6 +2058,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // Tell the bridge extension where Stem's MCP config lives.
     env[ENV_MCP_CONFIG] = piMcpConfigPath();
     env[ENV_MCP_OAUTH] = piMcpOAuthPath();
+    // The bridge decrypts/re-encrypts MCP secrets with the same key main uses
+    // (safeStorage is main-process-only). Unset in plaintext mode.
+    const secretKey = secretKeyHex();
+    if (secretKey) env[ENV_SECRET_KEY] = secretKey;
     // Tell the bridge extension where the assistant's self-authored skills live.
     env[ENV_SKILLS_DIR] = skillsRoot();
     return env;

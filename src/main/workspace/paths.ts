@@ -80,6 +80,14 @@ export function piMcpConfigPath(): string {
 }
 
 /**
+ * The safeStorage-wrapped AES key that encrypts MCP secrets at rest (see
+ * pi/secrets.ts). The env override lets unit tests use a throwaway key file.
+ */
+export function secretKeyPath(): string {
+  return process.env.STEM_SECRET_KEY_FILE ?? join(piHome(), 'secret.key');
+}
+
+/**
  * pi's custom-providers config (models.json) under the isolated pi home. Stem
  * writes local providers (Ollama, LM Studio) here; pi reads it at spawn.
  */

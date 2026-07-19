@@ -11,7 +11,7 @@
 // spawned from the in-repo path (like the recall MCP server).
 
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { open, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -51,6 +51,88 @@ function writeSecretSync(path, data) {
       // renamed or best-effort cleanup
     }
   }
+}
+
+// Secrets-at-rest twins of src/main/pi/secrets.ts (drift-guarded by
+// tests/unit/pi-protocol.test.ts). Main encrypts mcp.json's auth fields and the
+// whole mcp-oauth.json map with an AES-256-GCM key it wraps via safeStorage;
+// since safeStorage only exists in the Electron main process, PiRuntime hands
+// this bridge the raw key through the env at spawn. No key in the env (or an
+// undecryptable value) degrades to plaintext passthrough / dropped credential —
+// never a crash, never ciphertext sent upstream as a bearer token.
+const ENV_SECRET_KEY = 'STEM_SECRET_KEY';
+const SECRET_VALUE_PREFIX = 'stemenc:1:';
+const SECRET_ENVELOPE_KEY = '__stemenc__';
+
+function bridgeSecretKey() {
+  const hex = process.env[ENV_SECRET_KEY];
+  return hex && /^[0-9a-f]{64}$/.test(hex) ? Buffer.from(hex, 'hex') : null;
+}
+
+/** Un-prefixed values are legacy plaintext; undecryptable ciphertext → null. */
+function decryptSecretValue(value) {
+  if (typeof value !== 'string' || !value.startsWith(SECRET_VALUE_PREFIX)) return value;
+  const key = bridgeSecretKey();
+  if (!key) return null;
+  try {
+    const raw = Buffer.from(value.slice(SECRET_VALUE_PREFIX.length), 'base64');
+    const decipher = createDecipheriv('aes-256-gcm', key, raw.subarray(0, 12));
+    decipher.setAuthTag(raw.subarray(12, 28));
+    return Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+function encryptSecretValue(plain) {
+  const key = bridgeSecretKey();
+  if (!key) return plain;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  return SECRET_VALUE_PREFIX + Buffer.concat([iv, cipher.getAuthTag(), ct]).toString('base64');
+}
+
+function decryptRecord(record) {
+  const entries = [];
+  for (const [k, v] of Object.entries(record)) {
+    const plain = decryptSecretValue(v);
+    if (plain !== null) entries.push([k, plain]);
+  }
+  return Object.fromEntries(entries);
+}
+
+/** Decrypt a server's auth fields so identity hashes match main's plaintext hashes. */
+function decryptServerSecrets(server) {
+  if (!server || typeof server !== 'object') return server;
+  const out = { ...server };
+  if (out.headers) out.headers = decryptRecord(out.headers);
+  if (out.env) out.env = decryptRecord(out.env);
+  if (out.oauthClientSecret) {
+    const plain = decryptSecretValue(out.oauthClientSecret);
+    if (plain === null) delete out.oauthClientSecret;
+    else out.oauthClientSecret = plain;
+  }
+  return out;
+}
+
+/** Parse mcp-oauth.json, unwrapping the encrypted envelope when present. */
+function decodeOAuthTokens(raw) {
+  const parsed = JSON.parse(raw) || {};
+  const envelope = parsed[SECRET_ENVELOPE_KEY];
+  if (typeof envelope === 'string') {
+    const plain = decryptSecretValue(envelope);
+    if (plain === null) return {};
+    return JSON.parse(plain) || {};
+  }
+  return parsed;
+}
+
+/** Serialize the token map, encrypted as an envelope when the key is present. */
+function encodeOAuthTokens(all) {
+  return bridgeSecretKey()
+    ? JSON.stringify({ [SECRET_ENVELOPE_KEY]: encryptSecretValue(JSON.stringify(all)) }, null, 2)
+    : JSON.stringify(all, null, 2);
 }
 
 const FILE_LOCK_STALE_MS = 30_000;
@@ -163,17 +245,18 @@ export async function persistBridgeOAuthToken(
     } catch {
       return false;
     }
-    if (serverAuthIdentity(config.servers && config.servers[name]) !== expectedIdentity) return false;
+    const current = decryptServerSecrets(config.servers && config.servers[name]);
+    if (serverAuthIdentity(current) !== expectedIdentity) return false;
     return withOwnedFileLock(`${oauthPath}.lock`, 'Timed out waiting to update MCP OAuth credentials.', async () => {
       let all = {};
       try {
-        all = JSON.parse(readFileSync(oauthPath, 'utf8')) || {};
+        all = decodeOAuthTokens(readFileSync(oauthPath, 'utf8'));
       } catch {
         return false;
       }
       if (!all[name] || JSON.stringify(all[name]) !== JSON.stringify(expectedAuth)) return false;
       all[name] = { ...auth, serverIdentity: expectedIdentity };
-      writeSecretSync(oauthPath, JSON.stringify(all, null, 2));
+      writeSecretSync(oauthPath, encodeOAuthTokens(all));
       return true;
     });
   });
@@ -1091,14 +1174,16 @@ export default async function stemMcpBridge(pi) {
   } catch {
     return;
   }
-  const servers = (config && config.servers) || {};
+  const servers = Object.fromEntries(
+    Object.entries((config && config.servers) || {}).map(([name, spec]) => [name, decryptServerSecrets(spec)])
+  );
 
   // OAuth tokens (from Stem's browser sign-in) live next to mcp.json; the bridge
   // injects them as bearer headers and rewrites the file when it refreshes one.
   const oauthPath = process.env.STEM_PI_MCP_OAUTH || join(dirname(cfgPath), 'mcp-oauth.json');
   let oauthTokens = {};
   try {
-    oauthTokens = JSON.parse(readFileSync(oauthPath, 'utf8')) || {};
+    oauthTokens = decodeOAuthTokens(readFileSync(oauthPath, 'utf8'));
   } catch {
     // none yet
   }

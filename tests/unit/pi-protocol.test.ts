@@ -3,11 +3,14 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   ADMIN_APPROVAL_TITLE,
+  ENV_SECRET_KEY,
   INSTRUCTIONS_APPROVAL_TITLE,
   MCP_OAUTH_FILE,
   NATIVE_SEARCH_GATE_FILE,
   PROTECTED_ROOTS_FILE,
   parseWebSearchTee,
+  SECRET_ENVELOPE_KEY,
+  SECRET_VALUE_PREFIX,
   SERVICE_TIER_GATE_FILE,
   SKILLS_REV_FILE,
   TASK_BRIDGE_TITLE,
@@ -71,6 +74,18 @@ describe('gate files referenced by the bridge extension', () => {
 
   it(`falls back to ${MCP_OAUTH_FILE} next to the config`, () => {
     expect(extensionSource).toContain(`'${MCP_OAUTH_FILE}'`);
+  });
+});
+
+describe('secrets-at-rest constants match the bridge extension', () => {
+  it('env var carrying the key', () => {
+    expect(extensionConst('ENV_SECRET_KEY')).toBe(ENV_SECRET_KEY);
+  });
+  it('encrypted-value prefix', () => {
+    expect(extensionConst('SECRET_VALUE_PREFIX')).toBe(SECRET_VALUE_PREFIX);
+  });
+  it('envelope key', () => {
+    expect(extensionConst('SECRET_ENVELOPE_KEY')).toBe(SECRET_ENVELOPE_KEY);
   });
 });
 

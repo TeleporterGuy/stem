@@ -14,9 +14,13 @@ import {
   saveOAuthTokenIfServerMatches,
   writeMcpConfig
 } from '../../src/main/pi/mcp-config';
+import { secretKeyHex } from '../../src/main/pi/secrets';
 import { piMcpConfigPath } from '../../src/main/workspace/paths';
 
 beforeEach(() => {
+  // In production PiRuntime hands the bridge the secrets key via the env at
+  // spawn; the bridge functions under test read it the same way.
+  process.env.STEM_SECRET_KEY = secretKeyHex()!;
   rmSync(piMcpConfigPath(), { force: true });
   rmSync(piMcpOAuthPath(), { force: true });
   rmSync(`${piMcpOAuthPath()}.lock`, { force: true });

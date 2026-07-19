@@ -94,6 +94,15 @@ export const SKILLS_REV_FILE = '.skills-rev';
 export const ENV_MCP_CONFIG = 'STEM_MCP_CONFIG';
 export const ENV_MCP_OAUTH = 'STEM_PI_MCP_OAUTH';
 export const ENV_SKILLS_DIR = 'STEM_SKILLS_DIR';
+/** Hex AES-256 key for secrets at rest, handed to the pi process at spawn. */
+export const ENV_SECRET_KEY = 'STEM_SECRET_KEY';
+
+// ---- secrets at rest (mcp.json fields, mcp-oauth.json) ----
+
+/** Prefix marking one AES-256-GCM-encrypted string: `stemenc:1:<b64(iv|tag|ct)>`. */
+export const SECRET_VALUE_PREFIX = 'stemenc:1:';
+/** Sole key of an encrypted-envelope JSON document (mcp-oauth.json at rest). */
+export const SECRET_ENVELOPE_KEY = '__stemenc__';
 
 // ---- raw-event probing ----
 
