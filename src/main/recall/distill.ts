@@ -1,5 +1,5 @@
 
-import { lexTokens } from './search-core';
+import { buildMatchQuery, lexTokens } from './search-core';
 import { getEmbeddingsClient } from './retrieval';
 import { cosineSim } from './vector';
 import { isRecallEnabled } from '../workspace/memory';
@@ -7,7 +7,7 @@ import { contradicts } from './reconcile';
 import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
 import { recallStore, type StoredMessage, type TurnInjectedFacts } from './store';
-const { getDupCosine, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUngradedTurnFacts, markTurnFactsGraded, recordFactUsage, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
+const { factTermSearch, getDupCosine, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUngradedTurnFacts, markTurnFactsGraded, recordFactUsage, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
 
 // Level 1: the reflection pass. Periodically reads conversation that's new since
 // its last run and distills durable, stable facts about the user into the facts
@@ -69,8 +69,13 @@ Rules:
   and each factUsage entry is {"messageId":1,"usedFactIds":[2]}. Omit factUsage (or use []) when no injected-facts section is present.
 If there is nothing new and durable, output {"claims":[]}.`;
 
+// Fact text is normally English (the prompt demands it), but quoted identifiers
+// and note text pass through verbatim — so the deny-list also carries Slovak/
+// Czech/German terms. JS \b is ASCII-only, so the accented terms need
+// Unicode-aware boundaries: letter-lookarounds plus the /u flag. Stem patterns
+// (trailing \p{L}*) absorb declensions (heslo/hesla/heslom, rodného čísla...).
 const SECRET_RE =
-  /\b(?:password|passcode|pin|api[_ -]?key|auth token|access token|bearer token|secret key|private key|seed phrase|recovery phrase|credit card|card number|cvv|ssn|social security|national id|government id|birth number)\b/i;
+  /(?<!\p{L})(?:password|passcode|pin|api[_ -]?key|auth token|access token|bearer token|secret key|private key|seed phrase|recovery phrase|credit card|card number|cvv|ssn|social security|national id|government id|birth number|hesl\p{L}+|prístupov\p{L}+ (?:kód|fráz\p{L}+)|rodn\p{L}+ čísl\p{L}+|občiansk\p{L}+ preukaz\p{L}*|platobn\p{L}+ kart\p{L}+|kreditn\p{L}+ kart\p{L}+|číslo karty|passwort\p{L}*|kennwort\p{L}*|kreditkarte\p{L}*|kartennummer\p{L}*|personalausweis\p{L}*|sozialversicherung\p{L}*)(?!\p{L})/iu;
 
 export interface DistilledClaim {
   text: string;
@@ -306,15 +311,41 @@ export function parseFacts(output: string): string[] {
   return facts;
 }
 
+export const KNOWN_FACTS_CAP = 100;
+// How many of the cap's slots relevance may claim before recency fills the rest,
+// and how many transcript terms feed the lexical probe (facts are few and the
+// FTS index small, so a wide OR query stays cheap).
+const KNOWN_FACTS_RELEVANT = 60;
+const KNOWN_FACTS_QUERY_TERMS = 200;
+
 /**
  * The "you already know this" hint prepended to an extraction prompt. Bounded at
- * 100 facts (recency) on purpose: a dedup hint, not authority, and it caps prompt
- * size. Shared with the rebuild pass — an extractor that isn't told to skip known
- * facts restates them under new wording, minting duplicate rows and bogus
- * "this supersedes that" links between two facts that say the same thing.
+ * KNOWN_FACTS_CAP on purpose: a dedup hint, not authority, and it caps prompt
+ * size. Recency alone stops scaling past the cap — an old fact the current
+ * transcript touches falls out of the window and gets restated — so when the
+ * transcript is provided, facts sharing terms with it are pulled in first
+ * (those are exactly the ones a restatement would duplicate) and recency fills
+ * the remainder. Shared with the rebuild pass — an extractor that isn't told to
+ * skip known facts restates them under new wording, minting duplicate rows and
+ * bogus "this supersedes that" links between two facts that say the same thing.
  */
-export function knownFactsBlock(): string {
-  const known = getFacts(100).map((f) => `- [fact:${f.id} source:${f.source}] ${f.text}`).join('\n');
+export function knownFactsBlock(context?: string): string {
+  const picked: Array<{ id: number; source: string; text: string }> = [];
+  const seen = new Set<number>();
+  const add = (facts: Array<{ id: number; source: string; text: string }>) => {
+    for (const f of facts) {
+      if (picked.length >= KNOWN_FACTS_CAP) break;
+      if (seen.has(f.id)) continue;
+      seen.add(f.id);
+      picked.push(f);
+    }
+  };
+  if (context) {
+    const match = buildMatchQuery(lexTokens(context, 3).slice(0, KNOWN_FACTS_QUERY_TERMS).join(' '));
+    if (match) add(factTermSearch(match, KNOWN_FACTS_RELEVANT));
+  }
+  add(getFacts(KNOWN_FACTS_CAP));
+  const known = picked.map((f) => `- [fact:${f.id} source:${f.source}] ${f.text}`).join('\n');
   return known ? `\n\nKnown facts (do not restate these):\n${known}` : '';
 }
 
@@ -427,8 +458,10 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   };
 
   // Show the model what it already knows so it returns only new/corrected facts
-  // (curbs reworded duplicates the norm-based dedup can't catch).
-  const knownBlock = knownFactsBlock();
+  // (curbs reworded duplicates the norm-based dedup can't catch). Raw message
+  // texts feed the relevance probe — the transcript's [message:...] prefixes
+  // would pollute it with metadata tokens.
+  const knownBlock = knownFactsBlock(batch.messages.map((m) => m.text).join('\n'));
 
   // Usage grading rides on the same call: the batch's assistant replies whose
   // injected-fact sets are still ungraded get listed for the model to judge.
@@ -470,11 +503,15 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
 
   const byId = new Map(batch.messages.map((m) => [m.id, m]));
   // Legacy string-array output has no citations. For compatibility, bind those
-  // claims to direct user messages in the processed segment; assistant-only
-  // segments remain low-confidence.
+  // claims to the segment's user messages — but as provenance only, never
+  // authority: a claim whose citations were absent or didn't resolve may be
+  // hallucinated, so it must not inherit the confident direct-user treatment
+  // (0.9 confidence + silent supersede) from backfilled evidence.
+  const uncited = new Set<DistilledClaim>();
   for (const claim of claims) {
     claim.evidenceMessageIds = claim.evidenceMessageIds.filter((id) => byId.has(id));
     if (claim.evidenceMessageIds.length === 0) {
+      uncited.add(claim);
       claim.evidenceMessageIds = batch.messages.filter((m) => m.role === 'user').map((m) => m.id);
       if (claim.evidenceMessageIds.length === 0) claim.evidenceMessageIds = batch.messages.map((m) => m.id);
     }
@@ -494,7 +531,7 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
     if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
     i += 1;
     const evidenceMessages = claim.evidenceMessageIds.map((id) => byId.get(id)).filter((m): m is StoredMessage => !!m);
-    const directUser = evidenceMessages.some((m) => m.role === 'user');
+    const directUser = !uncited.has(claim) && evidenceMessages.some((m) => m.role === 'user');
     const id = upsertFact(claim.text, {
       source: 'distilled',
       category: claim.category,

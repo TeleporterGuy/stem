@@ -1073,9 +1073,18 @@ export class RecallStore {
               last_graded_at = ?
        WHERE id = ?`
     );
-    for (const id of injectedIds) {
-      const wasUsed = used.has(id) ? 1 : 0;
-      bump.run(wasUsed, wasUsed, ts, ts, id);
+    // One turn's grades land atomically — a crash mid-loop must not leave half
+    // the turn's injection counts applied.
+    handle.exec('BEGIN');
+    try {
+      for (const id of injectedIds) {
+        const wasUsed = used.has(id) ? 1 : 0;
+        bump.run(wasUsed, wasUsed, ts, ts, id);
+      }
+      handle.exec('COMMIT');
+    } catch (err) {
+      handle.exec('ROLLBACK');
+      throw err;
     }
   };
 
@@ -1264,7 +1273,7 @@ export class RecallStore {
 
 
   getFacts = (limit = 100): Fact[] => {
-    this.expireFacts();
+    this.sweepExpiredFacts();
     const handle = this.open();
     const rows = handle
       .prepare(`SELECT ${FACT_SELECT} FROM facts WHERE status = 'active' ORDER BY updated_at DESC LIMIT ?`)
@@ -1278,7 +1287,7 @@ export class RecallStore {
    * whole set to merge/correct/drop. `getFacts` keeps its 100-row cap for inject/UI.
    */
   getAllFacts = (): Fact[] => {
-    this.expireFacts();
+    this.sweepExpiredFacts();
     const handle = this.open();
     const rows = handle
       .prepare(`SELECT ${FACT_SELECT} FROM facts ORDER BY id ASC`)
@@ -1288,7 +1297,7 @@ export class RecallStore {
 
 
   getInjectableFacts = (): Fact[] => {
-    this.expireFacts();
+    this.sweepExpiredFacts();
     const rows = this.open()
       .prepare(
         // A pin is an explicit user override — it outranks the confidence floor that
@@ -1300,6 +1309,24 @@ export class RecallStore {
       )
       .all(this.nowSeconds()) as Array<Record<string, unknown>>;
     return rows.map(this.mapFact);
+  };
+
+
+  /** Wall clock of the last getter-triggered expiry sweep. */
+  private lastExpirySweep = 0;
+
+  /**
+   * Getter-side expiry, throttled to once a minute: valid_until has end-of-day
+   * granularity, so fact reads shouldn't each issue an UPDATE just to retire
+   * day-old expiries a few seconds sooner. getInjectableFacts additionally
+   * filters valid_until in SQL, so an expired fact never injects regardless of
+   * the sweep. Direct expireFacts() calls are never throttled.
+   */
+  private sweepExpiredFacts = (): void => {
+    const now = this.nowSeconds();
+    if (now - this.lastExpirySweep < 60) return;
+    this.lastExpirySweep = now;
+    this.expireFacts(now);
   };
 
 

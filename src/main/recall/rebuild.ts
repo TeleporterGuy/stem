@@ -79,7 +79,7 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
   try {
     const reply = await llm.complete(
       `${DISTILL_INSTRUCTIONS}\n\nToday's date: ${new Date().toISOString().slice(0, 10)}.` +
-      `${knownFactsBlock()}\n\nTranscript:\n${batch.transcript}`
+      `${knownFactsBlock(batch.messages.map((m) => m.text).join('\n'))}\n\nTranscript:\n${batch.transcript}`
     );
     if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
     const claims = parseClaims(reply);
@@ -87,9 +87,12 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
     for (const claim of claims) {
       if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
       const validIds = claim.evidenceMessageIds.filter((id) => messages.has(id));
+      // Backfilled evidence is provenance, not authority (see distill.ts): only a
+      // claim whose own citations resolved gets 0.9 confidence and supersede power.
+      const cited = validIds.length > 0;
       const fallback = batch.messages.filter((m) => m.role === 'user').map((m) => m.id);
-      const evidenceMessages = evidenceFor(validIds.length ? validIds : fallback, messages);
-      const directUser = evidenceMessages.some((m) => m.role === 'user');
+      const evidenceMessages = evidenceFor(cited ? validIds : fallback, messages);
+      const directUser = cited && evidenceMessages.some((m) => m.role === 'user');
       const factId = upsertFact(claim.text, {
         source: 'distilled',
         category: claim.category,
@@ -102,7 +105,7 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
           role: m.role,
           timestamp: m.ts,
           excerpt: m.text,
-          origin: m.role === 'user' ? 'user_message' : 'assistant_claim'
+          origin: directUser && m.role === 'user' ? 'user_message' : 'assistant_claim'
         }))
       });
       if (factId == null) continue;

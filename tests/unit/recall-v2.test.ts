@@ -104,6 +104,20 @@ describe('Recall v2 distillation cursor', () => {
     expect(claims).toHaveLength(1);
     expect(claims[0].sensitivity).toBe('sensitive');
   });
+
+  it('rejects secret-bearing claims in Slovak and German, including declined forms', () => {
+    const claims = distill.parseClaims(JSON.stringify({ claims: [
+      { text: 'Heslo používateľa do Gmailu je „hokej123“' },
+      { text: 'Používateľ si zmenil heslá na routeri' },
+      { text: 'Rodné číslo používateľa je 900101/1234' },
+      { text: 'Používateľ nahlásil stratu platobnej karty' },
+      { text: 'Das Passwort des Nutzers ist geheim' },
+      { text: 'Die Kartennummer endet auf 4242' },
+      { text: 'The user plays hockey with Pavol on Tuesdays' } // control — survives
+    ] }));
+    expect(claims).toHaveLength(1);
+    expect(claims[0].text).toContain('hockey');
+  });
 });
 
 describe('Recall v2 authority and lifecycle', () => {
@@ -133,6 +147,37 @@ describe('Recall v2 authority and lifecycle', () => {
     expect(store.getMemoryConflicts()).toHaveLength(1);
     store.resolveMemoryConflict(store.getMemoryConflicts()[0].id, 'keep_newer');
     expect(store.getFactDetails(explicitId)?.status).toBe('superseded');
+  });
+
+  it('denies a claim with hallucinated citations the direct-user fast path', async () => {
+    // The citation points at a message id outside the transcript, so it is
+    // treated as uncited: the user-message backfill is provenance only — the
+    // claim must land low-confidence and must NOT silently supersede; the
+    // checked contradiction surfaces as a conflict for the user instead.
+    const target = store.upsertFact('The user drives a diesel Passat', 'distilled')!;
+    store.recordMessage({ threadId: 'halluc', role: 'user', text: 'I switched to an electric Enyaq.' });
+    const [message] = store.getMessagesForDistillFrom(1);
+    await distill.distillNewMessages(extractorLlm(structuredClaim({
+      text: 'The user drives an electric Enyaq',
+      messageId: message.id + 999,
+      supersedes: [target]
+    }), false));
+    const claim = store.getAllFacts().find((f) => /Enyaq/.test(f.text))!;
+    expect(claim.confidence).toBe(0.55);
+    expect(store.getFactDetails(target)?.status).toBe('conflicted');
+    expect(store.getFactDetails(target)?.supersededBy).toBeNull();
+    // Control: the same claim WITH a resolving citation gets the fast path.
+    store.resetFacts();
+    const target2 = store.upsertFact('The user drives a diesel Passat', 'distilled')!;
+    store.recordMessage({ threadId: 'halluc', role: 'user', text: 'To be clear: I drive an electric Enyaq now.' });
+    const [message2] = store.getMessagesForDistillFrom(message.id + 1);
+    await distill.distillNewMessages(extractorLlm(structuredClaim({
+      text: 'The user drives an electric Enyaq',
+      messageId: message2.id,
+      supersedes: [target2]
+    }), false));
+    expect(store.getAllFacts().find((f) => /Enyaq/.test(f.text))!.confidence).toBe(0.9);
+    expect(store.getFactDetails(target2)?.status).toBe('superseded');
   });
 
   it('does not raise a conflict when a "supersedes" claim merely adds a compatible detail', async () => {

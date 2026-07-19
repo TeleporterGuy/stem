@@ -222,6 +222,56 @@ describe('v3 injection payload', () => {
     expect(payload.pastUserMessages.some((m: { text: string }) => m.text.includes('Kovac'))).toBe(true);
   });
 
+  it('admits a strong raw hit from an uncovered thread alongside summaries', async () => {
+    seedSummaryCorpus();
+    // Near-verbatim episodic evidence in a thread none of the summaries cover —
+    // the serial number is exactly what a summary compresses away.
+    store.recordMessage({ threadId: 'raw-strong', role: 'user', text: 'The heat pump serial number is HP-77812, sticker on the side panel.' });
+    const msg = store.getMessagesForEmbedding(0, 100).find((m) => /HP-77812/.test(m.text))!;
+    store.upsertMessageVector(msg.id, MODEL, Float32Array.from([1, 0]));
+    const embeddings = {
+      available: async () => true,
+      modelId: async () => MODEL,
+      embed: async (texts: string[]) => texts.map(() => Float32Array.from([1, 0]))
+    };
+    retrieval.setRetrievalClients({ embeddings, rerank: null });
+    try {
+      const block = (await buildRecallContext('what did we decide about the heat pump installation quote'))!;
+      const payload = JSON.parse(block.split('\n')[1]);
+      // The summary still lands AND the strong raw hit rides along (cosine 1 ≥ gate).
+      expect(payload.pastConversations.some((c: { summary: string }) => c.summary.includes('heat pump'))).toBe(true);
+      expect(payload.pastUserMessages.some((m: { text: string }) => m.text.includes('HP-77812'))).toBe(true);
+    } finally {
+      retrieval.setRetrievalClients({ embeddings: null, rerank: null });
+    }
+  });
+
+  it('still masks weak and summary-covered raw hits when summaries land', async () => {
+    seedSummaryCorpus();
+    // Covered: same thread as the matching summary, even with a perfect vector.
+    store.recordMessage({ threadId: 'inj-b', role: 'user', text: 'The heat pump vendor quote was 9000 euros.' });
+    // Weak: uncovered thread, orthogonal vector, no strong lexical evidence.
+    store.recordMessage({ threadId: 'raw-weak', role: 'user', text: 'Thinking about heat pump brands in general.' });
+    const msgs = store.getMessagesForEmbedding(0, 100);
+    for (const m of msgs) {
+      store.upsertMessageVector(m.id, MODEL, Float32Array.from(m.threadId === 'inj-b' ? [1, 0] : [0, 1]));
+    }
+    const embeddings = {
+      available: async () => true,
+      modelId: async () => MODEL,
+      embed: async (texts: string[]) => texts.map(() => Float32Array.from([1, 0]))
+    };
+    retrieval.setRetrievalClients({ embeddings, rerank: null });
+    try {
+      const block = (await buildRecallContext('what did we decide about the heat pump installation quote'))!;
+      const payload = JSON.parse(block.split('\n')[1]);
+      expect(payload.pastConversations.length).toBeGreaterThan(0);
+      expect(payload.pastUserMessages).toBeUndefined();
+    } finally {
+      retrieval.setRetrievalClients({ embeddings: null, rerank: null });
+    }
+  });
+
   it('escapes angle brackets inside summary text (injection surface discipline)', async () => {
     store.resetEpisodic();
     store.resetFacts();

@@ -49,6 +49,27 @@ describe('upsertFact return id', () => {
   });
 });
 
+describe('knownFactsBlock dedup hint', () => {
+  it('surfaces an old transcript-related fact that recency alone would drop past the cap', () => {
+    store.resetFacts();
+    const oldId = store.upsertFact('The user keeps a telescope named Kepler on the balcony', 'distilled')!;
+    // Age the fact, then bury it under a full cap of newer facts.
+    store.dbHandle().prepare('UPDATE facts SET updated_at = updated_at - 86400 WHERE id = ?').run(oldId);
+    for (let i = 0; i < distill.KNOWN_FACTS_CAP; i++) {
+      store.upsertFact(`The user filler fact number ${i} about topic ${i}`, 'distilled');
+    }
+    // Recency-only view: the old fact fell out of the window.
+    expect(distill.knownFactsBlock()).not.toContain('Kepler');
+    // With the transcript as context, the lexical probe pulls it back in — this
+    // is exactly the fact a re-extraction would otherwise restate as a dupe.
+    const block = distill.knownFactsBlock('we talked about the telescope kepler and stargazing on the balcony');
+    expect(block).toContain('Kepler');
+    expect(block).toContain('do not restate');
+    // The cap still holds.
+    expect((block.match(/- \[fact:/g) ?? []).length).toBeLessThanOrEqual(distill.KNOWN_FACTS_CAP);
+  });
+});
+
 describe('distill write-time dedup', () => {
   it('low-sim candidates: count-only pending bump, vectors cached, embedded as passages', async () => {
     store.resetFacts();

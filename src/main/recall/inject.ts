@@ -31,6 +31,13 @@ const MAX_SNIPPET_CHARS = 400;
 const MAX_SUMMARY_SNIPPET_CHARS = 600;
 export const STANDARD_FACT_MIN_COSINE = 0.72;
 export const SENSITIVE_FACT_MIN_COSINE = 0.82;
+// When summaries land, raw hits are mostly redundant — but a summary compresses
+// verbatim specifics away, so a very strong raw hit from a thread no injected
+// summary covers still earns a seat. "Strong" sits well above the per-leg noise
+// floors (min-cosine 0.82 / bm25 ceiling -0.1): near-verbatim only.
+export const STRONG_RAW_MIN_COSINE = 0.88;
+export const STRONG_RAW_MAX_BM25 = -2;
+const MAX_EXTRA_RAW_HITS = 2;
 
 function formatDate(tsSeconds: number): string {
   // YYYY-MM-DD is enough for "when did I mention this" context.
@@ -293,34 +300,41 @@ export async function buildRecallContext(
   // Episodic recall, summaries first: rolling thread summaries carry what a
   // conversation covered and decided, which raw message snippets lose. Threads
   // without a summary yet (fresh install, backfill still running) degrade to
-  // the v2 top-3 raw user messages path — no regression mid-migration.
+  // the v2 top-3 raw user messages path — no regression mid-migration. Both
+  // legs always run, concurrently (they share the memoized query embed): when
+  // summaries land they are never allowed to fully mask the raw leg — a couple
+  // of strong hits from uncovered threads ride along (gates above).
   const searchStart = Date.now();
-  let summaries: Array<{ date: string; summary: string }> = [];
-  try {
-    const summaryHits = await hybridSearchSummaries(dbHandle(), userText, {
+  const [summaryResult, messageResult] = await Promise.allSettled([
+    hybridSearchSummaries(dbHandle(), userText, {
       limit: MAX_HITS,
       excludeThreadId: options.currentThreadId ?? null,
       embedQuery: getQueryEmbedding,
       // Cosine scan off the main event loop when the scan worker is up.
       semanticScan: scanSummariesOffThread
-    });
-    summaries = summaryHits.map((h) => ({
-      date: formatDate(h.lastTs),
-      summary: clip(h.text, MAX_SUMMARY_SNIPPET_CHARS)
-    }));
-  } catch {
-    // Summary search must never break a turn — fall through to raw messages.
-  }
-  let userHits: Awaited<ReturnType<typeof searchMemoryHybrid>> = [];
-  if (summaries.length === 0) {
-    const hits = await searchMemoryHybrid(userText, {
+    }),
+    searchMemoryHybrid(userText, {
       limit: MAX_HITS * 4,
       excludeThreadId: options.currentThreadId ?? null,
       getQueryEmbedding,
       timingSink: timings
-    });
-    userHits = hits.filter((h) => h.role === 'user').slice(0, MAX_HITS);
-  }
+    })
+  ]);
+  // Episodic search must never break a turn — a failed leg degrades to no hits.
+  const summaryHits = summaryResult.status === 'fulfilled' ? summaryResult.value : [];
+  const rawUserHits = (messageResult.status === 'fulfilled' ? messageResult.value : [])
+    .filter((h) => h.role === 'user');
+  const summaries = summaryHits.map((h) => ({
+    date: formatDate(h.lastTs),
+    summary: clip(h.text, MAX_SUMMARY_SNIPPET_CHARS)
+  }));
+  const summaryThreads = new Set(summaryHits.map((h) => h.threadId));
+  const userHits = summaries.length === 0
+    ? rawUserHits.slice(0, MAX_HITS)
+    : rawUserHits
+        .filter((h) => !summaryThreads.has(h.threadId))
+        .filter((h) => (h.cosine ?? 0) >= STRONG_RAW_MIN_COSINE || (h.ftsScore ?? 0) <= STRONG_RAW_MAX_BM25)
+        .slice(0, MAX_EXTRA_RAW_HITS);
   if (timings) {
     timings.search = Date.now() - searchStart;
     timings.total = Date.now() - totalStart;
