@@ -18,6 +18,13 @@ import type {
  * inside the pi process; PiRuntime intercepts them and routes here, supplying the
  * authoritative current threadId. A backend with no scheduler can leave it unset.
  */
+/**
+ * Opaque token identifying a held approval round-trip (emitted with the
+ * approval-request event, passed back on resolve). Backends choose the
+ * representation — an id is only ever compared, never interpreted.
+ */
+export type ApprovalId = number | string;
+
 export interface TaskBridge {
   /** Create a task bound to `threadId` from the assistant's schedule_task tool. */
   schedule(
@@ -93,17 +100,16 @@ export interface ChatBackend extends EventEmitter {
    * allowed to continue.
    */
   resolveAdminApproval(
-    id: number | string,
+    id: ApprovalId,
     accept: boolean,
     beforeAccept?: (proposal: McpAdminProposal) => Promise<void>
   ): Promise<boolean>;
   /** Release a held custom-instructions approval (main has already written settings). */
   resolveInstructionsApproval(
-    id: number | string,
+    id: ApprovalId,
     accept: boolean,
     beforeAccept?: () => Promise<void>
   ): Promise<boolean>;
-  configMcpServerReload(): Promise<void>;
 
   // Skills: apply out-of-band skill changes (the background curator) by reloading
   // the backend, deferring to turn end if a turn is in flight.

@@ -47,7 +47,7 @@ import { buildConnectedFoldersContext } from '../connected-folders/inject';
 import { getPrivateRoots } from '../workspace/connected-folders';
 import { resolveAttachments, type PiImageContent } from './attachments';
 import { captureUserMessage } from '../recall/capture';
-import type { ChatBackend, TaskBridge } from '../backend/types';
+import type { ApprovalId, ChatBackend, TaskBridge } from '../backend/types';
 import {
   buildMcpCatalogContext,
   ensureMcpConfig,
@@ -1068,7 +1068,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   async resolveAdminApproval(
-    id: number | string,
+    id: ApprovalId,
     accept: boolean,
     beforeAccept?: (proposal: McpAdminProposal) => Promise<void>
   ): Promise<boolean> {
@@ -1107,7 +1107,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * there's nothing to reload — the next turn reads the instructions fresh.
    */
   async resolveInstructionsApproval(
-    id: number | string,
+    id: ApprovalId,
     accept: boolean,
     beforeAccept?: () => Promise<void>
   ): Promise<boolean> {
@@ -1149,7 +1149,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     for (const id of [...this.instructionsApprovals]) this.settleInstructionsApproval(id);
   }
 
-  async configMcpServerReload(): Promise<void> {
+  private async configMcpServerReload(): Promise<void> {
     // A reload is a full pi restart. Pay the cold-start cost HERE (spawn + MCP
     // connect + re-activating the previous thread/model) instead of lazily on the
     // next user turn — a user turn queued behind this gate then starts warm.

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { ChatBackend, TaskBridge } from './types';
+import type { ApprovalId, ChatBackend, TaskBridge } from './types';
 import type {
   ChatMessage,
   ChatSummary,
@@ -238,7 +238,7 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
   }
 
   async resolveAdminApproval(
-    _id: number | string,
+    _id: ApprovalId,
     _accept: boolean,
     _beforeAccept?: (proposal: McpAdminProposal) => Promise<void>
   ): Promise<boolean> {
@@ -248,8 +248,6 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
   async resolveInstructionsApproval(): Promise<boolean> {
     return false;
   }
-
-  async configMcpServerReload(): Promise<void> {}
 
   async requestSkillReload(): Promise<void> {}
 
