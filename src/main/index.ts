@@ -1,7 +1,6 @@
 import {
   app,
   BrowserWindow,
-  dialog,
   globalShortcut,
   ipcMain,
   nativeImage,
@@ -17,10 +16,17 @@ import { spawn } from 'node:child_process';
 import dns from 'node:dns';
 import net from 'node:net';
 import { createBackend, type ChatBackend } from './backend';
-import { handleIpc } from './ipc';
+import {
+  handleIpc,
+  registerAuthIpc,
+  registerChatsIpc,
+  registerMcpIpc,
+  registerMemoryIpc,
+  registerWorkspaceIpc,
+  type IpcDeps
+} from './ipc';
 import { log } from './log';
 import {
-  CHAT_SEARCH_COMPLETION_TIMEOUT_MS,
   failQuickChatProcess,
   HudPill,
   OverlaySession,
@@ -29,57 +35,21 @@ import {
   RendererPushQueue
 } from './ui-lifecycle';
 import { ensureWorkspace } from './workspace/bootstrap';
-import { listSkills, setSkillEnabled } from './workspace/skills';
-import { addFiles, listFiles, removeFile, revealFiles } from './files/store';
-import {
-  addConnectedFolders,
-  connectedFolderPath,
-  listConnectedFolders,
-  publishProtectedRootsNow,
-  removeConnectedFolder,
-  updateConnectedFolder
-} from './workspace/connected-folders';
+import { publishProtectedRootsNow } from './workspace/connected-folders';
 import {
   embedModelsDir,
   embedSocketPath,
   piHome,
   recallDbPath,
-  resolveProfileOverride,
-  workspaceRoot
+  resolveProfileOverride
 } from './workspace/paths';
 import { TaskScheduler } from './scheduler';
-import { imagePreviewDataUrl } from './pi/attachments';
-import * as piMcp from './pi/mcp';
 import { ProviderAuth } from './pi/provider-auth';
-import {
-  addMemoryNote,
-  clearEpisodicMemory,
-  clearFactsMemory,
-  forgetFact,
-  getMemorySettings,
-  isRecallEnabled,
-  listThreadSummaries,
-  readMemoryFiles,
-  removeThreadSummary,
-  setEpisodicLimit,
-  setMaxRelevantFactCount,
-  setMemoryEnabled,
-  setTidyUpThreshold
-} from './workspace/memory';
+import { isRecallEnabled } from './workspace/memory';
 import { captureFromEvent } from './recall/capture';
 import {
-  getEmbeddingCacheStats,
-  getEpisodicStats,
-  getActiveFactIds,
-  getFactsByIds,
   getFactsGeneration,
   getFactsMissingVector,
-  getFactDetails,
-  getMemoryConflicts,
-  setFactPinned as storeSetFactPinned,
-  confirmFact as storeConfirmFact,
-  resolveMemoryConflict as storeResolveMemoryConflict,
-  restoreSupersededFact as storeRestoreSupersededFact,
   pruneMessageVectorsExceptModel,
   pruneSummaryVectorsExceptModel,
   pruneVectorsExceptModel,
@@ -89,29 +59,20 @@ import {
 } from './recall/store';
 import { embedNewMessages } from './recall/embed-episodic';
 import { backfillSummaries, refreshRecentSummaries } from './recall/summarize';
-import { previewFacts } from './recall/inject';
-import type { ActiveFacts } from '../shared/types';
 import { distillNewMessages, shouldConsolidate } from './recall/distill';
 import { consolidateFacts } from './recall/consolidate';
-import { processExplicitNote } from './recall/note';
-import {
-  getMemoryRebuildStatus,
-  pauseMemoryRebuild,
-  resumeMemoryRebuild,
-  runMemoryRebuildStep,
-  startMemoryRebuild
-} from './recall/rebuild';
+import { getMemoryRebuildStatus, runMemoryRebuildStep } from './recall/rebuild';
 import { curateSkills } from './skills/curate';
-import { distillSkillsFromMessages, drainSkillDistill } from './skills/distill';
+import { distillSkillsFromMessages } from './skills/distill';
 import { getEmbeddingsClient, setRetrievalClients } from './recall/retrieval';
 import { startEmbedEndpoint } from './recall/embed-endpoint';
 import { createHttpEmbeddingsClient } from './recall/embeddings';
 import { createHttpRerankClient } from './recall/rerank';
-import { EMBED_CATALOG, effectiveEmbedModelKey, localModelCacheKey } from './recall/embed-catalog';
+import { EMBED_CATALOG, localModelCacheKey } from './recall/embed-catalog';
 import { createEmbedWorkerManager } from './recall/embed-manager';
 import type { EmbedWorkerManager } from './recall/embed-manager';
 import { createEmbeddingsRouter, createLocalEmbeddingsClient } from './recall/embed-local';
-import { DEFAULT_LOCAL_RERANK_MODEL, RERANK_CATALOG } from './recall/rerank-catalog';
+import { RERANK_CATALOG } from './recall/rerank-catalog';
 import { createLocalRerankClient, createRerankRouter } from './recall/rerank-local';
 import { spawnEmbedWorker } from './recall/embed-worker-host';
 import { createScanWorkerManager } from './recall/scan-manager';
@@ -119,48 +80,25 @@ import type { ScanWorkerManager } from './recall/scan-manager';
 import { spawnScanWorker } from './recall/scan-worker-host';
 import { setScanWorkerManager } from './recall/scan';
 import type { LlmClient } from './recall/llm';
-import { searchChats, searchChatsLexical } from './chatsearch/search';
-import { backfillChatIndex, reindexChatThread, dropChatThread } from './chatsearch/index-sync';
+import { backfillChatIndex, reindexChatThread } from './chatsearch/index-sync';
 import {
   markOnboardingCompleted,
   readSettings,
   updateCustomInstructions,
   updateDefaultModel,
   updateEscapeAction,
-  updateLocalProvider,
   updateMemorySettings,
   updateNativeWebSearch,
   updateQuickChat,
   updateRetrievalSettings,
   updateSkillsSettings
 } from './workspace/settings';
-import { probeLocalProvider, syncModelsConfig } from './pi/models-config';
-import {
-  createFolder,
-  deleteFolder,
-  getAssignments,
-  listFolders,
-  moveFolder,
-  removeChat,
-  renameFolder,
-  setChatFolder
-} from './workspace/chats';
 import { activityLabel } from '../shared/activity';
 import type {
-  ApiKeyProviderId,
-  AuthProviderId,
   BackendEventEnvelope,
-  ChatListResult,
-  ConflictResolution,
-  ConnectedFolderPatch,
   CustomInstructionsSettings,
   EscapeAction,
   ItemEventParams,
-  LocalEmbedStatus,
-  LocalProviderId,
-  LocalProviderSettings,
-  LocalRerankStatus,
-  McpServerInput,
   MemoryModelSettings,
   ModelSummary,
   NativeWebSearchSettings,
@@ -173,10 +111,8 @@ import type {
   QuickChatSettings,
   QuickChatStatus,
   RuntimeStatus,
-  ScheduledTask,
   StartTurnInput,
-  StartTurnResult,
-  TaskSchedulePatch
+  StartTurnResult
 } from '../shared/types';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -848,84 +784,26 @@ function registerIpc(): void {
     return status;
   });
 
-  // ---- provider sign-in (onboarding wizard) ----
-  handleIpc('auth:providerLogin', async (_e, provider: AuthProviderId) => {
-    if (E2E) {
-      // Scripted fake: surface the URL step, then complete, so the wizard's
-      // whole state machine is exercised without a browser or network. The
-      // fake backend flips to authenticated via its login().
-      sendToMain('auth:event', { kind: 'auth-url', url: 'https://oauth.example.test/authorize' });
-      const status = await runtime!.login();
-      sendToMain('auth:event', { kind: 'done', ok: true, provider });
-      void scheduler?.start(); // mirror onAuthenticated()
-      return { ok: true, status };
-    }
-    const res = await providerAuth!.login(provider);
-    if (!res.ok) return res;
-    return { ok: true, status: await onAuthenticated() };
-  });
-  handleIpc('auth:setApiKey', async (_e, provider: ApiKeyProviderId, key: string) => {
-    if (E2E) {
-      const status = await runtime!.login();
-      void scheduler?.start(); // mirror onAuthenticated()
-      return { ok: true, status };
-    }
-    try {
-      await providerAuth!.setApiKey(provider, key);
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
-    return { ok: true, status: await onAuthenticated() };
-  });
-  handleIpc('auth:respond', (_e, requestId: string, value: string) => {
-    providerAuth?.respond(requestId, value);
-  });
-  // Authoritative liveness probe for a stored credential — used reactively to
-  // classify a failed turn (expired/revoked OAuth token vs. a transient error).
-  handleIpc('auth:check', async (_e, provider: string) => {
-    if (E2E) return { alive: true };
-    return { alive: await providerAuth!.isAlive(provider) };
-  });
-  // ---- local providers (Ollama / LM Studio) + provider removal ----
-  handleIpc('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string) => {
-    if (E2E) return { ok: true, models: ['stem-e2e-model'] };
-    return probeLocalProvider(baseUrl);
-  });
-  handleIpc('providers:updateLocal', async (_e, id: LocalProviderId, patch: Partial<LocalProviderSettings>) => {
-    if (E2E) return { ok: true, status: await runtime!.login() };
-    try {
-      const settings = await updateLocalProvider(id, patch);
-      const cfg = settings.localProviders[id];
-      // Placeholder credential for keyless local servers (see ProviderAuth.setApiKey).
-      if (cfg.enabled) await providerAuth!.setApiKey(id, 'local');
-      else await providerAuth!.removeProvider(id);
-      await syncModelsConfig(settings.localProviders);
-      // pi reads models.json and auth.json only at spawn — restart before
-      // onAuthenticated() lists models so the new registry is visible to it.
-      await runtime!.restart();
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
-    return { ok: true, status: await onAuthenticated() };
-  });
-  handleIpc('providers:disconnect', async (_e, providerId: string) => {
-    if (E2E) return { ok: true, status: await runtime!.status() };
-    try {
-      await providerAuth!.removeProvider(providerId);
-      if (providerId === 'ollama' || providerId === 'lmstudio') {
-        const settings = await updateLocalProvider(providerId, { enabled: false });
-        await syncModelsConfig(settings.localProviders);
-      }
-      await runtime!.restart();
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
-    return { ok: true, status: await onAuthenticated() };
-  });
-  handleIpc('auth:cancel', () => {
-    providerAuth?.cancel();
-  });
-  handleIpc('auth:completeOnboarding', () => markOnboardingCompleted());
+  // Per-domain IPC surfaces (auth/providers, skills/files/cfolders/tasks/dialogs,
+  // MCP + approvals, memory, chats/folders) live in ./ipc/*; they reach the
+  // late-bound singletons through getters so registration can happen up front.
+  const deps: IpcDeps = {
+    e2e: E2E,
+    runtime: () => runtime!,
+    scheduler: () => scheduler,
+    providerAuth: () => providerAuth,
+    embedManager: () => embedManager,
+    mainWindow: () => mainWindow,
+    sendToMain,
+    onAuthenticated,
+    scheduleMemoryRebuild: () => scheduleMemoryRebuild()
+  };
+  registerAuthIpc(deps);
+  registerWorkspaceIpc(deps);
+  registerMcpIpc(deps);
+  registerMemoryIpc(deps);
+  registerChatsIpc(deps);
+
   handleIpc('backend:startTurn', async (_e, input: StartTurnInput) => {
     // The user is actively chatting: yield any scheduler-owned turn (frees the
     // foreground gate) and hold scheduled runs off for a while.
@@ -947,271 +825,13 @@ function registerIpc(): void {
     return runtime!.interruptTurn(turnId);
   });
   handleIpc('backend:newConversation', () => runtime!.newConversation());
-  handleIpc('dialog:openFiles', () =>
-    dialog
-      .showOpenDialog(mainWindow!, { properties: ['openFile', 'multiSelections'] })
-      .then((r) => (r.canceled ? [] : r.filePaths))
-  );
   handleIpc('backend:listModels', () => runtime!.listModels());
 
-  handleIpc('skills:list', () => listSkills());
-  handleIpc('skills:setEnabled', (_e, slug: string, enabled: boolean) => setSkillEnabled(slug, enabled));
-  handleIpc('skills:curate', async () => {
-    // Same hidden one-shot seam the curator uses; `force` bypasses the size floor
-    // so a manual "Tidy up" always runs. Reload so pi rescans the updated skills.
-    const llm: LlmClient = {
-      complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).skills.model })
-    };
-    await curateSkills(llm, { force: true });
-    await runtime!.requestSkillReload();
-    return listSkills();
-  });
-  handleIpc('skills:distillNow', async () => {
-    // Manual "collect now": drain the whole message backlog through the skill
-    // distiller (force bypasses the min-batch gate), then reload so any new
-    // skill activates immediately.
-    const llm: LlmClient = {
-      complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).skills.model })
-    };
-    const written = await drainSkillDistill(llm);
-    if (written > 0) await runtime!.requestSkillReload();
-    return listSkills();
-  });
-
-  handleIpc('files:list', () => listFiles());
-  handleIpc('files:add', (_e, paths: string[], subdir?: string) => addFiles(paths, subdir));
-  handleIpc('files:remove', (_e, rel: string) => removeFile(rel));
-  handleIpc('files:reveal', () => revealFiles());
-  handleIpc('files:preview', (_e, path: string) => imagePreviewDataUrl(path));
-
-  // ---- connected folders (external folders the assistant reads in place) ----
-  // Distinct `cfolders:*` namespace — `folders:*` is the chat-folder tree above.
-  handleIpc('cfolders:list', () => listConnectedFolders());
-  handleIpc('cfolders:add', (_e, paths: string[]) => addConnectedFolders(paths));
-  handleIpc('cfolders:update', (_e, id: string, patch: ConnectedFolderPatch) =>
-    updateConnectedFolder(id, patch)
-  );
-  handleIpc('cfolders:remove', (_e, id: string) => removeConnectedFolder(id));
-  handleIpc('cfolders:reveal', async (_e, id: string) => {
-    const path = await connectedFolderPath(id);
-    if (path) await shell.openPath(path);
-  });
-  handleIpc('cfolders:revealWorkspace', () => shell.openPath(workspaceRoot()));
-
-  // Scheduled tasks. Mutations return the fresh list (like the cfolders handlers).
-  handleIpc('tasks:list', (): ScheduledTask[] => scheduler?.snapshot() ?? []);
-  handleIpc('tasks:setEnabled', (_e, id: string, enabled: boolean) =>
-    scheduler ? scheduler.setEnabled(id, enabled) : []
-  );
-  handleIpc('tasks:runNow', (_e, id: string) => scheduler?.runNow(id) ?? []);
-  handleIpc('tasks:delete', (_e, id: string) => (scheduler ? scheduler.remove(id) : []));
-  handleIpc('tasks:updateSchedule', (_e, id: string, patch: TaskSchedulePatch) =>
-    scheduler ? scheduler.updateSchedule(id, patch.schedule) : []
-  );
-  handleIpc('dialog:openDirectory', () =>
-    dialog
-      .showOpenDialog(mainWindow!, { properties: ['openDirectory', 'multiSelections'] })
-      .then((r) => (r.canceled ? [] : r.filePaths))
-  );
-
-  handleIpc('mcp:list', () => piMcp.listMcpServers());
-  handleIpc('mcp:status', () => runtime!.getMcpStatus());
-  handleIpc('mcp:add', (_e, input: McpServerInput) => piMcp.addMcpServer(input));
-  handleIpc('mcp:remove', (_e, name: string) => piMcp.removeMcpServer(name));
-  handleIpc('mcp:setEnabled', (_e, name: string, enabled: boolean) =>
-    piMcp.setMcpServerEnabled(name, enabled)
-  );
-  handleIpc('mcp:login', (_e, name: string) => runtime!.mcpLogin(name));
-  handleIpc('mcp:adminDecision', async (_e, id: number | string, accept: boolean) => {
-    await runtime!.resolveAdminApproval(
-      id,
-      accept,
-      accept
-        ? async (proposal) => {
-            if (proposal.action === 'add') {
-              if (!proposal.input) throw new Error('The MCP add proposal is missing its server definition.');
-              await piMcp.addMcpServer(proposal.input);
-              return;
-            }
-            if (!proposal.name) throw new Error('The MCP remove proposal is missing its server name.');
-            await piMcp.removeMcpServer(proposal.name);
-          }
-        : undefined
-    );
-  });
-  handleIpc(
-    'instructions:resolveApproval',
-    async (_e, id: number | string, accept: boolean, surface: 'main' | 'quickChat', text: string) => {
-      // Main is the sole writer of settings.json: apply the card's final text BEFORE
-      // releasing the held tool call, so the assistant only proceeds once it's persisted.
-      await runtime!.resolveInstructionsApproval(
-        id,
-        accept,
-        accept
-          ? async () => {
-              await updateCustomInstructions({ [surface]: text });
-            }
-          : undefined
-      );
-    }
-  );
   handleIpc('runtime:restart', async () => {
     await runtime!.restart();
     return runtime!.status();
   });
 
-  handleIpc('memory:get', () => getMemorySettings());
-  handleIpc('memory:setEnabled', async (_e, enabled: boolean) => {
-    const settings = await setMemoryEnabled(enabled);
-    // Restart applies the recall-MCP change to the live backend (no-op on the fake).
-    await runtime!.restart();
-    return settings;
-  });
-  handleIpc('memory:read', () => readMemoryFiles());
-  handleIpc('memory:addNote', async (_e, text: string) => {
-    const result = await addMemoryNote(String(text ?? ''));
-    if (result.saved && result.factId != null) {
-      // Canonicalize + reconcile off the acknowledgement path (same hidden
-      // one-shot seam as distillation); the raw note is already durable.
-      const llm: LlmClient = {
-        complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).memory.model })
-      };
-      const factId = result.factId;
-      setTimeout(() => void processExplicitNote(factId, llm), 0);
-    }
-    return result;
-  });
-  handleIpc('memory:forget', async (_e, id: number) => {
-    await forgetFact(id);
-    return readMemoryFiles();
-  });
-  handleIpc('memory:setPinned', async (_e, id: number, pinned: boolean) => {
-    storeSetFactPinned(id, pinned);
-    return readMemoryFiles();
-  });
-  handleIpc('memory:confirmFact', async (_e, id: number) => {
-    storeConfirmFact(id);
-    return readMemoryFiles();
-  });
-  handleIpc('memory:factDetails', (_e, id: number) => getFactDetails(id));
-  handleIpc('memory:conflicts', () => getMemoryConflicts());
-  handleIpc('memory:resolveConflict', async (_e, id: number, resolution: ConflictResolution) => {
-    storeResolveMemoryConflict(id, resolution);
-    return readMemoryFiles();
-  });
-  handleIpc('memory:restoreFact', async (_e, id: number) => {
-    storeRestoreSupersededFact(id);
-    return readMemoryFiles();
-  });
-  handleIpc('memory:rebuildStatus', () => getMemoryRebuildStatus());
-  handleIpc('memory:startRebuild', () => {
-    const status = startMemoryRebuild();
-    scheduleMemoryRebuild();
-    return status;
-  });
-  handleIpc('memory:pauseRebuild', () => pauseMemoryRebuild());
-  handleIpc('memory:resumeRebuild', () => {
-    const status = resumeMemoryRebuild();
-    scheduleMemoryRebuild();
-    return status;
-  });
-  handleIpc('memory:resetFacts', () => clearFactsMemory());
-  handleIpc('memory:resetEpisodic', () => clearEpisodicMemory());
-  handleIpc('memory:episodicStats', () => getEpisodicStats());
-  handleIpc('memory:summaries', () => listThreadSummaries());
-  handleIpc('memory:deleteSummary', (_e, id: number) => removeThreadSummary(id));
-  handleIpc('memory:embeddingStats', async () =>
-    getEmbeddingCacheStats(effectiveEmbedModelKey((await readSettings()).retrieval.embeddings))
-  );
-  handleIpc('embeddings:localStatus', async (): Promise<LocalEmbedStatus> => {
-    // Opening the panel doubles as a kick (idempotent while healthy), so someone
-    // who goes straight to Memory → advanced right after launch sees the worker
-    // start immediately instead of an idle state until the startup timer lands.
-    const e = (await readSettings()).retrieval.embeddings;
-    if (!E2E && e.mode === 'local') embedManager?.ensure(EMBED_CATALOG[e.localModel]);
-    return embedManager?.status() ?? { model: 'multilingual-e5-small', state: 'idle' };
-  });
-  handleIpc('reranker:localStatus', async (): Promise<LocalRerankStatus> => {
-    // Same panel-open kick as embeddings:localStatus, for the reranker model.
-    const r = (await readSettings()).retrieval.reranker;
-    if (!E2E && r.mode === 'local') embedManager?.ensureRerank(RERANK_CATALOG[r.localModel]);
-    return embedManager?.rerankStatus() ?? { model: DEFAULT_LOCAL_RERANK_MODEL, state: 'idle' };
-  });
-  handleIpc('memory:activeFacts', (_e, threadId: string | null): ActiveFacts | null => {
-    if (!threadId) return null;
-    const rec = getActiveFactIds(threadId);
-    if (!rec) return null;
-    const facts = getFactsByIds(rec.factIds).map((f) => ({
-      id: f.id,
-      text: f.text,
-      source: f.source,
-      sensitivity: f.sensitivity,
-      reason: rec.reasons[f.id] ?? f.selectionReason
-    }));
-    return { facts, tier: rec.tier };
-  });
-  handleIpc('memory:previewFacts', async (_e, text: string): Promise<ActiveFacts> => {
-    const { facts, tier } = await previewFacts(text ?? '');
-    return { facts: facts.map((f) => ({
-      id: f.id,
-      text: f.text,
-      source: f.source,
-      sensitivity: f.sensitivity,
-      reason: f.selectionReason
-    })), tier };
-  });
-  handleIpc('memory:setEpisodicLimit', (_e, bytes: number) => setEpisodicLimit(bytes));
-  handleIpc('memory:setTidyThreshold', (_e, n: number) => setTidyUpThreshold(n));
-  handleIpc('memory:setMaxRelevantFacts', (_e, n: number) => setMaxRelevantFactCount(n));
-  handleIpc('memory:consolidate', async () => {
-    // Same hidden one-shot seam distillation uses; `force` bypasses the size floor
-    // so a manual run always executes.
-    const llm: LlmClient = {
-      complete: async (prompt) => runtime!.complete(prompt, { model: (await readSettings()).memory.model })
-    };
-    const result = await consolidateFacts(llm, { force: true });
-    return { ...result, contents: await readMemoryFiles() };
-  });
-
-  // ---- chats + folders ----
-  // Chats come from the backend's thread store; folders/assignments from the Stem
-  // store. We merge them here so the runtime stays backend-only and the store
-  // stays backend-unaware.
-  const chatList = async (): Promise<ChatListResult> => {
-    const [chats, folders, assignments] = await Promise.all([
-      runtime!.listThreads(),
-      listFolders(),
-      getAssignments()
-    ]);
-    const valid = new Set(folders.map((f) => f.id));
-    for (const chat of chats) {
-      const folderId = assignments[chat.threadId];
-      chat.folderId = folderId && valid.has(folderId) ? folderId : null;
-    }
-    return { chats, folders };
-  };
-
-  handleIpc('chats:list', () => chatList());
-  // Cross-language chat search: expand the query across Slovak+English (via the same
-  // hidden LlmClient seam as recall), then match the dedicated FTS5 chat index. The
-  // LLM is used regardless of the memory toggle — this is a foreground, user-initiated
-  // search, not background capture — and degrades to same-language search if it fails.
-  // Instant same-language results (no LLM) — the renderer shows these first, then swaps
-  // in the cross-language superset from chats:search when expansion resolves.
-  handleIpc('chats:searchFast', (_e, query: string) =>
-    searchChatsLexical(query, { llm: null, listChats: () => runtime!.listThreads() })
-  );
-  handleIpc('chats:search', (_e, query: string) => {
-    // Reuse the hidden one-shot seam (on the memory model) for query expansion.
-    const llm: LlmClient = {
-      complete: async (prompt) =>
-        runtime!.complete(prompt, {
-          model: (await readSettings()).memory.model,
-          timeoutMs: CHAT_SEARCH_COMPLETION_TIMEOUT_MS
-        })
-    };
-    return searchChats(query, { llm, listChats: () => runtime!.listThreads() });
-  });
   handleIpc('chats:open', async (_e, threadId: string) => {
     // Opening the overlay's live thread from the sidebar is an implicit hand-off:
     // route its events to the main window and drop the overlay/HUD so the two
@@ -1259,49 +879,6 @@ function registerIpc(): void {
     void runtime!.resumeThread(threadId).catch(() => {});
     const { title, messages } = await runtime!.readThread(threadId);
     return { threadId, title, messages };
-  });
-  handleIpc('chats:rollbackToTurn', (_e, threadId: string, turnId: string) =>
-    runtime!.rollbackToTurn(threadId, turnId)
-  );
-  handleIpc('chats:forkThread', (_e, threadId: string, turnId: string) =>
-    runtime!.forkThread(threadId, turnId)
-  );
-  handleIpc('chats:rename', async (_e, threadId: string, name: string) => {
-    await runtime!.renameThread(threadId, name);
-    // The title is indexed for search too — reflect the new name right away.
-    void reindexChatThread(runtime!, threadId);
-  });
-  handleIpc('chats:delete', async (_e, threadId: string) => {
-    // Independent stores (pi session file vs. folder-assignment JSON) — run concurrently.
-    // Also drop any scheduled tasks bound to this chat (they'd otherwise run into a
-    // missing thread; the scheduler guards against that too, but cleaning up is tidier).
-    await Promise.all([
-      runtime!.deleteThread(threadId),
-      removeChat(threadId),
-      scheduler?.removeForThread(threadId) ?? Promise.resolve()
-    ]);
-    dropChatThread(threadId); // forget it from the search index
-  });
-  handleIpc('chats:setFolder', async (_e, threadId: string, folderId: string | null) => {
-    await setChatFolder(threadId, folderId);
-    return chatList();
-  });
-
-  handleIpc('folders:create', async (_e, name: string, parentId: string | null) => {
-    await createFolder(name, parentId);
-    return chatList();
-  });
-  handleIpc('folders:rename', async (_e, folderId: string, name: string) => {
-    await renameFolder(folderId, name);
-    return chatList();
-  });
-  handleIpc('folders:delete', async (_e, folderId: string) => {
-    await deleteFolder(folderId);
-    return chatList();
-  });
-  handleIpc('folders:move', async (_e, folderId: string, parentId: string | null) => {
-    await moveFolder(folderId, parentId);
-    return chatList();
   });
 
   // ---- settings + quick chat ----

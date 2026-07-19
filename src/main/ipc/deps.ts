@@ -1,0 +1,27 @@
+import type { BrowserWindow } from 'electron';
+import type { ChatBackend } from '../backend';
+import type { TaskScheduler } from '../scheduler';
+import type { ProviderAuth } from '../pi/provider-auth';
+import type { EmbedWorkerManager } from '../recall/embed-manager';
+import type { RuntimeStatus } from '../../shared/types';
+
+/**
+ * Late-bound main-process singletons the per-domain IPC modules need. They are
+ * created in the whenReady bootstrap (after registration), so every accessor is
+ * a getter — never capture the value at registration time.
+ */
+export interface IpcDeps {
+  /** STEM_E2E: hermetic fake backend; network/browser side effects are scripted. */
+  e2e: boolean;
+  /** The chat backend. Handlers only run post-bootstrap, when it exists. */
+  runtime(): ChatBackend;
+  scheduler(): TaskScheduler | null;
+  providerAuth(): ProviderAuth | null;
+  embedManager(): EmbedWorkerManager | null;
+  mainWindow(): BrowserWindow | null;
+  sendToMain(channel: string, payload: unknown): void;
+  /** Post-sign-in hook: re-pick the default model, restart pi, start the scheduler. */
+  onAuthenticated(): Promise<RuntimeStatus>;
+  /** (Re)arm the background memory-rebuild stepper. */
+  scheduleMemoryRebuild(): void;
+}

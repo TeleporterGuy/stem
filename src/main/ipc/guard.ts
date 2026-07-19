@@ -1,5 +1,5 @@
 import { ipcMain, type IpcMainInvokeEvent } from 'electron';
-import { log } from './log';
+import { log } from '../log';
 
 // Runtime guard-rail for the renderer → main IPC boundary. Every invoke channel
 // registered through handleIpc gets (a) a trusted-sender check — top-level frame

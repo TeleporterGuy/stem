@@ -1,0 +1,163 @@
+import { handleIpc } from './guard';
+import type { IpcDeps } from './deps';
+import {
+  addMemoryNote,
+  clearEpisodicMemory,
+  clearFactsMemory,
+  forgetFact,
+  getMemorySettings,
+  listThreadSummaries,
+  readMemoryFiles,
+  removeThreadSummary,
+  setEpisodicLimit,
+  setMaxRelevantFactCount,
+  setMemoryEnabled,
+  setTidyUpThreshold
+} from '../workspace/memory';
+import {
+  getEmbeddingCacheStats,
+  getEpisodicStats,
+  getActiveFactIds,
+  getFactsByIds,
+  getFactDetails,
+  getMemoryConflicts,
+  setFactPinned as storeSetFactPinned,
+  confirmFact as storeConfirmFact,
+  resolveMemoryConflict as storeResolveMemoryConflict,
+  restoreSupersededFact as storeRestoreSupersededFact
+} from '../recall/store';
+import {
+  getMemoryRebuildStatus,
+  pauseMemoryRebuild,
+  resumeMemoryRebuild,
+  startMemoryRebuild
+} from '../recall/rebuild';
+import { previewFacts } from '../recall/inject';
+import { consolidateFacts } from '../recall/consolidate';
+import { processExplicitNote } from '../recall/note';
+import { EMBED_CATALOG, effectiveEmbedModelKey } from '../recall/embed-catalog';
+import { DEFAULT_LOCAL_RERANK_MODEL, RERANK_CATALOG } from '../recall/rerank-catalog';
+import { readSettings } from '../workspace/settings';
+import type { LlmClient } from '../recall/llm';
+import type {
+  ActiveFacts,
+  ConflictResolution,
+  LocalEmbedStatus,
+  LocalRerankStatus
+} from '../../shared/types';
+
+/** The Memory tab's surface: facts, episodic store, rebuild, and retrieval status. */
+export function registerMemoryIpc(deps: IpcDeps): void {
+  handleIpc('memory:get', () => getMemorySettings());
+  handleIpc('memory:setEnabled', async (_e, enabled: boolean) => {
+    const settings = await setMemoryEnabled(enabled);
+    // Restart applies the recall-MCP change to the live backend (no-op on the fake).
+    await deps.runtime().restart();
+    return settings;
+  });
+  handleIpc('memory:read', () => readMemoryFiles());
+  handleIpc('memory:addNote', async (_e, text: string) => {
+    const result = await addMemoryNote(String(text ?? ''));
+    if (result.saved && result.factId != null) {
+      // Canonicalize + reconcile off the acknowledgement path (same hidden
+      // one-shot seam as distillation); the raw note is already durable.
+      const llm: LlmClient = {
+        complete: async (prompt) => deps.runtime().complete(prompt, { model: (await readSettings()).memory.model })
+      };
+      const factId = result.factId;
+      setTimeout(() => void processExplicitNote(factId, llm), 0);
+    }
+    return result;
+  });
+  handleIpc('memory:forget', async (_e, id: number) => {
+    await forgetFact(id);
+    return readMemoryFiles();
+  });
+  handleIpc('memory:setPinned', async (_e, id: number, pinned: boolean) => {
+    storeSetFactPinned(id, pinned);
+    return readMemoryFiles();
+  });
+  handleIpc('memory:confirmFact', async (_e, id: number) => {
+    storeConfirmFact(id);
+    return readMemoryFiles();
+  });
+  handleIpc('memory:factDetails', (_e, id: number) => getFactDetails(id));
+  handleIpc('memory:conflicts', () => getMemoryConflicts());
+  handleIpc('memory:resolveConflict', async (_e, id: number, resolution: ConflictResolution) => {
+    storeResolveMemoryConflict(id, resolution);
+    return readMemoryFiles();
+  });
+  handleIpc('memory:restoreFact', async (_e, id: number) => {
+    storeRestoreSupersededFact(id);
+    return readMemoryFiles();
+  });
+  handleIpc('memory:rebuildStatus', () => getMemoryRebuildStatus());
+  handleIpc('memory:startRebuild', () => {
+    const status = startMemoryRebuild();
+    deps.scheduleMemoryRebuild();
+    return status;
+  });
+  handleIpc('memory:pauseRebuild', () => pauseMemoryRebuild());
+  handleIpc('memory:resumeRebuild', () => {
+    const status = resumeMemoryRebuild();
+    deps.scheduleMemoryRebuild();
+    return status;
+  });
+  handleIpc('memory:resetFacts', () => clearFactsMemory());
+  handleIpc('memory:resetEpisodic', () => clearEpisodicMemory());
+  handleIpc('memory:episodicStats', () => getEpisodicStats());
+  handleIpc('memory:summaries', () => listThreadSummaries());
+  handleIpc('memory:deleteSummary', (_e, id: number) => removeThreadSummary(id));
+  handleIpc('memory:embeddingStats', async () =>
+    getEmbeddingCacheStats(effectiveEmbedModelKey((await readSettings()).retrieval.embeddings))
+  );
+  handleIpc('embeddings:localStatus', async (): Promise<LocalEmbedStatus> => {
+    // Opening the panel doubles as a kick (idempotent while healthy), so someone
+    // who goes straight to Memory → advanced right after launch sees the worker
+    // start immediately instead of an idle state until the startup timer lands.
+    const e = (await readSettings()).retrieval.embeddings;
+    if (!deps.e2e && e.mode === 'local') deps.embedManager()?.ensure(EMBED_CATALOG[e.localModel]);
+    return deps.embedManager()?.status() ?? { model: 'multilingual-e5-small', state: 'idle' };
+  });
+  handleIpc('reranker:localStatus', async (): Promise<LocalRerankStatus> => {
+    // Same panel-open kick as embeddings:localStatus, for the reranker model.
+    const r = (await readSettings()).retrieval.reranker;
+    if (!deps.e2e && r.mode === 'local') deps.embedManager()?.ensureRerank(RERANK_CATALOG[r.localModel]);
+    return deps.embedManager()?.rerankStatus() ?? { model: DEFAULT_LOCAL_RERANK_MODEL, state: 'idle' };
+  });
+  handleIpc('memory:activeFacts', (_e, threadId: string | null): ActiveFacts | null => {
+    if (!threadId) return null;
+    const rec = getActiveFactIds(threadId);
+    if (!rec) return null;
+    const facts = getFactsByIds(rec.factIds).map((f) => ({
+      id: f.id,
+      text: f.text,
+      source: f.source,
+      sensitivity: f.sensitivity,
+      reason: rec.reasons[f.id] ?? f.selectionReason
+    }));
+    return { facts, tier: rec.tier };
+  });
+  handleIpc('memory:previewFacts', async (_e, text: string): Promise<ActiveFacts> => {
+    const { facts, tier } = await previewFacts(text ?? '');
+    return { facts: facts.map((f) => ({
+      id: f.id,
+      text: f.text,
+      source: f.source,
+      sensitivity: f.sensitivity,
+      reason: f.selectionReason
+    })), tier };
+  });
+  handleIpc('memory:setEpisodicLimit', (_e, bytes: number) => setEpisodicLimit(bytes));
+  handleIpc('memory:setTidyThreshold', (_e, n: number) => setTidyUpThreshold(n));
+  handleIpc('memory:setMaxRelevantFacts', (_e, n: number) => setMaxRelevantFactCount(n));
+  handleIpc('memory:consolidate', async () => {
+    // Same hidden one-shot seam distillation uses; `force` bypasses the size floor
+    // so a manual run always executes.
+    const llm: LlmClient = {
+      complete: async (prompt) => deps.runtime().complete(prompt, { model: (await readSettings()).memory.model })
+    };
+    const result = await consolidateFacts(llm, { force: true });
+    return { ...result, contents: await readMemoryFiles() };
+  });
+}
