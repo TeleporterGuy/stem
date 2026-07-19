@@ -609,7 +609,11 @@ function makeNativeSearchGate(nsPath) {
 /**
  * Returns `roots()` reading the absolute paths of read-only connected folders from
  * protected-roots.json (mtime-cached). The main process rewrites this whenever the
- * Folders registry changes; a missing/corrupt file means "nothing protected".
+ * Folders registry changes. A file that was never readable means "nothing
+ * protected" (a fresh install genuinely has no roots yet) — but once roots have
+ * been read successfully, a later missing/corrupt file KEEPS the last-known-good
+ * set rather than failing open: unprotecting a folder is a deliberate act that
+ * arrives as a valid rewrite, never as a disappearing or half-written file.
  */
 export function makeProtectedRootsGate(prPath) {
   let cache = { mtime: -1, roots: [] };
@@ -621,10 +625,51 @@ export function makeProtectedRootsGate(prPath) {
         cache = { mtime, roots: Array.isArray(data && data.roots) ? data.roots.filter((r) => typeof r === 'string') : [] };
       }
     } catch {
-      cache = { mtime: -1, roots: [] };
+      cache = { mtime: -1, roots: cache.roots };
     }
     return cache.roots;
   };
+}
+
+// String args that even look like filesystem paths: absolute, home-relative,
+// @-prefixed (pi's read syntax), file URLs, or Windows drive paths. Everything
+// else (prose, queries, URLs) is skipped without touching the filesystem.
+const PATHISH_RE = /^@?(?:[~/]|file:\/\/)|^[A-Za-z]:[\\/]/;
+
+/**
+ * Deep-scan an MCP tool-call's args for a path-shaped string inside one of the
+ * protected roots; returns the first offender or null. MCP servers are external
+ * processes with arbitrary write capability, so the read-only guarantee has to
+ * hold against ANY of their tools — there is no reliable way to tell a server's
+ * read tools from its write tools, so a protected path blocks the call outright
+ * (pi's built-in read/grep/find/ls remain the sanctioned way to read).
+ */
+export function findProtectedPath(value, roots) {
+  if (!Array.isArray(roots) || roots.length === 0) return null;
+  const stack = [value];
+  const seen = new Set();
+  while (stack.length > 0) {
+    const v = stack.pop();
+    if (typeof v === 'string') {
+      const s = v.trim();
+      if (s.length > 0 && s.length <= 1024 && PATHISH_RE.test(s) && roots.some((root) => isInside(s, root))) {
+        return s;
+      }
+    } else if (Array.isArray(v)) {
+      for (const item of v) stack.push(item);
+    } else if (v && typeof v === 'object' && !seen.has(v)) {
+      seen.add(v);
+      for (const item of Object.values(v)) stack.push(item);
+    }
+  }
+  return null;
+}
+
+/** The block/refusal text for an MCP call touching a read-only connected folder. */
+function protectedPathRefusal(path) {
+  return `"${path}" is inside a folder connected to Stem read-only, so MCP tools may not operate on it. ` +
+    `Read it with the built-in read/grep/find/ls tools instead, or ask the user to switch the folder ` +
+    `to read & write in the Folders tab.`;
 }
 
 /**
@@ -726,7 +771,7 @@ function makeServiceTierGate(stPath) {
 // only when needed. Token floor stays ~flat regardless of server count.
 
 /** Register one MCP tool as a native pi tool (used only for the eager recall server). */
-function registerNativeMcpTool(pi, name, spec, client, tool) {
+function registerNativeMcpTool(pi, name, spec, client, tool, protectedRoots) {
   const toolName = spec.trusted ? sanitizeToolName(tool.name) : sanitizeToolName(`${name}_${tool.name}`);
   pi.registerTool({
     name: toolName,
@@ -738,6 +783,8 @@ function registerNativeMcpTool(pi, name, spec, client, tool) {
         const ok = await ctx.ui.confirm('Allow MCP tool', `Run ${name} → ${tool.name}?`);
         if (!ok) return { content: [{ type: 'text', text: 'Denied by user.' }], details: {} };
       }
+      const offending = protectedRoots ? findProtectedPath(params || {}, protectedRoots()) : null;
+      if (offending) return errText(protectedPathRefusal(offending));
       const result = await client.callTool(tool.name, params || {});
       const content = Array.isArray(result && result.content)
         ? result.content
@@ -752,7 +799,7 @@ function errText(text) {
 }
 
 /** Register the router meta-tools over the connected (non-eager) clients map. */
-function registerRouterTools(pi, clients) {
+function registerRouterTools(pi, clients, protectedRoots) {
   pi.registerTool({
     name: 'invoke_tool',
     label: 'Use a tool',
@@ -782,6 +829,8 @@ function registerRouterTools(pi, clients) {
         const ok = await ctx.ui.confirm('Allow MCP tool', `Run ${server} → ${def.name}?`);
         if (!ok) return { content: [{ type: 'text', text: 'Denied by user.' }], details: {} };
       }
+      const offending = protectedRoots ? findProtectedPath((params && params.args) || {}, protectedRoots()) : null;
+      if (offending) return errText(protectedPathRefusal(offending));
       const result = await entry.client.callTool(def.name, (params && params.args) || {});
       const content = Array.isArray(result && result.content)
         ? result.content
@@ -1247,14 +1296,19 @@ export default async function stemMcpBridge(pi) {
   await sharedConn.recallReady;
   const { clients, recall } = sharedConn;
 
+  // Read-only connected folders (paths from the main process via
+  // protected-roots.json). One gate instance serves both the MCP guards below
+  // and the write/edit tool_call hook further down.
+  const protectedRoots = makeProtectedRootsGate(join(dirname(cfgPath), 'protected-roots.json'));
+
   // Register tools on THIS session's pi (cheap, no network). Recall stays eager
   // (native tools, used every turn); everything else is behind the router.
-  for (const r of recall) for (const tool of r.tools) registerNativeMcpTool(pi, r.name, r.spec, r.client, tool);
+  for (const r of recall) for (const tool of r.tools) registerNativeMcpTool(pi, r.name, r.spec, r.client, tool, protectedRoots);
 
   // Register the router meta-tools over the connected servers. `clients` fills in
   // live as background connects land, so their tools become invokable without
   // re-running this factory.
-  registerRouterTools(pi, clients);
+  registerRouterTools(pi, clients, protectedRoots);
 
   // Stem self-management tools (list/add/remove MCP servers). Always available.
   registerAdminTools(pi, cfgPath);
@@ -1328,11 +1382,13 @@ export default async function stemMcpBridge(pi) {
     }
 
     // Enforce read-only connected folders: block any write/edit whose target path
-    // falls inside a folder the user connected read-only (paths from the main
-    // process via protected-roots.json). Relative paths resolve against pi's cwd
-    // (Stem's workspace), which is never inside a connected folder, so only an
-    // absolute write into a protected root trips this. Reads are never blocked.
-    const protectedRoots = makeProtectedRootsGate(join(dirname(cfgPath), 'protected-roots.json'));
+    // falls inside a folder the user connected read-only. Relative paths resolve
+    // against pi's cwd (Stem's workspace), which is never inside a connected
+    // folder, so only an absolute write into a protected root trips this. Reads
+    // through the built-ins are never blocked; MCP tool calls are guarded
+    // separately in the router (findProtectedPath), and `bash` is excluded from
+    // pi's tool set entirely (runtime.ts) — together those close the paths around
+    // this hook, which only sees pi's own write/edit tools.
     pi.on('tool_call', (event) => {
       if (!event || (event.toolName !== 'write' && event.toolName !== 'edit')) return undefined;
       const p = event.input && typeof event.input.path === 'string' ? event.input.path : null;

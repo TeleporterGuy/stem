@@ -167,7 +167,13 @@ export async function getPrivateRoots(): Promise<string[]> {
 async function publishProtectedRoots(store: ConnectedFoldersStore): Promise<void> {
   const roots = await Promise.all(store.folders.filter((f) => f.mode === 'read').map((f) => canonical(f.path)));
   await mkdir(piHome(), { recursive: true });
-  await writeFile(protectedRootsPath(), JSON.stringify({ roots }, null, 2), 'utf8');
+  // Atomic: the bridge reads this mid-turn, and a half-written file must never
+  // exist — its gate fails closed (keeps the previous roots) on a corrupt read,
+  // so a torn write here would freeze protection on a stale set.
+  const path = protectedRootsPath();
+  const tmp = `${path}.${randomUUID()}.tmp`;
+  await writeFile(tmp, JSON.stringify({ roots }, null, 2), 'utf8');
+  await rename(tmp, path);
 }
 
 /** Publish the protected-roots gate from the current store (idempotent; for startup). */
