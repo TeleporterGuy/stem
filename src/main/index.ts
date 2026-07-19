@@ -37,7 +37,6 @@ import {
 } from './workspace/connected-folders';
 import { embedModelsDir, embedSocketPath, piHome, resolveProfileOverride, workspaceRoot } from './workspace/paths';
 import { TaskScheduler } from './scheduler';
-import { createE2ESchedulerBackend } from './scheduler/e2e-backend';
 import { imagePreviewDataUrl } from './pi/attachments';
 import * as piMcp from './pi/mcp';
 import { ProviderAuth } from './pi/provider-auth';
@@ -782,31 +781,12 @@ function revealMainWindow(): void {
   win.focus();
 }
 
-// Test seam: when STEM_E2E is set, report a healthy backend without touching pi,
-// so end-to-end UI tests can get past the sign-in gate and drive the real
-// renderer hermetically. Only the backend handshake is faked — every store
-// (recall, files, settings) still runs for real against the isolated workspace.
+// Test seam: when STEM_E2E is set, createBackend() returns the hermetic
+// FakeBackend (see backend/fake.ts) — real IPC, event routing, renderers,
+// Recall, and scheduler over deterministic scripted turns. The remaining
+// E2E branches below fake only what lives OUTSIDE the backend seam: network
+// probes, browser OAuth, and the embedding worker (model downloads).
 const E2E = !!process.env.STEM_E2E;
-
-// Onboarding sub-seam: with STEM_E2E_ONBOARDING (implies STEM_E2E) the faked
-// backend starts UNAUTHENTICATED so specs can drive the first-run wizard; the
-// fake auth handlers below flip it to authenticated, mimicking a real login.
-const E2E_ONBOARDING = E2E && !!process.env.STEM_E2E_ONBOARDING;
-let e2eAuthed = !E2E_ONBOARDING;
-
-function e2eStatus(): RuntimeStatus {
-  return e2eAuthed
-    ? { ok: true, authenticated: true, backendPath: null, backendHome: '', workspaceRoot: '' }
-    : {
-        ok: false,
-        authenticated: false,
-        providers: [],
-        backendPath: null,
-        backendHome: '',
-        workspaceRoot: '',
-        error: 'Stem is not signed in yet.'
-      };
-}
 
 // In-app provider sign-in (OAuth / API key) for the onboarding wizard; created in
 // the whenReady bootstrap alongside the runtime.
@@ -864,10 +844,7 @@ function registerIpc(): void {
     overlayHandoffBarrier.supply(id, payload);
   });
 
-  ipcMain.handle('runtime:status', (): Promise<RuntimeStatus> | RuntimeStatus => {
-    if (E2E) return e2eStatus();
-    return runtime!.status();
-  });
+  ipcMain.handle('runtime:status', (): Promise<RuntimeStatus> => runtime!.status());
   ipcMain.handle('runtime:login', async () => {
     const status = await runtime!.login();
     // Signing in mid-session: start the scheduler now (idempotent) so tasks load and
@@ -880,11 +857,13 @@ function registerIpc(): void {
   ipcMain.handle('auth:providerLogin', async (_e, provider: AuthProviderId) => {
     if (E2E) {
       // Scripted fake: surface the URL step, then complete, so the wizard's
-      // whole state machine is exercised without a browser or network.
+      // whole state machine is exercised without a browser or network. The
+      // fake backend flips to authenticated via its login().
       sendToMain('auth:event', { kind: 'auth-url', url: 'https://oauth.example.test/authorize' });
-      e2eAuthed = true;
+      const status = await runtime!.login();
       sendToMain('auth:event', { kind: 'done', ok: true, provider });
-      return { ok: true, status: e2eStatus() };
+      void scheduler?.start(); // mirror onAuthenticated()
+      return { ok: true, status };
     }
     const res = await providerAuth!.login(provider);
     if (!res.ok) return res;
@@ -892,8 +871,9 @@ function registerIpc(): void {
   });
   ipcMain.handle('auth:setApiKey', async (_e, provider: ApiKeyProviderId, key: string) => {
     if (E2E) {
-      e2eAuthed = true;
-      return { ok: true, status: e2eStatus() };
+      const status = await runtime!.login();
+      void scheduler?.start(); // mirror onAuthenticated()
+      return { ok: true, status };
     }
     try {
       await providerAuth!.setApiKey(provider, key);
@@ -917,10 +897,7 @@ function registerIpc(): void {
     return probeLocalProvider(baseUrl);
   });
   ipcMain.handle('providers:updateLocal', async (_e, id: LocalProviderId, patch: Partial<LocalProviderSettings>) => {
-    if (E2E) {
-      e2eAuthed = true;
-      return { ok: true, status: e2eStatus() };
-    }
+    if (E2E) return { ok: true, status: await runtime!.login() };
     try {
       const settings = await updateLocalProvider(id, patch);
       const cfg = settings.localProviders[id];
@@ -937,7 +914,7 @@ function registerIpc(): void {
     return { ok: true, status: await onAuthenticated() };
   });
   ipcMain.handle('providers:disconnect', async (_e, providerId: string) => {
-    if (E2E) return { ok: true, status: e2eStatus() };
+    if (E2E) return { ok: true, status: await runtime!.status() };
     try {
       await providerAuth!.removeProvider(providerId);
       if (providerId === 'ollama' || providerId === 'lmstudio') {
@@ -1091,9 +1068,8 @@ function registerIpc(): void {
   ipcMain.handle('memory:get', () => getMemorySettings());
   ipcMain.handle('memory:setEnabled', async (_e, enabled: boolean) => {
     const settings = await setMemoryEnabled(enabled);
-    // Restart applies the recall-MCP change to the live backend; skipped under the
-    // E2E seam, where there's no real backend to restart.
-    if (!E2E) await runtime!.restart();
+    // Restart applies the recall-MCP change to the live backend (no-op on the fake).
+    await runtime!.restart();
     return settings;
   });
   ipcMain.handle('memory:read', () => readMemoryFiles());
@@ -1627,10 +1603,7 @@ app.whenReady().then(async () => {
   // schedule. The scheduler owns timing + execution; the backend routes the
   // assistant's schedule_task/notify_user tools to it via the TaskBridge below.
   scheduler = new TaskScheduler({
-    // Under STEM_E2E the real pi backend can't dispatch a turn, so the scheduler
-    // gets a hermetic shim that settles turns instantly — letting e2e specs seed a
-    // due task and observe it fire + clean up (see scheduler/e2e-backend.ts).
-    runtime: E2E ? createE2ESchedulerBackend() : runtime,
+    runtime,
     onChange: (tasks) => sendToMain('tasks:changed', tasks),
     onRun: (run) => sendToMain('tasks:run', run),
     // Active = a turn in flight on either surface, or interaction in the last
@@ -2022,36 +1995,30 @@ app.whenReady().then(async () => {
   registerIpc();
   createWindow();
   // Eagerly spawn pi + connect MCP once the window has painted, so the first prompt
-  // doesn't pay backend cold-start. Skipped in E2E (the backend is faked) and when
-  // not signed in (status() is cheap and never spawns). did-finish-load keeps the
-  // spawn + MCP child processes off the first-paint path. Fire-and-forget; races
-  // harmlessly with the renderer's listModels warm (ensureStarted is idempotent).
-  if (E2E) {
-    // The backend is faked, so there's no prewarm and no sign-in gate — but the
-    // scheduler subsystem (store → IPC → renderer) is still real and worth
-    // exercising end-to-end. Start it so seeded tasks load and the Tasks tab is
-    // reachable. (E2E specs seed only non-due tasks, so no turns are dispatched.)
-    mainWindow?.webContents.once('did-finish-load', () => void scheduler?.start());
-  } else {
-    mainWindow?.webContents.once('did-finish-load', () => {
-      void runtime!
-        .status()
-        .then(async (s) => {
-          if (!s.ok) return;
-          // Already authenticated (e.g. auth seeded from an existing ~/.pi): count
-          // onboarding as done, so a LATER auth loss shows the compact re-sign-in
-          // screen instead of the first-run welcome.
-          const settings = await readSettings();
-          if (!settings.onboarding.completed) await markOnboardingCompleted();
-          // Start the scheduler only once signed in — runs are turns, which need a
-          // working backend. This also runs any tasks missed while Stem was closed
-          // (catch-up), exactly once each.
-          void scheduler?.start();
-          return runtime!.prewarm();
-        })
-        .catch(() => {});
-    });
-  }
+  // doesn't pay backend cold-start. Skipped when not signed in (status() is cheap
+  // and never spawns). did-finish-load keeps the spawn + MCP child processes off
+  // the first-paint path. Fire-and-forget; races harmlessly with the renderer's
+  // listModels warm (ensureStarted is idempotent). Under STEM_E2E the fake backend
+  // reports authenticated (unless the onboarding sub-seam), so this same path
+  // starts the scheduler for seeded tasks; prewarm/restart are no-ops on the fake.
+  mainWindow?.webContents.once('did-finish-load', () => {
+    void runtime!
+      .status()
+      .then(async (s) => {
+        if (!s.ok) return;
+        // Already authenticated (e.g. auth seeded from an existing ~/.pi): count
+        // onboarding as done, so a LATER auth loss shows the compact re-sign-in
+        // screen instead of the first-run welcome.
+        const settings = await readSettings();
+        if (!settings.onboarding.completed) await markOnboardingCompleted();
+        // Start the scheduler only once signed in — runs are turns, which need a
+        // working backend. This also runs any tasks missed while Stem was closed
+        // (catch-up), exactly once each.
+        void scheduler?.start();
+        return runtime!.prewarm();
+      })
+      .catch(() => {});
+  });
   // Pre-create the overlay (hidden) so the shortcut summons it instantly, and
   // bind the global accelerator from the saved settings. Seed the all-Spaces
   // flag before creating the overlay so it's applied once, at creation.

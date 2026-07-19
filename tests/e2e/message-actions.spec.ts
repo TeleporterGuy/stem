@@ -1,10 +1,10 @@
 // Message-operation e2e — copy, edit, retry, fork, delete on chat messages.
-// Runs ONLY when STEM_E2E_REAL is set (otherwise skipped), because the per-message
-// action buttons only appear once a message carries a real backend turnId, and
-// edit/retry/delete/fork drive the real thread ops (rollbackToTurn/forkThread)
-// through pi. Auth is the global one auto-seeded into the throwaway pi-home (see
-// real-backend.spec.ts). Each test sends tiny fixed-token prompts to keep the
-// assertions stable and the quota cost minimal. Run with: STEM_E2E_REAL=1 npm run test:e2e
+// Runs hermetically against the scripted FakeBackend by default (its echo
+// replies contain the prompt's token, so the same assertions hold), and against
+// real pi with STEM_E2E_REAL=1 (auth auto-seeded into the throwaway pi-home,
+// see real-backend.spec.ts). Either way the per-message actions drive the real
+// thread ops (rollbackToTurn/forkThread) through the backend seam. The prompts
+// send tiny fixed tokens to keep real-mode assertions stable and quota minimal.
 import { test, expect, REAL_BACKEND } from './electron';
 import type { Page } from '@playwright/test';
 
@@ -27,11 +27,9 @@ async function waitForReply(win: Page, token: RegExp): Promise<void> {
   });
 }
 
-test.describe('message actions (real backend)', () => {
-  test.skip(!REAL_BACKEND, 'set STEM_E2E_REAL=1 to run against real pi');
-
-  // Each test spawns pi and takes one or more real turns.
-  test.slow();
+test.describe('message actions', () => {
+  // In real-backend mode each test spawns pi and takes one or more real turns.
+  if (REAL_BACKEND) test.slow();
 
   test('copies a message and flips the button to the copied state', async ({ mainWindow }) => {
     test.setTimeout(120_000);
