@@ -1,0 +1,998 @@
+import { useEffect, useRef, useState } from 'react';
+import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck } from 'lucide-react';
+import type {
+  EmbeddingCacheStats,
+  MemoryContents,
+  MemorySettings,
+  ModelSummary,
+  EmbeddingsMode,
+  EmbeddingsSettings,
+  LocalEmbedModelId,
+  LocalEmbedStatus,
+  LocalRerankModelId,
+  LocalRerankStatus,
+  RerankerMode,
+  RerankerSettings,
+  RetrievalSettings,
+  RetrievalTestResult,
+  ActiveFacts,
+  FactTier,
+  FactDetails,
+  MemoryConflict,
+  MemoryRebuildStatus
+} from '../../../shared/types';
+import { MdxView } from '../../chat/MdxView';
+import { ModelPicker } from '../../ui/ModelPicker';
+import { holdFullSpin, type ActiveFactsViewProps } from './shared';
+
+// Auto tidy-up cadence, expressed as the new-fact count that triggers a pass
+// (0 = manual only). Mirrors CONSOLIDATE defaults in the recall store.
+const TIDY_PRESETS: { label: string; value: number; hint: string }[] = [
+  { label: 'Frequent', value: 3, hint: 'after 3 new facts' },
+  { label: 'Normal', value: 5, hint: 'after 5 new facts' },
+  { label: 'Occasional', value: 10, hint: 'after 10 new facts' },
+  { label: 'Manual', value: 0, hint: 'never automatically' }
+];
+
+const FACT_INJECT_PRESETS: { label: string; value: number }[] = [
+  { label: '4', value: 4 },
+  { label: '8', value: 8 },
+  { label: '12', value: 12 },
+  { label: '16', value: 16 }
+];
+
+// The curated local models, mirrored from main/recall/embed-catalog.ts (labels +
+// sizes only — the specs live in main; the id is the contract).
+const LOCAL_EMBED_MODELS: { id: LocalEmbedModelId; label: string; detail: string }[] = [
+  { id: 'multilingual-e5-small', label: 'Multilingual E5 Small', detail: '~120 MB · recommended' },
+  { id: 'multilingual-e5-base', label: 'Multilingual E5 Base', detail: '~280 MB · higher quality' },
+  { id: 'embeddinggemma-300m', label: 'EmbeddingGemma 300M', detail: '~330 MB · largest' }
+];
+
+const EMBED_MODES: { id: EmbeddingsMode; label: string; hint: string }[] = [
+  { id: 'local', label: 'Built-in', hint: 'Bundled multilingual model, runs on this Mac' },
+  { id: 'remote', label: 'Server', hint: 'Your own OpenAI-compatible endpoint (Ollama, LM Studio…)' },
+  { id: 'off', label: 'Off', hint: 'Rank facts by keywords/recency only' }
+];
+
+// The curated local reranker, mirrored from main/recall/rerank-catalog.ts.
+const LOCAL_RERANK_MODELS: { id: LocalRerankModelId; label: string; detail: string }[] = [
+  { id: 'bge-reranker-v2-m3', label: 'BGE Reranker v2 M3', detail: '~570 MB · multilingual' }
+];
+
+const RERANK_MODES: { id: RerankerMode; label: string; hint: string }[] = [
+  { id: 'off', label: 'Off', hint: 'Rank facts by embedding similarity only' },
+  { id: 'local', label: 'Built-in', hint: 'Bundled cross-encoder re-scores the top matches, runs on this Mac' },
+  { id: 'remote', label: 'Server', hint: 'Your own /rerank endpoint (llama.cpp --reranking, vLLM, Infinity…)' }
+];
+
+/** One line describing where a local retrieval model (embedder/reranker) is right now. */
+function localStatusLabel(
+  status: { state: LocalEmbedStatus['state']; progressPct?: number; dim?: number; error?: string } | null
+): string {
+  switch (status?.state) {
+    case 'downloading':
+      return `Downloading model… ${status.progressPct ?? 0}%`;
+    case 'loading':
+      return 'Loading model…';
+    case 'ready':
+      return `Ready${status.dim ? ` · ${status.dim}-dim` : ''}`;
+    case 'error':
+      return `Error: ${status.error ?? 'model failed to load'}`;
+    default:
+      // 'idle' is transient in local mode (the startup kick lands ~1.5 s after
+      // launch), and we can't tell cached-from-not-yet-downloaded from here — so
+      // don't claim either.
+      return 'Starting up… (first use downloads the model once)';
+  }
+}
+
+// Embeddings-stage controls: an exclusive Built-in / Server / Off mode, the local
+// model picker + live download/ready status, or the remote endpoint fields (free
+// text — Stem just makes the HTTP call). Text edits stay local while typing and
+// persist on blur; mode/model switches persist immediately.
+function EmbeddingsFields({
+  value,
+  onPatch
+}: {
+  value: EmbeddingsSettings;
+  onPatch: (patch: Partial<EmbeddingsSettings>) => void;
+}) {
+  const [local, setLocal] = useState(value);
+  const [testing, setTesting] = useState(false);
+  const [test, setTest] = useState<RetrievalTestResult | null>(null);
+  const [status, setStatus] = useState<LocalEmbedStatus | null>(null);
+  useEffect(() => setLocal(value), [value]);
+  useEffect(() => {
+    window.stem.getLocalEmbedStatus().then(setStatus);
+    return window.stem.onLocalEmbedStatus(setStatus);
+  }, []);
+
+  async function runTest() {
+    setTesting(true);
+    setTest(null);
+    try {
+      setTest(await window.stem.testRetrievalEndpoint('embeddings'));
+    } catch {
+      setTest({ ok: false, detail: 'request failed' });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const mode = value.mode;
+
+  return (
+    <div className="set-block fg-divider">
+      <div className="group-row">
+        <span className="row-main">
+          <strong>Embeddings</strong>
+          <em>{EMBED_MODES.find((m) => m.id === mode)?.hint}</em>
+        </span>
+      </div>
+      <div className="seg-ctl">
+        {EMBED_MODES.map((m) => (
+          <button
+            key={m.id}
+            className={mode === m.id ? 'active' : ''}
+            onClick={() => {
+              setTest(null);
+              onPatch({ mode: m.id });
+            }}
+            title={m.hint}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      {mode === 'local' && (
+        <>
+          <select
+            className="ifield"
+            aria-label="Local embedding model"
+            value={value.localModel}
+            onChange={(e) => {
+              setTest(null);
+              onPatch({ localModel: e.target.value as LocalEmbedModelId });
+            }}
+          >
+            {LOCAL_EMBED_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} ({m.detail})
+              </option>
+            ))}
+          </select>
+          <p className="muted">{localStatusLabel(status)}</p>
+        </>
+      )}
+      {mode === 'remote' && (
+        <>
+          <input
+            className="ifield"
+            placeholder="http://localhost:11434"
+            aria-label="Embeddings base URL"
+            value={local.baseUrl}
+            onChange={(e) => setLocal({ ...local, baseUrl: e.target.value })}
+            onBlur={() => onPatch({ baseUrl: local.baseUrl })}
+          />
+          <input
+            className="ifield"
+            placeholder="qwen3-embedding:4b"
+            aria-label="Embeddings model"
+            value={local.model}
+            onChange={(e) => setLocal({ ...local, model: e.target.value })}
+            onBlur={() => onPatch({ model: local.model })}
+          />
+          <p className="muted">
+            Recommended with Ollama: <code>qwen3-embedding:4b</code> — the best cross-language fact
+            recall we measured.
+          </p>
+          <input
+            className="ifield"
+            type="password"
+            placeholder="API key (optional)"
+            aria-label="Embeddings API key"
+            value={local.apiKey ?? ''}
+            onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
+            onBlur={() => onPatch({ apiKey: local.apiKey })}
+          />
+        </>
+      )}
+      {mode !== 'off' && (
+        <div className="retrieval-test">
+          <button
+            className="retrieval-test-btn"
+            onClick={runTest}
+            disabled={testing}
+            title={testing ? 'Testing…' : 'Test connection'}
+            aria-label="Test connection"
+          >
+            <Plug size={14} />
+            <span>{testing ? 'Testing…' : 'Test connection'}</span>
+          </button>
+          {!testing && test && (
+            <span className={`retrieval-test-status ${test.ok ? 'ok' : 'err'}`} title={test.detail}>
+              {test.ok ? <Check size={12} /> : <X size={12} />}
+              {test.detail}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Reranker-stage controls, mirroring EmbeddingsFields: an exclusive Off /
+// Built-in / Server mode, the local model + live download/ready status, or the
+// remote endpoint fields. The reranker re-scores the embedding shortlist with a
+// cross-encoder — the precision stage that catches cross-language matches
+// cosine ranking misses.
+function RerankerFields({
+  value,
+  onPatch
+}: {
+  value: RerankerSettings;
+  onPatch: (patch: Partial<RerankerSettings>) => void;
+}) {
+  const [local, setLocal] = useState(value);
+  const [testing, setTesting] = useState(false);
+  const [test, setTest] = useState<RetrievalTestResult | null>(null);
+  const [status, setStatus] = useState<LocalRerankStatus | null>(null);
+  useEffect(() => setLocal(value), [value]);
+  useEffect(() => {
+    window.stem.getLocalRerankStatus().then(setStatus);
+    return window.stem.onLocalRerankStatus(setStatus);
+  }, []);
+
+  async function runTest() {
+    setTesting(true);
+    setTest(null);
+    try {
+      setTest(await window.stem.testRetrievalEndpoint('reranker'));
+    } catch {
+      setTest({ ok: false, detail: 'request failed' });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const mode = value.mode;
+
+  return (
+    <div className="set-block fg-divider">
+      <div className="group-row">
+        <span className="row-main">
+          <strong>Reranker</strong>
+          <em>{RERANK_MODES.find((m) => m.id === mode)?.hint}</em>
+        </span>
+      </div>
+      <div className="seg-ctl">
+        {RERANK_MODES.map((m) => (
+          <button
+            key={m.id}
+            className={mode === m.id ? 'active' : ''}
+            onClick={() => {
+              setTest(null);
+              onPatch({ mode: m.id });
+            }}
+            title={m.hint}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      {mode === 'local' && (
+        <>
+          <select
+            className="ifield"
+            aria-label="Local reranker model"
+            value={value.localModel}
+            onChange={(e) => {
+              setTest(null);
+              onPatch({ localModel: e.target.value as LocalRerankModelId });
+            }}
+          >
+            {LOCAL_RERANK_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} ({m.detail})
+              </option>
+            ))}
+          </select>
+          <p className="muted">{localStatusLabel(status)}</p>
+        </>
+      )}
+      {mode === 'remote' && (
+        <>
+          <input
+            className="ifield"
+            placeholder="http://localhost:8080"
+            aria-label="Reranker base URL"
+            value={local.baseUrl}
+            onChange={(e) => setLocal({ ...local, baseUrl: e.target.value })}
+            onBlur={() => onPatch({ baseUrl: local.baseUrl })}
+          />
+          <input
+            className="ifield"
+            placeholder="bge-reranker-v2-m3"
+            aria-label="Reranker model"
+            value={local.model}
+            onChange={(e) => setLocal({ ...local, model: e.target.value })}
+            onBlur={() => onPatch({ model: local.model })}
+          />
+          <input
+            className="ifield"
+            type="password"
+            placeholder="API key (optional)"
+            aria-label="Reranker API key"
+            value={local.apiKey ?? ''}
+            onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
+            onBlur={() => onPatch({ apiKey: local.apiKey })}
+          />
+        </>
+      )}
+      {mode !== 'off' && (
+        <div className="retrieval-test">
+          <button
+            className="retrieval-test-btn"
+            onClick={runTest}
+            disabled={testing}
+            title={testing ? 'Testing…' : 'Test connection'}
+            aria-label="Test reranker"
+          >
+            <Plug size={14} />
+            <span>{testing ? 'Testing…' : 'Test connection'}</span>
+          </button>
+          {!testing && test && (
+            <span className={`retrieval-test-status ${test.ok ? 'ok' : 'err'}`} title={test.detail}>
+              {test.ok ? <Check size={12} /> : <X size={12} />}
+              {test.detail}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Human label for a fact-selection tier, shown in the active-facts summary. */
+function tierLabel(t: FactTier): string {
+  switch (t) {
+    case 'hybrid':
+      return 'semantic + lexical';
+    case 'pinned-only':
+      return 'pinned only';
+    case 'none':
+      return 'no match';
+    case 'all':
+      return 'all (under threshold)';
+    case 'embedding':
+      return 'embedding + rerank';
+    case 'lexical':
+      return 'lexical (BM25)';
+    case 'recency':
+      return 'recency';
+  }
+}
+
+/**
+ * [newer, older] — the same ordering `resolveMemoryConflict` applies in the store,
+ * id as the tiebreak. "Keep newer" is unusable unless the card shows which is which.
+ */
+function orderedConflictFacts(c: MemoryConflict): [FactDetails, FactDetails] {
+  const aIsNewer =
+    c.factA.updatedAt > c.factB.updatedAt ||
+    (c.factA.updatedAt === c.factB.updatedAt && c.factA.id > c.factB.id);
+  return aIsNewer ? [c.factA, c.factB] : [c.factB, c.factA];
+}
+
+export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts: ActiveFactsViewProps }) {
+  const { activeThreadId, activeRunning, previewActive, previewDraft, onTogglePreview } = activeFacts;
+  const [settings, setSettings] = useState<MemorySettings | null>(null);
+  const [contents, setContents] = useState<MemoryContents | null>(null);
+  const [showTech, setShowTech] = useState(false);
+  const [showSuperseded, setShowSuperseded] = useState(false);
+  const [showMemories, setShowMemories] = useState(false);
+  // Durable facts injected on this chat's last turn, and (when toggled) the set the
+  // current draft would inject. Both annotate + sort the stored-facts list below.
+  const [lastTurn, setLastTurn] = useState<ActiveFacts | null>(null);
+  const [preview, setPreview] = useState<ActiveFacts | null>(null);
+
+  // Refetch the last injected set when the chat changes or finishes a turn (the row
+  // is written at turn start, so a running-flag flip means a fresh set is available).
+  useEffect(() => {
+    let cancelled = false;
+    window.stem.getActiveFacts(activeThreadId).then((r) => {
+      if (!cancelled) setLastTurn(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeThreadId, activeRunning]);
+
+  // Reveal the stored list when preview turns on, so the re-sorted badges are visible.
+  useEffect(() => {
+    if (previewActive) setShowMemories(true);
+  }, [previewActive]);
+
+  // Debounced draft preview — only runs the (embedding/rerank) selection while the
+  // toggle is on; clears immediately when off so stale draft badges don't linger.
+  useEffect(() => {
+    if (!previewActive) {
+      setPreview(null);
+      return;
+    }
+    const text = previewDraft;
+    const t = setTimeout(() => {
+      window.stem.previewFacts(text).then(setPreview);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [previewActive, previewDraft]);
+  const [consolidating, setConsolidating] = useState(false);
+  const [consolidateMsg, setConsolidateMsg] = useState<string | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  // null => use the backend default model for distillation/tidy-up.
+  const [memoryModel, setMemoryModel] = useState<string | null>(null);
+  const [retrieval, setRetrieval] = useState<RetrievalSettings | null>(null);
+  const [showRetrieval, setShowRetrieval] = useState(false);
+  const [embStats, setEmbStats] = useState<EmbeddingCacheStats | null>(null);
+  const [rebuild, setRebuild] = useState<MemoryRebuildStatus | null>(null);
+  const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
+  const [details, setDetails] = useState<Record<number, FactDetails | null>>({});
+  const sensitivePinAcknowledged = useRef(false);
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  function loadContents() {
+    window.stem.readMemory().then(setContents);
+  }
+
+  async function refreshContents() {
+    setRefreshing(true);
+    try {
+      setContents(await holdFullSpin(window.stem.readMemory()));
+    } finally {
+      setRefreshing(false);
+    }
+  }
+  function loadEmbStats() {
+    window.stem.getEmbeddingStats().then(setEmbStats);
+  }
+  function loadTrustState() {
+    window.stem.getMemoryRebuildStatus().then(setRebuild);
+    window.stem.getMemoryConflicts().then(setConflicts);
+  }
+
+  useEffect(() => {
+    window.stem.getMemorySettings().then(setSettings);
+    window.stem.getSettings().then((s) => {
+      setMemoryModel(s.memory.model);
+      setRetrieval(s.retrieval);
+    });
+    loadContents();
+    loadEmbStats();
+    loadTrustState();
+  }, []);
+
+  // Main pushes a status after every rebuild step, so the panel follows along
+  // without a poll — and without a manual Refresh action to compensate for one.
+  useEffect(() => {
+    return window.stem.onMemoryRebuildStatus((next) => {
+      setRebuild(next);
+      if (next.state === 'complete') {
+        loadContents();
+        window.stem.getMemoryConflicts().then(setConflicts);
+      }
+    });
+  }, []);
+
+  function selectMemoryModel(id: string | null) {
+    setMemoryModel(id);
+    window.stem.updateMemorySettings({ model: id }).then((s) => setMemoryModel(s.memory.model));
+  }
+
+  function patchEmbeddings(patch: Partial<EmbeddingsSettings>) {
+    window.stem.updateRetrievalSettings({ embeddings: patch }).then((s) => setRetrieval(s.retrieval));
+  }
+
+  function patchReranker(patch: Partial<RerankerSettings>) {
+    window.stem.updateRetrievalSettings({ reranker: patch }).then((s) => setRetrieval(s.retrieval));
+  }
+
+  function selectTidyThreshold(n: number) {
+    window.stem.setTidyThreshold(n).then(setSettings);
+  }
+
+  function selectFactThreshold(n: number) {
+    window.stem.setMaxRelevantFacts(n).then(setSettings);
+  }
+
+  async function toggle() {
+    if (!settings) return;
+    setSettings(await window.stem.setMemoryEnabled(!settings.enabled));
+  }
+
+  async function forget(id: number) {
+    setContents(await window.stem.forgetMemory(id));
+    loadTrustState();
+  }
+
+  async function pinFact(id: number, pinned: boolean, sensitivity?: string) {
+    if (pinned && sensitivity === 'sensitive' && !sensitivePinAcknowledged.current) {
+      const accepted = window.confirm(
+        'Pinned memories are sent with every message. Pin this sensitive memory anyway?'
+      );
+      if (!accepted) return;
+      sensitivePinAcknowledged.current = true;
+    }
+    setContents(await window.stem.setFactPinned(id, pinned));
+  }
+
+  async function confirmFact(id: number) {
+    setContents(await window.stem.confirmFact(id));
+  }
+
+  async function restoreFact(id: number) {
+    setContents(await window.stem.restoreSupersededFact(id));
+  }
+
+  async function resolveConflict(id: number, resolution: 'keep_newer' | 'keep_older' | 'keep_both') {
+    setContents(await window.stem.resolveMemoryConflict(id, resolution));
+    loadTrustState();
+  }
+
+  async function toggleDetails(id: number) {
+    if (Object.prototype.hasOwnProperty.call(details, id)) return;
+    const value = await window.stem.getFactDetails(id);
+    setDetails((d) => ({ ...d, [id]: value }));
+  }
+
+  async function reset() {
+    if (!confirmReset) {
+      setConfirmReset(true);
+      return;
+    }
+    setResetting(true);
+    setConsolidateMsg(null);
+    try {
+      setContents(await window.stem.resetFactsMemory());
+      setConsolidateMsg('Facts cleared.');
+    } catch {
+      setConsolidateMsg('Reset failed — try again.');
+    } finally {
+      setResetting(false);
+      setConfirmReset(false);
+    }
+  }
+
+  async function consolidate() {
+    setConsolidating(true);
+    setConsolidateMsg(null);
+    try {
+      const r = await holdFullSpin(window.stem.consolidateMemory());
+      setContents(r.contents);
+      const changed = r.merged + r.corrected + r.dropped;
+      const outcome =
+        changed === 0
+          ? 'No duplicates or stale facts found'
+          : `Merged ${r.merged}, corrected ${r.corrected}, retired ${r.dropped} — retired facts move to Superseded below`;
+      setConsolidateMsg(
+        r.failedChunks > 0
+          ? `${outcome}. The memory model failed on ${r.failedChunks} ${r.failedChunks === 1 ? 'batch' : 'batches'} of facts — those weren't reviewed; try again.`
+          : `${outcome}.`
+      );
+    } catch {
+      setConsolidateMsg('Consolidation failed — try again.');
+    } finally {
+      setConsolidating(false);
+    }
+  }
+
+  if (!settings) return <p className="muted">Loading…</p>;
+
+  const allNotes = contents?.files.filter((f) => f.kind === 'note' && f.content.trim()) ?? [];
+  // Superseded facts are history, not memory: they never inject, so they don't
+  // belong in the live list or its count. They collapse into their own section.
+  const notes = allNotes.filter((f) => f.status !== 'superseded');
+  const supersededNotes = allNotes.filter((f) => f.status === 'superseded');
+  const techFiles = contents?.files.filter((f) => f.kind === 'native' && f.exists && f.content.trim()) ?? [];
+
+  // Which facts are "active": injected last turn, and (when preview is on) the set the
+  // current draft would inject. Sort active facts to the top — draft above last-turn —
+  // preserving recency order within each group, and badge each row accordingly.
+  const lastIds = new Set((lastTurn?.facts ?? []).map((f) => f.id));
+  const draftIds = previewActive ? new Set((preview?.facts ?? []).map((f) => f.id)) : null;
+  const groupOf = (id?: number): number => {
+    if (id == null) return 2;
+    if (draftIds?.has(id)) return 0;
+    if (lastIds.has(id)) return 1;
+    return 2;
+  };
+  const orderedNotes = notes
+    .map((f, i) => ({ f, i, g: groupOf(f.id) }))
+    .sort((a, b) => a.g - b.g || a.i - b.i)
+    .map((x) => x.f);
+
+  function renderNote(f: (typeof allNotes)[number]) {
+    const active = f.id != null && draftIds?.has(f.id) ? 'draft' : f.id != null && lastIds.has(f.id) ? 'injected' : null;
+    return (
+
+              <div key={f.name} className={`memory-note${active ? ' active' : ''}`}>
+                <div className="memory-note-body">
+                  {f.statement ? (
+                    <button className="memory-statement" onClick={() => f.id != null && void toggleDetails(f.id)}>
+                      {f.statement}
+                    </button>
+                  ) : <MdxView text={f.content} />}
+                  {active && <span className={`chip active-${active}`}>{active}</span>}
+                  {f.source && <span className="chip">{f.source}</span>}
+                  {f.category && <span className="chip">{f.category}</span>}
+                  {f.sensitivity === 'sensitive' && <span className="chip sensitive">sensitive</span>}
+                  {f.status && f.status !== 'active' && <span className="chip">{f.status}</span>}
+                  {f.pinned && <span className="chip"><Pin size={10} /> pinned</span>}
+                  {(f.timesInjected ?? 0) > 0 && (
+                    <span
+                      className="chip"
+                      title="How often this fact was sent with a message, and how often the reply visibly used it"
+                    >
+                      injected {f.timesInjected}× · used {f.timesUsed ?? 0}×
+                    </span>
+                  )}
+                  {f.id != null && details[f.id] && (
+                    <div className="memory-evidence">
+                      <span>Confidence {Math.round(details[f.id]!.confidence * 100)}%</span>
+                      {details[f.id]!.validUntil && <span>Valid until {new Date(details[f.id]!.validUntil! * 1000).toLocaleDateString()}</span>}
+                      {details[f.id]!.evidence.map((e) => (
+                        <blockquote key={e.id}>{new Date(e.timestamp * 1000).toLocaleDateString()} · {e.origin}: {e.excerpt}</blockquote>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {f.id != null && (
+                  <div className="memory-note-actions">
+                    {f.status === 'superseded' ? (
+                      <button
+                        className="memory-note-action"
+                        title="Restore"
+                        aria-label="Restore this memory"
+                        onClick={() => restoreFact(f.id!)}
+                      >
+                        <RotateCcw size={14} />
+                      </button>
+                    ) : (
+                      <>
+                        {f.source !== 'On request' && (f.confidence ?? 1) < 0.7 && (
+                          <button
+                            className="memory-note-action"
+                            title="Confirm"
+                            aria-label="Confirm this memory"
+                            onClick={() => confirmFact(f.id!)}
+                          >
+                            <ShieldCheck size={14} />
+                          </button>
+                        )}
+                        <button
+                          className={`memory-note-action${f.pinned ? ' on' : ''}`}
+                          title={f.pinned ? 'Unpin' : 'Pin for every message'}
+                          aria-label={f.pinned ? 'Unpin this memory' : 'Pin this memory'}
+                          aria-pressed={!!f.pinned}
+                          onClick={() => pinFact(f.id!, !f.pinned, f.sensitivity)}
+                        >
+                          <Pin size={14} fill={f.pinned ? 'currentColor' : 'none'} />
+                        </button>
+                      </>
+                    )}
+                    <button
+                      className="memory-note-action danger"
+                      title="Forget permanently"
+                      aria-label="Forget this memory permanently"
+                      onClick={() => forget(f.id!)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                )}
+              </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="grp-head">Memory</div>
+      <div className="group">
+        <div className="group-row">
+          <span className="row-main">
+            <strong>Memory</strong>
+            <em>Remember across conversations</em>
+          </span>
+          <button
+            className={`switch${settings.enabled ? ' on' : ''}`}
+            role="switch"
+            aria-checked={settings.enabled}
+            aria-label="Memory"
+            onClick={toggle}
+          />
+        </div>
+      </div>
+
+      <div className="grp-head">Model</div>
+      <div className="formgroup">
+        <ModelPicker
+          models={models}
+          value={memoryModel}
+          onChange={selectMemoryModel}
+          emptyLabel="Default (recommended)"
+          ariaLabel="Memory model"
+        />
+        <p className="muted">Used to distill and tidy up memories in the background. The skills curator has its own model (under MCP &amp; Skills → Skills).</p>
+        <div className="set-block fg-divider">
+          <span className="set-sub">Tidy up automatically</span>
+          <div className="seg-ctl">
+            {TIDY_PRESETS.map((p) => (
+              <button
+                key={p.label}
+                className={settings.tidyThreshold === p.value ? 'active' : ''}
+                onClick={() => selectTidyThreshold(p.value)}
+                title={`Tidy up ${p.hint}`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <p className="muted">Stem merges duplicates and drops stale facts once this many new ones accumulate.</p>
+        </div>
+      </div>
+
+      {rebuild && rebuild.state !== 'complete' && (
+        <>
+          <div className="grp-head">Memory upgrade</div>
+          <div className="formgroup memory-rebuild-card">
+            <strong>Rebuild provenance for existing memory</strong>
+            <p className="muted">
+              {rebuild.totalMessages} stored messages can be reprocessed to attach evidence, sensitivity,
+              validity, and conflict information. This uses the selected memory model; a remote model sends
+              transcript segments to that provider and may incur usage costs. Existing memories remain usable.
+            </p>
+            {rebuild.state !== 'available' && (
+              <p className="muted">
+                {rebuild.processedMessages} of {rebuild.totalMessages} messages · {rebuild.state}
+                {rebuild.lastError ? ` · ${rebuild.lastError}` : ''}
+              </p>
+            )}
+            <div className="memory-view-actions">
+              {rebuild.state === 'available' && (
+                <button className="link-btn" onClick={() => window.stem.startMemoryRebuild().then(setRebuild)}>
+                  Start rebuild
+                </button>
+              )}
+              {rebuild.state === 'running' && (
+                <button className="link-btn" onClick={() => window.stem.pauseMemoryRebuild().then(setRebuild)}>
+                  Pause
+                </button>
+              )}
+              {(rebuild.state === 'paused' || rebuild.state === 'failed') && (
+                <button className="link-btn" onClick={() => window.stem.resumeMemoryRebuild().then(setRebuild)}>
+                  {rebuild.state === 'failed' ? 'Retry' : 'Resume'}
+                </button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {conflicts.length > 0 && (
+        <>
+          <div className="grp-head">Conflicts ({conflicts.length})</div>
+          <div className="formgroup memory-conflicts">
+            {conflicts.map((c) => (
+              <div key={c.id} className="memory-conflict">
+                {orderedConflictFacts(c).map((f, i) => (
+                  <div key={f.id} className="memory-conflict-side">
+                    <span className="chip">{i === 0 ? 'Newer' : 'Older'}</span>
+                    <p>{f.text}</p>
+                    <span className="muted">
+                      Learned {new Date(f.updatedAt * 1000).toLocaleDateString()}
+                    </span>
+                  </div>
+                ))}
+                <em>{c.reason}</em>
+                <div className="memory-view-actions">
+                  <button className="link-btn" onClick={() => resolveConflict(c.id, 'keep_newer')}>Keep newer</button>
+                  <button className="link-btn" onClick={() => resolveConflict(c.id, 'keep_older')}>Keep older</button>
+                  <button className="link-btn" onClick={() => resolveConflict(c.id, 'keep_both')}>Keep both</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {retrieval && (
+        <>
+          <div className="grp-head">
+            <button
+              className="memory-view-toggle"
+              aria-expanded={showRetrieval}
+              onClick={() => {
+                if (!showRetrieval) loadEmbStats();
+                setShowRetrieval((v) => !v);
+              }}
+            >
+              <ChevronRight size={14} className={showRetrieval ? 'open' : ''} />
+              <strong>Relevance ranking (advanced)</strong>
+            </button>
+          </div>
+          {showRetrieval && (
+            <div className="formgroup">
+              <p className="muted">
+                Stem always selects relevant active facts instead of sending the whole memory store. Sensitive
+                facts require a direct keyword match or a stronger semantic match; conflicted, expired, and
+                unconfirmed assistant claims are excluded.
+              </p>
+              <div className="set-block">
+                <span className="set-sub">Relevant facts per message</span>
+                <div className="seg-ctl">
+                  {FACT_INJECT_PRESETS.map((p) => (
+                    <button
+                      key={p.label}
+                      className={settings.maxRelevantFacts === p.value ? 'active' : ''}
+                      onClick={() => selectFactThreshold(p.value)}
+                      title={`Select at most ${p.value} relevant facts, plus up to five pinned facts`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="muted">
+                  Up to five facts can be pinned for every message. All other memories need a positive semantic
+                  or lexical match; there is no recency filler.
+                </p>
+              </div>
+              <EmbeddingsFields value={retrieval.embeddings} onPatch={patchEmbeddings} />
+              <p className="muted">
+                {embStats == null
+                  ? 'Embedding cache: …'
+                  : embStats.embeddedCount === 0
+                    ? `0 of ${embStats.factCount} facts embedded — send a message to build the cache.`
+                    : `${embStats.embeddedCount} of ${embStats.factCount} facts embedded${
+                        embStats.dim ? ` · ${embStats.dim}-dim vectors` : ''
+                      }.`}{' '}
+                <button className="link-btn" onClick={loadEmbStats}>
+                  Refresh
+                </button>
+              </p>
+              <p className="muted">
+                The reranker is a second, precision pass: a cross-encoder re-scores the top embedding
+                matches before injection, which is what catches cross-language matches (a Slovak
+                question finding an English fact). It applies whichever embeddings mode is active —
+                Built-in or Server. While off or not ready, ranking uses embedding similarity alone.
+              </p>
+              <RerankerFields value={retrieval.reranker} onPatch={patchReranker} />
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="memory-view">
+        <div className="memory-view-head">
+          <button
+            className="memory-view-toggle"
+            aria-expanded={showMemories}
+            onClick={() => setShowMemories((v) => !v)}
+          >
+            <ChevronRight size={14} className={showMemories ? 'open' : ''} />
+            <strong>Stored memory{notes.length ? ` (${notes.length})` : ''}</strong>
+          </button>
+          <span className="memory-view-actions">
+            <button
+              className={`link-btn icon-only${previewActive ? ' on' : ''}`}
+              onClick={onTogglePreview}
+              data-label="Preview draft"
+              aria-label="Preview which facts your current draft would inject"
+              aria-pressed={previewActive}
+            >
+              <Eye size={15} />
+            </button>
+            <button
+              className="link-btn icon-only"
+              onClick={consolidate}
+              disabled={consolidating || !settings.enabled || notes.length < 2}
+              data-label={consolidating ? 'Tidying…' : 'Tidy up'}
+              aria-label="Tidy up: merge duplicates and drop stale facts"
+            >
+              <Wand2 size={15} className={consolidating ? 'spin' : undefined} />
+            </button>
+            <button
+              className="link-btn icon-only"
+              onClick={refreshContents}
+              disabled={refreshing}
+              data-label="Refresh"
+              aria-label="Refresh facts"
+            >
+              <RefreshCw size={15} className={refreshing ? 'spin' : undefined} />
+            </button>
+          </span>
+        </div>
+        {activeThreadId && lastTurn && (
+          <p className="muted active-facts-summary">
+            Last turn: {lastTurn.facts.length} {lastTurn.facts.length === 1 ? 'fact' : 'facts'} via{' '}
+            {tierLabel(lastTurn.tier)}.
+          </p>
+        )}
+        {previewActive && (
+          <p className="muted active-facts-summary">
+            {preview
+              ? `Draft preview: ${preview.facts.length} ${preview.facts.length === 1 ? 'fact' : 'facts'} via ${tierLabel(preview.tier)}.`
+              : 'Draft preview: computing…'}
+          </p>
+        )}
+        {consolidateMsg && <p className="muted">{consolidateMsg}</p>}
+        {!contents && <p className="muted">Loading…</p>}
+        {showMemories && contents && notes.length === 0 && (
+          <p className="muted">No memories stored yet — Stem builds these as you chat.</p>
+        )}
+        {showMemories && orderedNotes.map(renderNote)}
+
+        {showMemories && supersededNotes.length > 0 && (
+          <div className="memory-tech">
+            <button
+              className="memory-tech-head"
+              aria-expanded={showSuperseded}
+              onClick={() => setShowSuperseded((v) => !v)}
+            >
+              <ChevronRight size={14} className={showSuperseded ? 'open' : ''} />
+              <span>Superseded ({supersededNotes.length})</span>
+            </button>
+            {showSuperseded && supersededNotes.map(renderNote)}
+          </div>
+        )}
+
+        {techFiles.length > 0 && (
+          <div className="memory-tech">
+            <button
+              className="memory-tech-head"
+              aria-expanded={showTech}
+              onClick={() => setShowTech((v) => !v)}
+            >
+              <ChevronRight size={14} className={showTech ? 'open' : ''} />
+              <span>Technical details ({techFiles.length})</span>
+            </button>
+            {showTech &&
+              techFiles.map((f) => (
+                <div key={f.name} className="memory-doc">
+                  <h4>{f.label}</h4>
+                  <MdxView text={f.content} />
+                </div>
+              ))}
+          </div>
+        )}
+
+        {(notes.length > 0 || techFiles.length > 0) && (
+          <div className="memory-reset">
+            {confirmReset ? (
+              <span className="memory-reset-confirm">
+                <span className="muted">
+                  Erase all {notes.length} {notes.length === 1 ? 'fact' : 'facts'}? This can’t be undone.
+                </span>
+                <button className="link-btn danger" onClick={reset} disabled={resetting}>
+                  {resetting ? 'Resetting…' : 'Erase facts'}
+                </button>
+                <button className="link-btn" onClick={() => setConfirmReset(false)} disabled={resetting}>
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                className="link-btn danger memory-reset-trigger"
+                onClick={reset}
+                title="Permanently erase all durable facts (keeps episodic recall + your files)"
+              >
+                <Trash2 size={12} /> Reset facts
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
