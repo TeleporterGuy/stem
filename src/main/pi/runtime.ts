@@ -36,6 +36,7 @@ import {
   LOCAL_PROVIDER_IDS,
   providerName
 } from '../../shared/providers';
+import { log } from '../log';
 import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
@@ -421,6 +422,26 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   /** The skills revision marker captured at turn start, to detect in-turn skill writes. */
   private skillsRevAtTurnStart = '';
 
+  // ---- crash-loop breaker ----
+  // An exit under RAPID_EXIT_MS counts a strike; SPAWN_STRIKE_LIMIT strikes pause
+  // respawns for an escalating cooldown so a broken install can't spawn-crash in a
+  // tight loop on every turn attempt. A long-lived process resets the count, and a
+  // user-initiated restart() clears the breaker outright.
+  private static readonly RAPID_EXIT_MS = 15_000;
+  private static readonly SPAWN_STRIKE_LIMIT = 3;
+  private static readonly COOLDOWN_BASE_MS = 30_000;
+  private static readonly COOLDOWN_MAX_MS = 300_000;
+  /** Monotonic spawn counter, so one failed spawn never counts two strikes. */
+  private spawnGen = 0;
+  private strikedGen = 0;
+  private spawnStrikes = 0;
+  private cooldownUntil = 0;
+
+  /** complete() spawns a throwaway pi process per call; cap them (queue the rest). */
+  private static readonly MAX_COMPLETE_PROCS = 2;
+  private completeActive = 0;
+  private completeWaiters: Array<() => void> = [];
+
   constructor(private readonly options: RuntimeOptions) {
     super();
   }
@@ -462,6 +483,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   async restart(): Promise<void> {
+    // A deliberate restart is the manual breaker reset: the user (or a config
+    // change) asked for a fresh spawn, so it always gets one immediately.
+    this.spawnStrikes = 0;
+    this.cooldownUntil = 0;
     await this.shutdown();
     await this.ensureStarted();
   }
@@ -636,6 +661,34 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * active chat so it can't clobber the foreground session.
    */
   async complete(prompt: string, opts?: { model?: string | null; timeoutMs?: number }): Promise<string> {
+    // Every call spawns its own pi process; a burst (distill + consolidation +
+    // summary backfill + scheduled runs) must queue instead of forking a pile of
+    // concurrent children.
+    await this.acquireCompleteSlot();
+    try {
+      return await this.completeNow(prompt, opts);
+    } finally {
+      this.releaseCompleteSlot();
+    }
+  }
+
+  private acquireCompleteSlot(): Promise<void> {
+    if (this.completeActive < PiRuntime.MAX_COMPLETE_PROCS) {
+      this.completeActive += 1;
+      return Promise.resolve();
+    }
+    // The slot is handed over directly in releaseCompleteSlot, so completeActive
+    // stays constant across the transfer.
+    return new Promise((resolve) => this.completeWaiters.push(resolve));
+  }
+
+  private releaseCompleteSlot(): void {
+    const next = this.completeWaiters.shift();
+    if (next) next();
+    else this.completeActive -= 1;
+  }
+
+  private async completeNow(prompt: string, opts?: { model?: string | null; timeoutMs?: number }): Promise<string> {
     const timeoutMs = opts?.timeoutMs ?? 120_000;
     const pi = await resolvePi();
     if (!pi) throw new Error('The pi backend could not be located.');
@@ -667,6 +720,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     const done = new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup();
+        log('pi.complete', 'one-shot completion timed out', { timeoutMs, provider, model: modelId });
         reject(new Error('pi completion timed out.'));
       }, timeoutMs);
       const onEvent = (ev: PiEvent): void => {
@@ -1177,10 +1231,41 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private ensureStarted(): Promise<void> {
     if (this.proc && this.proc.running) return Promise.resolve();
     if (this.starting) return this.starting;
+    const cooldownLeft = this.cooldownUntil - Date.now();
+    if (cooldownLeft > 0) {
+      return Promise.reject(new Error(
+        `The pi backend keeps exiting right after startup; waiting ${Math.ceil(cooldownLeft / 1000)}s before ` +
+        `trying again. Restarting the backend from Settings retries immediately.`
+      ));
+    }
     this.starting = this.start().finally(() => {
       this.starting = null;
     });
     return this.starting;
+  }
+
+  /**
+   * Crash-loop accounting for one spawn generation (deduped: an exit event and a
+   * failed startup probe for the same spawn count once). Rapid exits accumulate
+   * strikes toward a cooldown; a process that lived a while resets them.
+   */
+  private noteProcessExit(gen: number, uptimeMs: number): void {
+    if (this.strikedGen === gen) return;
+    this.strikedGen = gen;
+    if (uptimeMs >= PiRuntime.RAPID_EXIT_MS) {
+      this.spawnStrikes = 0;
+      return;
+    }
+    this.spawnStrikes += 1;
+    if (this.spawnStrikes >= PiRuntime.SPAWN_STRIKE_LIMIT) {
+      const backoffMs = Math.min(
+        PiRuntime.COOLDOWN_MAX_MS,
+        PiRuntime.COOLDOWN_BASE_MS * 2 ** (this.spawnStrikes - PiRuntime.SPAWN_STRIKE_LIMIT)
+      );
+      this.cooldownUntil = Date.now() + backoffMs;
+      log('pi', `crash loop: ${this.spawnStrikes} rapid exits, pausing respawns`, { backoffMs });
+      this.emitEvent('process/cooldown', { until: this.cooldownUntil, strikes: this.spawnStrikes });
+    }
   }
 
   private async start(): Promise<void> {
@@ -1226,22 +1311,45 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     this.currentModel = `${provider}/${modelId}`;
     // A fresh process starts a fresh session whose thinking level is unknown to us.
     this.currentThinking = null;
+    const gen = ++this.spawnGen;
+    const spawnedAt = Date.now();
+    log('pi', 'spawning backend', { provider, model: modelId, gen });
 
     proc.on('event', (ev: PiEvent) => this.onPiEvent(ev));
-    proc.on('stderr', (text: string) => this.emitEvent('process/stderr', { text }));
+    proc.on('stderr', (text: string) => {
+      this.emitEvent('process/stderr', { text });
+      log('pi.stderr', text.trim());
+    });
     proc.on('exit', (info: { code: number | null; signal: string | null }) => {
+      // shutdown()/restart() detach the process before disposing it — only an
+      // exit of the CURRENT process is unexpected and feeds the breaker.
+      const unexpected = this.proc === proc;
       this.proc = null;
       this.activeThreadId = null;
       this.currentTurn = null;
       this.settleAllApprovals();
       this.foreground.finishTurn();
       this.emitEvent('process/exit', info);
+      const uptimeMs = Date.now() - spawnedAt;
+      log('pi', unexpected ? 'backend exited unexpectedly' : 'backend stopped', { ...info, uptimeMs, gen });
+      if (unexpected) this.noteProcessExit(gen, uptimeMs);
     });
 
-    proc.start();
-    // Probe readiness and capture the initial session id/file.
-    const state = await proc.request({ type: 'get_state' }, 20_000);
-    this.recordState(state.data);
+    try {
+      proc.start();
+      // Probe readiness and capture the initial session id/file.
+      const state = await proc.request({ type: 'get_state' }, 20_000);
+      this.recordState(state.data);
+    } catch (e) {
+      // A spawn that never became ready must not linger half-alive: detach it so
+      // ensureStarted() doesn't mistake it for a running backend, and count it
+      // toward the crash-loop breaker (deduped with the exit handler above).
+      if (this.proc === proc) this.proc = null;
+      void proc.dispose().catch(() => undefined);
+      log('pi', 'backend failed to become ready', { error: e instanceof Error ? e.message : String(e), gen });
+      this.noteProcessExit(gen, Date.now() - spawnedAt);
+      throw e;
+    }
   }
 
   private onPiEvent(ev: PiEvent): void {

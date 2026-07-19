@@ -169,6 +169,69 @@ describe('connected-folder path policy', () => {
   });
 });
 
+describe('crash-loop breaker', () => {
+  it('pauses respawns after repeated rapid exits, deduped per spawn generation', async () => {
+    const { runtime } = await tempRuntime();
+    const events: Array<{ method: string }> = [];
+    runtime.on('event', (event) => events.push(event));
+    const internal = runtime as unknown as {
+      noteProcessExit: (gen: number, uptimeMs: number) => void;
+      ensureStarted: () => Promise<void>;
+      cooldownUntil: number;
+      spawnStrikes: number;
+    };
+
+    internal.noteProcessExit(1, 500);
+    internal.noteProcessExit(2, 500);
+    // Same generation again (exit handler + failed probe): no double strike.
+    internal.noteProcessExit(2, 500);
+    expect(internal.spawnStrikes).toBe(2);
+    expect(internal.cooldownUntil).toBe(0);
+
+    internal.noteProcessExit(3, 500);
+    expect(internal.cooldownUntil).toBeGreaterThan(Date.now());
+    expect(events.some((e) => e.method === 'process/cooldown')).toBe(true);
+    await expect(internal.ensureStarted()).rejects.toThrow(/keeps exiting/);
+
+    // A process that lived a while resets the strike count entirely.
+    internal.cooldownUntil = 0;
+    internal.noteProcessExit(4, 60_000);
+    expect(internal.spawnStrikes).toBe(0);
+  });
+});
+
+describe('one-shot completion cap', () => {
+  it('runs at most two complete() processes, queueing the rest FIFO', async () => {
+    const { runtime } = await tempRuntime();
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+    let active = 0;
+    let maxActive = 0;
+    const gates: Array<() => void> = [];
+    (runtime as unknown as { completeNow: (prompt: string) => Promise<string> }).completeNow = async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      active -= 1;
+      return 'done';
+    };
+
+    const runs = Promise.all(['a', 'b', 'c', 'd'].map((p) => runtime.complete(p)));
+    await settle();
+    expect(active).toBe(2); // two admitted, two queued
+
+    gates.shift()!();
+    await settle();
+    expect(active).toBe(2); // released slot handed straight to the third
+
+    while (gates.length > 0 || active > 0) {
+      gates.splice(0).forEach((release) => release());
+      await settle();
+    }
+    await expect(runs).resolves.toEqual(['done', 'done', 'done', 'done']);
+    expect(maxActive).toBe(2);
+  });
+});
+
 describe('runtime auth status', () => {
   it('does not treat an empty or malformed credential store as authenticated', async () => {
     const { runtime, piHome } = await tempRuntime();

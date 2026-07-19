@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process';
 import dns from 'node:dns';
 import net from 'node:net';
 import { createBackend, type ChatBackend } from './backend';
+import { log } from './log';
 import {
   CHAT_SEARCH_COMPLETION_TIMEOUT_MS,
   failQuickChatProcess,
@@ -1598,6 +1599,19 @@ function registerIpc(): void {
     dismissQuickChat();
   });
 }
+
+// Last-resort diagnostics: an uncaught throw or rejection in main otherwise
+// vanishes with the console. Log-and-continue — Electron's default for
+// unhandledRejection is a warning, and killing main over a background hiccup
+// (a failed distill, a dropped watcher) would take the whole app down.
+process.on('uncaughtException', (e) => {
+  log('main', 'uncaughtException', { error: e instanceof Error ? (e.stack ?? e.message) : String(e) });
+});
+process.on('unhandledRejection', (reason) => {
+  log('main', 'unhandledRejection', {
+    reason: reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)
+  });
+});
 
 app.whenReady().then(async () => {
   await ensureWorkspace();

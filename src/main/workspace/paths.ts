@@ -184,6 +184,17 @@ export function settingsStorePath(): string {
 }
 
 /**
+ * The main-process log file (see main/log.ts): pi lifecycle, crash-loop
+ * cooldowns, and other diagnostics that would otherwise vanish with the
+ * console. Rotated once at ~5MB to `stem.log.1`.
+ */
+export function logFilePath(): string {
+  // STEM_LOG_FILE lets unit tests point at a throwaway file (and avoids touching
+  // Electron's `app` when run outside the app).
+  return process.env.STEM_LOG_FILE ?? join(userDataRoot(), 'stem.log');
+}
+
+/**
  * Stem-owned recall database (the custom memory layer): every user+assistant
  * message (Level 2, FTS5-searchable) plus distilled durable facts (Level 1).
  * Stem owns this end-to-end so memory is decoupled from the chat backend.
