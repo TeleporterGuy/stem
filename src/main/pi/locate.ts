@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { TESTED_PI_VERSION } from './protocol';
 
 // Resolve how to invoke the `pi` (pi.dev coding agent) backend.
 //
@@ -24,6 +25,8 @@ export interface PiInvocation {
   source: 'override' | 'bundled' | 'system';
   /** Human-readable location for status display / diagnostics. */
   displayPath: string;
+  /** Installed package version (bundled only; null when unknowable cheaply). */
+  version: string | null;
 }
 
 let cached: PiInvocation | null | undefined;
@@ -33,7 +36,14 @@ export async function resolvePi(): Promise<PiInvocation | null> {
 
   const override = process.env.STEM_PI_PATH;
   if (override) {
-    return (cached = { command: override, prefixArgs: [], env: {}, source: 'override', displayPath: override });
+    return (cached = warnIfUntested({
+      command: override,
+      prefixArgs: [],
+      env: {},
+      source: 'override',
+      displayPath: override,
+      version: null
+    }));
   }
 
   const bundled = await locateBundledCli();
@@ -42,20 +52,53 @@ export async function resolvePi(): Promise<PiInvocation | null> {
     // would otherwise check this headless Electron-as-Node child into
     // LaunchServices as a bouncing "Electron" Dock icon (see pi-node-shim.mjs).
     const shim = await locateNodeShim();
-    return (cached = {
+    return (cached = warnIfUntested({
       command: process.execPath,
       prefixArgs: [...(shim ? [shim] : []), bundled],
       // Per-child only — never set globally (it would break Electron child windows).
       env: { ELECTRON_RUN_AS_NODE: '1' },
       source: 'bundled',
-      displayPath: bundled
-    });
+      displayPath: bundled,
+      version: await readBundledVersion(bundled)
+    }));
   }
 
   const system = await findSystemPi();
   return (cached = system
-    ? { command: system, prefixArgs: [], env: {}, source: 'system', displayPath: system }
+    ? warnIfUntested({ command: system, prefixArgs: [], env: {}, source: 'system', displayPath: system, version: null })
     : null);
+}
+
+/**
+ * Version tripwire, once per process (resolution is memoized). The child runs
+ * with PI_SKIP_VERSION_CHECK=1 and Stem's file-and-sentinel side-protocol has
+ * broken on pi minor bumps before, so a pi other than the tested one must at
+ * least announce itself in the log instead of failing silently mid-turn.
+ */
+function warnIfUntested(pi: PiInvocation): PiInvocation {
+  if (pi.version === TESTED_PI_VERSION) return pi;
+  if (pi.version) {
+    console.warn(
+      `[stem] pi ${pi.version} at ${pi.displayPath} differs from the tested ${TESTED_PI_VERSION} — ` +
+        'the Stem bridge extension may misbehave (see src/main/pi/protocol.ts).'
+    );
+  } else if (pi.source !== 'bundled') {
+    console.warn(
+      `[stem] using a ${pi.source} pi at ${pi.displayPath} (version unknown; tested: ${TESTED_PI_VERSION}).`
+    );
+  }
+  return pi;
+}
+
+/** Read the bundled package's version from its package.json (…/dist/cli.js → …/package.json). */
+async function readBundledVersion(cliPath: string): Promise<string | null> {
+  try {
+    const raw = await readFile(join(cliPath, '..', '..', 'package.json'), 'utf8');
+    const version = (JSON.parse(raw) as { version?: unknown }).version;
+    return typeof version === 'string' ? version : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Test seam: the resolution is memoized for the process lifetime. */

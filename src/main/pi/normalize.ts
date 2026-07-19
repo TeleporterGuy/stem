@@ -1,5 +1,6 @@
 import type { PiEvent } from './rpc';
 import type { ActivityItem, SourceRef, TurnUsage } from '../../shared/types';
+import { toolArgsOf } from './protocol';
 
 // Translate pi's RPC event stream into Stem's canonical backend events (the
 // { method, params } envelopes the renderer/HUD/recall consume).
@@ -224,9 +225,7 @@ export function toolCallActivity(
 
 /** Pull a short, human target string (file/command/query) from a tool-start event. */
 function toolDetail(ev: PiEvent): string | undefined {
-  const nested = (ev.toolInput ?? ev.args ?? ev.input ?? ev.arguments ?? ev.params) as
-    | Record<string, unknown>
-    | undefined;
+  const nested = toolArgsOf(ev);
   const lookup = (src: Record<string, unknown> | undefined, key: string): string | undefined => {
     const v = src?.[key];
     return typeof v === 'string' && v.trim() ? v.trim() : undefined;
@@ -273,9 +272,7 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       break;
     }
     case 'tool_execution_start': {
-      const nested = (ev.toolInput ?? ev.args ?? ev.input ?? ev.arguments ?? ev.params) as
-        | Record<string, unknown>
-        | undefined;
+      const nested = toolArgsOf(ev);
       const item = toolCallActivity(
         String(ev.toolCallId ?? turnId),
         ev.toolName as string | undefined,

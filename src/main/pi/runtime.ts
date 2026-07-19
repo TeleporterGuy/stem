@@ -87,6 +87,18 @@ import {
   type FactTier
 } from '../recall/store';
 import { ForegroundSessionGate } from './session-gate';
+import {
+  ADMIN_APPROVAL_TITLE,
+  ENV_MCP_CONFIG,
+  ENV_MCP_OAUTH,
+  ENV_SKILLS_DIR,
+  INSTRUCTIONS_APPROVAL_TITLE,
+  parseWebSearchTee,
+  SKILLS_REV_FILE,
+  TASK_BRIDGE_TITLE,
+  toolArgsOf,
+  WEB_SEARCH_TEE_KEY
+} from './protocol';
 
 // Default provider/model. openai-codex is the user's working ChatGPT subscription
 // (verified streaming in the Phase-0 spike); Anthropic/Claude Max is selectable
@@ -102,14 +114,8 @@ const PROVIDER_NATIVE_SEARCH = new Set(['openai-codex']);
 // Friendly provider names for the UI live in shared/providers.ts (also used by
 // the renderer's settings/onboarding surfaces).
 
-// Sentinel title the bridge uses for an MCP add/remove approval (see
-// stem-mcp-extension.mjs). The message is a JSON McpAdminProposal payload.
-const ADMIN_APPROVAL_TITLE = 'stem-admin-approval';
-
-// Sentinel title the bridge uses for a custom-instructions change approval (see
-// stem-mcp-extension.mjs). The message is a JSON { action, incomingText, surface? }
-// payload; main shows the InstructionsApprovalCard and writes settings on accept.
-const INSTRUCTIONS_APPROVAL_TITLE = 'stem-instructions-approval';
+// Sentinel titles / tee key / gate-file names shared with the bridge extension
+// live in ./protocol (with a drift-guard test against the extension source).
 
 // pi has no per-turn context channel, so recall/files/format context is prepended
 // into the user's prompt message — which pi then PERSISTS in the session JSONL. To
@@ -139,11 +145,6 @@ function scheduledPreamble(at: string): string {
   ].join('\n');
 }
 
-// Sentinel title the bridge's scheduled-task tools (schedule_task / notify_user /
-// list_tasks / cancel_task) use for their ctx.ui.input round-trip to PiRuntime. The
-// placeholder carries a JSON op payload; PiRuntime answers with a JSON result string.
-const TASK_BRIDGE_TITLE = 'stem-task-bridge';
-
 // Max length for an auto-derived chat title; longer first messages are
 // truncated (the sidebar ellipsizes anyway).
 const MAX_AUTO_TITLE = 80;
@@ -160,9 +161,7 @@ const TOOL_PATH_KEYS = ['path', 'file_path', 'filename'] as const;
 
 /** Pull the target file/dir path out of a raw pi tool_execution_start event, if any. */
 function readToolPath(ev: PiEvent): string | null {
-  const nested = (ev.toolInput ?? ev.args ?? ev.input ?? ev.arguments ?? ev.params) as
-    | Record<string, unknown>
-    | undefined;
+  const nested = toolArgsOf(ev);
   const probe = (src: Record<string, unknown> | undefined): string | null => {
     if (!src) return null;
     for (const key of TOOL_PATH_KEYS) {
@@ -1249,7 +1248,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // The bridge's web-search tee (fire-and-forget notify; no response needed).
       if (ev.method === 'notify') {
         const msg = ev.message as string | undefined;
-        if (typeof msg === 'string' && msg.includes('stemWebSearch')) this.handleWebSearchTee(msg);
+        if (typeof msg === 'string' && msg.includes(WEB_SEARCH_TEE_KEY)) this.handleWebSearchTee(msg);
         return;
       }
       // The bridge's MCP add/remove approval → route to Stem's McpApprovalCard.
@@ -1324,20 +1323,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private handleWebSearchTee(message: string): void {
     const turn = this.currentTurn;
     if (!turn) return; // a tee event with no live turn — drop
-    interface TeePayload {
-      phase?: string;
-      id?: string;
-      query?: string;
-      status?: string;
-      url?: string;
-      title?: string;
-    }
-    let payload: TeePayload | null = null;
-    try {
-      payload = (JSON.parse(message) as { stemWebSearch?: TeePayload }).stemWebSearch ?? null;
-    } catch {
-      return;
-    }
+    const payload = parseWebSearchTee(message);
     if (!payload) return;
     const { threadId, turnId } = turn;
     if (payload.phase === 'source') {
@@ -1504,7 +1490,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   /** Read the skills revision marker the bridge bumps on every skill write. */
   private readSkillsRev(): string {
     try {
-      return readFileSync(join(skillsRoot(), '.skills-rev'), 'utf8');
+      return readFileSync(join(skillsRoot(), SKILLS_REV_FILE), 'utf8');
     } catch {
       return '';
     }
@@ -2068,10 +2054,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     env.PI_CODING_AGENT_SESSION_DIR = this.options.sessionsDir;
     env.PI_SKIP_VERSION_CHECK = '1';
     // Tell the bridge extension where Stem's MCP config lives.
-    env.STEM_MCP_CONFIG = piMcpConfigPath();
-    env.STEM_PI_MCP_OAUTH = piMcpOAuthPath();
+    env[ENV_MCP_CONFIG] = piMcpConfigPath();
+    env[ENV_MCP_OAUTH] = piMcpOAuthPath();
     // Tell the bridge extension where the assistant's self-authored skills live.
-    env.STEM_SKILLS_DIR = skillsRoot();
+    env[ENV_SKILLS_DIR] = skillsRoot();
     return env;
   }
 }

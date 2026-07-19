@@ -1,5 +1,6 @@
 import { app } from 'electron';
 import { join } from 'node:path';
+import { PROTECTED_ROOTS_FILE } from '../pi/protocol';
 
 // All app state lives under Electron's userData dir, fully isolated from the
 // user's global pi config. The backend home and the working dir we launch the
@@ -139,7 +140,7 @@ export function connectedFoldersStorePath(): string {
  * per-turn gate files. Rewritten by the main process whenever the registry changes.
  */
 export function protectedRootsPath(): string {
-  return join(piHome(), 'protected-roots.json');
+  return join(piHome(), PROTECTED_ROOTS_FILE);
 }
 
 /**

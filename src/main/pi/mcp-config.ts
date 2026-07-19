@@ -8,6 +8,7 @@ import { embedSocketPath, piHome, piMcpConfigPath, recallDbPath } from '../works
 import { RECALL_MCP_NAME, recallMcpServerPath } from '../recall/register-mcp';
 import { getEmbedEndpointToken } from '../recall/embed-endpoint';
 import type { OAuthToken } from './oauth';
+import { ENV_MCP_OAUTH, MCP_OAUTH_FILE, NATIVE_SEARCH_GATE_FILE, SERVICE_TIER_GATE_FILE } from './protocol';
 
 // Stem's MCP config for the pi backend (mcp.json). Consumed by the bridge
 // extension (stem-mcp-extension.mjs), which pi loads via `-e`. Stem owns this file
@@ -103,7 +104,7 @@ export function buildMcpCatalogContext(): string | null {
  * credentials, so a plain (non-secret) file is fine.
  */
 export function piNativeSearchPath(): string {
-  return join(piHome(), 'native-search.json');
+  return join(piHome(), NATIVE_SEARCH_GATE_FILE);
 }
 
 /** Write the `{ enabled }` gate the bridge's web-search hook reads for the next turn. */
@@ -118,7 +119,7 @@ export async function writeNativeSearchGate(enabled: boolean): Promise<void> {
  * process rewrites it just before each prompt (main vs Quick Chat share one pi process).
  */
 export function piServiceTierPath(): string {
-  return join(piHome(), 'service-tier.json');
+  return join(piHome(), SERVICE_TIER_GATE_FILE);
 }
 
 /** Write the `{ tier }` gate: 'priority' = Fast; null = Standard (omit service_tier). */
@@ -133,7 +134,7 @@ export async function writeServiceTierGate(tier: string | null): Promise<void> {
  * bearer header and rewrites it when it refreshes an expired token.
  */
 export function piMcpOAuthPath(): string {
-  return process.env.STEM_PI_MCP_OAUTH ?? join(piHome(), 'mcp-oauth.json');
+  return process.env[ENV_MCP_OAUTH] ?? join(piHome(), MCP_OAUTH_FILE);
 }
 
 export async function readOAuthTokens(): Promise<Record<string, OAuthToken>> {
