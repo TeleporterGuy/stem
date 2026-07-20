@@ -257,7 +257,11 @@ function McpTab() {
                 className={`group-row${selected === s.name ? ' selected' : ''}${s.enabled ? '' : ' disabled'}`}
                 onClick={() => setSelected(s.name)}
               >
-                <span className={`row-icon ${remote ? 'remote' : 'local'}`}>
+                <span
+                  className={`row-icon ${remote ? 'remote' : 'local'}`}
+                  title={remote ? 'Remote server' : 'Local server'}
+                  aria-label={remote ? 'Remote server' : 'Local server'}
+                >
                   {remote ? <Globe size={14} /> : <HardDrive size={14} />}
                 </span>
                 <span className="row-main">
@@ -289,9 +293,7 @@ function McpTab() {
                     title={state === 'pending' ? 'Connecting…' : 'Connected'}
                     aria-label={state === 'pending' ? 'Connecting' : 'Connected'}
                   />
-                ) : (
-                  <span className="pill off">Local</span>
-                )}
+                ) : null}
                 <button
                   className={`switch${s.enabled ? ' on' : ''}`}
                   role="switch"
