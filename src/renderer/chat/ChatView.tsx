@@ -34,7 +34,6 @@ import { MdxView } from './MdxView';
 import { StreamingMdxView } from './StreamingMdxView';
 import { ShortcutHint, useShortcut } from '../shortcuts';
 import { MdxActionContext } from '../mdx/ActionContext';
-import { mdxFeatureLabels } from '../mdx/components';
 import { useAutoHideScroll } from '../hooks/useAutoHideScroll';
 import { EFFORT_LABELS } from '../modelLabels';
 import { NOTE_CONFIRM_MS, detectNoteTrigger, noteBodyValid, useNoteMode } from '../noteMode';
@@ -46,6 +45,30 @@ const AVATAR: Record<ChatMessage['role'], { cls: string; icon: ReactNode; label:
 };
 
 const MAX_COMPOSER_HEIGHT = 180;
+
+// Starter prompts for the welcome screen — one per marquee capability (rich MDX
+// output, interactivity, cross-chat memory, plain drafting). mdxOnly starters
+// are hidden in MD mode, where component-flavored replies can't render.
+const STARTERS: { title: string; prompt: string; mdxOnly?: boolean }[] = [
+  {
+    title: 'Plan with a chart',
+    prompt: 'Plan a 6-week training ramp for a 10k — include a weekly mileage chart.',
+    mdxOnly: true
+  },
+  {
+    title: 'Interactive quiz',
+    prompt: 'Give me a quick interactive quiz — five questions on European capitals.',
+    mdxOnly: true
+  },
+  {
+    title: 'Personal memory',
+    prompt: 'What do you remember about me so far?'
+  },
+  {
+    title: 'Draft something',
+    prompt: 'Draft a short standup update from these bullets: shipped the settings page, reviewing PR #42, blocked on API keys.'
+  }
+];
 
 // Read a File's bytes into a base64 TurnAttachment (for clipboard/dropped data
 // with no on-disk path). Module-level: it depends on nothing in the component.
@@ -428,15 +451,13 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     [onSend, running]
   );
 
-  // Welcome-screen subtext: in MDX mode advertise the live component set (from the
-  // registry, so it can't drift); in MD mode there are no components to offer.
+  // Welcome-screen subtext: lead with what Stem does (memory, rich replies), not
+  // with the output format — the format toggle already lives in the composer.
   const emptyHint =
     format === 'md'
-      ? "Ask me to explain something. I'll reply in plain Markdown."
-      : `Ask me to explain something. I can use ${new Intl.ListFormat('en', {
-          style: 'long',
-          type: 'conjunction'
-        }).format(mdxFeatureLabels)}.`;
+      ? 'Ask anything — Stem remembers what matters across chats. Replies come as clean Markdown.'
+      : 'Ask anything — Stem remembers what matters across chats, and replies can include live charts, quizzes, and forms.';
+  const starters = format === 'md' ? STARTERS.filter((s) => !s.mdxOnly) : STARTERS;
 
   // One message bubble. Extracted so the timeline can render both standalone messages
   // and the contents of a collapsed scheduled-run group with identical markup.
@@ -620,6 +641,20 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
           <div className="empty">
             <h2>Stem</h2>
             <p>{emptyHint}</p>
+            <div className="empty-starters">
+              {starters.map((s) => (
+                <button
+                  key={s.title}
+                  type="button"
+                  className="empty-starter"
+                  disabled={running}
+                  onClick={() => onSend(s.prompt, [])}
+                >
+                  <strong>{s.title}</strong>
+                  <span>{s.prompt}</span>
+                </button>
+              ))}
+            </div>
             {draftFolderName && (
               <p className="empty-folder">This chat will be saved in “{draftFolderName}”.</p>
             )}

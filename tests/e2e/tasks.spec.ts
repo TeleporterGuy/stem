@@ -57,8 +57,9 @@ test.afterEach(async () => {
 test('Tasks tab renders seeded scheduled tasks', async () => {
   const win = await boot([seedTask('a', 'Summarize my unread email'), seedTask('b', 'Check the release page')]);
 
-  // The "Scheduled tasks" group head (exact, to avoid matching the empty-state copy).
-  await expect(win.getByText('Scheduled tasks', { exact: true })).toBeVisible();
+  // The "Scheduled tasks" group head (scoped to the panel body — the Tasks tab's
+  // tooltip in the icon rail carries the same text).
+  await expect(win.locator('.manage-body').getByText('Scheduled tasks', { exact: true })).toBeVisible();
   await expect(win.getByText('Summarize my unread email')).toBeVisible();
   await expect(win.getByText('Check the release page')).toBeVisible();
 });

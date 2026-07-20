@@ -5,7 +5,7 @@
   --content: #faf8f3;   /* conversation background */
   --panel: #efece5;     /* toolbar + inspector chrome */
   --ink: #23211d;       /* primary text */
-  --muted: #7c766c;     /* secondary text */
+  --muted: #6d675d;     /* secondary text (≥4.5:1 on --content even at small sizes) */
   --line: #e0dccf;      /* borders/dividers */
   --hair: rgba(35, 33, 29, 0.10); /* inset row separators */
   --accent: #9a6230;    /* warm sienna accent (used sparingly) */
@@ -35,6 +35,10 @@
   --fs-18: 18px;   /* Quick Chat input */
   --fs-19: 19px;   /* drop-zone titles */
   --fs-20: 20px;   /* gate heading */
+
+  /* Reading measure: caps the transcript column + composer so long replies keep
+     a book-like line length instead of spanning the whole window. */
+  --measure: 780px;
 
   /* Spacing scale (4px grid). Drives gaps; prefer it for new padding/margin too. */
   --sp-1: 2px;
@@ -82,17 +86,20 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #1d1b18;
-    --content: #211f1b;
-    --panel: #1b1916;
+    /* Dark layers get a full luminance step between chrome (--panel), the
+       transcript (--content), and raised cards (--surface) so the regions
+       separate at a glance instead of reading as one slab. */
+    --paper: #1c1a17;
+    --content: #242119;
+    --panel: #161411;
     --ink: #f0ece4;
     --muted: #9b948a;
-    --line: #35312b;
-    --hair: rgba(240, 236, 228, 0.12);
+    --line: #3d382f;
+    --hair: rgba(240, 236, 228, 0.16);
     --accent: #c79257;
     --accent-ink: #22150a;
-    --surface: #2a2722;
-    --field: #2a2722;
+    --surface: #2e2a23;
+    --field: #2e2a23;
     --sel: rgba(199, 146, 87, 0.22);
     --inline-bg: #2f2b25;
     --success: #5fae74;
@@ -262,10 +269,46 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 
 .messages { flex: 1; overflow-y: auto; padding: 24px 30px 14px; }
+/* Center every timeline row on the reading measure — messages, scheduled-run
+   groups, the empty state. Wide MDX (tables, charts) wraps or scrolls within it. */
+.messages > * { max-width: var(--measure); margin-inline: auto; }
 
-.empty { color: var(--muted); margin-top: 16vh; text-align: center; }
+.empty { color: var(--muted); margin-top: 14vh; text-align: center; }
 .empty h2 { color: var(--ink); margin-bottom: 6px; }
 .empty .empty-folder { font-size: 0.85em; margin-top: 10px; opacity: 0.8; }
+/* Starter-prompt cards: one per marquee capability, so a blank chat sells what
+   Stem can do instead of leaving a dark void under two lines of copy. */
+.empty-starters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+  margin: 20px auto 0;
+  max-width: 560px;
+  text-align: left;
+}
+.empty-starter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  color: var(--muted);
+  font-size: var(--fs-12);
+}
+.empty-starter strong { color: var(--ink); font-size: var(--fs-13); font-weight: 600; }
+.empty-starter span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.empty-starter:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.empty-starter:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--shadow-focus); }
+.empty-starter:disabled { opacity: 0.5; cursor: default; }
 
 /* message rows with an avatar gutter */
 .message { display: flex; gap: var(--sp-6); margin-bottom: 20px; }
@@ -292,7 +335,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   opacity: 0;
   transition: opacity var(--motion-fast) ease;
 }
-.message:hover .message-meta { opacity: 1; }
+.message:hover .message-meta,
+.message:focus-within .message-meta { opacity: 1; }
 /* Answer-time breakdown (total · thinking · tools) — same muted, hover-revealed
    treatment as .message-meta so it sits quietly next to the model label. */
 .message-timing {
@@ -302,7 +346,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   opacity: 0;
   transition: opacity var(--motion-fast) ease;
 }
-.message:hover .message-timing { opacity: 1; }
+.message:hover .message-timing,
+.message:focus-within .message-timing { opacity: 1; }
 .message-plain { white-space: pre-wrap; margin: 0; }
 .message-system .message-who { color: var(--danger); }
 .message-system .message-plain { color: var(--danger); }
@@ -316,7 +361,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   opacity: 0;
   transition: opacity var(--motion-fast) ease;
 }
-.message:hover .message-actions { opacity: 1; }
+.message:hover .message-actions,
+.message:focus-within .message-actions { opacity: 1; }
 .message-action {
   display: inline-flex;
   align-items: center;
@@ -440,6 +486,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   padding: 12px 24px 18px;
   border-top: 0.5px solid var(--line);
 }
+/* Keep the input + control strip on the same column as the transcript. */
+.composer > * { max-width: var(--measure); margin-inline: auto; }
 .composer-field {
   display: flex;
   flex-direction: column;
@@ -538,7 +586,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .icon-btn.stop { background: var(--danger); }
 
 /* effort + speed controls above the field */
-.composer-controls { display: flex; flex-wrap: wrap; gap: var(--sp-4); margin: 0 2px 8px; }
+.composer-controls { display: flex; flex-wrap: wrap; gap: var(--sp-4); margin: 0 auto 8px; width: 100%; }
 
 /* Context-fill meter: pushed to the right edge of the controls row. Mini bar + compact
    token text; the fill color shifts neutral → amber → red via .warn/.danger as it nears
@@ -915,7 +963,32 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   align-items: center;
   justify-content: center;
 }
+.insp-seg button:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .insp-seg button.active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16); }
+/* Styled tooltip naming each tab glyph — appears under the rail after a short
+   hover pause (or immediately on keyboard focus), since the icons alone are
+   unguessable but permanent captions crowded the rail. */
+.insp-tab-tip {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 9px;
+  background: var(--surface);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18);
+  color: var(--ink);
+  font-size: var(--fs-11);
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--motion-fast) ease;
+  z-index: var(--z-sticky);
+}
+.insp-seg button:hover .insp-tab-tip { opacity: 1; transition-delay: 350ms; }
+.insp-seg button:focus-visible .insp-tab-tip { opacity: 1; }
 
 .manage-body { padding: 14px; }
 /* Chats list runs close to the panel edges so rows/selection use the full width. */
@@ -1415,7 +1488,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   opacity: 0;
   transition: opacity var(--motion-fast) ease, color var(--motion-fast) ease, background var(--motion-fast) ease;
 }
-.memory-note:hover .memory-note-action { opacity: 1; }
+.memory-note:hover .memory-note-action,
+.memory-note:focus-within .memory-note-action { opacity: 1; }
 .memory-note-action:hover { color: var(--accent); background: var(--sel); }
 .memory-note-action.on { opacity: 1; color: var(--accent); }
 .memory-note-action.danger:hover { color: var(--danger); background: var(--sel); }
