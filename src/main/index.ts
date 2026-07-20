@@ -12,7 +12,6 @@ import {
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 import dns from 'node:dns';
 import net from 'node:net';
 import { createBackend, type ChatBackend } from './backend';
@@ -26,6 +25,17 @@ import {
   type IpcDeps
 } from './ipc';
 import { log } from './log';
+import {
+  isLinux,
+  isMac,
+  mainWindowChromeOptions,
+  overlayOuterBounds,
+  overlayWindowOptions,
+  playFinishChime as platformFinishChime,
+  requestAttention,
+  workspaceVisibilityOptions
+} from './platform';
+import { initTray } from './startup/tray';
 import {
   failQuickChatProcess,
   HudPill,
@@ -120,6 +130,23 @@ if (profileOverride) {
     `[stem] profile "${profileOverride.label}" → userData ${profileOverride.userDataDir}`
   );
 }
+
+// One Stem per profile. A second launch hands its argv to the running instance
+// and exits: `stem --quick-chat` toggles the overlay (the summon path for
+// Wayland, where Electron's globalShortcut never fires — users bind a DE
+// shortcut to this command), a plain `stem` reveals the main window (the
+// reopen path on Linux, where the app keeps running after the main window
+// closes and stock GNOME hides the tray). Must run after the profile override
+// so the lock keys off the final userData path (isolated E2E/profile runs
+// never deflect each other).
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) app.quit();
+app.on('second-instance', (_event, argv) => {
+  // Ignore launches racing the whenReady bootstrap (windows not created yet).
+  if (!quickChatWindow) return;
+  if (argv.includes('--quick-chat')) toggleQuickChat();
+  else revealMainWindow();
+});
 
 const appIcon = nativeImage.createFromPath(join(app.getAppPath(), 'build', 'icon.png'));
 
@@ -228,10 +255,7 @@ let summoningOverlay = false;
 // show, so summoning the overlay never disturbs the main window or dock.
 function applyOverlayWorkspaceVisibility(): void {
   if (quickChatWindow && !quickChatWindow.isDestroyed()) {
-    quickChatWindow.setVisibleOnAllWorkspaces(overlayOnAllDisplays, {
-      visibleOnFullScreen: true,
-      skipTransformProcessType: true
-    });
+    quickChatWindow.setVisibleOnAllWorkspaces(overlayOnAllDisplays, workspaceVisibilityOptions());
   }
 }
 
@@ -242,10 +266,9 @@ function createWindow(): void {
     height: 820,
     // Surfaces in the macOS Window menu / Mission Control when running an alternate profile.
     title: activeProfileLabel ? `Stem — ${activeProfileLabel}` : 'Stem',
-    titleBarStyle: 'hiddenInset',
+    // Inset traffic lights on macOS; the native frame elsewhere.
+    ...mainWindowChromeOptions(),
     icon: appIcon,
-    // Vertically center the inset traffic lights within the 52px toolbar.
-    trafficLightPosition: { x: 19, y: 20 },
     // Match the toolbar/chrome color so first paint doesn't flash; follows
     // the system appearance (the renderer adapts via prefers-color-scheme).
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1916' : '#efece5',
@@ -281,6 +304,14 @@ function createWindow(): void {
   mainWindow.on('focus', () => {
     if (hud.owner === 'main') hideHud();
   });
+  // Clear the taskbar/urgency flash raised by requestAttention (no-op on macOS,
+  // where attention is a dock bounce that clears itself).
+  if (!isMac) {
+    const flashed = mainWindow;
+    flashed.on('focus', () => {
+      if (!flashed.isDestroyed()) flashed.flashFrame(false);
+    });
+  }
 
   const devUrl = process.env.ELECTRON_RENDERER_URL;
   if (devUrl) {
@@ -310,29 +341,25 @@ const HUD_WIDTH = 320;
 const HUD_HEIGHT = 46;
 
 function createQuickChatWindow(): void {
+  // On macOS the window IS the card (native shadow drawn outside); elsewhere the
+  // window is grown by OVERLAY_SHADOW_INSET so the CSS shadow has room inside it.
+  const outer = overlayOuterBounds({ x: 0, y: 0, width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT });
   quickChatWindow = new BrowserWindow({
-    width: QUICK_CHAT_WIDTH,
-    height: QUICK_CHAT_HEIGHT,
+    width: outer.width,
+    height: outer.height,
     frame: false,
-    // A macOS NSPanel (not a normal window): it can take keyboard focus to type
-    // WITHOUT activating Stem, so summoning it never drags the main window forward,
-    // and hiding it never promotes the main window to the front. This is the
-    // Spotlight/Raycast-style overlay behavior.
-    type: 'panel',
+    // macOS: an NSPanel with native vibrancy — keyboard focus WITHOUT activating
+    // Stem (the Spotlight/Raycast overlay contract), frosting, rounded corners and
+    // the drop shadow all drawn natively. Elsewhere: a plain transparent frameless
+    // window; the renderer draws the card in CSS and summoning activates the app.
+    // See overlayWindowOptions.
+    ...overlayWindowOptions(),
     resizable: false,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
     skipTaskbar: true,
     show: false,
-    // Native macOS frosting: an NSVisualEffectView blurs the desktop behind the
-    // window (real refraction, unlike CSS backdrop-filter on a transparent window).
-    // The window itself is the rounded card — corners and the drop shadow are drawn
-    // natively (roundedCorners + hasShadow), so no CSS shadow/padding hacks.
-    vibrancy: 'under-window',
-    visualEffectState: 'active', // keep the material lit even when not key
-    roundedCorners: true,
-    hasShadow: true,
     backgroundColor: '#00000000',
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
@@ -398,10 +425,7 @@ function createHudWindow(): void {
   // (not tied to the `overlayOnAllDisplays` preference): the pill is the only
   // signal that a turn is still running once the overlay is hidden.
   hudWindow.setAlwaysOnTop(true, 'screen-saver');
-  hudWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true
-  });
+  hudWindow.setVisibleOnAllWorkspaces(true, workspaceVisibilityOptions());
   hudWindow.on('closed', () => {
     hudWindow = null;
   });
@@ -414,14 +438,9 @@ function createHudWindow(): void {
   }
 }
 
-/** Play a macOS finish chime (built-in system sound; no bundled asset). */
+/** Play the finish chime: macOS system sound, or the HUD window's bundled asset. */
 function playFinishChime(): void {
-  if (process.platform !== 'darwin') return;
-  try {
-    spawn('afplay', ['/System/Library/Sounds/Glass.aiff'], { stdio: 'ignore' }).unref();
-  } catch {
-    // Sound is best-effort; never let it break the turn lifecycle.
-  }
+  platformFinishChime(hudWindow);
 }
 
 /**
@@ -575,12 +594,16 @@ function showQuickChat(reset: boolean): void {
   const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const w = QUICK_CHAT_WIDTH;
   const h = reset ? QUICK_CHAT_HEIGHT : QUICK_CHAT_PANEL_HEIGHT;
-  win.setBounds({
-    x: Math.round(workArea.x + (workArea.width - w) / 2),
-    y: Math.round(workArea.y + workArea.height * 0.22),
-    width: w,
-    height: h
-  });
+  // Card bounds → window bounds (identical on macOS; grown by the CSS-shadow
+  // inset elsewhere, keeping the visible card in the same place on every OS).
+  win.setBounds(
+    overlayOuterBounds({
+      x: Math.round(workArea.x + (workArea.width - w) / 2),
+      y: Math.round(workArea.y + workArea.height * 0.22),
+      width: w,
+      height: h
+    })
+  );
   // show() orders the panel front; focus() makes it the key window so it actually
   // receives keystrokes (typing, Escape). Because it's a non-activating panel,
   // focus() makes it key WITHOUT activating Stem — the previous app stays active
@@ -1158,7 +1181,8 @@ app.whenReady().then(async () => {
     runtime,
     sendToMain,
     isUserActive: () => busyWithin(USER_ACTIVE_WINDOW_MS),
-    revealMainWindow
+    revealMainWindow,
+    requestAttention: () => requestAttention(mainWindow)
   });
 
   // Stem Recall relevance ranking + background workers: embed/scan utility
@@ -1344,6 +1368,16 @@ app.whenReady().then(async () => {
   createQuickChatWindow();
   createHudWindow();
   applyQuickChatShortcut(initialSettings.quickChat.shortcut);
+  // Linux-only for now: the tray is the discoverable summon/quit affordance where
+  // there's no dock and (on Wayland) no working global shortcut. Skipped under
+  // STEM_E2E to keep the harness's window/process accounting deterministic.
+  if (isLinux && !E2E) {
+    initTray({
+      icon: appIcon,
+      onToggleQuickChat: toggleQuickChat,
+      onOpenStem: revealMainWindow
+    });
+  }
 
   app.on('activate', () => {
     // Don't recreate the main window when the activation was triggered by summoning
@@ -1375,5 +1409,11 @@ app.on('will-quit', () => {
 });
 
 app.on('window-all-closed', () => {
+  // Dead-in-practice by design: the overlay + HUD windows are created at startup
+  // and only ever hidden, so this event can't fire while they exist. Closing the
+  // main window therefore leaves Stem running on every platform — on Linux the
+  // way back in is the tray, `stem` (second-instance reveal), or `stem
+  // --quick-chat`; quitting is the tray's Quit item. Kept as the standard idiom
+  // for the day the persistent windows become closable.
   if (process.platform !== 'darwin') app.quit();
 });

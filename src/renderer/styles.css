@@ -138,6 +138,9 @@ body {
   background: var(--panel);
   border-bottom: 0.5px solid var(--line);
 }
+/* Off-mac the window has a native frame — no traffic lights to reserve room for. */
+body.platform-linux .toolbar,
+body.platform-win32 .toolbar { padding-left: 12px; }
 /* Interactive controls must opt out of the drag region. */
 button, input, textarea, a, label, .switch, .insp-seg, .seg-ctl { -webkit-app-region: no-drag; }
 
@@ -1654,6 +1657,19 @@ body.qc-body { background: transparent; }
   overflow: hidden;
   -webkit-app-region: drag; /* the whole panel is a drag handle */
 }
+/* Off-mac there is no native vibrancy, rounded-corner clip, or window shadow:
+   the window is transparent and grown by 24px on every side (matching
+   OVERLAY_SHADOW_INSET in main's platform.ts), and the card draws its own
+   near-opaque surface + shadow here. Near-opaque (not frosted) because CSS
+   backdrop-filter cannot blur the desktop behind a transparent window. */
+body.platform-linux .qc-root,
+body.platform-win32 .qc-root { padding: 24px; }
+body.platform-linux .qc-card,
+body.platform-win32 .qc-card {
+  background: color-mix(in srgb, var(--surface) 97%, transparent);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.42);
+}
+
 .qc-row { display: flex; align-items: center; gap: var(--sp-6); padding: 16px 18px; }
 .qc-mark { color: var(--accent); flex: none; }
 .qc-input {
@@ -1758,6 +1774,10 @@ body.hud-body { background: transparent; }
   font-size: var(--fs-13);
   cursor: pointer;
 }
+/* Off-mac the backdrop blur has nothing to sample (see the .qc-card note), so
+   the pill leans on a more opaque surface for contrast instead. */
+body.platform-linux .hud-pill,
+body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94%, transparent); }
 .hud-pill .activity-dots { flex: none; }
 .hud-label {
   overflow: hidden;

@@ -1,4 +1,3 @@
-import { app } from 'electron';
 import { TaskScheduler } from '../scheduler';
 import type { ChatBackend } from '../backend';
 
@@ -15,6 +14,8 @@ export function initTaskScheduler(deps: {
   isUserActive: () => boolean;
   /** Raise + focus the main window (notify_user prominence). */
   revealMainWindow: () => void;
+  /** OS-level attention nudge (dock bounce / taskbar flash — see platform.ts). */
+  requestAttention: () => void;
 }): TaskScheduler {
   const scheduler = new TaskScheduler({
     runtime: deps.runtime,
@@ -34,11 +35,11 @@ export function initTaskScheduler(deps: {
       return scheduler.snapshot().length < before ? { ok: true } : { ok: false, error: 'No such task.' };
     },
     // notify_user: surface a prominent in-app alert — raise + focus the main window,
-    // bounce the dock, and show the alert modal. Native OS notifications were judged
-    // not prominent enough for watch-style tasks.
+    // nudge at the OS level (dock bounce / taskbar flash), and show the alert modal.
+    // Native OS notifications were judged not prominent enough for watch-style tasks.
     notify: async ({ title, message }, threadId) => {
       deps.revealMainWindow();
-      app.dock?.bounce('critical');
+      deps.requestAttention();
       deps.sendToMain('tasks:notify', {
         threadId,
         title,

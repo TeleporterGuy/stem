@@ -16,9 +16,9 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
  * electron.vite.config.ts) so it can share search-core.ts with the main
  * process — unlike the copied .mjs runtime assets there is no runnable source
  * fallback (a lone .ts file can't be spawned). At runtime this module executes
- * from dist/main, so a sibling join resolves the built artifact.
- * TODO(packaging): when an electron-builder pipeline exists, this script must be
- * unpacked (extraResources/asarUnpack) — it can't be spawned from inside app.asar.
+ * from dist/main, so a sibling join resolves the built artifact. Packaged builds
+ * ship without asar (see electron-builder.yml) precisely so this — and every
+ * other ELECTRON_RUN_AS_NODE child — stays spawnable as a real file.
  */
 export function recallMcpServerPath(): string {
   return join(__dirname, 'recall-mcp-server.js');

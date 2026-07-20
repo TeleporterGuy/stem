@@ -12,6 +12,7 @@ import type {
   LocalProviderTestResult
 } from '../../../shared/types';
 import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerName } from '../../../shared/providers';
+import { formatAccelerator, IS_MAC, splitAccelerator } from '../../accel';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { EFFORT_LABELS } from '../../modelLabels';
@@ -27,12 +28,6 @@ const NEW_THREAD_PRESETS: { label: string; ms: number }[] = [
 ];
 
 // ---- Settings tab: Quick Chat overlay configuration ----
-
-// macOS canonical modifier order (⌃⌥⇧⌘) and their glyphs.
-const MOD_ORDER = ['Control', 'Alt', 'Shift', 'Command'];
-const MOD_GLYPH: Record<string, string> = { Control: '⌃', Alt: '⌥', Shift: '⇧', Command: '⌘' };
-// The hyperkey fires all four modifiers at once; we collapse them to one icon.
-const HYPER_MODS = ['Command', 'Control', 'Alt', 'Shift'];
 
 /**
  * Map a physical `KeyboardEvent.code` to an Electron accelerator key token.
@@ -85,23 +80,19 @@ function codeToAccelerator(code: string): string | null {
   return MAP[code] ?? null;
 }
 
-/** Render an Electron accelerator ('Control+Alt+J') as mac glyphs, collapsing a
- *  full four-modifier hyperkey into a single hyper icon. */
+/** Render an Electron accelerator for display: mac glyphs (a four-modifier
+ *  hyperkey collapses to the accented hyper icon), plus-joined text elsewhere. */
 function renderAccelerator(accel: string): ReactNode {
-  const parts = accel.split('+');
-  const mods = parts.filter((p) => HYPER_MODS.includes(p)).sort((a, b) => MOD_ORDER.indexOf(a) - MOD_ORDER.indexOf(b));
-  const keys = parts.filter((p) => !HYPER_MODS.includes(p));
-  const isHyper = HYPER_MODS.every((m) => mods.includes(m));
-  return (
-    <span className="accel">
-      {isHyper ? (
+  const { isHyper, keys } = splitAccelerator(accel);
+  if (IS_MAC && isHyper) {
+    return (
+      <span className="accel">
         <span className="accel-hyper" aria-label="Hyper">✦</span>
-      ) : (
-        mods.map((m) => MOD_GLYPH[m] ?? m).join('')
-      )}
-      {keys.join('')}
-    </span>
-  );
+        {keys.join('')}
+      </span>
+    );
+  }
+  return <span className="accel">{formatAccelerator(accel)}</span>;
 }
 
 function ShortcutRecorder({
@@ -122,7 +113,9 @@ function ShortcutRecorder({
     const main = codeToAccelerator(e.code);
     if (!main) return; // waiting for a non-modifier / supported key
     const mods: string[] = [];
-    if (e.metaKey) mods.push('Command');
+    // The meta key is ⌘ on mac and the Super/Windows key elsewhere — both are
+    // valid Electron accelerator tokens, but only for their own platform.
+    if (e.metaKey) mods.push(IS_MAC ? 'Command' : 'Super');
     if (e.ctrlKey) mods.push('Control');
     if (e.altKey) mods.push('Alt');
     if (e.shiftKey) mods.push('Shift');
@@ -871,6 +864,16 @@ export function SettingsTab({
           </span>
           <ShortcutRecorder value={qc.shortcut} onChange={(accel) => update({ shortcut: accel })} />
         </div>
+        {window.stem.platform === 'linux' && (
+          <div className="set-row">
+            <span className="set-label">
+              <em>
+                On Wayland, global shortcuts may not fire — bind a system keyboard shortcut to{' '}
+                <code>stem --quick-chat</code> instead.
+              </em>
+            </span>
+          </div>
+        )}
 
         <div className="set-block">
           <span className="set-sub">Default model</span>

@@ -39,6 +39,8 @@ import type {
 } from '../shared/types';
 
 const api: StemApi = {
+  // Sandboxed preloads still see process.platform; exotic platforms never ship.
+  platform: process.platform as StemApi['platform'],
   rendererReady: () => ipcRenderer.send('renderer:ready'),
   runtimeStatus: () => ipcRenderer.invoke('runtime:status'),
   login: () => ipcRenderer.invoke('runtime:login'),
@@ -268,6 +270,11 @@ const api: StemApi = {
     const handler = (_e: unknown, payload: QuickChatSessionStarted) => listener(payload);
     ipcRenderer.on('quickchat:sessionStarted', handler);
     return () => ipcRenderer.removeListener('quickchat:sessionStarted', handler);
+  },
+  onHudPlayChime: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on('hud:playChime', handler);
+    return () => ipcRenderer.removeListener('hud:playChime', handler);
   }
 };
 

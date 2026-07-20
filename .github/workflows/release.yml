@@ -1,0 +1,82 @@
+name: Release
+
+# Tag a version (e.g. `git tag v0.2.0 && git push --tags`) to build and attach
+# installers to a GitHub Release. Linux artifacts MUST build on a Linux runner:
+# per-platform optional deps (@img/sharp) only install natively.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: |
+            release/*.AppImage
+            release/*.deb
+
+  # Best-effort arm64 lane (native arm runner, so optional deps install natively).
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:linux -- --arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: |
+            release/*.AppImage
+            release/*.deb
+
+  mac:
+    runs-on: macos-latest
+    env:
+      # Unsigned build (identity: null in electron-builder.yml); don't hunt for certs.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:mac -- --arm64 --x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: |
+            release/*.dmg
+            release/*.zip
+
+  publish:
+    needs: [linux-x64, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          draft: false
+          generate_release_notes: true

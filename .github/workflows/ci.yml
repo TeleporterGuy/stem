@@ -7,9 +7,15 @@ on:
 
 jobs:
   test:
-    # macOS runner: Stem is an Electron/macOS app, and the Playwright E2E layer
-    # launches a headed Electron window (no xvfb needed on macOS).
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is the regression gate (behavior there must stay byte-identical);
+        # ubuntu proves the Linux port continuously. The Playwright E2E layer
+        # launches a headed Electron window — no xvfb needed on macOS, wrapped
+        # in xvfb-run on Linux.
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -21,6 +27,12 @@ jobs:
 
       - run: npm ci
 
+      # Ubuntu 24.04 runners restrict unprivileged user namespaces (AppArmor),
+      # which breaks Electron's sandbox when launched from node_modules.
+      - name: Allow Electron sandbox (Linux)
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -31,12 +43,12 @@ jobs:
         run: npm test
 
       - name: E2E tests (Playwright + Electron)
-        run: npm run test:e2e
+        run: ${{ runner.os == 'Linux' && 'xvfb-run --auto-servernum --' || '' }} npm run test:e2e
 
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.os }}
           path: playwright-report/
           retention-days: 7

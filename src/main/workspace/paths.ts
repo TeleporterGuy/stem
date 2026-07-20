@@ -1,4 +1,5 @@
 import { app } from 'electron';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { PROTECTED_ROOTS_FILE } from '../pi/protocol';
 
@@ -206,13 +207,21 @@ export function recallDbPath(): string {
 }
 
 /**
- * Unix socket where main serves query embeddings to the stem-recall MCP server
- * (see recall/embed-endpoint.ts). Lives in userData — comfortably under the
- * 104-byte sun_path limit at the default location; the endpoint logs-and-skips
- * if an exotic profile path ever pushes past it.
+ * Local IPC endpoint where main serves query embeddings to the stem-recall MCP
+ * server (see recall/embed-endpoint.ts). On POSIX a Unix socket in userData —
+ * comfortably under the 104-byte sun_path limit at the default location; the
+ * endpoint logs-and-skips if an exotic profile path ever pushes past it. On
+ * Windows a named pipe (the filesystem path form doesn't exist there); the
+ * userData hash keeps profiles/instances apart. Windows branch is untested —
+ * groundwork for a later Windows release.
  */
 export function embedSocketPath(): string {
-  return process.env.STEM_EMBED_SOCK ?? join(userDataRoot(), 'stem-embed.sock');
+  if (process.env.STEM_EMBED_SOCK) return process.env.STEM_EMBED_SOCK;
+  if (process.platform === 'win32') {
+    const id = createHash('sha256').update(userDataRoot()).digest('hex').slice(0, 16);
+    return `\\\\.\\pipe\\stem-embed-${id}`;
+  }
+  return join(userDataRoot(), 'stem-embed.sock');
 }
 
 /**

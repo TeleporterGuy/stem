@@ -111,10 +111,15 @@ export function startEmbedEndpoint(opts: {
   socketPath: string;
   getClient: () => EmbeddingsClient | null;
 }): EmbedEndpoint {
-  try {
-    unlinkSync(opts.socketPath); // stale socket from a crashed previous run
-  } catch {
-    // Didn't exist — fine.
+  // Windows named pipes are not filesystem entries: nothing stale to unlink,
+  // nothing to chmod (access is gated by the request token either way).
+  const isPipe = process.platform === 'win32';
+  if (!isPipe) {
+    try {
+      unlinkSync(opts.socketPath); // stale socket from a crashed previous run
+    } catch {
+      // Didn't exist — fine.
+    }
   }
 
   const server = createServer((socket) => {
@@ -141,6 +146,7 @@ export function startEmbedEndpoint(opts: {
     console.warn(`[embed-endpoint] disabled: ${String(err)}`);
   });
   server.listen(opts.socketPath, () => {
+    if (isPipe) return;
     try {
       chmodSync(opts.socketPath, 0o600);
     } catch {

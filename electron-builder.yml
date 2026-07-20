@@ -1,0 +1,51 @@
+appId: com.join3r.stem
+productName: Stem
+
+directories:
+  buildResources: build
+  # electron-vite owns dist/ (the compiled app); keep packaged artifacts apart.
+  output: release
+
+# No asar. Several pieces are executed by plain-Node children (spawned with
+# ELECTRON_RUN_AS_NODE) that cannot read asar archives at all: pi's dist/cli.js,
+# dist/main/recall-mcp-server.js, and the copied pi/stem-mcp-extension.mjs +
+# pi/pi-node-shim.mjs runtime assets. pi's module resolution can also walk up
+# from its own nested node_modules into the app root's (e.g. shared deps like
+# yaml), so partial asarUnpack would be fragile. Shipping unpacked needs zero
+# path rewrites anywhere; AppImage's squashfs (and the dmg) make the file-count
+# cost irrelevant.
+asar: false
+
+# onnxruntime-node ships prebuilt N-API binaries for every platform/arch in one
+# package and node:sqlite is built into Electron — there is nothing to rebuild.
+npmRebuild: false
+
+# package.json and the pruned production node_modules are always included;
+# these patterns select the app files on top of that.
+files:
+  - dist/**
+  - build/icon.png # loaded at runtime via app.getAppPath() (main/index.ts appIcon)
+
+mac:
+  target: [dmg, zip]
+  category: public.app-category.productivity
+  # Unsigned for now (no Apple Developer ID) — recipients right-click-open or
+  # clear quarantine; notarization is a later follow-up.
+  identity: null
+
+linux:
+  target: [AppImage, deb]
+  executableName: stem
+  # 1024px source; electron-builder derives the icon size set.
+  icon: build/icon.png
+  category: Utility
+  synopsis: Local AI assistant with Quick Chat overlay and Stem Recall memory
+  desktop:
+    entry:
+      StartupWMClass: Stem
+
+deb:
+  # Expose `stem` on PATH so DE keyboard shortcuts can run `stem --quick-chat`
+  # (the Wayland summon path — see the single-instance handler in main/index.ts).
+  afterInstall: build/deb/after-install.sh
+  afterRemove: build/deb/after-remove.sh

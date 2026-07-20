@@ -13,6 +13,10 @@ const isQuickChat = params.has('quickchat');
 const isHud = params.has('hud');
 if (isQuickChat) document.body.classList.add('qc-body');
 if (isHud) document.body.classList.add('hud-body');
+// Let CSS branch per OS (e.g. the Linux overlay draws its own card + shadow,
+// the Linux main window has a native frame so the toolbar drops its
+// traffic-light inset). macOS styles stay the classless defaults.
+document.body.classList.add(`platform-${window.stem.platform}`);
 
 const root = isHud ? (
   <StatusHud />

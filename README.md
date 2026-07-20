@@ -102,7 +102,7 @@ Native **web search** uses your provider's built-in search — no separate searc
 
 ## Getting started
 
-Requires Node.js and macOS.
+Runs on macOS and Linux. For development you need Node.js:
 
 ```bash
 npm install
@@ -110,6 +110,20 @@ npm run dev      # launch the app in development
 ```
 
 First run opens the onboarding wizard — pick a provider and sign in, and you're chatting. Use `--fresh` (or `--profile=<name>`) to try Stem with a separate profile without touching your main one.
+
+### Installing a release
+
+Grab an artifact from [GitHub Releases](https://github.com/join3r/stem/releases):
+
+- **Linux** — `.AppImage` (make it executable and run it, any distro) or `.deb` (Ubuntu/Debian/Mint; also puts `stem` on your PATH).
+- **macOS** — `.dmg`. Builds are currently unsigned: right-click → Open the first time, or run `xattr -dr com.apple.quarantine /Applications/Stem.app`.
+
+### Linux notes
+
+- **Summoning Quick Chat on Wayland** (default GNOME/KDE sessions): Electron's global shortcuts don't fire there. Instead, bind a system keyboard shortcut to `stem --quick-chat` (deb) or `/path/to/Stem.AppImage --quick-chat` — a second launch hands the toggle to the running app. On X11 the in-app global shortcut works as on macOS.
+- A tray icon offers Summon Quick Chat / Open Stem / Quit. Stock GNOME hides tray icons without the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) — running `stem` again reopens the main window if you have no tray.
+- Closing the main window leaves Stem running in the background (like the macOS dock behavior); quit from the tray.
+- Secrets are encrypted via the system keyring (`libsecret`/kwallet). Without one, Stem falls back to plaintext files readable only by your user (mode 0600).
 
 ## Scripts
 
@@ -121,6 +135,7 @@ First run opens the onboarding wizard — pick a provider and sign in, and you'r
 | `npm run lint` | Lint with ESLint |
 | `npm test` | Run unit tests (Vitest) |
 | `npm run test:e2e` | Run end-to-end tests (Playwright) |
+| `npm run dist` | Package installers for the current OS (electron-builder) |
 | `npm run eval:retrieval` | Run the real local-embedding Recall retrieval gate |
 | `npm run eval:memory` | Run the real extraction gate against a configured OpenAI-compatible model |
 

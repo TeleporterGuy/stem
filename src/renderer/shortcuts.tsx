@@ -9,14 +9,17 @@ import {
   type ReactNode
 } from 'react';
 
-// Cmd shortcuts + the "hold ⌘ to reveal" helper. macOS-only app, so ⌘ === metaKey.
+import { IS_MAC } from './accel';
+
+// Mod-key shortcuts + the "hold the mod key to reveal" helper. The mod key is
+// ⌘ (metaKey) on macOS and Ctrl elsewhere.
 //
 // Two behaviors share one keydown listener:
-//   1. A bound combo (e.g. ⌘N) fires its handler immediately, on any press.
-//   2. ⌘ held *alone* for HINT_DELAY ms flips on `hintMode`, which makes each
-//      <ShortcutHint> render a keycap next to its control. A real shortcut press,
-//      any other key, ⌘-up, or window blur cancels it — so a quick combo never
-//      flashes the hints.
+//   1. A bound combo (e.g. ⌘N / Ctrl+N) fires its handler immediately, on any press.
+//   2. The mod key held *alone* for HINT_DELAY ms flips on `hintMode`, which makes
+//      each <ShortcutHint> render a keycap next to its control. A real shortcut
+//      press, any other key, mod-up, or window blur cancels it — so a quick combo
+//      never flashes the hints.
 //
 // `ChatView` is reused in the Quick Chat window, which has no provider; the default
 // context is a no-op so the hook/components degrade silently there (no badges).
@@ -41,22 +44,35 @@ interface Binding {
   match: ((e: KeyboardEvent) => boolean) | null;
 }
 
-const mod = (e: KeyboardEvent) => e.metaKey && !e.ctrlKey && !e.altKey;
+// The platform mod key: ⌘ on macOS, Ctrl elsewhere — each exclusive of the other.
+const mod = (e: KeyboardEvent) =>
+  IS_MAC ? e.metaKey && !e.ctrlKey && !e.altKey : e.ctrlKey && !e.metaKey && !e.altKey;
 const isKey = (e: KeyboardEvent, k: string) => e.key.toLowerCase() === k;
 
-// Single source of truth for every Cmd shortcut and its hint glyphs.
+/** Hint keycap for a mod-key combo: '⌘N' / '⌘⇧F' on mac, 'Ctrl+N' / 'Ctrl+Shift+F' elsewhere. */
+const cap = (key: string, shift = false) =>
+  IS_MAC ? `⌘${shift ? '⇧' : ''}${key}` : `Ctrl+${shift ? 'Shift+' : ''}${key}`;
+
+// Single source of truth for every mod-key shortcut and its hint glyphs.
 export const BINDINGS: Binding[] = [
-  { id: 'new-conversation', glyphs: '⌘N', match: (e) => mod(e) && !e.shiftKey && isKey(e, 'n') },
-  { id: 'toggle-inspector', glyphs: '⌘\\', match: (e) => mod(e) && isKey(e, '\\') },
-  { id: 'cycle-effort', glyphs: '⌘E', match: (e) => mod(e) && !e.shiftKey && isKey(e, 'e') },
-  { id: 'toggle-speed', glyphs: '⌘⇧F', match: (e) => mod(e) && e.shiftKey && isKey(e, 'f') },
-  { id: 'toggle-format', glyphs: '⌘⇧M', match: (e) => mod(e) && e.shiftKey && isKey(e, 'm') },
-  { id: 'attach', glyphs: '⌘U', match: (e) => mod(e) && !e.shiftKey && isKey(e, 'u') },
-  { id: 'focus-chat-search', glyphs: '⌘F', match: (e) => mod(e) && !e.shiftKey && isKey(e, 'f') },
-  { id: 'stop', glyphs: '⌘.', match: (e) => mod(e) && isKey(e, '.') },
-  // Control (not ⌘) — the only ctrl-based binding; no hold-⌘ hint anchors it.
-  { id: 'delete-thread', glyphs: '⌃X', match: (e) => e.ctrlKey && !e.metaKey && !e.altKey && isKey(e, 'x') },
-  { id: 'send', glyphs: '⏎', match: null }
+  { id: 'new-conversation', glyphs: cap('N'), match: (e) => mod(e) && !e.shiftKey && isKey(e, 'n') },
+  { id: 'toggle-inspector', glyphs: cap('\\'), match: (e) => mod(e) && isKey(e, '\\') },
+  { id: 'cycle-effort', glyphs: cap('E'), match: (e) => mod(e) && !e.shiftKey && isKey(e, 'e') },
+  { id: 'toggle-speed', glyphs: cap('F', true), match: (e) => mod(e) && e.shiftKey && isKey(e, 'f') },
+  { id: 'toggle-format', glyphs: cap('M', true), match: (e) => mod(e) && e.shiftKey && isKey(e, 'm') },
+  { id: 'attach', glyphs: cap('U'), match: (e) => mod(e) && !e.shiftKey && isKey(e, 'u') },
+  { id: 'focus-chat-search', glyphs: cap('F'), match: (e) => mod(e) && !e.shiftKey && isKey(e, 'f') },
+  { id: 'stop', glyphs: cap('.'), match: (e) => mod(e) && isKey(e, '.') },
+  // mac: Control (not ⌘) — the only ctrl-based mac binding; no hold-⌘ hint anchors
+  // it. Elsewhere Ctrl+X must keep meaning "cut", so deletion moves to Ctrl+Shift+X.
+  IS_MAC
+    ? { id: 'delete-thread', glyphs: '⌃X', match: (e) => e.ctrlKey && !e.metaKey && !e.altKey && isKey(e, 'x') }
+    : {
+        id: 'delete-thread',
+        glyphs: 'Ctrl+Shift+X',
+        match: (e) => e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && isKey(e, 'x')
+      },
+  { id: 'send', glyphs: IS_MAC ? '⏎' : 'Enter', match: null }
 ];
 
 type Handler = () => void;
@@ -76,6 +92,8 @@ const NOOP: ShortcutsCtx = {
 const Ctx = createContext<ShortcutsCtx>(NOOP);
 
 const HINT_DELAY = 1200;
+/** The hold-to-reveal key: the bare mod key itself (⌘ on mac, Ctrl elsewhere). */
+const HINT_KEY = IS_MAC ? 'Meta' : 'Control';
 
 export function ShortcutsProvider({ children }: { children: ReactNode }) {
   const [hintMode, setHintMode] = useState(false);
@@ -108,8 +126,8 @@ export function ShortcutsProvider({ children }: { children: ReactNode }) {
           return;
         }
       }
-      if (e.key === 'Meta') {
-        // ⌘ down alone — arm the delayed reveal once (ignore auto-repeat).
+      if (e.key === HINT_KEY) {
+        // Mod key down alone — arm the delayed reveal once (ignore auto-repeat).
         if (!e.repeat && timer.current === null) {
           timer.current = window.setTimeout(() => setHintMode(true), HINT_DELAY);
         }
@@ -119,7 +137,7 @@ export function ShortcutsProvider({ children }: { children: ReactNode }) {
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'Meta') dismiss();
+      if (e.key === HINT_KEY) dismiss();
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);

@@ -1190,6 +1190,8 @@ export interface QuickChatSessionStarted {
 // ---- Preload API surface exposed on window.stem ----
 
 export interface StemApi {
+  /** The OS the main process runs on; drives per-platform UI (mod key, glyphs, CSS). */
+  platform: 'darwin' | 'linux' | 'win32';
   /** Signal that the main renderer has installed all push-event listeners. */
   rendererReady(): void;
   runtimeStatus(): Promise<RuntimeStatus>;
@@ -1434,4 +1436,6 @@ export interface StemApi {
   onQuickChatAdopt(listener: (payload: QuickChatAdopt) => void): () => void;
   /** Main window: fired when a quickchat thread is created (optimistic sidebar row). */
   onQuickChatSessionStarted(listener: (payload: QuickChatSessionStarted) => void): () => void;
+  /** HUD window only: play the bundled finish chime (used where there's no system sound to spawn). */
+  onHudPlayChime(listener: () => void): () => void;
 }

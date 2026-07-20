@@ -1,6 +1,8 @@
 node_modules/
 dist/
 out/
+# electron-builder artifacts (see electron-builder.yml directories.output)
+release/
 *.log
 .DS_Store
 .vite/
