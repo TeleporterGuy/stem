@@ -1313,6 +1313,47 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .mp-opt-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mp-opt-check { flex: none; color: var(--accent); }
 
+/* Explainer ⓘ (InfoTip.tsx): static how-it-works prose lives in a click
+   popover so settings panels stay dense; status lines stay inline. */
+.info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  vertical-align: middle;
+  flex: none;
+}
+/* Header rows that host an ⓘ: flex centering instead of inline baselines
+   (an svg-first inline-flex sibling reports a bottom-edge baseline, which
+   sinks the icon). */
+.grp-head-row { display: flex; align-items: center; gap: var(--sp-3); }
+.info-tip:hover, .info-tip[aria-expanded="true"] { color: var(--accent); }
+.info-tip:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+.info-pop {
+  display: block;
+  position: fixed;
+  z-index: var(--z-popover);
+  width: 280px;
+  background: var(--surface);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  box-shadow: var(--shadow-pop);
+  font-size: var(--fs-12);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 /* macOS toggle switch */
 .switch {
   width: 36px;
@@ -1507,6 +1548,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 }
 .memory-note .chip { margin-top: var(--sp-3); }
 .chip + .chip { margin-left: var(--sp-3); }
+.chip svg { vertical-align: -1.5px; }
 
 /* Active facts: injected last turn (accent) or in the draft preview (warm). The
    left edge marks the row so the grouping reads at a glance when scrolling. */

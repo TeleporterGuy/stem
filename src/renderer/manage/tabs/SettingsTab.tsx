@@ -12,6 +12,7 @@ import type {
   LocalProviderTestResult
 } from '../../../shared/types';
 import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerName } from '../../../shared/providers';
+import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { EFFORT_LABELS } from '../../modelLabels';
 import type { ModelTabProps } from './shared';
@@ -808,7 +809,13 @@ export function SettingsTab({
       <div className="grp-head">Input</div>
       <div className="formgroup">
         <div className="set-block">
-          <span className="set-sub">Escape key</span>
+          <span className="set-sub">
+            Escape key{' '}
+            <InfoTip label="What Escape does while streaming">
+              While a reply is streaming, Escape can stop it and return your just-sent message to
+              the composer to edit — as if you never sent it.
+            </InfoTip>
+          </span>
           <div className="seg-ctl">
             <button
               className={escapeAction === 'off' ? 'active' : ''}
@@ -832,17 +839,19 @@ export function SettingsTab({
               Two-stage
             </button>
           </div>
-          <p className="muted">
-            While a reply is streaming, Escape can stop it and return your just-sent message to the composer to edit
-            — as if you never sent it.
-          </p>
         </div>
       </div>
 
       <div className="grp-head">Custom instructions</div>
       <div className="formgroup">
         <div className="set-block">
-          <span className="set-sub">Standing instructions</span>
+          <span className="set-sub">
+            Standing instructions{' '}
+            <InfoTip label="About standing instructions">
+              High-priority directives Stem follows in every reply — in the main app and in Quick
+              Chat. Stem can also update these itself when you ask it to.
+            </InfoTip>
+          </span>
           <textarea
             className="ci-textarea"
             value={ci.main}
@@ -850,10 +859,6 @@ export function SettingsTab({
             rows={5}
             placeholder="e.g. Reply briefly and to the point. Use plain Markdown unless I ask for components."
           />
-          <p className="muted">
-            High-priority directives Stem follows in every reply — in the main app and in Quick Chat. Stem can also
-            update these itself when you ask it to.
-          </p>
         </div>
       </div>
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
+import { InfoTip } from '../../ui/InfoTip';
 import type {
   EpisodicStats,
   ThreadSummary,
@@ -145,15 +146,17 @@ export function EpisodicTab() {
 
       <div className="memory-view">
         <div className="memory-view-head">
-          <strong>Episodic recall</strong>
+          <strong>
+            Episodic recall{' '}
+            <InfoTip label="About episodic recall">
+              The searchable history of past chats Stem draws on to recall what you've discussed
+              before. Stored as a local database, never browsed directly.
+            </InfoTip>
+          </strong>
           <span className="memory-view-actions">
             <button className="link-btn" onClick={load}>Refresh</button>
           </span>
         </div>
-        <p className="muted">
-          The searchable history of past chats Stem draws on to recall what you've
-          discussed before. Stored as a local database, never browsed directly.
-        </p>
         {resetMsg && <p className="muted">{resetMsg}</p>}
         {!stats && <p className="muted">Loading…</p>}
         {stats && stats.messageCount === 0 && (
@@ -196,15 +199,17 @@ export function EpisodicTab() {
 
       <div className="memory-view">
         <div className="memory-view-head">
-          <strong>Conversation summaries</strong>
+          <strong>
+            Conversation summaries{' '}
+            <InfoTip label="About conversation summaries">
+              A rolling English summary per chat — what was discussed, decided, and left open. Stem
+              recalls these before digging into verbatim messages.
+            </InfoTip>
+          </strong>
           <span className="memory-view-actions">
             <button className="link-btn" onClick={load}>Refresh</button>
           </span>
         </div>
-        <p className="muted">
-          A rolling English summary per chat — what was discussed, decided, and left
-          open. Stem recalls these before digging into verbatim messages.
-        </p>
         {!summaries && <p className="muted">Loading…</p>}
         {summaries && summaries.length === 0 && (
           <p className="muted">Summaries build as you chat (and backfill for older chats while Stem is idle).</p>

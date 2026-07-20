@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck } from 'lucide-react';
+import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send } from 'lucide-react';
 import type {
   EmbeddingCacheStats,
   MemoryContents,
@@ -22,6 +22,7 @@ import type {
   MemoryRebuildStatus
 } from '../../../shared/types';
 import { MdxView } from '../../chat/MdxView';
+import { HoverTip, InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { holdFullSpin, type ActiveFactsViewProps } from './shared';
 
@@ -262,7 +263,15 @@ function RerankerFields({
     <div className="set-block fg-divider">
       <div className="group-row">
         <span className="row-main">
-          <strong>Reranker</strong>
+          <strong>
+            Reranker{' '}
+            <InfoTip label="What the reranker does">
+              A second, precision pass: a cross-encoder re-scores the top embedding matches before
+              injection, which is what catches cross-language matches (a Slovak question finding an
+              English fact). It applies whichever embeddings mode is active — Built-in or Server.
+              While off or not ready, ranking uses embedding similarity alone.
+            </InfoTip>
+          </strong>
           <em>{RERANK_MODES.find((m) => m.id === mode)?.hint}</em>
         </span>
       </div>
@@ -627,16 +636,25 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                   {active && <span className={`chip active-${active}`}>{active}</span>}
                   {f.source && <span className="chip">{f.source}</span>}
                   {f.category && <span className="chip">{f.category}</span>}
-                  {f.sensitivity === 'sensitive' && <span className="chip sensitive">sensitive</span>}
+                  {f.sensitivity === 'sensitive' && (
+                    <HoverTip
+                      className="chip sensitive"
+                      ariaLabel="Sensitive"
+                      tip="Sensitive — recalled only on a direct keyword match or a much stronger semantic match."
+                    >
+                      <Lock size={10} />
+                    </HoverTip>
+                  )}
                   {f.status && f.status !== 'active' && <span className="chip">{f.status}</span>}
                   {f.pinned && <span className="chip"><Pin size={10} /> pinned</span>}
                   {(f.timesInjected ?? 0) > 0 && (
-                    <span
+                    <HoverTip
                       className="chip"
-                      title="How often this fact was sent with a message, and how often the reply visibly used it"
+                      ariaLabel={`Injected ${f.timesInjected} times, used ${f.timesUsed ?? 0} times`}
+                      tip={`Injected ${f.timesInjected}× — sent along with a message. Used ${f.timesUsed ?? 0}× — the reply visibly drew on it.`}
                     >
-                      injected {f.timesInjected}× · used {f.timesUsed ?? 0}×
-                    </span>
+                      <Send size={10} /> {f.timesInjected}× · <Check size={10} /> {f.timesUsed ?? 0}×
+                    </HoverTip>
                   )}
                   {f.id != null && details[f.id] && (
                     <div className="memory-evidence">
@@ -715,7 +733,13 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
         </div>
       </div>
 
-      <div className="grp-head">Model</div>
+      <div className="grp-head grp-head-row">
+        Model
+        <InfoTip label="About the memory model">
+          Used to distill and tidy up memories in the background. The skills curator has its own
+          model (under MCP &amp; Skills → Skills).
+        </InfoTip>
+      </div>
       <div className="formgroup">
         <ModelPicker
           models={models}
@@ -724,7 +748,6 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
           emptyLabel="Default (recommended)"
           ariaLabel="Memory model"
         />
-        <p className="muted">Used to distill and tidy up memories in the background. The skills curator has its own model (under MCP &amp; Skills → Skills).</p>
         <div className="set-block fg-divider">
           <span className="set-sub">Tidy up automatically</span>
           <div className="seg-ctl">
@@ -809,7 +832,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
 
       {retrieval && (
         <>
-          <div className="grp-head">
+          <div className="grp-head grp-head-row">
             <button
               className="memory-view-toggle"
               aria-expanded={showRetrieval}
@@ -821,16 +844,22 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
               <ChevronRight size={14} className={showRetrieval ? 'open' : ''} />
               <strong>Relevance ranking (advanced)</strong>
             </button>
+            <InfoTip label="How facts are selected">
+              Stem always selects relevant active facts instead of sending the whole memory store.
+              Sensitive facts require a direct keyword match or a stronger semantic match;
+              conflicted, expired, and unconfirmed assistant claims are excluded.
+            </InfoTip>
           </div>
           {showRetrieval && (
             <div className="formgroup">
-              <p className="muted">
-                Stem always selects relevant active facts instead of sending the whole memory store. Sensitive
-                facts require a direct keyword match or a stronger semantic match; conflicted, expired, and
-                unconfirmed assistant claims are excluded.
-              </p>
               <div className="set-block">
-                <span className="set-sub">Relevant facts per message</span>
+                <span className="set-sub">
+                  Relevant facts per message{' '}
+                  <InfoTip label="About pinned facts and matching">
+                    Up to five facts can be pinned for every message. All other memories need a
+                    positive semantic or lexical match; there is no recency filler.
+                  </InfoTip>
+                </span>
                 <div className="seg-ctl">
                   {FACT_INJECT_PRESETS.map((p) => (
                     <button
@@ -843,10 +872,6 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                     </button>
                   ))}
                 </div>
-                <p className="muted">
-                  Up to five facts can be pinned for every message. All other memories need a positive semantic
-                  or lexical match; there is no recency filler.
-                </p>
               </div>
               <EmbeddingsFields value={retrieval.embeddings} onPatch={patchEmbeddings} />
               <p className="muted">
@@ -860,12 +885,6 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                 <button className="link-btn" onClick={loadEmbStats}>
                   Refresh
                 </button>
-              </p>
-              <p className="muted">
-                The reranker is a second, precision pass: a cross-encoder re-scores the top embedding
-                matches before injection, which is what catches cross-language matches (a Slovak
-                question finding an English fact). It applies whichever embeddings mode is active —
-                Built-in or Server. While off or not ready, ranking uses embedding similarity alone.
               </p>
               <RerankerFields value={retrieval.reranker} onPatch={patchReranker} />
             </div>

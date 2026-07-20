@@ -4,6 +4,7 @@ import type {
   ModelSummary,
   SkillSummary
 } from '../../../shared/types';
+import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { holdFullSpin } from './shared';
 
@@ -110,7 +111,14 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
         </div>
       )}
 
-      <div className="grp-head">Curator model</div>
+      <div className="grp-head grp-head-row">
+        Curator model
+        <InfoTip label="About the curator model">
+          Runs the background skills curator — merging duplicate skills, sharpening sloppy ones, and
+          archiving stale ones. Separate from the memory model so you can give curation a stronger
+          model. New skills are still written by the model you chat with; this only affects upkeep.
+        </InfoTip>
+      </div>
       <div className="formgroup">
         <ModelPicker
           models={models}
@@ -119,11 +127,6 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
           emptyLabel="Default (recommended)"
           ariaLabel="Skills curator model"
         />
-        <p className="muted">
-          Runs the background skills curator — merging duplicate skills, sharpening sloppy ones, and
-          archiving stale ones. Separate from the memory model so you can give curation a stronger
-          model. New skills are still written by the model you chat with; this only affects upkeep.
-        </p>
       </div>
     </div>
   );
