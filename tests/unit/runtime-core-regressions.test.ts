@@ -447,3 +447,39 @@ describe('pi RPC failure handling', () => {
     expect(sent).toEqual([{ type: 'abort' }]);
   });
 });
+
+describe('readThread meta hydration', () => {
+  // Reopened chats must keep the per-reply model/effort hover label ("Stem ·
+  // <model> · <effort>"). It regressed silently in the codex→pi migration: the
+  // codex rollout parser stamped meta from turn_context lines, pi's reader didn't.
+  it('stamps model + effort onto hydrated assistant messages', async () => {
+    const { runtime, sessions } = await tempRuntime();
+    const lines = [
+      { type: 'session', id: 'sess-1', timestamp: '2026-07-01T10:00:00.000Z', cwd: '/tmp' },
+      { type: 'model_change', id: 'mc1', provider: 'openai-codex', modelId: 'gpt-5.3-codex-spark' },
+      { type: 'thinking_level_change', id: 'tl1', thinkingLevel: 'high' },
+      { type: 'message', id: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+      {
+        type: 'message',
+        id: 'a1',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'hello' }],
+          provider: 'openai-codex',
+          model: 'gpt-5.6-sol'
+        }
+      },
+      { type: 'thinking_level_change', id: 'tl2', thinkingLevel: 'low' },
+      { type: 'message', id: 'u2', message: { role: 'user', content: [{ type: 'text', text: 'again' }] } },
+      // No per-message provider/model (older files) → falls back to model_change.
+      { type: 'message', id: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'sure' }] } }
+    ];
+    await writeFile(join(sessions, 'sess.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n'));
+
+    const { messages } = await runtime.readThread('sess-1');
+    const replies = messages.filter((m) => m.role === 'assistant');
+    expect(replies).toHaveLength(2);
+    expect(replies[0].meta).toEqual({ model: 'openai-codex/gpt-5.6-sol', effort: 'high' });
+    expect(replies[1].meta).toEqual({ model: 'openai-codex/gpt-5.3-codex-spark', effort: 'low' });
+  });
+});

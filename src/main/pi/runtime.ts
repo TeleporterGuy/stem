@@ -24,6 +24,7 @@ import type {
   McpLoginResult,
   McpServerInput,
   MessageAttachment,
+  MessageMeta,
   ModelServiceTier,
   ModelSummary,
   RuntimeStatus,
@@ -792,6 +793,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // Fallback for turns predating the sqlite activity rows: synthesize activity
     // items from the session's own persisted toolCall blocks + toolResult entries.
     let pendingActivity: ActivityItem[] = [];
+    // Which model/effort produced each reply (the hover label next to "Stem").
+    // Assistant entries persist provider+model directly; effort comes from the
+    // thinking_level_change entry in force when the reply was written, and
+    // model_change covers assistant entries predating the per-message fields.
+    // Service tier is not persisted (same as the old codex rollout format).
+    let effortNow: string | undefined;
+    let modelNow: string | undefined;
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
       let entry: {
@@ -799,7 +807,18 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         id?: string;
         name?: string;
         timestamp?: string;
-        message?: { role?: string; content?: unknown; usage?: PiUsage; toolCallId?: string; isError?: boolean };
+        provider?: string;
+        modelId?: string;
+        thinkingLevel?: string;
+        message?: {
+          role?: string;
+          content?: unknown;
+          usage?: PiUsage;
+          toolCallId?: string;
+          isError?: boolean;
+          provider?: string;
+          model?: string;
+        };
       };
       try {
         entry = JSON.parse(line);
@@ -808,6 +827,14 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       }
       if (entry.type === 'session_info' && typeof entry.name === 'string') {
         title = entry.name.trim() || title;
+        continue;
+      }
+      if (entry.type === 'model_change' && entry.provider && entry.modelId) {
+        modelNow = `${entry.provider}/${entry.modelId}`;
+        continue;
+      }
+      if (entry.type === 'thinking_level_change' && entry.thinkingLevel) {
+        effortNow = entry.thinkingLevel;
         continue;
       }
       if (entry.type !== 'message' || !entry.message) continue;
@@ -856,11 +883,20 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
               ? [...pendingActivity]
               : undefined;
           const sources = persisted?.sources?.length ? persisted.sources : undefined;
+          const model =
+            entry.message.provider && entry.message.model
+              ? `${entry.message.provider}/${entry.message.model}`
+              : modelNow;
+          const meta: MessageMeta | undefined =
+            model || effortNow
+              ? { ...(model ? { model } : {}), ...(effortNow ? { effort: effortNow } : {}) }
+              : undefined;
           messages.push({
             id: `assistant-${entry.id}`,
             role: 'assistant',
             content,
             turnId: lastUserId || entry.id,
+            ...(meta ? { meta } : {}),
             ...(timing ? { timing } : {}),
             ...(usage ? { usage } : {}),
             ...(activity ? { activity } : {}),
@@ -1937,7 +1973,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   /** Read the live foreground session's messages (for active sessions without a file yet). */
   private async readActiveMessages(): Promise<{ title: string; messages: ChatMessage[] }> {
     const res = await this.proc!.request({ type: 'get_messages' });
-    const raw = (res.data as { messages?: { role?: string; content?: unknown }[] } | undefined)?.messages ?? [];
+    const raw =
+      (res.data as { messages?: { role?: string; content?: unknown; provider?: string; model?: string }[] } | undefined)
+        ?.messages ?? [];
     const messages: ChatMessage[] = [];
     for (const m of raw) {
       const { text: content, images, scheduled } = this.contentToParts(m.content);
@@ -1950,8 +1988,22 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           ...(images.length ? { attachments: images } : {}),
           ...(scheduled ? { scheduled } : {})
         });
-      else if (m.role === 'assistant')
-        messages.push({ id: `assistant-${messages.length}`, role: 'assistant', content });
+      else if (m.role === 'assistant') {
+        // Same hover label as readThread: pi's message objects carry provider+model;
+        // effort mirrors the live session's current thinking level (no per-message
+        // record here, but this path only serves the just-created active session).
+        const model = m.provider && m.model ? `${m.provider}/${m.model}` : undefined;
+        const meta: MessageMeta | undefined =
+          model || this.currentThinking
+            ? { ...(model ? { model } : {}), ...(this.currentThinking ? { effort: this.currentThinking } : {}) }
+            : undefined;
+        messages.push({
+          id: `assistant-${messages.length}`,
+          role: 'assistant',
+          content,
+          ...(meta ? { meta } : {})
+        });
+      }
     }
     const state = await this.proc!.request({ type: 'get_state' });
     const title = ((state.data as { sessionName?: string } | undefined)?.sessionName || 'New chat').trim() || 'New chat';
