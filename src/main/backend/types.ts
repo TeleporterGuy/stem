@@ -25,6 +25,35 @@ import type {
  */
 export type ApprovalId = number | string;
 
+/** One run_command request as it leaves the backend for the main-process ExecService. */
+export interface ExecRequest {
+  command: string;
+  cwd?: string;
+  timeoutMs?: number;
+  /** The originating conversation (null when no turn is live — shouldn't happen in practice). */
+  threadId: string | null;
+  /** True for autonomous scheduled runs — manual approvals are rejected there. */
+  isScheduled: boolean;
+}
+
+/** What the ExecService answers a run_command round-trip with. */
+export type ExecBridgeResult = { ok: true; text: string } | { ok: false; error: string };
+
+/**
+ * The seam the backend uses to reach the command executor (which lives in main,
+ * not the backend). The assistant's `run_command` tool runs inside the pi
+ * process; PiRuntime intercepts its round-trip and routes here, supplying the
+ * authoritative threadId + scheduled flag. A backend without exec leaves it unset.
+ */
+export interface ExecBridge {
+  /** Run the full policy (allowlist → judge → approval) and, if approved, the command. */
+  handleExecRequest(req: ExecRequest): Promise<ExecBridgeResult>;
+  /** Abort running commands + pending approvals for one thread (turn interrupted). */
+  abortThread(threadId: string): void;
+  /** Abort everything (the backend process died/restarted). */
+  settleAll(): void;
+}
+
 export interface TaskBridge {
   /** Create a task bound to `threadId` from the assistant's schedule_task tool. */
   schedule(
@@ -118,4 +147,8 @@ export interface ChatBackend extends EventEmitter {
   // Scheduled tasks: wire the bridge the assistant's schedule_task/notify_user
   // tools route through. Pass null to detach. No-op on a backend without scheduling.
   setTaskBridge(bridge: TaskBridge | null): void;
+
+  // Command execution: wire the bridge the assistant's run_command tool routes
+  // through. Pass null to detach. No-op on a backend without exec.
+  setExecBridge(bridge: ExecBridge | null): void;
 }

@@ -50,6 +50,31 @@ describe('argsProblem', () => {
   });
 });
 
+describe('exec channels', () => {
+  it('exec:resolveApproval takes a string id and a known decision', () => {
+    let got: unknown[] = [];
+    handleIpc('exec:resolveApproval', (_e, ...args) => {
+      got = args;
+      return 'ok';
+    });
+    const trusted = eventFrom('file:///app/index.html');
+    expect(ipcMain._invoke('exec:resolveApproval', trusted, 'ap-1', 'alwaysAllow')).toBe('ok');
+    expect(got).toEqual(['ap-1', 'alwaysAllow']);
+    expect(() => ipcMain._invoke('exec:resolveApproval', trusted, 'ap-1', 'yes'))
+      .toThrow(/one of allowOnce\|alwaysAllow\|deny/);
+    expect(() => ipcMain._invoke('exec:resolveApproval', trusted, 7, 'deny')).toThrow(/must be a string/);
+    ipcMain.removeHandler('exec:resolveApproval');
+  });
+
+  it('settings:updateExec takes an object patch', () => {
+    handleIpc('settings:updateExec', () => 'ok');
+    const trusted = eventFrom('file:///app/index.html');
+    expect(ipcMain._invoke('settings:updateExec', trusted, { enabled: false })).toBe('ok');
+    expect(() => ipcMain._invoke('settings:updateExec', trusted, 'enabled')).toThrow(/an object/);
+    ipcMain.removeHandler('settings:updateExec');
+  });
+});
+
 describe('handleIpc', () => {
   it('rejects bad senders and bad args before the handler runs; passes good calls through', () => {
     let ran = 0;

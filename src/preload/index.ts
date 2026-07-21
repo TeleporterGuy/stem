@@ -8,6 +8,9 @@ import type {
   ConnectedFolderPatch,
   CustomInstructionsSettings,
   EscapeAction,
+  ExecApprovalRequest,
+  ExecDecision,
+  ExecSettings,
   InstructionsProposal,
   LocalEmbedStatus,
   LocalProviderId,
@@ -152,6 +155,19 @@ const api: StemApi = {
   },
   respondInstructionsApproval: (id: number | string, accept: boolean, surface: 'main' | 'quickChat', text: string) =>
     ipcRenderer.invoke('instructions:resolveApproval', id, accept, surface, text),
+  updateExecSettings: (patch: Partial<ExecSettings>) => ipcRenderer.invoke('settings:updateExec', patch),
+  onExecApproval: (listener: (request: ExecApprovalRequest) => void) => {
+    const handler = (_e: unknown, request: ExecApprovalRequest) => listener(request);
+    ipcRenderer.on('exec:approvalRequest', handler);
+    return () => ipcRenderer.removeListener('exec:approvalRequest', handler);
+  },
+  onExecApprovalResolved: (listener: (payload: ApprovalResolvedPayload) => void) => {
+    const handler = (_e: unknown, payload: ApprovalResolvedPayload) => listener(payload);
+    ipcRenderer.on('exec:approvalResolved', handler);
+    return () => ipcRenderer.removeListener('exec:approvalResolved', handler);
+  },
+  respondExecApproval: (id: string, decision: ExecDecision) =>
+    ipcRenderer.invoke('exec:resolveApproval', id, decision),
   onMcpChanged: (listener: () => void) => {
     const handler = () => listener();
     ipcRenderer.on('mcp:changed', handler);

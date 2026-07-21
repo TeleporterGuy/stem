@@ -94,25 +94,49 @@ interface HoverTipProps {
   /** Class for the wrapper span — the anchor itself (e.g. "chip"). */
   className?: string;
   ariaLabel?: string;
+  /** Hold-off before the popup shows. 0 (default) explains on approach (chips);
+   *  a few hundred ms suits action buttons, where instant popups would flash as
+   *  the pointer crosses the row. */
+  delayMs?: number;
   children: ReactNode;
 }
 
 // Hover variant for content that explains itself on approach (e.g. icon chips):
-// same styled popup as InfoTip, but shown instantly on hover instead of the
-// delayed native title tooltip.
-export function HoverTip({ tip, className, ariaLabel, children }: HoverTipProps) {
+// same styled popup as InfoTip, but shown on hover instead of the slow native
+// title tooltip.
+export function HoverTip({ tip, className, ariaLabel, delayMs = 0, children }: HoverTipProps) {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
   const popRef = useRef<HTMLSpanElement>(null);
+  const timerRef = useRef<number | null>(null);
   const pos = useClampedPop(open, anchorRef, popRef);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
 
   return (
     <span
       ref={anchorRef}
       className={className}
       aria-label={ariaLabel}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
+      onMouseEnter={() => {
+        if (delayMs <= 0) {
+          setOpen(true);
+          return;
+        }
+        if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+        timerRef.current = window.setTimeout(() => setOpen(true), delayMs);
+      }}
+      onMouseLeave={() => {
+        if (timerRef.current !== null) {
+          window.clearTimeout(timerRef.current);
+          timerRef.current = null;
+        }
+        setOpen(false);
+      }}
     >
       {children}
       {open && (

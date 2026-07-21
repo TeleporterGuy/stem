@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   ADMIN_APPROVAL_TITLE,
   ENV_SECRET_KEY,
+  EXEC_BRIDGE_TITLE,
   INSTRUCTIONS_APPROVAL_TITLE,
   MCP_OAUTH_FILE,
   NATIVE_SEARCH_GATE_FILE,
@@ -42,6 +43,9 @@ describe('sentinel titles match the bridge extension', () => {
   });
   it('task bridge', () => {
     expect(extensionConst('TASK_BRIDGE_TITLE')).toBe(TASK_BRIDGE_TITLE);
+  });
+  it('exec bridge', () => {
+    expect(extensionConst('EXEC_BRIDGE_TITLE')).toBe(EXEC_BRIDGE_TITLE);
   });
 });
 

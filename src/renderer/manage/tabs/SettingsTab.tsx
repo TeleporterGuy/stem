@@ -5,6 +5,7 @@ import type {
   ApiKeyProviderId,
   CustomInstructionsSettings,
   EscapeAction,
+  ExecSettings,
   NativeWebSearchSettings,
   QuickChatSettings,
   LocalProviderId,
@@ -686,6 +687,8 @@ export function SettingsTab({
   const [nws, setNws] = useState<NativeWebSearchSettings>({ main: true, quickChat: true });
   const [escapeAction, setEscapeAction] = useState<EscapeAction>('off');
   const [ci, setCi] = useState<CustomInstructionsSettings>({ main: '', quickChat: '' });
+  const [exec, setExec] = useState<ExecSettings | null>(null);
+  const [allowInput, setAllowInput] = useState('');
   // Per-field debounce so typing doesn't spam the atomic settings writer.
   const ciMainTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ciQuickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -697,8 +700,14 @@ export function SettingsTab({
       setNws(s.nativeWebSearch);
       setEscapeAction(s.escapeAction);
       setCi(s.customInstructions);
+      setExec(s.exec);
     });
   }, []);
+
+  function updateExec(patch: Partial<ExecSettings>) {
+    setExec((cur) => (cur ? { ...cur, ...patch } : cur)); // optimistic; reconcile below
+    window.stem.updateExecSettings(patch).then((s) => setExec(s.exec));
+  }
 
   function saveCiMain(value: string) {
     setCi((c) => ({ ...c, main: value }));
@@ -853,6 +862,89 @@ export function SettingsTab({
             placeholder="e.g. Reply briefly and to the point. Use plain Markdown unless I ask for components."
           />
         </div>
+      </div>
+
+      <div className="grp-head">Command execution</div>
+      <div className="formgroup">
+        <div className="set-row">
+          <span className="set-label">
+            <strong>Run commands</strong>
+            <em>
+              Let Stem run shell commands (CLIs, git, agent-browser){' '}
+              <InfoTip label="How command approval works">
+                Clearly safe commands run immediately. Everything else is screened by an AI safety
+                check; commands it cannot clear pause for your approval. The check is a heuristic,
+                not a security boundary — review approval cards before allowing.
+              </InfoTip>
+            </em>
+          </span>
+          <button
+            className={`switch${exec?.enabled ? ' on' : ''}`}
+            role="switch"
+            aria-checked={exec?.enabled ?? false}
+            aria-label="Run commands"
+            onClick={() => exec && updateExec({ enabled: !exec.enabled })}
+          />
+        </div>
+
+        {exec?.enabled && (
+          <>
+            <div className="set-block">
+              <span className="set-sub">Safety-check model</span>
+              <ModelPicker
+                models={models}
+                value={exec.judgeModel}
+                onChange={(id) => updateExec({ judgeModel: id })}
+                emptyLabel="Auto (cheapest)"
+                ariaLabel="Safety-check model"
+              />
+            </div>
+
+            <div className="set-block">
+              <span className="set-sub">
+                Always-allowed commands{' '}
+                <InfoTip label="About the allowlist">
+                  Command prefixes that run without the safety check — grown by the approval card's
+                  "Always allow" button or added here (e.g. <code>git push</code> or <code>npm</code>).
+                </InfoTip>
+              </span>
+              {exec.allowlist.length > 0 && (
+                <div className="exec-allowlist">
+                  {exec.allowlist.map((prefix) => (
+                    <span key={prefix} className="pill">
+                      {prefix}
+                      <button
+                        title={`Remove "${prefix}"`}
+                        aria-label={`Remove "${prefix}" from the allowlist`}
+                        onClick={() => updateExec({ allowlist: exec.allowlist.filter((p) => p !== prefix) })}
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const prefix = allowInput.trim();
+                  if (!prefix || exec.allowlist.includes(prefix)) return;
+                  updateExec({ allowlist: [...exec.allowlist, prefix] });
+                  setAllowInput('');
+                }}
+              >
+                <input
+                  className="ifield"
+                  type="text"
+                  placeholder="Add a prefix, e.g. git push"
+                  aria-label="Add an allowlisted command prefix"
+                  value={allowInput}
+                  onChange={(e) => setAllowInput(e.target.value)}
+                />
+              </form>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="grp-head">Quick Chat</div>

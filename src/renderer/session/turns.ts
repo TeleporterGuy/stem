@@ -332,9 +332,49 @@ export async function sendTurn(core: SessionCore, spec: SendSpec): Promise<void>
     // A stale failure belongs to the abandoned send, not to whichever newer send
     // now occupies the key.
     if (deletePendingIfCurrent(pendingSends, key, pending)) {
-      store.patch(key, (s) => appendSystemMessage(s, e));
+      // Mark the orphaned bubble: no turn exists for it, so the message actions
+      // must take the local failed-send path (see removeFailedSend).
+      store.patch(key, (s) =>
+        appendSystemMessage(
+          {
+            ...s,
+            messages: s.messages.map((m) => (m.id === userMsgId ? { ...m, sendFailed: true } : m))
+          },
+          e
+        )
+      );
     }
   }
+}
+
+/**
+ * Retract a failed send from the slice: the orphaned user bubble plus the error
+ * bubble(s) right after it. The send never reached the backend (startTurn
+ * rejected), so this is a pure local splice — no rollback. Returns the original
+ * text/attachments so retry/edit can re-send; delete ignores them. Returns null
+ * (no-op) while the slice is running or when the message isn't a failed send.
+ */
+export function removeFailedSend(
+  core: SessionCore,
+  key: string,
+  userMsgId: string
+): { text: string; attachments: TurnAttachment[] } | null {
+  const slice = core.store.getThread(key);
+  if (!slice || slice.running) return null;
+  const idx = slice.messages.findIndex((m) => m.id === userMsgId && m.role === 'user' && m.sendFailed);
+  if (idx === -1) return null;
+  const msg = slice.messages[idx];
+  // The failure bubble(s) directly after the message go with it. Turn-level error
+  // bubbles carry a turnId and are left alone — they belong to a real turn.
+  let end = idx + 1;
+  while (end < slice.messages.length && slice.messages[end].role === 'system' && !slice.messages[end].turnId) {
+    end += 1;
+  }
+  core.store.patch(key, (s) => ({
+    messages: [...s.messages.slice(0, idx), ...s.messages.slice(end)],
+    status: s.status === 'error' ? ('idle' as const) : s.status
+  }));
+  return { text: msg.content, attachments: resendAttachments(msg) };
 }
 
 // ---- Turn actions shared by both windows ----

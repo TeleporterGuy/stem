@@ -114,6 +114,16 @@ export function agentsMdPath(): string {
 }
 
 /**
+ * Default working directory for the assistant's `run_command` tool: an isolated,
+ * app-owned scratch folder under the pi home. Commands may target real user
+ * paths explicitly (via absolute arguments or an explicit cwd), but by default
+ * their side effects land here. Created on demand by the exec service.
+ */
+export function execWorkspaceDir(): string {
+  return process.env.STEM_EXEC_WORKSPACE ?? join(piHome(), 'exec-workspace');
+}
+
+/**
  * The persistent "Files" place: a user-facing folder inside the backend cwd where
  * the user drops files (optionally organized into subfolders) that the assistant
  * can read on demand. Inside workspaceRoot() so the agent's read tools reach it.

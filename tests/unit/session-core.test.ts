@@ -14,6 +14,7 @@ import {
   attachBackendEvents,
   createSessionCore,
   interruptActiveTurn,
+  removeFailedSend,
   rerunFromTurn,
   sendTurn,
   type SessionCore,
@@ -274,6 +275,68 @@ describe('sendTurn', () => {
     expect(slice.messages.at(-1)).toMatchObject({ role: 'system' });
     expect(slice.status).toBe('error');
     expect(core.pendingSends.size).toBe(0);
+  });
+
+  it('marks the orphaned user bubble sendFailed when the start rejects', async () => {
+    const core = createSessionCore();
+    await sendTurn(core, spec(core, {
+      start: () => Promise.reject(new Error('Agent is already processing'))
+    }) as never);
+    const slice = core.store.getThread('thread1')!;
+    const user = slice.messages.find((m) => m.role === 'user')!;
+    expect(user.sendFailed).toBe(true);
+    expect(user.turnId).toBeUndefined();
+  });
+});
+
+describe('removeFailedSend', () => {
+  const failSend = async (core: SessionCore, key = 'thread1', text = 'hello') => {
+    await sendTurn(core, {
+      key,
+      text,
+      attachments: [],
+      meta: { model: 'm1' },
+      isNewChat: false,
+      start: () => Promise.reject(new Error('Agent is already processing'))
+    } as never);
+    return core.store.getThread(key)!.messages.find((m) => m.role === 'user' && m.sendFailed)!;
+  };
+
+  it('splices the orphan and its error bubble, returns the payload, and clears the error status', async () => {
+    const core = createSessionCore();
+    const user = await failSend(core);
+    const restore = removeFailedSend(core, 'thread1', user.id);
+    expect(restore).toEqual({ text: 'hello', attachments: [] });
+    const slice = core.store.getThread('thread1')!;
+    expect(slice.messages).toHaveLength(0);
+    expect(slice.status).toBe('idle');
+  });
+
+  it('leaves earlier messages and turn-level error bubbles untouched', async () => {
+    const core = createSessionCore();
+    core.store.patch('thread1', () => ({
+      messages: [
+        { id: 'u0', role: 'user' as const, content: 'earlier', turnId: 't0' },
+        { id: 'a0', role: 'assistant' as const, content: 'reply', turnId: 't0' }
+      ]
+    }));
+    const user = await failSend(core);
+    // A later turn-owned error bubble must survive the splice.
+    core.store.patch('thread1', (s) => ({
+      messages: [...s.messages, { id: 'sys-t9', role: 'system' as const, content: 'turn died', turnId: 't9' }]
+    }));
+    removeFailedSend(core, 'thread1', user.id);
+    expect(core.store.getThread('thread1')!.messages.map((m) => m.id)).toEqual(['u0', 'a0', 'sys-t9']);
+  });
+
+  it('no-ops while the slice is running or for a non-failed message', async () => {
+    const core = createSessionCore();
+    const user = await failSend(core);
+    core.store.patch('thread1', () => ({ running: true }));
+    expect(removeFailedSend(core, 'thread1', user.id)).toBeNull();
+    core.store.patch('thread1', () => ({ running: false }));
+    expect(removeFailedSend(core, 'thread1', 'unknown-id')).toBeNull();
+    expect(core.store.getThread('thread1')!.messages.length).toBeGreaterThan(0);
   });
 });
 

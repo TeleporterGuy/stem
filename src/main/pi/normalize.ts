@@ -1,5 +1,6 @@
 import type { PiEvent } from './rpc';
 import type { ActivityItem, SourceRef, TurnUsage } from '../../shared/types';
+import { stripCiteMarkers } from '../../shared/citations';
 import { toolArgsOf } from './protocol';
 
 // Translate pi's RPC event stream into Stem's canonical backend events (the
@@ -55,6 +56,12 @@ export interface TurnContext {
    */
   privateRoots?: string[];
   memoryTainted?: boolean;
+  /**
+   * True for an autonomous scheduled-task run. Set by PiRuntime.startTurn from the
+   * scheduler's input marker; the exec bridge uses it to reject commands that would
+   * need a manual approval nobody is present to give.
+   */
+  isScheduled?: boolean;
   phase: 'pending' | 'thinking' | 'tool' | 'answer';
   lastEventAt?: number; // epoch ms of the last normalized event, for interval attribution
   timing?: TurnTimingBreakdown; // stashed by reportTurnTiming so recordTurnEntry can persist it
@@ -168,7 +175,8 @@ export function toTurnUsage(usage: PiUsage | undefined | null): TurnUsage | null
 /** Map a pi tool name onto the item-type vocabulary `activityLabel` knows. */
 function toolItemType(toolName: string | undefined): string {
   const n = (toolName ?? '').toLowerCase();
-  if (n === 'bash' || n === 'read' || n === 'ls' || n === 'glob' || n === 'grep') return 'commandExecution';
+  if (n === 'bash' || n === 'run_command' || n === 'read' || n === 'ls' || n === 'glob' || n === 'grep')
+    return 'commandExecution';
   if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'apply_patch') return 'fileChange';
   if (n.startsWith('mcp')) return 'mcpToolCall';
   if (n.includes('search') || n.includes('web')) return 'webSearch';
@@ -238,19 +246,26 @@ function toolDetail(ev: PiEvent): string | undefined {
   return undefined;
 }
 
+// Leaked web-search citation markers are stripped from the authoritative text
+// here (message_end), which is what recall capture, chat search, and the settled
+// bubble consume. Streaming deltas stay raw — a marker can split across delta
+// boundaries, so the renderer strips the ACCUMULATED text at render time instead.
 function textOf(content: ContentBlock[] | string | undefined): string {
-  if (typeof content === 'string') return content;
+  if (typeof content === 'string') return stripCiteMarkers(content);
   if (!Array.isArray(content)) return '';
-  return content
-    .filter((c) => c.type === 'text' && typeof c.text === 'string')
-    .map((c) => c.text as string)
-    .join('');
+  return stripCiteMarkers(
+    content
+      .filter((c) => c.type === 'text' && typeof c.text === 'string')
+      .map((c) => c.text as string)
+      .join('')
+  );
 }
 
 /**
  * Process one pi event against the active turn, mutating `ctx` and returning the
  * normalized envelopes to emit (0 or more). Returns `done: true` once the turn
- * has fully ended (agent_end) so PiRuntime can clear its current-turn state.
+ * has fully ended (agent_end without a pending auto-retry) so PiRuntime can
+ * clear its current-turn state.
  */
 export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: NormalizedEvent[]; done: boolean } {
   const out: NormalizedEvent[] = [];
@@ -339,6 +354,12 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       break;
     }
     case 'agent_end': {
+      // pi announces post-run auto-retry on the agent_end itself (willRetry): after
+      // a backoff the SAME run continues (`agent.continue()`), so the turn is not
+      // over — keep it open and let the continuation stream into it. A later clean
+      // message_end clears the latched error (see above). If the promised retry
+      // never materializes, agent_settled settles the turn (runtime backstop).
+      if (ev.willRetry === true && !ctx.aborted) return { events: out, done: false };
       if (ctx.aborted) {
         out.push({ method: 'turn/aborted', params: { threadId, turn: { id: turnId, status: 'aborted' } } });
       } else if (ctx.errored) {

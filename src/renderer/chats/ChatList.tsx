@@ -11,6 +11,7 @@ import {
   X
 } from 'lucide-react';
 import type { ChatListResult, ChatSearchHit, ChatSummary, Folder, ThreadStatus } from '../../shared/types';
+import { stripCiteMarkers } from '../../shared/citations';
 import { useShortcut } from '../shortcuts';
 
 export interface ChatListProps {
@@ -58,10 +59,12 @@ function dateBucket(ts: number, now: number): { key: string; label: string } {
 
 // Turn an FTS5 snippet (matched terms wrapped in «…») into highlighted nodes. Split
 // on the sentinels rather than injecting HTML so snippet text can never be markup.
+// Cite markers are stripped at render because rows indexed before the strip fix
+// keep their original text until the session is re-ingested.
 function highlightSnippet(snippet: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   let key = 0;
-  snippet.split('«').forEach((chunk, idx) => {
+  stripCiteMarkers(snippet).split('«').forEach((chunk, idx) => {
     if (idx === 0) {
       if (chunk) nodes.push(chunk);
       return;

@@ -121,6 +121,13 @@ export interface ChatMessage {
    */
   createdAt?: string;
   /**
+   * User messages only: the send was rejected before a turn existed (startTurn
+   * threw — e.g. "agent is already processing"), so this message never reached
+   * the backend. Retry/edit/delete on it are local splices + re-send, not the
+   * turn-id rollback path (there is no turn to roll back).
+   */
+  sendFailed?: boolean;
+  /**
    * Set on the user message of a scheduled-task run (and propagated to its reply so
    * the pair renders as one collapsed "Scheduled run — HH:MM" block). `at` is the
    * run's ISO timestamp. Derived live from the tasks:run push and on replay from a
@@ -643,6 +650,31 @@ export interface ApprovalResolvedPayload {
   id: string;
 }
 
+// ---- Command execution (the `run_command` tool) ----
+
+/**
+ * A command that fell through the exec policy's auto-approve tiers (static
+ * allowlist → LLM judge) and needs the user's decision. Surfaced as an approval
+ * card; `id` is minted by the ExecService — pass it back to resolve.
+ */
+export interface ExecApprovalRequest {
+  id: string;
+  threadId: string;
+  /** The full shell command awaiting approval. */
+  command: string;
+  /** The resolved working directory it would run in. */
+  cwd: string;
+  /** What "Always allow" would persist to the user allowlist (command + subcommand). */
+  prefix: string;
+  /** The LLM judge's verdict that caused the escalation; null = judge skipped/failed. */
+  judgeVerdict: 'unsafe' | 'unsure' | null;
+  /** The judge's short reason, when it gave one. */
+  judgeReason?: string;
+}
+
+/** The user's answer to an exec approval card. */
+export type ExecDecision = 'allowOnce' | 'alwaysAllow' | 'deny';
+
 /** `mcp/login/url` — the OAuth authorize URL, streamed mid-login as a fallback link. */
 export interface McpLoginUrlParams {
   name: string;
@@ -945,6 +977,21 @@ export interface SkillsModelSettings {
 }
 
 /**
+ * Command execution (the `run_command` tool): a tiered auto-approve policy.
+ * A static safe allowlist and the user's learned prefixes run immediately; other
+ * commands are classified by an LLM judge, and only judge-flagged ones fall back
+ * to a manual approval card. The judge is a heuristic, not a security boundary.
+ */
+export interface ExecSettings {
+  /** Master switch for the run_command tool. */
+  enabled: boolean;
+  /** `provider/model` id for the safety judge; null = auto (cheapest known for the provider). */
+  judgeModel: string | null;
+  /** User-approved command prefixes (e.g. "git push", "npm") that auto-run as tier 1. */
+  allowlist: string[];
+}
+
+/**
  * The user's standing custom instructions (response-style directives, format/tone
  * rules, etc.) — an authoritative channel injected into every user-facing turn,
  * distinct from recalled facts. Quick Chat INHERITS Main and appends its own extra:
@@ -1099,6 +1146,8 @@ export interface AppSettings {
   nativeWebSearch: NativeWebSearchSettings;
   memory: MemoryModelSettings;
   skills: SkillsModelSettings;
+  /** Command execution (run_command) policy: enable switch, judge model, learned allowlist. */
+  exec: ExecSettings;
   retrieval: RetrievalSettings;
   /** Escape-to-retract behavior in the main composer. */
   escapeAction: EscapeAction;
@@ -1397,6 +1446,14 @@ export interface StemApi {
     surface: 'main' | 'quickChat',
     text: string
   ): Promise<void>;
+  /** Patch the command-execution policy (enable switch, judge model, allowlist). */
+  updateExecSettings(patch: Partial<ExecSettings>): Promise<AppSettings>;
+  /** A command needs the user's decision; fired so the UI can show the exec approval card. */
+  onExecApproval(listener: (request: ExecApprovalRequest) => void): () => void;
+  /** Fired when an exec approval is answered or expires. */
+  onExecApprovalResolved(listener: (payload: ApprovalResolvedPayload) => void): () => void;
+  /** Answer a pending exec approval ("Allow once" / "Always allow prefix" / "Deny"). */
+  respondExecApproval(id: string, decision: ExecDecision): Promise<void>;
   /** Update the embeddings/reranker retrieval endpoints (deep-merged per stage). */
   updateRetrievalSettings(patch: PartialRetrievalSettings): Promise<AppSettings>;
   /** Live-probe a retrieval endpoint with the current settings (Settings "Test" button). */

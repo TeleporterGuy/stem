@@ -38,6 +38,50 @@ describe('extractWebSearchEvent', () => {
     ).toEqual({ phase: 'source', url: 'https://example.com/a', title: 'Example' });
   });
 
+  it('sweeps url_citation annotations from a completed message item', () => {
+    // The codex backend repeats every citation in the final message item's
+    // content[].annotations; streamed annotation.added events are not reliable
+    // on all transports, so the extractor must sweep the item too.
+    expect(
+      extractWebSearchEvent({
+        type: 'response.output_item.done',
+        item: {
+          type: 'message',
+          id: 'msg_1',
+          content: [
+            {
+              type: 'output_text',
+              text: 'answer',
+              annotations: [
+                { type: 'url_citation', url: 'https://a.example', title: 'A', start_index: 10, end_index: 20 },
+                { type: 'file_citation', file_id: 'f1' },
+                { type: 'url_citation', url: 'https://b.example' }
+              ]
+            }
+          ]
+        }
+      })
+    ).toEqual([
+      { phase: 'source', url: 'https://a.example', title: 'A' },
+      { phase: 'source', url: 'https://b.example', title: undefined }
+    ]);
+  });
+
+  it('returns null for a message item without citations', () => {
+    expect(
+      extractWebSearchEvent({
+        type: 'response.output_item.done',
+        item: { type: 'message', id: 'msg_1', content: [{ type: 'output_text', text: 'answer', annotations: [] }] }
+      })
+    ).toBeNull();
+    expect(
+      extractWebSearchEvent({
+        type: 'response.output_item.added',
+        item: { type: 'message', id: 'msg_1', content: [] }
+      })
+    ).toBeNull();
+  });
+
   it('returns null for everything else', () => {
     expect(extractWebSearchEvent({ type: 'response.output_text.delta', delta: 'x' })).toBeNull();
     expect(extractWebSearchEvent({ type: 'response.output_item.added', item: { type: 'reasoning' } })).toBeNull();

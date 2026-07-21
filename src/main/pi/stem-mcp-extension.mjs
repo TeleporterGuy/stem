@@ -937,8 +937,17 @@ function teeEmit(payload) {
   }
 }
 
+/** A url_citation annotation object → source payload, or null. */
+function sourceFromAnnotation(a) {
+  if (a && a.type === 'url_citation' && typeof a.url === 'string') {
+    return { phase: 'source', url: a.url, title: typeof a.title === 'string' ? a.title : undefined };
+  }
+  return null;
+}
+
 /**
- * Extract a web-search tee payload from one raw Responses stream event, or null
+ * Extract web-search tee payload(s) from one raw Responses stream event — a
+ * single payload, an array (a message item carrying several citations), or null
  * when the event isn't web-search related. Pure — exported for unit tests; pi
  * only consumes the default export.
  */
@@ -947,21 +956,35 @@ export function extractWebSearchEvent(event) {
   const type = event.type;
   if (type === 'response.output_item.added' || type === 'response.output_item.done') {
     const item = event.item;
-    if (!item || item.type !== 'web_search_call') return null;
-    const query =
-      item.action && typeof item.action.query === 'string' && item.action.query ? item.action.query : undefined;
-    return {
-      phase: type === 'response.output_item.added' ? 'started' : 'completed',
-      id: typeof item.id === 'string' ? item.id : undefined,
-      query,
-      status: typeof item.status === 'string' ? item.status : undefined
-    };
+    if (!item || typeof item !== 'object') return null;
+    if (item.type === 'web_search_call') {
+      const query =
+        item.action && typeof item.action.query === 'string' && item.action.query ? item.action.query : undefined;
+      return {
+        phase: type === 'response.output_item.added' ? 'started' : 'completed',
+        id: typeof item.id === 'string' ? item.id : undefined,
+        query,
+        status: typeof item.status === 'string' ? item.status : undefined
+      };
+    }
+    // Completed message items repeat every citation in content[].annotations.
+    // The streamed annotation.added events don't reliably arrive on all
+    // transports, so this is the authoritative sweep (Stem dedupes by url).
+    if (type === 'response.output_item.done' && item.type === 'message' && Array.isArray(item.content)) {
+      const sources = [];
+      for (const block of item.content) {
+        if (!block || !Array.isArray(block.annotations)) continue;
+        for (const a of block.annotations) {
+          const src = sourceFromAnnotation(a);
+          if (src) sources.push(src);
+        }
+      }
+      return sources.length ? sources : null;
+    }
+    return null;
   }
   if (type === 'response.output_text.annotation.added') {
-    const a = event.annotation;
-    if (a && a.type === 'url_citation' && typeof a.url === 'string') {
-      return { phase: 'source', url: a.url, title: typeof a.title === 'string' ? a.title : undefined };
-    }
+    return sourceFromAnnotation(event.annotation);
   }
   return null;
 }
@@ -970,7 +993,8 @@ export function extractWebSearchEvent(event) {
 function teeFeed(event) {
   try {
     const payload = extractWebSearchEvent(event);
-    if (payload) teeEmit(payload);
+    if (Array.isArray(payload)) payload.forEach(teeEmit);
+    else if (payload) teeEmit(payload);
   } catch {
     // malformed event — ignore
   }
@@ -1048,6 +1072,11 @@ function installProviderTee() {
         return p.then((res) => {
           try {
             const url = input && typeof input === 'object' && 'url' in input ? input.url : input;
+            // The codex backend streams SSE with NO content-type header at all,
+            // which made this tee miss every response (zero sources ever
+            // captured) — so an absent/empty content-type must pass. The URL
+            // match already restricts this to provider /responses calls, and
+            // teeParseSse on a non-SSE body just parses nothing.
             const ct =
               res && res.headers && typeof res.headers.get === 'function'
                 ? res.headers.get('content-type') || ''
@@ -1056,7 +1085,7 @@ function installProviderTee() {
               res &&
               res.ok &&
               teeUrlMatches(url) &&
-              ct.includes('text/event-stream') &&
+              (!ct || ct.includes('text/event-stream')) &&
               typeof res.clone === 'function'
             ) {
               void teeParseSse(res.clone()).catch(() => {});
@@ -1323,6 +1352,11 @@ export default async function stemMcpBridge(pi) {
   // (which owns the scheduler) via a ctx.ui.input round-trip; main supplies the
   // current thread id, so a task is always bound to the conversation it's created in.
   registerTaskTools(pi);
+
+  // Command execution: run a shell command on the user's machine. The tool only
+  // forwards the request — the main process runs the tiered auto-approve policy
+  // (allowlist → LLM judge → approval card) and spawns the command itself.
+  registerExecTool(pi);
 
   // Stem self-authored skills: let the assistant create/patch/remove its own
   // SKILL.md procedures. Writes are silent (no approval card) and take effect on
@@ -1769,6 +1803,66 @@ function registerTaskTools(pi) {
       const res = await taskBridge(ctx, { op: 'notify', message, title: params?.title });
       if (!res.ok) return taskErr(res.error || 'Could not notify the user.');
       return taskOk('Notified the user.');
+    }
+  });
+}
+
+// ---- Command execution: run shell commands via the main-process executor ----
+
+// Sentinel title for the ctx.ui.input round-trip PiRuntime intercepts (it never
+// shows UI for this title — it runs the policy + command and answers with a JSON
+// result string). The response can take minutes: main may hold the request open
+// for an approval card and then for the command itself.
+const EXEC_BRIDGE_TITLE = 'stem-exec-bridge';
+
+/** Round-trip one exec request through PiRuntime; returns the parsed result (or an error object). */
+async function execBridge(ctx, payload) {
+  if (!ctx || !ctx.ui || typeof ctx.ui.input !== 'function') {
+    return { ok: false, error: 'Command execution is unavailable in this context.' };
+  }
+  const raw = await ctx.ui.input(EXEC_BRIDGE_TITLE, JSON.stringify(payload));
+  if (typeof raw !== 'string') return { ok: false, error: 'No response from Stem.' };
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { ok: false, error: 'Malformed response from Stem.' };
+  }
+}
+
+function registerExecTool(pi) {
+  pi.registerTool({
+    name: 'run_command',
+    label: 'Run command',
+    description:
+      'Run a shell command on the user\'s macOS machine (zsh, login-shell PATH — Homebrew/npm CLIs like ' +
+      '`agent-browser` work). Use it to drive CLIs, git, build tools, or quick scripts — NOT to read files ' +
+      '(use the dedicated read/grep/find/ls tools). By default the command runs in an isolated Stem ' +
+      'workspace folder; pass `cwd` only when it must run in a specific existing directory. Folders ' +
+      'connected read-only are blocked entirely. Safe commands run immediately; others are screened by an ' +
+      'automatic safety check and may pause for the user\'s approval (denied automatically in scheduled ' +
+      'runs — prefer simple, clearly-safe commands there). Always quote arguments containing special ' +
+      'characters (&, ?, ;, spaces) — e.g. agent-browser open "https://example.com/watch?v=x&t=1" — an ' +
+      'unquoted & or ; changes what the shell runs and forces the approval path. Output is captured with ' +
+      'the exit code and truncated past 64KB per stream; default timeout 60s (max 300s via `timeout_ms`).',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'The shell command to run, e.g. "agent-browser open https://example.com".' },
+        cwd: { type: 'string', description: 'Optional absolute path of an existing directory to run in.' },
+        timeout_ms: { type: 'number', description: 'Optional timeout in milliseconds (default 60000, max 300000).' }
+      },
+      required: ['command']
+    },
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const command = String((params && params.command) || '').trim();
+      if (!command) return taskErr('Provide a command to run.');
+      const res = await execBridge(ctx, {
+        command,
+        cwd: params && typeof params.cwd === 'string' ? params.cwd : undefined,
+        timeout_ms: params && typeof params.timeout_ms === 'number' ? params.timeout_ms : undefined
+      });
+      if (!res.ok) return taskErr(res.error || 'The command could not be run.');
+      return taskOk(res.text || '(no output)');
     }
   });
 }

@@ -99,6 +99,8 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'settings:updateEscapeAction': [a.oneOf(['off', 'single', 'twoStage'])],
   'settings:updateMemory': [a.object],
   'settings:updateSkills': [a.object],
+  'settings:updateExec': [a.object],
+  'exec:resolveApproval': [a.string, a.oneOf(['allowOnce', 'alwaysAllow', 'deny'])],
   'settings:updateCustomInstructions': [a.object],
   'settings:updateRetrieval': [a.object],
   'settings:testRetrieval': [a.oneOf(['embeddings', 'reranker'])],

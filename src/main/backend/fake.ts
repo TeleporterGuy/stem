@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { ApprovalId, ChatBackend, TaskBridge } from './types';
+import type { ApprovalId, ChatBackend, ExecBridge, TaskBridge } from './types';
 import type {
   ChatMessage,
   ChatSummary,
@@ -252,6 +252,8 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
   async requestSkillReload(): Promise<void> {}
 
   setTaskBridge(_bridge: TaskBridge | null): void {}
+
+  setExecBridge(_bridge: ExecBridge | null): void {}
 
   // ---- scripted turn execution ----
 

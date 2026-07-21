@@ -33,6 +33,7 @@ import { ContextMeter } from './ContextMeter';
 import { MdxView } from './MdxView';
 import { StreamingMdxView } from './StreamingMdxView';
 import { ShortcutHint, useShortcut } from '../shortcuts';
+import { HoverTip } from '../ui/InfoTip';
 import { MdxActionContext } from '../mdx/ActionContext';
 import { useAutoHideScroll } from '../hooks/useAutoHideScroll';
 import { EFFORT_LABELS } from '../modelLabels';
@@ -84,6 +85,17 @@ function fileToAttachment(file: File): Promise<TurnAttachment> {
   });
 }
 
+// Labeled tooltip for the hover action icons. The native title tooltip is slow
+// (and easy to miss), so the icons explain themselves via the shared popup after
+// a short hold — long enough not to flash while the pointer crosses the row.
+function ActionTip({ tip, children }: { tip: string; children: ReactNode }) {
+  return (
+    <HoverTip tip={tip} className="msg-tip" delayMs={300}>
+      {children}
+    </HoverTip>
+  );
+}
+
 /** Imperative surface so App can push files into this chat's composer (drop overlay). */
 export interface ChatViewHandle {
   addAttachments(files: File[]): void;
@@ -115,6 +127,13 @@ interface ChatViewProps {
   onFork: (turnId: string) => void;
   /** Delete this turn and everything after it (truncate, no re-send). */
   onDelete: (turnId: string) => void;
+  /** Re-send a message whose send failed before a turn existed (startTurn rejected —
+   *  no turn id anywhere; the orphan + its error bubble are spliced out locally). */
+  onRetryFailedSend: (messageId: string) => void;
+  /** Edit a failed send's text and re-send it (same local splice as retry). */
+  onEditFailedSend: (messageId: string, newText: string) => void;
+  /** Remove a failed send and its error bubble without re-sending. */
+  onDeleteFailedSend: (messageId: string) => void;
   models: ModelSummary[];
   model: ModelSummary | null;
   effort: string | null;
@@ -222,6 +241,9 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   onEdit,
   onFork,
   onDelete,
+  onRetryFailedSend,
+  onEditFailedSend,
+  onDeleteFailedSend,
   models,
   model,
   effort,
@@ -347,9 +369,14 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     setEditingId(null);
     setEditDraft('');
   }
-  function saveEdit(turnId: string | undefined) {
-    if (!turnId || !editDraft.trim()) return;
-    onEdit(turnId, editDraft);
+  function saveEdit(m: ChatMessage) {
+    const text = editDraft.trim();
+    if (!text) return;
+    // Two edit paths: a real turn is rolled back and re-run; a failed send (no
+    // turn ever existed) is spliced out locally and re-sent.
+    if (m.turnId) onEdit(m.turnId, text);
+    else if (m.sendFailed) onEditFailedSend(m.id, text);
+    else return;
     setEditingId(null);
     setEditDraft('');
   }
@@ -475,7 +502,21 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     // Retry/Edit/Fork need an authoritative turn id and a settled thread. Error
     // bubbles (role system) carry their failed turn's id, so they can offer
     // Copy + Retry — but not Edit/Fork/Delete, which belong to the real messages.
-    const canAct = !running && !!m.turnId;
+    // A send rejected before any turn existed leaves no id at all: its user
+    // bubble is marked sendFailed, and retry/edit/delete take the local path.
+    const failedSend = m.role === 'user' && !!m.sendFailed && !m.turnId;
+    // For a turn-less error bubble, Retry targets the orphaned user message just
+    // before it (skipping sibling error bubbles).
+    const retryTarget = (() => {
+      if (m.role !== 'system' || m.turnId) return null;
+      for (let i = messages.findIndex((x) => x.id === m.id) - 1; i >= 0; i--) {
+        const prev = messages[i];
+        if (prev.role === 'system') continue;
+        return prev.role === 'user' && prev.sendFailed && !prev.turnId ? prev : null;
+      }
+      return null;
+    })();
+    const canAct = !running && (!!m.turnId || failedSend || m.role === 'system');
     return (
       <div key={m.id} className={`message message-${m.role}`}>
         <div className={`msg-avatar ${a.cls}`}>{a.icon}</div>
@@ -506,7 +547,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    saveEdit(m.turnId);
+                    saveEdit(m);
                   } else if (e.key === 'Escape') {
                     e.preventDefault();
                     cancelEdit();
@@ -521,7 +562,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                 <button
                   type="button"
                   className="primary"
-                  onClick={() => saveEdit(m.turnId)}
+                  onClick={() => saveEdit(m)}
                   disabled={!editDraft.trim()}
                 >
                   Save &amp; run
@@ -563,56 +604,99 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
           )}
           {canAct && !isEditing && (
             <div className="message-actions">
-              <button
-                type="button"
-                className="message-action"
-                title={copiedId === m.id ? 'Copied' : 'Copy message'}
-                onClick={() => copyMessage(m)}
-              >
-                {copiedId === m.id ? <Check size={13} /> : <Copy size={13} />}
-              </button>
-              {(m.role === 'assistant' || m.role === 'system') && (
+              <ActionTip tip={copiedId === m.id ? 'Copied' : 'Copy message'}>
                 <button
                   type="button"
                   className="message-action"
-                  title={m.role === 'system' ? 'Retry — send the message again' : 'Retry — regenerate this reply'}
-                  onClick={() => onRetry(m.turnId!)}
+                  aria-label="Copy message"
+                  onClick={() => copyMessage(m)}
                 >
-                  <RotateCcw size={13} />
+                  {copiedId === m.id ? <Check size={13} /> : <Copy size={13} />}
                 </button>
-              )}
-              {m.role === 'user' && (
-                <button
-                  type="button"
-                  className="message-action"
-                  title="Edit & re-run"
-                  onClick={() => startEdit(m)}
+              </ActionTip>
+              {(m.role === 'assistant' || m.role === 'system') && (m.turnId || retryTarget) && (
+                <ActionTip
+                  tip={m.role === 'system' ? 'Retry — send the message again' : 'Retry — regenerate this reply'}
                 >
-                  <Pencil size={13} />
-                </button>
-              )}
-              {m.role !== 'system' && (
-                <>
                   <button
                     type="button"
                     className="message-action"
-                    title="Fork into a new chat from here"
-                    onClick={() => onFork(m.turnId!)}
+                    aria-label="Retry"
+                    onClick={() => (m.turnId ? onRetry(m.turnId) : onRetryFailedSend(retryTarget!.id))}
                   >
-                    <GitBranch size={13} />
+                    <RotateCcw size={13} />
                   </button>
+                </ActionTip>
+              )}
+              {m.role === 'user' && (m.turnId || failedSend) && (
+                <ActionTip tip={failedSend ? 'Edit & send again' : 'Edit & re-run'}>
                   <button
                     type="button"
-                    className={`message-action${confirmDeleteId === m.id ? ' danger' : ''}`}
-                    title={
+                    className="message-action"
+                    aria-label="Edit"
+                    onClick={() => startEdit(m)}
+                  >
+                    <Pencil size={13} />
+                  </button>
+                </ActionTip>
+              )}
+              {m.role !== 'system' && m.turnId && (
+                <>
+                  <ActionTip tip="Fork into a new chat from here">
+                    <button
+                      type="button"
+                      className="message-action"
+                      aria-label="Fork"
+                      onClick={() => onFork(m.turnId!)}
+                    >
+                      <GitBranch size={13} />
+                    </button>
+                  </ActionTip>
+                  <ActionTip
+                    tip={
                       confirmDeleteId === m.id
                         ? 'Click again to delete this turn and everything after it'
                         : 'Delete from here'
                     }
+                  >
+                    <button
+                      type="button"
+                      className={`message-action${confirmDeleteId === m.id ? ' danger' : ''}`}
+                      aria-label="Delete from here"
+                      onClick={() => {
+                        if (confirmDeleteId === m.id) {
+                          setConfirmDeleteId(null);
+                          onDelete(m.turnId!);
+                        } else {
+                          setConfirmDeleteId(m.id);
+                          window.setTimeout(
+                            () => setConfirmDeleteId((c) => (c === m.id ? null : c)),
+                            2500
+                          );
+                        }
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </ActionTip>
+                </>
+              )}
+              {failedSend && (
+                <ActionTip
+                  tip={
+                    confirmDeleteId === m.id
+                      ? 'Click again to remove'
+                      : 'Remove — this message was never sent'
+                  }
+                >
+                  <button
+                    type="button"
+                    className={`message-action${confirmDeleteId === m.id ? ' danger' : ''}`}
+                    aria-label="Remove unsent message"
                     onClick={() => {
                       if (confirmDeleteId === m.id) {
                         setConfirmDeleteId(null);
-                        onDelete(m.turnId!);
+                        onDeleteFailedSend(m.id);
                       } else {
                         setConfirmDeleteId(m.id);
                         window.setTimeout(
@@ -624,7 +708,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                   >
                     <Trash2 size={13} />
                   </button>
-                </>
+                </ActionTip>
               )}
             </div>
           )}

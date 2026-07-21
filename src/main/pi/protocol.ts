@@ -46,6 +46,13 @@ export const INSTRUCTIONS_APPROVAL_TITLE = 'stem-instructions-approval';
  */
 export const TASK_BRIDGE_TITLE = 'stem-task-bridge';
 
+/**
+ * run_command tool round-trip (`input`): the exec payload (command/cwd/timeout)
+ * rides in `placeholder`; PiRuntime routes it to the main-process ExecService
+ * (policy tiers + spawn) and answers with a JSON result string.
+ */
+export const EXEC_BRIDGE_TITLE = 'stem-exec-bridge';
+
 // ---- web-search tee (`notify` messages) ----
 
 /** JSON key wrapping a tee payload inside a bridge `notify` message. */

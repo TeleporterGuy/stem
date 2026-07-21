@@ -49,6 +49,8 @@ import { publishProtectedRootsNow } from './workspace/connected-folders';
 import { piHome, resolveProfileOverride } from './workspace/paths';
 import type { TaskScheduler } from './scheduler';
 import { initTaskScheduler } from './startup/scheduler';
+import type { ExecService } from './exec/service';
+import { initExecService } from './startup/exec';
 import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
 import { ProviderAuth } from './pi/provider-auth';
@@ -67,6 +69,7 @@ import {
   updateCustomInstructions,
   updateDefaultModel,
   updateEscapeAction,
+  updateExecSettings,
   updateMemorySettings,
   updateNativeWebSearch,
   updateQuickChat,
@@ -78,6 +81,8 @@ import type {
   BackendEventEnvelope,
   CustomInstructionsSettings,
   EscapeAction,
+  ExecDecision,
+  ExecSettings,
   ItemEventParams,
   MemoryModelSettings,
   ModelSummary,
@@ -199,6 +204,7 @@ let quickChatWindow: BrowserWindow | null = null;
 /** Bottom-left status pill shown while the overlay is hidden and a turn runs. */
 let hudWindow: BrowserWindow | null = null;
 let runtime: ChatBackend | null = null;
+let execService: ExecService | null = null;
 /** Scheduled-tasks engine (cron/once → autonomous turns). Created in whenReady. */
 let scheduler: TaskScheduler | null = null;
 /** The currently-registered global accelerator, so we can unregister on change. */
@@ -913,6 +919,14 @@ function registerIpc(): void {
     // each pass, so the change applies to the next curation run.
     return updateSkillsSettings(patch);
   });
+  handleIpc('settings:updateExec', async (_e, patch: Partial<ExecSettings>) => {
+    // Just persist — the ExecService reads the policy fresh from settings on each
+    // run_command request, so the change applies to the next command.
+    return updateExecSettings(patch);
+  });
+  handleIpc('exec:resolveApproval', async (_e, id: string, decision: ExecDecision) => {
+    execService?.resolveApproval(id, decision);
+  });
   handleIpc('settings:updateCustomInstructions', async (_e, patch: Partial<CustomInstructionsSettings>) => {
     // Just persist — startTurn/quickchat:run read the instructions fresh per turn, so
     // the change applies to the next turn with no restart.
@@ -1183,6 +1197,23 @@ app.whenReady().then(async () => {
     isUserActive: () => busyWithin(USER_ACTIVE_WINDOW_MS),
     revealMainWindow,
     requestAttention: () => requestAttention(mainWindow)
+  });
+
+  // Command execution (the run_command tool): the ExecService owns the tiered
+  // policy + spawn; approval cards go straight to the windows (both surfaces mount
+  // the card), revealing Quick Chat when it owns the originating thread — same
+  // pattern as the MCP-admin/instructions approvals.
+  execService = initExecService({
+    runtime,
+    emitApprovalRequest: (request) => {
+      if (request.threadId && overlay.owns(request.threadId)) showQuickChat(false);
+      sendToMain('exec:approvalRequest', request);
+      quickChatWindow?.webContents.send('exec:approvalRequest', request);
+    },
+    emitApprovalResolved: (id) => {
+      sendToMain('exec:approvalResolved', { id });
+      quickChatWindow?.webContents.send('exec:approvalResolved', { id });
+    }
   });
 
   // Stem Recall relevance ranking + background workers: embed/scan utility

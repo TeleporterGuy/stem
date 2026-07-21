@@ -7,6 +7,7 @@ import type {
   EmbeddingsMode,
   EmbeddingsSettings,
   EscapeAction,
+  ExecSettings,
   OnboardingSettings,
   LocalEmbedModelId,
   LocalProviderId,
@@ -53,6 +54,10 @@ const DEFAULTS: AppSettings = {
   // Background skills-curator model; null = the backend default. Separate from the
   // memory model so curation (which can be a harder task) can use a stronger model.
   skills: { model: null },
+  // Command execution: on by default with the tiered policy as the guard rail.
+  // judgeModel null = auto-pick the cheapest known model for the current provider;
+  // the allowlist grows via the approval card's "Always allow" button.
+  exec: { enabled: true, judgeModel: null, allowlist: [] },
   // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
   // default to the bundled local model (multilingual, in-process, nothing leaves
   // the machine); weights download once on first need, and until they're ready
@@ -170,6 +175,21 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   const skills: SkillsModelSettings = {
     model: typeof rawSkills.model === 'string' && rawSkills.model.trim() ? rawSkills.model : null
   };
+  const rawExec = (parsed?.exec ?? {}) as Partial<ExecSettings>;
+  const exec: ExecSettings = {
+    enabled: typeof rawExec.enabled === 'boolean' ? rawExec.enabled : DEFAULTS.exec.enabled,
+    judgeModel: typeof rawExec.judgeModel === 'string' && rawExec.judgeModel.trim() ? rawExec.judgeModel : null,
+    // Dedupe + trim, drop empties, and cap size so a runaway writer can't bloat
+    // settings.json (the allowlist is matched per command, so order is cosmetic).
+    allowlist: [
+      ...new Set(
+        (Array.isArray(rawExec.allowlist) ? rawExec.allowlist : [])
+          .filter((p): p is string => typeof p === 'string')
+          .map((p) => p.trim())
+          .filter((p) => p && p.length <= 200)
+      )
+    ].slice(0, 200)
+  };
   const rawRet = (parsed?.retrieval ?? {}) as Partial<RetrievalSettings>;
   const retrieval: RetrievalSettings = {
     embeddings: coerceEmbeddings(rawRet.embeddings, DEFAULTS.retrieval.embeddings),
@@ -223,6 +243,7 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     nativeWebSearch: nws,
     memory: mem,
     skills,
+    exec,
     retrieval,
     escapeAction,
     customInstructions,
@@ -315,6 +336,16 @@ export function updateSkillsSettings(patch: Partial<SkillsModelSettings>): Promi
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, skills: { ...cur.skills, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the command-execution policy and persist; returns the full settings. */
+export function updateExecSettings(patch: Partial<ExecSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, exec: { ...cur.exec, ...patch } });
     await writeSettings(next);
     return next;
   });

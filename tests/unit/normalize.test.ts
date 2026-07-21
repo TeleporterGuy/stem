@@ -93,4 +93,25 @@ describe('normalize turn outcome', () => {
     const end = normalizePiEvent(ev({ type: 'agent_end' }), ctx);
     expect(end.events.at(-1)).toMatchObject({ method: 'turn/aborted' });
   });
+
+  it('keeps the turn open when agent_end announces an auto-retry (willRetry)', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(assistantEnd({ content: [], stopReason: 'error', errorMessage: 'overloaded' }), ctx);
+    const end = normalizePiEvent(ev({ type: 'agent_end', willRetry: true }), ctx);
+    expect(end.done).toBe(false);
+    expect(end.events).toHaveLength(0);
+    // The retry continuation succeeds inside the SAME turn → completed, not failed.
+    normalizePiEvent(assistantEnd({ content: [{ type: 'text', text: 'answer' }], stopReason: 'stop' }), ctx);
+    const settled = normalizePiEvent(ev({ type: 'agent_end' }), ctx);
+    expect(settled.done).toBe(true);
+    expect(settled.events.at(-1)).toMatchObject({ method: 'turn/completed' });
+  });
+
+  it('willRetry never holds open an aborted turn', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(assistantEnd({ content: [], stopReason: 'aborted' }), ctx);
+    const end = normalizePiEvent(ev({ type: 'agent_end', willRetry: true }), ctx);
+    expect(end.done).toBe(true);
+    expect(end.events.at(-1)).toMatchObject({ method: 'turn/aborted' });
+  });
 });

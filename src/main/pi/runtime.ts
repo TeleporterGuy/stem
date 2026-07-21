@@ -37,6 +37,7 @@ import {
   LOCAL_PROVIDER_IDS,
   providerName
 } from '../../shared/providers';
+import { stripCiteMarkers } from '../../shared/citations';
 import { log } from '../log';
 import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
@@ -48,7 +49,7 @@ import { buildConnectedFoldersContext } from '../connected-folders/inject';
 import { getPrivateRoots } from '../workspace/connected-folders';
 import { resolveAttachments, type PiImageContent } from './attachments';
 import { captureUserMessage } from '../recall/capture';
-import type { ApprovalId, ChatBackend, TaskBridge } from '../backend/types';
+import type { ApprovalId, ChatBackend, ExecBridge, TaskBridge } from '../backend/types';
 import {
   buildMcpCatalogContext,
   ensureMcpConfig,
@@ -87,6 +88,7 @@ import {
   ENV_MCP_OAUTH,
   ENV_SECRET_KEY,
   ENV_SKILLS_DIR,
+  EXEC_BRIDGE_TITLE,
   INSTRUCTIONS_APPROVAL_TITLE,
   parseWebSearchTee,
   SKILLS_REV_FILE,
@@ -409,6 +411,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private instructionsApprovalProcesses = new Map<string, PiProcess | null>();
   /** Wired by main to route the assistant's schedule_task/notify_user tools. */
   private taskBridge: TaskBridge | null = null;
+  /** Wired by main to route the assistant's run_command tool. */
+  private execBridge: ExecBridge | null = null;
   /** Set when an admin add/remove was approved; reloads MCP servers at turn end. */
   private pendingMcpReload = false;
   /** Set when a skill was written this turn (or by the curator); reloads at turn end. */
@@ -545,6 +549,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       turn.startedAt = startedAt;
       turn.ensureMs = ensureMs;
       turn.recall = {};
+      // Autonomous scheduled run: run_command's manual-approval tier is rejected
+      // (nobody is present to answer the card) — see handleExecBridgeRequest.
+      turn.isScheduled = !!input.scheduled;
       // Folders connected memorize:false: if the assistant reads inside one this turn,
       // we suppress capturing its reply into Recall (see onPiEvent / isCaptureSuppressed).
       turn.privateRoots = await getPrivateRoots().catch(() => []);
@@ -604,6 +611,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // already settled without the scheduler observing the terminal event.
     if (!this.proc || !this.currentTurn || this.currentTurn.turnId !== turnId) return;
     this.currentTurn.aborted = true;
+    // Interrupting the turn must also stop any command it is running: pi's abort
+    // reaches the extension tool, but the actual child process lives in main.
+    this.execBridge?.abortThread(this.currentTurn.threadId);
     this.proc.send({ type: 'abort' });
   }
 
@@ -1176,6 +1186,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private settleAllApprovals(): void {
     for (const id of [...this.adminApprovals]) this.settleAdminApproval(id);
     for (const id of [...this.instructionsApprovals]) this.settleInstructionsApproval(id);
+    // Exec: deny pending approval cards and kill running commands — the pi child
+    // that asked is gone, so their results could never be delivered anyway.
+    this.execBridge?.settleAll();
   }
 
   private async configMcpServerReload(): Promise<void> {
@@ -1198,6 +1211,41 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
   setTaskBridge(bridge: TaskBridge | null): void {
     this.taskBridge = bridge;
+  }
+
+  setExecBridge(bridge: ExecBridge | null): void {
+    this.execBridge = bridge;
+  }
+
+  /**
+   * Handle the run_command tool's ctx.ui.input round-trip (sentinel EXEC_BRIDGE_TITLE).
+   * The placeholder is a JSON { command, cwd, timeout_ms } payload; we run it through
+   * the wired ExecBridge with the CURRENT turn's threadId + scheduled flag (only main
+   * knows both) and answer with a JSON result string the tool returns. The response
+   * can be minutes away (approval + spawn) — pi holds the elicitation open, same as
+   * the admin/instructions approvals.
+   */
+  private handleExecBridgeRequest(id: string, payload: string | undefined): void {
+    const respond = (value: unknown): void =>
+      this.proc?.send({ type: 'extension_ui_response', id, value: JSON.stringify(value) });
+    const turn = this.currentTurn;
+    void (async () => {
+      try {
+        const bridge = this.execBridge;
+        if (!bridge) return respond({ ok: false, error: 'Command execution is unavailable.' });
+        const req = JSON.parse(payload ?? '{}') as { command?: string; cwd?: string; timeout_ms?: number };
+        const result = await bridge.handleExecRequest({
+          command: req.command ?? '',
+          cwd: typeof req.cwd === 'string' && req.cwd.trim() ? req.cwd : undefined,
+          timeoutMs: typeof req.timeout_ms === 'number' ? req.timeout_ms : undefined,
+          threadId: turn?.threadId ?? null,
+          isScheduled: turn?.isScheduled === true
+        });
+        respond(result);
+      } catch (e) {
+        respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    })();
   }
 
   /**
@@ -1406,10 +1454,34 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         this.handleTaskBridgeRequest(id, ev.placeholder as string | undefined);
         return;
       }
+      // The run_command tool round-trip: policy + spawn happen in main (ExecService);
+      // the held elicitation is answered when the command settles.
+      if (ev.method === 'input' && ev.title === EXEC_BRIDGE_TITLE) {
+        this.handleExecBridgeRequest(id, ev.placeholder as string | undefined);
+        return;
+      }
       // No UI for other dialogs yet — dismiss them safely.
       if (ev.method === 'confirm') this.proc?.send({ type: 'extension_ui_response', id, confirmed: false });
       else if (ev.method === 'select' || ev.method === 'input' || ev.method === 'editor')
         this.proc?.send({ type: 'extension_ui_response', id, cancelled: true });
+      return;
+    }
+    if (ev.type === 'agent_settled') {
+      // pi is only NOW truly idle. agent_end can be followed by post-run work that
+      // keeps its agent busy (auto-retry of transient provider errors, context
+      // auto-compaction, extension-queued continuations) — a prompt sent in that
+      // window is rejected with "Agent is already processing". So the send gate is
+      // released HERE, not at agent_end (which stays the renderer's turn end).
+      // A turn still live here announced a retry (agent_end willRetry) that never
+      // materialized — settle it with its latched outcome so the renderer isn't
+      // left on a forever-running turn.
+      const leftover = this.currentTurn;
+      if (leftover) {
+        const { events } = normalizePiEvent({ type: 'agent_end' }, leftover);
+        for (const e of events) this.emitEvent(e.method, e.params);
+        this.settleTurn(leftover, Date.now());
+      }
+      this.releaseForeground();
       return;
     }
     if (!this.currentTurn) return;
@@ -1431,26 +1503,32 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       this.advancePhase(turn, events, now);
     }
     for (const e of events) this.emitEvent(e.method, e.params);
-    if (done) {
-      turn.endedAt = now;
-      this.advancePhase(turn, [], now); // flush the trailing segment
-      this.reportTurnTiming(turn);
-      // Web sources recovered by the tee ride out at turn end (the assistant
-      // bubble exists by now, so the renderer can attach them).
-      if (turn.sources.length) {
-        this.emitEvent('turn/sources', { threadId: turn.threadId, turnId: turn.turnId, sources: turn.sources });
-      }
-      // The assistant may have created/patched a skill via manage_skill this turn;
-      // detect it (the bridge bumps the rev marker) and reload at turn end.
-      if (this.readSkillsRev() !== this.skillsRevAtTurnStart) {
-        this.pendingSkillReload = true;
-        this.emitEvent('skills/changed');
-      }
-      this.finishTurn();
-      // Map this live turn's minted id to its persisted entry id so a later
-      // fork/edit targets the right pi entry — and persist the turn's timing.
-      void this.recordTurnEntry(turn);
+    if (done) this.settleTurn(turn, now);
+  }
+
+  /** The turn's stream is over (its terminal event just went out): flush timing,
+   * ride out tee-recovered sources, and drop per-turn state. The foreground gate
+   * is deliberately NOT released here — pi may still be busy with post-run work
+   * until agent_settled (see onPiEvent). */
+  private settleTurn(turn: TurnContext, now: number): void {
+    turn.endedAt = now;
+    this.advancePhase(turn, [], now); // flush the trailing segment
+    this.reportTurnTiming(turn);
+    // Web sources recovered by the tee ride out at turn end (the assistant
+    // bubble exists by now, so the renderer can attach them).
+    if (turn.sources.length) {
+      this.emitEvent('turn/sources', { threadId: turn.threadId, turnId: turn.turnId, sources: turn.sources });
     }
+    // The assistant may have created/patched a skill via manage_skill this turn;
+    // detect it (the bridge bumps the rev marker) and reload after agent_settled.
+    if (this.readSkillsRev() !== this.skillsRevAtTurnStart) {
+      this.pendingSkillReload = true;
+      this.emitEvent('skills/changed');
+    }
+    this.currentTurn = null;
+    // Map this live turn's minted id to its persisted entry id so a later
+    // fork/edit targets the right pi entry — and persist the turn's timing.
+    void this.recordTurnEntry(turn);
   }
 
   /**
@@ -1613,8 +1691,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     return this.turnEntryIds.get(turnId) ?? turnId;
   }
 
-  private finishTurn(): void {
-    this.currentTurn = null;
+  /** pi is idle again (agent_settled, or a prompt that never started): release the
+   * send gate and apply any deferred bridge reload. Reloading here — after pi's
+   * post-run continuations — means the restart can no longer kill an in-flight
+   * auto-retry or auto-compaction. */
+  private releaseForeground(): void {
     this.foreground.finishTurn();
     // An approved MCP add/remove, or a skill written this turn, takes effect by
     // reloading the bridge after the turn (restarting mid-turn would kill the
@@ -1624,6 +1705,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       this.pendingSkillReload = false;
       void this.configMcpServerReload().catch(() => undefined);
     }
+  }
+
+  /** A turn that failed before pi accepted the prompt: no agent run started, so no
+   * agent_settled will come — drop the turn AND release the gate right away. */
+  private finishTurn(): void {
+    this.currentTurn = null;
+    this.releaseForeground();
   }
 
   /** Read the skills revision marker the bridge bumps on every skill write. */
@@ -2051,6 +2139,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * prepended at send time so the replayed user bubble shows only what was actually
    * asked. The scheduled fence also flags the turn (with its timestamp) so the UI
    * renders it collapsed. No-op on turns with no injection and on assistant messages.
+   * Also drops leaked web-search citation markers (see shared/citations.ts) — the
+   * session JSONL stores them verbatim, so history reads clean them retroactively.
    */
   private stripMarkers(raw: string, images: MessageAttachment[]): {
     text: string;
@@ -2058,7 +2148,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     scheduled?: { at: string };
   } {
     const sched = raw.match(SCHED_STRIP_RE);
-    const text = raw.replace(SCHED_STRIP_RE, '').replace(CONTEXT_STRIP_RE, '');
+    const text = stripCiteMarkers(raw.replace(SCHED_STRIP_RE, '').replace(CONTEXT_STRIP_RE, ''));
     return sched ? { text, images, scheduled: { at: sched[1] } } : { text, images };
   }
 

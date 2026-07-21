@@ -427,6 +427,58 @@ describe('pi RPC failure handling', () => {
     expect(internal.currentModel).toBe('openai-codex/old');
   });
 
+  it('releases the send gate on agent_settled, not agent_end', async () => {
+    // pi stays busy after agent_end (auto-retry backoff, auto-compaction, queued
+    // continuations) until agent_settled; a prompt sent in that window is rejected
+    // with "Agent is already processing". The gate must span the gap.
+    const { runtime } = await tempRuntime();
+    const internal = runtime as unknown as {
+      currentTurn: unknown;
+      foreground: { claimTurn(): void; run<T>(task: () => Promise<T>): Promise<T> };
+      onPiEvent: (event: Record<string, unknown>) => void;
+    };
+    internal.currentTurn = newTurnContext('thread', 'turn1');
+    internal.foreground.claimTurn();
+
+    internal.onPiEvent({ type: 'agent_end' });
+    expect(internal.currentTurn).toBeNull(); // the renderer's turn end fired…
+
+    let ran = false;
+    const queued = internal.foreground.run(async () => {
+      ran = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ran).toBe(false); // …but sends stay queued while pi may still be busy
+
+    internal.onPiEvent({ type: 'agent_settled' });
+    await queued;
+    expect(ran).toBe(true);
+  });
+
+  it('settles a willRetry turn whose promised continuation never came', async () => {
+    const { runtime } = await tempRuntime();
+    const internal = runtime as unknown as {
+      currentTurn: unknown;
+      onPiEvent: (event: Record<string, unknown>) => void;
+    };
+    const methods: string[] = [];
+    runtime.on('event', (e: { method: string }) => methods.push(e.method));
+
+    internal.currentTurn = newTurnContext('thread', 'turn1');
+    internal.onPiEvent({
+      type: 'message_end',
+      message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'overloaded' }
+    });
+    internal.onPiEvent({ type: 'agent_end', willRetry: true });
+    // Kept open for the announced retry: no terminal event yet.
+    expect(internal.currentTurn).not.toBeNull();
+    expect(methods).not.toContain('turn/failed');
+
+    internal.onPiEvent({ type: 'agent_settled' });
+    expect(internal.currentTurn).toBeNull();
+    expect(methods).toContain('turn/failed');
+  });
+
   it('ignores a stale interrupt instead of aborting a newer turn', async () => {
     const { runtime } = await tempRuntime();
     const sent: unknown[] = [];

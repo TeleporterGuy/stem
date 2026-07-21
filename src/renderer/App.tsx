@@ -21,6 +21,7 @@ import { ShortcutHint, useShortcut } from './shortcuts';
 import { ManagePanel } from './manage/ManagePanel';
 import { McpApprovalCard } from './manage/McpApprovalCard';
 import { InstructionsApprovalCard } from './manage/InstructionsApprovalCard';
+import { ExecApprovalCard } from './manage/ExecApprovalCard';
 import { DeleteThreadDialog } from './DeleteThreadDialog';
 import { TaskAlertModal } from './TaskAlertModal';
 import { DropOverlay } from './files/DropOverlay';
@@ -39,6 +40,7 @@ import {
   createSessionCore,
   deleteFromTurn,
   interruptActiveTurn,
+  removeFailedSend,
   rerunFromTurn as rerunFromTurnShared,
   sendTurn,
   type SessionCore
@@ -850,6 +852,30 @@ export default function App() {
     [core, onDeleteChat]
   );
 
+  // A send that startTurn rejected (e.g. "agent is already processing") never made
+  // a turn — its bubble and error are local-only, so acting on them is a splice in
+  // the visible slice plus (for retry/edit) a fresh send.
+  const onRetryFailedSend = useCallback(
+    (messageId: string) => {
+      const restore = removeFailedSend(core, activeThreadIdRef.current ?? DRAFT, messageId);
+      if (restore) void onSend(restore.text, restore.attachments);
+    },
+    [core, onSend]
+  );
+  const onEditFailedSend = useCallback(
+    (messageId: string, newText: string) => {
+      const restore = removeFailedSend(core, activeThreadIdRef.current ?? DRAFT, messageId);
+      if (restore) void onSend(newText, restore.attachments);
+    },
+    [core, onSend]
+  );
+  const onDeleteFailedSend = useCallback(
+    (messageId: string) => {
+      removeFailedSend(core, activeThreadIdRef.current ?? DRAFT, messageId);
+    },
+    [core]
+  );
+
   // Escape-to-retract: stop the running turn and pull the just-sent message back
   // into the composer, dropping it from the chat AND pi's session — as if it was
   // never sent. Captures the original text/attachments and hands them to ChatView
@@ -1034,6 +1060,9 @@ export default function App() {
           onEdit={onEditMessage}
           onFork={onForkMessage}
           onDelete={onDeleteFromTurn}
+          onRetryFailedSend={onRetryFailedSend}
+          onEditFailedSend={onEditFailedSend}
+          onDeleteFailedSend={onDeleteFailedSend}
           models={models}
           model={selectedModel}
           effort={effort}
@@ -1077,6 +1106,7 @@ export default function App() {
       <DropOverlay onDropToChat={onDropToChat} />
       <McpApprovalCard />
       <InstructionsApprovalCard />
+      <ExecApprovalCard />
       {pendingDelete && (
         <DeleteThreadDialog
           title={pendingDelete.title}

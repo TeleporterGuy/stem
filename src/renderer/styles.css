@@ -379,6 +379,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   cursor: pointer;
 }
 .message-action:hover { background: var(--sel); border-color: var(--line); color: var(--ink); }
+/* HoverTip wrapper around each action icon — invisible in the flex row. */
+.msg-tip { display: inline-flex; }
 /* Armed delete (first click): turns destructive to signal the second click deletes
    this turn and everything after it. */
 .message-action.danger,
@@ -2078,3 +2080,36 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   box-shadow: var(--shadow-focus);
 }
 .instructions-approval-text { margin-top: 10px; }
+
+/* run_command approval card: the command awaiting the user's decision. */
+.exec-approval-command {
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+/* Settings → Command execution: the learned-prefix allowlist editor. */
+.exec-allowlist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.exec-allowlist .pill button {
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 0 0 4px;
+  line-height: 1;
+}

@@ -10,6 +10,7 @@ import { ChatView } from '../chat/ChatView';
 import { EFFORT_LABELS } from '../modelLabels';
 import { McpApprovalCard } from '../manage/McpApprovalCard';
 import { InstructionsApprovalCard } from '../manage/InstructionsApprovalCard';
+import { ExecApprovalCard } from '../manage/ExecApprovalCard';
 import { NOTE_CONFIRM_MS, detectNoteTrigger, useNoteMode } from '../noteMode';
 import { EMPTY_STATE, appendSystemMessage, type ThreadState } from '../chatState';
 import {
@@ -17,6 +18,7 @@ import {
   createSessionCore,
   deleteFromTurn,
   interruptActiveTurn,
+  removeFailedSend,
   rerunFromTurn,
   sendTurn,
   type AttachedEvents,
@@ -323,6 +325,28 @@ export function QuickChat() {
     },
     [core, threadId, resetSession, pushSystem]
   );
+  // A send the backend rejected before any turn existed: its bubble and error are
+  // local-only, so acting on them splices the slice and (for retry/edit) re-sends.
+  const onRetryFailedSend = useCallback(
+    (messageId: string) => {
+      const restore = removeFailedSend(core, QC_KEY, messageId);
+      if (restore) void onSend(restore.text, restore.attachments);
+    },
+    [core, onSend]
+  );
+  const onEditFailedSend = useCallback(
+    (messageId: string, newText: string) => {
+      const restore = removeFailedSend(core, QC_KEY, messageId);
+      if (restore) void onSend(newText, restore.attachments);
+    },
+    [core, onSend]
+  );
+  const onDeleteFailedSend = useCallback(
+    (messageId: string) => {
+      removeFailedSend(core, QC_KEY, messageId);
+    },
+    [core]
+  );
   // Fork: branch the thread and continue the branch in the main app.
   const onFork = useCallback(
     async (turnId: string) => {
@@ -473,6 +497,9 @@ export function QuickChat() {
           onEdit={onEdit}
           onFork={onFork}
           onDelete={onDelete}
+          onRetryFailedSend={onRetryFailedSend}
+          onEditFailedSend={onEditFailedSend}
+          onDeleteFailedSend={onDeleteFailedSend}
           models={models}
           model={selectedModel}
           effort={effort}
@@ -488,6 +515,7 @@ export function QuickChat() {
         </div>
         <McpApprovalCard />
         <InstructionsApprovalCard />
+        <ExecApprovalCard />
       </div>
     );
   }
@@ -581,6 +609,7 @@ export function QuickChat() {
       </div>
       <McpApprovalCard />
       <InstructionsApprovalCard />
+      <ExecApprovalCard />
     </div>
   );
 }

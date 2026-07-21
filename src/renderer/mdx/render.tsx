@@ -4,6 +4,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkMdx from 'remark-mdx';
+import { stripCiteMarkers } from '../../shared/citations';
 import { CodeBlock, componentMap } from './components';
 
 // A minimal structural type for the mdast/mdx nodes we walk.
@@ -175,8 +176,12 @@ export function splitMdBlocks(text: string): string[] {
  * Parse the safe MDX subset and render it to React. Tries MDX parsing first
  * (to recognize component tags); if the model emitted malformed JSX, falls back
  * to plain Markdown so the answer still renders. Never executes model code.
+ * Leaked web-search citation markers are stripped here rather than per delta —
+ * a marker can split across delta boundaries, but the accumulated text passed
+ * in always contains it whole (or as a strippable unterminated tail).
  */
 export function renderMdx(text: string): ReactNode {
+  text = stripCiteMarkers(text);
   let tree: MdNode;
   try {
     tree = mdxProcessor.parse(text) as unknown as MdNode;

@@ -9,6 +9,7 @@ import {
   readSettings,
   updateDefaultModel,
   updateEscapeAction,
+  updateExecSettings,
   updateLocalProvider,
   updateRetrievalSettings
 } from '../../src/main/workspace/settings';
@@ -200,5 +201,32 @@ describe('reranker settings migration + coercion', () => {
     rr = (await readSettings()).retrieval.reranker;
     expect(rr.mode).toBe('local');
     expect(rr.localModel).toBe('bge-reranker-v2-m3');
+  });
+});
+
+describe('exec settings', () => {
+  it('defaults to enabled with an auto judge and an empty allowlist', async () => {
+    const exec = (await readSettings()).exec;
+    expect(exec).toEqual({ enabled: true, judgeModel: null, allowlist: [] });
+  });
+
+  it('round-trips a patch through updateExecSettings', async () => {
+    const next = await updateExecSettings({ enabled: false, judgeModel: 'anthropic/claude-haiku-4' });
+    expect(next.exec.enabled).toBe(false);
+    expect(next.exec.judgeModel).toBe('anthropic/claude-haiku-4');
+    const grown = await updateExecSettings({ allowlist: ['git push', 'npm'] });
+    expect(grown.exec.allowlist).toEqual(['git push', 'npm']);
+    expect((await readSettings()).exec.enabled).toBe(false);
+  });
+
+  it('coerces a garbage allowlist: drops non-strings/empties, trims, dedupes', async () => {
+    writeFileSync(
+      path,
+      JSON.stringify({ exec: { enabled: 'yes', judgeModel: '  ', allowlist: ['git push ', 'git push', 7, '', null] } })
+    );
+    const exec = (await readSettings()).exec;
+    expect(exec.enabled).toBe(true);
+    expect(exec.judgeModel).toBeNull();
+    expect(exec.allowlist).toEqual(['git push']);
   });
 });
