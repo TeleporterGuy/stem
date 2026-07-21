@@ -205,17 +205,18 @@ describe('reranker settings migration + coercion', () => {
 });
 
 describe('exec settings', () => {
-  it('defaults to enabled with an auto judge and an empty allowlist', async () => {
+  it('defaults to enabled + assisted with an auto judge and an empty allowlist', async () => {
     const exec = (await readSettings()).exec;
-    expect(exec).toEqual({ enabled: true, judgeModel: null, allowlist: [] });
+    expect(exec).toEqual({ enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] });
   });
 
   it('round-trips a patch through updateExecSettings', async () => {
     const next = await updateExecSettings({ enabled: false, judgeModel: 'anthropic/claude-haiku-4' });
     expect(next.exec.enabled).toBe(false);
     expect(next.exec.judgeModel).toBe('anthropic/claude-haiku-4');
-    const grown = await updateExecSettings({ allowlist: ['git push', 'npm'] });
+    const grown = await updateExecSettings({ allowlist: ['git push', 'npm'], approvalMode: 'yolo' });
     expect(grown.exec.allowlist).toEqual(['git push', 'npm']);
+    expect(grown.exec.approvalMode).toBe('yolo');
     expect((await readSettings()).exec.enabled).toBe(false);
   });
 
@@ -228,5 +229,12 @@ describe('exec settings', () => {
     expect(exec.enabled).toBe(true);
     expect(exec.judgeModel).toBeNull();
     expect(exec.allowlist).toEqual(['git push']);
+  });
+
+  it('coerces an unknown approval mode back to assisted', async () => {
+    writeFileSync(path, JSON.stringify({ exec: { approvalMode: 'chaotic-evil' } }));
+    expect((await readSettings()).exec.approvalMode).toBe('assisted');
+    writeFileSync(path, JSON.stringify({ exec: { approvalMode: 'manual' } }));
+    expect((await readSettings()).exec.approvalMode).toBe('manual');
   });
 });

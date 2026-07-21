@@ -552,6 +552,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // Autonomous scheduled run: run_command's manual-approval tier is rejected
       // (nobody is present to answer the card) — see handleExecBridgeRequest.
       turn.isScheduled = !!input.scheduled;
+      // The exec safety judge classifies commands relative to this request.
+      turn.userText = input.input;
       // Folders connected memorize:false: if the assistant reads inside one this turn,
       // we suppress capturing its reply into Recall (see onPiEvent / isCaptureSuppressed).
       turn.privateRoots = await getPrivateRoots().catch(() => []);
@@ -1239,7 +1241,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           cwd: typeof req.cwd === 'string' && req.cwd.trim() ? req.cwd : undefined,
           timeoutMs: typeof req.timeout_ms === 'number' ? req.timeout_ms : undefined,
           threadId: turn?.threadId ?? null,
-          isScheduled: turn?.isScheduled === true
+          isScheduled: turn?.isScheduled === true,
+          userText: turn?.userText
         });
         respond(result);
       } catch (e) {

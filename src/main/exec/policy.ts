@@ -6,10 +6,13 @@ import type { ExecSettings, ModelSummary } from '../../shared/types';
 //   tier 2  everything else → a one-word LLM judge classification
 //   tier 3  judge said unsafe/unsure (or failed) → manual approval card
 //
-// Tier-1 matching is deliberately conservative: any shell metacharacter outside
-// single quotes disqualifies the command (a compound like `git status && rm -rf /`
-// must never auto-run on the strength of its head), and a command word containing
-// a path separator never matches (an allowlisted `git` must not admit `./git`).
+// Chains (`&&`, `||`, `|`, `;`, newline) are split into segments that are each
+// matched on their own — the whole command auto-runs only when EVERY segment
+// clears an allowlist (a compound like `git status && rm -rf /` must never
+// auto-run on the strength of its head). Any other shell metacharacter outside
+// single quotes (redirects, substitution, background `&`, escapes) disqualifies
+// tier 1 entirely, and a command word containing a path separator never matches
+// (an allowlisted `git` must not admit `./git`).
 
 /** Commands that are read-only or clearly harmless; matched against the parsed prefix. */
 const STATIC_ALLOWLIST = new Set([
@@ -34,35 +37,74 @@ const STATIC_ALLOWLIST = new Set([
   'agent-browser'
 ]);
 
-export interface ParsedCommand {
-  /** Command word + first non-flag subcommand (e.g. `git status`), or just the command word. */
+/** One chained command within a compound (or the whole thing when not chained). */
+export interface ParsedSegment {
+  /** Command word + subcommand when one is present (e.g. `git status`). */
   prefix: string;
   /** The candidate prefixes to match against an allowlist, shortest first. */
   candidates: string[];
-  /** A shell metacharacter appeared outside single quotes → never tier 1. */
+}
+
+export interface ParsedCommand {
+  /** One entry per chained command; empty for a blank command. */
+  segments: ParsedSegment[];
+  /** A non-chaining shell metacharacter appeared outside single quotes → never tier 1. */
   hasShellMeta: boolean;
 }
 
-// Metacharacters that give a "single command" additional shell semantics.
-// Backslash-escapes are treated as meta too — rare, and conservative is cheap.
-const META_CHARS = new Set([';', '&', '|', '>', '<', '`', '$', '(', ')', '{', '}', '\\', '\n', '\r']);
+// Metacharacters that give a command shell semantics beyond "commands chained
+// with plain arguments". Chain separators (&&, ||, |, ;, newline) are handled
+// by the segment split instead. Backslash-escapes are treated as meta too —
+// rare, and conservative is cheap.
+const HARD_META_CHARS = new Set(['>', '<', '`', '$', '(', ')', '{', '}', '\\', '\r']);
 // Inside double quotes only expansion characters stay live — `&`, `|`, `(` etc.
 // are literal there, and flagging them threw every double-quoted URL/CSS selector
 // (agent-browser's bread and butter) out of tier 1 and onto the judge.
 const DQUOTE_META_CHARS = new Set(['$', '`', '\\']);
 
+// A learnable subcommand must be the token immediately after the command word
+// and look like a bare word. A URL, path, format string, or flag value
+// (`--session yt-npc6`, `https://…`, `title=%(title)s`) must never end up in a
+// learned prefix — those are one-shot values that will not match again.
+const BARE_WORD = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+function makeSegment(tokens: string[]): ParsedSegment {
+  const word = tokens[0] ?? '';
+  const sub = tokens[1] && BARE_WORD.test(tokens[1]) ? tokens[1] : undefined;
+  // Candidates are matched by exact string only, so `/usr/local/bin/foo` or `./git`
+  // can be user-allowlisted verbatim but can never match an allowlisted bare `git`.
+  const candidates = word ? (sub ? [word, `${word} ${sub}`] : [word]) : [];
+  return { prefix: candidates[candidates.length - 1] ?? '', candidates };
+}
+
 /**
- * Quote-aware parse of a shell command string into allowlist-matchable prefixes.
- * Not a full shell parser — anything with shell semantics beyond "one command
- * with plain arguments" comes back `hasShellMeta` and is left to the judge.
+ * Quote-aware parse of a shell command string into allowlist-matchable segments.
+ * Not a full shell parser — anything with shell semantics beyond "commands
+ * chained with plain arguments" comes back `hasShellMeta` and is left to the judge.
  */
-export function parseCommandPrefix(command: string): ParsedCommand {
-  const tokens: string[] = [];
+export function parseCommand(command: string): ParsedCommand {
+  const segments: ParsedSegment[] = [];
+  let tokens: string[] = [];
   let current = '';
   let inToken = false;
   let hasShellMeta = false;
   let quote: "'" | '"' | null = null;
-  for (const ch of command) {
+
+  const endToken = (): void => {
+    if (inToken) {
+      tokens.push(current);
+      current = '';
+      inToken = false;
+    }
+  };
+  const endSegment = (): void => {
+    endToken();
+    if (tokens.length) segments.push(makeSegment(tokens));
+    tokens = [];
+  };
+
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i]!;
     if (quote === "'") {
       if (ch === "'") quote = null;
       else current += ch;
@@ -84,63 +126,90 @@ export function parseCommandPrefix(command: string): ParsedCommand {
       continue;
     }
     if (ch === ' ' || ch === '\t') {
-      if (inToken) {
-        tokens.push(current);
-        current = '';
-        inToken = false;
-      }
+      endToken();
       continue;
     }
-    if (META_CHARS.has(ch)) hasShellMeta = true;
+    if (ch === ';' || ch === '\n') {
+      endSegment();
+      continue;
+    }
+    if (ch === '&') {
+      if (command[i + 1] === '&') {
+        i += 1;
+        endSegment();
+      } else hasShellMeta = true; // lone `&` backgrounds the command — not a chain
+      continue;
+    }
+    if (ch === '|') {
+      if (command[i + 1] === '|') i += 1;
+      endSegment(); // both `|` (pipe) and `||` (or) join two plain commands
+      continue;
+    }
+    if (HARD_META_CHARS.has(ch)) hasShellMeta = true;
     current += ch;
     inToken = true;
   }
   if (quote) hasShellMeta = true; // unterminated quote — not a plain command
-  if (inToken) tokens.push(current);
+  endSegment();
 
-  const word = tokens[0] ?? '';
-  const sub = tokens.slice(1).find((t) => t && !t.startsWith('-'));
-  // Candidates are matched by exact string only, so `/usr/local/bin/foo` or `./git`
-  // can be user-allowlisted verbatim but can never match an allowlisted bare `git`.
-  const candidates: string[] = [];
-  if (word) {
-    candidates.push(word);
-    if (sub) candidates.push(`${word} ${sub}`);
-  }
-  const prefix = candidates[candidates.length - 1] ?? '';
-  return { prefix, candidates, hasShellMeta };
+  return { segments, hasShellMeta };
 }
 
 export interface Classification {
   /** 'run' = tier 1 (auto-run now); 'judge' = needs the LLM judge (tier 2). */
   tier: 'run' | 'judge';
-  prefix: string;
+  /**
+   * What "Always allow" should persist: the learnable prefix of every segment not
+   * already covered by an allowlist. Empty when the command has shell semantics
+   * tier 1 can never match — learning a prefix there would change nothing, so the
+   * approval card should not offer it.
+   */
+  prefixes: string[];
   hasShellMeta: boolean;
 }
 
 /** Decide whether a command may auto-run (tier 1) or must be judged. */
 export function classify(command: string, settings: Pick<ExecSettings, 'allowlist'>): Classification {
-  const parsed = parseCommandPrefix(command);
-  if (parsed.hasShellMeta || !parsed.candidates.length) {
-    return { tier: 'judge', prefix: parsed.prefix, hasShellMeta: parsed.hasShellMeta };
+  const parsed = parseCommand(command);
+  if (parsed.hasShellMeta || !parsed.segments.length) {
+    return { tier: 'judge', prefixes: [], hasShellMeta: parsed.hasShellMeta };
   }
   const user = new Set(settings.allowlist);
-  const allowed = parsed.candidates.some((c) => STATIC_ALLOWLIST.has(c) || user.has(c));
-  return { tier: allowed ? 'run' : 'judge', prefix: parsed.prefix, hasShellMeta: false };
+  const uncovered = parsed.segments.filter(
+    (seg) => !seg.candidates.some((c) => STATIC_ALLOWLIST.has(c) || user.has(c))
+  );
+  const prefixes = [...new Set(uncovered.map((seg) => seg.prefix).filter(Boolean))];
+  return { tier: uncovered.length ? 'judge' : 'run', prefixes, hasShellMeta: false };
 }
 
-/** The one-shot classification prompt for the safety judge. */
-export function buildJudgePrompt(command: string, cwd: string): string {
+/**
+ * The one-shot classification prompt for the safety judge. Safety is judged
+ * relative to the user's request when it is available — a download the user
+ * asked for is expected; the same download out of nowhere is not.
+ */
+export function buildJudgePrompt(command: string, cwd: string, userIntent?: string): string {
+  const intent = (userIntent ?? '').trim().slice(0, 800);
   return [
-    'Classify whether this shell command is safe to run automatically on the user\'s',
-    'macOS machine, without asking them. Reply with exactly one word — safe, unsafe,',
-    'or unsure — optionally followed on the same line by a very short reason.',
+    'An AI assistant working on a request from its user wants to run a shell command on',
+    "the user's macOS machine. Classify whether the command is safe to run without",
+    'asking the user first. Reply with exactly one word — safe, unsafe, or unsure —',
+    'optionally followed on the same line by a very short reason.',
     '',
-    '- safe: read-only, or writes only inside its own working directory in a clearly harmless way.',
-    '- unsafe: deletes or overwrites data outside its working directory, changes system or',
-    '  account state, sends data to the network in a way the user may not expect, installs',
-    '  software, or has ambiguous destructive potential.',
+    "- safe: the command plausibly serves the user's request and does not destroy data,",
+    '  change system or account state, or install software the user did not ask for.',
+    '  Reading files, fetching or downloading content, opening pages or apps, and',
+    '  writing inside the working directory or /tmp are all safe when the request calls',
+    "  for them. Sending the user's own files or data somewhere is safe only when the",
+    '  request asks for exactly that.',
+    '- unsafe: deletes or overwrites data unrelated to the request or outside the',
+    '  working directory and /tmp, changes system or account state, sends local files,',
+    '  secrets, or personal data anywhere the user did not ask for, installs software',
+    "  unprompted, or clearly does not serve the user's request.",
     '- unsure: you cannot tell.',
+    '',
+    intent
+      ? `The user's request the assistant is working on:\n${intent}`
+      : "The user's request is not available — judge the command on its own.",
     '',
     `Working directory: ${cwd}`,
     `Command: ${command}`

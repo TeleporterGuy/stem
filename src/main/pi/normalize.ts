@@ -62,6 +62,8 @@ export interface TurnContext {
    * need a manual approval nobody is present to give.
    */
   isScheduled?: boolean;
+  /** The raw user message that started this turn — intent context for the exec safety judge. */
+  userText?: string;
   phase: 'pending' | 'thinking' | 'tool' | 'answer';
   lastEventAt?: number; // epoch ms of the last normalized event, for interval attribution
   timing?: TurnTimingBreakdown; // stashed by reportTurnTiming so recordTurnEntry can persist it

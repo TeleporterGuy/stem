@@ -55,9 +55,11 @@ const DEFAULTS: AppSettings = {
   // memory model so curation (which can be a harder task) can use a stronger model.
   skills: { model: null },
   // Command execution: on by default with the tiered policy as the guard rail.
+  // approvalMode 'assisted' = allowlist → LLM judge → approval card ('manual'
+  // skips the judge, 'yolo' skips everything but the protected-roots guard);
   // judgeModel null = auto-pick the cheapest known model for the current provider;
   // the allowlist grows via the approval card's "Always allow" button.
-  exec: { enabled: true, judgeModel: null, allowlist: [] },
+  exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] },
   // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
   // default to the bundled local model (multilingual, in-process, nothing leaves
   // the machine); weights download once on first need, and until they're ready
@@ -178,6 +180,8 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   const rawExec = (parsed?.exec ?? {}) as Partial<ExecSettings>;
   const exec: ExecSettings = {
     enabled: typeof rawExec.enabled === 'boolean' ? rawExec.enabled : DEFAULTS.exec.enabled,
+    approvalMode:
+      rawExec.approvalMode === 'manual' || rawExec.approvalMode === 'yolo' ? rawExec.approvalMode : 'assisted',
     judgeModel: typeof rawExec.judgeModel === 'string' && rawExec.judgeModel.trim() ? rawExec.judgeModel : null,
     // Dedupe + trim, drop empties, and cap size so a runaway writer can't bloat
     // settings.json (the allowlist is matched per command, so order is cosmetic).

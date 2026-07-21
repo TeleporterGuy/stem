@@ -664,8 +664,13 @@ export interface ExecApprovalRequest {
   command: string;
   /** The resolved working directory it would run in. */
   cwd: string;
-  /** What "Always allow" would persist to the user allowlist (command + subcommand). */
-  prefix: string;
+  /**
+   * What "Always allow" would persist to the user allowlist: the learnable prefix
+   * of every chained segment not already allowlisted. Empty = nothing learnable
+   * (the command has shell semantics tier 1 can never match), so the card offers
+   * no "Always allow" button.
+   */
+  prefixes: string[];
   /** The LLM judge's verdict that caused the escalation; null = judge skipped/failed. */
   judgeVerdict: 'unsafe' | 'unsure' | null;
   /** The judge's short reason, when it gave one. */
@@ -977,6 +982,14 @@ export interface SkillsModelSettings {
 }
 
 /**
+ * How run_command approvals work:
+ * - `manual`   — no LLM judge; anything not allowlisted pauses for the user.
+ * - `assisted` — the tiered default: allowlist → LLM safety judge → approval card.
+ * - `yolo`     — everything runs immediately (the protected-roots guard still applies).
+ */
+export type ExecApprovalMode = 'manual' | 'assisted' | 'yolo';
+
+/**
  * Command execution (the `run_command` tool): a tiered auto-approve policy.
  * A static safe allowlist and the user's learned prefixes run immediately; other
  * commands are classified by an LLM judge, and only judge-flagged ones fall back
@@ -985,6 +998,8 @@ export interface SkillsModelSettings {
 export interface ExecSettings {
   /** Master switch for the run_command tool. */
   enabled: boolean;
+  /** Approval policy: manual / LLM-assisted (default) / yolo. */
+  approvalMode: ExecApprovalMode;
   /** `provider/model` id for the safety judge; null = auto (cheapest known for the provider). */
   judgeModel: string | null;
   /** User-approved command prefixes (e.g. "git push", "npm") that auto-run as tier 1. */

@@ -5,8 +5,9 @@ import { enqueueApproval, removeApproval } from './approvalQueue';
 
 // Modal confirm card shown when a run_command call fell through the auto-approve
 // tiers (allowlist → LLM judge). The backend holds the tool call open until the
-// user decides; "Always allow" also persists the command's prefix to the user
-// allowlist so it auto-runs next time (editable in Settings → Command execution).
+// user decides; "Always allow" also persists the prefix of every not-yet-allowed
+// chained segment to the user allowlist so the command auto-runs next time
+// (editable in Settings → Command execution).
 export function ExecApprovalCard() {
   const [queue, setQueue] = useState<ExecApprovalRequest[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -47,7 +48,9 @@ export function ExecApprovalCard() {
   const verdictLine =
     request.judgeVerdict === 'unsafe'
       ? 'The safety check flagged this command as potentially unsafe'
-      : 'The safety check could not tell whether this command is safe';
+      : request.judgeVerdict === 'unsure'
+        ? 'The safety check could not tell whether this command is safe'
+        : 'Manual approval is on — commands only run when you allow them';
 
   return (
     <div className="mcp-approval-backdrop" role="dialog" aria-modal="true">
@@ -75,14 +78,14 @@ export function ExecApprovalCard() {
           <button className="push" onClick={() => void decide('deny')} disabled={busy}>
             Deny
           </button>
-          {request.prefix && (
+          {request.prefixes.length > 0 && (
             <button
               className="push"
               onClick={() => void decide('alwaysAllow')}
               disabled={busy}
-              title={`Adds "${request.prefix}" to the allowlist in Settings → Command execution`}
+              title={`Adds ${request.prefixes.map((p) => `"${p}"`).join(', ')} to the allowlist in Settings → Command execution`}
             >
-              Always allow “{request.prefix}”
+              Always allow {request.prefixes.map((p) => `“${p}”`).join(', ')}
             </button>
           )}
           <button className="push default" onClick={() => void decide('allowOnce')} disabled={busy}>

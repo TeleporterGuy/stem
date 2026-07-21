@@ -34,6 +34,11 @@ export interface ExecRequest {
   threadId: string | null;
   /** True for autonomous scheduled runs — manual approvals are rejected there. */
   isScheduled: boolean;
+  /**
+   * The user message that started the current turn. Context for the safety judge,
+   * which classifies the command relative to what the user actually asked for.
+   */
+  userText?: string;
 }
 
 /** What the ExecService answers a run_command round-trip with. */

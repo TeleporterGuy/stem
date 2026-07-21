@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { AppSettings, ExecApprovalRequest, ExecDecision, ExecSettings } from '../../shared/types';
+import type { AppSettings, ExecApprovalRequest, ExecDecision, ExecSettings, ModelSummary } from '../../shared/types';
 import type { ChatBackend, ExecBridge, ExecBridgeResult, ExecRequest } from '../backend/types';
 import { log } from '../log';
 import { execWorkspaceDir } from '../workspace/paths';
@@ -16,7 +16,12 @@ import { scanProtected } from './protected';
 // hard gates are the protected-roots scan and the manual approval tier.
 
 const APPROVAL_TIMEOUT_MS = 120_000;
-const JUDGE_TIMEOUT_MS = 15_000;
+// complete() spawns a throwaway pi process per call and may queue behind Recall
+// distillation completes, so cold-start alone can eat >10s — 15s timed out in
+// practice and dumped perfectly fine commands onto approval cards.
+const JUDGE_TIMEOUT_MS = 30_000;
+/** listModels() is an RPC to the backend; cache it — the judge runs per command. */
+const MODELS_CACHE_TTL_MS = 5 * 60_000;
 /** Concurrent command cap; further tool calls queue rather than forking shells. */
 const MAX_CONCURRENT = 2;
 
@@ -32,7 +37,6 @@ export interface ExecServiceDeps {
 
 interface PendingApproval {
   threadId: string;
-  prefix: string;
   resolve: (decision: ExecDecision) => void;
   timer: NodeJS.Timeout;
 }
@@ -48,6 +52,7 @@ export class ExecService implements ExecBridge {
   private readonly running = new Set<RunningExec>();
   private active = 0;
   private readonly waiters: Array<() => void> = [];
+  private modelsCache: { at: number; models: ModelSummary[] } | null = null;
 
   constructor(deps: ExecServiceDeps) {
     this.deps = deps;
@@ -79,40 +84,47 @@ export class ExecService implements ExecBridge {
     const guard = scanProtected(command, cwd);
     if (guard.blocked) return { ok: false, error: guard.reason ?? 'Blocked by the read-only folder guard.' };
 
-    // Tier 1: static + user allowlist.
+    // Yolo mode: everything runs — the protected-roots guard above is the only gate.
+    if (settings.approvalMode === 'yolo') return this.run(command, cwd, req);
+
+    // Tier 1: static + user allowlist (every chained segment must clear it).
     const cls = classify(command, settings);
-    let judgeVerdict: 'unsafe' | 'unsure' | null = null;
-    let judgeReason: string | undefined;
     if (cls.tier !== 'run') {
-      // Tier 2: one-word LLM judge classification; errors/timeouts escalate.
-      const verdict = await this.judge(command, cwd, settings);
-      if (verdict.verdict !== 'safe') {
+      // Tier 2 (assisted mode only): one-word LLM judge classification (intent-aware
+      // when the turn's user message is known); errors/timeouts escalate. Manual mode
+      // skips straight to the card — judgeVerdict stays null so it can say so.
+      let judgeVerdict: 'unsafe' | 'unsure' | null = null;
+      let judgeReason: string | undefined;
+      if (settings.approvalMode === 'assisted') {
+        const verdict = await this.judge(command, cwd, settings, req.userText);
+        if (verdict.verdict === 'safe') return this.run(command, cwd, req);
         judgeVerdict = verdict.verdict;
         judgeReason = verdict.reason;
-        // Tier 3: the user decides — unless nobody is there to.
-        if (req.isScheduled) {
-          return {
-            ok: false,
-            error:
-              `The command "${command}" requires user approval, which is not available in scheduled/autonomous ` +
-              'runs. Use a simpler command the safety check can clear, or leave this step for an interactive chat.'
-          };
-        }
-        const decision = await this.requestApproval({
-          threadId: req.threadId ?? '',
-          command,
-          cwd,
-          prefix: cls.prefix,
-          judgeVerdict,
-          judgeReason
-        });
-        if (decision === 'deny') {
-          return { ok: false, error: 'The user declined to run this command.' };
-        }
-        if (decision === 'alwaysAllow' && cls.prefix) {
-          const cur = (await this.deps.readSettings()).exec.allowlist;
-          await this.deps.updateExecSettings({ allowlist: [...cur, cls.prefix] }).catch(() => undefined);
-        }
+      }
+      // Tier 3: the user decides — unless nobody is there to.
+      if (req.isScheduled) {
+        return {
+          ok: false,
+          error:
+            `The command "${command}" requires user approval, which is not available in scheduled/autonomous ` +
+            'runs. Use a simpler command that clears the approval policy, or leave this step for an interactive chat.'
+        };
+      }
+      const decision = await this.requestApproval({
+        threadId: req.threadId ?? '',
+        command,
+        cwd,
+        prefixes: cls.prefixes,
+        judgeVerdict,
+        judgeReason
+      });
+      if (decision === 'deny') {
+        return { ok: false, error: 'The user declined to run this command.' };
+      }
+      if (decision === 'alwaysAllow' && cls.prefixes.length) {
+        const cur = (await this.deps.readSettings()).exec.allowlist;
+        const merged = [...cur, ...cls.prefixes.filter((p) => !cur.includes(p))];
+        await this.deps.updateExecSettings({ allowlist: merged }).catch(() => undefined);
       }
     }
 
@@ -140,16 +152,25 @@ export class ExecService implements ExecBridge {
 
   // ---- internals ----
 
+  private async listModelsCached(): Promise<ModelSummary[]> {
+    if (this.modelsCache && Date.now() - this.modelsCache.at < MODELS_CACHE_TTL_MS) {
+      return this.modelsCache.models;
+    }
+    const models = await this.deps.runtime().listModels().catch(() => []);
+    if (models.length) this.modelsCache = { at: Date.now(), models };
+    return models;
+  }
+
   private async judge(
     command: string,
     cwd: string,
-    settings: ExecSettings
+    settings: ExecSettings,
+    userText?: string
   ): Promise<{ verdict: 'safe' | 'unsafe' | 'unsure'; reason?: string }> {
     try {
       const runtime = this.deps.runtime();
-      const models = await runtime.listModels().catch(() => []);
-      const model = resolveJudgeModel(settings, models, null);
-      const reply = await runtime.complete(buildJudgePrompt(command, cwd), {
+      const model = resolveJudgeModel(settings, await this.listModelsCached(), null);
+      const reply = await runtime.complete(buildJudgePrompt(command, cwd, userText), {
         model,
         timeoutMs: JUDGE_TIMEOUT_MS
       });
@@ -166,7 +187,7 @@ export class ExecService implements ExecBridge {
     const id = randomUUID();
     return new Promise<ExecDecision>((resolveDecision) => {
       const timer = setTimeout(() => this.settleApproval(id, 'deny'), APPROVAL_TIMEOUT_MS);
-      this.pending.set(id, { threadId: request.threadId, prefix: request.prefix, resolve: resolveDecision, timer });
+      this.pending.set(id, { threadId: request.threadId, resolve: resolveDecision, timer });
       this.deps.emitApprovalRequest({ id, ...request });
     });
   }

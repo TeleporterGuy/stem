@@ -872,9 +872,9 @@ export function SettingsTab({
             <em>
               Let Stem run shell commands (CLIs, git, agent-browser){' '}
               <InfoTip label="How command approval works">
-                Clearly safe commands run immediately. Everything else is screened by an AI safety
-                check; commands it cannot clear pause for your approval. The check is a heuristic,
-                not a security boundary — review approval cards before allowing.
+                What runs on its own is governed by the approval mode below — from manual (you
+                approve everything unlisted) to yolo (everything runs). Folders you marked
+                read-only are always protected.
               </InfoTip>
             </em>
           </span>
@@ -890,59 +890,98 @@ export function SettingsTab({
         {exec?.enabled && (
           <>
             <div className="set-block">
-              <span className="set-sub">Safety-check model</span>
-              <ModelPicker
-                models={models}
-                value={exec.judgeModel}
-                onChange={(id) => updateExec({ judgeModel: id })}
-                emptyLabel="Auto (cheapest)"
-                ariaLabel="Safety-check model"
-              />
-            </div>
-
-            <div className="set-block">
               <span className="set-sub">
-                Always-allowed commands{' '}
-                <InfoTip label="About the allowlist">
-                  Command prefixes that run without the safety check — grown by the approval card's
-                  "Always allow" button or added here (e.g. <code>git push</code> or <code>npm</code>).
+                Approval mode{' '}
+                <InfoTip label="About approval modes">
+                  <strong>Manual</strong> — only allowlisted commands run on their own; everything
+                  else pauses for your approval. <strong>Assisted</strong> — an AI safety check
+                  clears commands that serve your request; only flagged ones pause.{' '}
+                  <strong>Yolo</strong> — every command runs immediately, no questions asked (folders
+                  you marked read-only stay protected). The safety check is a heuristic, not a
+                  security boundary.
                 </InfoTip>
               </span>
-              {exec.allowlist.length > 0 && (
-                <div className="exec-allowlist">
-                  {exec.allowlist.map((prefix) => (
-                    <span key={prefix} className="pill">
-                      {prefix}
-                      <button
-                        title={`Remove "${prefix}"`}
-                        aria-label={`Remove "${prefix}" from the allowlist`}
-                        onClick={() => updateExec({ allowlist: exec.allowlist.filter((p) => p !== prefix) })}
-                      >
-                        <X size={11} />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const prefix = allowInput.trim();
-                  if (!prefix || exec.allowlist.includes(prefix)) return;
-                  updateExec({ allowlist: [...exec.allowlist, prefix] });
-                  setAllowInput('');
-                }}
-              >
-                <input
-                  className="ifield"
-                  type="text"
-                  placeholder="Add a prefix, e.g. git push"
-                  aria-label="Add an allowlisted command prefix"
-                  value={allowInput}
-                  onChange={(e) => setAllowInput(e.target.value)}
-                />
-              </form>
+              <div className="seg-ctl">
+                <button
+                  className={exec.approvalMode === 'manual' ? 'active' : ''}
+                  onClick={() => updateExec({ approvalMode: 'manual' })}
+                >
+                  Manual
+                </button>
+                <button
+                  className={exec.approvalMode === 'assisted' ? 'active' : ''}
+                  onClick={() => updateExec({ approvalMode: 'assisted' })}
+                >
+                  Assisted
+                </button>
+                <button
+                  className={exec.approvalMode === 'yolo' ? 'active' : ''}
+                  onClick={() => updateExec({ approvalMode: 'yolo' })}
+                  title="Every command runs immediately — use with care"
+                >
+                  Yolo
+                </button>
+              </div>
             </div>
+
+            {exec.approvalMode === 'assisted' && (
+              <div className="set-block">
+                <span className="set-sub">Safety-check model</span>
+                <ModelPicker
+                  models={models}
+                  value={exec.judgeModel}
+                  onChange={(id) => updateExec({ judgeModel: id })}
+                  emptyLabel="Auto (cheapest)"
+                  ariaLabel="Safety-check model"
+                />
+              </div>
+            )}
+
+            {exec.approvalMode !== 'yolo' && (
+              <div className="set-block">
+                <span className="set-sub">
+                  Always-allowed commands{' '}
+                  <InfoTip label="About the allowlist">
+                    Command prefixes that run without the safety check — grown by the approval card's
+                    "Always allow" button or added here (e.g. <code>git push</code> or <code>npm</code>).
+                  </InfoTip>
+                </span>
+                {exec.allowlist.length > 0 && (
+                  <div className="exec-allowlist">
+                    {exec.allowlist.map((prefix) => (
+                      <span key={prefix} className="pill">
+                        {prefix}
+                        <button
+                          title={`Remove "${prefix}"`}
+                          aria-label={`Remove "${prefix}" from the allowlist`}
+                          onClick={() => updateExec({ allowlist: exec.allowlist.filter((p) => p !== prefix) })}
+                        >
+                          <X size={11} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const prefix = allowInput.trim();
+                    if (!prefix || exec.allowlist.includes(prefix)) return;
+                    updateExec({ allowlist: [...exec.allowlist, prefix] });
+                    setAllowInput('');
+                  }}
+                >
+                  <input
+                    className="ifield"
+                    type="text"
+                    placeholder="Add a prefix, e.g. git push"
+                    aria-label="Add an allowlisted command prefix"
+                    value={allowInput}
+                    onChange={(e) => setAllowInput(e.target.value)}
+                  />
+                </form>
+              </div>
+            )}
           </>
         )}
       </div>
