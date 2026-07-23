@@ -2,6 +2,7 @@ import { access, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { SkillSummary } from '../../shared/types';
+import { readUsage } from '../skills/usage';
 import { skillsRoot } from './paths';
 
 const DISABLED_MARKER = '.disabled';
@@ -44,6 +45,7 @@ export async function listSkills(): Promise<SkillSummary[]> {
     return [];
   }
 
+  const usage = readUsage();
   const skills: SkillSummary[] = [];
   for (const slug of entries) {
     const dir = join(skillsRoot(), slug);
@@ -59,7 +61,10 @@ export async function listSkills(): Promise<SkillSummary[]> {
         path: dir,
         source: fm.source ?? 'user',
         version: fm.version,
-        updatedAt: fm.updated
+        updatedAt: fm.updated,
+        // Explicit 0 (not undefined) so the UI can say "never used" plainly.
+        useCount: usage.skills[slug]?.count ?? 0,
+        lastUsedAt: usage.skills[slug]?.lastUsedAt
       });
     } catch {
       // No SKILL.md — not a skill directory; skip.

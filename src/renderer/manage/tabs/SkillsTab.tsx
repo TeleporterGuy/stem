@@ -55,6 +55,21 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
   // Stem auto-authors and tidies skills; a manual "Tidy up" runs the curator now.
   const hasAgentSkills = skills.some((s) => s.source === 'agent');
 
+  // "Jun 12", with the year added once it isn't this year's date.
+  function formatDay(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+    return d.toLocaleDateString(undefined, opts);
+  }
+
+  function usageLabel(s: SkillSummary): string {
+    if (!s.useCount) return 'never used';
+    const day = s.lastUsedAt ? formatDay(s.lastUsedAt) : '';
+    return `used ${s.useCount}×${day ? ` · last ${day}` : ''}`;
+  }
+
   return (
     <div>
       <div className="grp-head with-actions">
@@ -96,6 +111,9 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
                       auto{s.version && s.version > 1 ? ` · v${s.version}` : ''}
                     </span>
                   )}
+                  <span className="muted" style={{ marginLeft: 6, fontWeight: 400, fontSize: '0.8em' }}>
+                    {usageLabel(s)}
+                  </span>
                 </strong>
                 <em>{s.description}</em>
               </span>

@@ -421,6 +421,10 @@ export interface SkillSummary {
   version?: number;
   /** ISO timestamp of the last agent write (auto-authored skills only). */
   updatedAt?: string;
+  /** Times the assistant consulted this skill (0 = never since tracking began). */
+  useCount?: number;
+  /** ISO timestamp of the most recent use. */
+  lastUsedAt?: string;
 }
 
 // ---- Files (the persistent drop-place the assistant can read) ----

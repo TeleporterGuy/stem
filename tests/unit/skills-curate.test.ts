@@ -10,6 +10,7 @@ const skillsDir = join(tmpdir(), `stem-skills-${process.pid}`);
 process.env.STEM_SKILLS_DIR = skillsDir;
 
 import { clampCurate, curateSkills, parseCurate } from '../../src/main/skills/curate';
+import { readUsage, recordUses } from '../../src/main/skills/usage';
 import type { LlmClient } from '../../src/main/recall/llm';
 
 function fakeLlm(reply: string): LlmClient {
@@ -114,6 +115,46 @@ describe('curateSkills', () => {
     expect(res.archived).toBe(1);
     expect(existsSync(join(skillsDir, 'old-way', '.disabled'))).toBe(true);
     expect(existsSync(join(skillsDir, 'old-way', 'SKILL.md'))).toBe(true); // not deleted
+  });
+
+  it('feeds usage stats into the prompt (tracked, never-used, tracking-since header)', async () => {
+    writeSkill('used-one', { source: 'agent' });
+    writeSkill('dusty-one', { source: 'agent' });
+    recordUses(['used-one'], new Date('2026-07-10T00:00:00.000Z'));
+    recordUses(['used-one'], new Date('2026-07-15T00:00:00.000Z'));
+
+    let seen = '';
+    const llm: LlmClient = {
+      complete: async (prompt: string) => {
+        seen = prompt;
+        return '{"merge":[],"patch":[],"archive":[]}';
+      }
+    };
+    await curateSkills(llm, { force: true });
+    expect(seen).toContain('Usage has been tracked since');
+    expect(seen).toContain('used 2×, last 2026-07-15');
+    expect(seen).toContain('never used since tracking began');
+    expect(seen).toContain('Created 2026-01-01');
+  });
+
+  it('merge folds the losers\' usage into the winner and prunes their entries', async () => {
+    writeSkill('make-coffee', { source: 'agent' });
+    writeSkill('brew-coffee', { source: 'agent' });
+    recordUses(['make-coffee'], new Date('2026-06-01T00:00:00.000Z'));
+    recordUses(['brew-coffee'], new Date('2026-07-01T00:00:00.000Z'));
+
+    const llm = fakeLlm(
+      JSON.stringify({
+        merge: [{ slugs: ['make-coffee', 'brew-coffee'], name: 'make-coffee', description: 'brew coffee', content: 'Step 1.' }],
+        patch: [],
+        archive: []
+      })
+    );
+    const res = await curateSkills(llm, { force: true });
+    expect(res.merged).toBe(1);
+    const usage = readUsage();
+    expect(usage.skills['make-coffee']).toEqual({ count: 2, lastUsedAt: '2026-07-01T00:00:00.000Z' });
+    expect(usage.skills['brew-coffee']).toBeUndefined();
   });
 
   it('does not call the model when there are fewer than two agent skills', async () => {

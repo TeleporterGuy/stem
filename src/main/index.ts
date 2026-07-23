@@ -53,6 +53,7 @@ import type { ExecService } from './exec/service';
 import { initExecService } from './startup/exec';
 import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
+import { ensureUsageTracking } from './skills/usage';
 import { initFolderIndexTasks } from './startup/folder-index-tasks';
 import { closeFolderIndexes } from './folder-index';
 import { ProviderAuth } from './pi/provider-auth';
@@ -1231,6 +1232,11 @@ app.whenReady().then(async () => {
   });
   embedManager = retrieval.embedManager;
   scanManager = retrieval.scanManager;
+
+  // Skill usage tracking: anchor trackingSince and prune entries for deleted
+  // skills. Unconditional — usage feeds the Manage panel regardless of the
+  // recall toggle that gates the distill/curate passes below.
+  ensureUsageTracking();
 
   // Stem Recall's background passes (distillation, summaries, consolidation,
   // skills, confirmed rebuild, dormant backfill) — see startup/recall-tasks.ts.

@@ -57,6 +57,12 @@ export interface TurnContext {
   privateRoots?: string[];
   memoryTainted?: boolean;
   /**
+   * Slugs of skills consulted this turn (a read/grep/find/ls inside the skill's
+   * folder). A Set so a skill counts at most once per turn; flushed to the usage
+   * sidecar by PiRuntime.settleTurn.
+   */
+  skillsUsed?: Set<string>;
+  /**
    * True for an autonomous scheduled-task run. Set by PiRuntime.startTurn from the
    * scheduler's input marker; the exec bridge uses it to reject commands that would
    * need a manual approval nobody is present to give.

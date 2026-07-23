@@ -66,6 +66,7 @@ import {
 import { authorizeMcp } from './oauth';
 import { syncModelsConfig } from './models-config';
 import { piMcpConfigPath, skillsRoot } from '../workspace/paths';
+import { recordUses } from '../skills/usage';
 import { resolvePi, type PiInvocation } from './locate';
 import { PiProcess, type PiEvent } from './rpc';
 import {
@@ -157,6 +158,12 @@ function titleFromInput(input: string): string {
 // Argument keys a built-in file tool (read/grep/find/ls/edit/write) carries its
 // target path under. Probed on the raw pi event for the memory-taint check.
 const TOOL_PATH_KEYS = ['path', 'file_path', 'filename'] as const;
+
+// Tools whose touch inside a skill folder counts as CONSULTING that skill for
+// usage tracking. An allowlist, not "everything but edit/write": a future tool
+// that merely carries a path arg must not count, and edits are authoring, not
+// use (agent authoring goes through manage_skill in the bridge anyway).
+const SKILL_CONSULT_TOOLS = new Set(['read', 'grep', 'find', 'ls']);
 
 /** Pull the target file/dir path out of a raw pi tool_execution_start event, if any. */
 function readToolPath(ev: PiEvent): string | null {
@@ -274,6 +281,18 @@ function canonicalPolicyReadPath(target: string, cwd: string): string {
     }
   }
   return canonicalizePolicyAbsolutePath(resolved);
+}
+
+/**
+ * Slug (first path segment under `root`) named by a tool-target path, or null
+ * when the path is the root itself or outside it. Canonicalizes both sides like
+ * pathInsideAny so relative/`~`/symlinked spellings resolve to the same skill.
+ */
+export function skillSlugForPath(target: string, root: string, cwd: string): string | null {
+  const abs = canonicalPolicyReadPath(target, cwd);
+  const r = canonicalPolicyPath(root, cwd);
+  if (abs === r || !abs.startsWith(r + sep)) return null;
+  return abs.slice(r.length + 1).split(sep)[0] || null;
 }
 
 /** True when `target` (resolved against cwd if relative) is at/inside any of `roots`. */
@@ -1524,12 +1543,23 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
     if (!this.currentTurn) return;
     const turn = this.currentTurn;
-    // Memory privacy: if this turn reads inside a memorize:false connected folder,
-    // taint it so its assistant reply never enters Recall. Checked on the RAW event
-    // (the normalizer truncates the path to a basename, losing the dir for matching).
-    if (!turn.memoryTainted && turn.privateRoots?.length && ev.type === 'tool_execution_start') {
+    // Path-carrying tool calls feed two checks off the RAW event (the normalizer
+    // truncates the path to a basename, losing the dir for matching):
+    // - memory privacy: a read inside a memorize:false connected folder taints
+    //   the turn so its assistant reply never enters Recall;
+    // - skill usage: a consultative tool inside a skill's folder marks that
+    //   skill used this turn (deduped by the Set; flushed in settleTurn).
+    if (ev.type === 'tool_execution_start') {
       const p = readToolPath(ev);
-      if (p && pathInsideAny(p, turn.privateRoots, this.options.workspaceRoot)) turn.memoryTainted = true;
+      if (p) {
+        if (!turn.memoryTainted && turn.privateRoots?.length && pathInsideAny(p, turn.privateRoots, this.options.workspaceRoot)) {
+          turn.memoryTainted = true;
+        }
+        if (SKILL_CONSULT_TOOLS.has(String(ev.toolName ?? '').toLowerCase())) {
+          const slug = skillSlugForPath(p, skillsRoot(), this.options.workspaceRoot);
+          if (slug) (turn.skillsUsed ??= new Set()).add(slug);
+        }
+      }
     }
     const { events, done } = normalizePiEvent(ev, turn);
     const now = Date.now();
@@ -1561,6 +1591,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // detect it (the bridge bumps the rev marker) and reload after agent_settled.
     if (this.readSkillsRev() !== this.skillsRevAtTurnStart) {
       this.pendingSkillReload = true;
+      this.emitEvent('skills/changed');
+    }
+    // Flush this turn's skill consultations (once per skill per turn) to the
+    // usage sidecar. Sidecar-only: refresh an open Skills tab, but no
+    // pendingSkillReload — pi ignores non-skill files, nothing to reload.
+    if (turn.skillsUsed?.size && recordUses([...turn.skillsUsed]) > 0) {
       this.emitEvent('skills/changed');
     }
     this.currentTurn = null;

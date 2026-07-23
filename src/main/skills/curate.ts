@@ -4,6 +4,7 @@ import { parse as parseYaml } from 'yaml';
 import { skillsRoot } from '../workspace/paths';
 import { isRecallEnabled } from '../workspace/memory';
 import type { LlmClient } from '../recall/llm';
+import { mergeUsage, pruneUsage, readUsage, type SkillsUsage } from './usage';
 
 // Level-2 cleanup for self-authored skills, mirroring recall/consolidate.ts for
 // durable facts. The assistant only ever ADDS or patches skills via manage_skill,
@@ -38,6 +39,10 @@ interface AgentSkill {
   version: number;
   created: string;
   body: string;
+  /** Consultations recorded since usage tracking began (0 = none recorded). */
+  useCount: number;
+  /** ISO timestamp of the most recent recorded use. */
+  lastUsedAt?: string;
 }
 
 interface CurateOps {
@@ -61,6 +66,7 @@ Rules:
 - merge: combine skills that cover the SAME task. The FIRST slug in "slugs" is kept and rewritten with your "name"/"description"/"content"; the rest are retired. List at least two slugs.
 - patch: only to fix a clearly wrong or incomplete body; return the FULL improved body (no front-matter, no fences).
 - archive: only a skill made redundant or obsolete by another, or one that is clearly not a reusable procedure.
+- Usage counts are advisory, never decisive on their own. A skill NEVER used since tracking began, created after tracking started and more than ~30 days ago, is a strong archive candidate. A skill that WAS used but has been dormant since is a WEAK signal — seasonal or rarely-needed procedures are legitimate; keep it by default.
 - Use ONLY the slugs listed below. Never invent a skill or a slug.
 - If nothing needs changing, return {"merge":[],"patch":[],"archive":[]}.`;
 
@@ -108,7 +114,7 @@ export function composeSkillMd(s: { name: string; description: string; body: str
 }
 
 /** Load only the agent-authored skills (never user/bundled ones). */
-function loadAgentSkills(): AgentSkill[] {
+function loadAgentSkills(usage: SkillsUsage): AgentSkill[] {
   let entries: string[];
   try {
     entries = readdirSync(skillsRoot(), { withFileTypes: true })
@@ -133,17 +139,32 @@ function loadAgentSkills(): AgentSkill[] {
       description: fm.description ?? '',
       version: fm.version ?? 1,
       created: fm.created ?? new Date().toISOString(),
-      body: stripFront(raw)
+      body: stripFront(raw),
+      useCount: usage.skills[slug]?.count ?? 0,
+      lastUsedAt: usage.skills[slug]?.lastUsedAt
     });
   }
   return out;
 }
 
-function buildPrompt(skills: AgentSkill[]): string {
+/** "2026-07-23" from an ISO timestamp (the prompt doesn't need the time part). */
+function isoDay(iso: string): string {
+  return iso.slice(0, 10);
+}
+
+function buildPrompt(skills: AgentSkill[], trackingSince: string): string {
+  const header =
+    `Today is ${isoDay(new Date().toISOString())}. Usage has been tracked since ${isoDay(trackingSince)} — ` +
+    'a skill created before that date may have earlier uses that were never recorded.';
   const blocks = skills
-    .map((s) => `## [${s.slug}] ${s.name}\n${s.description}\n\n${s.body}`)
+    .map((s) => {
+      const usage = s.useCount
+        ? `used ${s.useCount}×, last ${isoDay(s.lastUsedAt ?? '')}`
+        : 'never used since tracking began';
+      return `## [${s.slug}] ${s.name}\n${s.description}\nCreated ${isoDay(s.created)} · ${usage}\n\n${s.body}`;
+    })
     .join('\n\n---\n\n');
-  return `${INSTRUCTIONS}\n\nSkills:\n\n${blocks}`;
+  return `${INSTRUCTIONS}\n\n${header}\n\nSkills:\n\n${blocks}`;
 }
 
 /** Parse the model's reply into curate ops. Defensive: any malformation → no-op. */
@@ -254,6 +275,8 @@ function applyCurate(skills: AgentSkill[], ops: CurateOps): CurateResult {
         if (loser === winnerSlug) continue;
         rmSync(join(skillsRoot(), loser), { recursive: true, force: true });
       }
+      // Proven utility survives the merge: winner inherits the losers' counts.
+      mergeUsage(winnerSlug, losers);
       merged += 1;
     } catch {
       // best-effort; leave this group for a later cycle
@@ -294,11 +317,12 @@ function applyCurate(skills: AgentSkill[], ops: CurateOps): CurateResult {
  */
 export async function curateSkills(llm: LlmClient, opts: { force?: boolean } = {}): Promise<CurateResult> {
   if (!isRecallEnabled()) return ZERO;
-  const skills = loadAgentSkills();
+  const usage = readUsage();
+  const skills = loadAgentSkills(usage);
   // The automatic pass skips small sets; a manual trigger still needs two to merge.
   if (skills.length < (opts.force ? 2 : MIN_SKILLS)) return ZERO;
 
-  const prompt = buildPrompt(skills);
+  const prompt = buildPrompt(skills, usage.trackingSince);
   if (prompt.length > MAX_PROMPT_CHARS) {
     console.warn(`[skills curator] ${skills.length} skills exceed the single-pass budget; skipping.`);
     return ZERO;
@@ -312,5 +336,10 @@ export async function curateSkills(llm: LlmClient, opts: { force?: boolean } = {
   }
 
   const known = new Set(skills.map((s) => s.slug));
-  return applyCurate(skills, clampCurate(ops, known, skills.length));
+  const result = applyCurate(skills, clampCurate(ops, known, skills.length));
+  // Hygiene: drop usage entries for skills deleted by merges above — and for
+  // dirs removed out-of-band (manage_skill "remove" runs in the bridge
+  // subprocess, which cannot touch the sidecar itself).
+  pruneUsage();
+  return result;
 }
