@@ -2254,22 +2254,34 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // Stamp pre-identity-migration OAuth tokens before the bridge reads them, or
     // every previously-signed-in remote server connects unauthenticated (401).
     await migrateLegacyOAuthTokens().catch(() => undefined);
-    // Prefer pi's SSE transport over its default WebSocket-first "auto".
-    await this.ensurePiTransportDefault().catch(() => undefined);
+    // Prefer pi's SSE transport over its default WebSocket-first "auto", and give
+    // auto-compaction enough headroom for Stem's heavy turns.
+    await this.ensurePiSettingsDefaults().catch(() => undefined);
   }
 
   /**
-   * Seed `transport: "sse"` into pi's settings.json (read once at spawn — see the
-   * pi RPC no-hot-reload note). pi's codex/ChatGPT transport is WebSocket-first,
-   * but a WebSocket that drops MID-stream cannot be retried (replaying would re-run
+   * Seed defaults into pi's settings.json (read once at spawn — see the pi RPC
+   * no-hot-reload note). Each key is only seeded when unset — an explicit value in
+   * the file wins — and hand-authored settings are never clobbered.
+   *
+   * `transport: "sse"`: pi's codex/ChatGPT transport is WebSocket-first, but a
+   * WebSocket that drops MID-stream cannot be retried (replaying would re-run
    * tools it already executed — openai-codex-responses throws once websocketStarted),
    * so a transient disconnect hard-fails the whole turn even though its side effects
    * (e.g. a scheduled reminder) already committed. The SSE fetch path instead retries
    * transient errors with backoff and is sturdier through network filters (Little
-   * Snitch). Only seed when unset — an explicit transport in the file wins — and never
-   * clobber existing/hand-authored settings.
+   * Snitch).
+   *
+   * `compaction.reserveTokens`: pi's default reserve (16384) only leaves that much
+   * room between the compaction threshold and the model's context window, and the
+   * threshold is only checked between prompts/runs — a single agent run's tool
+   * results land unchecked. Stem's turns routinely add far more than 16k tokens in
+   * one run (each prompt carries ~38k chars of recall/instructions injection, and
+   * one MCP result can be 100k+ chars), which is how a gpt-5.6-sol session went
+   * from 327k straight past its 372k window and got a provider overflow error.
+   * 64k of reserve makes compaction fire a turn earlier instead.
    */
-  private async ensurePiTransportDefault(): Promise<void> {
+  private async ensurePiSettingsDefaults(): Promise<void> {
     const file = join(this.options.piHome, 'settings.json');
     let raw: string | null = null;
     try {
@@ -2289,9 +2301,16 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         return; // present but malformed — never destroy hand-authored content
       }
     }
-    if ('transport' in settings) return; // respect an explicit choice
-    settings.transport = 'sse';
-    await writeFile(file, JSON.stringify(settings, null, 2) + '\n');
+    let changed = false;
+    if (!('transport' in settings)) {
+      settings.transport = 'sse';
+      changed = true;
+    }
+    if (!('compaction' in settings)) {
+      settings.compaction = { reserveTokens: 65536 };
+      changed = true;
+    }
+    if (changed) await writeFile(file, JSON.stringify(settings, null, 2) + '\n');
   }
 
   private async fileExists(path: string): Promise<boolean> {
