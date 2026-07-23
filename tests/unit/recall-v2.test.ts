@@ -9,7 +9,7 @@ import {
   embedNewMessages,
   EPISODIC_EMBED_MAX_CHARS
 } from '../../src/main/recall/embed-episodic';
-import { reconcileExplicitFact } from '../../src/main/recall/reconcile';
+import { RELATION_PROMPT_HEADER, reconcileExplicitFact, type FactRelation } from '../../src/main/recall/reconcile';
 import {
   getMemoryRebuildStatus,
   pauseMemoryRebuild,
@@ -48,14 +48,14 @@ function structuredClaim(input: {
 
 /**
  * A distiller LLM whose extraction reply is fixed, and which answers the separate
- * contradiction-adjudication prompt with `compatible`. Distillation now makes two
+ * relation-classification prompt with a fixed verdict. Distillation makes two
  * different calls, so a single canned reply can't stand in for both.
  */
-function extractorLlm(claimJson: string, compatible: boolean) {
+function extractorLlm(claimJson: string, verdict: FactRelation, rawVerdictReply?: string) {
   return {
     complete: async (prompt: string) =>
-      /Decide whether they can BOTH be true/.test(prompt)
-        ? JSON.stringify({ compatible })
+      prompt.includes(RELATION_PROMPT_HEADER)
+        ? rawVerdictReply ?? JSON.stringify({ verdict })
         : claimJson
   };
 }
@@ -142,7 +142,7 @@ describe('Recall v2 authority and lifecycle', () => {
       category: 'location',
       sensitivity: 'sensitive',
       supersedes: [explicitId]
-    }), false));
+    }), 'contradicts'));
     expect(store.getFactDetails(explicitId)?.status).toBe('conflicted');
     expect(store.getMemoryConflicts()).toHaveLength(1);
     store.resolveMemoryConflict(store.getMemoryConflicts()[0].id, 'keep_newer');
@@ -161,7 +161,7 @@ describe('Recall v2 authority and lifecycle', () => {
       text: 'The user drives an electric Enyaq',
       messageId: message.id + 999,
       supersedes: [target]
-    }), false));
+    }), 'contradicts'));
     const claim = store.getAllFacts().find((f) => /Enyaq/.test(f.text))!;
     expect(claim.confidence).toBe(0.55);
     expect(store.getFactDetails(target)?.status).toBe('conflicted');
@@ -175,7 +175,7 @@ describe('Recall v2 authority and lifecycle', () => {
       text: 'The user drives an electric Enyaq',
       messageId: message2.id,
       supersedes: [target2]
-    }), false));
+    }), 'contradicts'));
     expect(store.getAllFacts().find((f) => /Enyaq/.test(f.text))!.confidence).toBe(0.9);
     expect(store.getFactDetails(target2)?.status).toBe('superseded');
   });
@@ -192,9 +192,68 @@ describe('Recall v2 authority and lifecycle', () => {
       messageId: message.id,
       category: 'schedule',
       supersedes: [existing]
-    }), true));
+    }), 'compatible'));
     expect(store.getMemoryConflicts()).toHaveLength(0);
     expect(store.getFactDetails(existing)?.status).toBe('active');
+  });
+
+  it('gates the "conflictsWith" path on the relation verdict instead of trusting the extractor', async () => {
+    // Regression: this path used to create a conflict unconditionally.
+    const target = store.upsertFact('The user pays €129.15 per month for accounting')!;
+    store.recordMessage({ threadId: 'ambig', role: 'assistant', text: 'Accounting also covers payroll.' });
+    const [message] = store.getMessagesForDistillFrom(1);
+    await distill.distillNewMessages(extractorLlm(structuredClaim({
+      text: 'The user’s accounting service also covers payroll',
+      messageId: message.id,
+      conflicts: [target]
+    }), 'compatible'));
+    expect(store.getMemoryConflicts()).toHaveLength(0);
+    expect(store.getFactDetails(target)?.status).toBe('active');
+  });
+
+  it('defaults to compatible when the relation reply is unparseable', async () => {
+    const target = store.upsertFact('The user pays €129.15 per month for accounting')!;
+    store.recordMessage({ threadId: 'garbage', role: 'assistant', text: 'Accounting chatter.' });
+    const [message] = store.getMessagesForDistillFrom(1);
+    await distill.distillNewMessages(extractorLlm(structuredClaim({
+      text: 'The user pays €134.07 per month for accounting',
+      messageId: message.id,
+      conflicts: [target]
+    }), 'compatible', 'no json here'));
+    expect(store.getMemoryConflicts()).toHaveLength(0);
+    expect(store.getFactDetails(target)?.status).toBe('active');
+  });
+
+  it('injects one disputed representative per open conflict — the newest-evidence side', () => {
+    const now = Math.floor(Date.now() / 1000);
+    const older = store.upsertFact('The domain is registered through 2026', {
+      confidence: 0.9,
+      evidence: [{ messageId: null, threadId: null, role: null, timestamp: now - 86_400, excerpt: 'old invoice', origin: 'folder_doc', folderId: 'f', relPath: 'a.pdf' }]
+    })!;
+    const newer = store.upsertFact('The domain is registered through 2027', {
+      confidence: 0.9,
+      evidence: [{ messageId: null, threadId: null, role: null, timestamp: now, excerpt: 'new invoice', origin: 'folder_doc', folderId: 'f', relPath: 'b.pdf' }]
+    })!;
+    store.createFactConflict(older, newer, 'test');
+    const injectable = store.getInjectableFacts();
+    const rep = injectable.find((f) => f.id === newer);
+    expect(rep?.disputed).toBe(true);
+    expect(injectable.some((f) => f.id === older)).toBe(false);
+  });
+
+  it('prefers an explicit side as the disputed representative and gates doc-vs-doc pairs out', () => {
+    // Explicit beats newer: the user's word holds while disputed.
+    const explicitId = store.upsertFact('The user has GAP insurance with Kooperativa', 'explicit')!;
+    const docId = store.upsertFact('The car has DEFEND GAP MAX insurance', { source: 'folder:f1', confidence: 0.9 })!;
+    store.createFactConflict(explicitId, docId, 'test');
+    const reps = store.getInjectableFacts().filter((f) => f.disputed);
+    expect(reps.map((f) => f.id)).toEqual([explicitId]);
+    // Doc-vs-doc at 0.55 clears no gate → no representative at all.
+    store.resetFacts();
+    const a = store.upsertFact('Fee is €129.15', { source: 'folder:f1', confidence: 0.55 })!;
+    const b = store.upsertFact('Fee is €134.07', { source: 'folder:f1', confidence: 0.55 })!;
+    store.createFactConflict(a, b, 'test');
+    expect(store.getInjectableFacts()).toHaveLength(0);
   });
 
   it('expires dated facts without deleting their history', () => {

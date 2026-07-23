@@ -881,7 +881,21 @@ export interface MemoryConflict {
   createdAt: number;
 }
 
-export type ConflictResolution = 'keep_newer' | 'keep_older' | 'keep_both';
+/** Resolutions the user can pick in the Conflicts card. */
+export type ManualConflictResolution = 'keep_newer' | 'keep_older' | 'keep_both';
+/** Resolutions the background adjudicator records (never user-selectable). */
+export type AutoConflictResolution = 'auto_supersede' | 'auto_keep_both' | 'auto_rewrite';
+export type ConflictResolution = ManualConflictResolution | AutoConflictResolution;
+
+/** A conflict the background adjudicator resolved, for the audit list in the Facts tab. */
+export interface AutoResolvedConflict {
+  id: number;
+  factA: FactDetails;
+  factB: FactDetails;
+  reason: string;
+  resolution: AutoConflictResolution;
+  resolvedAt: number;
+}
 
 export interface MemoryRebuildStatus {
   state: 'available' | 'running' | 'paused' | 'complete' | 'failed';
@@ -900,6 +914,8 @@ export interface ActiveFacts {
     source: string;
     sensitivity?: FactSensitivity;
     reason?: FactSelectionReason;
+    /** Injected as the representative of an open conflict (see Fact.disputed). */
+    disputed?: boolean;
   }>;
   tier: FactTier;
 }
@@ -1450,9 +1466,11 @@ export interface StemApi {
   setFactPinned(id: number, pinned: boolean): Promise<MemoryContents>;
   confirmFact(id: number): Promise<MemoryContents>;
   getFactDetails(id: number): Promise<FactDetails | null>;
-  resolveMemoryConflict(id: number, resolution: ConflictResolution): Promise<MemoryContents>;
+  resolveMemoryConflict(id: number, resolution: ManualConflictResolution): Promise<MemoryContents>;
   restoreSupersededFact(id: number): Promise<MemoryContents>;
   getMemoryConflicts(): Promise<MemoryConflict[]>;
+  /** Conflicts the background adjudicator resolved, newest first. */
+  getAutoResolvedConflicts(): Promise<AutoResolvedConflict[]>;
   getMemoryRebuildStatus(): Promise<MemoryRebuildStatus>;
   startMemoryRebuild(): Promise<MemoryRebuildStatus>;
   pauseMemoryRebuild(): Promise<MemoryRebuildStatus>;

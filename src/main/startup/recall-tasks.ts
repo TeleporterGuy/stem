@@ -3,6 +3,7 @@ import { isRecallEnabled } from '../workspace/memory';
 import { embedNewMessages } from '../recall/embed-episodic';
 import { backfillSummaries, refreshRecentSummaries } from '../recall/summarize';
 import { distillNewMessages, shouldConsolidate } from '../recall/distill';
+import { adjudicateOpenConflicts } from '../recall/adjudicate';
 import { consolidateFacts } from '../recall/consolidate';
 import { getMemoryRebuildStatus, runMemoryRebuildStep } from '../recall/rebuild';
 import { curateSkills } from '../skills/curate';
@@ -77,6 +78,10 @@ export function initRecallTasks(deps: {
         // just-active threads from the same new messages. Own watermark, so a
         // failure here never blocks fact extraction (and vice versa).
         await refreshRecentSummaries(recallLlm);
+        // Auto-resolve open fact conflicts (non-explicit pairs only) before the
+        // consolidation check, so reactivated winners and rewrite replacements
+        // are visible to the same cycle's tidy pass.
+        await adjudicateOpenConflicts(recallLlm);
         // Once enough new facts have piled up, clean the set: merge reworded
         // duplicates, apply corrections, drop superseded facts. Same hidden
         // LlmClient seam, so it's invisible to the user like distillation.

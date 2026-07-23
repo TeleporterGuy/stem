@@ -9,11 +9,11 @@ import {
   parseDistillOutput,
   scoreCandidatesAgainstFacts
 } from '../recall/distill';
-import { contradicts } from '../recall/reconcile';
+import { classifyRelation, evidenceDateOf } from '../recall/reconcile';
 import { recallStore } from '../recall/store';
 import type { FolderIndexStore, PendingLearnDoc } from './store';
 
-const { createFactConflict, getFactDetails, getFactsGeneration, getDupCosine, getMeta, getTidyThreshold, setMeta, upsertFact, upsertFactVector } = recallStore;
+const { createFactConflict, getFactDetails, getFactsGeneration, getDupCosine, getMeta, getTidyThreshold, setMeta, supersedeFact, upsertFact, upsertFactVector } = recallStore;
 
 // The doc distill engine behind the 'new'/'all' learn modes: batches of pending
 // docs (learned_hash missing or stale) go through one hidden LLM call each and
@@ -22,7 +22,10 @@ const { createFactConflict, getFactDetails, getFactsGeneration, getDupCosine, ge
 // batch can't wedge the folder forever, write-time semantic dedup feeding the
 // consolidation dirty counter, facts-generation guards against mid-flight
 // resets — but never the direct-user treatment: doc-derived facts stay at
-// confidence 0.55 and never silently supersede (conflicts are surfaced).
+// confidence 0.55. A doc fact MAY silently supersede another doc fact when the
+// relation verdict says it clearly updates it (a renewal, a price change —
+// reversible, the loser is superseded not deleted); conversation- and
+// user-derived facts are never silently overridden (conflicts are surfaced).
 
 /** Docs per LLM call; long docs are truncated to keep the prompt bounded. */
 const MAX_BATCH_LEARN_DOCS = 24;
@@ -41,6 +44,8 @@ Rules:
 - These are the user's own files: personal details in them ARE wanted. But never include credentials, payment secrets, recovery phrases, or government identifiers. Addresses, contact details, health, and finance are allowed but must use sensitivity "sensitive".
 - Include only things likely still true in future conversations. Resolve relative dates using each document's modified date. Use validUntil for facts that expire (bookings, deadlines).
 - Do NOT record standing behavioral directives or response-style preferences.
+- Anchor every claim to the natural identifier the document shows — invoice number, contract or policy id, order number, file name — and its stated effective or issue date, inside the fact text itself. Example: "The user's company issued invoice 20260004 (30 Apr 2026) to Cloudfarms a.s. for €11,291.40 incl. VAT."
+- Claims anchored to DIFFERENT identifiers (two invoice numbers, two contracts) are different facts: never mark them as superseding or conflicting with each other.
 - If a claim clearly replaces a known fact, include that fact id in supersedesFactIds. If the conflict is ambiguous, include it in conflictsWithFactIds instead.
 - For every claim cite the doc ids it rests on in evidenceDocIds — only ids present below.
 - Output ONLY {"claims":[...]} where each claim is:
@@ -210,21 +215,46 @@ export async function learnFolderBatch(
       upsertFactVector(id, scored.model, scored.vecs[i]);
       if (scored.maxSims[i] >= dupThreshold) dupSeen = true;
     }
-    // No authority to supersede — a doc's say-so isn't the user's word. Verify
-    // the contradiction, then surface it for the user to adjudicate.
-    for (const targetId of [...claim.supersedesFactIds, ...claim.conflictsWithFactIds]) {
+    // A doc's say-so isn't the user's word, but documents DO have authority over
+    // other documents: a newer invoice legitimately updates the fee an older one
+    // established. Classify each claimed relation; doc-over-doc supersession is
+    // applied silently (reversible — the loser is superseded, not deleted), any
+    // other non-compatible relation is surfaced for the user or the adjudicator.
+    const incomingDate = evidenceDateOf(getFactDetails(id));
+    for (const targetId of new Set([...claim.supersedesFactIds, ...claim.conflictsWithFactIds])) {
       const target = getFactDetails(targetId);
-      if (!target || target.id === id) continue;
-      const ambiguous = claim.conflictsWithFactIds.includes(targetId);
-      if (ambiguous || (await contradicts(target.text, claim.text, llm))) {
-        if (getFactsGeneration() !== factsGeneration) {
-          stampBatch();
-          return { processed: batch.docs.length, written };
-        }
+      if (!target || target.id === id || target.status !== 'active') continue;
+      const verdict = await classifyRelation(
+        { text: target.text, evidenceDate: evidenceDateOf(target) },
+        { text: claim.text, evidenceDate: incomingDate },
+        llm
+      );
+      if (getFactsGeneration() !== factsGeneration) {
+        stampBatch();
+        return { processed: batch.docs.length, written };
+      }
+      if (verdict === 'compatible') continue;
+      // Re-verify the pair is unchanged before applying a model-proposed relation
+      // (ids can be superseded or rewritten while the call was in flight).
+      const currentTarget = getFactDetails(targetId);
+      if (!currentTarget || currentTarget.status !== 'active' || currentTarget.text !== target.text) continue;
+      const currentNew = getFactDetails(id);
+      if (!currentNew || currentNew.status === 'superseded') break;
+      const bothDocs = target.source.startsWith('folder:');
+      if (verdict === 'b_supersedes_a' && bothDocs) {
+        supersedeFact(target.id, id);
+      } else if (verdict === 'a_supersedes_b' && bothDocs) {
+        // A stale doc processed late must not clobber the newer state: the
+        // incoming fact loses instead, and stops relating to further targets.
+        supersedeFact(id, target.id);
+        break;
+      } else {
         createFactConflict(
           target.id,
           id,
-          ambiguous ? 'The available evidence is ambiguous.' : `A document in "${folder.label}" may contradict this fact.`
+          verdict === 'contradicts'
+            ? `A document in "${folder.label}" may contradict this fact.`
+            : `A document in "${folder.label}" appears to update this fact.`
         );
       }
     }

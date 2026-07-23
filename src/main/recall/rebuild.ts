@@ -7,7 +7,7 @@ import {
   parseClaims,
   type DistillCursor
 } from './distill';
-import { contradicts } from './reconcile';
+import { classifyRelation, evidenceDateOf } from './reconcile';
 import type { LlmClient } from './llm';
 import { recallStore, type StoredMessage } from './store';
 const { createFactConflict, getFactDetails, getFactsGeneration, getMeta, messageCount, setMeta, supersedeFact, upsertFact } = recallStore;
@@ -109,21 +109,39 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
         }))
       });
       if (factId == null) continue;
+      // The rebuild re-reads transcripts that distillation already mined, so its
+      // "supersedes"/"conflicts" links land overwhelmingly on restatements of the
+      // same fact. Only a classified disagreement is worth a user-facing conflict.
+      const incomingDate = evidenceDateOf(getFactDetails(factId));
+      const raiseVerified = async (targetId: number, reason: string): Promise<boolean> => {
+        const target = getFactDetails(targetId);
+        if (!target || target.id === factId || target.status !== 'active') return true;
+        const verdict = await classifyRelation(
+          { text: target.text, evidenceDate: evidenceDateOf(target) },
+          { text: claim.text, evidenceDate: incomingDate },
+          llm
+        );
+        if (getFactsGeneration() !== factsGeneration) return false;
+        if (verdict === 'compatible') return true;
+        const current = getFactDetails(targetId);
+        if (current && current.status === 'active' && current.text === target.text) {
+          createFactConflict(targetId, factId, reason);
+        }
+        return true;
+      };
       for (const targetId of claim.supersedesFactIds) {
         const target = getFactDetails(targetId);
         if (!target || target.id === factId) continue;
-        if (directUser && target.source !== 'explicit') supersedeFact(targetId, factId);
-        // The rebuild re-reads transcripts that distillation already mined, so its
-        // "supersedes" links land overwhelmingly on restatements of the same fact.
-        // Only a checked contradiction is worth a user-facing conflict.
-        else if (await contradicts(target.text, claim.text, llm)) {
-          if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
-          createFactConflict(targetId, factId, 'Rebuilt evidence may contradict this fact.');
+        if (directUser && target.source !== 'explicit') {
+          supersedeFact(targetId, factId);
+        } else if (!(await raiseVerified(targetId, 'Rebuilt evidence may contradict this fact.'))) {
+          return getMemoryRebuildStatus();
         }
       }
       for (const targetId of claim.conflictsWithFactIds) {
-        if (targetId !== factId && getFactDetails(targetId)) {
-          createFactConflict(targetId, factId, 'Rebuilt evidence is ambiguous.');
+        if (claim.supersedesFactIds.includes(targetId)) continue;
+        if (!(await raiseVerified(targetId, 'Rebuilt evidence is ambiguous.'))) {
+          return getMemoryRebuildStatus();
         }
       }
     }

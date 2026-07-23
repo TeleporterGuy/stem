@@ -2,6 +2,7 @@ import type { ConnectedFolder } from '../../shared/types';
 import { isRecallEnabled } from '../workspace/memory';
 import { readSettings } from '../workspace/settings';
 import { learnAllIndexedFolders, scanAllIndexedFolders } from '../folder-index';
+import { adjudicateOpenConflicts } from '../recall/adjudicate';
 import type { LlmClient } from '../recall/llm';
 import type { ChatBackend } from '../backend';
 
@@ -55,7 +56,16 @@ export function initFolderIndexTasks(deps: {
         makeLlm,
         shouldYield: () => deps.busyWithin(30_000)
       }).then((yielded) => {
-        if (yielded) scheduleFolderLearn(60_000);
+        if (yielded) {
+          scheduleFolderLearn(60_000);
+          return;
+        }
+        // The drain finished: adjudicate whatever conflicts the fresh doc facts
+        // raised. Runs on the recall memory model — this is a recall-level pass,
+        // not a per-folder one. adjudicateOpenConflicts never rejects.
+        void adjudicateOpenConflicts({
+          complete: async (prompt) => deps.runtime().complete(prompt, { model: (await readSettings()).memory.model })
+        });
       });
     }, delayMs);
   };

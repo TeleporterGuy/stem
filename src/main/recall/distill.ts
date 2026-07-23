@@ -3,7 +3,7 @@ import { buildMatchQuery, lexTokens } from './search-core';
 import { getEmbeddingsClient } from './retrieval';
 import { cosineSim } from './vector';
 import { isRecallEnabled } from '../workspace/memory';
-import { contradicts } from './reconcile';
+import { classifyRelation, evidenceDateOf } from './reconcile';
 import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
 import { recallStore, type StoredMessage, type TurnInjectedFacts } from './store';
@@ -644,20 +644,40 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
       if (scored.maxSims[i] >= dupThreshold) dupSeen = true;
     }
     if (id != null) {
+      // The extractor's say-so isn't proof two facts disagree — classify the
+      // relation before making anyone adjudicate. Conversation-distilled facts
+      // have no supersede authority of their own (only the directUser fast path
+      // does), so even a supersede-direction verdict just means "these disagree".
+      const incomingDate = evidenceDateOf(getFactDetails(id));
+      const raiseVerified = async (targetId: number, reason: string): Promise<boolean> => {
+        const target = getFactDetails(targetId);
+        if (!target || target.id === id || target.status !== 'active') return true;
+        const verdict = await classifyRelation(
+          { text: target.text, evidenceDate: evidenceDateOf(target) },
+          { text: claim.text, evidenceDate: incomingDate },
+          llm
+        );
+        if (getFactsGeneration() !== factsGeneration) return false;
+        if (verdict === 'compatible') return true;
+        const current = getFactDetails(targetId);
+        if (current && current.status === 'active' && current.text === target.text) {
+          createFactConflict(target.id, id, reason);
+        }
+        return true;
+      };
       for (const targetId of claim.supersedesFactIds) {
         const target = getFactDetails(targetId);
         if (!target || target.id === id) continue;
-        if (directUser && target.source !== 'explicit') supersedeFact(target.id, id);
-        // No authority to supersede — but the extractor's say-so isn't proof the two
-        // facts disagree, so check before making the user adjudicate.
-        else if (await contradicts(target.text, claim.text, llm)) {
-          if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
-          createFactConflict(target.id, id, 'A newer memory may contradict this fact.');
+        if (directUser && target.source !== 'explicit') {
+          supersedeFact(target.id, id);
+        } else if (!(await raiseVerified(targetId, 'A newer memory may contradict this fact.'))) {
+          return advanceWithoutWriting();
         }
       }
       for (const targetId of claim.conflictsWithFactIds) {
-        if (targetId !== id && getFactDetails(targetId)) {
-          createFactConflict(targetId, id, 'The available evidence is ambiguous.');
+        if (claim.supersedesFactIds.includes(targetId)) continue;
+        if (!(await raiseVerified(targetId, 'The available evidence is ambiguous.'))) {
+          return advanceWithoutWriting();
         }
       }
     }

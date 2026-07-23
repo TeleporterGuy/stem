@@ -1,6 +1,7 @@
 
+import type { FactDetails } from '../../shared/types';
 import type { LlmClient } from './llm';
-import { recallStore } from './store';
+import { newestEvidenceTs, recallStore } from './store';
 const { createFactConflict, getFactDetails, getFactsGeneration, getInjectableFacts, supersedeFact } = recallStore;
 
 interface ReconcileReply {
@@ -8,40 +9,68 @@ interface ReconcileReply {
   conflictIds?: unknown;
 }
 
+/** How two fact texts relate; the `supersedes` verdicts carry direction. */
+export type FactRelation = 'compatible' | 'contradicts' | 'a_supersedes_b' | 'b_supersedes_a';
+
+export interface RelationSide {
+  text: string;
+  /** ISO date (YYYY-MM-DD) of the side's newest evidence, or null when unknown. */
+  evidenceDate: string | null;
+}
+
+// Exported so tests dispatch fake-LLM replies on the constant instead of a
+// brittle regex over prompt wording.
+export const RELATION_PROMPT_HEADER = 'Two statements describe the same user. Decide how they relate.';
+
+/** Evidence timestamp → ISO date for the relation prompt. */
+export function isoDate(ts: number | null): string | null {
+  return ts == null ? null : new Date(ts * 1000).toISOString().slice(0, 10);
+}
+
+/** The newest-evidence date of a fact, formatted for a RelationSide. */
+export function evidenceDateOf(details: FactDetails | null): string | null {
+  return details ? isoDate(newestEvidenceTs(details)) : null;
+}
+
 /**
- * Does `incoming` actually contradict `existing`, or do they merely describe the
- * same subject?
+ * How does `b` (the incoming claim) relate to `a` (the existing fact)?
  *
- * An extractor's `supersedesFactIds` is a *claim* that the new text replaces the
- * old one, and it is routinely wrong: two facts about the same appointment ("…€85
+ * An extractor's `supersedesFactIds`/`conflictsWithFactIds` is a *claim* about the
+ * relation, and it is routinely wrong: two facts about the same appointment ("…€85
  * due at registration" and "…a Slovak interpreter was secured") are complementary,
  * not contradictory. Raising a user-facing conflict on that assertion alone floods
- * the Conflicts card with pairs that are both true. So when we lack the authority
- * to supersede outright, we ask instead of assuming.
+ * the Conflicts card with pairs that are both true — so we classify instead of
+ * assuming. The supersede verdicts exist for temporal succession (a renewal, a
+ * price change): same attribute of the same thing, one side clearly the newer
+ * state. Callers decide whether they have the authority to act on them.
  *
- * Defaults to `false` (no conflict) whenever the model is unreachable or
- * unparseable: a missed contradiction is quietly adjudicated by the consolidation
- * pass later, while a false conflict demands the user resolve something that isn't
- * broken.
+ * Defaults to `'compatible'` whenever the model is unreachable or unparseable: a
+ * missed contradiction is quietly adjudicated by a later pass, while a false
+ * conflict demands the user resolve something that isn't broken.
  */
-export async function contradicts(existing: string, incoming: string, llm: LlmClient): Promise<boolean> {
-  const prompt = `Two statements describe the same user. Decide whether they can BOTH be true at once.
+export async function classifyRelation(a: RelationSide, b: RelationSide, llm: LlmClient): Promise<FactRelation> {
+  const prompt = `${RELATION_PROMPT_HEADER}
 
-A: ${existing}
-B: ${incoming}
+A (evidence dated ${a.evidenceDate ?? 'unknown'}): ${a.text}
+B (evidence dated ${b.evidenceDate ?? 'unknown'}): ${b.text}
 
-Statements about the same subject that add different details (a payment, an interpreter, a companion) are COMPATIBLE. Only statements that assert different values for the same attribute — a different date, place, price, or status — are INCOMPATIBLE.
+Classify:
+- "compatible": they add different details about the same subject (a payment, an interpreter, a companion), or they concern DIFFERENT things entirely (different invoice numbers, different contracts, different policies). Both can be true at once.
+- "b_supersedes_a" / "a_supersedes_b": both state the same attribute of the SAME thing (the same domain, contract, policy, recurring fee) and one is clearly the newer state — a renewal, a price change, an update. Prefer dates stated INSIDE the statements over the evidence dates; evidence dates are file or message times and can lie.
+- "contradicts": they assert different values for the same attribute and there is no way to tell which is current.
 
-Return ONLY JSON {"compatible": true} or {"compatible": false}.`;
+Return ONLY JSON {"verdict":"compatible"|"contradicts"|"a_supersedes_b"|"b_supersedes_a"}.`;
   try {
     const raw = await llm.complete(prompt);
     const start = raw.indexOf('{');
     const end = raw.lastIndexOf('}');
-    if (start === -1 || end <= start) return false;
-    const parsed = JSON.parse(raw.slice(start, end + 1)) as { compatible?: unknown };
-    return parsed.compatible === false;
+    if (start === -1 || end <= start) return 'compatible';
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as { verdict?: unknown };
+    return parsed.verdict === 'contradicts' || parsed.verdict === 'a_supersedes_b' || parsed.verdict === 'b_supersedes_a'
+      ? parsed.verdict
+      : 'compatible';
   } catch {
-    return false;
+    return 'compatible';
   }
 }
 

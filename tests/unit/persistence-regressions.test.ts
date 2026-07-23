@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { captureMemoryFromUserInput } from '../../src/main/workspace/memory';
 import { distillNewMessages } from '../../src/main/recall/distill';
@@ -358,5 +359,76 @@ describe('persistence regressions', () => {
     const status = await pending;
     expect(status.state).toBe('available');
     expect(status.lastError).toBeUndefined();
+  });
+
+  it("repairs 'this.open' conflict rows written by v0.1.0 into a pre-refactor database", () => {
+    const a = store.upsertFact('The domain is registered through 2026.', 'explicit');
+    const b = store.upsertFact('The domain is registered through 2027.', 'explicit');
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+
+    // A database created before the refactor keeps its pair index on 'open', so
+    // rows the broken build wrote as 'this.open' bypassed dedup entirely —
+    // including outright duplicates of the same pair.
+    store.close();
+    const raw = new DatabaseSync(process.env.STEM_RECALL_DB!);
+    raw.prepare(
+      `INSERT INTO fact_conflicts(fact_a, fact_b, reason, status, created_at) VALUES (?, ?, 'r', 'this.open', 1)`
+    ).run(a!, b!);
+    raw.prepare(
+      `INSERT INTO fact_conflicts(fact_a, fact_b, reason, status, created_at) VALUES (?, ?, 'r', 'this.open', 2)`
+    ).run(b!, a!);
+    raw.prepare(`UPDATE facts SET status = 'conflicted' WHERE id IN (?, ?)`).run(a!, b!);
+    raw.close();
+
+    // Reopening migrates: duplicates collapse to the oldest row, statuses normalize.
+    const conflicts = store.getMemoryConflicts();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].factA.id).toBe(a);
+    expect(conflicts[0].factB.id).toBe(b);
+    // Pair dedup holds for the migrated row.
+    expect(store.createFactConflict(a!, b!, 'again')).toBeNull();
+    // And resolution still sees the migrated row as open.
+    expect(store.resolveMemoryConflict(conflicts[0].id, 'keep_newer')).toBe(true);
+    expect(store.getFactDetails(b!)?.status).toBe('active');
+    expect(store.getFactDetails(a!)?.status).toBe('superseded');
+  });
+
+  it('backfills the adjudicate_attempts column on databases that predate it', () => {
+    store.close();
+    const raw = new DatabaseSync(process.env.STEM_RECALL_DB!);
+    raw.exec(`ALTER TABLE fact_conflicts DROP COLUMN adjudicate_attempts`);
+    raw.close();
+    // Any store call reopens and runs the additive migration.
+    expect(store.getMemoryConflicts()).toEqual([]);
+    store.close();
+    const check = new DatabaseSync(process.env.STEM_RECALL_DB!);
+    const cols = (check.prepare(`PRAGMA table_info(fact_conflicts)`).all() as Array<{ name: string }>).map((c) => c.name);
+    check.close();
+    expect(cols).toContain('adjudicate_attempts');
+  });
+
+  it("rebuilds the pair-dedup index of a database created by v0.1.0", () => {
+    const a = store.upsertFact('The office is in Bratislava.', 'explicit');
+    const b = store.upsertFact('The office is in Kosice.', 'explicit');
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+
+    // A database CREATED by the broken build carries the partial index keyed on
+    // the bad literal; after the row repair that index would never apply again.
+    store.close();
+    const raw = new DatabaseSync(process.env.STEM_RECALL_DB!);
+    raw.exec(`DROP INDEX IF EXISTS idx_fact_conflict_pair`);
+    raw.exec(`CREATE UNIQUE INDEX idx_fact_conflict_pair
+      ON fact_conflicts(MIN(fact_a, fact_b), MAX(fact_a, fact_b)) WHERE status = 'this.open'`);
+    raw.prepare(
+      `INSERT INTO fact_conflicts(fact_a, fact_b, reason, status, created_at) VALUES (?, ?, 'r', 'this.open', 1)`
+    ).run(a!, b!);
+    raw.close();
+
+    const conflicts = store.getMemoryConflicts();
+    expect(conflicts).toHaveLength(1);
+    // The recreated index (now on 'open') enforces pair dedup again.
+    expect(store.createFactConflict(b!, a!, 'again')).toBeNull();
   });
 });

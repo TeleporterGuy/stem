@@ -13,6 +13,8 @@ import {
 } from './maintenance-core';
 import type {
   ActivityItem,
+  AutoConflictResolution,
+  AutoResolvedConflict,
   ConflictResolution,
   EmbeddingCacheStats,
   EpisodicStats,
@@ -101,6 +103,12 @@ export interface Fact {
   /** Last time this fact's injection was graded (used or not) — see usageRate. */
   lastGradedAt: number | null;
   selectionReason?: FactSelectionReason;
+  /**
+   * Set only on the representative of an OPEN conflict that getInjectableFacts
+   * lets through: the fact is status='conflicted' but injected anyway, flagged
+   * so the model treats it as uncertain.
+   */
+  disputed?: boolean;
 }
 
 
@@ -114,6 +122,33 @@ export interface FactWriteOptions {
   validFrom?: number | null;
   validUntil?: number | null;
   evidence?: Omit<FactEvidence, 'id'>[];
+}
+
+
+/** An open conflict hydrated for the background adjudicator. */
+export interface ConflictForAdjudication {
+  id: number;
+  reason: string;
+  attempts: number;
+  factA: FactDetails;
+  factB: FactDetails;
+}
+
+/** What the adjudicator decided for one conflict (see applyAdjudication). */
+export type AdjudicationDecision =
+  | { kind: 'winner'; winnerId: number }
+  | { kind: 'both' }
+  | { kind: 'rewrite'; texts: string[] };
+
+
+/**
+ * Newest evidence timestamp of a fact, or null when it has none. Evidence rows
+ * are sorted ts ASC. Preferred over updated_at for truth-recency comparisons:
+ * consolidation and re-upserts bump updated_at without any new evidence.
+ */
+export function newestEvidenceTs(details: Pick<FactDetails, 'evidence'>): number | null {
+  const ev = details.evidence;
+  return ev.length > 0 ? ev[ev.length - 1].timestamp : null;
 }
 
 
@@ -623,13 +658,16 @@ export class RecallStore {
         fact_a      INTEGER NOT NULL,
         fact_b      INTEGER NOT NULL,
         reason      TEXT NOT NULL,
-        status      TEXT NOT NULL DEFAULT 'this.open',
+        status      TEXT NOT NULL DEFAULT 'open',
         created_at  INTEGER NOT NULL,
         resolved_at INTEGER,
-        resolution  TEXT
+        resolution  TEXT,
+        -- LLM adjudication tries so far; capped so a permanently-failing conflict
+        -- can't burn a model call on every background cycle.
+        adjudicate_attempts INTEGER NOT NULL DEFAULT 0
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_conflict_pair
-        ON fact_conflicts(MIN(fact_a, fact_b), MAX(fact_a, fact_b)) WHERE status = 'this.open';
+        ON fact_conflicts(MIN(fact_a, fact_b), MAX(fact_a, fact_b)) WHERE status = 'open';
 
       CREATE TABLE IF NOT EXISTS message_chunks (
         message_id  INTEGER NOT NULL,
@@ -801,6 +839,34 @@ export class RecallStore {
       handle.prepare(`UPDATE facts SET source = 'legacy' WHERE source IS NULL OR source = 'distilled'`).run();
     }
     handle.prepare(`UPDATE facts SET created_at = updated_at WHERE created_at = 0`).run();
+    // Repair a class-refactor find/replace that turned the conflict-status literal
+    // 'open' into 'this.open' in shipped builds (v0.1.0). Rows written by those
+    // builds carry the wrong status, and DBs they created hold the pair-dedup
+    // partial index keyed on it. Normalize the index first, then the rows;
+    // duplicate pairs that slipped in while dedup was dead collapse to their
+    // oldest row before the UPDATE so it can't trip the unique index.
+    const conflictIdx = handle.prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_fact_conflict_pair'`
+    ).get() as { sql: string | null } | undefined;
+    if (conflictIdx?.sql?.includes('this.open')) handle.exec(`DROP INDEX idx_fact_conflict_pair`);
+    handle.exec(`
+      DELETE FROM fact_conflicts WHERE status IN ('open', 'this.open') AND id NOT IN (
+        SELECT MIN(id) FROM fact_conflicts WHERE status IN ('open', 'this.open')
+        GROUP BY MIN(fact_a, fact_b), MAX(fact_a, fact_b)
+      );
+      UPDATE fact_conflicts SET status = 'open' WHERE status = 'this.open';
+    `);
+    handle.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_conflict_pair
+        ON fact_conflicts(MIN(fact_a, fact_b), MAX(fact_a, fact_b)) WHERE status = 'open';
+    `);
+    // Adjudication bookkeeping, added after fact_conflicts shipped.
+    const conflictColumns = new Set(
+      (handle.prepare(`PRAGMA table_info(fact_conflicts)`).all() as Array<{ name: string }>).map((r) => r.name)
+    );
+    if (!conflictColumns.has('adjudicate_attempts')) {
+      handle.exec(`ALTER TABLE fact_conflicts ADD COLUMN adjudicate_attempts INTEGER NOT NULL DEFAULT 0`);
+    }
     handle.prepare(
       `INSERT INTO meta(key, value) VALUES('recall_schema_version', '3')
        ON CONFLICT(key) DO UPDATE SET value = '3'`
@@ -1431,7 +1497,45 @@ export class RecallStore {
          ORDER BY id ASC`
       )
       .all(this.nowSeconds()) as Array<Record<string, unknown>>;
-    return rows.map(this.mapFact);
+    const base = rows.map(this.mapFact);
+    const disputed = this.getDisputedRepresentatives();
+    return disputed.length === 0 ? base : [...base, ...disputed].sort((a, b) => a.id - b.id);
+  };
+
+
+  /**
+   * One injectable representative per OPEN conflict, flagged `disputed`, so a
+   * disagreement degrades to "mostly right" instead of amnesia about both sides.
+   * An explicit side wins the pick (the user's word holds while disputed);
+   * otherwise the side with the newest evidence (updated_at is unreliable for
+   * truth-recency — consolidation bumps it without new evidence). The pick must
+   * clear the same gates as an active fact; the pinned lane can't apply because
+   * createFactConflict unpins, so a doc-vs-doc pair (both 0.55) yields none.
+   */
+  private getDisputedRepresentatives = (): Fact[] => {
+    const pairs = this.open().prepare(
+      `SELECT fact_a AS factA, fact_b AS factB FROM fact_conflicts WHERE status = 'open'`
+    ).all() as Array<{ factA: number; factB: number }>;
+    if (pairs.length === 0) return [];
+    const now = this.nowSeconds();
+    const picked = new Map<number, Fact>();
+    for (const pair of pairs) {
+      const sides = [this.getFactDetails(pair.factA), this.getFactDetails(pair.factB)]
+        .filter((f): f is FactDetails => f?.status === 'conflicted');
+      if (sides.length === 0) continue;
+      const rep = sides.find((f) => f.source === 'explicit')
+        ?? sides.reduce((best, f) => {
+          const bestTs = newestEvidenceTs(best) ?? best.updatedAt;
+          const ts = newestEvidenceTs(f) ?? f.updatedAt;
+          return ts > bestTs || (ts === bestTs && f.id > best.id) ? f : best;
+        });
+      if (rep.validUntil != null && rep.validUntil < now) continue;
+      if (!(rep.confidence >= 0.7 || rep.source === 'explicit' || rep.source === 'legacy')) continue;
+      if (!picked.has(rep.id)) {
+        picked.set(rep.id, (({ evidence: _evidence, ...fact }: FactDetails): Fact => ({ ...fact, disputed: true }))(rep));
+      }
+    }
+    return [...picked.values()];
   };
 
 
@@ -1587,7 +1691,7 @@ export class RecallStore {
     if (changed) {
       handle.prepare(
         `UPDATE fact_conflicts SET status = 'resolved', resolved_at = ?, resolution = 'superseded'
-         WHERE status = 'this.open' AND (fact_a = ? OR fact_b = ?)`
+         WHERE status = 'open' AND (fact_a = ? OR fact_b = ?)`
       ).run(this.nowSeconds(), id, id);
     }
     return changed;
@@ -1617,7 +1721,7 @@ export class RecallStore {
     handle.prepare(`UPDATE facts SET status = 'conflicted', pinned = 0 WHERE id IN (?, ?)`).run(factA, factB);
     const row = handle.prepare(
       `INSERT OR IGNORE INTO fact_conflicts(fact_a, fact_b, reason, status, created_at)
-       VALUES (?, ?, ?, 'this.open', ?) RETURNING id`
+       VALUES (?, ?, ?, 'open', ?) RETURNING id`
     ).get(factA, factB, reason.slice(0, 500), this.nowSeconds()) as { id: number } | undefined;
     return row?.id ?? null;
   };
@@ -1626,7 +1730,7 @@ export class RecallStore {
   getMemoryConflicts = (): MemoryConflict[] => {
     const rows = this.open().prepare(
       `SELECT id, fact_a AS factA, fact_b AS factB, reason, created_at AS createdAt
-       FROM fact_conflicts WHERE status = 'this.open' ORDER BY created_at DESC`
+       FROM fact_conflicts WHERE status = 'open' ORDER BY created_at DESC`
     ).all() as Array<{ id: number; factA: number; factB: number; reason: string; createdAt: number }>;
     return rows.flatMap((r) => {
       const factA = this.getFactDetails(r.factA);
@@ -1639,7 +1743,7 @@ export class RecallStore {
   resolveMemoryConflict = (id: number, resolution: ConflictResolution): boolean => {
     const handle = this.open();
     const row = handle.prepare(
-      `SELECT fact_a AS factA, fact_b AS factB FROM fact_conflicts WHERE id = ? AND status = 'this.open'`
+      `SELECT fact_a AS factA, fact_b AS factB FROM fact_conflicts WHERE id = ? AND status = 'open'`
     ).get(id) as { factA: number; factB: number } | undefined;
     if (!row) return false;
     const a = this.getFactDetails(row.factA);
@@ -1658,14 +1762,153 @@ export class RecallStore {
       `UPDATE fact_conflicts SET status = 'resolved', resolved_at = ?, resolution = ? WHERE id = ?`
     ).run(this.nowSeconds(), resolution, id);
     for (const factId of [a.id, b.id]) {
-      if (factId === loserId) continue;
-      const stillConflicted = (handle.prepare(
-        `SELECT EXISTS(SELECT 1 FROM fact_conflicts WHERE status = 'this.open' AND (fact_a = ? OR fact_b = ?)) AS n`
-      ).get(factId, factId) as { n: number }).n === 1;
-      handle.prepare(`UPDATE facts SET status = ? WHERE id = ? AND status <> 'superseded'`)
-        .run(stillConflicted ? 'conflicted' : 'active', factId);
+      if (factId !== loserId) this.settleConflictSide(factId);
     }
     return true;
+  };
+
+
+  /** Reactivate a conflict side unless it's still in another open conflict (or superseded). */
+  private settleConflictSide = (factId: number): void => {
+    const handle = this.open();
+    const stillConflicted = (handle.prepare(
+      `SELECT EXISTS(SELECT 1 FROM fact_conflicts WHERE status = 'open' AND (fact_a = ? OR fact_b = ?)) AS n`
+    ).get(factId, factId) as { n: number }).n === 1;
+    handle.prepare(`UPDATE facts SET status = ? WHERE id = ? AND status <> 'superseded'`)
+      .run(stillConflicted ? 'conflicted' : 'active', factId);
+  };
+
+
+  /**
+   * Open conflicts eligible for autonomous adjudication: attempts under the cap,
+   * neither side explicit (the user's word is only ever adjudicated by the user),
+   * both facts still present. Oldest first.
+   */
+  getConflictsForAdjudication = (limit: number, maxAttempts: number): ConflictForAdjudication[] => {
+    const rows = this.open().prepare(
+      `SELECT id, fact_a AS factA, fact_b AS factB, reason, adjudicate_attempts AS attempts
+       FROM fact_conflicts WHERE status = 'open' AND adjudicate_attempts < ?
+       ORDER BY created_at ASC, id ASC LIMIT ?`
+    ).all(maxAttempts, limit) as Array<{ id: number; factA: number; factB: number; reason: string; attempts: number }>;
+    return rows.flatMap((r) => {
+      const factA = this.getFactDetails(r.factA);
+      const factB = this.getFactDetails(r.factB);
+      if (!factA || !factB) return [];
+      if (factA.source === 'explicit' || factB.source === 'explicit') return [];
+      return [{ id: r.id, reason: r.reason, attempts: r.attempts, factA, factB }];
+    });
+  };
+
+
+  bumpAdjudicationAttempts = (conflictId: number): void => {
+    this.open().prepare(
+      `UPDATE fact_conflicts SET adjudicate_attempts = adjudicate_attempts + 1 WHERE id = ?`
+    ).run(conflictId);
+  };
+
+
+  /**
+   * Apply one adjudicator decision transactionally. `expected` pins the exact pair
+   * the model judged — the conflict must still be open on those ids with those
+   * texts, or nothing is applied (facts can be superseded, rewritten, or reset
+   * while the model call was in flight).
+   */
+  applyAdjudication = (
+    conflictId: number,
+    decision: AdjudicationDecision,
+    expected: { aId: number; aText: string; bId: number; bText: string }
+  ): boolean => {
+    const handle = this.open();
+    handle.exec('BEGIN');
+    try {
+      const row = handle.prepare(
+        `SELECT fact_a AS factA, fact_b AS factB FROM fact_conflicts WHERE id = ? AND status = 'open'`
+      ).get(conflictId) as { factA: number; factB: number } | undefined;
+      const a = this.getFactDetails(expected.aId);
+      const b = this.getFactDetails(expected.bId);
+      const intact = row && row.factA === expected.aId && row.factB === expected.bId
+        && a && a.text === expected.aText && a.status !== 'superseded'
+        && b && b.text === expected.bText && b.status !== 'superseded';
+      if (!intact) {
+        handle.exec('ROLLBACK');
+        return false;
+      }
+      let resolution: AutoConflictResolution;
+      const settleIds: number[] = [];
+      if (decision.kind === 'winner') {
+        if (decision.winnerId !== expected.aId && decision.winnerId !== expected.bId) {
+          handle.exec('ROLLBACK');
+          return false;
+        }
+        const loserId = decision.winnerId === expected.aId ? expected.bId : expected.aId;
+        // supersedeFact resolves every open conflict on the loser (this one
+        // included, as 'superseded'); the resolution UPDATE below re-stamps it.
+        this.supersedeFact(loserId, decision.winnerId);
+        settleIds.push(decision.winnerId);
+        resolution = 'auto_supersede';
+      } else if (decision.kind === 'both') {
+        settleIds.push(expected.aId, expected.bId);
+        resolution = 'auto_keep_both';
+      } else {
+        // Rewrite: replace the pair with 1..N atomic facts carrying the union of
+        // both sides' provenance. Source/confidence/sensitivity inherit from the
+        // sides so the replacements pass the same injection gates the originals
+        // would have.
+        const donor = (newestEvidenceTs(b) ?? b.updatedAt) >= (newestEvidenceTs(a) ?? a.updatedAt) ? b : a;
+        const evidence = [...a.evidence, ...b.evidence].map(({ id: _id, ...rest }) => rest);
+        const newIds: number[] = [];
+        for (const text of decision.texts) {
+          const nid = this.upsertFact(text, {
+            source: donor.source,
+            category: donor.category,
+            sensitivity: a.sensitivity === 'sensitive' || b.sensitivity === 'sensitive' ? 'sensitive' : 'standard',
+            confidence: Math.max(a.confidence, b.confidence),
+            evidence
+          });
+          if (nid != null && !newIds.includes(nid)) newIds.push(nid);
+        }
+        // A rewrite text can normalize onto one of the originals ("keep this half
+        // verbatim") — that side survives as its own replacement, so only the
+        // originals that did NOT come back are superseded.
+        const survivors = newIds.filter((nid) => nid !== expected.aId && nid !== expected.bId);
+        if (newIds.length === 0) {
+          handle.exec('ROLLBACK');
+          return false;
+        }
+        const successor = survivors[0] ?? newIds[0];
+        for (const originalId of [expected.aId, expected.bId]) {
+          if (newIds.includes(originalId)) settleIds.push(originalId);
+          else this.supersedeFact(originalId, successor);
+        }
+        settleIds.push(...survivors);
+        resolution = 'auto_rewrite';
+      }
+      handle.prepare(
+        `UPDATE fact_conflicts SET status = 'resolved', resolved_at = ?, resolution = ? WHERE id = ?`
+      ).run(this.nowSeconds(), resolution, conflictId);
+      for (const factId of new Set(settleIds)) this.settleConflictSide(factId);
+      handle.exec('COMMIT');
+      return true;
+    } catch (err) {
+      handle.exec('ROLLBACK');
+      throw err;
+    }
+  };
+
+
+  /** Conflicts the background adjudicator resolved, newest first, for the audit list. */
+  getAutoResolvedConflicts = (limit = 20): AutoResolvedConflict[] => {
+    const rows = this.open().prepare(
+      `SELECT id, fact_a AS factA, fact_b AS factB, reason, resolution, resolved_at AS resolvedAt
+       FROM fact_conflicts
+       WHERE status = 'resolved' AND resolution IN ('auto_supersede', 'auto_keep_both', 'auto_rewrite')
+       ORDER BY resolved_at DESC, id DESC LIMIT ?`
+    ).all(limit) as Array<{ id: number; factA: number; factB: number; reason: string; resolution: AutoConflictResolution; resolvedAt: number }>;
+    return rows.flatMap((r) => {
+      const factA = this.getFactDetails(r.factA);
+      const factB = this.getFactDetails(r.factB);
+      return factA && factB ? [{ id: r.id, factA, factB, reason: r.reason, resolution: r.resolution, resolvedAt: r.resolvedAt }] : [];
+    });
   };
 
 
@@ -1696,6 +1939,8 @@ export class RecallStore {
    * BM25 term ranking of facts for a prebuilt FTS5 MATCH expression. Returns up to
    * `limit`, best (most-negative bm25) first, with the raw score so callers can blend
    * in recency. Empty on no match or malformed query — search.ts builds the MATCH.
+   * Conflicted rows are included so a disputed representative stays rankable; the
+   * injection path intersects with getInjectableFacts, which admits only those.
    */
   factTermSearch = (match: string, limit: number): ScoredFact[] => {
     if (!match.trim() || limit <= 0) return [];
@@ -1706,7 +1951,7 @@ export class RecallStore {
           `SELECT ${FACT_SELECT_F},
                   bm25(facts_fts) AS score
            FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
-           WHERE facts_fts MATCH ? AND f.status = 'active'
+           WHERE facts_fts MATCH ? AND f.status IN ('active', 'conflicted')
            ORDER BY score
            LIMIT ?`
         )
@@ -1732,7 +1977,7 @@ export class RecallStore {
           `SELECT ${FACT_SELECT_F},
                   0 AS score
            FROM facts_trigram JOIN facts f ON f.id = facts_trigram.rowid
-           WHERE facts_trigram MATCH ? AND f.status = 'active'
+           WHERE facts_trigram MATCH ? AND f.status IN ('active', 'conflicted')
            ORDER BY f.updated_at DESC
            LIMIT ?`
         )
@@ -1762,7 +2007,7 @@ export class RecallStore {
         `SELECT ${FACT_SELECT_F}
            FROM facts f
            LEFT JOIN fact_vectors v ON v.fact_id = f.id AND v.model = ?
-          WHERE v.fact_id IS NULL AND f.status = 'active'
+          WHERE v.fact_id IS NULL AND f.status IN ('active', 'conflicted')
           ORDER BY f.id ASC`
       )
       .all(model) as Array<Record<string, unknown>>;

@@ -5,11 +5,13 @@ import { afterAll, describe, expect, it } from 'vitest';
 import type { ConnectedFolder } from '../../src/shared/types';
 import { FolderIndexStore } from '../../src/main/folder-index/store';
 import {
+  DOC_DISTILL_INSTRUCTIONS,
   DOC_FACT_CONFIDENCE,
   PER_DOC_CHAR_CAP,
   buildLearnBatch,
   learnFolderBatch
 } from '../../src/main/folder-index/learn';
+import { RELATION_PROMPT_HEADER } from '../../src/main/recall/reconcile';
 import type { LlmClient } from '../../src/main/recall/llm';
 import { recallStore } from '../../src/main/recall/store';
 import {
@@ -212,6 +214,108 @@ describe('learnFolderBatch', () => {
       // Third strike: stamped-and-skipped, learning moves on.
       expect(await learnFolderBatch(store, folder, garbage)).toEqual({ processed: 1, written: 0 });
       expect(store.pendingLearnCount()).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe('temporal succession (doc-over-doc authority)', () => {
+  const relationLlm = (claims: unknown[], verdict: string): LlmClient => ({
+    complete: async (prompt) =>
+      prompt.includes(RELATION_PROMPT_HEADER) ? JSON.stringify({ verdict }) : claimsReply(claims)
+  });
+  const docEvidence = (folderId: string, ts: number) => [
+    { messageId: null, threadId: null, role: null, timestamp: ts, excerpt: 'seed', origin: 'folder_doc' as const, folderId, relPath: 'seed.pdf' }
+  ];
+  const claimFor = (text: string, over: Record<string, unknown> = {}): unknown => ({
+    text, category: 'finance', sensitivity: 'standard', validUntil: null,
+    evidenceDocIds: [1], supersedesFactIds: [], conflictsWithFactIds: [], ...over
+  });
+
+  it('anchors extraction to natural identifiers (gap 3 prompt regression)', () => {
+    expect(DOC_DISTILL_INSTRUCTIONS).toMatch(/invoice number/i);
+    expect(DOC_DISTILL_INSTRUCTIONS).toMatch(/DIFFERENT identifiers/);
+  });
+
+  it('a newer doc fact silently supersedes an older doc fact on a supersede verdict', async () => {
+    const conflictsBefore = recallStore.getMemoryConflicts().length;
+    const old = recallStore.upsertFact('The ts1 domain is registered through 2026.', {
+      source: 'folder:ts-1', evidence: docEvidence('ts-1', 1_700_000_000)
+    })!;
+    const store = freshStore();
+    try {
+      store.upsertDoc({ relPath: 'renewal.pdf', title: 'R', text: 'ts1 domain renewed through 2027.', mtime: 1_800_000_000_000, size: 10, hash: 'h1' }, 1);
+      await learnFolderBatch(store, fakeFolder('ts-1'), relationLlm(
+        [claimFor('The ts1 domain is registered through 2027.', { supersedesFactIds: [old] })],
+        'b_supersedes_a'
+      ));
+      const renewed = recallStore.getAllFacts().find((f) => /ts1 domain is registered through 2027/.test(f.text))!;
+      expect(recallStore.getFactDetails(old)?.status).toBe('superseded');
+      expect(recallStore.getFactDetails(old)?.supersededBy).toBe(renewed.id);
+      expect(recallStore.getFactDetails(renewed.id)?.status).toBe('active');
+      expect(recallStore.getMemoryConflicts()).toHaveLength(conflictsBefore);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('a stale doc processed late loses to the newer existing fact instead of clobbering it', async () => {
+    const conflictsBefore = recallStore.getMemoryConflicts().length;
+    const current = recallStore.upsertFact('The ts2 fee is €134.07 per month.', {
+      source: 'folder:ts-2', evidence: docEvidence('ts-2', 1_800_000_000)
+    })!;
+    const store = freshStore();
+    try {
+      store.upsertDoc({ relPath: 'old-fee.pdf', title: 'O', text: 'ts2 fee was €129.15.', mtime: 1_700_000_000_000, size: 10, hash: 'h1' }, 1);
+      await learnFolderBatch(store, fakeFolder('ts-2'), relationLlm(
+        [claimFor('The ts2 fee is €129.15 per month.', { supersedesFactIds: [current] })],
+        'a_supersedes_b'
+      ));
+      const stale = recallStore.getAllFacts().find((f) => /ts2 fee is €129.15/.test(f.text))!;
+      expect(recallStore.getFactDetails(stale.id)?.status).toBe('superseded');
+      expect(recallStore.getFactDetails(stale.id)?.supersededBy).toBe(current);
+      expect(recallStore.getFactDetails(current)?.status).toBe('active');
+      expect(recallStore.getMemoryConflicts()).toHaveLength(conflictsBefore);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('a doc fact never silently supersedes a conversation-derived fact — conflict instead', async () => {
+    const conflictsBefore = recallStore.getMemoryConflicts().length;
+    const distilled = recallStore.upsertFact('The user pays €129.15 for the ts3 service.', 'distilled')!;
+    const store = freshStore();
+    try {
+      store.upsertDoc({ relPath: 'invoice.pdf', title: 'I', text: 'ts3 service now €134.07.', mtime: 1_800_000_000_000, size: 10, hash: 'h1' }, 1);
+      await learnFolderBatch(store, fakeFolder('ts-3'), relationLlm(
+        [claimFor('The user pays €134.07 for the ts3 service.', { supersedesFactIds: [distilled] })],
+        'b_supersedes_a'
+      ));
+      expect(recallStore.getFactDetails(distilled)?.status).toBe('conflicted');
+      expect(recallStore.getFactDetails(distilled)?.supersededBy).toBeNull();
+      const conflicts = recallStore.getMemoryConflicts();
+      expect(conflicts).toHaveLength(conflictsBefore + 1);
+      expect(conflicts[0].reason).toMatch(/appears to update/);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('gates the ambiguous "conflictsWith" path on the verdict (regression: was unconditional)', async () => {
+    const conflictsBefore = recallStore.getMemoryConflicts().length;
+    const target = recallStore.upsertFact('The user has a ts4 appointment with a deposit due.', {
+      source: 'folder:ts-4', evidence: docEvidence('ts-4', 1_700_000_000)
+    })!;
+    const store = freshStore();
+    try {
+      store.upsertDoc({ relPath: 'note.md', title: 'N', text: 'Interpreter secured for ts4 appointment.', mtime: 1_800_000_000_000, size: 10, hash: 'h1' }, 1);
+      await learnFolderBatch(store, fakeFolder('ts-4'), relationLlm(
+        [claimFor('An interpreter was secured for the user\'s ts4 appointment.', { conflictsWithFactIds: [target] })],
+        'compatible'
+      ));
+      expect(recallStore.getMemoryConflicts()).toHaveLength(conflictsBefore);
+      expect(recallStore.getFactDetails(target)?.status).toBe('active');
     } finally {
       store.close();
     }

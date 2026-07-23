@@ -19,6 +19,7 @@ import type {
   FactTier,
   FactDetails,
   MemoryConflict,
+  AutoResolvedConflict,
   MemoryRebuildStatus
 } from '../../../shared/types';
 import { MdxView } from '../../chat/MdxView';
@@ -387,6 +388,12 @@ function tierLabel(t: FactTier): string {
  * [newer, older] — the same ordering `resolveMemoryConflict` applies in the store,
  * id as the tiebreak. "Keep newer" is unusable unless the card shows which is which.
  */
+const AUTO_RESOLUTION_LABEL: Record<AutoResolvedConflict['resolution'], string> = {
+  auto_supersede: 'One side superseded automatically',
+  auto_keep_both: 'Both kept automatically',
+  auto_rewrite: 'Rewritten into clearer facts automatically'
+};
+
 function orderedConflictFacts(c: MemoryConflict): [FactDetails, FactDetails] {
   const aIsNewer =
     c.factA.updatedAt > c.factB.updatedAt ||
@@ -447,6 +454,8 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
   const [embStats, setEmbStats] = useState<EmbeddingCacheStats | null>(null);
   const [rebuild, setRebuild] = useState<MemoryRebuildStatus | null>(null);
   const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
+  const [autoResolved, setAutoResolved] = useState<AutoResolvedConflict[]>([]);
+  const [showAutoResolved, setShowAutoResolved] = useState(false);
   const [details, setDetails] = useState<Record<number, FactDetails | null>>({});
   const sensitivePinAcknowledged = useRef(false);
 
@@ -470,6 +479,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
   function loadTrustState() {
     window.stem.getMemoryRebuildStatus().then(setRebuild);
     window.stem.getMemoryConflicts().then(setConflicts);
+    window.stem.getAutoResolvedConflicts().then(setAutoResolved);
   }
 
   useEffect(() => {
@@ -830,6 +840,44 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
               </div>
             ))}
           </div>
+        </>
+      )}
+
+      {autoResolved.length > 0 && (
+        <>
+          <div className="grp-head grp-head-row">
+            <button
+              className="memory-view-toggle"
+              aria-expanded={showAutoResolved}
+              onClick={() => setShowAutoResolved((v) => !v)}
+            >
+              <ChevronRight size={14} className={showAutoResolved ? 'open' : ''} />
+              <strong>Recently auto-resolved ({autoResolved.length})</strong>
+            </button>
+            <InfoTip label="About auto-resolved conflicts">
+              Conflicts between non-protected memories are adjudicated in the background:
+              one side superseded, both kept, or both rewritten into clearer facts.
+              Anything superseded here is recoverable from the superseded list below.
+            </InfoTip>
+          </div>
+          {showAutoResolved && (
+            <div className="formgroup memory-conflicts">
+              {autoResolved.map((c) => (
+                <div key={c.id} className="memory-conflict">
+                  {[c.factA, c.factB].map((f) => (
+                    <div key={f.id} className="memory-conflict-side">
+                      <span className="chip">{f.status === 'superseded' ? 'Superseded' : 'Kept'}</span>
+                      <p className={f.status === 'superseded' ? 'muted' : undefined}>{f.text}</p>
+                    </div>
+                  ))}
+                  <em>
+                    {AUTO_RESOLUTION_LABEL[c.resolution]} ·{' '}
+                    {new Date(c.resolvedAt * 1000).toLocaleDateString()}
+                  </em>
+                </div>
+              ))}
+            </div>
+          )}
         </>
       )}
 

@@ -35,7 +35,7 @@ import type {
   LocalRerankStatus
 } from '../../shared/types';
 import { recallStore } from '../recall/store';
-const { getEmbeddingCacheStats, getEpisodicStats, getActiveFactIds, getFactsByIds, getFactDetails, getMemoryConflicts, setFactPinned: storeSetFactPinned, confirmFact: storeConfirmFact, resolveMemoryConflict: storeResolveMemoryConflict, restoreSupersededFact: storeRestoreSupersededFact } = recallStore;
+const { getAutoResolvedConflicts, getEmbeddingCacheStats, getEpisodicStats, getActiveFactIds, getFactsByIds, getFactDetails, getMemoryConflicts, setFactPinned: storeSetFactPinned, confirmFact: storeConfirmFact, resolveMemoryConflict: storeResolveMemoryConflict, restoreSupersededFact: storeRestoreSupersededFact } = recallStore;
 
 /** The Memory tab's surface: facts, episodic store, rebuild, and retrieval status. */
 export function registerMemoryIpc(deps: IpcDeps): void {
@@ -74,6 +74,7 @@ export function registerMemoryIpc(deps: IpcDeps): void {
   });
   handleIpc('memory:factDetails', (_e, id: number) => getFactDetails(id));
   handleIpc('memory:conflicts', () => getMemoryConflicts());
+  handleIpc('memory:autoResolvedConflicts', () => getAutoResolvedConflicts());
   handleIpc('memory:resolveConflict', async (_e, id: number, resolution: ConflictResolution) => {
     storeResolveMemoryConflict(id, resolution);
     return readMemoryFiles();
@@ -125,7 +126,9 @@ export function registerMemoryIpc(deps: IpcDeps): void {
       text: f.text,
       source: f.source,
       sensitivity: f.sensitivity,
-      reason: rec.reasons[f.id] ?? f.selectionReason
+      reason: rec.reasons[f.id] ?? f.selectionReason,
+      // An injected fact that is (still) conflicted was a disputed representative.
+      ...(f.status === 'conflicted' ? { disputed: true } : {})
     }));
     return { facts, tier: rec.tier };
   });
@@ -136,7 +139,8 @@ export function registerMemoryIpc(deps: IpcDeps): void {
       text: f.text,
       source: f.source,
       sensitivity: f.sensitivity,
-      reason: f.selectionReason
+      reason: f.selectionReason,
+      ...(f.disputed ? { disputed: true } : {})
     })), tier };
   });
   handleIpc('memory:setEpisodicLimit', (_e, bytes: number) => setEpisodicLimit(bytes));

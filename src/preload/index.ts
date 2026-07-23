@@ -192,6 +192,7 @@ const api: StemApi = {
   confirmFact: (id: number) => ipcRenderer.invoke('memory:confirmFact', id),
   getFactDetails: (id: number) => ipcRenderer.invoke('memory:factDetails', id),
   getMemoryConflicts: () => ipcRenderer.invoke('memory:conflicts'),
+  getAutoResolvedConflicts: () => ipcRenderer.invoke('memory:autoResolvedConflicts'),
   resolveMemoryConflict: (id: number, resolution) => ipcRenderer.invoke('memory:resolveConflict', id, resolution),
   restoreSupersededFact: (id: number) => ipcRenderer.invoke('memory:restoreFact', id),
   getMemoryRebuildStatus: () => ipcRenderer.invoke('memory:rebuildStatus'),
