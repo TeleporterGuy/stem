@@ -63,6 +63,27 @@ export function CodeBlock({ lang, value }: { lang?: string; value: string }) {
   );
 }
 
+// ---- Task list item (GFM `- [ ]` / `- [x]`) -------------------------------
+
+// Interactive checklist item rendered for GFM task-list markdown. The marker in
+// the text sets the initial state; ticking is local UI state so the user can
+// track progress while reading — nothing is sent back to the assistant.
+export function TaskItem({ checked, children }: { checked?: boolean; children?: ReactNode }) {
+  const [done, setDone] = useState(checked ?? false);
+  return (
+    <li className={`task-item${done ? ' done' : ''}`}>
+      <input
+        type="checkbox"
+        className="task-check"
+        checked={done}
+        aria-label={done ? 'Mark as not done' : 'Mark as done'}
+        onChange={(e) => setDone(e.target.checked)}
+      />
+      <div className="task-item-body">{children}</div>
+    </li>
+  );
+}
+
 // ---- Tabs -----------------------------------------------------------------
 
 // <Tab> renders this marker so <Tabs> can introspect label + content via
@@ -594,5 +615,5 @@ export const componentMap: Record<string, ComponentEntry> = {
 /** User-facing names of the top-level MDX features, in display order.
  * Keep in sync with componentMap when adding/removing a top-level component. */
 export const mdxFeatureLabels = [
-  'callouts', 'steps', 'collapsibles', 'tabs', 'tables', 'charts', 'quizzes', 'forms',
+  'callouts', 'steps', 'checklists', 'collapsibles', 'tabs', 'tables', 'charts', 'quizzes', 'forms',
 ];

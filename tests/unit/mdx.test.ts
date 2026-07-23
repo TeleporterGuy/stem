@@ -92,6 +92,29 @@ describe('MDX interactive components', () => {
   });
 });
 
+// GFM task lists feed the interactive checklist rendering: remark-gfm strips
+// the `[ ]`/`[x]` marker into listItem.checked, which render.tsx maps to
+// <TaskItem> (checkbox) vs a plain <li>.
+describe('GFM task lists', () => {
+  it('parses [ ] / [x] markers into listItem.checked', () => {
+    const tree = proc.parse('- [ ] open\n- [x] done\n- plain');
+    const items = findAll(tree, 'listItem');
+    expect(items.map((i) => i.checked)).toEqual([false, true, null]);
+  });
+
+  it('keeps the marker out of the item text', () => {
+    const tree = proc.parse('- [x] buy milk');
+    const texts = findAll(tree, 'text');
+    expect(texts.map((t) => t.value).join('')).toBe('buy milk');
+  });
+
+  it('supports ordered task lists', () => {
+    const tree = proc.parse('1. [ ] first\n2. [x] second');
+    const items = findAll(tree, 'listItem');
+    expect(items.map((i) => i.checked)).toEqual([false, true]);
+  });
+});
+
 // splitMdBlocks backs StreamingMdxView's incremental streaming parse: blocks
 // split on blank lines OUTSIDE fenced code, so stable (already-complete) blocks
 // are parsed exactly once while only the trailing block re-parses per delta.

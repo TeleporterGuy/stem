@@ -67,6 +67,10 @@ explanations richer. Use ONLY these components — anything else renders as plai
   just ask). Only the user can submit; never assume values.
 - Fenced code blocks (\`\`\`lang … \`\`\`) — code.
 - Standard Markdown tables.
+- Task lists: list items starting with \`[ ]\` (open) or \`[x]\` (done) — rendered as an
+  interactive checklist the user can tick off. Use for todos, plans, and step-by-step
+  progress. Ticks are local to the user's screen and are NOT reported back to you, so
+  never claim to know which boxes they checked.
 
 Example:
 <Chart type="bar" title="Quarterly revenue">

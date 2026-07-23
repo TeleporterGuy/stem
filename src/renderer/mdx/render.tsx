@@ -5,7 +5,7 @@ import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkMdx from 'remark-mdx';
 import { stripCiteMarkers } from '../../shared/citations';
-import { CodeBlock, componentMap } from './components';
+import { CodeBlock, TaskItem, componentMap } from './components';
 
 // A minimal structural type for the mdast/mdx nodes we walk.
 interface MdNode {
@@ -13,6 +13,7 @@ interface MdNode {
   value?: string;
   depth?: number;
   ordered?: boolean;
+  checked?: boolean | null;
   url?: string;
   alt?: string;
   lang?: string;
@@ -69,12 +70,19 @@ function renderNode(node: MdNode, key: string): ReactNode {
       return <code key={key} className="inline-code">{node.value}</code>;
     case 'code':
       return <CodeBlock key={key} lang={node.lang ?? undefined} value={node.value ?? ''} />;
-    case 'list':
+    case 'list': {
+      // GFM task lists mark items with `checked`; the list itself drops its
+      // bullets so the checkboxes become the markers.
+      const task = (node.children ?? []).some((c) => typeof c.checked === 'boolean');
+      const className = task ? 'task-list' : undefined;
       return node.ordered
-        ? <ol key={key}>{renderChildren(node, key)}</ol>
-        : <ul key={key}>{renderChildren(node, key)}</ul>;
+        ? <ol key={key} className={className}>{renderChildren(node, key)}</ol>
+        : <ul key={key} className={className}>{renderChildren(node, key)}</ul>;
+    }
     case 'listItem':
-      return <li key={key}>{renderChildren(node, key)}</li>;
+      return typeof node.checked === 'boolean'
+        ? <TaskItem key={key} checked={node.checked}>{renderChildren(node, key)}</TaskItem>
+        : <li key={key}>{renderChildren(node, key)}</li>;
     case 'link': {
       const href = safeUrl(node.url);
       return href

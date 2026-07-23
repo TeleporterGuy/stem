@@ -751,6 +751,32 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   font-weight: 600;
 }
 
+/* ---- Task lists (GFM `- [ ]` / `- [x]`) ---- */
+.task-list { list-style: none; padding-left: var(--sp-2); }
+.task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-4);
+  margin: 0.35em 0;
+}
+.task-check {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.task-check:focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: var(--radius-sm); }
+.task-item-body { min-width: 0; }
+.task-item-body > p { margin: 0; }
+.task-item.done > .task-item-body {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--muted) 55%, transparent);
+  transition: color var(--motion-fast) ease;
+}
+
 .collapsible { border: 0.5px solid var(--line); border-radius: var(--radius-md); margin: 0.8em 0; background: var(--surface); }
 .collapsible-header {
   width: 100%;
