@@ -608,7 +608,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                 <button
                   type="button"
                   className="message-action"
-                  aria-label="Copy message"
+                  aria-label={copiedId === m.id ? 'Copied' : 'Copy message'}
                   onClick={() => copyMessage(m)}
                 >
                   {copiedId === m.id ? <Check size={13} /> : <Copy size={13} />}
@@ -621,7 +621,9 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                   <button
                     type="button"
                     className="message-action"
-                    aria-label="Retry"
+                    aria-label={
+                      m.role === 'system' ? 'Retry — send the message again' : 'Retry — regenerate this reply'
+                    }
                     onClick={() => (m.turnId ? onRetry(m.turnId) : onRetryFailedSend(retryTarget!.id))}
                   >
                     <RotateCcw size={13} />
@@ -633,7 +635,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                   <button
                     type="button"
                     className="message-action"
-                    aria-label="Edit"
+                    aria-label={failedSend ? 'Edit & send again' : 'Edit & re-run'}
                     onClick={() => startEdit(m)}
                   >
                     <Pencil size={13} />
@@ -646,7 +648,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                     <button
                       type="button"
                       className="message-action"
-                      aria-label="Fork"
+                      aria-label="Fork into a new chat from here"
                       onClick={() => onFork(m.turnId!)}
                     >
                       <GitBranch size={13} />
@@ -662,7 +664,11 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                     <button
                       type="button"
                       className={`message-action${confirmDeleteId === m.id ? ' danger' : ''}`}
-                      aria-label="Delete from here"
+                      aria-label={
+                        confirmDeleteId === m.id
+                          ? 'Click again to delete this turn and everything after it'
+                          : 'Delete from here'
+                      }
                       onClick={() => {
                         if (confirmDeleteId === m.id) {
                           setConfirmDeleteId(null);
@@ -692,7 +698,9 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                   <button
                     type="button"
                     className={`message-action${confirmDeleteId === m.id ? ' danger' : ''}`}
-                    aria-label="Remove unsent message"
+                    aria-label={
+                      confirmDeleteId === m.id ? 'Click again to remove' : 'Remove — this message was never sent'
+                    }
                     onClick={() => {
                       if (confirmDeleteId === m.id) {
                         setConfirmDeleteId(null);

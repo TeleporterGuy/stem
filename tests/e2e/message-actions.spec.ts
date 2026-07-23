@@ -39,11 +39,11 @@ test.describe('message actions', () => {
     // The action buttons are opacity:0 until the message is hovered.
     const userMsg = mainWindow.locator('.message-user').last();
     await userMsg.hover();
-    await userMsg.getByTitle('Copy message').click();
+    await userMsg.getByLabel('Copy message').click();
 
     // The clipboard write is async; the observable signal is the icon/tooltip
     // flipping to "Copied" (the check icon) for ~1.5s.
-    await expect(userMsg.getByTitle('Copied')).toBeVisible();
+    await expect(userMsg.getByLabel('Copied')).toBeVisible();
   });
 
   test('edits a user message: cancel restores, save & run re-runs the turn', async ({ mainWindow }) => {
@@ -53,7 +53,7 @@ test.describe('message actions', () => {
 
     const userMsg = mainWindow.locator('.message-user').last();
     await userMsg.hover();
-    await userMsg.getByTitle('Edit & re-run').click();
+    await userMsg.getByLabel('Edit & re-run').click();
 
     // The inline editor opens seeded with the original text.
     const editor = mainWindow.locator('.message-edit textarea');
@@ -68,7 +68,7 @@ test.describe('message actions', () => {
     // Re-open, change the text, Save & run → the old turn is rolled back and a
     // fresh turn streams a new reply for the edited prompt.
     await userMsg.hover();
-    await userMsg.getByTitle('Edit & re-run').click();
+    await userMsg.getByLabel('Edit & re-run').click();
     await mainWindow
       .locator('.message-edit textarea')
       .fill('Reply with exactly the single word GREEN and nothing else.');
@@ -86,7 +86,7 @@ test.describe('message actions', () => {
 
     const assistant = mainWindow.locator('.message-assistant:not(.activity-row)').last();
     await assistant.hover();
-    await assistant.getByTitle('Retry — regenerate this reply').click();
+    await assistant.getByLabel('Retry — regenerate this reply').click();
 
     // Retry truncates the turn and re-sends the SAME prompt, so after it settles
     // there is still exactly one user bubble and one assistant reply (no dup).
@@ -105,7 +105,7 @@ test.describe('message actions', () => {
 
     const userMsg = mainWindow.locator('.message-user').last();
     await userMsg.hover();
-    await userMsg.getByTitle('Fork into a new chat from here').click();
+    await userMsg.getByLabel('Fork into a new chat from here').click();
 
     // Fork branches into a new chat that opens with the history up to this turn
     // replayed (the BLUE exchange). The new chat is written lazily — it only joins
@@ -125,18 +125,18 @@ test.describe('message actions', () => {
 
     const secondUser = mainWindow.locator('.message-user').last();
     await secondUser.hover();
-    await secondUser.getByTitle('Delete from here').click();
+    await secondUser.getByLabel('Delete from here').click();
 
     // First click only arms the delete (changed tooltip / red danger state) —
     // nothing is removed yet.
     await expect(
-      secondUser.getByTitle('Click again to delete this turn and everything after it')
+      secondUser.getByLabel('Click again to delete this turn and everything after it')
     ).toBeVisible();
     await expect(mainWindow.locator('.messages')).toContainText('BETA');
 
     // Second click truncates the second turn and everything after it; the first
     // turn survives.
-    await secondUser.getByTitle('Click again to delete this turn and everything after it').click();
+    await secondUser.getByLabel('Click again to delete this turn and everything after it').click();
     await expect(mainWindow.locator('.messages')).not.toContainText('BETA');
     await expect(mainWindow.locator('.messages')).toContainText('ALPHA');
     await expect(mainWindow.locator('.message-user')).toHaveCount(1);
