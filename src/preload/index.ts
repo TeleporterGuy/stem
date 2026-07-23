@@ -97,6 +97,8 @@ const api: StemApi = {
   updateConnectedFolder: (id: string, patch: ConnectedFolderPatch) =>
     ipcRenderer.invoke('cfolders:update', id, patch),
   removeConnectedFolder: (id: string) => ipcRenderer.invoke('cfolders:remove', id),
+  forgetConnectedFolderFacts: (id: string) => ipcRenderer.invoke('cfolders:forgetFacts', id),
+  folderIndexStatus: () => ipcRenderer.invoke('cfolders:indexStatus'),
   revealConnectedFolder: (id: string) => ipcRenderer.invoke('cfolders:reveal', id),
   openWorkspaceFolder: () => ipcRenderer.invoke('cfolders:revealWorkspace'),
   pickDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),

@@ -24,10 +24,14 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createInterface } from 'node:readline';
 import { connect } from 'node:net';
+import { readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import {
+  hybridSearchDocs,
   hybridSearchFacts,
   hybridSearchMessages,
   hybridSearchSummaries,
+  type CoreDocHit,
   type CoreFactHit,
   type CoreSearchHit,
   type CoreSummaryHit,
@@ -37,6 +41,7 @@ import {
 const DB_PATH = process.env.STEM_RECALL_DB;
 const EMBED_SOCK = process.env.STEM_EMBED_SOCK;
 const EMBED_TOKEN = process.env.STEM_EMBED_TOKEN;
+const FOLDER_INDEX_DIR = process.env.STEM_FOLDER_INDEX_DIR;
 
 let db: DatabaseSync | null = null;
 function open(): DatabaseSync {
@@ -46,6 +51,25 @@ function open(): DatabaseSync {
   // A scan-worker VACUUM briefly locks even readers out — wait, don't throw.
   db.exec('PRAGMA busy_timeout = 5000;');
   return db;
+}
+
+/**
+ * The Settings memory toggle, read from recall.sqlite meta on every call so a
+ * flip takes effect without a pi restart. It gates ALL tools here — "memory
+ * off" means Stem's memory surface is off, including explicit search over the
+ * (possibly stale) folder indexes, not just proactive injection. Unreadable
+ * meta (fresh DB, mid-migration) counts as enabled, matching isRecallEnabled's
+ * default in the main process.
+ */
+function isRecallEnabledFlag(): boolean {
+  try {
+    const row = open()
+      .prepare(`SELECT value FROM meta WHERE key = 'recall_enabled'`)
+      .get() as { value?: string } | undefined;
+    return row?.value !== 'false';
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -127,6 +151,93 @@ async function searchSummaries(query: string, limit: unknown): Promise<CoreSumma
   });
 }
 
+// ---- indexed connected folders ----
+//
+// Per-folder index DBs are discovered through manifest.json (written atomically
+// by main's folder-index module on every registry change), re-read on every
+// call — so a freshly indexed folder is searchable without a pi restart.
+
+interface FolderManifestEntry {
+  id: string;
+  label: string;
+  path: string;
+  memorize: boolean;
+  dbFile: string;
+}
+
+function readFolderManifest(): FolderManifestEntry[] {
+  if (!FOLDER_INDEX_DIR) return [];
+  try {
+    const raw = JSON.parse(readFileSync(join(FOLDER_INDEX_DIR, 'manifest.json'), 'utf8')) as {
+      folders?: FolderManifestEntry[];
+    };
+    return Array.isArray(raw.folders) ? raw.folders.filter((f) => f && typeof f.dbFile === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+type FolderDocHit = CoreDocHit & { folderLabel: string };
+
+/**
+ * True when the folder's directory currently exists. The manifest can outlive
+ * the directory (unmounted volume, deleted mirror) — the main process skips
+ * missing folders for injection, and this keeps the explicit tool consistent
+ * instead of serving hits from a frozen index of a vanished folder.
+ */
+function folderReachable(path: unknown): boolean {
+  if (typeof path !== 'string' || !path) return false;
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function searchFolderDocs(query: string, limit: unknown, folder: unknown): Promise<FolderDocHit[]> {
+  const max = clampLimit(limit, 8, 20);
+  const wanted = typeof folder === 'string' && folder.trim() ? folder.trim().toLowerCase() : null;
+  const entries = readFolderManifest().filter(
+    (f) => (!wanted || f.label.toLowerCase().includes(wanted)) && folderReachable(f.path)
+  );
+  const embedQuery = embedOnce(query);
+  const all: FolderDocHit[] = [];
+  for (const entry of entries) {
+    let db: DatabaseSync | null = null;
+    try {
+      db = new DatabaseSync(entry.dbFile, { readOnly: true });
+      db.exec('PRAGMA busy_timeout = 5000;');
+      const hits = await hybridSearchDocs(db, query, {
+        limit: max,
+        snippetChars: 600,
+        embedQuery
+      });
+      all.push(...hits.map((h) => ({ ...h, folderLabel: entry.label })));
+    } catch {
+      // A missing/locked index just contributes no hits.
+    } finally {
+      try {
+        db?.close();
+      } catch {
+        // Already closed.
+      }
+    }
+  }
+  return all.sort((a, b) => b.score - a.score).slice(0, max);
+}
+
+function formatFolderDocs(rows: FolderDocHit[]): string {
+  if (rows.length === 0) {
+    return 'No matching documents found in indexed folders (only folders with the Index option enabled are searchable here).';
+  }
+  return rows
+    .map((r) => {
+      const text = (r.snippet || r.text).replace(/\s+/g, ' ').trim().slice(0, 600);
+      return `[${isoDate(Math.floor(r.mtime / 1000))}] (${r.folderLabel}) ${r.relPath}: ${text}`;
+    })
+    .join('\n\n');
+}
+
 function formatFacts(rows: CoreFactHit[]): string {
   if (rows.length === 0) return 'No matching stored facts found.';
   return rows.map((r) => `- ${r.text.replace(/\s+/g, ' ').trim()}`).join('\n');
@@ -172,7 +283,7 @@ interface RpcMessage {
   params?: {
     protocolVersion?: string;
     name?: string;
-    arguments?: { query?: unknown; limit?: unknown };
+    arguments?: { query?: unknown; limit?: unknown; folder?: unknown };
   };
 }
 
@@ -230,6 +341,21 @@ const SUMMARIES_TOOL = {
   }
 };
 
+const FOLDER_DOCS_TOOL = {
+  name: 'search_folder_docs',
+  description:
+    'Search the text files of the user\'s indexed connected folders (folders with the Index option on — e.g. an Obsidian vault or a synced mail/notes mirror). Returns ranked excerpts with folder and file path; read the full file with your file tools at the folder\'s path when an excerpt is not enough. Matching is keyword plus semantic (multilingual) while the Stem app is running, keyword-only otherwise; if a search misses, retry with the key terms in the other language.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'What to look for — a topic, phrase or keywords.' },
+      folder: { type: 'string', description: 'Optional: only search folders whose label contains this text.' },
+      limit: { type: 'number', description: 'Max documents to return (default 8, max 20).' }
+    },
+    required: ['query']
+  }
+};
+
 function handle(msg: RpcMessage): void {
   const { id, method, params } = msg;
   switch (method) {
@@ -247,12 +373,27 @@ function handle(msg: RpcMessage): void {
       reply(id, {});
       return;
     case 'tools/list':
-      reply(id, { tools: [CHATS_TOOL, FACTS_TOOL, SUMMARIES_TOOL] });
+      reply(id, { tools: [CHATS_TOOL, FACTS_TOOL, SUMMARIES_TOOL, FOLDER_DOCS_TOOL] });
       return;
     case 'tools/call': {
       const name = params?.name;
-      if (name !== 'search_past_chats' && name !== 'search_facts' && name !== 'search_chat_summaries') {
+      if (
+        name !== 'search_past_chats' &&
+        name !== 'search_facts' &&
+        name !== 'search_chat_summaries' &&
+        name !== 'search_folder_docs'
+      ) {
         replyError(id, -32602, `Unknown tool: ${name}`);
+        return;
+      }
+      if (!isRecallEnabledFlag()) {
+        // Plain text, not isError — "disabled" is an answer, not a failure to retry.
+        reply(id, {
+          content: [{
+            type: 'text',
+            text: 'Stem\'s memory is currently disabled in Settings, so memory and folder-index search are unavailable. Do not retry; tell the user they can re-enable memory in Settings if they want this searched.'
+          }]
+        });
         return;
       }
       void (async () => {
@@ -264,7 +405,9 @@ function handle(msg: RpcMessage): void {
               ? formatFacts(await searchFacts(query, limit))
               : name === 'search_chat_summaries'
                 ? formatSummaries(await searchSummaries(query, limit))
-                : formatResults(await searchPastChats(query, limit));
+                : name === 'search_folder_docs'
+                  ? formatFolderDocs(await searchFolderDocs(query, limit, params?.arguments?.folder))
+                  : formatResults(await searchPastChats(query, limit));
           reply(id, { content: [{ type: 'text', text }] });
         } catch (e) {
           // Surface as a tool error rather than crashing the server.

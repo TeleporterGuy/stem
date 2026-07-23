@@ -31,8 +31,22 @@ function coerce(raw: unknown): ConnectedFolder | null {
     label: typeof r.label === 'string' && r.label ? r.label : basename(r.path) || r.path,
     mode: r.mode === 'readwrite' ? 'readwrite' : 'read',
     memorize: r.memorize !== false, // default true
-    ...(typeof r.note === 'string' && r.note ? { note: r.note } : {})
+    ...(typeof r.note === 'string' && r.note ? { note: r.note } : {}),
+    ...(r.index === true ? { index: true } : {}), // default off
+    // Only non-default modes are persisted; absent = 'use' (learn on use).
+    ...(r.learnMode === 'off' || r.learnMode === 'new' || r.learnMode === 'all' ? { learnMode: r.learnMode } : {}),
+    ...(typeof r.learnModel === 'string' && r.learnModel ? { learnModel: r.learnModel } : {})
   };
+}
+
+/**
+ * The learn mode actually in force for a folder: the stored mode (absent =
+ * 'use'), forced to 'off' unless the folder is both indexed and memorize —
+ * learning reads the index, and private content must never feed facts.
+ */
+export function effectiveLearnMode(f: ConnectedFolder): 'off' | 'use' | 'new' | 'all' {
+  if (!f.index || !f.memorize) return 'off';
+  return f.learnMode ?? 'use';
 }
 
 export async function readStore(): Promise<ConnectedFoldersStore> {
@@ -127,10 +141,23 @@ export function updateConnectedFolder(id: string, patch: ConnectedFolderPatch): 
       if (typeof patch.label === 'string') f.label = patch.label.trim() || f.label;
       if (patch.mode === 'read' || patch.mode === 'readwrite') f.mode = patch.mode;
       if (typeof patch.memorize === 'boolean') f.memorize = patch.memorize;
+      if (typeof patch.index === 'boolean') {
+        if (patch.index) f.index = true;
+        else delete f.index;
+      }
       if (typeof patch.note === 'string') {
         const note = patch.note.trim();
         if (note) f.note = note;
         else delete f.note;
+      }
+      if (patch.learnMode === 'off' || patch.learnMode === 'use' || patch.learnMode === 'new' || patch.learnMode === 'all') {
+        if (patch.learnMode === 'use') delete f.learnMode; // 'use' is the absent default
+        else f.learnMode = patch.learnMode;
+      }
+      if (typeof patch.learnModel === 'string') {
+        const model = patch.learnModel.trim();
+        if (model) f.learnModel = model;
+        else delete f.learnModel; // empty = back to the memory default
       }
     }
     return store.folders;

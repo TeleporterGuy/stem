@@ -51,6 +51,21 @@ export interface CoreSummaryHit {
   cosine?: number;
 }
 
+/** A ranked hit from one indexed connected folder's document index. */
+export interface CoreDocHit {
+  id: number;
+  /** Folder-relative path of the file. */
+  relPath: string;
+  title: string;
+  /** File mtime, Unix milliseconds. */
+  mtime: number;
+  text: string;
+  snippet: string;
+  score: number;
+  ftsScore?: number;
+  cosine?: number;
+}
+
 /** A query embedding plus the model that keys the vector caches. */
 export interface QueryEmbedding {
   vec: Float32Array;
@@ -157,6 +172,17 @@ export function readSemanticMinCosine(db: DatabaseSync): number {
 /** The tunable summary min-cosine (own key — see DEFAULT_SUMMARY_MIN_COSINE). */
 export function readSummaryMinCosine(db: DatabaseSync): number {
   return readMinCosine(db, 'recall_summary_min_cosine', DEFAULT_SUMMARY_MIN_COSINE);
+}
+
+/**
+ * Floor for semantic folder-document hits. Docs are long multi-topic passages
+ * like summaries (embedded from title + lead), so they share the lower floor.
+ */
+export const DEFAULT_DOC_MIN_COSINE = 0.78;
+
+/** The tunable folder-doc min-cosine (read from the folder index's own meta table). */
+export function readDocMinCosine(db: DatabaseSync): number {
+  return readMinCosine(db, 'folder_docs_min_cosine', DEFAULT_DOC_MIN_COSINE);
 }
 
 /** The row buffer may be reused/unaligned — copy into a fresh, 0-aligned buffer. */
@@ -673,6 +699,157 @@ export async function hybridSearchSummaries(
     [fts.map((h) => ({ ...h, ftsScore: h.score })), sem],
     limit,
     (h) => h.lastTs,
+    (prior, other) => {
+      prior.cosine = prior.cosine ?? other.cosine;
+    }
+  );
+}
+
+// ---- indexed connected-folder documents ----
+//
+// Same corpus pattern as summaries, but the handle is a per-folder index DB
+// (folder-index/store.ts schema: docs / docs_fts / doc_vectors), not
+// recall.sqlite. Shared here so the main process and the stem-recall MCP
+// server search folder indexes with identical mechanics.
+
+export interface DocSearchOptions {
+  limit?: number;
+  /** Max characters of a semantic hit's excerpt (FTS hits use the FTS snippet). */
+  snippetChars?: number;
+  embedQuery?: EmbedQueryFn;
+}
+
+/**
+ * Below this many docs the bm25 noise gate is skipped: bm25 magnitudes scale
+ * with IDF, and in a small corpus every score collapses toward 0 — the -0.1
+ * ceiling would suppress perfectly good hits from a 20-note vault. Noise the
+ * gate exists to strain is a large-corpus phenomenon anyway.
+ */
+const DOC_FTS_GATE_MIN_DOCS = 32;
+
+/** bm25-gated FTS leg over one folder index's documents (gate is scale-aware). */
+export function ftsSearchDocs(
+  db: DatabaseSync,
+  rawQuery: string,
+  opts: { limit?: number } = {}
+): CoreDocHit[] {
+  const match = buildMatchQuery(rawQuery);
+  if (!match) return [];
+  const limit = opts.limit ?? FTS_CANDIDATES;
+  try {
+    const total = (db.prepare(`SELECT COUNT(*) AS n FROM docs`).get() as { n: number }).n;
+    const rows = db
+      .prepare(
+        `SELECT d.id AS id, d.rel_path AS relPath, d.title AS title, d.mtime AS mtime,
+                d.text AS text,
+                snippet(docs_fts, 0, '«', '»', '…', 12) AS snippet,
+                bm25(docs_fts) AS score
+         FROM docs_fts
+         JOIN docs d ON d.id = docs_fts.rowid
+         WHERE docs_fts MATCH ?
+         ORDER BY score
+         LIMIT ?`
+      )
+      .all(match, limit) as Array<Record<string, unknown>>;
+    return rows
+      .map((r) => ({
+        id: r.id as number,
+        relPath: r.relPath as string,
+        title: r.title as string,
+        mtime: r.mtime as number,
+        text: r.text as string,
+        snippet: r.snippet as string,
+        score: r.score as number
+      }))
+      .filter((h) => total < DOC_FTS_GATE_MIN_DOCS || h.score <= FTS_SCORE_CEILING);
+  } catch {
+    return [];
+  }
+}
+
+/** Cosine top-N over one folder index's doc vectors, gated by the doc min-cosine. */
+export function semanticSearchDocsCore(
+  db: DatabaseSync,
+  qVec: Float32Array,
+  model: string,
+  opts: { limit: number; minCosine: number; snippetChars?: number }
+): CoreDocHit[] {
+  if (opts.limit <= 0) return [];
+  const snippetChars = opts.snippetChars ?? 400;
+  const qMag = Math.sqrt(qVec.reduce((s, v) => s + v * v, 0));
+  if (qMag === 0) return [];
+  try {
+    const scored: CoreDocHit[] = [];
+    const rows = db
+      .prepare(
+        `SELECT v.doc_id AS id, v.vec AS vec, d.rel_path AS relPath, d.title AS title,
+                d.mtime AS mtime, d.text AS text
+         FROM doc_vectors v JOIN docs d ON d.id = v.doc_id
+         WHERE v.model = ?`
+      )
+      .iterate(model) as Iterable<Record<string, unknown>>;
+    for (const row of rows) {
+      const vec = bytesToFloat32(row.vec as Uint8Array);
+      if (vec.length !== qVec.length) continue;
+      let dot = 0;
+      let mag = 0;
+      for (let i = 0; i < vec.length; i++) {
+        dot += vec[i] * qVec[i];
+        mag += vec[i] * vec[i];
+      }
+      const denom = qMag * Math.sqrt(mag);
+      const cos = denom === 0 ? 0 : dot / denom;
+      if (cos < opts.minCosine) continue;
+      const text = row.text as string;
+      scored.push({
+        id: row.id as number,
+        relPath: row.relPath as string,
+        title: row.title as string,
+        mtime: row.mtime as number,
+        text,
+        snippet: text.length <= snippetChars ? text : `${text.slice(0, snippetChars - 1)}…`,
+        score: cos,
+        cosine: cos
+      });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, opts.limit);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Hybrid document search over one folder index: FTS + cosine legs fused by RRF.
+ * Degrades to FTS-only without embeddings; [] on an empty/missing index.
+ */
+export async function hybridSearchDocs(
+  db: DatabaseSync,
+  rawQuery: string,
+  opts: DocSearchOptions = {}
+): Promise<CoreDocHit[]> {
+  const limit = opts.limit ?? 3;
+  const fts = ftsSearchDocs(db, rawQuery, { limit: FTS_CANDIDATES });
+  let sem: CoreDocHit[] = [];
+  if (opts.embedQuery) {
+    try {
+      const qe = await opts.embedQuery();
+      if (qe) {
+        sem = semanticSearchDocsCore(db, qe.vec, qe.model, {
+          limit: SEMANTIC_CANDIDATES,
+          minCosine: readDocMinCosine(db),
+          snippetChars: opts.snippetChars
+        });
+      }
+    } catch {
+      // Semantic leg optional.
+    }
+  }
+  if (sem.length === 0) return fts.slice(0, limit);
+  return rrfFuse(
+    [fts.map((h) => ({ ...h, ftsScore: h.score })), sem],
+    limit,
+    (h) => h.mtime,
     (prior, other) => {
       prior.cosine = prior.cosine ?? other.cosine;
     }

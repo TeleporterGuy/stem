@@ -2,6 +2,7 @@ import type { EpisodicStats, MemoryContents, MemoryNoteResult, MemorySettings, T
 
 import { vacuumRecallDb } from '../recall/scan';
 import { recallStore } from '../recall/store';
+import { listConnectedFolders } from './connected-folders';
 const { deleteFact, deleteThreadSummary, getAllFacts, getEpisodicLimitBytes, getEpisodicStats, getFactEvidenceCounts, getMaxRelevantFacts, getMeta, getTidyThreshold, listThreadSummaries: storeListThreadSummaries, resetEpisodic, resetFacts, setEpisodicLimitBytes, setMaxRelevantFacts, setMeta, setTidyThreshold, upsertFact } = recallStore;
 
 // Stem's memory control surface, backed entirely by Stem Recall (recall.sqlite).
@@ -184,9 +185,13 @@ export async function addMemoryNote(text: string): Promise<MemoryNoteResult> {
 
 // ---- Manage panel "Stored memory" view ----
 
-function sourceLabel(source: string): string {
+function sourceLabel(source: string, folderLabels: Map<string, string>): string {
   if (source === 'explicit') return 'On request';
   if (source === 'legacy') return 'Legacy';
+  if (source.startsWith('folder:')) {
+    const label = folderLabels.get(source.slice('folder:'.length));
+    return label ? `From ${label}` : 'From a disconnected folder';
+  }
   return 'Learned';
 }
 
@@ -200,6 +205,10 @@ export async function readMemoryFiles(): Promise<MemoryContents> {
   // the old cap silently hid older facts from the Manage panel.
   const facts = getAllFacts().sort((a, b) => b.updatedAt - a.updatedAt);
   const evidenceCounts = getFactEvidenceCounts();
+  // Folder-learned facts (source `folder:<id>`) chip as "From <folder label>".
+  const folderLabels = new Map(
+    (await listConnectedFolders()).map((f) => [f.id, f.label] as const)
+  );
   const files = facts.map((f) => ({
     name: `fact-${f.id}`,
     label: 'Fact',
@@ -208,7 +217,7 @@ export async function readMemoryFiles(): Promise<MemoryContents> {
     kind: 'note' as const,
     id: f.id,
     statement: f.text,
-    source: sourceLabel(f.source),
+    source: sourceLabel(f.source, folderLabels),
     category: f.category,
     sensitivity: f.sensitivity,
     confidence: f.confidence,

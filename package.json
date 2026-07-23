@@ -29,6 +29,7 @@
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@huggingface/transformers": "^3.8.1",
     "lucide-react": "^0.468.0",
+    "pdfjs-dist": "^6.1.200",
     "remark-gfm": "^4.0.0",
     "remark-mdx": "^3.1.0",
     "remark-parse": "^11.0.0",

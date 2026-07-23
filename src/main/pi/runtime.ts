@@ -96,8 +96,8 @@ import {
   toolArgsOf,
   WEB_SEARCH_TEE_KEY
 } from './protocol';
-import { recallStore, type Fact, type FactTier } from '../recall/store';
-const { getTurnActivitiesByThread, getTurnTimingsByThread, upsertTurnActivity, upsertTurnTiming, setActiveFacts, recordTurnInjectedFacts } = recallStore;
+import { recallStore, type Fact, type FactTier, type InjectedDocRef } from '../recall/store';
+const { getTurnActivitiesByThread, getTurnTimingsByThread, upsertTurnActivity, upsertTurnTiming, setActiveFacts, recordTurnInjectedFacts, recordTurnInjectedDocs } = recallStore;
 
 // Default provider/model. openai-codex is the user's working ChatGPT subscription
 // (verified streaming in the Phase-0 spike); Anthropic/Claude Max is selectable
@@ -1916,12 +1916,21 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
     if (isRecallEnabled()) {
       const chosen: { facts: Fact[]; tier: FactTier } = { facts: [], tier: 'all' };
+      const flags: { privateDocsInjected?: boolean } = {};
+      const injectedDocs: InjectedDocRef[] = [];
       const recall = await buildRecallContext(input.input, {
         currentThreadId: threadId,
         timings: recallTimings,
-        chosen
+        chosen,
+        flags,
+        injectedDocs
       });
       if (recall) blocks.push(recall);
+      // Documents from a memorize:false folder were injected: taint the turn the
+      // same way reading such a folder does, so the reply stays out of Recall.
+      if (flags.privateDocsInjected && this.currentTurn?.threadId === threadId) {
+        this.currentTurn.memoryTainted = true;
+      }
       // Record what was injected so the Memory UI can show this chat's active facts.
       try {
         setActiveFacts(
@@ -1935,6 +1944,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         // messages carry the same turnId, which is the join key.
         if (turnId && chosen.facts.length > 0) {
           recordTurnInjectedFacts(threadId, turnId, chosen.facts.map((f) => f.id));
+        }
+        // Same log for learn-eligible folder-doc excerpts (learn-on-use): the
+        // distill pass folds them into its transcript as citable evidence.
+        if (turnId && injectedDocs.length > 0) {
+          recordTurnInjectedDocs(threadId, turnId, injectedDocs);
         }
       } catch {
         // Debug surface only — never let it break a turn.

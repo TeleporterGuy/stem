@@ -25,6 +25,17 @@ npmRebuild: false
 files:
   - dist/**
   - build/icon.png # loaded at runtime via app.getAppPath() (main/index.ts appIcon)
+  # pdf.js is only used for folder-index text extraction (main/folder-index/pdf.ts),
+  # which loads legacy/build/pdf.mjs + its fake-worker import pdf.worker.mjs.
+  # The browser builds, rendering assets (cmaps/fonts/wasm/icc), minified
+  # variants, and sourcemaps are ~33MB of dead weight per artifact.
+  - '!node_modules/pdfjs-dist/{build,web,cmaps,iccs,image_decoders,standard_fonts,types,wasm}/**'
+  - '!node_modules/pdfjs-dist/legacy/{web,image_decoders}/**'
+  - '!node_modules/pdfjs-dist/legacy/build/*.{map,min.mjs}'
+  - '!node_modules/pdfjs-dist/legacy/build/pdf.sandbox*'
+  # pdfjs-dist's optional native canvas polyfill (skia) — rendering only; text
+  # extraction runs on the DOMMatrix/Path2D stubs in main/folder-index/pdf.ts.
+  - '!node_modules/@napi-rs/**'
 
 mac:
   target: [dmg, zip]

@@ -4,7 +4,7 @@ import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/pro
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { embedSocketPath, piHome, piMcpConfigPath, recallDbPath } from '../workspace/paths';
+import { embedSocketPath, folderIndexDir, piHome, piMcpConfigPath, recallDbPath } from '../workspace/paths';
 import { RECALL_MCP_NAME, recallMcpServerPath } from '../recall/register-mcp';
 import { getEmbedEndpointToken } from '../recall/embed-endpoint';
 import type { OAuthToken } from './oauth';
@@ -438,7 +438,10 @@ function recallServerEntry(): PiMcpServer {
       // without) the endpoint actually listening — the server falls back to
       // keyword-only whenever the socket doesn't answer.
       STEM_EMBED_SOCK: embedSocketPath(),
-      STEM_EMBED_TOKEN: getEmbedEndpointToken()
+      STEM_EMBED_TOKEN: getEmbedEndpointToken(),
+      // Indexed connected folders: the server re-reads manifest.json in this dir
+      // on every search_folder_docs call, so new indexes need no pi restart.
+      STEM_FOLDER_INDEX_DIR: folderIndexDir()
     },
     trusted: true
   };

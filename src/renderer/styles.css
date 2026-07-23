@@ -1962,22 +1962,75 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 .cfolder-item { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
 .cfolder-item + .cfolder-item { border-top: 0.5px solid var(--hair); }
 .cfolder-head { display: flex; align-items: center; gap: var(--sp-3); }
-.cfolder-head .row-main em { font-family: var(--font-mono, ui-monospace, monospace); }
+/* The path is context, not content: one line, tail kept (the informative end of
+   a path), leading boilerplate elided. Full path lives in the title tooltip. */
+.cfolder-head .row-main em {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
 .cfolder-missing { font-weight: 400; }
 .icon-action.sm { width: 26px; height: 26px; }
-.cfolder-opts { display: flex; align-items: center; gap: 18px; }
-.cfolder-opt {
+/* Cards collapse to head + a one-line state summary; the whole head toggles.
+   The chevron is the keyboard-reachable control (aria-expanded lives there). */
+.cfolder-head-toggle { cursor: pointer; }
+.cfolder-chev {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  cursor: pointer;
+}
+.cfolder-chev:focus-visible { outline: none; border-radius: var(--radius-sm); box-shadow: var(--shadow-focus); }
+.cfolder-chev svg { transition: transform var(--motion-fast); }
+.cfolder-chev svg.open { transform: rotate(90deg); }
+/* Aligns under the folder name (chevron width 16px + head gap 6px). */
+.cfolder-summary { font-size: var(--fs-11); margin-left: 22px; }
+/* Per-folder options as a settings list (the .set-row idiom): label left,
+   switch right, one option per line — no wrapping at any panel width. */
+.cfolder-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border-top: 0.5px solid var(--hair);
+  padding-top: 8px;
+}
+.cfolder-opt { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); }
+.cfolder-opt-label {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  font-size: var(--fs-11);
-  color: var(--muted);
+  gap: 2px;
+  font-size: var(--fs-12);
 }
-.cfolder-opt .switch { display: inline-block; }
+.cfolder-index-status { font-size: var(--fs-11); }
+/* Learn-facts controls: the mode select and model picker sit compact on the
+   row's right, mirroring the switches' alignment column. */
+.cfolder-learn-select {
+  width: auto;
+  max-width: 60%;
+  padding: 3px 7px;
+  font-size: var(--fs-12);
+}
+.cfolder-learn-model { max-width: 60%; min-width: 0; }
+.cfolder-learn-model .mp-trigger { padding: 3px 7px; font-size: var(--fs-12); }
+/* The one-time Full-history cost confirm: estimate line + Start/Cancel. */
+.cfolder-learn-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-12);
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+}
+.cfolder-learn-confirm .push-row { display: flex; gap: 6px; justify-content: flex-end; }
 
 /* ---- Scheduled tasks (Tasks tab) ---- */
 .task-item { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; }

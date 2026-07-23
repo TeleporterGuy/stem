@@ -162,6 +162,24 @@ export interface TurnInjectedFacts {
 }
 
 
+/** One folder-doc excerpt injected on a turn (see turn_injected_docs). */
+export interface InjectedDocRef {
+  folderId: string;
+  folderLabel: string;
+  relPath: string;
+  /** File mtime, Unix milliseconds. */
+  mtime: number;
+  excerpt: string;
+}
+
+
+export interface TurnInjectedDocs {
+  threadId: string;
+  turnId: string;
+  docs: InjectedDocRef[];
+}
+
+
 export interface StoredMessage {
   id: number;
   threadId: string;
@@ -591,7 +609,10 @@ export class RecallStore {
         role       TEXT,
         ts         INTEGER NOT NULL,
         excerpt    TEXT NOT NULL,
-        origin     TEXT NOT NULL
+        origin     TEXT NOT NULL,
+        -- 'folder_doc' evidence: which indexed connected folder + file it cites.
+        folder_id  TEXT,
+        rel_path   TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_fact_evidence_fact ON fact_evidence(fact_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_evidence_unique
@@ -637,6 +658,19 @@ export class RecallStore {
         turn_id    TEXT NOT NULL,
         fact_ids   TEXT NOT NULL,
         graded     INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (thread_id, turn_id)
+      );
+
+      -- Folder-doc excerpts injected on EACH turn (learn-eligible folders only —
+      -- memorize on, learnMode not 'off'). The distill pass folds unconsumed rows
+      -- into its transcript as citable [doc:n] entries so conversation-used
+      -- documents can back durable facts, then flips consumed with the segment.
+      CREATE TABLE IF NOT EXISTS turn_injected_docs (
+        thread_id  TEXT NOT NULL,
+        turn_id    TEXT NOT NULL,
+        doc_refs   TEXT NOT NULL,
+        consumed   INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         PRIMARY KEY (thread_id, turn_id)
       );
@@ -747,6 +781,13 @@ export class RecallStore {
     ];
     for (const [name, ddl] of summaryAdditions) {
       if (!summaryColumns.has(name)) handle.exec(`ALTER TABLE summaries ADD COLUMN ${name} ${ddl}`);
+    }
+    // Folder-doc evidence columns, added after fact_evidence shipped.
+    const evidenceColumns = new Set(
+      (handle.prepare(`PRAGMA table_info(fact_evidence)`).all() as Array<{ name: string }>).map((r) => r.name)
+    );
+    for (const name of ['folder_id', 'rel_path']) {
+      if (!evidenceColumns.has(name)) handle.exec(`ALTER TABLE fact_evidence ADD COLUMN ${name} TEXT`);
     }
     // Existing v1 rows predate the external-content FTS table. Populate it before
     // the metadata backfill below fires the UPDATE trigger; deleting an absent FTS
@@ -1057,6 +1098,88 @@ export class RecallStore {
   };
 
 
+  // ---- per-turn injected-docs log (folder learn-on-use source) ----
+
+  /** Append the folder-doc excerpts injected on one turn (same contract as facts). */
+  recordTurnInjectedDocs = (threadId: string, turnId: string, docs: InjectedDocRef[]): void => {
+    if (!turnId || docs.length === 0) return;
+    const handle = this.open();
+    const now = this.nowSeconds();
+    handle
+      .prepare(
+        `INSERT INTO turn_injected_docs (thread_id, turn_id, doc_refs, consumed, created_at)
+         VALUES (?, ?, ?, 0, ?)
+         ON CONFLICT(thread_id, turn_id) DO UPDATE SET doc_refs = excluded.doc_refs`
+      )
+      .run(threadId, turnId, JSON.stringify(docs), now);
+    handle.prepare(`DELETE FROM turn_injected_docs WHERE created_at < ?`).run(now - 30 * 24 * 3600);
+  };
+
+
+  /** Unconsumed injected-doc rows for the given turn ids (a distill batch's turns). */
+  getUnconsumedTurnDocs = (turnIds: string[]): TurnInjectedDocs[] => {
+    if (turnIds.length === 0) return [];
+    const placeholders = turnIds.map(() => '?').join(',');
+    const rows = this.open()
+      .prepare(
+        `SELECT thread_id AS threadId, turn_id AS turnId, doc_refs AS docRefs
+         FROM turn_injected_docs WHERE consumed = 0 AND turn_id IN (${placeholders})`
+      )
+      .all(...turnIds) as Array<{ threadId: string; turnId: string; docRefs: string }>;
+    return rows.flatMap((r) => {
+      try {
+        const docs = JSON.parse(r.docRefs);
+        return Array.isArray(docs)
+          ? [{
+              threadId: r.threadId,
+              turnId: r.turnId,
+              docs: docs.filter(
+                (d): d is InjectedDocRef =>
+                  !!d && typeof d === 'object' &&
+                  typeof (d as InjectedDocRef).folderId === 'string' &&
+                  typeof (d as InjectedDocRef).relPath === 'string' &&
+                  typeof (d as InjectedDocRef).excerpt === 'string'
+              )
+            }]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+  };
+
+
+  markTurnDocsConsumed = (threadId: string, turnId: string): void => {
+    this.open().prepare(`UPDATE turn_injected_docs SET consumed = 1 WHERE thread_id = ? AND turn_id = ?`)
+      .run(threadId, turnId);
+  };
+
+
+  // ---- folder-learned facts (source 'folder:<id>') ----
+
+  /** Active facts attributed to one folder source tag. */
+  countFactsBySource = (source: string): number => {
+    return (this.open()
+      .prepare(`SELECT COUNT(*) AS n FROM facts WHERE source = ? AND status = 'active'`)
+      .get(source) as { n: number }).n;
+  };
+
+  /**
+   * Forget a disconnected folder's learned facts. Pinned facts always survive
+   * (an explicit user override), as do explicit-converted ones (their source is
+   * no longer the folder tag). Each goes through deleteFact so vectors,
+   * evidence, conflicts and superseded_by pointers are cleaned consistently.
+   * Returns the number of facts deleted.
+   */
+  forgetFactsBySource = (source: string): number => {
+    const ids = (this.open()
+      .prepare(`SELECT id FROM facts WHERE source = ? AND pinned = 0`)
+      .all(source) as Array<{ id: number }>).map((r) => r.id);
+    for (const id of ids) this.deleteFact(id);
+    return ids.length;
+  };
+
+
   /**
    * Apply one graded turn: every injected fact gains an injection count; the used
    * subset also gains a use count + last-used stamp. Deliberately does NOT touch
@@ -1344,11 +1467,14 @@ export class RecallStore {
     if (evidence.length === 0) return;
     const stmt = this.open().prepare(
       `INSERT OR IGNORE INTO fact_evidence
-         (fact_id, message_id, thread_id, role, ts, excerpt, origin)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+         (fact_id, message_id, thread_id, role, ts, excerpt, origin, folder_id, rel_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const e of evidence) {
-      stmt.run(factId, e.messageId, e.threadId, e.role, e.timestamp, e.excerpt.slice(0, 1000), e.origin);
+      stmt.run(
+        factId, e.messageId, e.threadId, e.role, e.timestamp, e.excerpt.slice(0, 1000), e.origin,
+        e.folderId ?? null, e.relPath ?? null
+      );
     }
   };
 
@@ -1356,7 +1482,8 @@ export class RecallStore {
   getFactEvidence = (factId: number): FactEvidence[] => {
     const rows = this.open()
       .prepare(
-        `SELECT id, message_id AS messageId, thread_id AS threadId, role, ts AS timestamp, excerpt, origin
+        `SELECT id, message_id AS messageId, thread_id AS threadId, role, ts AS timestamp, excerpt, origin,
+                folder_id AS folderId, rel_path AS relPath
          FROM fact_evidence WHERE fact_id = ? ORDER BY ts ASC, id ASC`
       )
       .all(factId) as Array<Record<string, unknown>>;
@@ -1367,7 +1494,9 @@ export class RecallStore {
       role: (r.role as FactEvidence['role']) ?? null,
       timestamp: r.timestamp as number,
       excerpt: r.excerpt as string,
-      origin: r.origin as FactEvidence['origin']
+      origin: r.origin as FactEvidence['origin'],
+      folderId: (r.folderId as string | null) ?? null,
+      relPath: (r.relPath as string | null) ?? null
     }));
   };
 

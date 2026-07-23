@@ -467,12 +467,62 @@ export interface ConnectedFolder {
   memorize: boolean;
   /** Optional one-line description, injected so the assistant knows what it is. */
   note?: string;
+  /**
+   * When true, Stem maintains a local search index (FTS + embeddings) over the
+   * folder's text files so relevant content surfaces in recall pre-turn injection
+   * and semantic search. The folder itself is never modified; disconnecting or
+   * toggling this off deletes the index.
+   */
+  index?: boolean;
+  /**
+   * How Stem learns durable facts from this folder's indexed content (only
+   * effective while `index` and `memorize` are both on). Ordinal — each level
+   * includes the ones below it:
+   *  'off'  — never learn from this folder;
+   *  'use'  — (default when absent) learn only from excerpts that actually
+   *           surfaced in conversations, riding the normal conversation distill;
+   *  'new'  — additionally distill files added or changed from now on;
+   *  'all'  — backlog-sweep every indexed file, then behave like 'new'.
+   */
+  learnMode?: 'off' | 'use' | 'new' | 'all';
+  /** Model for 'new'/'all' distillation; absent = the Settings → Memory model. */
+  learnModel?: string;
   /** Computed on list: the path no longer exists on disk. Not persisted. */
   missing?: boolean;
 }
 
-/** The mutable fields of a connected folder (label/mode/memorize/note). */
-export type ConnectedFolderPatch = Partial<Pick<ConnectedFolder, 'label' | 'mode' | 'memorize' | 'note'>>;
+/** The mutable fields of a connected folder (label/mode/memorize/note/index/learn*). */
+export type ConnectedFolderPatch = Partial<
+  Pick<ConnectedFolder, 'label' | 'mode' | 'memorize' | 'note' | 'index' | 'learnMode' | 'learnModel'>
+>;
+
+/**
+ * Index health for one indexed connected folder (computed from its index DB —
+ * never persisted in connected-folders.json).
+ */
+export interface FolderIndexStatus {
+  /** Documents currently in the index. */
+  indexedCount: number;
+  /** Files seen but not indexed, total (sum of skippedByExt). */
+  skippedCount: number;
+  /** Skip breakdown: extension (or 'too-large' / 'binary') → count. */
+  skippedByExt: Record<string, number>;
+  /** Indexed docs still waiting for an embedding vector. */
+  pendingEmbeds: number;
+  /** Unix seconds of the last completed scan, or null before the first one. */
+  lastScanTs: number | null;
+  /** Total characters of indexed text (drives the "≈N model calls" estimate). */
+  totalTextChars: number;
+  /** Fact-learning state (the 'new'/'all' distill engine + attribution). */
+  learn: {
+    /** Docs not yet distilled at their current content (backlog + changed). */
+    pending: number;
+    /** Active facts attributed to this folder (source `folder:<id>`). */
+    facts: number;
+    /** Unix seconds of the last successful learn batch, or null. */
+    lastTs: number | null;
+  };
+}
 
 // ---- Scheduled tasks ----
 //
@@ -787,7 +837,12 @@ export interface FactEvidence {
   role: 'user' | 'assistant' | null;
   timestamp: number;
   excerpt: string;
-  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'legacy';
+  /** 'folder_doc' = an indexed connected-folder file (folderId/relPath set). */
+  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'legacy' | 'folder_doc';
+  /** Connected-folder id, for 'folder_doc' evidence. */
+  folderId?: string | null;
+  /** Folder-relative file path, for 'folder_doc' evidence. */
+  relPath?: string | null;
 }
 
 export interface FactDetails {
@@ -1328,6 +1383,10 @@ export interface StemApi {
   updateConnectedFolder(id: string, patch: ConnectedFolderPatch): Promise<ConnectedFolder[]>;
   /** Forget a connected folder (does not touch the folder on disk). Returns fresh list. */
   removeConnectedFolder(id: string): Promise<ConnectedFolder[]>;
+  /** Delete the facts learned from a folder (pinned survive). Returns the count deleted. */
+  forgetConnectedFolderFacts(id: string): Promise<number>;
+  /** Index health per indexed folder id (indexed/skipped counts, pending embeds). */
+  folderIndexStatus(): Promise<Record<string, FolderIndexStatus>>;
   /** Open a connected folder in the OS file manager. */
   revealConnectedFolder(id: string): Promise<void>;
   /** Open Stem's own workspace folder (containing the Files place) in the OS file manager. */

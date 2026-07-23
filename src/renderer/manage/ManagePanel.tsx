@@ -76,7 +76,7 @@ function ManagePanelImpl({
         {tab === 'chats' && <ChatList {...chatProps} activeThreadId={activeThreadId} />}
         {tab === 'memory' && <MemoryTab models={models} activeFacts={activeFacts} />}
         {tab === 'mcp' && <McpSkillsTab models={models} />}
-        {tab === 'folders' && <FoldersTab />}
+        {tab === 'folders' && <FoldersTab models={models} />}
         {tab === 'tasks' && <TasksTab onOpenChat={chatProps.onOpen} />}
         {tab === 'settings' && (
           <SettingsTab

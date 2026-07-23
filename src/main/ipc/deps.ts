@@ -24,4 +24,8 @@ export interface IpcDeps {
   onAuthenticated(): Promise<RuntimeStatus>;
   /** (Re)arm the background memory-rebuild stepper. */
   scheduleMemoryRebuild(): void;
+  /** Kick the indexed-connected-folders scan (e.g. right after an index toggle). */
+  scheduleFolderIndexScan(delayMs?: number): void;
+  /** Kick the folder fact-learning drain (e.g. right after a learn-mode change). */
+  scheduleFolderLearn(delayMs?: number): void;
 }

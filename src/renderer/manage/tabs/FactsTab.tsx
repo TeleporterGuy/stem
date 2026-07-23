@@ -661,7 +661,10 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                       <span>Confidence {Math.round(details[f.id]!.confidence * 100)}%</span>
                       {details[f.id]!.validUntil && <span>Valid until {new Date(details[f.id]!.validUntil! * 1000).toLocaleDateString()}</span>}
                       {details[f.id]!.evidence.map((e) => (
-                        <blockquote key={e.id}>{new Date(e.timestamp * 1000).toLocaleDateString()} · {e.origin}: {e.excerpt}</blockquote>
+                        <blockquote key={e.id}>
+                          {new Date(e.timestamp * 1000).toLocaleDateString()} ·{' '}
+                          {e.origin === 'folder_doc' ? `file ${e.relPath ?? '(unknown)'}` : e.origin}: {e.excerpt}
+                        </blockquote>
                       ))}
                     </div>
                   )}

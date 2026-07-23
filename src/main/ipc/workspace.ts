@@ -10,6 +10,8 @@ import {
   removeConnectedFolder,
   updateConnectedFolder
 } from '../workspace/connected-folders';
+import { getFolderIndexStatuses, seedFolderLearnMarks, syncFolderIndexes } from '../folder-index';
+import { recallStore } from '../recall/store';
 import { workspaceRoot } from '../workspace/paths';
 import { readSettings } from '../workspace/settings';
 import { imagePreviewDataUrl } from '../pi/attachments';
@@ -54,10 +56,34 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
   // Distinct `cfolders:*` namespace — `folders:*` is the chat-folder tree.
   handleIpc('cfolders:list', () => listConnectedFolders());
   handleIpc('cfolders:add', (_e, paths: string[]) => addConnectedFolders(paths));
-  handleIpc('cfolders:update', (_e, id: string, patch: ConnectedFolderPatch) =>
-    updateConnectedFolder(id, patch)
-  );
-  handleIpc('cfolders:remove', (_e, id: string) => removeConnectedFolder(id));
+  handleIpc('cfolders:update', async (_e, id: string, patch: ConnectedFolderPatch) => {
+    const folders = await updateConnectedFolder(id, patch);
+    // Index toggled: reconcile now (off → the DB file is deleted) and, when
+    // turned on, kick a scan so the index fills without waiting for the timer.
+    if (typeof patch.index === 'boolean') {
+      void syncFolderIndexes();
+      if (patch.index) deps.scheduleFolderIndexScan(500);
+    }
+    // Learn-mode transitions seed the per-doc marks: 'new' stamps everything as
+    // already learned ("start from now" — also how a running 'all' sweep is
+    // cancelled); 'all' stamps nothing, leaving the backlog pending. Then kick
+    // the drain so learning starts without waiting for the next scan cycle.
+    if (typeof patch.learnMode === 'string') {
+      if (patch.learnMode === 'new') await seedFolderLearnMarks(id);
+      if (patch.learnMode === 'new' || patch.learnMode === 'all') deps.scheduleFolderLearn(1_000);
+    }
+    return folders;
+  });
+  handleIpc('cfolders:remove', async (_e, id: string) => {
+    const folders = await removeConnectedFolder(id);
+    void syncFolderIndexes(); // Drops the disconnected folder's index DB.
+    return folders;
+  });
+  // The disconnect flow's "also forget the facts learned from this folder"
+  // choice. Separate from cfolders:remove so keeping the facts stays the
+  // default; pinned facts always survive (enforced in the store).
+  handleIpc('cfolders:forgetFacts', (_e, id: string) => recallStore.forgetFactsBySource(`folder:${id}`));
+  handleIpc('cfolders:indexStatus', () => getFolderIndexStatuses());
   handleIpc('cfolders:reveal', async (_e, id: string) => {
     const path = await connectedFolderPath(id);
     if (path) await shell.openPath(path);

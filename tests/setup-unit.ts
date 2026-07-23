@@ -13,6 +13,8 @@ const mcpConfig = join(tmpdir(), `stem-mcp-config-${process.pid}.json`);
 const mcpOAuth = join(tmpdir(), `stem-mcp-oauth-${process.pid}.json`);
 const secretKey = join(tmpdir(), `stem-secret-key-${process.pid}.bin`);
 const logFile = join(tmpdir(), `stem-log-${process.pid}.log`);
+const connectedFoldersStore = join(tmpdir(), `stem-cfolders-${process.pid}.json`);
+const folderIndexDir = join(tmpdir(), `stem-folder-index-${process.pid}`);
 
 process.env.STEM_RECALL_DB = recallDb;
 process.env.STEM_FILES_DIR = filesDir;
@@ -21,6 +23,8 @@ process.env.STEM_PI_MCP_CONFIG = mcpConfig;
 process.env.STEM_PI_MCP_OAUTH = mcpOAuth;
 process.env.STEM_SECRET_KEY_FILE = secretKey;
 process.env.STEM_LOG_FILE = logFile;
+process.env.STEM_CONNECTED_FOLDERS_STORE = connectedFoldersStore;
+process.env.STEM_FOLDER_INDEX_DIR = folderIndexDir;
 
 for (const p of [recallDb, `${recallDb}-wal`, `${recallDb}-shm`]) {
   rmSync(p, { force: true });
@@ -28,5 +32,6 @@ for (const p of [recallDb, `${recallDb}-wal`, `${recallDb}-shm`]) {
 for (const p of [chatSearchDb, `${chatSearchDb}-wal`, `${chatSearchDb}-shm`]) {
   rmSync(p, { force: true });
 }
-for (const p of [mcpConfig, mcpOAuth, secretKey, logFile]) rmSync(p, { force: true });
+for (const p of [mcpConfig, mcpOAuth, secretKey, logFile, connectedFoldersStore]) rmSync(p, { force: true });
 rmSync(join(tmpdir(), `stem-files-${process.pid}`), { recursive: true, force: true });
+rmSync(folderIndexDir, { recursive: true, force: true });

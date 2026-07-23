@@ -53,6 +53,8 @@ import type { ExecService } from './exec/service';
 import { initExecService } from './startup/exec';
 import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
+import { initFolderIndexTasks } from './startup/folder-index-tasks';
+import { closeFolderIndexes } from './folder-index';
 import { ProviderAuth } from './pi/provider-auth';
 import { isRecallEnabled } from './workspace/memory';
 import { captureFromEvent } from './recall/capture';
@@ -242,6 +244,8 @@ const runningMainThreads = new Set<string>();
 // scheduler's isUserActive signal so scheduled runs defer while they're chatting.
 let lastInteractiveAt = 0;
 let scheduleMemoryRebuild: () => void = () => {};
+let scheduleFolderIndexScan: (delayMs?: number) => void = () => {};
+let scheduleFolderLearn: (delayMs?: number) => void = () => {};
 // How long after the last interaction the user still counts as "active".
 const USER_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 /** Ownership + last phase of the shared pill (chime edge detection) — see HudPill. */
@@ -795,7 +799,9 @@ function registerIpc(): void {
     mainWindow: () => mainWindow,
     sendToMain,
     onAuthenticated,
-    scheduleMemoryRebuild: () => scheduleMemoryRebuild()
+    scheduleMemoryRebuild: () => scheduleMemoryRebuild(),
+    scheduleFolderIndexScan: (delayMs) => scheduleFolderIndexScan(delayMs),
+    scheduleFolderLearn: (delayMs) => scheduleFolderLearn(delayMs)
   };
   registerAuthIpc(deps);
   registerWorkspaceIpc(deps);
@@ -1237,6 +1243,12 @@ app.whenReady().then(async () => {
   scheduleMemoryRebuild = recallTasks.scheduleMemoryRebuild;
   const { scheduleDistill, scheduleEpisodicEmbed } = recallTasks;
 
+  // Indexed connected folders: startup kick + periodic incremental rescan
+  // (mirror folders change from outside the app). See startup/folder-index-tasks.ts.
+  const folderIndexTasks = initFolderIndexTasks({ runtime: () => runtime!, busyWithin });
+  scheduleFolderIndexScan = folderIndexTasks.scheduleFolderIndexScan;
+  scheduleFolderLearn = folderIndexTasks.scheduleFolderLearn;
+
   // Forward backend events to the main window. Registered once (not per-window) so
   // recreating the window can't double-subscribe.
   runtime.on('event', (event) => {
@@ -1432,6 +1444,7 @@ app.on('before-quit', (event) => {
   scheduler?.stop();
   embedManager?.dispose();
   scanManager?.dispose();
+  closeFolderIndexes();
   runtime.shutdown().finally(() => app.exit(0));
 });
 

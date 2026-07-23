@@ -3,6 +3,7 @@ import { readSettings } from '../workspace/settings';
 import { embedModelsDir, embedSocketPath, recallDbPath } from '../workspace/paths';
 
 import { embedNewMessages } from '../recall/embed-episodic';
+import { scanAllIndexedFolders } from '../folder-index';
 import { getEmbeddingsClient, setRetrievalClients } from '../recall/retrieval';
 import { startEmbedEndpoint } from '../recall/embed-endpoint';
 import { createHttpEmbeddingsClient } from '../recall/embeddings';
@@ -126,6 +127,9 @@ export function initRetrieval(deps: {
         // post-turn kick can't double-embed.
         pruneMessageVectorsExceptModel(key);
         await embedNewMessages(localEmbeddings);
+        // Indexed connected folders: top up their doc vectors now that the
+        // model is up (the scan pass is incremental and self-guarding).
+        await scanAllIndexedFolders();
       } catch {
         // non-fatal: inject tops up lazily on the next semantic turn
       }

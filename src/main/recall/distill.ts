@@ -7,7 +7,7 @@ import { contradicts } from './reconcile';
 import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
 import { recallStore, type StoredMessage, type TurnInjectedFacts } from './store';
-const { factTermSearch, getDupCosine, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUngradedTurnFacts, markTurnFactsGraded, recordFactUsage, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
+const { factTermSearch, getDupCosine, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUnconsumedTurnDocs, getUngradedTurnFacts, markTurnDocsConsumed, markTurnFactsGraded, recordFactUsage, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
 
 // Level 1: the reflection pass. Periodically reads conversation that's new since
 // its last run and distills durable, stable facts about the user into the facts
@@ -27,10 +27,26 @@ export const MAX_TRANSCRIPT_CHARS = 16000;
 export const DISTILL_OVERLAP_CHARS = 256;
 
 export interface DistillCursor { messageId: number; offset: number }
+
+/** One folder-doc excerpt the batch's turns saw, citable as [doc:key]. */
+export interface DistillBatchDoc {
+  key: number;
+  folderId: string;
+  folderLabel: string;
+  relPath: string;
+  /** File mtime, Unix milliseconds. */
+  mtime: number;
+  excerpt: string;
+}
+
 export interface DistillBatch {
   transcript: string;
   messages: StoredMessage[];
   nextCursor: DistillCursor;
+  /** Learn-eligible folder-doc excerpts injected on this batch's turns. */
+  docs: DistillBatchDoc[];
+  /** The turn_injected_docs rows behind `docs` — consumed with the segment. */
+  docTurns: Array<{ threadId: string; turnId: string }>;
 }
 
 // Counts durable facts written since the last consolidation pass — the dirty
@@ -63,9 +79,10 @@ Rules:
 - If a new claim clearly replaces a known fact, include that fact id in supersedesFactIds. If the conflict is ambiguous, include it in conflictsWithFactIds instead.
 - Never include credentials, payment secrets, recovery phrases, or government identifiers. Addresses, contact details, health, and finance are allowed but must use sensitivity "sensitive".
 - For every claim cite only message ids present in the transcript.
+- The prompt may include a "Documents shown to the assistant" section: excerpts from the user's own files that were surfaced during these conversations. Treat their content as information about the user's life retrieved on their behalf; durable facts grounded in them ARE wanted. When a claim rests on a document, cite its doc id in evidenceDocIds (alongside any message ids). Only cite doc ids present in that section.
 - SECOND DUTY — fact-usage grading. The prompt may include an "Injected facts per assistant reply" section listing, for some assistant messages, the stored facts that were available when that reply was written. For each listed message, judge which of those facts VISIBLY informed the reply's content (its recommendations, specifics, or phrasing) and report them in factUsage. Merely being available does not count; when none were used, report an empty usedFactIds. Grade only the listed messages and only their listed fact ids.
 - Output ONLY {"claims":[...],"factUsage":[...]} where each claim is:
-  {"text":"The user ...","category":"identity|preference|relationship|work|project|health|finance|location|schedule|other","sensitivity":"standard|sensitive","validUntil":"YYYY-MM-DD or null","evidenceMessageIds":[1],"supersedesFactIds":[],"conflictsWithFactIds":[]}
+  {"text":"The user ...","category":"identity|preference|relationship|work|project|health|finance|location|schedule|other","sensitivity":"standard|sensitive","validUntil":"YYYY-MM-DD or null","evidenceMessageIds":[1],"evidenceDocIds":[],"supersedesFactIds":[],"conflictsWithFactIds":[]}
   and each factUsage entry is {"messageId":1,"usedFactIds":[2]}. Omit factUsage (or use []) when no injected-facts section is present.
 If there is nothing new and durable, output {"claims":[]}.`;
 
@@ -83,6 +100,8 @@ export interface DistilledClaim {
   sensitivity: FactSensitivity;
   validUntil: number | null;
   evidenceMessageIds: number[];
+  /** [doc:n] keys from the batch's "Documents shown" section (see DistillBatchDoc). */
+  evidenceDocIds: number[];
   supersedesFactIds: number[];
   conflictsWithFactIds: number[];
 }
@@ -161,6 +180,7 @@ export function parseDistillOutput(output: string, maxTextLength = 300): ParsedD
       sensitivity: r.sensitivity === 'sensitive' || sensitiveByCategory ? 'sensitive' : 'standard',
       validUntil: parseValidUntil(r.validUntil),
       evidenceMessageIds: cleanIds(r.evidenceMessageIds),
+      evidenceDocIds: cleanIds(r.evidenceDocIds),
       supersedesFactIds: cleanIds(r.supersedesFactIds),
       conflictsWithFactIds: cleanIds(r.conflictsWithFactIds)
     });
@@ -380,6 +400,9 @@ export function readDistillCursor(): DistillCursor {
   return { messageId: old + 1, offset: 0 };
 }
 
+/** Cap the docs section: excerpts are ≤500 chars, so 8 add ≤~4.5k to the prompt. */
+export const MAX_BATCH_DOCS = 8;
+
 export function buildDistillBatch(cursor: DistillCursor, maxChars = MAX_TRANSCRIPT_CHARS): DistillBatch | null {
   const source = getMessagesForDistillFrom(cursor.messageId, MAX_MESSAGES_PER_RUN);
   if (source.length === 0) return null;
@@ -403,7 +426,47 @@ export function buildDistillBatch(cursor: DistillCursor, maxChars = MAX_TRANSCRI
     next = { messageId: message.id + 1, offset: 0 };
     if (transcript.length >= maxChars) break;
   }
-  return transcript ? { transcript, messages: included, nextCursor: next } : null;
+  if (!transcript) return null;
+
+  // Folder-doc excerpts injected on this segment's turns (learn-on-use): loaded
+  // here so the same batch object carries everything one distill call needs.
+  // Deduped by file — the same doc injected on several turns is one [doc:n].
+  const turnIds = [...new Set(included.map((m) => m.turnId).filter((t): t is string => !!t))];
+  const docRows = getUnconsumedTurnDocs(turnIds);
+  const docs: DistillBatchDoc[] = [];
+  const seenDocs = new Set<string>();
+  for (const row of docRows) {
+    for (const d of row.docs) {
+      const key = `${d.folderId} ${d.relPath}`;
+      if (seenDocs.has(key) || docs.length >= MAX_BATCH_DOCS) continue;
+      seenDocs.add(key);
+      docs.push({
+        key: docs.length + 1,
+        folderId: d.folderId,
+        folderLabel: d.folderLabel,
+        relPath: d.relPath,
+        mtime: d.mtime,
+        excerpt: d.excerpt
+      });
+    }
+  }
+  return {
+    transcript,
+    messages: included,
+    nextCursor: next,
+    docs,
+    docTurns: docRows.map((r) => ({ threadId: r.threadId, turnId: r.turnId }))
+  };
+}
+
+/** The "Documents shown to the assistant" prompt section. Empty when no docs. */
+export function buildDocsBlock(docs: DistillBatchDoc[]): string {
+  if (docs.length === 0) return '';
+  const lines = docs.map(
+    (d) =>
+      `[doc:${d.key} folder:${JSON.stringify(d.folderLabel)} path:${JSON.stringify(d.relPath)} modified:${new Date(d.mtime).toISOString().slice(0, 10)}] ${d.excerpt}`
+  );
+  return `\n\nDocuments shown to the assistant during these conversations (excerpts from the user's own files; cite as doc ids in evidenceDocIds):\n${lines.join('\n')}`;
 }
 
 /**
@@ -416,7 +479,7 @@ export function buildDistillBatch(cursor: DistillCursor, maxChars = MAX_TRANSCRI
  * embeddings are unavailable or anything fails, and the caller takes exactly the
  * pre-dedup path; distillation never breaks on a dead embedder.
  */
-async function scoreCandidatesAgainstFacts(
+export async function scoreCandidatesAgainstFacts(
   candidates: string[]
 ): Promise<{ vecs: Float32Array[]; model: string; maxSims: number[] } | null> {
   if (candidates.length === 0) return null;
@@ -451,9 +514,16 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   if (!batch) return 0;
   const factsGeneration = getFactsGeneration();
 
+  // The segment's injected-doc rows are consumed whenever the segment is —
+  // written or abandoned — so they can never be cited twice or linger.
+  const consumeDocRows = () => {
+    for (const t of batch.docTurns) markTurnDocsConsumed(t.threadId, t.turnId);
+  };
+
   const advanceWithoutWriting = () => {
     setMeta(CURSOR_KEY, JSON.stringify(batch.nextCursor));
     setMeta(WATERMARK, String(Math.max(0, batch.nextCursor.messageId - 1)));
+    consumeDocRows();
     return 0;
   };
 
@@ -468,12 +538,16 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   const usageTurns = gradableTurns(batch);
   const usageBlock = buildUsageBlock(usageTurns);
 
+  // Folder-doc excerpts these turns saw (learn-on-use), citable as [doc:n].
+  const docsBlock = buildDocsBlock(batch.docs);
+  const docByKey = new Map(batch.docs.map((d) => [d.key, d]));
+
   let claims: DistilledClaim[] = [];
   let usageGrades: FactUsageGrade[] = [];
   try {
     const today = new Date().toISOString().slice(0, 10);
     const reply = await llm.complete(
-      `${DISTILL_INSTRUCTIONS}\n\nToday's date: ${today}.${knownBlock}${usageBlock}\n\nTranscript:\n${batch.transcript}`
+      `${DISTILL_INSTRUCTIONS}\n\nToday's date: ${today}.${knownBlock}${usageBlock}${docsBlock}\n\nTranscript:\n${batch.transcript}`
     );
     const parsed = parseDistillOutput(reply);
     if (!parsed.recognized) {
@@ -510,7 +584,10 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   const uncited = new Set<DistilledClaim>();
   for (const claim of claims) {
     claim.evidenceMessageIds = claim.evidenceMessageIds.filter((id) => byId.has(id));
-    if (claim.evidenceMessageIds.length === 0) {
+    claim.evidenceDocIds = claim.evidenceDocIds.filter((key) => docByKey.has(key));
+    // A claim resting only on valid doc citations is cited, not uncited — it
+    // just never earns the direct-user treatment (docs aren't the user's words).
+    if (claim.evidenceMessageIds.length === 0 && claim.evidenceDocIds.length === 0) {
       uncited.add(claim);
       claim.evidenceMessageIds = batch.messages.filter((m) => m.role === 'user').map((m) => m.id);
       if (claim.evidenceMessageIds.length === 0) claim.evidenceMessageIds = batch.messages.map((m) => m.id);
@@ -531,6 +608,7 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
     if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
     i += 1;
     const evidenceMessages = claim.evidenceMessageIds.map((id) => byId.get(id)).filter((m): m is StoredMessage => !!m);
+    const evidenceDocs = claim.evidenceDocIds.map((key) => docByKey.get(key)).filter((d): d is DistillBatchDoc => !!d);
     const directUser = !uncited.has(claim) && evidenceMessages.some((m) => m.role === 'user');
     const id = upsertFact(claim.text, {
       source: 'distilled',
@@ -538,14 +616,26 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
       sensitivity: claim.sensitivity,
       confidence: directUser ? 0.9 : 0.55,
       validUntil: claim.validUntil,
-      evidence: evidenceMessages.map((m) => ({
-        messageId: m.id,
-        threadId: m.threadId,
-        role: m.role,
-        timestamp: m.ts,
-        excerpt: m.text,
-        origin: directUser && m.role === 'user' ? 'user_message' : 'assistant_claim'
-      }))
+      evidence: [
+        ...evidenceMessages.map((m) => ({
+          messageId: m.id,
+          threadId: m.threadId,
+          role: m.role,
+          timestamp: m.ts,
+          excerpt: m.text,
+          origin: (directUser && m.role === 'user' ? 'user_message' : 'assistant_claim') as 'user_message' | 'assistant_claim'
+        })),
+        ...evidenceDocs.map((d) => ({
+          messageId: null,
+          threadId: null,
+          role: null,
+          timestamp: Math.floor(d.mtime / 1000),
+          excerpt: d.excerpt,
+          origin: 'folder_doc' as const,
+          folderId: d.folderId,
+          relPath: d.relPath
+        }))
+      ]
     });
     if (scored && id != null) {
       // We already hold this fact's fresh passage vector — cache it so neither
@@ -589,5 +679,6 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   // Keep the old watermark moving for downgrade compatibility, but never use it
   // to decide v2 progress.
   setMeta(WATERMARK, String(Math.max(0, batch.nextCursor.messageId - 1)));
+  consumeDocRows();
   return claims.length;
 }

@@ -149,7 +149,9 @@ export function chatStorePath(): string {
  * memorize flags — the folders themselves stay where they live on disk.
  */
 export function connectedFoldersStorePath(): string {
-  return join(userDataRoot(), 'connected-folders.json');
+  // STEM_CONNECTED_FOLDERS_STORE lets unit tests point at a throwaway file (and
+  // avoids touching Electron's `app` when run outside the app).
+  return process.env.STEM_CONNECTED_FOLDERS_STORE ?? join(userDataRoot(), 'connected-folders.json');
 }
 
 /**
@@ -232,6 +234,24 @@ export function embedSocketPath(): string {
     return `\\\\.\\pipe\\stem-embed-${id}`;
   }
   return join(userDataRoot(), 'stem-embed.sock');
+}
+
+/**
+ * Per-folder search indexes for indexed connected folders: one SQLite file per
+ * folder id, physically separate from recall.sqlite so a huge indexed folder
+ * never bloats the hot recall DB and "disconnect" is just deleting one file.
+ * The manifest.json inside (written by folder-index/index.ts) tells the
+ * stem-recall MCP server which indexes exist without a pi restart.
+ */
+export function folderIndexDir(): string {
+  // STEM_FOLDER_INDEX_DIR lets unit tests point at a throwaway directory (and
+  // avoids touching Electron's `app` when run outside the app).
+  return process.env.STEM_FOLDER_INDEX_DIR ?? join(userDataRoot(), 'folder-index');
+}
+
+/** The index database for one indexed connected folder. */
+export function folderIndexDbPath(folderId: string): string {
+  return join(folderIndexDir(), `${folderId}.sqlite`);
 }
 
 /**

@@ -48,7 +48,9 @@ export default defineConfig({
         // pi-coding-agent must stay external too: pure-ESM, exports-map-only, and
         // its dist/cli.js is spawned as a real file (plus AuthStorage relies on
         // package-relative resolution). Loaded lazily via dynamic import.
-        external: ['@huggingface/transformers', '@earendil-works/pi-coding-agent'],
+        // pdfjs-dist stays external as well: its legacy build probes optional
+        // canvas packages via dynamic import, which rollup would try to resolve.
+        external: ['@huggingface/transformers', '@earendil-works/pi-coding-agent', /^pdfjs-dist/],
         // Multi-input builds default to hashed names; package.json main expects
         // dist/main/index.js, so pin entry names.
         output: { entryFileNames: '[name].js' }
