@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronRight, FileText, Globe, Pencil, Terminal, Wrench } from 'lucide-react';
+import { ChevronRight, FileText, Globe, Pencil, Shrink, Terminal, Wrench } from 'lucide-react';
 import type { ActivityItem, SourceRef } from '../../shared/types';
 import { activityLabel, settledActivityLabel } from '../../shared/activity';
 
@@ -10,6 +10,7 @@ import { activityLabel, settledActivityLabel } from '../../shared/activity';
 function iconFor(item: ActivityItem) {
   if (item.type === 'webSearch') return <Globe size={13} />;
   if (item.type === 'fileChange') return <Pencil size={13} />;
+  if (item.type === 'compaction') return <Shrink size={13} />;
   if (item.name === 'read') return <FileText size={13} />;
   if (item.type === 'commandExecution') return <Terminal size={13} />;
   return <Wrench size={13} />;

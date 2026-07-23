@@ -136,6 +136,51 @@ describe('chatState reducer', () => {
     expect(completed.messages).toHaveLength(0);
   });
 
+  it('stamps a post-run compaction row onto the settled bubble', () => {
+    // pi's threshold compaction runs AFTER agent_end: the live activity list is
+    // already cleared, so the row must land on the turn's message directly.
+    const settled = {
+      ...EMPTY_STATE,
+      messages: [{ id: 'assistant-turn1', role: 'assistant' as const, content: 'done', turnId: 'turn1' }]
+    };
+    const stamped = applyBackendEventToThread(
+      settled,
+      event('item/completed', {
+        threadId: 't1',
+        turnId: 'turn1',
+        item: { type: 'compaction', id: 'compaction-turn1-post', status: 'ok' }
+      })
+    )!;
+    expect(stamped.messages[0].activity).toEqual([
+      { id: 'compaction-turn1-post', kind: 'tool', type: 'compaction', status: 'ok' }
+    ]);
+    expect(stamped.running).toBe(false);
+
+    // Replaying the same event must not duplicate the row.
+    expect(
+      applyBackendEventToThread(
+        stamped,
+        event('item/completed', {
+          threadId: 't1',
+          turnId: 'turn1',
+          item: { type: 'compaction', id: 'compaction-turn1-post', status: 'ok' }
+        })
+      )
+    ).toBeNull();
+
+    // A compaction for an unknown turn is dropped, not crashed on.
+    expect(
+      applyBackendEventToThread(
+        settled,
+        event('item/completed', {
+          threadId: 't1',
+          turnId: 'ghost',
+          item: { type: 'compaction', id: 'compaction-ghost-post', status: 'ok' }
+        })
+      )
+    ).toBeNull();
+  });
+
   it('stamps the failed turn id on the error bubble only when its user message exists', () => {
     // With a user bubble carrying the turn id, the error bubble is retryable.
     const withUser = {

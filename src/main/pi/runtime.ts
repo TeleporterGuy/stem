@@ -398,6 +398,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private turnEntryIds = new Map<string, string>();
   /** The turn currently streaming on the foreground process (one at a time). */
   private currentTurn: TurnContext | null = null;
+  /**
+   * The last turn that settled, so post-run auto-compaction (which pi runs AFTER
+   * agent_end, when no live turn exists) can still be surfaced on its bubble.
+   */
+  private lastSettledTurn: { threadId: string; turnId: string } | null = null;
   /** Pending stem-admin approvals, keyed by the bridge's extension_ui_request id. */
   private adminApprovals = new Set<string>();
   /** Immutable proposal snapshot paired with each pending admin approval. */
@@ -847,6 +852,22 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       }
       if (entry.type === 'thinking_level_change' && entry.thinkingLevel) {
         effortNow = entry.thinkingLevel;
+        continue;
+      }
+      if (entry.type === 'compaction') {
+        // Replay the condense as an activity row where it happened: after a settled
+        // reply → stamp that bubble (post-run threshold compaction); mid-turn →
+        // ride with the upcoming reply. When the turn's sqlite activity exists it
+        // wins below and already carries the live-captured row, so no duplicate.
+        const row: ActivityItem = {
+          id: `compaction-${entry.id ?? messages.length}`,
+          kind: 'tool',
+          type: 'compaction',
+          status: 'ok'
+        };
+        const last = messages[messages.length - 1];
+        if (last?.role === 'assistant') last.activity = [...(last.activity ?? []), row];
+        else pendingActivity.push(row);
         continue;
       }
       if (entry.type !== 'message' || !entry.message) continue;
@@ -1487,6 +1508,20 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       this.releaseForeground();
       return;
     }
+    // Post-run threshold compaction: pi checks context size AFTER agent_end (which
+    // settled the turn here), so these events arrive with no live TurnContext.
+    // Stamp a settled "condensed" row onto the just-finished bubble so the condense
+    // is visible; compaction_start is skipped (nothing to animate on a settled turn).
+    if (!this.currentTurn && ev.type === 'compaction_end' && this.lastSettledTurn) {
+      const { threadId, turnId } = this.lastSettledTurn;
+      const failed = ev.aborted === true || typeof ev.errorMessage === 'string';
+      this.emitEvent('item/completed', {
+        item: { type: 'compaction', id: `compaction-${turnId}-post`, status: failed ? 'error' : 'ok' },
+        threadId,
+        turnId
+      });
+      return;
+    }
     if (!this.currentTurn) return;
     const turn = this.currentTurn;
     // Memory privacy: if this turn reads inside a memorize:false connected folder,
@@ -1529,6 +1564,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       this.emitEvent('skills/changed');
     }
     this.currentTurn = null;
+    this.lastSettledTurn = { threadId: turn.threadId, turnId: turn.turnId };
     // Map this live turn's minted id to its persisted entry id so a later
     // fork/edit targets the right pi entry — and persist the turn's timing.
     void this.recordTurnEntry(turn);

@@ -323,6 +323,27 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       });
       break;
     }
+    // pi condensing the conversation mid-run (context-overflow recovery, or the
+    // pre-send threshold check) — shown as an activity row like any tool call.
+    // Post-run threshold compaction arrives after the turn settled and is handled
+    // by PiRuntime instead (no live TurnContext exists by then).
+    case 'compaction_start': {
+      const n = ctx.activity.filter((a) => a.type === 'compaction').length;
+      const id = `compaction-${turnId}-${n}`;
+      ctx.activity.push({ id, kind: 'tool', type: 'compaction', status: 'running' });
+      out.push({ method: 'item/started', params: { item: { type: 'compaction', id }, threadId, turnId } });
+      break;
+    }
+    case 'compaction_end': {
+      const entry = [...ctx.activity].reverse().find((a) => a.type === 'compaction' && a.status === 'running');
+      if (!entry) break; // an end without a tracked start — nothing to flip
+      entry.status = ev.aborted === true || typeof ev.errorMessage === 'string' ? 'error' : 'ok';
+      out.push({
+        method: 'item/completed',
+        params: { item: { type: 'compaction', id: entry.id, status: entry.status }, threadId, turnId }
+      });
+      break;
+    }
     case 'message_end': {
       const msg = ev.message as PiMessage | undefined;
       if (msg?.role !== 'assistant') break; // ignore the user message echo

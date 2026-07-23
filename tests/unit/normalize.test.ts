@@ -62,6 +62,41 @@ describe('normalize tool activity', () => {
   });
 });
 
+describe('normalize compaction activity', () => {
+  it('tracks a mid-run compaction from start to successful end', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    const start = normalizePiEvent(ev({ type: 'compaction_start', reason: 'overflow' }), ctx);
+    expect(start.events[0]).toMatchObject({
+      method: 'item/started',
+      params: { item: { type: 'compaction', id: 'compaction-turn1-0' } }
+    });
+    expect(ctx.activity).toEqual([{ id: 'compaction-turn1-0', kind: 'tool', type: 'compaction', status: 'running' }]);
+
+    const end = normalizePiEvent(ev({ type: 'compaction_end', reason: 'overflow', aborted: false, result: {} }), ctx);
+    expect(end.events[0]).toMatchObject({
+      method: 'item/completed',
+      params: { item: { type: 'compaction', id: 'compaction-turn1-0', status: 'ok' } }
+    });
+    expect(ctx.activity[0].status).toBe('ok');
+  });
+
+  it('flags a failed compaction end', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(ev({ type: 'compaction_start', reason: 'overflow' }), ctx);
+    normalizePiEvent(
+      ev({ type: 'compaction_end', reason: 'overflow', aborted: false, errorMessage: 'recovery failed' }),
+      ctx
+    );
+    expect(ctx.activity[0].status).toBe('error');
+  });
+
+  it('ignores a compaction end without a tracked start', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    const end = normalizePiEvent(ev({ type: 'compaction_end', reason: 'threshold', aborted: false }), ctx);
+    expect(end.events).toHaveLength(0);
+  });
+});
+
 describe('normalize turn outcome', () => {
   const assistantEnd = (msg: Record<string, unknown>) =>
     ev({ type: 'message_end', message: { role: 'assistant', ...msg } });

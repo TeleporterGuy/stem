@@ -41,6 +41,7 @@ export function settledActivityLabel(type: string, name?: string, detail?: strin
     const tool = (name ?? '').split('__').filter(Boolean).pop() ?? name;
     return `Used ${tool}${on}`;
   }
+  if (type === 'compaction') return 'Condensed chat history to free up space';
   if (name) return `Used ${name}${on}`;
   switch (type) {
     case 'commandExecution':
@@ -76,6 +77,8 @@ export function activityLabel(type: string, name?: string, detail?: string): str
     case 'fileChange':
     case 'file_change':
       return 'Editing files…';
+    case 'compaction':
+      return 'Condensing chat history…';
     default:
       return 'Working…';
   }

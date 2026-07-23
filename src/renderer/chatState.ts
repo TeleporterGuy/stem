@@ -272,7 +272,24 @@ export function applyBackendEventToThread(
       if (p.item?.type !== 'agentMessage') {
         // A tool call finished — flip its row's status.
         const idx = state.activities.findIndex((a) => a.id === p.item?.id);
-        if (idx === -1) return null;
+        if (idx === -1) {
+          // Post-run compaction: pi condensed the conversation AFTER the turn
+          // settled (live activity list already cleared) — stamp a settled row
+          // straight onto the turn's bubble so the condense is visible.
+          if (p.item?.type === 'compaction' && p.item.id) {
+            const mid = `assistant-${p.turnId}`;
+            const i = state.messages.findIndex((m) => m.id === mid);
+            if (i === -1 || state.messages[i].activity?.some((a) => a.id === p.item.id)) return null;
+            const row: ActivityItem = { id: p.item.id, kind: 'tool', type: 'compaction', status: p.item.status ?? 'ok' };
+            return {
+              ...state,
+              messages: state.messages.map((m, j) =>
+                j === i ? { ...m, activity: [...(m.activity ?? []), row] } : m
+              )
+            };
+          }
+          return null;
+        }
         const activities = state.activities.map((a, i) =>
           i === idx ? { ...a, status: p.item.status ?? 'ok', detail: p.item.detail ?? a.detail } : a
         );
