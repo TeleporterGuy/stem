@@ -536,6 +536,201 @@ describe('readThread meta hydration', () => {
   });
 });
 
+describe('scheduled-run model restore', () => {
+  // pi never restores a session's persisted model on switch_session (the spawn-time
+  // --model pins every runtime rebuild), so a scheduled run — which carries no
+  // renderer-selected model — silently executed on the app default. First hit:
+  // a morning task on a gpt-5.6-sol thread ran on the 128k-context spark default
+  // and blew the context window mid-turn.
+  const sessionLines = [
+    { type: 'session', id: 'sched-1', timestamp: '2026-07-23T22:00:00.000Z', cwd: '/tmp' },
+    { type: 'model_change', id: 'mc1', provider: 'openai-codex', modelId: 'gpt-5.3-codex-spark' },
+    { type: 'thinking_level_change', id: 'tl1', thinkingLevel: 'medium' },
+    { type: 'model_change', id: 'mc2', provider: 'openai-codex', modelId: 'gpt-5.6-sol' },
+    { type: 'thinking_level_change', id: 'tl2', thinkingLevel: 'high' },
+    { type: 'message', id: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+    // A prior scheduled run that executed on the wrong model persists that model on
+    // its assistant message — it must NOT poison the resolution (model_change wins).
+    {
+      type: 'message',
+      id: 'a1',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'ran' }],
+        provider: 'openai-codex',
+        model: 'gpt-5.3-codex-spark'
+      }
+    }
+  ];
+
+  type Internal = {
+    ensureStarted: () => Promise<void>;
+    buildMessage: () => Promise<{ message: string; images: unknown[] }>;
+    sessionFiles: Map<string, string>;
+    threadTurnSettings: (threadId: string) => Promise<{ model?: string; effort?: string }>;
+    proc: {
+      running: boolean;
+      request: (cmd: Record<string, unknown>) => Promise<{ success: boolean; error?: string; data?: unknown }>;
+    };
+  };
+
+  async function scheduledRuntime(extraLines: object[] = []): Promise<{ runtime: PiRuntime; internal: Internal; requests: Array<Record<string, unknown>> }> {
+    const { runtime, sessions } = await tempRuntime();
+    const session = join(sessions, 'sched.jsonl');
+    await writeFile(session, [...sessionLines, ...extraLines].map((l) => JSON.stringify(l)).join('\n'));
+    const internal = runtime as unknown as Internal;
+    internal.ensureStarted = async () => undefined;
+    internal.buildMessage = async () => ({ message: 'scheduled prompt', images: [] });
+    internal.sessionFiles.set('sched-1', session);
+    const requests: Array<Record<string, unknown>> = [];
+    internal.proc = {
+      running: true,
+      request: async (cmd) => {
+        requests.push(cmd);
+        if (cmd.type === 'get_available_models') {
+          return {
+            success: true,
+            data: { models: [{ id: 'gpt-5.6-sol', provider: 'openai-codex', contextWindow: 128000 }] }
+          };
+        }
+        return { success: true };
+      }
+    };
+    return { runtime, internal, requests };
+  }
+
+  it('resolves the last explicitly chosen model/effort, ignoring assistant-message models', async () => {
+    const { internal } = await scheduledRuntime();
+    await expect(internal.threadTurnSettings('sched-1')).resolves.toMatchObject({
+      model: 'openai-codex/gpt-5.6-sol',
+      effort: 'high'
+    });
+  });
+
+  it('re-applies the thread model and effort before the prompt of a scheduled turn', async () => {
+    const { runtime, requests } = await scheduledRuntime();
+    await runtime.startTurn({
+      input: 'check the news',
+      threadId: 'sched-1',
+      scheduled: { at: '2026-07-24T06:00:00.000Z', taskId: 'task-1' }
+    });
+
+    const types = requests.map((r) => r.type);
+    expect(requests.find((r) => r.type === 'set_model')).toMatchObject({
+      provider: 'openai-codex',
+      modelId: 'gpt-5.6-sol'
+    });
+    expect(requests.find((r) => r.type === 'set_thinking_level')).toMatchObject({ level: 'high' });
+    expect(types.indexOf('set_model')).toBeLessThan(types.indexOf('prompt'));
+    expect(types.indexOf('set_thinking_level')).toBeLessThan(types.indexOf('prompt'));
+  });
+
+  it('falls back to the active model instead of failing the run when set_model is rejected', async () => {
+    const { runtime, internal, requests } = await scheduledRuntime();
+    const base = internal.proc.request;
+    internal.proc.request = async (cmd) => {
+      if (cmd.type === 'set_model') {
+        requests.push(cmd);
+        return { success: false, error: 'model unavailable' };
+      }
+      return base(cmd);
+    };
+
+    await expect(
+      runtime.startTurn({
+        input: 'check the news',
+        threadId: 'sched-1',
+        scheduled: { at: '2026-07-24T06:00:00.000Z', taskId: 'task-1' }
+      })
+    ).resolves.toMatchObject({ threadId: 'sched-1' });
+    expect(requests.map((r) => r.type)).toContain('prompt');
+  });
+
+  it('leaves interactive turns on the renderer-selected model', async () => {
+    const { runtime, requests } = await scheduledRuntime();
+    await runtime.startTurn({ input: 'hello', threadId: 'sched-1', model: 'openai-codex/gpt-5.6-terra' });
+    expect(requests.find((r) => r.type === 'set_model')).toMatchObject({ modelId: 'gpt-5.6-terra' });
+  });
+
+  // Scheduled pre-run condense: pi's global compaction reserve can't scale per
+  // model, so startTurn condenses the thread itself when its estimated context
+  // exceeds the run model's window minus a proportional reserve (window/4,
+  // clamped to [16384, 65536] — 32000 for the 128k catalog model above).
+  const usageAssistant = (totalTokens: number) => ({
+    type: 'message',
+    id: 'a-usage',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'done' }],
+      provider: 'openai-codex',
+      model: 'gpt-5.6-sol',
+      stopReason: 'stop',
+      usage: { input: totalTokens - 500, output: 500, cacheRead: 0, cacheWrite: 0, totalTokens }
+    }
+  });
+
+  it('condenses an oversized thread before a scheduled run', async () => {
+    const { runtime, requests } = await scheduledRuntime([usageAssistant(119_000)]);
+    await runtime.startTurn({
+      input: 'check the news',
+      threadId: 'sched-1',
+      scheduled: { at: '2026-07-25T06:00:00.000Z', taskId: 'task-1' }
+    });
+
+    const types = requests.map((r) => r.type);
+    expect(types).toContain('compact');
+    expect(types.indexOf('compact')).toBeLessThan(types.indexOf('prompt'));
+    expect(types.indexOf('set_model')).toBeLessThan(types.indexOf('compact'));
+  });
+
+  it('does not condense when the thread fits the run model comfortably', async () => {
+    const { runtime, requests } = await scheduledRuntime([usageAssistant(50_000)]);
+    await runtime.startTurn({
+      input: 'check the news',
+      threadId: 'sched-1',
+      scheduled: { at: '2026-07-25T06:00:00.000Z', taskId: 'task-1' }
+    });
+
+    expect(requests.map((r) => r.type)).not.toContain('compact');
+  });
+});
+
+describe('interactive overflow self-heal', () => {
+  const OVERFLOW = 'Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.';
+
+  async function settledTurn(patch: { errored?: boolean; errorMessage?: string; isScheduled?: boolean }) {
+    const { runtime } = await tempRuntime();
+    const compacted: string[] = [];
+    (runtime as unknown as { compactThread: (id: string) => Promise<void> }).compactThread = async (id) => {
+      compacted.push(id);
+    };
+    const internal = runtime as unknown as {
+      settleTurn: (turn: ReturnType<typeof newTurnContext>, now: number) => void;
+    };
+    const turn = newTurnContext('thread-x', 'turn-x');
+    Object.assign(turn, patch);
+    internal.settleTurn(turn, Date.now());
+    await new Promise((r) => setTimeout(r, 0));
+    return compacted;
+  }
+
+  it('condenses the thread after an interactive turn dies on a context overflow', async () => {
+    await expect(settledTurn({ errored: true, errorMessage: OVERFLOW })).resolves.toEqual(['thread-x']);
+  });
+
+  it('leaves scheduled turns to the scheduler self-heal', async () => {
+    await expect(settledTurn({ errored: true, errorMessage: OVERFLOW, isScheduled: true })).resolves.toEqual([]);
+  });
+
+  it('does not condense after a non-overflow failure', async () => {
+    await expect(settledTurn({ errored: true, errorMessage: 'pi exploded' })).resolves.toEqual([]);
+  });
+
+  it('does not condense after a clean turn', async () => {
+    await expect(settledTurn({})).resolves.toEqual([]);
+  });
+});
+
 describe('skillSlugForPath', () => {
   it('maps nested paths to the first segment under the skills root and rejects outsiders', async () => {
     const root = await mkdtemp(join(tmpdir(), 'stem-skill-slug-'));

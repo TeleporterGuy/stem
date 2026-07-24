@@ -193,6 +193,15 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     return { title: thread?.title ?? '', messages: [...(thread?.messages ?? [])] };
   }
 
+  async threadTurnSettings(_threadId: string): Promise<{ model?: string; effort?: string }> {
+    // The fake catalog has exactly one model; every thread "runs on" it.
+    return { model: MODEL.id };
+  }
+
+  async compactThread(_threadId: string): Promise<void> {
+    // Nothing to condense — fake threads carry no real context.
+  }
+
   async resumeThread(_threadId: string): Promise<void> {}
 
   async renameThread(threadId: string, name: string): Promise<void> {

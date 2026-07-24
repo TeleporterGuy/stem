@@ -9,7 +9,8 @@ import type {
   ScheduleTaskRequest,
   ScheduledTask,
   StartTurnInput,
-  StartTurnResult
+  StartTurnResult,
+  ThreadTurnSettings
 } from '../../shared/types';
 
 /**
@@ -115,6 +116,19 @@ export interface ChatBackend extends EventEmitter {
   isInternalThread(threadId: string): boolean;
   /** True when the active turn read a memorize:false connected folder → skip Recall capture. */
   isCaptureSuppressed(threadId: string): boolean;
+
+  /**
+   * The model/effort a scheduled run of this thread would use: the thread's last
+   * explicitly selected model, not whatever the process happens to be on. Shown
+   * in the Tasks tab and applied by startTurn for scheduled runs.
+   */
+  threadTurnSettings(threadId: string): Promise<ThreadTurnSettings>;
+
+  /**
+   * Condense a thread's context (summarize older messages). Used by the
+   * scheduler's overflow self-heal before retrying a failed run.
+   */
+  compactThread(threadId: string): Promise<void>;
 
   // thread CRUD
   listThreads(): Promise<ChatSummary[]>;

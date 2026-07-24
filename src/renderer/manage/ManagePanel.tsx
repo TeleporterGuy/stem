@@ -77,7 +77,7 @@ function ManagePanelImpl({
         {tab === 'memory' && <MemoryTab models={models} activeFacts={activeFacts} />}
         {tab === 'mcp' && <McpSkillsTab models={models} />}
         {tab === 'folders' && <FoldersTab models={models} />}
-        {tab === 'tasks' && <TasksTab onOpenChat={chatProps.onOpen} />}
+        {tab === 'tasks' && <TasksTab onOpenChat={chatProps.onOpen} models={models} />}
         {tab === 'settings' && (
           <SettingsTab
             models={models}

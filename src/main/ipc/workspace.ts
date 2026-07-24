@@ -92,6 +92,8 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
 
   // Scheduled tasks. Mutations return the fresh list (like the cfolders handlers).
   handleIpc('tasks:list', (): ScheduledTask[] => deps.scheduler()?.snapshot() ?? []);
+  // What a scheduled run of this thread would execute on (Tasks tab "runs on" chip).
+  handleIpc('tasks:threadSettings', (_e, threadId: string) => deps.runtime().threadTurnSettings(threadId));
   handleIpc('tasks:setEnabled', (_e, id: string, enabled: boolean) => {
     const scheduler = deps.scheduler();
     return scheduler ? scheduler.setEnabled(id, enabled) : [];

@@ -10,7 +10,7 @@ const STORE = join(tmpdir(), `stem-tasks-${process.pid}.json`);
 process.env.STEM_TASKS_STORE = STORE;
 
 import type { ScheduledTask, StartTurnInput } from '../../src/shared/types';
-import { TaskScheduler } from '../../src/main/scheduler';
+import { isContextOverflowError, TaskScheduler } from '../../src/main/scheduler';
 import { readTasks, saveTasks } from '../../src/main/workspace/tasks';
 
 // A minimal ChatBackend stand-in: records startTurn calls, emits the turn/completed
@@ -28,7 +28,37 @@ class FakeRuntime extends EventEmitter {
   async listThreads() {
     return [...this.threadIds].map((threadId) => ({ threadId, title: '', folderId: null, createdAt: 0, updatedAt: 0 }));
   }
+  compacts: string[] = [];
+  async compactThread(threadId: string) {
+    this.compacts.push(threadId);
+  }
 }
+
+// FakeRuntime whose runs settle per a scripted outcome list: an error string fails
+// that run with turn/failed carrying it; null completes it.
+class ScriptedRuntime extends FakeRuntime {
+  constructor(private readonly outcomes: (string | null)[]) {
+    super();
+  }
+  override async startTurn(input: StartTurnInput) {
+    this.starts.push(input);
+    const turnId = `turn-${this.starts.length}`;
+    const error = this.outcomes[this.starts.length - 1] ?? null;
+    setTimeout(() => {
+      if (error) {
+        this.emit('event', {
+          method: 'turn/failed',
+          params: { threadId: input.threadId, turn: { id: turnId }, error }
+        });
+      } else {
+        this.emit('event', { method: 'turn/completed', params: { threadId: input.threadId, turn: { id: turnId } } });
+      }
+    }, 0);
+    return { threadId: input.threadId, turnId };
+  }
+}
+
+const OVERFLOW_ERROR = 'Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.';
 
 function makeScheduler(runtime: EventEmitter) {
   const changes: ScheduledTask[][] = [];
@@ -412,5 +442,84 @@ describe('TaskScheduler defer + preempt', () => {
     await vi.advanceTimersByTimeAsync(16_000);
     expect(runtime.starts).toHaveLength(1);
     scheduler.stop();
+  });
+});
+
+describe('overflow self-heal', () => {
+  it('condenses the thread and retries once when a run dies on a context overflow', async () => {
+    const runtime = new ScriptedRuntime([OVERFLOW_ERROR, null]);
+    const { scheduler, runs } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'morning news', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await flush();
+    await flush();
+
+    expect(runtime.compacts).toEqual(['t1']);
+    expect(runtime.starts).toHaveLength(2);
+    // Both attempts announce themselves so an open thread shows the run rows.
+    expect(runs).toHaveLength(2);
+    expect((await readTasks())[0].lastStatus).toBe('ok');
+    scheduler.stop();
+  });
+
+  it('does not retry a non-overflow failure', async () => {
+    const runtime = new ScriptedRuntime(['pi exploded', null]);
+    const { scheduler } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await flush();
+    await flush();
+
+    expect(runtime.compacts).toEqual([]);
+    expect(runtime.starts).toHaveLength(1);
+    expect((await readTasks())[0].lastStatus).toBe('failed');
+    scheduler.stop();
+  });
+
+  it('retries at most once per firing even when the retry overflows again', async () => {
+    const runtime = new ScriptedRuntime([OVERFLOW_ERROR, OVERFLOW_ERROR, null]);
+    const { scheduler } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await flush();
+    await flush();
+
+    expect(runtime.compacts).toEqual(['t1']);
+    expect(runtime.starts).toHaveLength(2);
+    expect((await readTasks())[0].lastStatus).toBe('failed');
+    scheduler.stop();
+  });
+
+  it('records a failure when the condense itself fails, without retrying', async () => {
+    const runtime = new ScriptedRuntime([OVERFLOW_ERROR, null]);
+    runtime.compactThread = async () => {
+      throw new Error('nothing to compact');
+    };
+    const { scheduler } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await flush();
+    await flush();
+
+    expect(runtime.starts).toHaveLength(1);
+    expect((await readTasks())[0].lastStatus).toBe('failed');
+    scheduler.stop();
+  });
+});
+
+describe('isContextOverflowError', () => {
+  it('recognizes provider overflow shapes and rejects lookalikes', () => {
+    expect(isContextOverflowError(OVERFLOW_ERROR)).toBe(true);
+    expect(isContextOverflowError('prompt is too long: 213462 tokens > 200000 maximum')).toBe(true);
+    expect(isContextOverflowError("Requested token count exceeds the model's maximum context length of 131072 tokens")).toBe(true);
+    expect(isContextOverflowError('tokens to keep from the initial prompt is greater than the context length')).toBe(true);
+    expect(isContextOverflowError('the request exceeds the available context size, try increasing it')).toBe(true);
+    expect(isContextOverflowError(undefined)).toBe(false);
+    expect(isContextOverflowError('pi exploded')).toBe(false);
+    expect(isContextOverflowError('Rate limit reached, token limit exceeded for this minute')).toBe(false);
   });
 });

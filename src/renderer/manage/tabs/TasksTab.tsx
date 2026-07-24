@@ -1,10 +1,22 @@
 import { useEffect, useState } from 'react';
 import { Trash2, Play, Pause, ExternalLink } from 'lucide-react';
 import type {
-  ScheduledTask
+  ModelSummary,
+  ScheduledTask,
+  ThreadTurnSettings
 } from '../../../shared/types';
+import { EFFORT_LABELS } from '../../modelLabels';
 
 // ---- Tasks tab: scheduled autonomous re-runs ----
+
+/** "GPT-5.6 Sol · High" — what a run of this task will execute on. */
+function runsOnLabel(settings: ThreadTurnSettings | undefined, models: ModelSummary[]): string | null {
+  if (!settings?.model) return null;
+  const m = models.find((x) => x.id === settings.model);
+  const name = m ? m.displayName : settings.model.split('/').pop() ?? settings.model;
+  const effort = settings.effort ? (EFFORT_LABELS[settings.effort] ?? settings.effort) : null;
+  return effort ? `${name} · ${effort}` : name;
+}
 
 /** Human-readable schedule, e.g. "cron 0 8 * * 1-5" or "once · Jul 1, 08:00". */
 function describeSchedule(task: ScheduledTask): string {
@@ -20,8 +32,17 @@ function formatWhen(iso: string | null | undefined): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-export function TasksTab({ onOpenChat }: { onOpenChat: (threadId: string) => void }) {
+export function TasksTab({
+  onOpenChat,
+  models
+}: {
+  onOpenChat: (threadId: string) => void;
+  models: ModelSummary[];
+}) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+  // Each task runs on its thread's persisted model/effort — resolved lazily per
+  // thread so the label stays honest after the user switches the chat's model.
+  const [settings, setSettings] = useState<Record<string, ThreadTurnSettings>>({});
   // Task prompts can be long; show a clamped preview and let the row expand in place.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const toggleExpanded = (id: string) =>
@@ -38,6 +59,19 @@ export function TasksTab({ onOpenChat }: { onOpenChat: (threadId: string) => voi
     return window.stem.onTasksChanged(setTasks);
   }, []);
 
+  useEffect(() => {
+    let stale = false;
+    const ids = [...new Set(tasks.map((t) => t.threadId))];
+    void Promise.all(
+      ids.map(async (id) => [id, await window.stem.taskThreadSettings(id).catch(() => ({}))] as const)
+    ).then((entries) => {
+      if (!stale) setSettings(Object.fromEntries(entries));
+    });
+    return () => {
+      stale = true;
+    };
+  }, [tasks]);
+
   const toggle = async (t: ScheduledTask) => setTasks(await window.stem.setTaskEnabled(t.id, !t.enabled));
   const runNow = async (t: ScheduledTask) => setTasks(await window.stem.runTaskNow(t.id));
   const remove = async (t: ScheduledTask) => setTasks(await window.stem.deleteTask(t.id));
@@ -53,7 +87,9 @@ export function TasksTab({ onOpenChat }: { onOpenChat: (threadId: string) => voi
         </p>
       ) : (
         <div className="group">
-          {tasks.map((t) => (
+          {tasks.map((t) => {
+            const runsOn = runsOnLabel(settings[t.threadId], models);
+            return (
             <div key={t.id} className={`task-item${t.enabled ? '' : ' paused'}`}>
               <div className="task-head">
                 <span className="row-main">
@@ -118,9 +154,11 @@ export function TasksTab({ onOpenChat }: { onOpenChat: (threadId: string) => voi
                     )}
                   </>
                 )}
+                {runsOn && <span title="The model this task's runs execute on — the one selected in its chat">{' · '}{runsOn}</span>}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

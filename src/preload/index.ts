@@ -104,6 +104,7 @@ const api: StemApi = {
   pickDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
 
   listTasks: () => ipcRenderer.invoke('tasks:list'),
+  taskThreadSettings: (threadId: string) => ipcRenderer.invoke('tasks:threadSettings', threadId),
   setTaskEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke('tasks:setEnabled', id, enabled),
   runTaskNow: (id: string) => ipcRenderer.invoke('tasks:runNow', id),
   deleteTask: (id: string) => ipcRenderer.invoke('tasks:delete', id),

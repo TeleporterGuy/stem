@@ -542,6 +542,17 @@ export type TaskSchedule =
   | { kind: 'cron'; expr: string }
   | { kind: 'once'; at: string };
 
+/**
+ * The model/effort a scheduled run of a thread would use — the thread's last
+ * explicitly selected model (`provider/modelId`) and thinking level, resolved
+ * from its session file. Either field is absent when the thread never recorded
+ * one (the run then stays on the backend's default).
+ */
+export interface ThreadTurnSettings {
+  model?: string;
+  effort?: string;
+}
+
 export interface ScheduledTask {
   /** Stable id (randomUUID). */
   id: string;
@@ -1416,6 +1427,8 @@ export interface StemApi {
 
   // Scheduled tasks. Mutations return the fresh list (like the folders APIs).
   listTasks(): Promise<ScheduledTask[]>;
+  /** The model/effort a scheduled run of this thread would use (Tasks tab "runs on" chip). */
+  taskThreadSettings(threadId: string): Promise<ThreadTurnSettings>;
   /** Pause/resume a task without deleting it. Returns the fresh list. */
   setTaskEnabled(id: string, enabled: boolean): Promise<ScheduledTask[]>;
   /** Run a task immediately (off-schedule). Returns the fresh list. */

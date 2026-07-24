@@ -7,6 +7,7 @@ import type {
   ScheduleTaskRequest,
   TaskSchedule
 } from '../../shared/types';
+import { isContextOverflowError } from '../backend/overflow';
 import { isValidCron, nextAfter } from './cron';
 import { readTasks, saveTasks, titleFromPrompt } from '../workspace/tasks';
 
@@ -47,6 +48,8 @@ const IDLE_POLL_MS = 15 * 1000;
 const DEFER_CAP_MS = 30 * 60 * 1000; // 30m
 // A run preempted by the user retries after idle at most this many times per firing.
 const MAX_REQUEUES = 3;
+
+export { isContextOverflowError };
 
 export class TaskScheduler {
   private tasks: ScheduledTask[] = [];
@@ -350,8 +353,40 @@ export class TaskScheduler {
         // A preempt that landed while startTurn was still building: interrupt now.
         if (run.preempted && this.opts.interrupt) void this.opts.interrupt(turnId).catch(() => undefined);
         this.opts.onRun({ threadId: task.threadId, turnId, taskId: task.id, prompt: task.prompt, at: atIso });
-        const status = await this.waitForSettle(turnId, task.threadId);
-        task.lastStatus = status;
+        let settle = await this.waitForSettle(turnId, task.threadId);
+        // Overflow self-heal: a run that died because the thread outgrew the
+        // model's context window is not a lost cause — condense the thread and
+        // re-run once. (pi has its own compact-and-retry for this, but it has
+        // been observed to fail silently; this backstop is model-agnostic.)
+        if (settle.status === 'failed' && !run.preempted && isContextOverflowError(settle.error)) {
+          const compacted = await this.opts.runtime
+            .compactThread(task.threadId)
+            .then(() => true)
+            .catch(() => false);
+          if (compacted) {
+            const retry = await this.opts.runtime.startTurn({
+              input: task.prompt,
+              threadId: task.threadId,
+              webSearch: true,
+              scheduled: { at: atIso, taskId: task.id }
+            });
+            if (retry.turnId) {
+              run.turnId = retry.turnId;
+              if (run.preempted && this.opts.interrupt) {
+                void this.opts.interrupt(retry.turnId).catch(() => undefined);
+              }
+              this.opts.onRun({
+                threadId: task.threadId,
+                turnId: retry.turnId,
+                taskId: task.id,
+                prompt: task.prompt,
+                at: atIso
+              });
+              settle = await this.waitForSettle(retry.turnId, task.threadId);
+            }
+          }
+        }
+        task.lastStatus = settle.status;
       } else {
         task.lastStatus = 'ok';
       }
@@ -395,16 +430,18 @@ export class TaskScheduler {
     await this.persistAndArm();
   }
 
-  /** Resolve when the given turn settles (completed/failed/aborted), via backend events. */
-  private waitForSettle(turnId: string, threadId: string): Promise<'ok' | 'failed'> {
+  /** Resolve when the given turn settles (completed/failed/aborted), via backend events.
+   *  A failure carries the turn's terminal error text (when the backend reported one)
+   *  so runTask can recognize context-overflow deaths and self-heal. */
+  private waitForSettle(turnId: string, threadId: string): Promise<{ status: 'ok' | 'failed'; error?: string }> {
     return new Promise((resolve) => {
       let done = false;
-      const finish = (status: 'ok' | 'failed') => {
+      const finish = (status: 'ok' | 'failed', error?: string) => {
         if (done) return;
         done = true;
         clearTimeout(timeout);
         this.opts.runtime.off('event', onEvent);
-        resolve(status);
+        resolve({ status, ...(error ? { error } : {}) });
       };
       const onEvent = (event: BackendEventEnvelope) => {
         // Process exits are runtime-wide and intentionally carry no thread/turn
@@ -414,13 +451,14 @@ export class TaskScheduler {
           finish('failed');
           return;
         }
-        const p = event.params as { threadId?: string; turn?: { id?: string } } | undefined;
+        const p = event.params as { threadId?: string; turn?: { id?: string }; error?: string } | undefined;
         // Turns serialize, so threadId alone is sufficient, but match the turn id
         // when present for precision.
         const matches = p?.turn?.id ? p.turn.id === turnId : p?.threadId === threadId;
         if (!matches) return;
         if (event.method === 'turn/completed') finish('ok');
-        else if (event.method === 'turn/failed' || event.method === 'turn/aborted') finish('failed');
+        else if (event.method === 'turn/failed') finish('failed', typeof p?.error === 'string' ? p.error : undefined);
+        else if (event.method === 'turn/aborted') finish('failed');
       };
       const timeout = setTimeout(() => {
         // Mark the run failed promptly, but also abort its backend turn so a hung
