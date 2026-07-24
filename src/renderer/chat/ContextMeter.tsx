@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { ChatMessage, ModelSummary, TurnUsage } from '../../shared/types';
 
 // Compact token count: 30118 → "30k", 1339 → "1.3k", 980 → "980". Keeps the meter
@@ -19,8 +20,9 @@ function formatExact(n: number): string {
  * model's context window (what the next turn will use). Renders nothing until both exist —
  * a fresh chat, or a model that doesn't report a window. Tooltip carries the exact split
  * plus the cumulative session cost summed over every assistant turn.
+ * Memoized: it lives in the composer, which re-renders per keystroke.
  */
-export function ContextMeter({
+export const ContextMeter = memo(function ContextMeter({
   messages,
   model
 }: {
@@ -67,4 +69,4 @@ export function ContextMeter({
       </span>
     </div>
   );
-}
+});

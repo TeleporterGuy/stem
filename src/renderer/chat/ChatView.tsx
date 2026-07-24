@@ -2,21 +2,16 @@ import {
   forwardRef,
   useCallback,
   useEffect,
-  useImperativeHandle,
   useMemo,
   useRef,
   useState,
   type ReactNode
 } from 'react';
 import {
-  Square,
-  ArrowUp,
-  Paperclip,
   User,
   Sparkles,
   AlertTriangle,
   File,
-  X,
   RotateCcw,
   Pencil,
   GitBranch,
@@ -24,28 +19,23 @@ import {
   Check,
   Trash2,
   ChevronRight,
-  Clock,
-  NotebookPen
+  Clock
 } from 'lucide-react';
 import type { ActivityItem, ChatMessage, EscapeAction, ModelSummary, TurnAttachment, TurnTiming } from '../../shared/types';
 import { ActivityRows, SourcesList } from './ActivityRows';
-import { ContextMeter } from './ContextMeter';
+import { Composer, type ComposerHandle } from './Composer';
 import { MdxView } from './MdxView';
 import { StreamingMdxView } from './StreamingMdxView';
-import { ShortcutHint, useShortcut } from '../shortcuts';
 import { HoverTip } from '../ui/InfoTip';
 import { MdxActionContext } from '../mdx/ActionContext';
 import { useAutoHideScroll } from '../hooks/useAutoHideScroll';
 import { EFFORT_LABELS } from '../modelLabels';
-import { NOTE_CONFIRM_MS, detectNoteTrigger, noteBodyValid, useNoteMode } from '../noteMode';
 
 const AVATAR: Record<ChatMessage['role'], { cls: string; icon: ReactNode; label: string }> = {
   user: { cls: 'you', icon: <User size={15} />, label: 'You' },
   assistant: { cls: 'stem', icon: <Sparkles size={15} />, label: 'Stem' },
   system: { cls: 'sys', icon: <AlertTriangle size={15} />, label: 'Error' }
 };
-
-const MAX_COMPOSER_HEIGHT = 180;
 
 // Starter prompts for the welcome screen — one per marquee capability (rich MDX
 // output, interactivity, cross-chat memory, plain drafting). mdxOnly starters
@@ -70,20 +60,6 @@ const STARTERS: { title: string; prompt: string; mdxOnly?: boolean }[] = [
     prompt: 'Draft a short standup update from these bullets: shipped the settings page, reviewing PR #42, blocked on API keys.'
   }
 ];
-
-// Read a File's bytes into a base64 TurnAttachment (for clipboard/dropped data
-// with no on-disk path). Module-level: it depends on nothing in the component.
-function fileToAttachment(file: File): Promise<TurnAttachment> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error);
-    reader.onload = () => {
-      const result = reader.result as string; // data:<mime>;base64,<data>
-      resolve({ name: file.name, dataBase64: result.split(',')[1] ?? '', mime: file.type });
-    };
-    reader.readAsDataURL(file);
-  });
-}
 
 // Labeled tooltip for the hover action icons. The native title tooltip is slow
 // (and easy to miss), so the icons explain themselves via the shared popup after
@@ -184,19 +160,28 @@ function formatTiming(t: TurnTiming): string | undefined {
   return parts.length ? parts.join(' · ') : undefined;
 }
 
+// Shared cached formatter — constructing an Intl.DateTimeFormat per call is one of
+// the slowest common ops in JS, and the timeline re-renders on every stream delta.
+const STAMP_FORMAT = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit'
+});
+
 // Hover-revealed authored time on a user bubble, e.g. "Jun 28, 14:09". The full
 // localized date/time rides in the span's title attribute.
 function formatStamp(iso: string): string | undefined {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return undefined;
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return STAMP_FORMAT.format(d);
 }
 
 // Local time-of-day for a scheduled run's collapsed header, e.g. "Jun 29, 09:00".
 function formatRunTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return 'scheduled';
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return STAMP_FORMAT.format(d);
 }
 
 // One rendered block: either a normal message, or a scheduled-run group (the run's
@@ -223,6 +208,52 @@ function buildTimelineGroups(messages: ChatMessage[]): TimelineGroup[] {
     }
   }
   return groups;
+}
+
+// Inline editor for a user message. Owns its working text so keystrokes re-render
+// only this box, not the whole timeline.
+function MessageEditBox({
+  initial,
+  onSave,
+  onCancel
+}: {
+  initial: string;
+  onSave: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState(initial);
+  return (
+    <div className="message-edit">
+      <textarea
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            onSave(text);
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        rows={1}
+      />
+      <div className="message-edit-actions">
+        <button type="button" className="push" onClick={onCancel}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => onSave(text)}
+          disabled={!text.trim()}
+        >
+          Save &amp; run
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatView({
@@ -258,16 +289,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   onDraftChange,
   onNoteSaved
 }: ChatViewProps, ref) {
-  const [draft, setDraft] = useState('');
-  const [attachments, setAttachments] = useState<TurnAttachment[]>([]);
-  const [dragOver, setDragOver] = useState(false);
-  // Two-stage Escape: after the first Escape stops the turn, `armed` lets a second
-  // Escape retract the just-stopped message. Cleared the moment the user acts
-  // (types, sends, blurs); a chat switch remounts ChatView, resetting it too.
-  const [armed, setArmed] = useState(false);
-  // Which user message is being edited inline, and its working text.
+  // Which user message is being edited inline (the working text lives in the box).
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState('');
   // Transient per-message UI: which bubble just got copied (check icon), and which
   // delete button is armed (first click → red; second click within 2.5s deletes).
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -291,7 +314,6 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     });
   }, []);
   const endRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useAutoHideScroll<HTMLDivElement>();
   // ChatView is keyed by the active chat, so it remounts on every switch. Jump
   // instantly to the bottom on that first paint (no scrolling through history);
@@ -303,74 +325,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     didInitialScroll.current = true;
   }, [messages, running]);
 
-  // Auto-grow the composer from one line up to a max, then scroll internally.
-  const resizeComposer = useCallback(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    const needed = el.scrollHeight;
-    el.style.height = `${Math.min(needed, MAX_COMPOSER_HEIGHT)}px`;
-    // Only show a scrollbar once content exceeds the max height.
-    el.style.overflowY = needed > MAX_COMPOSER_HEIGHT ? 'auto' : 'hidden';
-  }, []);
-
-  useEffect(() => {
-    resizeComposer();
-  }, [draft, resizeComposer]);
-
-  // Mirror the live draft to the Memory tab's fact preview while it's toggled on
-  // (and once when it flips on). No-op on the normal compose path.
-  useEffect(() => {
-    if (reportDraft && onDraftChange) onDraftChange(draft);
-  }, [draft, reportDraft, onDraftChange]);
-
-  // Apply a retract's restored text/attachments to the composer. Skips clobbering a
-  // follow-up the user began typing during streaming (the turn is still removed —
-  // we just drop the restored text in that case). Nonce-guarded so it applies once.
-  const lastRestoreNonce = useRef<number | null>(null);
-  useEffect(() => {
-    if (!pendingRestore || lastRestoreNonce.current === pendingRestore.nonce) return;
-    lastRestoreNonce.current = pendingRestore.nonce;
-    if (!draft.trim() && attachments.length === 0) {
-      setDraft(pendingRestore.text);
-      setAttachments(pendingRestore.attachments);
-      textareaRef.current?.focus();
-    }
-    onRestoreConsumed();
-  }, [pendingRestore, draft, attachments, onRestoreConsumed]);
-
-  // `/note` / `//` quick-note capture: saves the draft straight to memory, no turn.
-  const { noteMode, flash: noteFlash, enterNoteMode, exitNoteMode, toggleNoteMode, saveNote } = useNoteMode();
-
-  function submit() {
-    const text = draft.trim();
-    if (noteMode) {
-      // A note save never touches the backend, so it's allowed mid-turn.
-      if (!noteBodyValid(text)) return;
-      void saveNote(text).then((saved) => {
-        if (!saved) return;
-        setDraft('');
-        if (onNoteSaved) window.setTimeout(onNoteSaved, NOTE_CONFIRM_MS);
-      });
-      return;
-    }
-    if ((!text && attachments.length === 0) || running) return;
-    setArmed(false);
-    onSend(text, attachments);
-    setDraft('');
-    setAttachments([]);
-  }
-
-  function startEdit(m: ChatMessage) {
-    setEditingId(m.id);
-    setEditDraft(m.content);
-  }
-  function cancelEdit() {
-    setEditingId(null);
-    setEditDraft('');
-  }
-  function saveEdit(m: ChatMessage) {
-    const text = editDraft.trim();
+  function saveEdit(m: ChatMessage, rawText: string) {
+    const text = rawText.trim();
     if (!text) return;
     // Two edit paths: a real turn is rolled back and re-run; a failed send (no
     // turn ever existed) is spliced out locally and re-sent.
@@ -378,78 +334,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     else if (m.sendFailed) onEditFailedSend(m.id, text);
     else return;
     setEditingId(null);
-    setEditDraft('');
   }
-
-  const removeAttachment = useCallback((idx: number) => {
-    setAttachments((prev) => prev.filter((_, i) => i !== idx));
-  }, []);
-
-  // Pick files via the native dialog (paperclip button).
-  const pickFiles = useCallback(async () => {
-    const paths = await window.stem.openFiles();
-    if (!paths.length) return;
-    setAttachments((prev) => [
-      ...prev,
-      ...paths.map((p) => ({ name: p.split('/').pop() || p, path: p }))
-    ]);
-  }, []);
-
-  // Turn dropped/picked Files into composer attachments: prefer the on-disk path,
-  // falling back to base64 bytes for path-less data. Shared by drop + the overlay.
-  const addFilesToComposer = useCallback(async (files: File[]) => {
-    if (!files.length) return;
-    const next = await Promise.all(
-      files.map(async (f) => {
-        const path = window.stem.getPathForFile(f);
-        return path ? { name: f.name, path } : await fileToAttachment(f);
-      })
-    );
-    setAttachments((prev) => [...prev, ...next]);
-  }, []);
-
-  // App pushes overlay-dropped files ("Add to this conversation") in here.
-  useImperativeHandle(ref, () => ({ addAttachments: (files) => void addFilesToComposer(files) }), [
-    addFilesToComposer
-  ]);
-
-  async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const files = Array.from(e.clipboardData.files);
-    const images = files.filter((f) => f.type.startsWith('image/'));
-    if (!images.length) return; // let plain-text paste through untouched
-    e.preventDefault();
-    const next = await Promise.all(images.map(fileToAttachment));
-    setAttachments((prev) => [...prev, ...next]);
-  }
-
-  async function onDrop(e: React.DragEvent<HTMLDivElement>) {
-    e.preventDefault();
-    setDragOver(false);
-    await addFilesToComposer(Array.from(e.dataTransfer.files));
-  }
-
-  const hasFast = !!model?.serviceTiers.some((t) => t.id === 'priority');
-
-  // Composer shortcuts. Effort/format mirror the seg-ctls (inert while running, like
-  // the buttons themselves); ⌘. stops only when a turn is in flight.
-  useShortcut('cycle-effort', () => {
-    const efforts = model?.supportedEfforts ?? [];
-    if (running || efforts.length === 0) return;
-    const next = efforts[(efforts.indexOf(effort ?? '') + 1) % efforts.length];
-    onChangeEffort(next);
-  });
-  useShortcut('toggle-speed', () => {
-    if (running || !hasFast) return;
-    onChangeSpeed(serviceTier === 'priority' ? null : 'priority');
-  });
-  useShortcut('toggle-format', () => {
-    if (running) return;
-    onChangeFormat(format === 'mdx' ? 'md' : 'mdx');
-  });
-  useShortcut('attach', () => void pickFiles());
-  useShortcut('stop', () => {
-    if (running) onInterrupt();
-  });
 
   // Show the working indicator while a turn runs and no answer text is streaming
   // yet (reasoning / tool calls happen before the first token, when no assistant
@@ -539,36 +424,11 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
             <ActivityRows items={m.activity!} running={running && isStreaming} />
           )}
           {isEditing ? (
-            <div className="message-edit">
-              <textarea
-                autoFocus
-                value={editDraft}
-                onChange={(e) => setEditDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    saveEdit(m);
-                  } else if (e.key === 'Escape') {
-                    e.preventDefault();
-                    cancelEdit();
-                  }
-                }}
-                rows={1}
-              />
-              <div className="message-edit-actions">
-                <button type="button" className="push" onClick={cancelEdit}>
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => saveEdit(m)}
-                  disabled={!editDraft.trim()}
-                >
-                  Save &amp; run
-                </button>
-              </div>
-            </div>
+            <MessageEditBox
+              initial={m.content}
+              onSave={(text) => saveEdit(m, text)}
+              onCancel={() => setEditingId(null)}
+            />
           ) : renderRich ? (
             isStreaming ? (
               <StreamingMdxView text={m.content} />
@@ -636,7 +496,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                     type="button"
                     className="message-action"
                     aria-label={failedSend ? 'Edit & send again' : 'Edit & re-run'}
-                    onClick={() => startEdit(m)}
+                    onClick={() => setEditingId(m.id)}
                   >
                     <Pencil size={13} />
                   </button>
@@ -779,216 +639,28 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
         <div ref={endRef} />
       </div>
 
-      <div className="composer">
-        <div className="composer-controls">
-          {model && model.supportedEfforts.length > 0 && (
-            <div className="seg-ctl compact" role="group" aria-label="Reasoning effort">
-              <ShortcutHint id="cycle-effort" />
-              {model.supportedEfforts.map((e) => (
-                <button
-                  key={e}
-                  type="button"
-                  className={effort === e ? 'active' : ''}
-                  onClick={() => onChangeEffort(e)}
-                  disabled={running}
-                >
-                  {EFFORT_LABELS[e] ?? e}
-                </button>
-              ))}
-            </div>
-          )}
-          {hasFast && (
-            <div className="seg-ctl compact" role="group" aria-label="Speed">
-              <ShortcutHint id="toggle-speed" />
-              <button
-                type="button"
-                className={serviceTier === 'priority' ? '' : 'active'}
-                onClick={() => onChangeSpeed(null)}
-                disabled={running}
-              >
-                Standard
-              </button>
-              <button
-                type="button"
-                className={serviceTier === 'priority' ? 'active' : ''}
-                onClick={() => onChangeSpeed('priority')}
-                disabled={running}
-                title="1.5× speed, increased usage"
-              >
-                Fast
-              </button>
-            </div>
-          )}
-          <div className="seg-ctl compact" role="group" aria-label="Output format">
-            <ShortcutHint id="toggle-format" />
-            <button
-              type="button"
-              className={format === 'mdx' ? 'active' : ''}
-              onClick={() => onChangeFormat('mdx')}
-              disabled={running}
-              title="Rich components (callouts, steps, collapsibles)"
-            >
-              MDX
-            </button>
-            <button
-              type="button"
-              className={format === 'md' ? 'active' : ''}
-              onClick={() => onChangeFormat('md')}
-              disabled={running}
-              title="Plain Markdown only"
-            >
-              MD
-            </button>
-          </div>
-          <div className="seg-ctl compact" role="group" aria-label="Memory note">
-            <button
-              type="button"
-              className={noteMode ? 'active' : ''}
-              onClick={toggleNoteMode}
-              title="Save a note to memory — or type /note or //"
-            >
-              <NotebookPen size={13} /> Note
-            </button>
-          </div>
-          {showContextMeter && <ContextMeter messages={messages} model={model} />}
-        </div>
-        <div
-          className={`composer-field${dragOver ? ' drag-over' : ''}${noteMode ? ' note-mode' : ''}`}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOver(true);
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={onDrop}
-        >
-          {noteMode && (
-            <div className="composer-attachments">
-              <span className="attachment-chip note-chip">
-                <NotebookPen size={13} />
-                <span className="attachment-name">Note to memory</span>
-                <button
-                  type="button"
-                  className="attachment-remove"
-                  title="Back to chat (Esc)"
-                  onClick={exitNoteMode}
-                >
-                  <X size={13} />
-                </button>
-              </span>
-            </div>
-          )}
-          {noteFlash && (
-            <div className="composer-attachments">
-              <span className={`note-flash${noteFlash === 'saved' ? ' ok' : ''}`} role="status" aria-live="polite">
-                {noteFlash === 'saved' && <><Check size={13} /> Saved to memory</>}
-                {noteFlash === 'off' && 'Memory is off — note not saved'}
-                {noteFlash === 'secret' && 'Looks like a credential — not saved'}
-                {noteFlash === 'error' && 'Couldn’t save the note — try restarting Stem'}
-              </span>
-            </div>
-          )}
-          {attachments.length > 0 && (
-            <div className="composer-attachments">
-              {attachments.map((att, i) => (
-                <span className="attachment-chip" key={`${att.name}-${i}`}>
-                  <File size={13} />
-                  <span className="attachment-name">{att.name}</span>
-                  <button
-                    type="button"
-                    className="attachment-remove"
-                    title="Remove"
-                    onClick={() => removeAttachment(i)}
-                  >
-                    <X size={13} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          <div className="composer-row">
-            <button type="button" className="composer-attach" title="Attach" onClick={pickFiles}>
-              <Paperclip size={17} />
-              <ShortcutHint id="attach" />
-            </button>
-            <textarea
-              ref={textareaRef}
-              value={draft}
-              onChange={(e) => {
-                const value = e.target.value;
-                // Typing `/note ` or `//` at the start flips into note mode; the
-                // prefix is consumed (the chip replaces it in the UI). Strip
-                // before setDraft so the fact preview never sees the prefix.
-                const trigger = noteMode ? null : detectNoteTrigger(value);
-                if (trigger) {
-                  enterNoteMode();
-                  setDraft(trigger.body);
-                } else {
-                  setDraft(value);
-                }
-                if (armed) setArmed(false); // any edit disarms the second-Escape retract
-              }}
-              onBlur={() => {
-                if (armed) setArmed(false);
-              }}
-              onPaste={onPaste}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  submit();
-                  return;
-                }
-                if (e.key !== 'Escape') return;
-                if (noteMode) {
-                  // Back to chat mode. preventDefault also keeps Quick Chat's
-                  // window-level Escape from hiding the overlay on this press.
-                  e.preventDefault();
-                  exitNoteMode();
-                  return;
-                }
-                if (escapeAction === 'single') {
-                  // One Escape stops the running turn and retracts the message.
-                  if (running) {
-                    e.preventDefault();
-                    setArmed(false);
-                    void onRetractActiveTurn();
-                  }
-                } else if (escapeAction === 'twoStage') {
-                  if (running && !armed) {
-                    // First Escape: stop only; the message stays, like ⌘.
-                    e.preventDefault();
-                    onInterrupt();
-                    setArmed(true);
-                  } else if (armed) {
-                    // Second Escape: retract the just-stopped message.
-                    e.preventDefault();
-                    setArmed(false);
-                    void onRetractActiveTurn();
-                  }
-                }
-                // escapeAction === 'off' → leave Escape alone.
-              }}
-              placeholder={noteMode ? 'Save a note to memory…' : 'Ask Stem…'}
-              rows={1}
-            />
-            {running && !noteMode ? (
-              <button type="button" className="icon-btn stop" onClick={onInterrupt} title="Stop">
-                <Square size={16} />
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="icon-btn send"
-                onClick={submit}
-                disabled={noteMode ? !draft.trim() : !draft.trim() && attachments.length === 0}
-                title={noteMode ? 'Save note' : 'Send'}
-              >
-                <ArrowUp size={16} />
-                <ShortcutHint id="send" placement="br" />
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
+      <Composer
+        ref={ref as React.Ref<ComposerHandle>}
+        messages={messages}
+        running={running}
+        escapeAction={escapeAction}
+        onSend={onSend}
+        onInterrupt={onInterrupt}
+        onRetractActiveTurn={onRetractActiveTurn}
+        pendingRestore={pendingRestore}
+        onRestoreConsumed={onRestoreConsumed}
+        model={model}
+        effort={effort}
+        serviceTier={serviceTier}
+        format={format}
+        showContextMeter={showContextMeter}
+        onChangeEffort={onChangeEffort}
+        onChangeSpeed={onChangeSpeed}
+        onChangeFormat={onChangeFormat}
+        reportDraft={reportDraft}
+        onDraftChange={onDraftChange}
+        onNoteSaved={onNoteSaved}
+      />
     </div>
     </MdxActionContext.Provider>
   );
