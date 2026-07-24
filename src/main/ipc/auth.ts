@@ -57,10 +57,12 @@ export function registerAuthIpc(deps: IpcDeps): void {
     try {
       const settings = await updateLocalProvider(id, patch);
       const cfg = settings.localProviders[id];
+      // models.json first: the credential write goes through pi's provider
+      // login, which only knows providers already present in models.json.
+      await syncModelsConfig(settings.localProviders);
       // Placeholder credential for keyless local servers (see ProviderAuth.setApiKey).
       if (cfg.enabled) await deps.providerAuth()!.setApiKey(id, 'local');
       else await deps.providerAuth()!.removeProvider(id);
-      await syncModelsConfig(settings.localProviders);
       // pi reads models.json and auth.json only at spawn — restart before
       // onAuthenticated() lists models so the new registry is visible to it.
       await deps.runtime().restart();

@@ -1,19 +1,30 @@
 import { randomUUID } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { shell } from 'electron';
 import type { AuthProviderId, ApiKeyProviderId, AuthUiEvent, LocalProviderId } from '../../shared/types';
 
-// In-app provider sign-in. pi's TUI is NOT required for login: the pi package
-// exports AuthStorage, whose login(providerId, callbacks) runs the full PKCE
-// OAuth flow (anthropic → 127.0.0.1:53692/callback, openai-codex →
-// localhost:1455/auth/callback) and persists the credential to auth.json with
-// file locking. This class bridges those callbacks to the renderer's wizard:
-// events go out as AuthUiEvent pushes; text answers (manual code paste) come
-// back via respond(). One login at a time — a new attempt supersedes.
+// In-app provider sign-in. pi's TUI is NOT required for login: since pi 0.80.8
+// the package exports ModelRuntime, the credential/auth facade that owns the
+// file-locked auth.json store and the provider login flows (the old AuthStorage
+// orchestration API was removed). runtime.login(provider, 'oauth', interaction)
+// runs the full PKCE OAuth flow (anthropic → 127.0.0.1:53692/callback,
+// openai-codex → localhost:1455/auth/callback) and persists the credential;
+// 'api_key' login answers the provider's single "Enter API key" prompt with the
+// stored key. This class bridges the interaction callbacks to the renderer's
+// wizard: events go out as AuthUiEvent pushes; text answers (manual code paste)
+// come back via respond(). One login at a time — a new attempt supersedes.
+//
+// A ModelRuntime is created fresh per operation: it composes providers from
+// builtins + models.json at create time, and models.json changes between
+// operations (local-provider enable/disable) must be visible. Creation is
+// offline (no allowModelNetwork); login/logout run pi's own trailing catalog
+// refresh, throttled upstream to once per four hours.
 //
 // The pi package is pure ESM and rollup-external; import it lazily so app
 // startup never pays for it.
 
 type PiModule = typeof import('@earendil-works/pi-coding-agent');
+type PiModelRuntime = Awaited<ReturnType<PiModule['ModelRuntime']['create']>>;
 
 interface ActiveLogin {
   controller: AbortController;
@@ -59,23 +70,39 @@ export class ProviderAuth {
     const active: ActiveLogin = { controller, pending: new Map() };
     this.active = active;
     try {
-      const { AuthStorage } = await this.loadPi();
-      const store = AuthStorage.create(this.authPath);
-      await store.login(providerId, {
-        onAuth: ({ url, instructions }) => {
-          void shell.openExternal(url);
-          this.emit({ kind: 'auth-url', url, ...(instructions ? { instructions } : {}) });
-        },
-        onDeviceCode: (info) =>
-          this.emit({ kind: 'device-code', userCode: info.userCode, verificationUri: info.verificationUri }),
-        onProgress: (message) => this.emit({ kind: 'progress', message }),
-        onPrompt: (prompt) => this.awaitInput(active, prompt.message, prompt.placeholder),
-        onManualCodeInput: () => this.awaitInput(active, 'Paste the code from your browser'),
-        // openai-codex offers browser vs device-code; the wizard always drives
-        // the browser flow (device-code is a possible follow-up).
-        onSelect: async (sel) => sel.options.find((o) => o.id === 'browser')?.id ?? sel.options[0]?.id,
-        signal: controller.signal
-      });
+      const { readStoredCredential } = await this.loadPi();
+      const before = JSON.stringify(readStoredCredential(providerId, this.authPath) ?? null);
+      const runtime = await this.createRuntime();
+      try {
+        await runtime.login(providerId, 'oauth', {
+          signal: controller.signal,
+          prompt: async (prompt) => {
+            // openai-codex offers browser vs device-code; the wizard always
+            // drives the browser flow (device-code is a possible follow-up).
+            if (prompt.type === 'select') {
+              return prompt.options.find((o) => o.id === 'browser')?.id ?? prompt.options[0]?.id ?? '';
+            }
+            if (prompt.type === 'manual_code') return this.awaitInput(active, 'Paste the code from your browser');
+            return this.awaitInput(active, prompt.message, prompt.placeholder);
+          },
+          notify: (event) => {
+            if (event.type === 'auth_url') {
+              void shell.openExternal(event.url);
+              this.emit({ kind: 'auth-url', url: event.url, ...(event.instructions ? { instructions: event.instructions } : {}) });
+            } else if (event.type === 'device_code') {
+              this.emit({ kind: 'device-code', userCode: event.userCode, verificationUri: event.verificationUri });
+            } else {
+              this.emit({ kind: 'progress', message: event.message });
+            }
+          }
+        });
+      } catch (e) {
+        // The credential is persisted BEFORE login's trailing catalog refresh;
+        // a refresh failure (offline, pi.dev hiccup) must not read as a failed
+        // sign-in when the token actually landed.
+        const after = readStoredCredential(providerId, this.authPath);
+        if (!(after?.type === 'oauth' && JSON.stringify(after) !== before)) throw e;
+      }
       this.emit({ kind: 'done', ok: true, provider: providerId });
       return { ok: true };
     } catch (e) {
@@ -106,44 +133,71 @@ export class ProviderAuth {
   }
 
   /**
-   * Save a plain API key; written through AuthStorage so the file lock is honored.
-   * Local providers (Ollama, LM Studio) get a placeholder key — their servers are
-   * keyless, but the entry makes pi's availability check, Stem's provider filter,
-   * and the authenticated gate all treat them as signed in.
+   * Save a plain API key; written through the runtime's api_key login (a single
+   * "Enter API key" prompt answered with the key) so the store's file lock is
+   * honored. Local providers (Ollama, LM Studio) get a placeholder key — their
+   * servers are keyless, but the entry makes pi's availability check, Stem's
+   * provider filter, and the authenticated gate all treat them as signed in.
+   * NOTE: the provider must already exist in models.json (builtin or synced
+   * local provider) — sync models.json before calling this for a new one.
    */
   async setApiKey(provider: ApiKeyProviderId | LocalProviderId, key: string): Promise<void> {
     const trimmed = key.trim();
     if (!trimmed) throw new Error('API key is empty.');
-    const { AuthStorage } = await this.loadPi();
-    AuthStorage.create(this.authPath).set(provider, { type: 'api_key', key: trimmed });
+    const { readStoredCredential } = await this.loadPi();
+    const runtime = await this.createRuntime();
+    try {
+      await runtime.login(provider, 'api_key', {
+        prompt: async () => trimmed,
+        notify: () => undefined
+      });
+    } catch (e) {
+      const after = readStoredCredential(provider, this.authPath);
+      if (!(after?.type === 'api_key' && after.key === trimmed)) throw e;
+    }
   }
 
   /** Remove a provider's stored credential (Disconnect). Missing entries are a no-op. */
   async removeProvider(provider: string): Promise<void> {
-    const { AuthStorage } = await this.loadPi();
-    AuthStorage.create(this.authPath).remove(provider);
+    const { readStoredCredential } = await this.loadPi();
+    const runtime = await this.createRuntime();
+    try {
+      await runtime.logout(provider);
+    } catch (e) {
+      if (readStoredCredential(provider, this.authPath) !== undefined) throw e;
+    }
   }
 
   /** Provider ids with stored credentials. */
   async listProviders(): Promise<string[]> {
-    const { AuthStorage } = await this.loadPi();
-    return AuthStorage.create(this.authPath).list();
+    const runtime = await this.createRuntime();
+    const credentials = await runtime.listCredentials();
+    return credentials.map((c) => c.providerId);
   }
 
   /**
-   * Authoritative liveness check for a stored credential. AuthStorage.getApiKey
-   * refreshes an expired OAuth access token (with file locking, the same path pi
-   * uses) and returns a usable key — or `undefined` when the *refresh itself*
-   * fails, i.e. the refresh token is expired/revoked and the user is truly signed
-   * out. `includeFallback: false` keeps an env var from masking a dead stored
-   * credential. Caveat: a transient network error during refresh also yields
-   * `undefined` (false negative), which is acceptable because this only runs after
-   * a turn already failed and the re-auth screen has a "Back to chat" escape.
+   * Authoritative liveness check for a stored credential. A stored API key is
+   * alive when non-empty; a stored OAuth credential is alive when getAuth can
+   * resolve it — that refreshes an expired access token (with file locking, the
+   * same path pi uses) and throws when the *refresh itself* fails, i.e. the
+   * refresh token is expired/revoked and the user is truly signed out. Checking
+   * the stored credential first keeps an env var from masking a dead or missing
+   * stored credential (the old includeFallback:false). Caveat: a transient
+   * network error during refresh also yields false (false negative), which is
+   * acceptable because this only runs after a turn already failed and the
+   * re-auth screen has a "Back to chat" escape.
    */
   async isAlive(provider: string): Promise<boolean> {
-    const { AuthStorage } = await this.loadPi();
-    const key = await AuthStorage.create(this.authPath).getApiKey(provider, { includeFallback: false });
-    return !!key;
+    const { readStoredCredential } = await this.loadPi();
+    const stored = readStoredCredential(provider, this.authPath);
+    if (!stored) return false;
+    if (stored.type === 'api_key') return typeof stored.key === 'string' && stored.key.length > 0;
+    const runtime = await this.createRuntime();
+    try {
+      return (await runtime.getAuth(provider)) !== undefined;
+    } catch {
+      return false;
+    }
   }
 
   private awaitInput(active: ActiveLogin, message: string, placeholder?: string): Promise<string> {
@@ -151,6 +205,15 @@ export class ProviderAuth {
     return new Promise<string>((resolve, reject) => {
       active.pending.set(requestId, { resolve, reject });
       this.emit({ kind: 'input-request', requestId, message, ...(placeholder ? { placeholder } : {}) });
+    });
+  }
+
+  /** Fresh runtime per operation so models.json edits are always visible. */
+  private async createRuntime(): Promise<PiModelRuntime> {
+    const { ModelRuntime } = await this.loadPi();
+    return ModelRuntime.create({
+      authPath: this.authPath,
+      modelsPath: join(dirname(this.authPath), 'models.json')
     });
   }
 
