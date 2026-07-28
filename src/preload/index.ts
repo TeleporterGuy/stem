@@ -89,6 +89,8 @@ const api: StemApi = {
   listFiles: () => ipcRenderer.invoke('files:list'),
   addFiles: (paths: string[], subdir?: string) => ipcRenderer.invoke('files:add', paths, subdir),
   removeFile: (rel: string) => ipcRenderer.invoke('files:remove', rel),
+  createFilesSubdir: (name: string) => ipcRenderer.invoke('files:mkdir', name),
+  removeFilesSubdir: (name: string) => ipcRenderer.invoke('files:rmdir', name),
   revealFiles: () => ipcRenderer.invoke('files:reveal'),
   previewImage: (path: string) => ipcRenderer.invoke('files:preview', path),
 

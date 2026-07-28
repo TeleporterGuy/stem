@@ -81,9 +81,13 @@ async function copyToUniquePath(src: string, dir: string, name: string): Promise
   }
 }
 
-/** True when `subdir` is a single safe path segment (no slashes, no traversal). */
+/**
+ * True when `subdir` is a single safe path segment (no slashes, no traversal)
+ * that would actually show up in a listing — dotted names are skipped by
+ * isHidden, so creating one would make an invisible folder.
+ */
 function isSafeSubdir(subdir: string): boolean {
-  return subdir === basename(subdir) && subdir !== '..' && subdir !== '.';
+  return subdir === basename(subdir) && subdir !== '..' && subdir !== '.' && !isHidden(subdir);
 }
 
 /**
@@ -112,6 +116,26 @@ export async function removeFile(rel: string): Promise<FilesListing> {
   const abs = join(root, rel);
   const within = abs === root || abs.startsWith(root + sep);
   if (within) await rm(abs, { force: true });
+  return listFiles();
+}
+
+/**
+ * Create a top-level subfolder. Only one level: subfolders are the drop-overlay
+ * bands, and a band per nested path would not fit (nested files still list, they
+ * just belong to their top-level folder). Idempotent — an existing folder of the
+ * same name is left as it is.
+ */
+export async function createSubdir(name: string): Promise<FilesListing> {
+  const trimmed = name.trim();
+  if (!trimmed || !isSafeSubdir(trimmed)) throw new Error(`Unsafe files subfolder: ${name}`);
+  await mkdir(join(filesRoot(), trimmed), { recursive: true });
+  return listFiles();
+}
+
+/** Delete a top-level subfolder and everything under it (guards the name first). */
+export async function removeSubdir(name: string): Promise<FilesListing> {
+  if (!isSafeSubdir(name)) throw new Error(`Unsafe files subfolder: ${name}`);
+  await rm(join(filesRoot(), name), { recursive: true, force: true });
   return listFiles();
 }
 

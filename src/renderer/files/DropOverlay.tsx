@@ -87,7 +87,12 @@ export function DropOverlay({ onDropToChat }: DropOverlayProps) {
       // A Files band: resolve to on-disk paths (overlay adds by path) and copy in.
       const subdir = target === ROOT ? undefined : target;
       const paths = files.map((f) => window.stem.getPathForFile(f)).filter(Boolean);
-      if (paths.length) window.stem.addFiles(paths, subdir).catch(() => {});
+      if (paths.length)
+        window.stem
+          .addFiles(paths, subdir)
+          // The Files tab may be open behind the overlay — tell it to re-read.
+          .then(() => window.dispatchEvent(new Event('stem:files-changed')))
+          .catch(() => {});
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && showRef.current) close();

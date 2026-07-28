@@ -7,8 +7,34 @@ import type {
 } from '../../../shared/types';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
+import { FilesTab } from './FilesTab';
 
-// ---- Folders tab: external folders the assistant reads in place ----
+// ---- Sources tab: everywhere the assistant can read from ----
+// Two kinds, split into sub-tabs because they are different things wearing the
+// same word "files". Files holds *copies* inside Stem's workspace and every name
+// is listed to the assistant each turn — a small, always-in-view pile, so its
+// surface is a file browser. Connected folders are *references* to folders that
+// stay where they live; nothing is enumerated (a vault has thousands of files),
+// so the assistant searches them instead — and each one carries settings that
+// govern how far it may go.
+export function SourcesTab({ models }: { models: ModelSummary[] }) {
+  const [sub, setSub] = useState<'files' | 'folders'>('files');
+  return (
+    <div>
+      <div className="seg-ctl">
+        <button className={sub === 'files' ? 'active' : ''} onClick={() => setSub('files')}>
+          Files
+        </button>
+        <button className={sub === 'folders' ? 'active' : ''} onClick={() => setSub('folders')}>
+          Connected folders
+        </button>
+      </div>
+      {sub === 'files' ? <FilesTab /> : <ConnectedFoldersTab models={models} />}
+    </div>
+  );
+}
+
+// ---- Connected folders: external folders the assistant reads in place ----
 // The user connects folders (an Obsidian vault, a financials folder) by absolute
 // path; Stem reads them live, never copying. Per folder: a write toggle (read-only
 // is enforced in the backend), a memorize toggle (off keeps its contents out of
@@ -116,7 +142,7 @@ function LearnStatusLine({ status }: { status: FolderIndexStatus }) {
   return null;
 }
 
-export function FoldersTab({ models }: { models: ModelSummary[] }) {
+function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
   const [folders, setFolders] = useState<ConnectedFolder[]>([]);
   const [indexStatus, setIndexStatus] = useState<Record<string, FolderIndexStatus>>({});
   const [busy, setBusy] = useState(false);

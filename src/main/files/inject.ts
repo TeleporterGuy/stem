@@ -1,3 +1,4 @@
+import { FILES_CONTEXT_LIMIT } from '../../shared/types';
 import { listFiles } from './store';
 
 // Builds the per-turn context Stem prepends to the user's message so the
@@ -5,13 +6,11 @@ import { listFiles } from './store';
 // Names only (never contents): the model reads a file on demand with its read
 // tools. Returns null when the folder is empty (nothing to inject).
 
-const MAX_LISTED = 100;
-
 export async function buildFilesContext(): Promise<string | null> {
   const { files } = await listFiles();
   if (files.length === 0) return null;
 
-  const shown = files.slice(0, MAX_LISTED);
+  const shown = files.slice(0, FILES_CONTEXT_LIMIT);
   const lines = shown.map((f) => `- files/${f.rel}`).join('\n');
   const more = files.length > shown.length ? `\n…and ${files.length - shown.length} more.` : '';
 

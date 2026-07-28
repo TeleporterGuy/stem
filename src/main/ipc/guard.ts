@@ -53,6 +53,8 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'skills:setEnabled': [a.string, a.boolean],
   'files:add': [a.stringArray, a.optional(a.nullish(a.string))],
   'files:remove': [a.string],
+  'files:mkdir': [a.string],
+  'files:rmdir': [a.string],
   'files:preview': [a.string],
   'cfolders:add': [a.stringArray],
   'cfolders:update': [a.string, a.object],

@@ -2,7 +2,7 @@ import { dialog, shell } from 'electron';
 import { handleIpc } from './guard';
 import type { IpcDeps } from './deps';
 import { listSkills, setSkillEnabled } from '../workspace/skills';
-import { addFiles, listFiles, removeFile, revealFiles } from '../files/store';
+import { addFiles, createSubdir, listFiles, removeFile, removeSubdir, revealFiles } from '../files/store';
 import {
   addConnectedFolders,
   connectedFolderPath,
@@ -49,6 +49,8 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
   handleIpc('files:list', () => listFiles());
   handleIpc('files:add', (_e, paths: string[], subdir?: string) => addFiles(paths, subdir));
   handleIpc('files:remove', (_e, rel: string) => removeFile(rel));
+  handleIpc('files:mkdir', (_e, name: string) => createSubdir(name));
+  handleIpc('files:rmdir', (_e, name: string) => removeSubdir(name));
   handleIpc('files:reveal', () => revealFiles());
   handleIpc('files:preview', (_e, path: string) => imagePreviewDataUrl(path));
 

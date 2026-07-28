@@ -1968,7 +1968,7 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   .drop-overlay, .dz-glyph, .drop-zone, .drop-band { animation: none; transition: none; }
 }
 
-/* ---- Compact icon button (e.g. Settings → Files → Open in Finder) ---- */
+/* ---- Compact icon button (e.g. Sources → reveal a folder in Finder) ---- */
 .icon-action {
   flex: none;
   display: grid;
@@ -1983,7 +1983,35 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 }
 .icon-action:hover { background: var(--sel); border-color: var(--line); color: var(--ink); }
 
-/* ---- Connected folders (Folders tab) ---- */
+/* ---- Files (Sources tab → Files sub-tab) ---- */
+/* A file browser, not a settings list: tight rows, quiet glyph, delete revealed
+   on hover (but always focusable, so keyboard users can reach it). */
+.files-group-head {
+  margin-top: 14px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--fs-11);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+/* Deleting a subfolder takes its files with it — keep it as quiet as the row
+   delete (hover/focus only) so it is never the obvious thing to click. */
+.files-group-head .grp-head-add { opacity: 0; transition: opacity 0.12s ease; }
+.files-group-head:hover .grp-head-add, .files-group-head .grp-head-add:focus-visible { opacity: 1; }
+/* Inline "new subfolder" row: name field + commit, error below the pair. */
+.files-newdir { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin: 0 4px 10px; }
+.files-newdir .ifield { flex: 1; min-width: 120px; width: auto; }
+.files-newdir-error { flex-basis: 100%; font-size: var(--fs-11); color: var(--danger); }
+.files-row { padding: 6px 12px; gap: var(--sp-3); }
+.files-row .row-icon { width: 16px; background: transparent; color: var(--muted); box-shadow: none; }
+.files-row .row-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-row .row-action { opacity: 0; transition: opacity 0.12s ease; }
+.files-row:hover .row-action, .files-row .row-action:focus-visible { opacity: 1; }
+.files-foot { margin: 10px 4px 0; }
+
+/* ---- Connected folders (Sources tab → Connected folders sub-tab) ---- */
 .cfolders-head { display: flex; align-items: center; justify-content: space-between; }
 .cfolder-item { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
 .cfolder-item + .cfolder-item { border-top: 0.5px solid var(--hair); }

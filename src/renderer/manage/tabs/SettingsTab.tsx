@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Plug, Globe, HardDrive, Plus, Minus, X, Check, FolderOpen, RefreshCw } from 'lucide-react';
+import { Plug, Globe, HardDrive, Plus, Minus, X, Check, RefreshCw } from 'lucide-react';
 import type {
   AuthProviderId,
   ApiKeyProviderId,
@@ -790,23 +790,8 @@ export function SettingsTab({
 
       <ProvidersSection deadProvider={deadProvider} />
 
-      <div className="grp-head">Files</div>
-      <div className="formgroup">
-        <div className="set-row">
-          <span className="set-label">
-            <strong>Files folder</strong>
-            <em>Drop files here for Stem to read across chats</em>
-          </span>
-          <button
-            className="icon-action"
-            title="Open in Finder"
-            aria-label="Open Files folder in Finder"
-            onClick={() => window.stem.revealFiles()}
-          >
-            <FolderOpen size={16} />
-          </button>
-        </div>
-      </div>
+      {/* The Files folder lives in the Sources tab (Files sub-tab) — it is a
+          source the assistant reads from, not an app setting. */}
 
       <div className="grp-head">Input</div>
       <div className="formgroup">

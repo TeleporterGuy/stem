@@ -429,6 +429,13 @@ export interface SkillSummary {
 
 // ---- Files (the persistent drop-place the assistant can read) ----
 
+/**
+ * How many file names the per-turn Files context lists before truncating (see
+ * main/files/inject.ts). Shared so the Files tab can warn once the folder grows
+ * past the point where the assistant is still told about every file.
+ */
+export const FILES_CONTEXT_LIMIT = 100;
+
 /** One file in the Files folder. `rel` is the path relative to files/ (the id). */
 export interface FileEntry {
   /** Path relative to files/, e.g. `Recipes/cake.pdf`. Unique id for removal. */
@@ -1400,6 +1407,10 @@ export interface StemApi {
   addFiles(paths: string[], subdir?: string): Promise<FilesListing>;
   /** Delete a file by its rel path. Returns fresh listing. */
   removeFile(rel: string): Promise<FilesListing>;
+  /** Create a top-level subfolder (one level only). Rejects unsafe/dotted names. */
+  createFilesSubdir(name: string): Promise<FilesListing>;
+  /** Delete a top-level subfolder and its contents. Returns fresh listing. */
+  removeFilesSubdir(name: string): Promise<FilesListing>;
   /** Open the Files folder in the OS file manager. */
   revealFiles(): Promise<void>;
   /** Read an on-disk image → `data:` URL for a bubble thumbnail (null if not an image). */

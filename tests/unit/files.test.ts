@@ -77,3 +77,36 @@ describe('Files place', () => {
     expect(listing.files.some((f) => f.rel === 'Recipes/cake.pdf')).toBe(false);
   });
 });
+
+describe('Files subfolders', () => {
+  it('creates an empty subfolder that still shows up in the listing', async () => {
+    // The Files tab renders sections from `dirs`, so a folder the user just made
+    // has to survive a listing round-trip before anything is dropped into it.
+    const listing = await store.createSubdir('Invoices');
+    expect(listing.dirs).toContain('Invoices');
+    expect(listing.files.some((f) => f.dir === 'Invoices')).toBe(false);
+  });
+
+  it('trims the name and is idempotent for one that already exists', async () => {
+    const listing = await store.createSubdir('  Invoices  ');
+    expect(listing.dirs.filter((d) => d === 'Invoices')).toHaveLength(1);
+  });
+
+  it('rejects traversal, nesting, and hidden names', async () => {
+    for (const bad of ['..', '.', '', '   ', 'a/b', '../escape', '.hidden']) {
+      await expect(store.createSubdir(bad)).rejects.toThrow(/Unsafe files subfolder/);
+    }
+    await expect(store.removeSubdir('../stage')).rejects.toThrow(/Unsafe files subfolder/);
+    // The guard must not have deleted anything on its way to throwing.
+    expect((await store.listFiles()).dirs).toContain('Invoices');
+  });
+
+  it('removes a subfolder along with the files inside it', async () => {
+    await store.addFiles([srcA], 'Invoices');
+    expect((await store.listFiles()).files.some((f) => f.dir === 'Invoices')).toBe(true);
+
+    const listing = await store.removeSubdir('Invoices');
+    expect(listing.dirs).not.toContain('Invoices');
+    expect(listing.files.some((f) => f.dir === 'Invoices')).toBe(false);
+  });
+});
