@@ -21,12 +21,17 @@ test('picking a keyed backend reveals its key field and persists', async ({ main
   await backend.selectOption('tavily');
   await expect(mainWindow.getByLabel('Tavily key', { exact: true }).first()).toBeVisible();
 
-  const saved = await mainWindow.evaluate(() =>
-    (window as unknown as { stem: { getSettings(): Promise<{ webSearch: { provider: string } }> } }).stem
-      .getSettings()
-      .then((s) => s.webSearch.provider)
-  );
-  expect(saved).toBe('tavily');
+  // The picker paints optimistically and reconciles from the write, so the key
+  // field showing up proves nothing about the store — poll the real settings.
+  await expect
+    .poll(async () =>
+      mainWindow.evaluate(() =>
+        (window as unknown as { stem: { getSettings(): Promise<{ webSearch: { provider: string } }> } }).stem
+          .getSettings()
+          .then((s) => s.webSearch.provider)
+      )
+    )
+    .toBe('tavily');
 });
 
 test('SearXNG offers an endpoint field, not an API key', async ({ mainWindow }) => {
@@ -68,17 +73,19 @@ test('all backend keys are editable at once and survive a backend switch', async
   await mainWindow.getByLabel('Brave key', { exact: true }).fill('brave-key-1');
   await mainWindow.getByLabel('Search backend', { exact: true }).selectOption('exa');
 
-  const creds = await mainWindow.evaluate(() =>
-    (
-      window as unknown as {
-        stem: { getSettings(): Promise<{ webSearch: { credentials: Record<string, string> } }> };
-      }
-    ).stem
-      .getSettings()
-      .then((s) => s.webSearch.credentials)
-  );
-  expect(creds.exaApiKey).toBe('exa-key-1');
-  expect(creds.braveApiKey).toBe('brave-key-1');
+  const savedCreds = () =>
+    mainWindow.evaluate(() =>
+      (
+        window as unknown as {
+          stem: { getSettings(): Promise<{ webSearch: { credentials: Record<string, string> } }> };
+        }
+      ).stem
+        .getSettings()
+        .then((s) => s.webSearch.credentials)
+    );
+  // Same optimistic write as above: wait for the store, don't race it.
+  await expect.poll(async () => (await savedCreds()).exaApiKey).toBe('exa-key-1');
+  expect((await savedCreds()).braveApiKey).toBe('brave-key-1');
 });
 
 test('the web-search toggle shows regardless of the selected model', async ({ mainWindow }) => {

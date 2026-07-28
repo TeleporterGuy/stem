@@ -19,8 +19,12 @@ const windowState = (app: ElectronApplication, flag: 'quickchat' | 'hud') =>
   }, flag);
 
 test('summon → prompt → HUD → re-summon shows the answer', async ({ electronApp, mainWindow }) => {
-  // Pre-created hidden at startup.
-  expect(await windowState(electronApp, 'quickchat')).toEqual({ exists: true, visible: false });
+  // Pre-created hidden at startup — but the prewarm hangs off the whenReady tail,
+  // so on a loaded runner the first window may not exist the instant the main
+  // window is up. Poll for it rather than racing the tail (same wait as the CLI
+  // toggle test below).
+  await expect.poll(async () => (await windowState(electronApp, 'quickchat')).exists).toBe(true);
+  expect((await windowState(electronApp, 'quickchat')).visible).toBe(false);
 
   // Summon (same main-process path as the global shortcut / tray / HUD click).
   await mainWindow.evaluate(() => (window as any).stem.revealQuickChat());
