@@ -22,3 +22,6 @@ playwright-report/
 
 # External folders connected for in-place reading (separate repos)
 .external/
+
+# Local Obsidian vault state for docs/ (per-machine editor layout)
+docs/.obsidian/
