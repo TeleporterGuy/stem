@@ -24,7 +24,7 @@ import {
 import { previewFacts } from '../recall/inject';
 import { consolidateFacts } from '../recall/consolidate';
 import { processExplicitNote } from '../recall/note';
-import { EMBED_CATALOG, effectiveEmbedModelKey } from '../recall/embed-catalog';
+import { EMBED_CATALOG } from '../recall/embed-catalog';
 import { DEFAULT_LOCAL_RERANK_MODEL, RERANK_CATALOG } from '../recall/rerank-catalog';
 import { readSettings } from '../workspace/settings';
 import type { LlmClient } from '../recall/llm';
@@ -35,7 +35,8 @@ import type {
   LocalRerankStatus
 } from '../../shared/types';
 import { recallStore } from '../recall/store';
-const { getAutoResolvedConflicts, getEmbeddingCacheStats, getEpisodicStats, getActiveFactIds, getFactsByIds, getFactDetails, getMemoryConflicts, setFactPinned: storeSetFactPinned, confirmFact: storeConfirmFact, resolveMemoryConflict: storeResolveMemoryConflict, restoreSupersededFact: storeRestoreSupersededFact } = recallStore;
+import * as activity from '../activity';
+const { getAutoResolvedConflicts, getEpisodicStats, getActiveFactIds, getFactsByIds, getFactDetails, getMemoryConflicts, setFactPinned: storeSetFactPinned, confirmFact: storeConfirmFact, resolveMemoryConflict: storeResolveMemoryConflict, restoreSupersededFact: storeRestoreSupersededFact } = recallStore;
 
 /** The Memory tab's surface: facts, episodic store, rebuild, and retrieval status. */
 export function registerMemoryIpc(deps: IpcDeps): void {
@@ -100,9 +101,10 @@ export function registerMemoryIpc(deps: IpcDeps): void {
   handleIpc('memory:episodicStats', () => getEpisodicStats());
   handleIpc('memory:summaries', () => listThreadSummaries());
   handleIpc('memory:deleteSummary', (_e, id: number) => removeThreadSummary(id));
-  handleIpc('memory:embeddingStats', async () =>
-    getEmbeddingCacheStats(effectiveEmbedModelKey((await readSettings()).retrieval.embeddings))
-  );
+  // Background-activity feed for the toolbar indicator. Read-only: the snapshot
+  // and a "panel opened" acknowledgement that clears the sticky failure marker.
+  handleIpc('activity:snapshot', () => activity.snapshot());
+  handleIpc('activity:markSeen', () => activity.markSeen());
   handleIpc('embeddings:localStatus', async (): Promise<LocalEmbedStatus> => {
     // Opening the panel doubles as a kick (idempotent while healthy), so someone
     // who goes straight to Memory → advanced right after launch sees the worker

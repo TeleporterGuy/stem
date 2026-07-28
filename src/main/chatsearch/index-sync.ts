@@ -1,4 +1,5 @@
 import { getIndexedWatermark, reindexThread, dropThread, type IndexDoc } from './store';
+import * as activity from '../activity';
 
 // Keeps the chat-search index in step with the JSONL sessions:
 //   - backfillChatIndex: a background sweep on launch that indexes every chat whose
@@ -68,6 +69,8 @@ let backfilling = false;
 export async function backfillChatIndex(rt: IndexRuntime): Promise<void> {
   if (backfilling) return;
   backfilling = true;
+  const handle = activity.begin('chatIndex.backfill', 'Indexing chats');
+  let indexed = 0;
   try {
     const chats = await rt.listThreads();
     for (const c of chats) {
@@ -75,13 +78,19 @@ export async function backfillChatIndex(rt: IndexRuntime): Promise<void> {
       if (wm !== null && wm >= c.updatedAt) continue;
       try {
         await reindexOne(rt, c.threadId, c.updatedAt);
+        indexed += 1;
       } catch {
         // Skip a chat that fails to read/index; the next launch retries it (watermark
         // wasn't advanced), and the rest of the backfill still proceeds.
       }
     }
-  } catch {
+    activity.end(handle, {
+      worked: indexed > 0,
+      detail: `Indexed ${indexed.toLocaleString()} chat${indexed === 1 ? '' : 's'}`
+    });
+  } catch (error) {
     // listThreads failed — nothing to do; a later launch retries.
+    activity.fail('chatIndex.backfill', error, 'Indexing chats');
   } finally {
     backfilling = false;
   }

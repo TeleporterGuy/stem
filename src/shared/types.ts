@@ -49,7 +49,7 @@ export interface TurnUsage {
 }
 
 /**
- * One tool call (or native web search) that ran during a turn, shown as an
+ * One tool call (web search included) that ran during a turn, shown as an
  * activity row in the assistant bubble — live while running, collapsed into a
  * "Used N tools" summary once the turn settles. Persisted per turn so rows
  * survive reopen.
@@ -67,7 +67,7 @@ export interface ActivityItem {
   status: 'running' | 'ok' | 'error';
 }
 
-/** A web source the model consulted (recovered native-web-search citation). */
+/** A web source the model consulted, parsed out of a web_search result. */
 export interface SourceRef {
   url: string;
   title?: string;
@@ -112,7 +112,7 @@ export interface ChatMessage {
   usage?: TurnUsage;
   /** Assistant messages only: the tool calls/web searches that ran this turn. */
   activity?: ActivityItem[];
-  /** Assistant messages only: web sources consulted by native web search. */
+  /** Assistant messages only: web sources consulted by the search tools. */
   sources?: SourceRef[];
   /**
    * ISO timestamp the message was authored. Surfaced as a hover-revealed label on
@@ -280,8 +280,8 @@ export interface ModelSummary {
   provider: string;
   /** Friendly provider name for the UI, e.g. 'ChatGPT' / 'Claude'. */
   providerName: string;
-  /** True when this model's provider supports native (server-side) web search. */
-  supportsNativeWebSearch: boolean;
+  // No web-search capability flag: search is served by the vendored pi-web-access
+  // extension rather than the provider, so every model in this list has it.
   /** e.g. ['low','medium','high','xhigh']. */
   supportedEfforts: string[];
   defaultEffort: string;
@@ -377,7 +377,7 @@ export interface TurnUsageParams extends TurnUsage {
   turnId: string;
 }
 
-/** `turn/sources` — web sources recovered from native web search, emitted at turn end. */
+/** `turn/sources` — web sources cited by the search tools, emitted at turn end. */
 export interface TurnSourcesParams {
   threadId: string;
   turnId: string;
@@ -924,6 +924,61 @@ export interface MemoryRebuildStatus {
   lastError?: string;
 }
 
+/**
+ * Every background pass that the toolbar activity indicator can report. One id
+ * per logical job, not per call site: the folder passes run once per connected
+ * folder but share a kind (the folder's label lands in `detail`).
+ */
+export type ActivityKind =
+  | 'memory.distill'
+  | 'memory.summaries'
+  | 'memory.adjudicate'
+  | 'memory.consolidate'
+  | 'memory.episodicEmbed'
+  | 'memory.factEmbed'
+  | 'memory.summaryEmbed'
+  | 'memory.summaryBackfill'
+  | 'memory.rebuild'
+  | 'skills.distill'
+  | 'skills.curate'
+  | 'folders.scan'
+  | 'folders.embed'
+  | 'folders.learn'
+  | 'chatIndex.backfill'
+  | 'models.embed'
+  | 'models.rerank'
+  | 'tasks.run';
+
+/**
+ * One background run — in flight, or finished and kept in the history buffer.
+ * `activeMs` accumulates only time actually spent working: the stepped passes
+ * (rebuild, folder learn, model download) yield to interactive work and resume
+ * minutes later, so wall-clock start→finish would read as hours of "work".
+ */
+export interface ActivityEntry {
+  id: string;
+  kind: ActivityKind;
+  /** Imperative while running ("Distilling facts"); the UI past-tenses history rows. */
+  label: string;
+  /** What the run actually did ("Learned 3 facts") or which folder it was for. */
+  detail?: string;
+  startedAt: number;
+  activeMs: number;
+  state: 'running' | 'done' | 'failed';
+  /** Stepped passes only — oneshot runs are too short for a bar to mean anything. */
+  progress?: { done: number; total: number };
+  error?: string;
+}
+
+/** Everything the activity popover renders, pushed on `activity:changed`. */
+export interface ActivitySnapshot {
+  running: ActivityEntry[];
+  /** Newest first, capped at ACTIVITY_HISTORY_LIMIT. Runs that did nothing are omitted. */
+  history: ActivityEntry[];
+  /** A run has failed since the user last opened the panel — drives the sticky dot. */
+  unseenFailure: boolean;
+}
+
 /** The durable facts injected on a turn (last turn or a draft preview), plus their tier. */
 export interface ActiveFacts {
   facts: Array<{
@@ -1051,15 +1106,49 @@ export interface QuickChatSettings {
 }
 
 /**
- * Native (server-side) web search, toggled independently per context. The UI only
- * surfaces a toggle when the relevant model's provider actually supports it; the
- * backend injects the tool per turn based on the originating context.
+ * Whether the configured summon key is actually live, reported by main because the
+ * renderer cannot see an OS-level grab. `registered` false means the OS refused the
+ * accelerator (another app holds it). `wayland` true means the grab is meaningless
+ * even when it succeeds — the compositor never routes the key to Stem — and
+ * `summonCommand` is what to bind as a system shortcut there instead.
  */
-export interface NativeWebSearchSettings {
+export interface QuickChatShortcutStatus {
+  accelerator: string | null;
+  registered: boolean;
+  wayland: boolean;
+  summonCommand: string;
+}
+
+/**
+ * Web search, toggled independently per context and available on EVERY provider.
+ *
+ * Search used to be an openai-codex-only trick (Stem injected the provider's own
+ * server-side tool into the outgoing request), so the toggle hid itself for every
+ * other model. It is now served by the vendored pi-web-access extension, which
+ * registers ordinary pi tools and therefore works identically on Claude,
+ * OpenRouter, Ollama and LM Studio — so the toggle is always shown, and the
+ * backend enables the tools per turn based on the originating context.
+ */
+export interface WebSearchSettings {
   /** Main window turns. */
   main: boolean;
   /** Quick Chat overlay turns. */
   quickChat: boolean;
+  /**
+   * Search backend, INDEPENDENT of the model being chatted with — an Ollama chat
+   * can search through Exa, a ChatGPT chat through SearXNG. `auto` walks
+   * pi-web-access's fallback chain, which ends at keyless Exa MCP so search works
+   * with no configuration at all; `all` fans out across every configured backend.
+   * Otherwise one of the ids in SEARCH_BACKENDS (main/pi/web-search.ts).
+   */
+  provider: string;
+  /**
+   * Credentials and endpoints, keyed by the exact field name pi-web-access reads
+   * (`exaApiKey`, `searxngBaseUrl`, `openaiResponsesUrl`, …). Held as one map so
+   * every backend's key can be stored at once and switching backends never means
+   * re-entering one. Blank entries are simply not written to its config.
+   */
+  credentials: Record<string, string>;
 }
 
 /** Model used for Stem Recall's hidden memory turns (distillation + tidy-up). */
@@ -1205,16 +1294,6 @@ export interface PartialRetrievalSettings {
   reranker?: Partial<RerankerSettings>;
 }
 
-/** Embedding-cache coverage for the configured model — shown in the Manage panel. */
-export interface EmbeddingCacheStats {
-  /** Total durable facts. */
-  factCount: number;
-  /** Facts with a cached vector for the current embeddings model. */
-  embeddedCount: number;
-  /** Vector dimension for the current model, or null when nothing is cached. */
-  dim: number | null;
-}
-
 export type RetrievalStage = 'embeddings' | 'reranker';
 
 /** Result of a live probe against a retrieval endpoint (the Settings "Test" button). */
@@ -1249,9 +1328,51 @@ export interface DefaultsSettings {
   model: string | null;
 }
 
+/**
+ * The phone bridge: a loopback-only HTTP server that serves Stem's mobile client
+ * and proxies an allowlisted slice of the IPC surface to it (fronted by
+ * `tailscale serve` so the phone reaches it over the tailnet).
+ *
+ * Off by default — this is the first Stem surface reachable from off-box, so it
+ * is opt-in. The bearer token is NOT here: it lives 0600 in its own file (see
+ * mobileTokenPath), because settings.json is rewritten wholesale by many paths.
+ */
+export interface MobileSettings {
+  enabled: boolean;
+  /** Loopback port to bind; whatever `tailscale serve` is pointed at. */
+  port: number;
+  /**
+   * The origin `tailscale serve` publishes the bridge under — normally
+   * `https://<machine>.<tailnet>.ts.net`. Empty until the user has run serve and
+   * told Stem the name: nothing on this machine can discover it, and without it
+   * the pairing URL would only be reachable from the Mac itself.
+   */
+  publicUrl: string;
+}
+
+/** Everything the Settings pairing UI needs to render a QR the phone can scan. */
+export interface MobilePairingInfo {
+  enabled: boolean;
+  /** Whether the loopback server is actually listening right now. */
+  running: boolean;
+  port: number;
+  token: string;
+  /**
+   * The URL to put in front of the phone, token in the fragment (fragments are
+   * never sent to a server; the client persists it and strips the hash). This is
+   * the `publicUrl` origin when one is configured, and the loopback URL — which
+   * only works on this Mac — when it isn't.
+   */
+  url: string;
+  /** The same URL on 127.0.0.1, for trying the client in a browser at the desk. */
+  loopbackUrl: string;
+  /** Whether `url` is the tailnet one, i.e. whether a phone can actually open it. */
+  reachable: boolean;
+}
+
 export interface AppSettings {
   quickChat: QuickChatSettings;
-  nativeWebSearch: NativeWebSearchSettings;
+  webSearch: WebSearchSettings;
   memory: MemoryModelSettings;
   skills: SkillsModelSettings;
   /** Command execution (run_command) policy: enable switch, judge model, learned allowlist. */
@@ -1267,6 +1388,8 @@ export interface AppSettings {
   defaults: DefaultsSettings;
   /** Local model servers (Ollama, LM Studio) registered with the chat backend. */
   localProviders: LocalProvidersSettings;
+  /** The phone bridge (loopback HTTP server + mobile client); off by default. */
+  mobile: MobileSettings;
 }
 
 /**
@@ -1543,8 +1666,10 @@ export interface StemApi {
   // App settings + Quick Chat overlay.
   getSettings(): Promise<AppSettings>;
   updateQuickChat(patch: Partial<QuickChatSettings>): Promise<AppSettings>;
-  /** Enable/disable native web search per context (e.g. { quickChat: false }). */
-  updateNativeWebSearch(patch: Partial<NativeWebSearchSettings>): Promise<AppSettings>;
+  /** Is the configured summon key actually live? (See QuickChatShortcutStatus.) */
+  getQuickChatShortcutStatus(): Promise<QuickChatShortcutStatus>;
+  /** Enable/disable web search per context, or repoint its backend. */
+  updateWebSearch(patch: Partial<WebSearchSettings>): Promise<AppSettings>;
   /** Set the main-composer Escape-to-retract behavior. */
   updateEscapeAction(action: EscapeAction): Promise<AppSettings>;
   /** Set the model used for memory distillation/tidy-up ({ model: null } = default). */
@@ -1576,10 +1701,23 @@ export interface StemApi {
   respondExecApproval(id: string, decision: ExecDecision): Promise<void>;
   /** Update the embeddings/reranker retrieval endpoints (deep-merged per stage). */
   updateRetrievalSettings(patch: PartialRetrievalSettings): Promise<AppSettings>;
+  /**
+   * Turn the phone bridge on/off or move its port. Applied immediately: the
+   * loopback server starts, stops or rebinds before this resolves.
+   */
+  updateMobileSettings(patch: Partial<MobileSettings>): Promise<AppSettings>;
+  /** Everything the pairing panel shows: the URL to open, the token, and liveness. */
+  getMobilePairing(): Promise<MobilePairingInfo>;
+  /** Mint a new bearer token, un-pairing every phone. Returns the new pairing info. */
+  rerollMobileToken(): Promise<MobilePairingInfo>;
   /** Live-probe a retrieval endpoint with the current settings (Settings "Test" button). */
   testRetrievalEndpoint(stage: RetrievalStage): Promise<RetrievalTestResult>;
-  /** Embedding-cache coverage for the configured model (how many facts are embedded). */
-  getEmbeddingStats(): Promise<EmbeddingCacheStats>;
+  /** Everything the toolbar activity indicator shows: in-flight runs plus recent history. */
+  getActivity(): Promise<ActivitySnapshot>;
+  /** Fired whenever a background pass starts, progresses or finishes. */
+  onActivity(listener: (snapshot: ActivitySnapshot) => void): () => void;
+  /** Panel opened — clear the sticky "something failed" marker on the icon. */
+  markActivitySeen(): Promise<void>;
   /** Current local embedding worker state (download/load/ready) for the Manage panel. */
   getLocalEmbedStatus(): Promise<LocalEmbedStatus>;
   /** Fired whenever the local embedding worker's status changes (incl. download progress). */

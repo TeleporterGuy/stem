@@ -15,7 +15,8 @@ import type {
   LocalProvidersSettings,
   LocalRerankModelId,
   MemoryModelSettings,
-  NativeWebSearchSettings,
+  MobileSettings,
+  WebSearchSettings,
   PartialRetrievalSettings,
   QuickChatSettings,
   RerankerMode,
@@ -46,9 +47,10 @@ const DEFAULTS: AppSettings = {
     // Opt-in chime when a turn finishes while the pill is visible.
     finishSound: false
   },
-  // Native web search defaults on for both contexts; surfaced in the UI only when
-  // the relevant model's provider supports it (currently ChatGPT/openai-codex).
-  nativeWebSearch: { main: true, quickChat: true },
+  // Web search defaults on for both contexts, on every provider. `auto` walks
+  // pi-web-access's backend chain, which ends at keyless Exa MCP — so search
+  // works on a fresh install with no account, no key and no configuration.
+  webSearch: { main: true, quickChat: true, provider: 'auto', credentials: {} },
   // Memory distillation/tidy-up model; null = the backend default.
   memory: { model: null },
   // Background skills-curator model; null = the backend default. Separate from the
@@ -97,7 +99,11 @@ const DEFAULTS: AppSettings = {
   localProviders: {
     ollama: { enabled: false, baseUrl: 'http://localhost:11434' },
     lmstudio: { enabled: false, baseUrl: 'http://localhost:1234' }
-  }
+  },
+  // The phone bridge: off until the user turns it on in Settings (it is the only
+  // Stem surface reachable from off-box). The port is what `tailscale serve` gets
+  // pointed at; the default is a high, unregistered one.
+  mobile: { enabled: false, port: 8823, publicUrl: '' }
 };
 
 const ESCAPE_ACTIONS: readonly EscapeAction[] = ['off', 'single', 'twoStage'];
@@ -161,13 +167,62 @@ function coerceEmbeddings(
   };
 }
 
+/**
+ * The address `tailscale serve` publishes the bridge under, normalized to a bare
+ * origin ("https://host" — no path, no trailing slash) so the pairing URL can be
+ * assembled by concatenation. Anything unparseable becomes empty, which the
+ * pairing panel reads as "not set up yet" rather than as a broken URL.
+ */
+function coercePublicUrl(raw: unknown): string {
+  if (typeof raw !== 'string' || !raw.trim()) return '';
+  const text = raw.trim();
+  try {
+    const url = new URL(/^https?:\/\//i.test(text) ? text : `https://${text}`);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+    return url.origin;
+  } catch {
+    return '';
+  }
+}
+
+/** True for a plain object usable as a string map (not null, not an array). */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
 function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   const qc = (parsed?.quickChat ?? {}) as Partial<QuickChatSettings>;
   const d = DEFAULTS.quickChat;
-  const rawNws = (parsed?.nativeWebSearch ?? {}) as Partial<NativeWebSearchSettings>;
-  const nws: NativeWebSearchSettings = {
-    main: typeof rawNws.main === 'boolean' ? rawNws.main : DEFAULTS.nativeWebSearch.main,
-    quickChat: typeof rawNws.quickChat === 'boolean' ? rawNws.quickChat : DEFAULTS.nativeWebSearch.quickChat
+  // `nativeWebSearch` is the pre-pi-web-access key name: same two per-context
+  // booleans, back when search was an openai-codex-only injection. Read it as a
+  // fallback so an existing install keeps whatever the user had toggled; the
+  // rewritten file uses the new key and the old one simply stops being read.
+  // `nativeWebSearch` is the pre-pi-web-access key name: same two per-context
+  // booleans, back when search was an openai-codex-only injection. Read it as a
+  // fallback so an existing install keeps whatever the user had toggled; the
+  // rewritten file uses the new key and the old one simply stops being read.
+  const legacy = parsed as {
+    nativeWebSearch?: Partial<WebSearchSettings>;
+    webSearch?: { apiKeys?: unknown; searxngUrl?: unknown };
+  } | null;
+  const rawWs = (parsed?.webSearch ?? legacy?.nativeWebSearch ?? {}) as Partial<WebSearchSettings>;
+  // Credentials were briefly split across `apiKeys` + a `searxngUrl` that used the
+  // wrong field name (pi-web-access reads `searxngBaseUrl`). Fold both into the
+  // single passthrough map, so nothing the user already typed is lost.
+  const rawCreds: Record<string, unknown> = {
+    ...(isRecord(legacy?.webSearch?.apiKeys) ? legacy.webSearch.apiKeys : {}),
+    ...(typeof legacy?.webSearch?.searxngUrl === 'string' && legacy.webSearch.searxngUrl
+      ? { searxngBaseUrl: legacy.webSearch.searxngUrl }
+      : {}),
+    ...(isRecord(rawWs.credentials) ? rawWs.credentials : {})
+  };
+  const ws: WebSearchSettings = {
+    main: typeof rawWs.main === 'boolean' ? rawWs.main : DEFAULTS.webSearch.main,
+    quickChat: typeof rawWs.quickChat === 'boolean' ? rawWs.quickChat : DEFAULTS.webSearch.quickChat,
+    provider: typeof rawWs.provider === 'string' && rawWs.provider.trim() ? rawWs.provider : DEFAULTS.webSearch.provider,
+    credentials: Object.fromEntries(
+      Object.entries(rawCreds).filter(([, v]) => typeof v === 'string' && v.trim())
+    ) as Record<string, string>
   };
   const rawMem = (parsed?.memory ?? {}) as Partial<MemoryModelSettings>;
   const mem: MemoryModelSettings = {
@@ -228,6 +283,17 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     ollama: coerceLocal('ollama'),
     lmstudio: coerceLocal('lmstudio')
   };
+  const rawMobile = (parsed?.mobile ?? {}) as Partial<MobileSettings>;
+  const mobile: MobileSettings = {
+    enabled: typeof rawMobile.enabled === 'boolean' ? rawMobile.enabled : DEFAULTS.mobile.enabled,
+    // Reject anything that isn't a usable TCP port, so a hand-edited settings.json
+    // can't make the bridge fail to bind on every launch. Below 1024 needs root.
+    port:
+      typeof rawMobile.port === 'number' && Number.isInteger(rawMobile.port) && rawMobile.port >= 1024 && rawMobile.port <= 65535
+        ? rawMobile.port
+        : DEFAULTS.mobile.port,
+    publicUrl: coercePublicUrl(rawMobile.publicUrl)
+  };
   return {
     quickChat: {
       shortcut: typeof qc.shortcut === 'string' && qc.shortcut.trim() ? qc.shortcut : null,
@@ -244,7 +310,7 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
       followAcrossSpaces: typeof qc.followAcrossSpaces === 'boolean' ? qc.followAcrossSpaces : d.followAcrossSpaces,
       finishSound: typeof qc.finishSound === 'boolean' ? qc.finishSound : d.finishSound
     },
-    nativeWebSearch: nws,
+    webSearch: ws,
     memory: mem,
     skills,
     exec,
@@ -253,7 +319,8 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     customInstructions,
     onboarding,
     defaults,
-    localProviders
+    localProviders,
+    mobile
   };
 }
 
@@ -295,11 +362,11 @@ export function updateQuickChat(patch: Partial<QuickChatSettings>): Promise<AppS
   });
 }
 
-/** Patch the per-context native-web-search toggles and persist; returns full settings. */
-export function updateNativeWebSearch(patch: Partial<NativeWebSearchSettings>): Promise<AppSettings> {
+/** Patch the web-search toggles/backend and persist; returns full settings. */
+export function updateWebSearch(patch: Partial<WebSearchSettings>): Promise<AppSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
-    const next = coerce({ ...cur, nativeWebSearch: { ...cur.nativeWebSearch, ...patch } });
+    const next = coerce({ ...cur, webSearch: { ...cur.webSearch, ...patch } });
     await writeSettings(next);
     return next;
   });
@@ -383,6 +450,16 @@ export function updateLocalProvider(id: LocalProviderId, patch: Partial<LocalPro
       ...cur,
       localProviders: { ...cur.localProviders, [id]: { ...cur.localProviders[id], ...patch } }
     });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the phone-bridge settings (enable/port) and persist; returns full settings. */
+export function updateMobileSettings(patch: Partial<MobileSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, mobile: { ...cur.mobile, ...patch } });
     await writeSettings(next);
     return next;
   });

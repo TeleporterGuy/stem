@@ -23,6 +23,7 @@ import { McpApprovalCard } from './manage/McpApprovalCard';
 import { InstructionsApprovalCard } from './manage/InstructionsApprovalCard';
 import { ExecApprovalCard } from './manage/ExecApprovalCard';
 import { DeleteThreadDialog } from './DeleteThreadDialog';
+import { ActivityIndicator } from './ui/ActivityIndicator';
 import { TaskAlertModal } from './TaskAlertModal';
 import { DropOverlay } from './files/DropOverlay';
 import { useAutoHideScroll } from './hooks/useAutoHideScroll';
@@ -1148,6 +1149,7 @@ export default function App() {
         )}
       </div>
       <div className="toolbar-spacer" />
+      <ActivityIndicator />
       <button
         className={`tbtn${showInspector ? ' active' : ''}`}
         title="Toggle inspector"

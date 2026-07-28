@@ -7,7 +7,7 @@ import { buildRecallContext } from '../../src/main/recall/inject';
 import { reconcileExplicitFact } from '../../src/main/recall/reconcile';
 import { setRetrievalClients } from '../../src/main/recall/retrieval';
 import { runMemoryRebuildStep, startMemoryRebuild } from '../../src/main/recall/rebuild';
-import { recallStore as store } from '../../src/main/recall/store';
+import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/main/recall/store';
 
 beforeEach(() => {
   store.resetEpisodic();
@@ -288,6 +288,8 @@ describe('persistence regressions', () => {
   });
 
   it('cancels an in-flight memory rebuild at the same reset barrier', async () => {
+    // Only a store upgraded from v1 can rebuild at all (memory-upgrade.test.ts).
+    store.setMeta(V1_FACTS_MIGRATED_KEY, '1');
     store.recordMessage({
       threadId: 'rebuild-race',
       turnId: 'turn-1',
@@ -330,6 +332,7 @@ describe('persistence regressions', () => {
   });
 
   it('does not persist a stale rebuild failure when reset wins a rejected model call', async () => {
+    store.setMeta(V1_FACTS_MIGRATED_KEY, '1');
     store.recordMessage({
       threadId: 'rebuild-rejection-race',
       turnId: 'turn-1',

@@ -196,7 +196,6 @@ describe('resolveJudgeModel', () => {
       description: provider,
       provider,
       providerName: provider,
-      supportsNativeWebSearch: false,
       supportedEfforts: ['medium'],
       defaultEffort: 'medium',
       serviceTiers: [],

@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { recallStore as store } from '../../src/main/recall/store';
+import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/main/recall/store';
+import { getMemoryRebuildStatus } from '../../src/main/recall/rebuild';
 
 beforeAll(() => {
   const path = process.env.STEM_RECALL_DB!;
@@ -69,6 +70,13 @@ describe('Recall v3 additive migration', () => {
     expect(id).not.toBeNull();
     expect(store.listThreadSummaries()).toHaveLength(1);
     store.deleteThreadSummary(id!);
+  });
+
+  it('marks the provenance gap so only this upgraded store is offered the rebuild', () => {
+    expect(store.getMeta(V1_FACTS_MIGRATED_KEY)).toBe('1');
+    expect(store.getFactDetails(7)?.source).toBe('legacy');
+    store.recordMessage({ threadId: 'migrated', role: 'user', text: 'A message captured before v2.' });
+    expect(getMemoryRebuildStatus().state).toBe('available');
   });
 
   it('is idempotent on a second open', () => {

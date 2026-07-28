@@ -242,7 +242,7 @@ export function applyBackendEventToThread(
           activity: label
         };
       }
-      // A tool call (or teed native web search) becomes an activity row.
+      // A tool call (web search included) becomes an activity row.
       const itemId = p.item.id;
       const activities = state.activities.some((a) => a.id === itemId)
         ? state.activities

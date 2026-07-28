@@ -16,7 +16,6 @@ import type {
   AutoConflictResolution,
   AutoResolvedConflict,
   ConflictResolution,
-  EmbeddingCacheStats,
   EpisodicStats,
   FactCategory,
   FactDetails,
@@ -359,6 +358,13 @@ export { DEFAULT_EPISODIC_MAX_BYTES } from './maintenance-core';
 
 /** Run a tidy-up once this many new facts have accumulated (0 = manual only). */
 export const DEFAULT_TIDY_THRESHOLD = 5;
+
+/**
+ * Set once, by the v1→v2 schema migration, on a store that held facts distilled
+ * before evidence/sensitivity/validity existed. Gates the provenance rebuild
+ * offer (rebuild.ts) so only such a store is ever asked to upgrade.
+ */
+export const V1_FACTS_MIGRATED_KEY = 'recall_v1_facts_migrated';
 
 
 // ---- fact-ranking tunables (inject-time relevance selection) ----
@@ -837,6 +843,14 @@ export class RecallStore {
         // The later guarded rebuild retries; schema migration itself remains usable.
       }
       handle.prepare(`UPDATE facts SET source = 'legacy' WHERE source IS NULL OR source = 'distilled'`).run();
+      // Mark that this store once held provenance-less v1 memories — the ONLY
+      // reason to offer the memory rebuild (see rebuild.ts). A fresh install
+      // captures evidence from its first message, so it must never be asked to
+      // "upgrade" a memory it has always had. Sticky: the offer survives the
+      // user deleting every legacy fact before deciding.
+      handle
+        .prepare(`INSERT INTO meta(key, value) VALUES('${V1_FACTS_MIGRATED_KEY}', '1') ON CONFLICT(key) DO NOTHING`)
+        .run();
     }
     handle.prepare(`UPDATE facts SET created_at = updated_at WHERE created_at = 0`).run();
     // Repair a class-refactor find/replace that turned the conflict-status literal
@@ -2069,19 +2083,6 @@ export class RecallStore {
   };
 
 
-  /** How many facts have a cached vector for `model` (plus total facts + vector dim). */
-  getEmbeddingCacheStats = (model: string): EmbeddingCacheStats => {
-    const handle = this.open();
-    const factCount = (handle.prepare(`SELECT COUNT(*) AS n FROM facts WHERE status = 'active'`).get() as { n: number }).n;
-    const row = handle
-      .prepare(
-        `SELECT COUNT(*) AS n, MAX(v.dim) AS dim FROM fact_vectors v
-         JOIN facts f ON f.id = v.fact_id WHERE v.model = ? AND f.status = 'active'`
-      )
-      .get(model) as { n: number; dim: number | null };
-    return { factCount, embeddedCount: row.n, dim: row.n > 0 ? (row.dim ?? null) : null };
-  };
-
 
   /**
    * Messages with id greater than `afterId`, oldest first — the episodic embed
@@ -2548,6 +2549,8 @@ export class RecallStore {
       handle.exec(`DELETE FROM meta WHERE key = 'consolidate_pending'`);
       // Clearing facts is also a cancellation barrier for an active rebuild.
       // Removing its progress returns it to the explicit-consent "available" state.
+      // The v1 flag deliberately survives: it describes the store's TRANSCRIPTS
+      // (recorded before v2 ever attached evidence), which this reset doesn't touch.
       handle.exec(`DELETE FROM meta WHERE key = 'memory_rebuild_v2'`);
       handle.exec('COMMIT');
     } catch (err) {

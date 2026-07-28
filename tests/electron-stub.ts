@@ -8,7 +8,16 @@ import { join } from 'node:path';
 
 export const app = {
   getPath: (name: string) => join(tmpdir(), 'stem-vitest-userdata', name),
-  getAppPath: () => process.cwd()
+  getAppPath: () => process.cwd(),
+  isPackaged: false,
+  // platform.ts opts into Chromium's Linux global-shortcuts portal at startup.
+  // `switches` is stub-only bookkeeping so tests can assert what was appended.
+  commandLine: {
+    switches: [] as Array<[string, string]>,
+    appendSwitch(name: string, value?: string) {
+      app.commandLine.switches.push([name, value ?? '']);
+    }
+  }
 };
 
 // ipc.ts registers invoke handlers through this fake; tests drive them via

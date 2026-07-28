@@ -26,12 +26,15 @@ import {
 } from './ipc';
 import { log } from './log';
 import {
+  enableGlobalShortcutPortal,
   isLinux,
   isMac,
+  isWaylandSession,
   mainWindowChromeOptions,
   overlayOuterBounds,
   overlayWindowOptions,
   playFinishChime as platformFinishChime,
+  quickChatSummonCommand,
   requestAttention,
   workspaceVisibilityOptions
 } from './platform';
@@ -51,6 +54,16 @@ import type { TaskScheduler } from './scheduler';
 import { initTaskScheduler } from './startup/scheduler';
 import type { ExecService } from './exec/service';
 import { initExecService } from './startup/exec';
+import {
+  clearMobileTurns,
+  closeMobileBridge,
+  initMobileBridge,
+  mobileTurnsInFlight,
+  noteMobileTurnEvent,
+  pushToMobile,
+  syncMobileBridge
+} from './startup/mobile';
+import { setActivityEmitter } from './activity';
 import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
 import { ensureUsageTracking } from './skills/usage';
@@ -74,11 +87,12 @@ import {
   updateEscapeAction,
   updateExecSettings,
   updateMemorySettings,
-  updateNativeWebSearch,
+  updateWebSearch,
   updateQuickChat,
   updateRetrievalSettings,
   updateSkillsSettings
 } from './workspace/settings';
+import { writeWebSearchConfig } from './pi/web-search';
 import { activityLabel } from '../shared/activity';
 import type {
   BackendEventEnvelope,
@@ -89,7 +103,7 @@ import type {
   ItemEventParams,
   MemoryModelSettings,
   ModelSummary,
-  NativeWebSearchSettings,
+  WebSearchSettings,
   PartialRetrievalSettings,
   RetrievalStage,
   RetrievalTestResult,
@@ -97,6 +111,7 @@ import type {
   QuickChatHandoff,
   QuickChatPrompt,
   QuickChatSettings,
+  QuickChatShortcutStatus,
   QuickChatStatus,
   RuntimeStatus,
   StartTurnInput,
@@ -163,6 +178,10 @@ if (process.env.ELECTRON_RENDERER_URL) {
   app.commandLine.appendSwitch('remote-debugging-port', '9222');
 }
 
+// Global shortcuts through the XDG portal on Linux — the only path that works in
+// a Wayland session. Must be set here: switches are read at Chromium startup.
+enableGlobalShortcutPortal();
+
 const EXTERNAL_URL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 
 function openExternalUrl(url: string): void {
@@ -212,6 +231,13 @@ let execService: ExecService | null = null;
 let scheduler: TaskScheduler | null = null;
 /** The currently-registered global accelerator, so we can unregister on change. */
 let currentShortcut: string | null = null;
+/**
+ * The accelerator the user configured, registered or not. Kept apart from
+ * `currentShortcut` (which only ever holds a grab the OS accepted) so Settings can
+ * tell "your key is live" from "the OS refused it" instead of showing a shortcut
+ * that does nothing.
+ */
+let desiredShortcut: string | null = null;
 /** Cached "show overlay on all Spaces" setting, applied once per overlay window. */
 let overlayOnAllDisplays = true;
 /** Cached inactivity timeout (ms) after which a summon starts a fresh thread. */
@@ -270,9 +296,16 @@ function applyOverlayWorkspaceVisibility(): void {
   }
 }
 
-function createWindow(): void {
+/**
+ * Create the main window. `hidden` is for a cold `stem --quick-chat` launch (the
+ * DE-bound summon path): the window still loads — the backend prewarm and every
+ * push destination hang off it — but the user only sees the overlay they asked
+ * for. The tray's "Open Stem", a plain `stem`, or activation reveals it.
+ */
+function createWindow(hidden = false): void {
   mainPushQueue.reset();
   mainWindow = new BrowserWindow({
+    show: !hidden,
     width: 1200,
     height: 820,
     // Surfaces in the macOS Window menu / Mission Control when running an alternate profile.
@@ -656,6 +689,7 @@ function toggleQuickChat(): void {
 
 /** (Re)register the global accelerator. Returns false when registration fails. */
 function applyQuickChatShortcut(accelerator: string | null): boolean {
+  desiredShortcut = accelerator;
   if (currentShortcut) {
     globalShortcut.unregister(currentShortcut);
     currentShortcut = null;
@@ -664,10 +698,26 @@ function applyQuickChatShortcut(accelerator: string | null): boolean {
   try {
     const ok = globalShortcut.register(accelerator, toggleQuickChat);
     if (ok) currentShortcut = accelerator;
+    else log('main', 'global shortcut refused by the OS', { accelerator });
     return ok;
-  } catch {
+  } catch (error) {
+    log('main', 'global shortcut registration failed', { accelerator, error: String(error) });
     return false;
   }
+}
+
+/**
+ * What Settings needs to tell the truth about the summon key: the configured
+ * accelerator, whether the OS actually granted the grab, and — on Wayland, where
+ * a granted grab still never fires — the command to bind in the DE instead.
+ */
+function quickChatShortcutStatus(): QuickChatShortcutStatus {
+  return {
+    accelerator: desiredShortcut,
+    registered: !!desiredShortcut && currentShortcut === desiredShortcut,
+    wayland: isWaylandSession(),
+    summonCommand: quickChatSummonCommand()
+  };
 }
 
 /** Send to the main window, deferring until React has registered its IPC
@@ -678,6 +728,16 @@ function sendToMain(channel: string, payload: unknown): void {
   for (const message of mainPushQueue.push({ channel, payload })) {
     win.webContents.send(message.channel, message.payload);
   }
+}
+
+/**
+ * Send to every phone connected to the bridge (see startup/mobile.ts). The
+ * third push destination alongside the main window and the overlay: a no-op when
+ * the bridge is off or nothing is connected, and silently dropped for any
+ * channel not on the mobile push allowlist.
+ */
+function sendToMobile(channel: string, payload: unknown): void {
+  pushToMobile(channel, payload);
 }
 
 async function captureQuickChatHandoff(threadId: string): Promise<{
@@ -815,14 +875,14 @@ function registerIpc(): void {
     // foreground gate) and hold scheduled runs off for a while.
     lastInteractiveAt = Date.now();
     scheduler?.preemptForUser();
-    // Main-window turns honor the main native-web-search toggle (the backend no-ops
-    // it for providers without native search).
+    // Main-window turns honor the main web-search toggle (the bridge extension
+    // activates/deactivates the search tools for the turn to match).
     const settings = await readSettings();
     // Main-window turns get the Main custom instructions (which also cover Quick Chat
     // by inheritance; Quick Chat's own turns add their extra on top — see quickchat:run).
     return runtime!.startTurn({
       ...input,
-      webSearch: settings.nativeWebSearch.main,
+      webSearch: settings.webSearch.main,
       instructions: settings.customInstructions.main
     });
   });
@@ -889,6 +949,7 @@ function registerIpc(): void {
 
   // ---- settings + quick chat ----
   handleIpc('settings:get', () => readSettings());
+  handleIpc('quickchat:shortcutStatus', () => quickChatShortcutStatus());
   handleIpc('settings:updateQuickChat', async (_e, patch: Partial<QuickChatSettings>) => {
     const next = await updateQuickChat(patch);
     // Apply the side effects the renderer can't: re-bind the global shortcut and
@@ -906,10 +967,18 @@ function registerIpc(): void {
     if ('finishSound' in patch) finishSound = next.quickChat.finishSound;
     return next;
   });
-  handleIpc('settings:updateNativeWebSearch', async (_e, patch: Partial<NativeWebSearchSettings>) => {
-    // Just persist — the value is applied per turn (the runtime writes the gate the
-    // bridge reads, based on the originating context), so no restart/file write here.
-    return updateNativeWebSearch(patch);
+  handleIpc('settings:updateWebSearch', async (_e, patch: Partial<WebSearchSettings>) => {
+    const next = await updateWebSearch(patch);
+    // The per-context on/off booleans are applied per turn (the runtime writes the
+    // gate the bridge reads, based on the originating context) — nothing to do here.
+    // A backend/key change is different: it lives in <piHome>/web-search.json, which
+    // pi-web-access reads, so rewrite that file whenever those fields move.
+    if ('provider' in patch || 'searxngUrl' in patch || 'apiKeys' in patch) {
+      await writeWebSearchConfig(next.webSearch).catch((err: unknown) =>
+        log('websearch', 'failed to write web-search.json', { error: String(err) })
+      );
+    }
+    return next;
   });
   handleIpc('settings:updateEscapeAction', async (_e, action: EscapeAction) => {
     // Just persist — the renderer reads escapeAction fresh from settings (mount +
@@ -1075,7 +1144,7 @@ function registerIpc(): void {
         serviceTier: prompt.serviceTier,
         format: prompt.format,
         // Quick Chat turns honor the Quick Chat native-web-search toggle.
-        webSearch: qcSettings.nativeWebSearch.quickChat,
+        webSearch: qcSettings.webSearch.quickChat,
         // Quick Chat inherits the Main instructions and appends its own extra.
         instructions: [ci.main, ci.quickChat].map((s) => s.trim()).filter(Boolean).join('\n'),
         attachments: prompt.attachments
@@ -1192,11 +1261,16 @@ app.whenReady().then(async () => {
   // auth.json the pi subprocess reads; progress is pushed to the renderer.
   providerAuth = new ProviderAuth(join(piHome(), 'auth.json'), (event) => sendToMain('auth:event', event));
 
-  // True while a turn runs on either surface or the user interacted within
-  // `idleMs`. Drives the scheduler's defer/preempt signal and lets the recall
-  // background passes yield to interactive work.
+  // True while a turn runs on any surface — main window, overlay, or a phone on
+  // the bridge — or the user interacted within `idleMs`. Drives the scheduler's
+  // defer/preempt signal and lets the recall background passes yield to
+  // interactive work. The phone counts even though nobody is at the Mac: a live
+  // conversation is a live conversation.
   const busyWithin = (idleMs: number): boolean =>
-    runningMainThreads.size > 0 || overlay.turnRunning || Date.now() - lastInteractiveAt < idleMs;
+    runningMainThreads.size > 0 ||
+    overlay.turnRunning ||
+    mobileTurnsInFlight() > 0 ||
+    Date.now() - lastInteractiveAt < idleMs;
 
   scheduler = initTaskScheduler({
     runtime,
@@ -1216,12 +1290,18 @@ app.whenReady().then(async () => {
       if (request.threadId && overlay.owns(request.threadId)) showQuickChat(false);
       sendToMain('exec:approvalRequest', request);
       quickChatWindow?.webContents.send('exec:approvalRequest', request);
+      sendToMobile('exec:approvalRequest', request);
     },
     emitApprovalResolved: (id) => {
       sendToMain('exec:approvalResolved', { id });
       quickChatWindow?.webContents.send('exec:approvalResolved', { id });
+      sendToMobile('exec:approvalResolved', { id });
     }
   });
+
+  // Background-activity feed for the toolbar indicator. Wired before the passes
+  // below start reporting; main window only, since that is where the icon lives.
+  setActivityEmitter((snapshot) => mainWindow?.webContents.send('activity:changed', snapshot));
 
   // Stem Recall relevance ranking + background workers: embed/scan utility
   // processes, retrieval clients (settings-mode routed), and the MCP embed
@@ -1267,11 +1347,13 @@ app.whenReady().then(async () => {
       if (approvalThreadId && overlay.owns(approvalThreadId)) showQuickChat(false);
       sendToMain('mcp:adminApproval', event.params);
       quickChatWindow?.webContents.send('mcp:adminApproval', event.params);
+      sendToMobile('mcp:adminApproval', event.params);
       return;
     }
     if (event.method === 'mcp/admin/approvalResolved') {
       sendToMain('mcp:adminApprovalResolved', event.params);
       quickChatWindow?.webContents.send('mcp:adminApprovalResolved', event.params);
+      sendToMobile('mcp:adminApprovalResolved', event.params);
       return;
     }
     if (event.method === 'instructions/approvalRequest') {
@@ -1279,11 +1361,13 @@ app.whenReady().then(async () => {
       if (approvalThreadId && overlay.owns(approvalThreadId)) showQuickChat(false);
       sendToMain('instructions:approvalRequest', event.params);
       quickChatWindow?.webContents.send('instructions:approvalRequest', event.params);
+      sendToMobile('instructions:approvalRequest', event.params);
       return;
     }
     if (event.method === 'instructions/approvalResolved') {
       sendToMain('instructions:approvalResolved', event.params);
       quickChatWindow?.webContents.send('instructions:approvalResolved', event.params);
+      sendToMobile('instructions:approvalResolved', event.params);
       return;
     }
     if (event.method === 'mcp/changed') {
@@ -1299,6 +1383,7 @@ app.whenReady().then(async () => {
     if (event.method === 'mcp/status') {
       sendToMain('mcp:status', event.params);
       quickChatWindow?.webContents.send('mcp:status', event.params);
+      sendToMobile('mcp:status', event.params);
       return;
     }
     const threadId = (event.params as { threadId?: string } | undefined)?.threadId;
@@ -1312,6 +1397,9 @@ app.whenReady().then(async () => {
     if (handoffBuffered) {
       // captureQuickChatHandoff replays these immediately after the atomic snapshot.
     } else if (overlayOwned) {
+      // Not mirrored to the phone: the overlay's live thread is a conversation
+      // happening at the desk, and the phone would build the same phantom
+      // user-less slice the main window would.
       quickChatWindow?.webContents.send('backend:event', event);
       driveHud(event);
     } else if (!threadId) {
@@ -1325,7 +1413,11 @@ app.whenReady().then(async () => {
       }
       sendToMain('backend:event', event);
       quickChatWindow?.webContents.send('backend:event', event);
+      // The phone needs these too, or a backend crash leaves it streaming
+      // forever with no way to learn the turn is never coming.
+      sendToMobile('backend:event', event);
       runningMainThreads.clear();
+      clearMobileTurns();
       if (event.method === 'process/exit' && (overlay.turnRunning || overlayResetBarrier.pending)) {
         overlay.restore(failQuickChatProcess(Date.now(), overlay.threadId));
         if (hud.owner === 'quickchat') showHud({ phase: 'finished', label: 'Request failed' }, 'quickchat');
@@ -1335,6 +1427,11 @@ app.whenReady().then(async () => {
     } else {
       sendToMain('backend:event', event);
       noteMainThreadEvent(event.method, threadId);
+      // Third destination: any non-internal thread the overlay doesn't own is
+      // one the phone may be showing. It filters by threadId itself, exactly as
+      // the main window does — the bridge doesn't track which thread is open.
+      sendToMobile('backend:event', event);
+      noteMobileTurnEvent(event.method, threadId);
     }
     if (isRecallEnabled()) {
       // Skip capture when the turn read inside a memorize:false connected folder, so
@@ -1380,7 +1477,20 @@ app.whenReady().then(async () => {
   }
 
   registerIpc();
-  createWindow();
+  // The phone bridge dispatches into the handlers registerIpc just installed, so
+  // it can only be wired after it. Serving the mobile bundle out of the same
+  // place the desktop renderer is loaded from keeps the two builds together.
+  initMobileBridge({
+    rendererDir: join(__dirname, '../renderer'),
+    devUrl: process.env.ELECTRON_RENDERER_URL ?? null
+  });
+  void syncMobileBridge();
+  // A cold `stem --quick-chat` must land on the overlay, not the main window:
+  // that command IS the shortcut on Wayland (see the second-instance handler),
+  // and pressing it with Stem closed should feel the same as pressing it with
+  // Stem running. The overlay is summoned once it exists, below.
+  const coldSummon = process.argv.includes('--quick-chat');
+  createWindow(coldSummon);
   // Eagerly spawn pi + connect MCP once the window has painted, so the first prompt
   // doesn't pay backend cold-start. Skipped when not signed in (status() is cheap
   // and never spawns). did-finish-load keeps the spawn + MCP child processes off
@@ -1417,6 +1527,7 @@ app.whenReady().then(async () => {
   createQuickChatWindow();
   createHudWindow();
   applyQuickChatShortcut(initialSettings.quickChat.shortcut);
+  if (coldSummon) toggleQuickChat();
   // Linux-only for now: the tray is the discoverable summon/quit affordance where
   // there's no dock and (on Wayland) no working global shortcut. Skipped under
   // STEM_E2E to keep the harness's window/process accounting deterministic.
@@ -1451,6 +1562,9 @@ app.on('before-quit', (event) => {
   embedManager?.dispose();
   scanManager?.dispose();
   closeFolderIndexes();
+  // Destroys any open SSE stream before closing the listener — without that,
+  // close() waits for a connection that by design never ends.
+  void closeMobileBridge();
   runtime.shutdown().finally(() => app.exit(0));
 });
 

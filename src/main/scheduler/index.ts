@@ -10,6 +10,7 @@ import type {
 import { isContextOverflowError } from '../backend/overflow';
 import { isValidCron, nextAfter } from './cron';
 import { readTasks, saveTasks, titleFromPrompt } from '../workspace/tasks';
+import * as activity from '../activity';
 
 // The main-process scheduler. Holds tasks in memory, keeps ONE timer armed for the
 // earliest due task, and runs each firing as a full autonomous agent turn appended
@@ -341,6 +342,9 @@ export class TaskScheduler {
       preempted: false
     };
     this.activeRun = run;
+    // Instrumented here rather than at the onRun callback: onRun only fires when
+    // the turn starts, and this is the only scope that also sees it settle.
+    const handle = activity.begin('tasks.run', 'Running scheduled task', { detail: titleFromPrompt(task.prompt) });
     try {
       const { turnId } = await this.opts.runtime.startTurn({
         input: task.prompt,
@@ -394,6 +398,13 @@ export class TaskScheduler {
       task.lastStatus = 'failed';
     } finally {
       this.activeRun = null;
+      // A preempted run is requeued below rather than finished, so it earns
+      // neither a completed row nor a failure — `worked: false` drops it.
+      if (task.lastStatus === 'failed') {
+        activity.fail('tasks.run', 'Scheduled run failed', 'Running scheduled task');
+      } else {
+        activity.end(handle, { worked: !run.preempted });
+      }
     }
 
     // Preempted by the user: not a failure. Restore the pre-run status and retry

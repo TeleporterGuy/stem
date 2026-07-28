@@ -11,6 +11,54 @@ export const isLinux = process.platform === 'linux';
 export const isWindows = process.platform === 'win32';
 
 /**
+ * Is this a Wayland desktop session? Stem itself runs under XWayland there, and
+ * an X11 key grab never sees a key the Wayland compositor routed elsewhere — so
+ * `globalShortcut.register` reports success and the accelerator silently never
+ * fires. The only reliable summon paths are the XDG GlobalShortcuts portal (see
+ * enableGlobalShortcutPortal) and a DE-bound `--quick-chat` launch, so the UI
+ * has to say so instead of showing a shortcut that does nothing.
+ */
+export function isWaylandSession(): boolean {
+  if (!isLinux) return false;
+  return (
+    (process.env.XDG_SESSION_TYPE ?? '').toLowerCase() === 'wayland' ||
+    !!process.env.WAYLAND_DISPLAY ||
+    (process.env.ELECTRON_OZONE_PLATFORM_HINT ?? '').toLowerCase() === 'wayland'
+  );
+}
+
+/**
+ * Opt into Chromium's GlobalShortcutsPortal — the only implementation of global
+ * shortcuts that can work in a Wayland session, registering through
+ * org.freedesktop.portal.GlobalShortcuts instead of grabbing X11 keys. Must run
+ * before the app is ready: command-line switches are read at Chromium startup.
+ *
+ * Chromium only takes this path on the ozone/wayland backend, and Stem does not
+ * force that backend (a native Wayland client cannot position its own windows,
+ * which the overlay and the status pill both do) — so this helps the setups that
+ * launch Stem with ELECTRON_OZONE_PLATFORM_HINT=wayland themselves, and the
+ * DE-bound `--quick-chat` command remains the reliable Wayland summon path.
+ */
+export function enableGlobalShortcutPortal(): void {
+  if (!isLinux) return;
+  app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
+}
+
+/**
+ * The command to bind to a system-level keyboard shortcut when Stem can't grab
+ * one itself (Wayland). A second launch hands its argv to the running instance,
+ * which toggles the overlay — see the second-instance handler in index.ts.
+ */
+export function quickChatSummonCommand(): string {
+  // Inside an AppImage, execPath points at the extracted temp mount, which is
+  // gone by the time the user's keybinding fires. $APPIMAGE is the stable file.
+  const exe = process.env.APPIMAGE || process.execPath;
+  const quoted = /\s/.test(exe) ? `"${exe}"` : exe;
+  // Unpackaged (dev) runs need the app directory too, or Electron opens its demo.
+  return app.isPackaged ? `${quoted} --quick-chat` : `${quoted} ${app.getAppPath()} --quick-chat`;
+}
+
+/**
  * Overlay (Quick Chat) window chrome.
  *
  * macOS: an NSPanel (`type: 'panel'`) — it can take keyboard focus WITHOUT

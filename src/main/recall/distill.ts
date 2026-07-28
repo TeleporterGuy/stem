@@ -3,6 +3,7 @@ import { buildMatchQuery, lexTokens } from './search-core';
 import { getEmbeddingsClient } from './retrieval';
 import { cosineSim } from './vector';
 import { isRecallEnabled } from '../workspace/memory';
+import * as activity from '../activity';
 import { classifyRelation, evidenceDateOf } from './reconcile';
 import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
@@ -565,9 +566,12 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
     setMeta(PARSE_STRIKES_KEY, '');
     claims = parsed.claims;
     usageGrades = parseFactUsage(reply);
-  } catch {
+  } catch (error) {
     // Leave the cursor unmoved so a later run retries this exact segment
-    // (grading rides along: ungraded rows stay ungraded).
+    // (grading rides along: ungraded rows stay ungraded). Reported before the
+    // swallow: returning 0 is indistinguishable from "nothing to distill" at the
+    // call site, which is how a broken memory model stayed invisible for so long.
+    activity.fail('memory.distill', error, 'Distilling facts');
     return 0;
   }
   // The user may have cleared facts while the model call was in flight. Treat

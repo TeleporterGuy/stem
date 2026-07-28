@@ -161,6 +161,88 @@ button, input, textarea, a, label, .switch, .insp-seg, .seg-ctl { -webkit-app-re
 .tbtn:disabled { opacity: 0.4; cursor: default; background: none; }
 .tbtn.active { background: color-mix(in srgb, var(--ink) 10%, transparent); color: var(--ink); }
 
+/* Background-activity indicator (ActivityIndicator.tsx). Always mounted, so it
+   never shifts the toolbar; motion carries "running", colour carries health. */
+.activity-ind { position: relative; }
+.activity-ind.pulse { color: var(--ink); animation: activity-pulse 1.4s ease-in-out infinite; }
+@keyframes activity-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.12); }
+}
+/* Sticky until the panel is opened: a pass that failed hours ago is still news. */
+.activity-ind-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 1.5px var(--panel);
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-ind.pulse { animation: none; opacity: 1; }
+}
+
+/* Anchored to the window rather than measured against the button: the toolbar is
+   a fixed 52px band and the icon always sits at its right end. */
+.activity-pop {
+  position: fixed;
+  top: 56px;
+  right: 12px;
+  width: 320px;
+  max-height: min(60vh, 480px);
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: var(--radius-md);
+  border: 0.5px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow-pop);
+  z-index: var(--z-popover);
+}
+.activity-pop-head { font-size: var(--fs-11); font-weight: 600; padding: 2px 6px 6px; }
+.activity-pop-sub {
+  font-size: var(--fs-11);
+  color: var(--muted);
+  padding: 8px 6px 4px;
+  border-top: 0.5px solid var(--line);
+  margin-top: 4px;
+}
+.activity-empty { font-size: var(--fs-11); color: var(--muted); padding: 2px 6px 6px; margin: 0; }
+.activity-list { list-style: none; margin: 0; padding: 0; }
+.activity-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: var(--radius);
+  font-size: var(--fs-11);
+}
+.activity-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.activity-row-label { color: var(--ink); }
+.activity-row-detail { color: var(--muted); overflow-wrap: anywhere; }
+.activity-row-meta { color: var(--muted); white-space: nowrap; }
+.activity-row-failed .activity-row-detail { color: var(--warn); }
+.activity-row-running .activity-row-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink);
+  animation: activity-pulse 1.4s ease-in-out infinite;
+  align-self: center;
+  flex: 0 0 auto;
+}
+.activity-bar {
+  flex: 0 0 56px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+  align-self: center;
+  overflow: hidden;
+}
+.activity-bar-fill { display: block; height: 100%; background: var(--ink); opacity: 0.55; }
+.activity-more { margin: 4px 6px 2px; }
+
 .toolbar-title { display: flex; flex-direction: column; line-height: 1.15; margin-left: 6px; }
 .toolbar-title strong { font-size: var(--fs-13); font-weight: 600; }
 .toolbar-title span { font-size: var(--fs-11); color: var(--muted); }
@@ -1402,7 +1484,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); transition: left var(--motion-med); }
 .switch.on::after { left: 17px; }
 
-/* Compact inline checkbox shown under a model picker (e.g. native web search). */
+/* Compact inline checkbox shown under a model picker (e.g. web search). */
 .set-check { display: inline-flex; align-items: center; gap: var(--sp-3); margin-top: 8px; font-size: var(--fs-12); color: var(--muted); cursor: pointer; user-select: none; }
 .set-check input { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
 
@@ -2219,4 +2301,45 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   cursor: pointer;
   padding: 0 0 0 4px;
   line-height: 1;
+}
+
+/* ---- Settings → Mobile: the phone pairing panel ---- */
+
+/* The QR keeps its own white paper in both themes: an inverted or tinted code is
+   unreadable to a good share of phone scanners. */
+.qr-card {
+  align-self: center;
+  background: #fff;
+  border-radius: var(--radius-md);
+  padding: 8px;
+  line-height: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+}
+.qr-image { display: block; }
+/* The pairing link is a credential, so the warning reads as one. */
+.pair-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  font-size: var(--fs-11);
+  color: var(--danger);
+}
+.pair-warn svg { flex: none; margin-top: 1px; }
+.pair-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); }
+.pair-url {
+  font-size: var(--fs-11);
+  color: var(--muted);
+  word-break: break-all;
+  user-select: all;
+}
+.pair-port { width: 7em; }
+.pair-cmd {
+  background: var(--field);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  font-size: var(--fs-11);
+  color: var(--ink);
+  user-select: all;
+  word-break: break-all;
 }

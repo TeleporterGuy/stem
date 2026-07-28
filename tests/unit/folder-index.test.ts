@@ -15,6 +15,7 @@ import {
 import { embedMissingDocVectors } from '../../src/main/folder-index/embed';
 import { ftsSearchDocs, hybridSearchDocs, semanticSearchDocsCore } from '../../src/main/recall/search-core';
 import type { EmbeddingsClient } from '../../src/main/recall/embeddings';
+import * as activity from '../../src/main/activity';
 
 // The indexed-connected-folders pipeline: store schema, incremental scan with
 // mirror semantics (upsert changed, prune vanished), skip classification, the
@@ -323,6 +324,33 @@ describe('embedMissingDocVectors + hybridSearchDocs', () => {
       expect(store.readStatus().pendingEmbeds).toBe(0);
       expect(await embedMissingDocVectors(store, fakeClient([1]))).toBe(0);
     } finally {
+      store.close();
+    }
+  });
+
+  // The pass swallows embedding failures and returns a count, so the caller can't
+  // tell a dead worker from a folder with nothing to do. The activity registry is
+  // the only place that distinction survives.
+  it('reports an embedding failure to the activity registry', async () => {
+    const root = freshFolder();
+    writeFileSync(join(root, 'trip.md'), '# Vienna trip\nThe hotel booking reference is VN-2211.');
+    const store = freshStore();
+    activity.resetActivity();
+    try {
+      await scanFolder(store, root);
+      const dead: EmbeddingsClient = {
+        available: async () => true,
+        modelId: async () => 'fake-model',
+        embed: async () => {
+          throw new Error('worker died');
+        }
+      };
+      expect(await embedMissingDocVectors(store, dead)).toBe(0);
+      const snap = activity.snapshot();
+      expect(snap.unseenFailure).toBe(true);
+      expect(snap.history[0]).toMatchObject({ kind: 'folders.embed', state: 'failed', error: 'worker died' });
+    } finally {
+      activity.resetActivity();
       store.close();
     }
   });

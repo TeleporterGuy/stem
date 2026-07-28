@@ -2,6 +2,7 @@ import type { PiEvent } from './rpc';
 import type { ActivityItem, SourceRef, TurnUsage } from '../../shared/types';
 import { stripCiteMarkers } from '../../shared/citations';
 import { toolArgsOf } from './protocol';
+import { extractSources } from './web-search';
 
 // Translate pi's RPC event stream into Stem's canonical backend events (the
 // { method, params } envelopes the renderer/HUD/recall consume).
@@ -180,15 +181,47 @@ export function toTurnUsage(usage: PiUsage | undefined | null): TurnUsage | null
   };
 }
 
+/**
+ * The tools the vendored pi-web-access extension registers. `fetch_content` is
+ * named for what it does rather than for the web, so it would otherwise fall
+ * through to the generic "Using a tool…" row.
+ */
+const WEB_ACCESS_TOOLS = new Set(['web_search', 'source_check', 'fetch_content', 'get_search_content']);
+
+/** True for a tool whose result carries citable web sources. */
+export function isWebSearchTool(toolName: string | undefined): boolean {
+  const n = (toolName ?? '').toLowerCase();
+  return n === 'web_search' || n === 'fetch_content';
+}
+
 /** Map a pi tool name onto the item-type vocabulary `activityLabel` knows. */
 function toolItemType(toolName: string | undefined): string {
   const n = (toolName ?? '').toLowerCase();
   if (n === 'bash' || n === 'run_command' || n === 'read' || n === 'ls' || n === 'glob' || n === 'grep')
     return 'commandExecution';
   if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'apply_patch') return 'fileChange';
+  if (WEB_ACCESS_TOOLS.has(n)) return 'webSearch';
   if (n.startsWith('mcp')) return 'mcpToolCall';
   if (n.includes('search') || n.includes('web')) return 'webSearch';
   return 'mcpToolCall'; // generic tool → "Using a tool…"
+}
+
+/**
+ * Flatten a pi tool result's content blocks to plain text. The result shape is
+ * MCP-ish (`{ content: [{ type: 'text', text }] }`) but PiEvent is deliberately
+ * open, so probe rather than cast.
+ */
+function resultText(result: { content?: unknown } | undefined): string {
+  const blocks = result?.content;
+  if (!Array.isArray(blocks)) return '';
+  const parts: string[] = [];
+  for (const block of blocks) {
+    if (block && typeof block === 'object') {
+      const text = (block as { text?: unknown }).text;
+      if (typeof text === 'string') parts.push(text);
+    }
+  }
+  return parts.join('\n');
 }
 
 // Argument keys that carry a human-meaningful target, most-specific first. pi's
@@ -317,8 +350,17 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       const id = String(ev.toolCallId ?? '');
       const entry = ctx.activity.find((a) => a.id === id);
       if (!entry) break; // an end without a tracked start (or unkeyed) — nothing to flip
-      const result = ev.result as { isError?: boolean } | undefined;
+      const result = ev.result as { isError?: boolean; content?: unknown } | undefined;
       entry.status = ev.isError === true || result?.isError === true ? 'error' : 'ok';
+      // Web sources for the citations panel. Native search used to stream these on
+      // the provider's own event stream (recovered by a codex-only tee); now they
+      // come back inside the pi-web-access tool result, as inline markdown links
+      // plus a trailing "**Sources:**" list, and are parsed out of its text.
+      if (entry.status === 'ok' && isWebSearchTool(entry.name)) {
+        for (const source of extractSources(resultText(result))) {
+          if (!ctx.sources.some((s) => s.url === source.url)) ctx.sources.push(source);
+        }
+      }
       out.push({
         method: 'item/completed',
         params: {

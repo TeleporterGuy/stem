@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send } from 'lucide-react';
 import type {
-  EmbeddingCacheStats,
   MemoryContents,
   MemorySettings,
   ModelSummary,
@@ -68,15 +67,20 @@ const RERANK_MODES: { id: RerankerMode; label: string; hint: string }[] = [
   { id: 'remote', label: 'Server', hint: 'Your own /rerank endpoint (llama.cpp --reranking, vLLM, Infinity…)' }
 ];
 
-/** One line describing where a local retrieval model (embedder/reranker) is right now. */
+/**
+ * One line describing where a local retrieval model (embedder/reranker) is right
+ * now. Deliberately state-only: the download percentage and the play-by-play
+ * belong to the toolbar activity indicator, which is the single place that
+ * answers "is Stem busy". What stays here is what this panel is for — did my
+ * model switch take effect, what dimension did it produce, and did it break.
+ */
 function localStatusLabel(
-  status: { state: LocalEmbedStatus['state']; progressPct?: number; dim?: number; error?: string } | null
+  status: { state: LocalEmbedStatus['state']; dim?: number; error?: string } | null
 ): string {
   switch (status?.state) {
     case 'downloading':
-      return `Downloading model… ${status.progressPct ?? 0}%`;
     case 'loading':
-      return 'Loading model…';
+      return 'Preparing model…';
     case 'ready':
       return `Ready${status.dim ? ` · ${status.dim}-dim` : ''}`;
     case 'error':
@@ -451,7 +455,6 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
   const [memoryModel, setMemoryModel] = useState<string | null>(null);
   const [retrieval, setRetrieval] = useState<RetrievalSettings | null>(null);
   const [showRetrieval, setShowRetrieval] = useState(false);
-  const [embStats, setEmbStats] = useState<EmbeddingCacheStats | null>(null);
   const [rebuild, setRebuild] = useState<MemoryRebuildStatus | null>(null);
   const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
   const [autoResolved, setAutoResolved] = useState<AutoResolvedConflict[]>([]);
@@ -473,9 +476,6 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
       setRefreshing(false);
     }
   }
-  function loadEmbStats() {
-    window.stem.getEmbeddingStats().then(setEmbStats);
-  }
   function loadTrustState() {
     window.stem.getMemoryRebuildStatus().then(setRebuild);
     window.stem.getMemoryConflicts().then(setConflicts);
@@ -489,7 +489,6 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
       setRetrieval(s.retrieval);
     });
     loadContents();
-    loadEmbStats();
     loadTrustState();
   }, []);
 
@@ -887,10 +886,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
             <button
               className="memory-view-toggle"
               aria-expanded={showRetrieval}
-              onClick={() => {
-                if (!showRetrieval) loadEmbStats();
-                setShowRetrieval((v) => !v);
-              }}
+              onClick={() => setShowRetrieval((v) => !v)}
             >
               <ChevronRight size={14} className={showRetrieval ? 'open' : ''} />
               <strong>Relevance ranking (advanced)</strong>
@@ -925,18 +921,6 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                 </div>
               </div>
               <EmbeddingsFields value={retrieval.embeddings} onPatch={patchEmbeddings} />
-              <p className="muted">
-                {embStats == null
-                  ? 'Embedding cache: …'
-                  : embStats.embeddedCount === 0
-                    ? `0 of ${embStats.factCount} facts embedded — send a message to build the cache.`
-                    : `${embStats.embeddedCount} of ${embStats.factCount} facts embedded${
-                        embStats.dim ? ` · ${embStats.dim}-dim vectors` : ''
-                      }.`}{' '}
-                <button className="link-btn" onClick={loadEmbStats}>
-                  Refresh
-                </button>
-              </p>
               <RerankerFields value={retrieval.reranker} onPatch={patchReranker} />
             </div>
           )}

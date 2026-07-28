@@ -73,7 +73,14 @@ export default defineConfig({
     build: {
       outDir: 'dist/renderer',
       rollupOptions: {
-        input: 'src/renderer/index.html'
+        // Two HTML entries. index.html serves all three desktop windows (the URL
+        // flag picks main / Quick Chat / HUD); mobile.html is the phone client,
+        // which the loopback bridge serves out of this same directory (see
+        // src/main/mobile/server.ts) and which has no preload behind it.
+        input: {
+          index: 'src/renderer/index.html',
+          mobile: 'src/renderer/mobile.html'
+        }
       }
     }
   }

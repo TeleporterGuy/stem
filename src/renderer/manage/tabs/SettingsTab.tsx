@@ -1,13 +1,28 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Plug, Globe, HardDrive, Plus, Minus, X, Check, RefreshCw } from 'lucide-react';
+import {
+  Plug,
+  Globe,
+  HardDrive,
+  Plus,
+  Minus,
+  X,
+  Check,
+  Copy,
+  KeyRound,
+  RefreshCw,
+  TriangleAlert
+} from 'lucide-react';
 import type {
   AuthProviderId,
   ApiKeyProviderId,
   CustomInstructionsSettings,
   EscapeAction,
   ExecSettings,
-  NativeWebSearchSettings,
+  MobilePairingInfo,
+  MobileSettings,
+  WebSearchSettings,
   QuickChatSettings,
+  QuickChatShortcutStatus,
   LocalProviderId,
   LocalProvidersSettings,
   LocalProviderTestResult
@@ -16,8 +31,85 @@ import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerNam
 import { formatAccelerator, IS_MAC, splitAccelerator } from '../../accel';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
+import { QrImage } from '../../ui/QrImage';
 import { EFFORT_LABELS } from '../../modelLabels';
 import type { ModelTabProps } from './shared';
+
+/**
+ * Search backends pi-web-access can use, in the order the picker lists them. `field`
+ * is the exact config key that backend's loader reads (they are NOT uniformly
+ * `<name>ApiKey` — SearXNG wants a base URL), mirroring SEARCH_BACKENDS in
+ * main/pi/web-search.ts. `field: null` means the backend needs no credential.
+ *
+ * The backend is independent of the model being chatted with: an Ollama chat can
+ * search through Exa, a ChatGPT chat through SearXNG.
+ */
+const SEARCH_BACKENDS: {
+  id: string;
+  label: string;
+  field: string | null;
+  placeholder?: string;
+  note?: string;
+}[] = [
+  {
+    id: 'auto',
+    label: 'Automatic',
+    field: null,
+    note: 'Tries each configured backend in turn, ending at one that needs no key.'
+  },
+  { id: 'all', label: 'All at once', field: null, note: 'Queries every configured backend and combines the answers.' },
+  {
+    id: 'openai',
+    label: 'ChatGPT / OpenAI',
+    field: 'openaiApiKey',
+    placeholder: 'sk-…',
+    note: 'Free with a ChatGPT sign-in — searches bill to that subscription. A key is only needed without one.'
+  },
+  {
+    id: 'exa',
+    label: 'Exa',
+    field: 'exaApiKey',
+    placeholder: 'exa-…',
+    note: 'Works with no key at all through Exa MCP; a key switches it to the faster direct API.'
+  },
+  { id: 'brave', label: 'Brave', field: 'braveApiKey', placeholder: 'BSA…' },
+  { id: 'tavily', label: 'Tavily', field: 'tavilyApiKey', placeholder: 'tvly-…' },
+  { id: 'perplexity', label: 'Perplexity', field: 'perplexityApiKey', placeholder: 'pplx-…' },
+  { id: 'gemini', label: 'Gemini', field: 'geminiApiKey', placeholder: 'AIza…' },
+  { id: 'parallel', label: 'Parallel', field: 'parallelApiKey' },
+  { id: 'tinyfish', label: 'TinyFish', field: 'tinyfishApiKey', placeholder: 'sk-tinyfish-…' },
+  { id: 'serpdive', label: 'SERPdive', field: 'serpdiveApiKey' },
+  { id: 'anysearch', label: 'AnySearch', field: 'anysearchApiKey' },
+  {
+    id: 'searxng',
+    label: 'SearXNG (self-hosted)',
+    field: 'searxngBaseUrl',
+    placeholder: 'https://search.example.com',
+    note: 'No key or account; nothing leaves your network.'
+  }
+];
+
+/** Field label for a backend's credential: "Exa key" / "SearXNG endpoint". */
+function credentialLabel(b: { label: string; field: string | null }): string {
+  return `${b.label.replace(/ \(self-hosted\)$/, '')} ${b.field?.endsWith('ApiKey') ? 'key' : 'endpoint'}`;
+}
+
+/** Endpoints that tune a backend rather than selecting one. */
+const SEARCH_ENDPOINTS: { field: string; label: string; placeholder: string; hint: string }[] = [
+  {
+    field: 'openaiResponsesUrl',
+    label: 'OpenAI Responses endpoint',
+    placeholder: 'https://api.openai.com/v1/responses',
+    hint: 'Point the OpenAI backend at a compatible gateway instead.'
+  },
+  {
+    field: 'firecrawlBaseUrl',
+    label: 'Firecrawl endpoint',
+    placeholder: 'https://firecrawl.example.com',
+    hint: 'Self-hosted Firecrawl, tried first when a page blocks plain fetching.'
+  },
+  { field: 'firecrawlApiKey', label: 'Firecrawl key', placeholder: 'fc-…', hint: 'Only if your Firecrawl requires one.' }
+];
 
 // Inactivity presets for starting a fresh Quick Chat thread on re-summon.
 // 0 = never (always continue the current session).
@@ -677,6 +769,235 @@ function LocalServerAddForm({
   );
 }
 
+// ---- Mobile (Settings → phone pairing) ----
+
+/**
+ * The phone bridge: an enable switch, the one-time `tailscale serve` step, and
+ * the pairing link as both a QR and a copyable string.
+ *
+ * Two things shape this panel. First, the link IS the credential — the bearer
+ * token rides its fragment — so it is only shown while the bridge is on, and the
+ * warning about it is not optional. Second, nothing on this Mac can discover the
+ * MagicDNS name `tailscale serve` publishes under, so the user has to tell Stem
+ * what it is; until they do, the pairing link points at loopback and the panel
+ * says so rather than offering a QR that resolves to the phone's own localhost.
+ */
+function MobileSection() {
+  const [mobile, setMobile] = useState<MobileSettings | null>(null);
+  const [pairing, setPairing] = useState<MobilePairingInfo | null>(null);
+  // Drafts, so typing an address or a port doesn't write settings per keystroke.
+  const [addressDraft, setAddressDraft] = useState('');
+  const [portDraft, setPortDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [confirmReroll, setConfirmReroll] = useState(false);
+
+  /** Adopt saved settings + fresh pairing info, resetting the drafts to match. */
+  const adopt = useCallback((next: MobileSettings, info: MobilePairingInfo) => {
+    setMobile(next);
+    setPairing(info);
+    setAddressDraft(next.publicUrl);
+    setPortDraft(String(next.port));
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      const [settings, info] = await Promise.all([window.stem.getSettings(), window.stem.getMobilePairing()]);
+      adopt(settings.mobile, info);
+    })();
+  }, [adopt]);
+
+  async function update(patch: Partial<MobileSettings>) {
+    setBusy(true);
+    setConfirmReroll(false);
+    try {
+      // updateMobileSettings starts/stops/rebinds the server before it resolves,
+      // so the pairing info read after it reflects the new state.
+      const settings = await window.stem.updateMobileSettings(patch);
+      adopt(settings.mobile, await window.stem.getMobilePairing());
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reroll() {
+    setBusy(true);
+    setConfirmReroll(false);
+    try {
+      const info = await window.stem.rerollMobileToken();
+      setPairing(info);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function commitPort() {
+    const port = Number(portDraft);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      setPortDraft(String(mobile?.port ?? ''));
+      return;
+    }
+    if (port !== mobile?.port) void update({ port });
+  }
+
+  function copyLink() {
+    if (!pairing) return;
+    void navigator.clipboard.writeText(pairing.url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    });
+  }
+
+  return (
+    <>
+      <div className="grp-head">Mobile</div>
+      <div className="formgroup">
+        <div className="set-row">
+          <span className="set-label">
+            <strong>Phone access</strong>
+            <em>
+              Open Stem on your phone, with the same memory{' '}
+              <InfoTip label="How phone access works">
+                Stem serves its own phone client from a server bound to this Mac's loopback address —
+                nothing off the machine can reach it directly. <code>tailscale serve</code> fronts it
+                with HTTPS on your tailnet, so only your own devices can connect, and each one pairs
+                with a bearer token you can revoke here.
+              </InfoTip>
+            </em>
+          </span>
+          <button
+            className={`switch${mobile?.enabled ? ' on' : ''}`}
+            role="switch"
+            aria-checked={mobile?.enabled ?? false}
+            aria-label="Phone access"
+            disabled={busy || !mobile}
+            onClick={() => mobile && void update({ enabled: !mobile.enabled })}
+          />
+        </div>
+
+        {mobile?.enabled && (
+          <>
+            <div className="set-block fg-divider">
+              <span className="set-sub">Port</span>
+              <div className="pair-actions">
+                <input
+                  className="ifield pair-port"
+                  type="text"
+                  inputMode="numeric"
+                  aria-label="Phone bridge port"
+                  value={portDraft}
+                  disabled={busy}
+                  onChange={(e) => setPortDraft(e.target.value)}
+                  onBlur={commitPort}
+                  // Enter commits through the same blur path, so there is one writer.
+                  onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+                />
+                <span className={`retrieval-test-status ${pairing?.running ? 'ok' : 'err'}`}>
+                  {pairing?.running ? <Check size={12} /> : <X size={12} />}
+                  {pairing?.running ? 'Listening' : 'Not listening — the port may be in use'}
+                </span>
+              </div>
+            </div>
+
+            <div className="set-block fg-divider">
+              <span className="set-sub">One-time setup</span>
+              <p className="muted">Run this once in a terminal, then paste the address it prints:</p>
+              <code className="pair-cmd">tailscale serve --bg {mobile.port}</code>
+              <input
+                className="ifield"
+                type="text"
+                placeholder="https://your-mac.your-tailnet.ts.net"
+                aria-label="Tailnet address"
+                value={addressDraft}
+                disabled={busy}
+                onChange={(e) => setAddressDraft(e.target.value)}
+                onBlur={() => addressDraft.trim() !== mobile.publicUrl && void update({ publicUrl: addressDraft })}
+                onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+              />
+              <p className="muted">
+                <code>tailscale serve status</code> shows the address again later.
+              </p>
+            </div>
+
+            <div className="set-block fg-divider">
+              <span className="set-sub">Pair a phone</span>
+              {pairing && (
+                <>
+                  {pairing.reachable ? (
+                    <p className="muted">
+                      Scan this with your phone's camera, then use Share → Add to Home Screen to install it.
+                    </p>
+                  ) : (
+                    <p className="muted">
+                      No tailnet address yet, so this link only works in a browser on this Mac. Add the
+                      address above to get one your phone can open.
+                    </p>
+                  )}
+                  <div className="qr-card">
+                    <QrImage text={pairing.url} label="Pairing code for this Stem" />
+                  </div>
+                  <code className="pair-url">{pairing.url}</code>
+                  <div className="pair-actions">
+                    <button className="retrieval-test-btn" onClick={copyLink} title="Copy the pairing link">
+                      <Copy size={14} />
+                      <span>Copy pairing link</span>
+                    </button>
+                    {copied && (
+                      <span className="retrieval-test-status ok">
+                        <Check size={12} />
+                        Copied
+                      </span>
+                    )}
+                  </div>
+                  <p className="pair-warn">
+                    <TriangleAlert size={13} />
+                    <span>
+                      This link is the key to Stem — anything holding it can read your chats and your
+                      memory. Treat it like a password: send it to yourself, not to anyone else.
+                    </span>
+                  </p>
+                </>
+              )}
+            </div>
+
+            <div className="set-block fg-divider">
+              <span className="set-sub">Paired phones</span>
+              {confirmReroll ? (
+                <>
+                  <p className="muted">
+                    Every phone paired with the current link stops working immediately and has to scan a
+                    new one. Nothing else changes.
+                  </p>
+                  <div className="push-row">
+                    <button type="button" className="push" onClick={() => setConfirmReroll(false)}>
+                      Cancel
+                    </button>
+                    <button type="button" className="push default" disabled={busy} onClick={() => void reroll()}>
+                      {busy ? 'Un-pairing…' : 'Un-pair everything'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="pair-actions">
+                  <button
+                    className="retrieval-test-btn"
+                    onClick={() => setConfirmReroll(true)}
+                    disabled={busy}
+                    title="Mint a new pairing link and revoke the old one"
+                  >
+                    <KeyRound size={14} />
+                    <span>New pairing link</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
 export function SettingsTab({
   models,
   modelId,
@@ -684,24 +1005,34 @@ export function SettingsTab({
   deadProvider
 }: ModelTabProps & { deadProvider?: string | null }) {
   const [qc, setQc] = useState<QuickChatSettings | null>(null);
-  const [nws, setNws] = useState<NativeWebSearchSettings>({ main: true, quickChat: true });
+  // The all-backends key list is collapsed by default: most people configure one
+  // backend, and a wall of empty key fields would bury the picker.
+  const [showSearchKeys, setShowSearchKeys] = useState(false);
+  const [ws, setWs] = useState<WebSearchSettings>({
+    main: true,
+    quickChat: true,
+    provider: 'auto',
+    credentials: {}
+  });
   const [escapeAction, setEscapeAction] = useState<EscapeAction>('off');
   const [ci, setCi] = useState<CustomInstructionsSettings>({ main: '', quickChat: '' });
   const [exec, setExec] = useState<ExecSettings | null>(null);
   const [allowInput, setAllowInput] = useState('');
+  const [shortcutStatus, setShortcutStatus] = useState<QuickChatShortcutStatus | null>(null);
+  const [copiedSummon, setCopiedSummon] = useState(false);
   // Per-field debounce so typing doesn't spam the atomic settings writer.
   const ciMainTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ciQuickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const selectedModel = models.find((m) => m.id === modelId) ?? null;
 
   useEffect(() => {
     window.stem.getSettings().then((s) => {
       setQc(s.quickChat);
-      setNws(s.nativeWebSearch);
+      setWs(s.webSearch);
       setEscapeAction(s.escapeAction);
       setCi(s.customInstructions);
       setExec(s.exec);
     });
+    window.stem.getQuickChatShortcutStatus().then(setShortcutStatus);
   }, []);
 
   function updateExec(patch: Partial<ExecSettings>) {
@@ -733,8 +1064,35 @@ export function SettingsTab({
     window.stem.updateQuickChat(patch).then((s) => setQc(s.quickChat));
   }
 
-  function toggleNativeSearch(key: keyof NativeWebSearchSettings, enabled: boolean) {
-    window.stem.updateNativeWebSearch({ [key]: enabled }).then((s) => setNws(s.nativeWebSearch));
+  /** Re-bind, then re-read whether the OS actually granted the new accelerator. */
+  function updateShortcut(accel: string | null) {
+    window.stem.updateQuickChat({ shortcut: accel }).then(async (s) => {
+      setQc(s.quickChat);
+      setShortcutStatus(await window.stem.getQuickChatShortcutStatus());
+    });
+  }
+
+  function copySummonCommand() {
+    if (!shortcutStatus) return;
+    void navigator.clipboard.writeText(shortcutStatus.summonCommand).then(() => {
+      setCopiedSummon(true);
+      setTimeout(() => setCopiedSummon(false), 1600);
+    });
+  }
+
+  function updateWebSearch(patch: Partial<WebSearchSettings>) {
+    setWs((cur) => ({ ...cur, ...patch })); // optimistic; reconcile below
+    window.stem.updateWebSearch(patch).then((s) => setWs(s.webSearch));
+  }
+
+  const activeBackend = SEARCH_BACKENDS.find((b) => b.id === ws.provider) ?? null;
+
+  /**
+   * Patch one credential. Sent as the whole map because the IPC merges settings
+   * shallowly — a partial `credentials` would drop every other backend's key.
+   */
+  function setCredential(field: string, value: string) {
+    updateWebSearch({ credentials: { ...ws.credentials, [field]: value } });
   }
 
   if (!qc) return <p className="muted">Loading…</p>;
@@ -774,21 +1132,94 @@ export function SettingsTab({
               onChange={(id) => onSelectModel(id ?? '')}
               ariaLabel="Model"
             />
-            {selectedModel?.supportsNativeWebSearch && (
-              <label className="set-check" title="Search the live web for current info, with citations">
-                <input
-                  type="checkbox"
-                  checked={nws.main}
-                  onChange={(e) => toggleNativeSearch('main', e.target.checked)}
-                />
-                Native web search
-              </label>
-            )}
+            <label className="set-check" title="Search the live web for current info, with citations">
+              <input type="checkbox" checked={ws.main} onChange={(e) => updateWebSearch({ main: e.target.checked })} />
+              Web search
+            </label>
           </>
         )}
       </div>
 
       <ProvidersSection deadProvider={deadProvider} />
+
+      <div className="grp-head">Web search</div>
+      <div className="formgroup">
+        <div className="set-block">
+          <span className="set-sub">
+            Search backend{' '}
+            <InfoTip label="About search backends">
+              This is independent of the model you chat with — a local Ollama chat can search
+              through Exa, a ChatGPT chat through SearXNG. <strong>Automatic</strong> tries each
+              backend you have configured and ends at one that needs no key, so search works with
+              no setup at all. <strong>All at once</strong> queries every configured backend and
+              combines the answers. Keys below are kept for every backend, so switching between
+              them never means re-entering one.
+            </InfoTip>
+          </span>
+          <select
+            className="ifield"
+            aria-label="Search backend"
+            value={ws.provider}
+            onChange={(e) => updateWebSearch({ provider: e.target.value })}
+          >
+            {SEARCH_BACKENDS.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.label}
+              </option>
+            ))}
+          </select>
+          {/* The selected backend's own field, inline — the common case is
+              "pick one, paste its key" without opening anything else. */}
+          {activeBackend?.field && (
+            <input
+              className="ifield"
+              type={activeBackend.field.endsWith('ApiKey') ? 'password' : 'url'}
+              placeholder={activeBackend.placeholder}
+              aria-label={credentialLabel(activeBackend)}
+              value={ws.credentials[activeBackend.field] ?? ''}
+              onChange={(e) => setCredential(activeBackend.field as string, e.target.value)}
+            />
+          )}
+          {activeBackend?.note && <em className="muted">{activeBackend.note}</em>}
+        </div>
+
+        <div className="set-block">
+          <button className="push" onClick={() => setShowSearchKeys((v) => !v)} aria-expanded={showSearchKeys}>
+            {showSearchKeys ? 'Hide' : 'Show'} all backend keys
+          </button>
+          {showSearchKeys && (
+            <>
+              {SEARCH_BACKENDS.filter((b) => b.field).map((b) => (
+                <label className="set-block" key={b.field}>
+                  <span className="set-sub">{credentialLabel(b)}</span>
+                  <input
+                    className="ifield"
+                    type={b.field?.endsWith('ApiKey') ? 'password' : 'url'}
+                    placeholder={b.placeholder}
+                    aria-label={credentialLabel(b)}
+                    value={ws.credentials[b.field as string] ?? ''}
+                    onChange={(e) => setCredential(b.field as string, e.target.value)}
+                  />
+                </label>
+              ))}
+              {SEARCH_ENDPOINTS.map((f) => (
+                <label className="set-block" key={f.field}>
+                  <span className="set-sub">{f.label}</span>
+                  <input
+                    className="ifield"
+                    type={f.field.endsWith('ApiKey') ? 'password' : 'url'}
+                    placeholder={f.placeholder}
+                    aria-label={f.label}
+                    value={ws.credentials[f.field] ?? ''}
+                    onChange={(e) => setCredential(f.field, e.target.value)}
+                  />
+                  <em className="muted">{f.hint}</em>
+                </label>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
 
       {/* The Files folder lives in the Sources tab (Files sub-tab) — it is a
           source the assistant reads from, not an app setting. */}
@@ -971,6 +1402,8 @@ export function SettingsTab({
         )}
       </div>
 
+      <MobileSection />
+
       <div className="grp-head">Quick Chat</div>
       <div className="formgroup">
         <div className="set-row">
@@ -978,16 +1411,60 @@ export function SettingsTab({
             <strong>Global shortcut</strong>
             <em>Summon the quick-chat overlay from anywhere</em>
           </span>
-          <ShortcutRecorder value={qc.shortcut} onChange={(accel) => update({ shortcut: accel })} />
+          <ShortcutRecorder value={qc.shortcut} onChange={updateShortcut} />
         </div>
-        {window.stem.platform === 'linux' && (
-          <div className="set-row">
-            <span className="set-label">
-              <em>
-                On Wayland, global shortcuts may not fire — bind a system keyboard shortcut to{' '}
-                <code>stem --quick-chat</code> instead.
-              </em>
+        {/* The recorder can't tell whether the key is live: the grab happens in the OS.
+            Main reports that back, so a shortcut that will never fire says so here
+            instead of looking configured and doing nothing. */}
+        {qc.shortcut && shortcutStatus && !shortcutStatus.registered && (
+          <div className="set-block">
+            <span className="retrieval-test-status err">
+              <X size={12} />
+              The system refused this combination — another app is probably holding it. Record a
+              different one.
             </span>
+          </div>
+        )}
+        {/* A granted grab is not the same as a delivered key: most Linux desktops keep
+            Super for themselves and swallow it before Stem sees it. */}
+        {window.stem.platform === 'linux' &&
+          !shortcutStatus?.wayland &&
+          qc.shortcut?.includes('Super') &&
+          shortcutStatus?.registered && (
+            <div className="set-block">
+              <span className="set-sub">
+                Most Linux desktops reserve the Super key for themselves. If nothing happens when
+                you press this, record a combination with Ctrl or Alt instead.
+              </span>
+            </div>
+          )}
+        {shortcutStatus?.wayland && (
+          <div className="set-block fg-divider">
+            <p className="pair-warn">
+              <TriangleAlert size={13} />
+              <span>
+                This is a Wayland session, where an app can't grab a key for itself — the
+                shortcut above stays silent no matter what you record. Add a custom keyboard
+                shortcut in your system settings that runs this command instead:
+              </span>
+            </p>
+            <code className="pair-cmd">{shortcutStatus.summonCommand}</code>
+            <div className="pair-actions">
+              <button
+                className="retrieval-test-btn"
+                onClick={copySummonCommand}
+                title="Copy the summon command"
+              >
+                <Copy size={14} />
+                <span>Copy command</span>
+              </button>
+              {copiedSummon && (
+                <span className="retrieval-test-status ok">
+                  <Check size={12} />
+                  Copied
+                </span>
+              )}
+            </div>
           </div>
         )}
 
@@ -1000,16 +1477,14 @@ export function SettingsTab({
             emptyLabel="Same as main"
             ariaLabel="Quick Chat default model"
           />
-          {qcModel?.supportsNativeWebSearch && (
-            <label className="set-check" title="Search the live web for current info, with citations">
-              <input
-                type="checkbox"
-                checked={nws.quickChat}
-                onChange={(e) => toggleNativeSearch('quickChat', e.target.checked)}
-              />
-              Native web search
-            </label>
-          )}
+          <label className="set-check" title="Search the live web for current info, with citations">
+            <input
+              type="checkbox"
+              checked={ws.quickChat}
+              onChange={(e) => updateWebSearch({ quickChat: e.target.checked })}
+            />
+            Web search
+          </label>
         </div>
 
         <div className="set-block">

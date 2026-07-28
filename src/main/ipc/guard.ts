@@ -99,12 +99,13 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'folders:delete': [a.string],
   'folders:move': [a.string, a.nullish(a.string)],
   'settings:updateQuickChat': [a.object],
-  'settings:updateNativeWebSearch': [a.object],
+  'settings:updateWebSearch': [a.object],
   'settings:updateEscapeAction': [a.oneOf(['off', 'single', 'twoStage'])],
   'settings:updateMemory': [a.object],
   'settings:updateSkills': [a.object],
   'settings:updateExec': [a.object],
   'exec:resolveApproval': [a.string, a.oneOf(['allowOnce', 'alwaysAllow', 'deny'])],
+  'settings:updateMobile': [a.object],
   'settings:updateCustomInstructions': [a.object],
   'settings:updateRetrieval': [a.object],
   'settings:testRetrieval': [a.oneOf(['embeddings', 'reranker'])],
@@ -150,6 +151,7 @@ export function handleIpc(
   handler: (event: IpcMainInvokeEvent, ...args: never[]) => unknown
 ): void {
   const specs = IPC_ARGS[channel] ?? [];
+  localHandlers.set(channel, handler as LocalHandler);
   ipcMain.handle(channel, (event, ...args) => {
     const problem = senderProblem(event) ?? argsProblem(specs, args);
     if (problem) {
@@ -158,4 +160,49 @@ export function handleIpc(
     }
     return (handler as (event: IpcMainInvokeEvent, ...rest: unknown[]) => unknown)(event, ...args);
   });
+}
+
+// ---- local dispatch (surfaces that have no Electron sender) ----
+//
+// The phone bridge (main/mobile) receives calls over loopback HTTP, not over
+// Electron IPC: there is no BrowserWindow, no frame, and therefore no
+// IpcMainInvokeEvent to hand a handler. Rather than fork 110 handlers, every
+// handleIpc registration is also recorded here, and dispatchLocal replays a call
+// through the SAME per-channel argument validation and the SAME handler.
+//
+// Why passing no event is safe: no handler registered through handleIpc reads
+// its event object — all call sites ignore the first parameter (the only two
+// `event.sender` uses in main are ipcMain.on handlers for the Quick Chat
+// handoff, which never come through here). The parameter is typed as possibly
+// absent rather than cast away precisely so that a future handler which does
+// reach for it has to acknowledge that it may not exist.
+//
+// This layer deliberately does NOT decide who may call what — that is the
+// caller's job (see mobile/channels.ts for the phone's allowlist). Registering a
+// channel here grants nothing on its own.
+
+/** A registered invoke handler, viewed without the event it never reads. */
+type LocalHandler = (event: IpcMainInvokeEvent | undefined, ...args: unknown[]) => unknown;
+
+const localHandlers = new Map<string, LocalHandler>();
+
+/** Whether `channel` has a handler registered, i.e. dispatchLocal can run it. */
+export function hasLocalHandler(channel: string): boolean {
+  return localHandlers.has(channel);
+}
+
+/**
+ * Invoke a handleIpc-registered channel with no Electron sender: argument
+ * validation first, then the handler. Rejects — with the same message shape as
+ * the IPC path — when the channel has no handler or the arguments don't fit.
+ */
+export async function dispatchLocal(channel: string, args: unknown[]): Promise<unknown> {
+  const handler = localHandlers.get(channel);
+  if (!handler) throw new Error(`Rejected local call to ${channel}: no handler registered.`);
+  const problem = argsProblem(IPC_ARGS[channel] ?? [], args);
+  if (problem) {
+    log('ipc', `rejected local ${channel}`, { problem });
+    throw new Error(`Rejected local call to ${channel}: ${problem}.`);
+  }
+  return handler(undefined, ...args);
 }

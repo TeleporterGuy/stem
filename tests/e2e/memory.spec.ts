@@ -76,3 +76,21 @@ test('Recall v2 trust and rebuild controls are exposed through the preload bridg
   const status = await mainWindow.evaluate(() => (window as any).stem.getMemoryRebuildStatus());
   expect(status.state).toBe('complete');
 });
+
+test('a new install is never offered the memory upgrade once it has chatted', async ({ mainWindow }) => {
+  const composer = mainWindow.getByPlaceholder('Ask Stem…');
+  await composer.click();
+  await composer.fill('The user enjoys astronomy.');
+  await composer.press('Enter');
+  await expect(
+    mainWindow.locator('.message-assistant:not(.activity-row) .message-body').last()
+  ).toContainText('Echo:');
+
+  // The turn IS captured episodically — that stored-message count is exactly what
+  // the offer used to read as "you have pre-v2 memory to upgrade".
+  await expect.poll(async () => (await stem.episodicStats(mainWindow)).messageCount).toBeGreaterThan(0);
+  // Nothing here predates provenance, so there is nothing to rebuild and the
+  // Memory tab's upgrade card stays hidden.
+  const status = await mainWindow.evaluate(() => (window as any).stem.getMemoryRebuildStatus());
+  expect(status.state).toBe('complete');
+});

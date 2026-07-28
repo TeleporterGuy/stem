@@ -36,6 +36,26 @@ files:
   # pdfjs-dist's optional native canvas polyfill (skia) — rendering only; text
   # extraction runs on the DOMMatrix/Path2D stubs in main/folder-index/pdf.ts.
   - '!node_modules/@napi-rs/**'
+  # pi-web-access ships a 6MB demo video and a banner in its npm tarball (they are
+  # in its `files` list for the npm/GitHub page). pi loads its *.ts sources; the
+  # marketing assets are pure weight in every artifact.
+  - '!node_modules/pi-web-access/*.{mp4,png}'
+  # pi-web-access peer-depends on @earendil-works/pi-ai + pi-tui, so npm installs
+  # them (and their SDK trees: anthropic, bedrock, genai, mistral, otel, …) at the
+  # top level — ~100MB that is never loaded twice over. pi's extension loader
+  # ALIASES both specifiers to its own bundled copies
+  # (pi-coding-agent/dist/core/extensions/loader.js), and pi-coding-agent carries
+  # its whole dependency tree nested under itself, so nothing ever resolves these
+  # top-level duplicates. Kept in the dev tree (npm install stays vanilla), dropped
+  # from the artifact.
+  - '!node_modules/@earendil-works/{pi-ai,pi-tui}/**'
+  - '!node_modules/{@anthropic-ai,@aws,@aws-crypto,@aws-sdk,@smithy}/**'
+  - '!node_modules/{@google,@mistralai,@opentelemetry}/**'
+  - '!node_modules/{openai,zod,zod-to-json-schema,partial-json,json-schema-to-ts,ts-algebra}/**'
+  - '!node_modules/{gaxios,gcp-metadata,google-auth-library,google-logging-utils,json-bigint}/**'
+  - '!node_modules/{jwa,jws,ecdsa-sig-formatter,buffer-equal-constant-time,bignumber.js,bowser}/**'
+  - '!node_modules/{node-fetch,fetch-blob,formdata-polyfill,node-domexception,data-uri-to-buffer}/**'
+  - '!node_modules/{web-streams-polyfill,p-retry,ws,marked,get-east-asian-width}/**'
 
 mac:
   target: [dmg, zip]

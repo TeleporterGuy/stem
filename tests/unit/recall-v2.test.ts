@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { recallStore as store } from '../../src/main/recall/store';
+import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/main/recall/store';
+import * as activity from '../../src/main/activity';
 import * as distill from '../../src/main/recall/distill';
 import * as inject from '../../src/main/recall/inject';
 import * as retrieval from '../../src/main/recall/retrieval';
@@ -94,6 +95,21 @@ describe('Recall v2 distillation cursor', () => {
     store.setMeta(distill.CURSOR_KEY, JSON.stringify(cursor));
     expect(await distill.distillNewMessages({ complete: async () => { throw new Error('offline'); } })).toBe(0);
     expect(distill.readDistillCursor()).toEqual(cursor);
+  });
+
+  // The 0 above is indistinguishable from "nothing to distill" at the call site,
+  // which is how a broken memory model could stay invisible indefinitely.
+  it('reports a failed distillation to the activity registry', async () => {
+    activity.resetActivity();
+    store.recordMessage({ threadId: 'failure-activity', role: 'user', text: 'Another durable fact worth retrying.' });
+    try {
+      await distill.distillNewMessages({ complete: async () => { throw new Error('offline'); } });
+      const snap = activity.snapshot();
+      expect(snap.unseenFailure).toBe(true);
+      expect(snap.history[0]).toMatchObject({ kind: 'memory.distill', state: 'failed', error: 'offline' });
+    } finally {
+      activity.resetActivity();
+    }
   });
 
   it('rejects restricted identifiers and conservatively labels sensitive categories', () => {
@@ -380,6 +396,9 @@ describe('Recall v2 episodic chunks and rebuild', () => {
   });
 
   it('does not resurrect a rebuild paused while a step was mid-model-call', async () => {
+    // Only a store upgraded from v1 can rebuild at all (see memory-upgrade.test.ts);
+    // the migration flag is the signal, standing in for the migration itself.
+    store.setMeta(V1_FACTS_MIGRATED_KEY, '1');
     store.recordMessage({ threadId: 'rebuild-race', role: 'user', text: 'The user collects vintage maps.' });
     expect(startMemoryRebuild().state).toBe('running');
     // Pause lands while the step is awaiting the model, exactly as it does when the

@@ -17,12 +17,44 @@ import { spawnEmbedWorker } from '../recall/embed-worker-host';
 import { createScanWorkerManager, type ScanWorkerManager } from '../recall/scan-manager';
 import { spawnScanWorker } from '../recall/scan-worker-host';
 import { setScanWorkerManager } from '../recall/scan';
+import * as activity from '../activity';
 import { recallStore } from '../recall/store';
 const { getFactsGeneration, getFactsMissingVector, pruneMessageVectorsExceptModel, pruneSummaryVectorsExceptModel, pruneVectorsExceptModel, getSummariesMissingVector, upsertFactVectorForSnapshot, upsertSummaryVector } = recallStore;
 
 export interface RetrievalRuntime {
   embedManager: EmbedWorkerManager;
   scanManager: ScanWorkerManager;
+}
+
+/**
+ * Mirror a local model's download/load lifecycle into the activity registry.
+ * Event-driven rather than call-scoped — start and finish arrive as separate
+ * status callbacks — so it closes by kind rather than by handle. A model that
+ * is already cached reports straight to 'ready' with nothing open, and
+ * `endByKind` no-ops, which is the correct "no work happened" outcome.
+ */
+function trackModelStatus(
+  kind: 'models.embed' | 'models.rerank',
+  label: string,
+  status: { state: string; progressPct?: number; dim?: number; error?: string }
+): void {
+  if (status.state === 'downloading' || status.state === 'loading') {
+    const handle = activity.begin(kind, label, { stepped: true });
+    // Loading has no byte progress of its own; hold the bar at full rather than
+    // letting it snap back to 0% after the download finishes.
+    activity.progress(handle, {
+      done: status.state === 'loading' ? 100 : Math.max(0, Math.min(100, status.progressPct ?? 0)),
+      total: 100
+    });
+    return;
+  }
+  if (status.state === 'error') {
+    activity.fail(kind, status.error ?? 'Model failed to load', label);
+    return;
+  }
+  if (status.state === 'ready') {
+    activity.endByKind(kind, { worked: true, detail: status.dim ? `Ready · ${status.dim}-dim` : 'Ready' });
+  }
 }
 
 /**
@@ -86,9 +118,11 @@ export function initRetrieval(deps: {
   });
   embedManager.onRerankStatus((status) => {
     deps.sendToMainWindow('reranker:localStatus', status);
+    trackModelStatus('models.rerank', 'Preparing reranker model', status);
   });
   embedManager.onStatus((status) => {
     deps.sendToMainWindow('embeddings:localStatus', status);
+    trackModelStatus('models.embed', 'Preparing embedding model', status);
     // The model just came up: prune vectors from previously-used models (local
     // vectors are cheap to regenerate; keeps recall.sqlite tidy) and backfill any
     // facts missing a vector in the background. Without this, inject would embed
@@ -102,6 +136,10 @@ export function initRetrieval(deps: {
         const factsGeneration = getFactsGeneration();
         pruneVectorsExceptModel(key);
         const missing = getFactsMissingVector(key);
+        // Stepped, because after a model switch this is thousands of vectors and
+        // the count is the only honest answer to "why is search worse right now".
+        const factHandle = activity.begin('memory.factEmbed', 'Embedding facts', { stepped: true });
+        let factsDone = 0;
         for (let i = 0; i < missing.length; i += 64) {
           if (getFactsGeneration() !== factsGeneration) break;
           const batch = missing.slice(i, i + 64);
@@ -113,25 +151,46 @@ export function initRetrieval(deps: {
           batch.forEach((f, j) =>
             upsertFactVectorForSnapshot(f.id, f.text, factsGeneration, key, vecs[j])
           );
+          factsDone += batch.length;
+          activity.progress(factHandle, { done: factsDone, total: missing.length });
         }
+        activity.end(factHandle, {
+          worked: factsDone > 0,
+          detail: `Embedded ${factsDone.toLocaleString()} fact${factsDone === 1 ? '' : 's'}`
+        });
         // Same hygiene + backfill for thread-summary vectors (Level 1.5 search).
         pruneSummaryVectorsExceptModel(key);
         const summariesMissing = getSummariesMissingVector(key);
+        const summaryHandle = activity.begin('memory.summaryEmbed', 'Embedding chat summaries', { stepped: true });
+        let summariesDone = 0;
         for (let i = 0; i < summariesMissing.length; i += 64) {
           const batch = summariesMissing.slice(i, i + 64);
           const vecs = await localEmbeddings.embed(batch.map((s) => s.text), 'passage');
           batch.forEach((s, j) => upsertSummaryVector(s.id, key, vecs[j]));
+          summariesDone += batch.length;
+          activity.progress(summaryHandle, { done: summariesDone, total: summariesMissing.length });
         }
+        activity.end(summaryHandle, {
+          worked: summariesDone > 0,
+          detail: `Embedded ${summariesDone.toLocaleString()} summar${summariesDone === 1 ? 'y' : 'ies'}`
+        });
         // Same hygiene + backfill for the episodic message vectors (semantic
         // episodic search). Watermark-driven and self-guarding, so a concurrent
         // post-turn kick can't double-embed.
         pruneMessageVectorsExceptModel(key);
-        await embedNewMessages(localEmbeddings);
+        await activity.track(
+          'memory.episodicEmbed',
+          'Embedding messages',
+          () => embedNewMessages(localEmbeddings),
+          (n) => ({ worked: n > 0, detail: `Embedded ${n.toLocaleString()} message${n === 1 ? '' : 's'}` })
+        );
         // Indexed connected folders: top up their doc vectors now that the
         // model is up (the scan pass is incremental and self-guarding).
         await scanAllIndexedFolders();
-      } catch {
-        // non-fatal: inject tops up lazily on the next semantic turn
+      } catch (error) {
+        // non-fatal: inject tops up lazily on the next semantic turn. Recorded
+        // so a backfill that never completes after a model switch is visible.
+        activity.fail('memory.factEmbed', error, 'Embedding facts');
       }
     })();
   });

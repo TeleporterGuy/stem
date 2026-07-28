@@ -1,0 +1,15 @@
+{
+  "name": "Stem",
+  "short_name": "Stem",
+  "description": "Ask Stem anything from your phone, with the same memory it has at the desk.",
+  "start_url": "/mobile.html",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#f6f4ef",
+  "icons": [
+    { "src": "/icons/stem-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/icons/stem-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/stem-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

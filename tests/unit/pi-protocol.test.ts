@@ -9,20 +9,18 @@ import {
   MCP_OAUTH_FILE,
   NATIVE_SEARCH_GATE_FILE,
   PROTECTED_ROOTS_FILE,
-  parseWebSearchTee,
   SECRET_ENVELOPE_KEY,
   SECRET_VALUE_PREFIX,
   SERVICE_TIER_GATE_FILE,
   SKILLS_REV_FILE,
   TASK_BRIDGE_TITLE,
   TESTED_PI_VERSION,
-  toolArgsOf,
-  WEB_SEARCH_TEE_KEY
+  toolArgsOf
 } from '../../src/main/pi/protocol';
 
 // Drift guards for the Stem ⇄ pi side-protocol. The bridge extension
 // (stem-mcp-extension.mjs) runs inside the pi process and cannot import
-// src/main/pi/protocol.ts, so its sentinel titles, tee key, and gate-file names
+// src/main/pi/protocol.ts, so its sentinel titles, tool names, and gate-file names
 // are hand-written twins of the TS constants. These tests parse the extension
 // source and fail when either side changes alone.
 
@@ -49,20 +47,14 @@ describe('sentinel titles match the bridge extension', () => {
   });
 });
 
-describe('web-search tee', () => {
-  it('the extension wraps tee payloads under the shared key', () => {
-    expect(extensionSource).toContain(`{ ${WEB_SEARCH_TEE_KEY}: payload }`);
-  });
-
-  it('parseWebSearchTee unwraps a payload', () => {
-    const msg = JSON.stringify({ [WEB_SEARCH_TEE_KEY]: { phase: 'started', id: 'ws1', query: 'q' } });
-    expect(parseWebSearchTee(msg)).toEqual({ phase: 'started', id: 'ws1', query: 'q' });
-  });
-
-  it('parseWebSearchTee rejects non-tee and malformed messages', () => {
-    expect(parseWebSearchTee('{"other": 1}')).toBeNull();
-    expect(parseWebSearchTee('not json')).toBeNull();
-    expect(parseWebSearchTee(`{"${WEB_SEARCH_TEE_KEY}": "not-an-object"}`)).toBeNull();
+describe('web-search tools match the bridge extension', () => {
+  // The gate file flips these tools on/off per turn; the names are hand-written
+  // twins of the tools the vendored pi-web-access package registers, so a package
+  // that renames one must not silently turn the toggle into a no-op.
+  it('the extension gates exactly the pi-web-access tool names', () => {
+    const listed = extensionSource.match(/const WEB_ACCESS_TOOLS = \[([^\]]+)\]/)?.[1] ?? '';
+    const names = [...listed.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    expect(names).toEqual(['web_search', 'source_check', 'fetch_content', 'get_search_content']);
   });
 });
 

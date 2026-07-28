@@ -104,17 +104,21 @@ export function buildMcpCatalogContext(): string | null {
 }
 
 /**
- * Per-turn gate the bridge's web-search hook reads to decide whether to inject the
- * current model's native web_search tool. The main process rewrites it just before
+ * Per-turn gate the bridge reads to decide whether the vendored pi-web-access
+ * search tools are active for this turn. The main process rewrites it just before
  * each prompt with the originating context's setting (main vs Quick Chat), since
- * both share one pi process and the hook can't tell them apart. Carries no
+ * both share one pi process and the hooks can't tell them apart. Carries no
  * credentials, so a plain (non-secret) file is fine.
+ *
+ * The file keeps its `native-search.json` name from when search WAS the provider's
+ * own server-side tool: renaming it would strand the file in every existing pi
+ * home for no behavioral gain.
  */
 export function piNativeSearchPath(): string {
   return join(piHome(), NATIVE_SEARCH_GATE_FILE);
 }
 
-/** Write the `{ enabled }` gate the bridge's web-search hook reads for the next turn. */
+/** Write the `{ enabled }` web-search gate the bridge reads for the next turn. */
 export async function writeNativeSearchGate(enabled: boolean): Promise<void> {
   await mkdir(piHome(), { recursive: true });
   await writeFile(piNativeSearchPath(), JSON.stringify({ enabled }, null, 2), 'utf8');

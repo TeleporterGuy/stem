@@ -10,6 +10,7 @@ import { hybridSearchDocs, type CoreDocHit, type EmbedQueryFn } from '../recall/
 import type { LlmClient } from '../recall/llm';
 import { recallStore } from '../recall/store';
 import { log } from '../log';
+import * as activity from '../activity';
 import { embedMissingDocVectors } from './embed';
 import { learnFolderBatch } from './learn';
 import { scanFolder } from './scan';
@@ -135,17 +136,30 @@ export async function scanAllIndexedFolders(): Promise<void> {
     for (const f of folders) {
       await mkdir(folderIndexDir(), { recursive: true });
       const store = storeFor(f.id);
+      const scanHandle = activity.begin('folders.scan', `Scanning ${f.label}`, { detail: f.label });
       try {
         const res = await scanFolder(store, f.path);
+        activity.end(scanHandle, {
+          worked: res.indexed > 0 || res.removed > 0,
+          detail: `${f.label} — ${res.indexed} indexed, ${res.removed} removed`
+        });
         if (res.indexed > 0 || res.removed > 0) {
           log('folder-index', `scanned ${f.label}`, { indexed: res.indexed, removed: res.removed });
         }
       } catch (err) {
+        activity.fail('folders.scan', err, `Scanning ${f.label}`);
         log('folder-index', `scan failed for ${f.label}`, { error: (err as Error).message });
         continue;
       }
       const emb = getEmbeddingsClient();
-      if (emb) await embedMissingDocVectors(store, emb);
+      if (emb) {
+        const embedHandle = activity.begin('folders.embed', `Embedding ${f.label}`, { detail: f.label });
+        const written = await embedMissingDocVectors(store, emb);
+        activity.end(embedHandle, {
+          worked: written > 0,
+          detail: `${f.label} — ${written.toLocaleString()} document${written === 1 ? '' : 's'}`
+        });
+      }
     }
   } finally {
     scanning = false;
@@ -203,10 +217,30 @@ export async function learnAllIndexedFolders(opts: {
 }): Promise<boolean> {
   if (learningActive) return false;
   learningActive = true;
+  // Stepped activity entry: the drain yields to interactive work and resumes on a
+  // later kick, so one entry spans the whole backlog and banks only working time.
+  let handle: activity.ActivityHandle | null = null;
+  let docsLearned = 0;
+  let factsWritten = 0;
+  const closeEntry = (): void => {
+    if (!handle) return;
+    activity.end(handle, {
+      worked: factsWritten > 0,
+      detail: `${factsWritten} fact${factsWritten === 1 ? '' : 's'} from ${docsLearned} document${docsLearned === 1 ? '' : 's'}`
+    });
+    handle = null;
+  };
   try {
     for (;;) {
-      if (!isRecallEnabled()) return false;
-      if (opts.shouldYield?.()) return true;
+      if (!isRecallEnabled()) {
+        closeEntry();
+        return false;
+      }
+      if (opts.shouldYield?.()) {
+        // Leave the entry open — the caller reschedules and we resume into it.
+        if (handle) activity.yieldStep(handle);
+        return true;
+      }
       const folders = (await indexedFolders()).filter((f) => {
         const mode = effectiveLearnMode(f);
         return mode === 'new' || mode === 'all';
@@ -218,9 +252,27 @@ export async function learnAllIndexedFolders(opts: {
           return false;
         }
       });
-      if (!target) return false;
+      if (!target) {
+        closeEntry();
+        return false;
+      }
+      // Opened only once there is real work, so an empty drain stays silent.
+      handle ??= activity.begin('folders.learn', 'Learning from folders', { stepped: true });
       const res = await learnFolderBatch(storeFor(target.id), target, opts.makeLlm(target));
-      if (!res || res.processed === 0) return false;
+      if (!res || res.processed === 0) {
+        closeEntry();
+        return false;
+      }
+      docsLearned += res.processed;
+      factsWritten += res.written;
+      try {
+        activity.progress(handle, {
+          done: docsLearned,
+          total: docsLearned + storeFor(target.id).pendingLearnCount()
+        });
+      } catch {
+        // A closed/locked index just means no progress bar this iteration.
+      }
       await new Promise((resolve) => setTimeout(resolve, LEARN_BATCH_PAUSE_MS));
     }
   } finally {

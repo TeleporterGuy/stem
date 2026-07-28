@@ -13,14 +13,18 @@ import {
 import { getFolderIndexStatuses, seedFolderLearnMarks, syncFolderIndexes } from '../folder-index';
 import { recallStore } from '../recall/store';
 import { workspaceRoot } from '../workspace/paths';
-import { readSettings } from '../workspace/settings';
+import { readSettings, updateMobileSettings } from '../workspace/settings';
 import { imagePreviewDataUrl } from '../pi/attachments';
 import { curateSkills } from '../skills/curate';
 import { drainSkillDistill } from '../skills/distill';
+import { mobilePairingInfo, rerollMobilePairing, syncMobileBridge } from '../startup/mobile';
 import type { LlmClient } from '../recall/llm';
-import type { ConnectedFolderPatch, ScheduledTask, TaskSchedulePatch } from '../../shared/types';
+import type { ConnectedFolderPatch, MobileSettings, ScheduledTask, TaskSchedulePatch } from '../../shared/types';
 
-/** Skills, the Files place, connected folders, file dialogs, and scheduled tasks. */
+/**
+ * Skills, the Files place, connected folders, file dialogs, scheduled tasks, and
+ * the phone bridge's settings pair.
+ */
 export function registerWorkspaceIpc(deps: IpcDeps): void {
   handleIpc('skills:list', () => listSkills());
   handleIpc('skills:setEnabled', (_e, slug: string, enabled: boolean) => setSkillEnabled(slug, enabled));
@@ -109,6 +113,25 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     const scheduler = deps.scheduler();
     return scheduler ? scheduler.updateSchedule(id, patch.schedule) : [];
   });
+
+  // ---- the phone bridge (see startup/mobile.ts) ----
+  // Deliberately NOT reachable from the phone itself: settings:updateMobile is
+  // absent from the mobile allowlist, so a phone can never turn the bridge off
+  // (or move it) from under the user.
+  handleIpc('settings:updateMobile', async (_e, patch: Partial<MobileSettings>) => {
+    const next = await updateMobileSettings(patch);
+    // Apply now rather than at next launch: enabling starts the loopback server,
+    // disabling stops it, a port change rebinds. Never throws — a port that
+    // won't bind is logged and reported as `running: false` by mobile:pairingInfo.
+    await syncMobileBridge();
+    return next;
+  });
+  // The QR's contents: the URL to open plus the bearer token. Never pushed
+  // anywhere — the Settings pane pulls it when the user opens the pairing UI.
+  handleIpc('mobile:pairingInfo', () => mobilePairingInfo());
+  // Revocation. Also absent from the mobile allowlist: a phone must not be able
+  // to lock the other phones out, or itself.
+  handleIpc('mobile:rerollToken', () => rerollMobilePairing());
 
   handleIpc('dialog:openFiles', () =>
     dialog

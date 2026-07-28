@@ -1,6 +1,7 @@
 import type { EmbeddingsClient } from '../recall/embeddings';
 import { docEmbedText } from './scan';
 import type { FolderIndexStore } from './store';
+import * as activity from '../activity';
 
 // Background embedding of indexed folder documents — one thin vector per doc
 // (title + lead text), mirroring the never-throwing shape of embed-episodic's
@@ -37,9 +38,12 @@ export async function embedMissingDocVectors(
       inputs.forEach((d, i) => store.upsertDocVector(d.id, model, vecs[i]));
       written += inputs.length;
     }
-  } catch {
+  } catch (error) {
     // Embeddings not ready / worker died mid-batch: written vectors stay, the
-    // rest remain "missing" and the next pass picks them up.
+    // rest remain "missing" and the next pass picks them up. Still non-fatal —
+    // but reported, because the caller only sees a count and can't tell a failed
+    // pass from a folder that had nothing to embed.
+    activity.fail('folders.embed', error);
   }
   return written;
 }

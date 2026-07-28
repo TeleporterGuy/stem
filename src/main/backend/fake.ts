@@ -33,7 +33,6 @@ const MODEL: ModelSummary = {
   description: 'e2e',
   provider: 'e2e',
   providerName: 'E2E',
-  supportsNativeWebSearch: false,
   supportedEfforts: ['low', 'medium', 'high'],
   defaultEffort: 'medium',
   serviceTiers: [],

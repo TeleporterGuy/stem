@@ -1,0 +1,190 @@
+import { access, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { piHome } from '../workspace/paths';
+import type { SourceRef, WebSearchSettings } from '../../shared/types';
+
+// Web search for EVERY provider, via the vendored pi-web-access extension.
+//
+// Stem used to have web search only on openai-codex, by injecting the provider's
+// server-side `web_search` tool into the outgoing request body (a
+// before_provider_request hook in the bridge extension). That trick has no analog
+// on Claude/OpenRouter/Ollama/LM Studio, so every other model answered from stale
+// weights with no way to look anything up.
+//
+// pi-web-access registers real pi tools (`web_search`, `fetch_content`,
+// `get_search_content`) that work the same on every provider, because the search
+// happens in the extension rather than inside the provider's own inference. Its
+// OpenAI backend resolves auth through pi's model registry and posts to the Codex
+// Responses endpoint, so a ChatGPT subscription still pays for its own searches
+// exactly as before — and everyone else falls back down the chain to a keyed
+// backend, a self-hosted SearXNG, or keyless Exa MCP.
+//
+// The package is a pinned production dependency (never `pi install`ed at runtime:
+// a packaged desktop app has no npm and may have no network on first launch). pi
+// loads it with a second `-e` alongside Stem's own bridge extension.
+
+const PACKAGE = 'pi-web-access';
+
+/** The version this integration was written against (mirrors TESTED_PI_VERSION). */
+export const TESTED_WEB_ACCESS_VERSION = '0.15.0';
+
+/**
+ * `<piHome>/web-search.json` — pi-web-access reads its whole configuration from
+ * here, because its getWebSearchConfigDir() honors PI_CODING_AGENT_DIR before
+ * falling back to `~/.pi`. Stem points that at its isolated pi home, so this file
+ * is ours end-to-end and the user's real `~/.pi` is never touched.
+ */
+export function webSearchConfigPath(): string {
+  return join(piHome(), 'web-search.json');
+}
+
+/**
+ * Absolute path to the vendored extension's entry point. Resolved through Node
+ * from the package's own package.json (pi-web-access declares no `main`/`exports`,
+ * so the bare specifier is not resolvable but a subpath is) — which works both
+ * from `src/` under vitest and from the built `dist/main` bundle at runtime, since
+ * the package is rollup-external and the app ships unpacked (asar: false).
+ */
+export async function piWebAccessPath(): Promise<string | null> {
+  try {
+    const manifest = fileURLToPath(import.meta.resolve(`${PACKAGE}/package.json`));
+    const entry = join(manifest, '..', 'index.ts');
+    await access(entry);
+    return entry;
+  } catch {
+    // Missing dependency: pi still starts, just without the search tools. Logged
+    // by the caller — a hard failure here would cost the user the whole backend.
+    return null;
+  }
+}
+
+/** Installed version of the vendored package, for the startup drift warning. */
+export async function webAccessVersion(): Promise<string | null> {
+  try {
+    const manifest = fileURLToPath(import.meta.resolve(`${PACKAGE}/package.json`));
+    const version = (JSON.parse(await readFile(manifest, 'utf8')) as { version?: unknown }).version;
+    return typeof version === 'string' ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every search backend pi-web-access can use, with the config field that unlocks
+ * it. `SearchProvider` in the package's gemini-search.ts is the source of truth
+ * for the ids; `field` is the exact key each backend's own loader reads (they are
+ * NOT uniformly `<name>ApiKey` — SearXNG wants a base URL).
+ *
+ * Backends with `field: null` need no credential: `auto` walks the chain, `all`
+ * fans out across everything configured, and Exa additionally works keyless
+ * through its public MCP endpoint (a key just upgrades it to the direct API).
+ */
+export const SEARCH_BACKENDS = [
+  { id: 'auto', field: null },
+  { id: 'all', field: null },
+  { id: 'openai', field: 'openaiApiKey' },
+  { id: 'exa', field: 'exaApiKey', optional: true },
+  { id: 'brave', field: 'braveApiKey' },
+  { id: 'tavily', field: 'tavilyApiKey' },
+  { id: 'perplexity', field: 'perplexityApiKey' },
+  { id: 'gemini', field: 'geminiApiKey' },
+  { id: 'parallel', field: 'parallelApiKey' },
+  { id: 'tinyfish', field: 'tinyfishApiKey' },
+  { id: 'serpdive', field: 'serpdiveApiKey' },
+  { id: 'anysearch', field: 'anysearchApiKey' },
+  { id: 'searxng', field: 'searxngBaseUrl' }
+] as const;
+
+/**
+ * Every config field Stem will pass through to web-search.json. An allowlist
+ * rather than a free-for-all: an unrecognized name would sit in a file the user
+ * may well open, doing nothing.
+ *
+ * Beyond the per-backend fields above:
+ * - `openaiResponsesUrl` repoints the OpenAI backend at a Responses-compatible
+ *   gateway (the package defaults to api.openai.com).
+ * - `firecrawlBaseUrl`/`firecrawlApiKey` supply a self-hosted Firecrawl, first in
+ *   the chain that `fetch_content` falls back to when a page blocks plain fetching.
+ * - `cloudflareApiKey` backs the Gemini-via-Cloudflare path.
+ */
+export const WEB_SEARCH_FIELDS: readonly string[] = [
+  ...SEARCH_BACKENDS.flatMap((b) => (b.field ? [b.field as string] : [])),
+  'cloudflareApiKey',
+  'openaiResponsesUrl',
+  'firecrawlBaseUrl',
+  'firecrawlApiKey'
+];
+
+/** Fields holding a secret (masked in the UI); the rest are endpoints. */
+export const WEB_SEARCH_SECRET_FIELDS: readonly string[] = WEB_SEARCH_FIELDS.filter((f) =>
+  f.endsWith('ApiKey')
+);
+
+/**
+ * Rewrite `<piHome>/web-search.json` from Stem's settings. Called on startup and
+ * whenever the user changes the backend or a credential; pi-web-access re-reads
+ * the file lazily (mtime-cached per module), so a key edit takes effect without a
+ * backend restart — only `workflow`, read at extension init, would need one, and
+ * Stem always pins that to the same value.
+ *
+ * Credentials are written in the clear, matching how the package reads them. They
+ * are the user's own keys under the app's private data dir — the same trust
+ * boundary as `<piHome>/auth.json`, which holds their OAuth tokens.
+ */
+export async function writeWebSearchConfig(settings: WebSearchSettings): Promise<void> {
+  const file: Record<string, unknown> = {
+    // `none` keeps the tools headless. The package's default workflow
+    // ("summary-review") starts a local HTTP server and opens a BROWSER window to
+    // curate results — right for a terminal agent, wrong for Stem, which drives pi
+    // over RPC and renders its own activity rows. It does check `ctx.hasUI`, but
+    // relying on that inference would put a stray localhost server one upstream
+    // refactor away, so pin it explicitly.
+    workflow: 'none'
+  };
+  if (settings.provider && settings.provider !== 'auto') file.provider = settings.provider;
+  for (const [name, value] of Object.entries(settings.credentials ?? {})) {
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    if (trimmed && WEB_SEARCH_FIELDS.includes(name)) file[name] = trimmed;
+  }
+  await writeFile(webSearchConfigPath(), JSON.stringify(file, null, 2) + '\n', { mode: 0o600 });
+}
+
+// `web_search` returns one markdown blob: a synthesized answer with inline
+// [title](url) citations, then a trailing numbered "**Sources:**" list. Stem's
+// sources panel wants {url, title} pairs, so recover them from the text — the
+// tee that used to supply them only ever existed for the codex stream.
+const SOURCES_HEADING = /^\s*\*\*Sources:\*\*\s*$/m;
+const MARKDOWN_LINK = /\[([^\]]{1,200})\]\((https?:\/\/[^\s)]+)\)/g;
+const BARE_URL = /https?:\/\/[^\s)<>"']+/g;
+
+/**
+ * Pull deduped web sources out of a `web_search` tool result.
+ *
+ * Inline `[title](url)` citations come first and carry a human title, so they win
+ * on the dedupe; the numbered tail list fills in whatever they missed as bare
+ * URLs. Anything unparseable yields an empty list rather than throwing — a
+ * malformed result must never cost the user their answer.
+ */
+export function extractSources(text: string): SourceRef[] {
+  if (!text) return [];
+  const byUrl = new Map<string, SourceRef>();
+  const add = (url: string, title?: string): void => {
+    // Trailing punctuation clings to bare URLs in prose.
+    const clean = url.replace(/[.,;:]+$/, '');
+    const existing = byUrl.get(clean);
+    if (existing) {
+      if (!existing.title && title) existing.title = title;
+      return;
+    }
+    byUrl.set(clean, title ? { url: clean, title } : { url: clean });
+  };
+
+  for (const m of text.matchAll(MARKDOWN_LINK)) add(m[2], m[1].trim() || undefined);
+
+  const headingAt = text.search(SOURCES_HEADING);
+  if (headingAt !== -1) {
+    for (const m of text.slice(headingAt).matchAll(BARE_URL)) add(m[0]);
+  }
+  return [...byUrl.values()];
+}

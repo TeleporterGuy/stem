@@ -48,6 +48,8 @@ export interface LaunchOptions {
   real?: boolean;
   /** Extra env overrides for the launch. */
   env?: Record<string, string>;
+  /** Extra argv for the launch (e.g. `--quick-chat` for the cold summon path). */
+  extraArgs?: string[];
 }
 
 export interface LaunchedApp {
@@ -68,7 +70,7 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
   }
   const real = opts.real ?? REAL_BACKEND;
   const app = await electron.launch({
-    args: [PROJECT_ROOT, `--user-data-dir=${userDataDir}`],
+    args: [PROJECT_ROOT, `--user-data-dir=${userDataDir}`, ...(opts.extraArgs ?? [])],
     env: {
       ...process.env,
       // Isolate the Stem-owned stores onto throwaway paths (same seam the unit

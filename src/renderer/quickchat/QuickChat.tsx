@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sparkles, SquarePen, PanelRight, Globe, NotebookPen, Check } from 'lucide-react';
 import type {
   ModelSummary,
-  NativeWebSearchSettings,
+  WebSearchSettings,
   QuickChatSettings,
   TurnAttachment
 } from '../../shared/types';
@@ -43,9 +43,12 @@ export function QuickChat() {
   const [effort, setEffort] = useState<string | null>(null);
   const [serviceTier, setServiceTier] = useState<string | null>(null);
   const [format, setFormat] = useState<'md' | 'mdx'>('mdx');
-  // Native web search, toggled independently per context — Quick Chat owns the
+  // Web search, toggled independently per context — Quick Chat owns the
   // `quickChat` flag (surfaced here since it can pick a different model than main).
-  const [nativeWebSearch, setNativeWebSearch] = useState<NativeWebSearchSettings>({ main: true, quickChat: true });
+  const [webSearch, setWebSearch] = useState<Pick<WebSearchSettings, 'main' | 'quickChat'>>({
+    main: true,
+    quickChat: true
+  });
 
   // One conversation's state, owned by the shared session core. Store reads are
   // synchronous, which is what main's handoff barrier relies on.
@@ -131,14 +134,14 @@ export function QuickChat() {
       .catch(() => {});
     window.stem
       .getSettings()
-      .then((s) => setNativeWebSearch(s.nativeWebSearch))
+      .then((s) => setWebSearch(s.webSearch))
       .catch(() => {});
   }, []);
 
-  function toggleNativeSearch(enabled: boolean) {
+  function toggleWebSearch(enabled: boolean) {
     window.stem
-      .updateNativeWebSearch({ quickChat: enabled })
-      .then((s) => setNativeWebSearch(s.nativeWebSearch))
+      .updateWebSearch({ quickChat: enabled })
+      .then((s) => setWebSearch(s.webSearch))
       .catch(() => {});
   }
 
@@ -444,23 +447,22 @@ export function QuickChat() {
     selectedModel && selectedModel.supportedEfforts.length ? selectedModel.supportedEfforts : ['low', 'medium', 'high'];
   const hasFast = selectedModel ? selectedModel.serviceTiers.some((t) => t.id === 'priority') : true;
 
-  // Native web search toggle for Quick Chat turns, shown only when the selected
-  // model's provider supports native search.
-  const showSearch = !!selectedModel?.supportsNativeWebSearch;
-  const searchOn = nativeWebSearch.quickChat;
-  const searchToggle = (key: string) =>
-    showSearch ? (
-      <div className="seg-ctl compact" role="group" aria-label="Web search" key={key}>
-        <button
-          type="button"
-          className={searchOn ? 'active' : ''}
-          onClick={() => toggleNativeSearch(!searchOn)}
-          title={`Native web search ${searchOn ? 'on' : 'off'}`}
-        >
-          <Globe size={13} /> Web
-        </button>
-      </div>
-    ) : null;
+  // Web-search toggle for Quick Chat turns. Search is served by the vendored
+  // pi-web-access extension rather than the provider, so unlike before there is no
+  // model for which this control has to hide itself — it renders unconditionally.
+  const searchOn = webSearch.quickChat;
+  const searchToggle = (key: string) => (
+    <div className="seg-ctl compact" role="group" aria-label="Web search" key={key}>
+      <button
+        type="button"
+        className={searchOn ? 'active' : ''}
+        onClick={() => toggleWebSearch(!searchOn)}
+        title={`Web search ${searchOn ? 'on' : 'off'}`}
+      >
+        <Globe size={13} /> Web
+      </button>
+    </div>
+  );
 
   // Expanded conversation panel once the session has any messages.
   if (messages.length > 0) {

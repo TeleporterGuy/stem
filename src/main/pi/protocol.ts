@@ -53,39 +53,12 @@ export const TASK_BRIDGE_TITLE = 'stem-task-bridge';
  */
 export const EXEC_BRIDGE_TITLE = 'stem-exec-bridge';
 
-// ---- web-search tee (`notify` messages) ----
-
-/** JSON key wrapping a tee payload inside a bridge `notify` message. */
-export const WEB_SEARCH_TEE_KEY = 'stemWebSearch';
-
-/**
- * A native web-search event recovered by the bridge's provider-stream tee
- * (native search runs server-side, so pi itself emits nothing for it).
- * `phase: 'started' | 'completed'` frames one search; `phase: 'source'` carries
- * one cited URL.
- */
-export interface WebSearchTeePayload {
-  phase?: string;
-  id?: string;
-  query?: string;
-  status?: string;
-  url?: string;
-  title?: string;
-}
-
-/** Extract the tee payload from a bridge `notify` message, or null if it isn't one. */
-export function parseWebSearchTee(message: string): WebSearchTeePayload | null {
-  try {
-    const payload = (JSON.parse(message) as Record<string, unknown>)[WEB_SEARCH_TEE_KEY];
-    return payload && typeof payload === 'object' ? (payload as WebSearchTeePayload) : null;
-  } catch {
-    return null;
-  }
-}
-
 // ---- gate files (basenames under the pi home, mtime-polled by the bridge) ----
 
-/** `{ enabled: boolean }` — inject the model's native web_search tool this turn? */
+/**
+ * `{ enabled: boolean }` — are the vendored pi-web-access search tools active this
+ * turn? The bridge extension adds/removes them from the session's tool set to match.
+ */
 export const NATIVE_SEARCH_GATE_FILE = 'native-search.json';
 /** `{ tier: string | null }` — OpenAI service_tier for the next request. */
 export const SERVICE_TIER_GATE_FILE = 'service-tier.json';

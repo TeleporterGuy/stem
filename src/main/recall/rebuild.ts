@@ -9,15 +9,38 @@ import {
 } from './distill';
 import { classifyRelation, evidenceDateOf } from './reconcile';
 import type { LlmClient } from './llm';
-import { recallStore, type StoredMessage } from './store';
-const { createFactConflict, getFactDetails, getFactsGeneration, getMeta, messageCount, setMeta, supersedeFact, upsertFact } = recallStore;
+import { recallStore, V1_FACTS_MIGRATED_KEY, type StoredMessage } from './store';
+const {
+  countFactsBySource,
+  createFactConflict,
+  getFactDetails,
+  getFactsGeneration,
+  getMeta,
+  messageCount,
+  setMeta,
+  supersedeFact,
+  upsertFact
+} = recallStore;
 
 const REBUILD_KEY = 'memory_rebuild_v2';
+
+/**
+ * Is there anything to upgrade? Only a store that distilled facts under v1 has
+ * provenance-less memories, and only it should ever see the rebuild offer — a
+ * new install records evidence from its first message, so offering to "upgrade"
+ * its memory is nonsense (and would spend model calls re-mining transcripts it
+ * already mined). Two signals, either of which is enough: the flag the v1→v2
+ * migration stamps, and the 'legacy' source that migration puts on every
+ * pre-v2 fact (which also recognizes stores migrated before the flag existed).
+ */
+function provenanceGap(): boolean {
+  return getMeta(V1_FACTS_MIGRATED_KEY) === '1' || countFactsBySource('legacy') > 0;
+}
 
 function initialStatus(): MemoryRebuildStatus {
   const total = messageCount();
   return {
-    state: total > 0 ? 'available' : 'complete',
+    state: total > 0 && provenanceGap() ? 'available' : 'complete',
     processedMessages: 0,
     totalMessages: total,
     cursorMessageId: 1,
@@ -31,6 +54,10 @@ function save(status: MemoryRebuildStatus): MemoryRebuildStatus {
 }
 
 export function getMemoryRebuildStatus(): MemoryRebuildStatus {
+  // Re-checked on every read, not just before the first offer: a build that
+  // shipped without the gate could have persisted progress on a store that never
+  // had anything to upgrade, and that stale row must stop advertising itself.
+  if (!provenanceGap()) return initialStatus();
   const raw = getMeta(REBUILD_KEY);
   if (!raw) return initialStatus();
   try {

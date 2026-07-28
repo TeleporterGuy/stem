@@ -49,6 +49,25 @@ test('summon → prompt → HUD → re-summon shows the answer', async ({ electr
   await expect.poll(async () => (await windowState(electronApp, 'quickchat')).visible).toBe(false);
 });
 
+test('a cold `--quick-chat` launch opens the overlay, not the main window', async () => {
+  // The command a Wayland user binds to a system shortcut. With Stem closed it has
+  // to feel like the shortcut does when Stem is running: overlay up front, main
+  // window loaded (the backend prewarm hangs off it) but not shown.
+  const { app, userDataDir } = await launchApp({ extraArgs: ['--quick-chat'] });
+  try {
+    await expect.poll(async () => (await windowState(app, 'quickchat')).visible, { timeout: 15_000 }).toBe(true);
+    const main = await mainWindowOf(app);
+    const mainVisible = await app.evaluate(({ BrowserWindow }, url) => {
+      const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === url);
+      return win?.isVisible() ?? null;
+    }, main.url());
+    expect(mainVisible).toBe(false);
+  } finally {
+    await app.close().catch(() => {});
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
 test('a second `--quick-chat` launch toggles the running instance (Linux CLI summon path)', async () => {
   test.skip(process.platform !== 'linux', 'the second-instance CLI toggle ships for Linux (Wayland summon path)');
 

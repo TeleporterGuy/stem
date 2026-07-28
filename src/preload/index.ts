@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
+  ActivitySnapshot,
   ApprovalResolvedPayload,
   ApiKeyProviderId,
   AuthProviderId,
@@ -21,7 +22,8 @@ import type {
   McpServerStatus,
   MemoryModelSettings,
   MemoryRebuildStatus,
-  NativeWebSearchSettings,
+  MobileSettings,
+  WebSearchSettings,
   PartialRetrievalSettings,
   RetrievalStage,
   QuickChatAdopt,
@@ -235,8 +237,9 @@ const api: StemApi = {
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateQuickChat: (patch: Partial<QuickChatSettings>) => ipcRenderer.invoke('settings:updateQuickChat', patch),
-  updateNativeWebSearch: (patch: Partial<NativeWebSearchSettings>) =>
-    ipcRenderer.invoke('settings:updateNativeWebSearch', patch),
+  getQuickChatShortcutStatus: () => ipcRenderer.invoke('quickchat:shortcutStatus'),
+  updateWebSearch: (patch: Partial<WebSearchSettings>) =>
+    ipcRenderer.invoke('settings:updateWebSearch', patch),
   updateEscapeAction: (action: EscapeAction) => ipcRenderer.invoke('settings:updateEscapeAction', action),
   updateMemorySettings: (patch: Partial<MemoryModelSettings>) =>
     ipcRenderer.invoke('settings:updateMemory', patch),
@@ -246,8 +249,17 @@ const api: StemApi = {
     ipcRenderer.invoke('settings:updateSkills', patch),
   updateRetrievalSettings: (patch: PartialRetrievalSettings) =>
     ipcRenderer.invoke('settings:updateRetrieval', patch),
+  updateMobileSettings: (patch: Partial<MobileSettings>) => ipcRenderer.invoke('settings:updateMobile', patch),
+  getMobilePairing: () => ipcRenderer.invoke('mobile:pairingInfo'),
+  rerollMobileToken: () => ipcRenderer.invoke('mobile:rerollToken'),
   testRetrievalEndpoint: (stage: RetrievalStage) => ipcRenderer.invoke('settings:testRetrieval', stage),
-  getEmbeddingStats: () => ipcRenderer.invoke('memory:embeddingStats'),
+  getActivity: () => ipcRenderer.invoke('activity:snapshot'),
+  onActivity: (listener: (snapshot: ActivitySnapshot) => void) => {
+    const handler = (_e: unknown, snapshot: ActivitySnapshot) => listener(snapshot);
+    ipcRenderer.on('activity:changed', handler);
+    return () => ipcRenderer.removeListener('activity:changed', handler);
+  },
+  markActivitySeen: () => ipcRenderer.invoke('activity:markSeen'),
   getLocalEmbedStatus: () => ipcRenderer.invoke('embeddings:localStatus'),
   onLocalEmbedStatus: (listener: (status: LocalEmbedStatus) => void) => {
     const handler = (_e: unknown, status: LocalEmbedStatus) => listener(status);

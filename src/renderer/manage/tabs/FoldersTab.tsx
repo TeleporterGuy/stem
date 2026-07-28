@@ -62,14 +62,18 @@ const LEARN_CHARS_PER_CALL = 14_000;
 /** Below this many indexed files, dropping the index is cheap enough to skip the confirm. */
 const CONFIRM_DROP_INDEX_MIN_DOCS = 100;
 
-/** Collapsed-card state summary: "Read-only · Indexed 3,412 · Learning 214/3,412". */
+/**
+ * Collapsed-card state summary: "Read-only · Indexed 3,412 · Learned 38 facts".
+ * State of the index, never its progress — a scan or learn drain in flight is
+ * reported by the toolbar activity indicator, not by every folder card.
+ */
 function cardSummary(f: ConnectedFolder, status: FolderIndexStatus | undefined): string {
   const parts = [f.mode === 'readwrite' ? 'Writable' : 'Read-only'];
   if (!f.memorize) parts.push('Private');
   if (f.index) {
     parts.push(
       !status || status.lastScanTs === null
-        ? 'Indexing…'
+        ? 'Not indexed yet'
         : `Indexed ${status.indexedCount.toLocaleString()}`
     );
   }
@@ -77,28 +81,28 @@ function cardSummary(f: ConnectedFolder, status: FolderIndexStatus | undefined):
     const mode = f.learnMode ?? 'use';
     if (mode === 'use') parts.push('Learns on use');
     else if (mode !== 'off') {
-      const pending = status?.learn.pending ?? 0;
       const facts = status?.learn.facts ?? 0;
-      if (status && pending > 0) {
-        const done = Math.max(0, status.indexedCount - pending);
-        parts.push(`Learning ${done.toLocaleString()}/${status.indexedCount.toLocaleString()}`);
-      } else if (facts > 0) {
-        parts.push(`Learned ${facts.toLocaleString()} fact${facts === 1 ? '' : 's'}`);
-      } else {
-        parts.push(`Learns ${LEARN_LABELS[mode].toLowerCase()}`);
-      }
+      parts.push(
+        facts > 0
+          ? `Learned ${facts.toLocaleString()} fact${facts === 1 ? '' : 's'}`
+          : `Learns ${LEARN_LABELS[mode].toLowerCase()}`
+      );
     }
   }
   return parts.join(' · ');
 }
 
-/** "Indexed 3,412 · 214 skipped" with the skip breakdown in an InfoTip. */
+/**
+ * "Indexed 3,412 · 214 skipped" with the skip breakdown in an InfoTip. Inventory
+ * of what this folder's index holds — the scan/embed work that produced it is
+ * reported by the toolbar activity indicator.
+ */
 function IndexStatusLine({ status }: { status: FolderIndexStatus }) {
   const skipped = Object.entries(status.skippedByExt).sort((a, b) => b[1] - a[1]);
   return (
     <div className="muted cfolder-index-status">
       {status.lastScanTs === null
-        ? 'Indexing…'
+        ? 'Not indexed yet'
         : `Indexed ${status.indexedCount.toLocaleString()} file${status.indexedCount === 1 ? '' : 's'}`}
       {status.skippedCount > 0 && (
         <>
@@ -111,23 +115,13 @@ function IndexStatusLine({ status }: { status: FolderIndexStatus }) {
           </InfoTip>
         </>
       )}
-      {status.pendingEmbeds > 0 && ` · ${status.pendingEmbeds.toLocaleString()} awaiting embedding`}
     </div>
   );
 }
 
-/** "Learning… 214/3,412 files · 12 facts" while draining; "Learned 38 facts" after. */
+/** "Learned 38 facts · 12 Mar" — what this folder has contributed to memory so far. */
 function LearnStatusLine({ status }: { status: FolderIndexStatus }) {
-  const { pending, facts, lastTs } = status.learn;
-  if (pending > 0) {
-    const done = Math.max(0, status.indexedCount - pending);
-    return (
-      <div className="muted cfolder-index-status">
-        Learning… {done.toLocaleString()}/{status.indexedCount.toLocaleString()} files
-        {facts > 0 && ` · ${facts.toLocaleString()} fact${facts === 1 ? '' : 's'}`}
-      </div>
-    );
-  }
+  const { facts, lastTs } = status.learn;
   if (facts > 0) {
     return (
       <div className="muted cfolder-index-status">

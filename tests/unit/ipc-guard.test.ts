@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
 import { a, argsProblem, handleIpc, senderProblem } from '../../src/main/ipc';
+import { dispatchLocal, hasLocalHandler } from '../../src/main/ipc/guard';
 
 // The renderer → main IPC guard: trusted-sender check + per-channel structural
 // argument validation (see src/main/ipc.ts).
@@ -98,5 +99,38 @@ describe('handleIpc', () => {
     expect(() => ipcMain._invoke('runtime:status', trusted, 'sneaky')).toThrow(/at most 0/);
     ipcMain.removeHandler('chats:rename');
     ipcMain.removeHandler('runtime:status');
+  });
+});
+
+// The registry the phone bridge dispatches through: same handlers, same argument
+// validation, no IpcMainInvokeEvent (see the dispatchLocal comment in guard.ts).
+describe('dispatchLocal', () => {
+  it('routes to the registered handler with the same arg validation, and no event', async () => {
+    let sawEvent: unknown = 'not called';
+    handleIpc('chats:rename', (event, threadId, name) => {
+      sawEvent = event;
+      return `${String(threadId)}:${String(name)}`;
+    });
+
+    expect(hasLocalHandler('chats:rename')).toBe(true);
+    await expect(dispatchLocal('chats:rename', ['t-1', 'From the phone'])).resolves.toBe('t-1:From the phone');
+    expect(sawEvent).toBeUndefined();
+
+    // Same per-channel spec table as the IPC path.
+    await expect(dispatchLocal('chats:rename', ['t-1', 42])).rejects.toThrow(/argument 2 must be a string/);
+    await expect(dispatchLocal('chats:rename', [])).rejects.toThrow(/argument 1 must be a string/);
+
+    ipcMain.removeHandler('chats:rename');
+  });
+
+  it('refuses a channel nothing registered', async () => {
+    expect(hasLocalHandler('nope:notAThing')).toBe(false);
+    await expect(dispatchLocal('nope:notAThing', [])).rejects.toThrow(/no handler registered/);
+  });
+
+  it('surfaces a handler rejection rather than swallowing it', async () => {
+    handleIpc('backend:newConversation', () => Promise.reject(new Error('backend is down')));
+    await expect(dispatchLocal('backend:newConversation', [])).rejects.toThrow('backend is down');
+    ipcMain.removeHandler('backend:newConversation');
   });
 });

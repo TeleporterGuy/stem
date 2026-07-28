@@ -66,6 +66,12 @@ import {
 } from './mcp-config';
 import { authorizeMcp } from './oauth';
 import { syncModelsConfig } from './models-config';
+import {
+  piWebAccessPath,
+  TESTED_WEB_ACCESS_VERSION,
+  webAccessVersion,
+  writeWebSearchConfig
+} from './web-search';
 import { piMcpConfigPath, skillsRoot } from '../workspace/paths';
 import { recordUses } from '../skills/usage';
 import { resolvePi, type PiInvocation } from './locate';
@@ -92,11 +98,9 @@ import {
   ENV_SKILLS_DIR,
   EXEC_BRIDGE_TITLE,
   INSTRUCTIONS_APPROVAL_TITLE,
-  parseWebSearchTee,
   SKILLS_REV_FILE,
   TASK_BRIDGE_TITLE,
-  toolArgsOf,
-  WEB_SEARCH_TEE_KEY
+  toolArgsOf
 } from './protocol';
 import { recallStore, type Fact, type FactTier, type InjectedDocRef } from '../recall/store';
 const { getTurnActivitiesByThread, getTurnTimingsByThread, upsertTurnActivity, upsertTurnTiming, setActiveFacts, recordTurnInjectedFacts, recordTurnInjectedDocs } = recallStore;
@@ -108,10 +112,8 @@ const { getTurnActivitiesByThread, getTurnTimingsByThread, upsertTurnActivity, u
 const DEFAULT_PROVIDER = 'openai-codex';
 const DEFAULT_MODEL = 'gpt-5.3-codex-spark';
 
-// Providers that serve a native (server-side) web-search tool, which the bridge
-// extension injects via before_provider_request. Add 'anthropic' once Claude-via-pi
-// is ungated and its injection branch is enabled.
-const PROVIDER_NATIVE_SEARCH = new Set(['openai-codex']);
+// No provider capability set for web search any more: it is served by the vendored
+// pi-web-access extension (see ./web-search), so every model has it.
 // Friendly provider names for the UI live in shared/providers.ts (also used by
 // the renderer's settings/onboarding surfaces).
 
@@ -459,6 +461,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private strikedGen = 0;
   private spawnStrikes = 0;
   private cooldownUntil = 0;
+  /** Memoized pi-web-access entry point: undefined = unresolved, null = absent. */
+  private webAccessPath: string | null | undefined = undefined;
 
   /** complete() spawns a throwaway pi process per call; cap them (queue the rest). */
   private static readonly MAX_COMPLETE_PROCS = 2;
@@ -683,7 +687,6 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         description: m.provider,
         provider: m.provider,
         providerName: providerName(m.provider),
-        supportsNativeWebSearch: PROVIDER_NATIVE_SEARCH.has(m.provider),
         supportedEfforts: efforts,
         defaultEffort: efforts.includes('medium') ? 'medium' : efforts[0] ?? 'medium',
         serviceTiers: serviceTiersFor(m),
@@ -1420,6 +1423,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // mode reads the file once at startup and never again.
     this.lastLocalSyncAt = Date.now();
     await syncModelsConfig().catch(() => undefined);
+    // Same deal for web search: pi-web-access reads its workflow setting once at
+    // extension-init, so the config file has to be correct BEFORE the spawn.
+    const settings = await readSettings().catch(() => null);
+    if (settings) await writeWebSearchConfig(settings.webSearch).catch(() => undefined);
+    const webAccess = await this.resolveWebAccessExtension();
     const { provider, modelId } = await this.resolveDefaultModel();
 
     const proc = new PiProcess({
@@ -1442,6 +1450,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         'bash',
         '-e',
         piExtensionPath(),
+        // Web search for every provider (web_search / source_check /
+        // fetch_content / get_search_content), loaded as a second extension
+        // alongside Stem's own bridge. Omitted entirely when
+        // the vendored package can't be resolved — pi still runs, just without the
+        // search tools, which beats failing the whole backend over a missing dep.
+        ...(webAccess ? ['-e', webAccess] : []),
         '--provider',
         provider,
         '--model',
@@ -1498,12 +1512,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private onPiEvent(ev: PiEvent): void {
     if (ev.type === 'extension_ui_request') {
       const id = ev.id as string;
-      // The bridge's web-search tee (fire-and-forget notify; no response needed).
-      if (ev.method === 'notify') {
-        const msg = ev.message as string | undefined;
-        if (typeof msg === 'string' && msg.includes(WEB_SEARCH_TEE_KEY)) this.handleWebSearchTee(msg);
-        return;
-      }
+      // Bridge notifications are fire-and-forget (no response needed). Nothing
+      // consumes them since the web-search tee was retired — kept as an explicit
+      // no-op so a notify never falls through to the approval routing below.
+      if (ev.method === 'notify') return;
       // The bridge's MCP add/remove approval → route to Stem's McpApprovalCard.
       if (ev.method === 'confirm' && ev.title === ADMIN_APPROVAL_TITLE) {
         this.handleAdminApproval(id, ev.message as string | undefined);
@@ -1645,55 +1657,6 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           error: error instanceof Error ? error.message : String(error)
         })
       );
-    }
-  }
-
-  /**
-   * A web-search event recovered by the bridge's provider-stream tee (native
-   * search runs server-side, so pi emits nothing for it — see the extension).
-   * Mapped onto the same item/started + item/completed events a function tool
-   * produces, so activity rows, the HUD label, and persistence all just work.
-   */
-  private handleWebSearchTee(message: string): void {
-    const turn = this.currentTurn;
-    if (!turn) return; // a tee event with no live turn — drop
-    const payload = parseWebSearchTee(message);
-    if (!payload) return;
-    const { threadId, turnId } = turn;
-    if (payload.phase === 'source') {
-      const url = payload.url;
-      if (typeof url === 'string' && !turn.sources.some((s) => s.url === url)) {
-        turn.sources.push({ url, ...(payload.title ? { title: payload.title } : {}) });
-      }
-      return;
-    }
-    const id = payload.id ?? `websearch-${turn.activity.length}`;
-    if (payload.phase === 'started') {
-      if (!turn.activity.some((a) => a.id === id)) {
-        turn.activity.push({
-          id,
-          kind: 'webSearch',
-          type: 'webSearch',
-          name: 'web_search',
-          detail: payload.query,
-          status: 'running'
-        });
-      }
-      this.emitEvent('item/started', {
-        item: { type: 'webSearch', id, name: 'web_search', detail: payload.query },
-        threadId,
-        turnId
-      });
-    } else if (payload.phase === 'completed') {
-      const entry = turn.activity.find((a) => a.id === id);
-      if (!entry) return;
-      entry.status = payload.status === 'failed' ? 'error' : 'ok';
-      if (payload.query) entry.detail = payload.query; // the query often only fills in at done
-      this.emitEvent('item/completed', {
-        item: { type: 'webSearch', id, name: 'web_search', detail: entry.detail, status: entry.status },
-        threadId,
-        turnId
-      });
     }
   }
 
@@ -2510,6 +2473,28 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * maybeCompactBeforeScheduledRun, and the scheduler compact-and-retries a run
    * that still dies on a provider overflow (see TaskScheduler.runTask).
    */
+  /**
+   * Locate the vendored pi-web-access entry point once per process, warning if the
+   * installed version drifted from the one this integration was written against
+   * (mirroring locate.ts's pi version tripwire — Stem depends on the shape of the
+   * package's tool names and result text, neither of which is a stable API).
+   * Returns null when the dependency is absent, which downgrades to "no search"
+   * rather than "no backend".
+   */
+  private async resolveWebAccessExtension(): Promise<string | null> {
+    if (this.webAccessPath !== undefined) return this.webAccessPath;
+    const path = await piWebAccessPath();
+    if (!path) {
+      log('pi', 'pi-web-access not found — web search tools will be unavailable');
+    } else {
+      const version = await webAccessVersion();
+      if (version && version !== TESTED_WEB_ACCESS_VERSION) {
+        log('pi', `pi-web-access ${version} differs from the tested ${TESTED_WEB_ACCESS_VERSION}`);
+      }
+    }
+    return (this.webAccessPath = path);
+  }
+
   private async ensurePiSettingsDefaults(): Promise<void> {
     const file = join(this.options.piHome, 'settings.json');
     let raw: string | null = null;

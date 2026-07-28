@@ -1,5 +1,6 @@
 import { readSettings } from '../workspace/settings';
 import { isRecallEnabled } from '../workspace/memory';
+import * as activity from '../activity';
 import { embedNewMessages } from '../recall/embed-episodic';
 import { backfillSummaries, refreshRecentSummaries } from '../recall/summarize';
 import { distillNewMessages, shouldConsolidate } from '../recall/distill';
@@ -50,9 +51,26 @@ export function initRecallTasks(deps: {
         scheduleMemoryRebuild();
         return;
       }
+      // Stepped: one entry spans the whole rebuild, re-opened by each batch, so
+      // the panel shows "340/2100 messages" rather than 200 three-second rows.
+      const handle = activity.begin('memory.rebuild', 'Rebuilding memory provenance', { stepped: true });
       const status = await runMemoryRebuildStep(recallLlm);
       deps.sendToMainWindow('memory:rebuildStatus', status);
-      if (status.state === 'running') scheduleMemoryRebuild();
+      activity.progress(handle, { done: status.processedMessages, total: status.totalMessages });
+      if (status.state === 'running') {
+        // Bank this batch's time; the entry stays open until the rebuild ends.
+        activity.yieldStep(handle);
+        scheduleMemoryRebuild();
+        return;
+      }
+      if (status.state === 'failed') {
+        activity.fail('memory.rebuild', status.lastError ?? 'Memory rebuild failed');
+        return;
+      }
+      activity.end(handle, {
+        worked: status.processedMessages > 0,
+        detail: `Reprocessed ${status.processedMessages.toLocaleString()} messages`
+      });
     }, 2_000);
   };
   scheduleMemoryRebuild();
@@ -73,23 +91,45 @@ export function initRecallTasks(deps: {
       if (distilling) return;
       distilling = true;
       try {
-        await distillNewMessages(recallLlm);
+        // Each sub-pass is its own activity row: they have separate watermarks and
+        // fail independently, so "memory maintenance, 42 s" would hide which one
+        // actually did (or failed to do) the work.
+        await activity.track('memory.distill', 'Distilling facts', () => distillNewMessages(recallLlm), (n) => ({
+          worked: n > 0,
+          detail: `Learned ${n} fact${n === 1 ? '' : 's'}`
+        }));
         // Rolling thread summaries (Level 1.5): revise the summaries of the
         // just-active threads from the same new messages. Own watermark, so a
         // failure here never blocks fact extraction (and vice versa).
-        await refreshRecentSummaries(recallLlm);
+        await activity.track('memory.summaries', 'Updating chat summaries', () => refreshRecentSummaries(recallLlm), (n) => ({
+          worked: n > 0,
+          detail: `Summarised ${n} chat${n === 1 ? '' : 's'}`
+        }));
         // Auto-resolve open fact conflicts (non-explicit pairs only) before the
         // consolidation check, so reactivated winners and rewrite replacements
         // are visible to the same cycle's tidy pass.
-        await adjudicateOpenConflicts(recallLlm);
+        await activity.track('memory.adjudicate', 'Resolving memory conflicts', () => adjudicateOpenConflicts(recallLlm), (r) => ({
+          worked: r.resolved > 0,
+          detail: `Resolved ${r.resolved} conflict${r.resolved === 1 ? '' : 's'}`
+        }));
         // Once enough new facts have piled up, clean the set: merge reworded
         // duplicates, apply corrections, drop superseded facts. Same hidden
         // LlmClient seam, so it's invisible to the user like distillation.
-        if (shouldConsolidate()) await consolidateFacts(recallLlm);
+        if (shouldConsolidate()) {
+          await activity.track('memory.consolidate', 'Tidying memory', () => consolidateFacts(recallLlm), (r) => ({
+            worked: r.merged + r.corrected + r.dropped > 0,
+            detail: `Merged ${r.merged}, corrected ${r.corrected}, dropped ${r.dropped}`
+          }));
+        }
         // Skills acquisition: a separate single-purpose pass over the same new
         // messages (own watermark) — the in-turn manage_skill nudge alone never
         // fires. Uses the skills model; a write reloads pi so the skill activates.
-        const newSkills = await distillSkillsFromMessages(skillsLlm);
+        const newSkills = await activity.track(
+          'skills.distill',
+          'Learning skills',
+          () => distillSkillsFromMessages(skillsLlm),
+          (n) => ({ worked: n > 0, detail: `Saved ${n} skill${n === 1 ? '' : 's'}` })
+        );
         if (newSkills > 0) await deps.runtime().requestSkillReload();
       } catch {
         // non-fatal
@@ -110,7 +150,15 @@ export function initRecallTasks(deps: {
     if (episodicEmbedTimer) clearTimeout(episodicEmbedTimer);
     episodicEmbedTimer = setTimeout(() => {
       const client = getEmbeddingsClient();
-      if (client) void embedNewMessages(client);
+      if (!client) return;
+      void activity
+        .track('memory.episodicEmbed', 'Embedding messages', () => embedNewMessages(client), (n) => ({
+          worked: n > 0,
+          detail: `Embedded ${n.toLocaleString()} message${n === 1 ? '' : 's'}`
+        }))
+        .catch(() => {
+          // Reported by track(); embedding failures stay non-fatal as before.
+        });
     }, delayMs);
   };
 
@@ -123,7 +171,10 @@ export function initRecallTasks(deps: {
     if (curating || !isRecallEnabled()) return;
     curating = true;
     try {
-      const res = await curateSkills(skillsLlm);
+      const res = await activity.track('skills.curate', 'Curating skills', () => curateSkills(skillsLlm), (r) => ({
+        worked: r.merged + r.patched + r.archived > 0,
+        detail: `Merged ${r.merged}, patched ${r.patched}, archived ${r.archived}`
+      }));
       if (res.merged || res.patched || res.archived) await deps.runtime().requestSkillReload();
     } catch {
       // non-fatal
@@ -142,7 +193,12 @@ export function initRecallTasks(deps: {
   const runSummaryBackfill = async (): Promise<void> => {
     if (deps.busyWithin(30_000)) return;
     try {
-      await backfillSummaries(recallLlm, 3);
+      await activity.track(
+        'memory.summaryBackfill',
+        'Summarising older chats',
+        () => backfillSummaries(recallLlm, 3),
+        (n) => ({ worked: n > 0, detail: `Summarised ${n} chat${n === 1 ? '' : 's'}` })
+      );
     } catch {
       // non-fatal
     }

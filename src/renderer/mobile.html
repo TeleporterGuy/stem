@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover lets the app paint into the notch/home-indicator area;
+         the layout pays that back with env(safe-area-inset-*) padding. The
+         interactive-widget hint asks the browser to resize the layout (rather
+         than pan it) when the on-screen keyboard opens, which keeps the composer
+         above the keys. No user-scalable=no: pinch-zoom stays available, and the
+         composer uses a 16px font so iOS has no reason to zoom on focus. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <!-- Tints the browser chrome to match the app's own paper, per color scheme. -->
+    <meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1c1a17" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Installable to the Home Screen, running standalone. The manifest is
+         fetched by the browser itself, outside the app's auth context, which is
+         why the bridge's static path is origin-checked but not token-gated. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- iOS reads almost none of the manifest for a Home Screen web app: the
+         icon, the title and the standalone flag all have to be restated here.
+         apple-touch-icon must be opaque and square — iOS composites it over
+         black and applies its own mask (see the icons' generation note). -->
+    <link rel="apple-touch-icon" href="/icons/stem-180.png" />
+    <link rel="icon" href="/icons/stem-32.png" sizes="32x32" type="image/png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <!-- `default` lets iOS tint the status bar from the page, which follows the
+         theme-color pair above; black-translucent would force light text even in
+         light mode. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Stem" />
+    <title>Stem</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./mobile/main.tsx"></script>
+  </body>
+</html>
