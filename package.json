@@ -12,6 +12,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "postinstall": "node scripts/ensure-electron.mjs",
     "preflight": "node scripts/preflight.mjs",
     "predev": "npm run preflight && node scripts/brand-electron-dev.mjs",
     "dev": "electron-vite dev",

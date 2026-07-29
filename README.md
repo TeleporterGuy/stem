@@ -110,17 +110,15 @@ npm install
 npm run dev      # launch the app in development
 ```
 
-If `npm install` printed a line like `N packages have install scripts not yet covered by allowScripts`,
-approve them before the first `npm run dev`:
+`npm install` also downloads the Electron binary (~120MB). Electron 42 dropped its own install
+script and now fetches the binary lazily on first `require('electron')`, which electron-vite never
+does — so a `postinstall` here handles it. It warns rather than fails if the download doesn't go
+through, so `npm run dev` preflights for the binary (and for the Node version) and prints the one
+command to re-run; you can also check on its own with `npm run preflight`.
 
-```bash
-npm approve-scripts --allow-scripts-pending
-```
-
-npm 11 holds install scripts until you approve them, and Electron's is what downloads its ~124MB
-binary — skip it and the app fails to launch with the unhelpful `Error: Electron uninstall`.
-`npm run dev` preflights for this (and for the Node version) and tells you how to fix it; you can
-also run the check on its own with `npm run preflight`.
+npm 11 may warn that `N packages have install scripts not yet covered by allowScripts`. Nothing in
+Stem needs them — every native dependency ships prebuilt binaries through its platform package — so
+you can leave them unapproved.
 
 First run opens the onboarding wizard — pick a provider and sign in, and you're chatting. Use `--fresh` (or `--profile=<name>`) to try Stem with a separate profile without touching your main one.
 

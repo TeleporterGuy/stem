@@ -3,10 +3,10 @@
 //
 //  1. Too old a Node. node:sqlite (the recall store) is only flag-free on 24+,
 //     so an older runtime dies deep inside the store with a cryptic import error.
-//  2. No Electron binary. npm 11's `allowScripts` gate holds install scripts
-//     until they are approved, and electron's postinstall is what downloads the
-//     ~124MB binary. Without it electron-vite fails with `Error: Electron
-//     uninstall`, which names neither electron's install script nor npm's gate.
+//  2. No Electron binary. `postinstall` (scripts/ensure-electron.mjs) downloads
+//     it, but never fails the install, so a proxy or an offline machine lands
+//     here. Without the binary electron-vite fails with `Error: Electron
+//     uninstall`, which names neither electron nor the missing download.
 //     (Nothing platform-specific here — it greets a fresh clone on any OS.)
 //
 // Wired as part of `predev`, and runnable on its own via `npm run preflight`.
@@ -49,10 +49,9 @@ if (!existsSync(electronDir)) {
     problems.push(
       "Electron's binary was never downloaded, so the app cannot launch " +
         '(electron-vite reports this as `Error: Electron uninstall`).\n' +
-        "      npm blocks install scripts until you approve them, and electron's is what fetches the binary:\n" +
-        '        npm approve-scripts --allow-scripts-pending   # review, then approve `electron`\n' +
-        '        npm rebuild electron\n' +
-        '      On older npm without that gate, `npm rebuild electron` alone is enough.'
+        '      `npm install` normally fetches it and only warns if it cannot, so this\n' +
+        '      usually means the download failed. Re-run it directly:\n' +
+        '        node node_modules/electron/install.js'
     );
   }
 }
