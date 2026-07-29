@@ -56,10 +56,28 @@ files:
   - '!node_modules/{jwa,jws,ecdsa-sig-formatter,buffer-equal-constant-time,bignumber.js,bowser}/**'
   - '!node_modules/{node-fetch,fetch-blob,formdata-polyfill,node-domexception,data-uri-to-buffer}/**'
   - '!node_modules/{web-streams-polyfill,p-retry,ws,marked,get-east-asian-width}/**'
+  # onnxruntime-node ships one fat package covering every platform/arch it supports
+  # (~500MB unpacked) and electron-builder copies all of it. The GPU execution
+  # providers are never opened: recall/embed-worker.ts passes no `device` to
+  # transformers.js, so it asks for the CPU provider and the rest are never
+  # dlopen'd. libonnxruntime_providers_cuda.so exists for linux/x64 alone and is
+  # 327MB — the whole reason the v0.2.0 x64 AppImage came out at twice the size of
+  # the arm64 one (433MB vs 216MB). The per-platform `files` below drop the
+  # unreachable arch dirs; the loader only ever resolves
+  # bin/napi-v3/${process.platform}/${process.arch}.
+  - '!node_modules/onnxruntime-node/bin/napi-v3/*/*/libonnxruntime_providers_*'
 
 mac:
   target: [dmg, zip]
   category: public.app-category.productivity
+  # Appended to the top-level `files` (electron-builder merges platform-specific
+  # patterns rather than replacing them). Spelled out per platform on purpose:
+  # electron-builder's ${platform} macro expands to the *host* (process.platform),
+  # so a cross-build would strip the wrong dirs, while ${arch} is the build target
+  # and is correct here — `dist:mac` builds x64 and arm64 in one invocation.
+  files:
+    - '!node_modules/onnxruntime-node/bin/napi-v3/{linux,win32}/**'
+    - '!node_modules/onnxruntime-node/bin/napi-v3/darwin/!(${arch})/**'
   # Unsigned for now (no Apple Developer ID) — recipients right-click-open or
   # clear quarantine; notarization is a later follow-up.
   identity: null
@@ -67,6 +85,9 @@ mac:
 linux:
   target: [AppImage, deb]
   executableName: stem
+  files: # see the note under `mac`
+    - '!node_modules/onnxruntime-node/bin/napi-v3/{darwin,win32}/**'
+    - '!node_modules/onnxruntime-node/bin/napi-v3/linux/!(${arch})/**'
   # 1024px source; electron-builder derives the icon size set.
   icon: build/icon.png
   category: Utility
