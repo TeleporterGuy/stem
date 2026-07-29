@@ -55,6 +55,9 @@ test('first run: API key path reaches the main app', async ({ onboardingApp }) =
 // Electron at a compositor, so this runs the real Wayland branch on an X11/xvfb
 // runner.
 test('first run on Wayland: wizard explains the Quick Chat summon command', async () => {
+  // isWaylandSession() answers false off Linux before it ever reads the seam, so
+  // there is no Wayland branch to exercise on the macOS runner.
+  test.skip(process.platform !== 'linux', 'the Wayland summon step is a Linux-session branch');
   const launched = await launchApp({
     env: { STEM_E2E: '1', STEM_E2E_ONBOARDING: '1', STEM_E2E_SESSION: 'wayland' }
   });

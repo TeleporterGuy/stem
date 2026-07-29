@@ -73,6 +73,21 @@ function makeScheduler(runtime: EventEmitter) {
 
 const flush = () => new Promise((r) => setTimeout(r, 5));
 
+// A run's chain is async all the way down — startTurn, the settle event, then the
+// atomic store write — so a fixed sleep races it on a loaded CI runner. Wait for the
+// observable condition instead. (Real timers only: never call this under fake ones.)
+async function until(cond: () => boolean | Promise<boolean>, label: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await cond()) return;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    await flush();
+  }
+}
+
+/** The status the store has actually persisted for the first (usually only) task. */
+const storedStatus = async () => (await readTasks())[0]?.lastStatus;
+
 beforeEach(() => rmSync(STORE, { force: true }));
 afterEach(() => {
   vi.useRealTimers();
@@ -129,7 +144,7 @@ describe('TaskScheduler catch-up', () => {
     const runtime = new FakeRuntime();
     const { scheduler, runs } = makeScheduler(runtime);
     await scheduler.start();
-    await flush();
+    await until(async () => (await storedStatus()) === 'ok', 'the catch-up run to be recorded');
 
     expect(runtime.starts).toHaveLength(1);
     expect(runtime.starts[0].threadId).toBe('t1');
@@ -238,7 +253,7 @@ describe('TaskScheduler.runNow + management', () => {
     const res = await scheduler.create({ prompt: 'now', cron: '0 8 * * *' }, 't1');
     if (!res.ok) throw new Error('create failed');
     scheduler.runNow(res.task.id);
-    await flush();
+    await until(async () => (await storedStatus()) === 'ok', 'the run to be recorded');
     expect(runtime.starts).toHaveLength(1);
     const after = await readTasks();
     expect(after[0].lastStatus).toBe('ok');
@@ -252,7 +267,7 @@ describe('TaskScheduler.runNow + management', () => {
     const res = await scheduler.create({ prompt: 'orphan', cron: '0 8 * * *' }, 't1');
     if (!res.ok) throw new Error('create failed');
     scheduler.runNow(res.task.id);
-    await flush();
+    await until(async () => (await storedStatus()) === 'failed', 'the orphaned task to be disabled');
     expect(runtime.starts).toHaveLength(0);
     const after = await readTasks();
     expect(after[0].enabled).toBe(false);
@@ -305,11 +320,13 @@ describe('TaskScheduler backend exit handling', () => {
     const res = await scheduler.create({ prompt: 'p', cron: '0 8 * * *' }, 't1');
     if (!res.ok) throw new Error('create failed');
     scheduler.runNow(res.task.id);
-    await flush();
+    // The turn hangs, so wait on waitForSettle's listener rather than a status: the
+    // process/exit below is only observed once that listener is attached.
+    await until(() => runtime.listenerCount('event') > 0, 'the run to await its settle');
     expect(runtime.starts).toHaveLength(1);
 
     runtime.emit('event', { method: 'process/exit', params: { code: 1, signal: null } });
-    await flush();
+    await until(async () => (await storedStatus()) === 'failed', 'the run to settle as failed');
 
     expect(scheduler.snapshot().find((t) => t.id === res.task.id)?.lastStatus).toBe('failed');
     expect((await readTasks())[0].lastStatus).toBe('failed');
@@ -452,8 +469,7 @@ describe('overflow self-heal', () => {
     const res = await scheduler.create({ prompt: 'morning news', cron: '0 8 * * *' }, 't1');
     if (!res.ok) throw new Error('create failed');
     scheduler.runNow(res.task.id);
-    await flush();
-    await flush();
+    await until(async () => (await storedStatus()) === 'ok', 'the retried run to succeed');
 
     expect(runtime.compacts).toEqual(['t1']);
     expect(runtime.starts).toHaveLength(2);
@@ -469,8 +485,7 @@ describe('overflow self-heal', () => {
     const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
     if (!res.ok) throw new Error('create failed');
     scheduler.runNow(res.task.id);
-    await flush();
-    await flush();
+    await until(async () => (await storedStatus()) === 'failed', 'the failure to be recorded');
 
     expect(runtime.compacts).toEqual([]);
     expect(runtime.starts).toHaveLength(1);
@@ -484,8 +499,7 @@ describe('overflow self-heal', () => {
     const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
     if (!res.ok) throw new Error('create failed');
     scheduler.runNow(res.task.id);
-    await flush();
-    await flush();
+    await until(async () => (await storedStatus()) === 'failed', 'the second overflow to be recorded');
 
     expect(runtime.compacts).toEqual(['t1']);
     expect(runtime.starts).toHaveLength(2);
@@ -502,8 +516,7 @@ describe('overflow self-heal', () => {
     const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
     if (!res.ok) throw new Error('create failed');
     scheduler.runNow(res.task.id);
-    await flush();
-    await flush();
+    await until(async () => (await storedStatus()) === 'failed', 'the failed condense to be recorded');
 
     expect(runtime.starts).toHaveLength(1);
     expect((await readTasks())[0].lastStatus).toBe('failed');
