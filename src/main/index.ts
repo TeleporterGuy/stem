@@ -34,6 +34,7 @@ import {
   overlayOuterBounds,
   overlayWindowOptions,
   playFinishChime as platformFinishChime,
+  presentOverlayWindow,
   quickChatSummonCommand,
   requestAttention,
   workspaceVisibilityOptions
@@ -290,6 +291,17 @@ let summoningOverlay = false;
 // windows, and re-activates the app (pulling the main window forward). We apply
 // this exactly once per window (at creation) and on settings change, never per
 // show, so summoning the overlay never disturbs the main window or dock.
+//
+// Three macOS caveats worth knowing before debugging this again:
+//  - Setting the collection behavior is NOT what puts the overlay on the Space you
+//    are looking at; the ordering call is (see presentOverlayWindow).
+//  - Electron's NSPanel subclass force-ORs CanJoinAllSpaces|FullScreenAuxiliary into
+//    every setCollectionBehavior:, so `false` here cannot actually take the overlay
+//    off other Spaces on macOS — the preference only bites on Linux.
+//  - `skipTransformProcessType` keeps Stem a regular (dock-icon) app, and since
+//    10.14 a regular app's window cannot float over ANOTHER app's full-screen
+//    Space. Ordinary Desktop Spaces are unaffected; full-screen ones need an
+//    accessory-app policy we deliberately don't adopt.
 function applyOverlayWorkspaceVisibility(): void {
   if (quickChatWindow && !quickChatWindow.isDestroyed()) {
     quickChatWindow.setVisibleOnAllWorkspaces(overlayOnAllDisplays, workspaceVisibilityOptions());
@@ -648,12 +660,11 @@ function showQuickChat(reset: boolean): void {
       height: h
     })
   );
-  // show() orders the panel front; focus() makes it the key window so it actually
-  // receives keystrokes (typing, Escape). Because it's a non-activating panel,
-  // focus() makes it key WITHOUT activating Stem — the previous app stays active
-  // underneath and the main window is never pulled forward.
-  win.show();
-  win.focus();
+  // Surface the panel on whatever Space the user is on and make it the key window
+  // so it receives keystrokes (typing, Escape) — without activating Stem, so the
+  // previous app stays active underneath and the main window is never pulled
+  // forward. The macOS ordering is subtle; see presentOverlayWindow.
+  presentOverlayWindow(win);
   win.webContents.send('quickchat:focus', { reset });
 }
 

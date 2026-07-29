@@ -105,6 +105,37 @@ export function workspaceVisibilityOptions():
   return isMac ? { visibleOnFullScreen: true, skipTransformProcessType: true } : undefined;
 }
 
+/**
+ * Order the overlay onto the Space the user is actually looking at, and make it
+ * key so it receives keystrokes.
+ *
+ * macOS: `show()` on its own is not enough. Electron maps it to
+ * `-[NSWindow makeKeyAndOrderFront:]`, and AppKit deliberately refuses to bring a
+ * window forward while its application is not the active one. For a Spotlight-style
+ * summon that is *always* the case — the overlay is a non-activating panel
+ * precisely so Stem never steals activation — so the panel fails to surface on the
+ * Space the user is on. `-[NSWindow orderFrontRegardless]` is Apple's documented
+ * escape hatch for exactly this, and `showInactive()` is Electron's binding for it.
+ * (Same reason the status pill, which has always used `showInactive`, does follow
+ * you across Spaces.) The follow-up `show()` is one extra `makeKeyAndOrderFront:`
+ * to make the panel key; by then it is already ordered front, so the inactive-app
+ * restriction no longer bites. `focus()` can't do that job here — it is gated on
+ * `NativeWindowMac::IsVisible()`, which consults the window's (asynchronously
+ * updated) occlusion state and so is not reliable immediately after a show.
+ *
+ * Elsewhere: summoning activates the app — the accepted non-mac UX — so the plain
+ * show/focus pair is both sufficient and correct.
+ */
+export function presentOverlayWindow(win: BrowserWindow): void {
+  if (isMac) {
+    win.showInactive(); // orderFrontRegardless — surfaces on the current Space
+    win.show(); // makeKeyAndOrderFront — key without activating Stem (it's a panel)
+    return;
+  }
+  win.show();
+  win.focus();
+}
+
 /** Main-window chrome: inset traffic lights on macOS, the native frame elsewhere. */
 export function mainWindowChromeOptions(): BrowserWindowConstructorOptions {
   if (isMac) {
