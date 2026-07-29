@@ -102,12 +102,25 @@ Native **web search** uses your provider's built-in search — no separate searc
 
 ## Getting started
 
-Runs on macOS and Linux. For development you need Node.js:
+Runs on macOS and Linux. Development needs **Node.js 24 or newer** (`node:sqlite`, which backs the
+recall store, is only flag-free from 24). There's an `.nvmrc`, so `nvm use` picks the right one.
 
 ```bash
 npm install
 npm run dev      # launch the app in development
 ```
+
+If `npm install` printed a line like `N packages have install scripts not yet covered by allowScripts`,
+approve them before the first `npm run dev`:
+
+```bash
+npm approve-scripts --allow-scripts-pending
+```
+
+npm 11 holds install scripts until you approve them, and Electron's is what downloads its ~124MB
+binary — skip it and the app fails to launch with the unhelpful `Error: Electron uninstall`.
+`npm run dev` preflights for this (and for the Node version) and tells you how to fix it; you can
+also run the check on its own with `npm run preflight`.
 
 First run opens the onboarding wizard — pick a provider and sign in, and you're chatting. Use `--fresh` (or `--profile=<name>`) to try Stem with a separate profile without touching your main one.
 

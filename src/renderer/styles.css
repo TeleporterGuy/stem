@@ -336,6 +336,15 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   font-weight: 600;
   letter-spacing: 0.08em;
 }
+/* Wayland summon command on the last onboarding step — .pair-cmd supplies the
+   field styling, this just makes it a full-width block inside the gate card.
+   Left-aligned against the card's centered text: it's a command to read and
+   copy, and centering breaks the eye's line-start anchor when the path wraps. */
+.gate-cmd {
+  display: block;
+  margin: 0 0 14px;
+  text-align: left;
+}
 .gate-form { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
 .gate-form input,
 .gate-form select {

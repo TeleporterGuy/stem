@@ -22,6 +22,11 @@ test('first run: welcome → ChatGPT OAuth → main app', async ({ onboardingApp
 
   // Welcome step (first run: onboarding.completed is false in the fresh store).
   await expect(win.getByText('Welcome to Stem')).toBeVisible();
+  // The pitch is "your data stays on this machine", so it has to name the right
+  // machine — calling a Linux box a Mac undercuts the very claim being made.
+  await expect(
+    win.getByText(process.platform === 'darwin' ? 'lives on your Mac' : 'lives on your computer')
+  ).toBeVisible();
   await win.getByRole('button', { name: 'Get started' }).click();
 
   // Provider choice → fake OAuth (scripted auth-url + done events).
@@ -44,6 +49,33 @@ test('first run: API key path reaches the main app', async ({ onboardingApp }) =
   await win.getByRole('button', { name: 'Save key' }).click();
 
   await expect(win.locator('.conversation')).toBeVisible({ timeout: 15_000 });
+});
+
+// STEM_E2E_SESSION moves what isWaylandSession() reports without repointing
+// Electron at a compositor, so this runs the real Wayland branch on an X11/xvfb
+// runner.
+test('first run on Wayland: wizard explains the Quick Chat summon command', async () => {
+  const launched = await launchApp({
+    env: { STEM_E2E: '1', STEM_E2E_ONBOARDING: '1', STEM_E2E_SESSION: 'wayland' }
+  });
+  try {
+    const win = await mainWindowOf(launched.app);
+    await win.waitForLoadState('domcontentloaded');
+
+    await win.getByRole('button', { name: 'Get started' }).click();
+    await win.getByRole('button', { name: 'Continue with ChatGPT' }).click();
+
+    // Auth succeeds, but the wizard stops here instead of dropping straight into
+    // the app — otherwise the shortcut silently never fires and Stem looks broken.
+    await expect(win.getByText('One last step')).toBeVisible({ timeout: 15_000 });
+    await expect(win.locator('.gate-cmd')).toContainText('--quick-chat');
+
+    await win.getByRole('button', { name: 'Start using Stem' }).click();
+    await expect(win.locator('.conversation')).toBeVisible({ timeout: 15_000 });
+  } finally {
+    await launched.app.close().catch(() => {});
+    rmSync(launched.userDataDir, { recursive: true, force: true });
+  }
 });
 
 test('plain STEM_E2E (authenticated) skips the wizard entirely', async () => {

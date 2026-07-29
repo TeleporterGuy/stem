@@ -8,8 +8,12 @@
   },
   "main": "dist/main/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "predev": "node scripts/brand-electron-dev.mjs",
+    "preflight": "node scripts/preflight.mjs",
+    "predev": "npm run preflight && node scripts/brand-electron-dev.mjs",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "preview": "electron-vite preview",

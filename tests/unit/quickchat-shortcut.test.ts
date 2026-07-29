@@ -21,7 +21,13 @@ async function load() {
 }
 
 beforeEach(() => {
-  for (const key of ['XDG_SESSION_TYPE', 'WAYLAND_DISPLAY', 'ELECTRON_OZONE_PLATFORM_HINT', 'APPIMAGE']) {
+  for (const key of [
+    'XDG_SESSION_TYPE',
+    'WAYLAND_DISPLAY',
+    'ELECTRON_OZONE_PLATFORM_HINT',
+    'STEM_E2E_SESSION',
+    'APPIMAGE'
+  ]) {
     delete process.env[key];
   }
 });
@@ -46,6 +52,21 @@ describe('Quick Chat summon on Linux', () => {
     delete process.env.WAYLAND_DISPLAY;
     process.env.ELECTRON_OZONE_PLATFORM_HINT = 'wayland';
     expect((await load()).isWaylandSession()).toBe(true);
+  });
+
+  it('lets STEM_E2E_SESSION override the detected session both ways', async () => {
+    setPlatform('linux');
+    // Tests need the Wayland *answer* without the Wayland *backend*: the signals
+    // above double as Chromium's ozone selector, so faking them starts an Electron
+    // that tries to reach a compositor that isn't running.
+    process.env.STEM_E2E_SESSION = 'wayland';
+    expect((await load()).isWaylandSession()).toBe(true);
+
+    // And it must pin X11 on a real Wayland desktop, or every E2E spec that
+    // expects the non-Wayland UI fails on the contributor's machine only.
+    process.env.WAYLAND_DISPLAY = 'wayland-0';
+    process.env.STEM_E2E_SESSION = 'x11';
+    expect((await load()).isWaylandSession()).toBe(false);
   });
 
   it('never reports Wayland off Linux, however the env looks', async () => {

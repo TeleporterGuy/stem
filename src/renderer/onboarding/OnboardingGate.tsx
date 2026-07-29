@@ -5,9 +5,11 @@ import type {
   AuthUiEvent,
   LocalProviderId,
   LocalProviderTestResult,
+  QuickChatShortcutStatus,
   RuntimeStatus
 } from '../../shared/types';
 import { API_KEY_PROVIDER_IDS, providerName } from '../../shared/providers';
+import { IS_MAC } from '../accel';
 import { RequestGate } from '../requestGate';
 
 // First-run / re-auth gate: the wizard shown instead of the app until Stem holds
@@ -22,7 +24,21 @@ const PROVIDER_LABELS: Record<AuthProviderId, string> = {
   'openai-codex': 'ChatGPT'
 };
 
-type Step = 'welcome' | 'chooseProvider' | 'oauthWait' | 'apiKey' | 'localServer' | 'manualInput' | 'finishing' | 'error';
+// The wizard's pitch is "your data stays on this machine", so it names the
+// machine repeatedly. Calling a Linux box a Mac in the first sentence a new user
+// reads undercuts exactly the claim the sentence is making.
+const DEVICE = IS_MAC ? 'Mac' : 'computer';
+
+type Step =
+  | 'welcome'
+  | 'chooseProvider'
+  | 'oauthWait'
+  | 'apiKey'
+  | 'localServer'
+  | 'manualInput'
+  | 'finishing'
+  | 'quickChatSetup'
+  | 'error';
 
 interface WizardState {
   step: Step;
@@ -41,6 +57,7 @@ type WizardAction =
   | { type: 'pickLocal' }
   | { type: 'backToChoice' }
   | { type: 'finishing' }
+  | { type: 'quickChatSetup' }
   | { type: 'authEvent'; event: AuthUiEvent }
   | { type: 'fail'; error: string };
 
@@ -80,6 +97,8 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
       return { ...initialState('reauth'), step: 'chooseProvider' };
     case 'finishing':
       return { ...state, step: 'finishing' };
+    case 'quickChatSetup':
+      return { ...state, step: 'quickChatSetup' };
     case 'fail':
       return { ...state, step: 'error', error: action.error };
     case 'authEvent': {
@@ -128,6 +147,11 @@ export function OnboardingGate({
   onDismissReauth
 }: OnboardingGateProps) {
   const [state, dispatch] = useReducer(reduce, undefined, () => initialState(variant, initialProvider));
+  // Wayland only: the summon command to bind, plus the status to hand onAuthenticated
+  // once the user dismisses that step (see finish).
+  const [waylandShortcut, setWaylandShortcut] = useState<QuickChatShortcutStatus | null>(null);
+  const [copiedSummon, setCopiedSummon] = useState(false);
+  const pendingStatusRef = useRef<RuntimeStatus | null>(null);
   // The finish path runs in async handlers after awaits — guard against unmount.
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -144,10 +168,43 @@ export function OnboardingGate({
       dispatch({ type: 'finishing' });
       if (variant === 'firstRun') await window.stem.completeOnboarding().catch(() => undefined);
       const next = status ?? (await window.stem.runtimeStatus());
-      if (mountedRef.current) onAuthenticated(next);
+      if (!mountedRef.current) return;
+
+      // In a Wayland session no app can grab a hotkey for itself, so Quick Chat —
+      // the summon-from-anywhere overlay that is half the point of Stem — stays
+      // silent until the user binds a DE shortcut to the summon command. Settings
+      // explains this, but a first-run user has no reason to go looking: they press
+      // the shortcut, nothing happens, and Stem looks broken. So say it here, once,
+      // while they are already being set up.
+      if (variant === 'firstRun') {
+        const shortcut = await window.stem.getQuickChatShortcutStatus().catch(() => null);
+        if (!mountedRef.current) return;
+        if (shortcut?.wayland) {
+          pendingStatusRef.current = next;
+          setWaylandShortcut(shortcut);
+          dispatch({ type: 'quickChatSetup' });
+          return;
+        }
+      }
+      onAuthenticated(next);
     },
     [variant, onAuthenticated]
   );
+
+  const copySummonCommand = useCallback(() => {
+    if (!waylandShortcut) return;
+    void navigator.clipboard.writeText(waylandShortcut.summonCommand).then(() => {
+      if (!mountedRef.current) return;
+      setCopiedSummon(true);
+      setTimeout(() => mountedRef.current && setCopiedSummon(false), 1600);
+    });
+  }, [waylandShortcut]);
+
+  const leaveQuickChatSetup = useCallback(async () => {
+    // finish() already ran completeOnboarding and resolved the status; this step is
+    // purely informational, so entering the app must not depend on it succeeding.
+    onAuthenticated(pendingStatusRef.current ?? (await window.stem.runtimeStatus()));
+  }, [onAuthenticated]);
 
   const startOAuth = useCallback(
     async (provider: AuthProviderId) => {
@@ -196,11 +253,11 @@ export function OnboardingGate({
         {state.step === 'welcome' && (
           <>
             <h1>Welcome to Stem</h1>
-            <p>A private AI assistant that lives on your Mac.</p>
+            <p>A private AI assistant that lives on your {DEVICE}.</p>
             <p className="gate-sub">
               Stem brings your own AI account: sign in with a ChatGPT or Claude subscription, use an API
               key (Anthropic, OpenAI, OpenRouter), or run local models with Ollama or LM Studio. Your
-              chats, files, and memory stay on this Mac.
+              chats, files, and memory stay on this {DEVICE}.
             </p>
             <button className="primary" onClick={() => dispatch({ type: 'continue' })}>
               Get started
@@ -305,6 +362,27 @@ export function OnboardingGate({
           <>
             <h1>Setting things up…</h1>
             <p className="gate-sub">Signed in. Picking a default model and starting the assistant.</p>
+          </>
+        )}
+
+        {state.step === 'quickChatSetup' && waylandShortcut && (
+          <>
+            <h1>One last step</h1>
+            <p className="gate-sub">
+              Quick Chat is Stem's overlay — summon it with a keyboard shortcut from inside any app.
+              This is a Wayland session, where an app can't claim a shortcut for itself, so add one in
+              your system's keyboard settings that runs this command:
+            </p>
+            <code className="pair-cmd gate-cmd">{waylandShortcut.summonCommand}</code>
+            <div className="gate-form-actions">
+              <button type="button" className="push" onClick={copySummonCommand}>
+                {copiedSummon ? 'Copied' : 'Copy command'}
+              </button>
+              <button type="button" className="primary" onClick={() => void leaveQuickChatSetup()}>
+                Start using Stem
+              </button>
+            </div>
+            <p className="gate-hint">You can find this again under Settings → Quick Chat.</p>
           </>
         )}
 
@@ -445,7 +523,7 @@ function LocalServerForm({
     <>
       <h1>Use a local model</h1>
       <p className="gate-sub">
-        Chat with models running on this Mac — nothing leaves your machine. Start {providerName(server)}, then test
+        Chat with models running on this {DEVICE} — nothing leaves your machine. Start {providerName(server)}, then test
         the connection.
       </p>
       <form
@@ -513,7 +591,7 @@ function ApiKeyForm({
     <>
       <h1>Use an API key</h1>
       <p className="gate-sub">
-        Paste a key from your Anthropic, OpenAI, or OpenRouter account. It's stored only on this Mac.
+        Paste a key from your Anthropic, OpenAI, or OpenRouter account. It's stored only on this {DEVICE}.
       </p>
       <form
         className="gate-form"

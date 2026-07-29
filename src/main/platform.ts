@@ -20,6 +20,14 @@ export const isWindows = process.platform === 'win32';
  */
 export function isWaylandSession(): boolean {
   if (!isLinux) return false;
+  // Test seam. The three signals below are also what Chromium reads to choose its
+  // ozone backend, so a test cannot fake a session type through them without
+  // changing which display server Electron connects to — pointing it at a
+  // compositor that isn't there kills the app at startup. This override moves the
+  // answer without touching the backend. It is read on Linux only, and the worst a
+  // user can do by setting it is mis-label their own session in Settings.
+  const forced = (process.env.STEM_E2E_SESSION ?? '').toLowerCase();
+  if (forced) return forced === 'wayland';
   return (
     (process.env.XDG_SESSION_TYPE ?? '').toLowerCase() === 'wayland' ||
     !!process.env.WAYLAND_DISPLAY ||

@@ -82,6 +82,13 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
       // the real UI past the sign-in gate (see the STEM_E2E seam in
       // src/main/index.ts). In real-backend mode the seam is off and pi runs.
       ...(real ? {} : { STEM_E2E: '1' }),
+      // Pin the session type the app *reports*, without touching the env vars
+      // Chromium uses to pick its display backend (see isWaylandSession). Wayland
+      // drives real UI — the onboarding wizard adds a Quick Chat step there — so
+      // leaving this to the developer's desktop would mean the same spec passes
+      // on CI and fails on a Wayland machine. Specs wanting the Wayland path
+      // override it via opts.env.
+      STEM_E2E_SESSION: 'x11',
       ...opts.env
     }
   });
