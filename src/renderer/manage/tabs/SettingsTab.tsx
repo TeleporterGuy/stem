@@ -183,7 +183,7 @@ const OAUTH_CHOICES: { id: AuthProviderId; hint: string }[] = [
 /** How a connected provider signed in — shown as the row's secondary line. */
 function providerKind(id: string): string {
   if (id === 'openai-codex') return 'ChatGPT subscription';
-  if (isLocalProviderId(id)) return 'Local server';
+  if (isLocalProviderId(id)) return 'Server';
   return 'API key / subscription';
 }
 
@@ -293,7 +293,9 @@ function ProvidersSection({ deadProvider }: { deadProvider?: string | null }) {
   const enabledLocals = local ? (Object.keys(local) as LocalProviderId[]).filter((id) => local[id].enabled) : [];
   const rows = [
     ...cloudProviders.map((id) => ({ id, local: false, detail: providerKind(id) })),
-    ...enabledLocals.map((id) => ({ id, local: true, detail: local![id].baseUrl }))
+    // A custom endpoint is registered the same way but needn't be on this box, so
+    // it keeps the remote icon.
+    ...enabledLocals.map((id) => ({ id, local: id !== 'custom', detail: local![id].baseUrl }))
   ];
 
   return (
@@ -375,8 +377,10 @@ function ProvidersSection({ deadProvider }: { deadProvider?: string | null }) {
                   <button className={mode === 'apikey' ? 'active' : ''} onClick={() => setMode('apikey')}>
                     API key
                   </button>
+                  {/* "Server", not "Local server": the same form now also takes a
+                      custom endpoint, which needn't be on this machine. */}
                   <button className={mode === 'local' ? 'active' : ''} onClick={() => setMode('local')}>
-                    Local server
+                    Server
                   </button>
                 </div>
                 {mode === 'account' && (
@@ -585,9 +589,17 @@ function ProviderApiKeyForm({
 }
 
 /**
- * Add a local model server (Ollama / LM Studio): pick the server, adjust the
- * URL if needed, optionally Test, then Enable. Editing later = disconnect (−)
- * and re-add, matching the MCP servers list.
+ * Add an OpenAI-compatible server (Ollama / LM Studio / a custom endpoint): pick
+ * the server, adjust the URL if needed, optionally Test, then Enable. Editing
+ * later = disconnect (−) and re-add, matching the MCP servers list.
+ *
+ * The custom endpoint adds a key field and swaps model discovery for a typed
+ * list: an arbitrary endpoint may not serve GET /v1/models at all (or may serve
+ * far more than the key can reach), so Test becomes a convenience that fills the
+ * field in rather than the thing that decides the catalog.
+ *
+ * The how-it-works prose for all three lives in the header InfoTip, not inline —
+ * the fields differ by selection and a paragraph per branch buries the form.
  */
 function LocalServerAddForm({
   settings,
@@ -602,13 +614,22 @@ function LocalServerAddForm({
 }) {
   const [server, setServer] = useState<LocalProviderId>('ollama');
   const [baseUrl, setBaseUrl] = useState(settings.ollama.baseUrl);
+  const [apiKey, setApiKey] = useState('');
+  const [models, setModels] = useState('');
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<LocalProviderTestResult | null>(null);
   const [saving, setSaving] = useState(false);
+  const custom = server === 'custom';
+  const modelList = models
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
 
   function pick(id: LocalProviderId) {
     setServer(id);
     setBaseUrl(settings[id].baseUrl);
+    setApiKey('');
+    setModels('');
     setTest(null);
   }
 
@@ -616,7 +637,11 @@ function LocalServerAddForm({
     setTesting(true);
     setTest(null);
     try {
-      setTest(await window.stem.testLocalProvider(server, baseUrl));
+      const result = await window.stem.testLocalProvider(server, baseUrl, custom ? apiKey.trim() : undefined);
+      setTest(result);
+      // A listing endpoint that does answer saves the typing — but never
+      // overwrite ids the user already chose.
+      if (custom && result.ok && result.models?.length && !models.trim()) setModels(result.models.join(', '));
     } catch {
       setTest({ ok: false, error: 'request failed' });
     } finally {
@@ -628,7 +653,14 @@ function LocalServerAddForm({
     setSaving(true);
     onError(null);
     try {
-      const res = await window.stem.updateLocalProvider(server, { enabled: true, baseUrl: baseUrl.trim() });
+      const res = await window.stem.updateLocalProvider(server, {
+        enabled: true,
+        baseUrl: baseUrl.trim(),
+        // Sent even when empty so re-adding a previously keyed endpoint without
+        // one clears the stored key instead of silently inheriting it.
+        apiKey: custom ? apiKey.trim() : '',
+        models: custom ? modelList : []
+      });
       if (!res.ok) onError(res.error ?? 'Could not enable the server.');
       else await onSaved();
     } finally {
@@ -645,9 +677,20 @@ function LocalServerAddForm({
 
   return (
     <div className="set-block">
+      <span className="set-sub">
+        Server{' '}
+        <InfoTip label="About servers">
+          Any OpenAI-compatible server Stem can register itself, rather than one it already knows.{' '}
+          <strong>Ollama</strong> and <strong>LM Studio</strong> run on this machine and report their own models — LM
+          Studio loads one on first use, so its first reply can take a while. <strong>Custom endpoint</strong> is any
+          other URL: a gateway, a proxy, a server elsewhere on your network. Stem appends <code>/v1</code> to the URL if
+          it isn't there, and sends the key as a bearer token when you give one. Test connection fills the model IDs in
+          when the endpoint lists them; endpoints that serve no listing just need the IDs typed in.
+        </InfoTip>
+      </span>
       <select
         className="ifield"
-        aria-label="Local server"
+        aria-label="Server"
         value={server}
         onChange={(e) => pick(e.target.value as LocalProviderId)}
       >
@@ -660,9 +703,29 @@ function LocalServerAddForm({
       <input
         className="ifield"
         aria-label={`${providerName(server)} base URL`}
+        placeholder={custom ? 'https://api.example.com/v1' : undefined}
         value={baseUrl}
         onChange={(e) => setBaseUrl(e.target.value)}
       />
+      {custom && (
+        <>
+          <input
+            className="ifield"
+            type="password"
+            aria-label="API key"
+            placeholder="API key (leave empty if the server needs none)"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+          <input
+            className="ifield"
+            aria-label="Model IDs"
+            placeholder="Model IDs, comma-separated"
+            value={models}
+            onChange={(e) => setModels(e.target.value)}
+          />
+        </>
+      )}
       <div className="retrieval-test">
         <button
           className="retrieval-test-btn"
@@ -681,9 +744,6 @@ function LocalServerAddForm({
           </span>
         )}
       </div>
-      {server === 'lmstudio' && (
-        <p className="muted">LM Studio loads a model on first use — the first reply can take a while.</p>
-      )}
       <div className="push-row">
         <button type="button" className="push" onClick={onCancel}>
           Cancel
@@ -691,7 +751,7 @@ function LocalServerAddForm({
         <button
           type="button"
           className="push default"
-          disabled={saving || !baseUrl.trim()}
+          disabled={saving || !baseUrl.trim() || (custom && modelList.length === 0)}
           onClick={() => void enable()}
         >
           {saving ? 'Enabling…' : 'Enable'}

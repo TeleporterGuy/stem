@@ -302,7 +302,7 @@ export function OnboardingGate({
               Use an API key instead
             </button>
             <button className="gate-link" onClick={() => dispatch({ type: 'pickLocal' })}>
-              Use a local model (Ollama or LM Studio)
+              Use a local model or your own endpoint
             </button>
             {variant === 'reauth' && onDismissReauth && (
               <button className="gate-link" onClick={onDismissReauth}>
@@ -443,13 +443,19 @@ function ManualCodeForm({
 
 const LOCAL_SERVER_DEFAULTS: Record<LocalProviderId, string> = {
   ollama: 'http://localhost:11434',
-  lmstudio: 'http://localhost:1234'
+  lmstudio: 'http://localhost:1234',
+  custom: ''
 };
 
+const IS_DEFAULT_URL = (url: string): boolean =>
+  Object.values(LOCAL_SERVER_DEFAULTS).some((d) => d !== '' && url === d);
+
 /**
- * Local-only onboarding: point Stem at a running Ollama / LM Studio server. The
- * Test probe must find at least one model before Continue unlocks, so the wizard
- * can't finish into an empty catalog.
+ * Local-only onboarding: point Stem at a running Ollama / LM Studio server, or at
+ * an arbitrary OpenAI-compatible endpoint. The Test probe must find at least one
+ * model before Continue unlocks, so the wizard can't finish into an empty
+ * catalog — except for a custom endpoint, which may not serve a model listing at
+ * all and so gates on the typed model IDs instead.
  */
 function LocalServerForm({
   onDone,
@@ -462,12 +468,19 @@ function LocalServerForm({
 }) {
   const [server, setServer] = useState<LocalProviderId>('ollama');
   const [baseUrl, setBaseUrl] = useState(LOCAL_SERVER_DEFAULTS.ollama);
+  const [apiKey, setApiKey] = useState('');
+  const [models, setModels] = useState('');
   const [test, setTest] = useState<LocalProviderTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const testGateRef = useRef(new RequestGate());
   const configRef = useRef({ server, baseUrl });
   configRef.current = { server, baseUrl };
+  const custom = server === 'custom';
+  const modelList = models
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
 
   function invalidateTest() {
     testGateRef.current.invalidate();
@@ -478,7 +491,10 @@ function LocalServerForm({
   function pickServer(id: LocalProviderId) {
     invalidateTest();
     setServer(id);
-    setBaseUrl((cur) => (cur === LOCAL_SERVER_DEFAULTS.ollama || cur === LOCAL_SERVER_DEFAULTS.lmstudio ? LOCAL_SERVER_DEFAULTS[id] : cur));
+    setApiKey('');
+    setModels('');
+    // Keep a hand-edited URL; replace one the user never touched.
+    setBaseUrl((cur) => (IS_DEFAULT_URL(cur) || !cur ? LOCAL_SERVER_DEFAULTS[id] : cur));
   }
 
   async function runTest() {
@@ -487,7 +503,11 @@ function LocalServerForm({
     setTesting(true);
     setTest(null);
     try {
-      const result = await window.stem.testLocalProvider(tested.server, tested.baseUrl);
+      const result = await window.stem.testLocalProvider(
+        tested.server,
+        tested.baseUrl,
+        custom ? apiKey.trim() : undefined
+      );
       const current = configRef.current;
       if (
         testGateRef.current.isCurrent(request) &&
@@ -495,6 +515,7 @@ function LocalServerForm({
         current.baseUrl.trim() === tested.baseUrl
       ) {
         setTest(result);
+        if (custom && result.ok && result.models?.length && !models.trim()) setModels(result.models.join(', '));
       }
     } catch {
       if (testGateRef.current.isCurrent(request)) {
@@ -508,7 +529,12 @@ function LocalServerForm({
   async function save() {
     setSaving(true);
     try {
-      const res = await window.stem.updateLocalProvider(server, { enabled: true, baseUrl: baseUrl.trim() });
+      const res = await window.stem.updateLocalProvider(server, {
+        enabled: true,
+        baseUrl: baseUrl.trim(),
+        apiKey: custom ? apiKey.trim() : '',
+        models: custom ? modelList : []
+      });
       if (res.ok) onDone(res.status);
       else onFail(res.error ?? 'The local server could not be set up.');
     } finally {
@@ -517,14 +543,25 @@ function LocalServerForm({
   }
 
   const modelCount = test?.ok ? test.models?.length ?? 0 : 0;
-  const canContinue = !!test?.ok && modelCount > 0 && !saving;
+  const canContinue = custom
+    ? !!baseUrl.trim() && modelList.length > 0 && !saving
+    : !!test?.ok && modelCount > 0 && !saving;
 
   return (
     <>
-      <h1>Use a local model</h1>
+      <h1>{custom ? 'Use your own endpoint' : 'Use a local model'}</h1>
       <p className="gate-sub">
-        Chat with models running on this {DEVICE} — nothing leaves your machine. Start {providerName(server)}, then test
-        the connection.
+        {custom ? (
+          <>
+            Point Stem at any OpenAI-compatible endpoint — a gateway, a proxy, a server on your network. Enter its URL,
+            a key if it needs one, and the model IDs to offer.
+          </>
+        ) : (
+          <>
+            Chat with models running on this {DEVICE} — nothing leaves your machine. Start {providerName(server)}, then
+            test the connection.
+          </>
+        )}
       </p>
       <form
         className="gate-form"
@@ -535,31 +572,64 @@ function LocalServerForm({
       >
         <select
           value={server}
-          aria-label="Local server"
+          aria-label="Server"
           onChange={(e) => pickServer(e.target.value as LocalProviderId)}
         >
           <option value="ollama">Ollama</option>
           <option value="lmstudio">LM Studio</option>
+          <option value="custom">Custom endpoint</option>
         </select>
         <input
           type="text"
           aria-label="Server URL"
+          placeholder={custom ? 'https://api.example.com/v1' : undefined}
           value={baseUrl}
           onChange={(e) => {
             invalidateTest();
             setBaseUrl(e.target.value);
           }}
         />
+        {custom && (
+          <>
+            <input
+              type="password"
+              aria-label="API key"
+              placeholder="API key (leave empty if the server needs none)"
+              value={apiKey}
+              onChange={(e) => {
+                invalidateTest();
+                setApiKey(e.target.value);
+              }}
+            />
+            <input
+              type="text"
+              aria-label="Model IDs"
+              placeholder="Model IDs, comma-separated"
+              value={models}
+              onChange={(e) => setModels(e.target.value)}
+            />
+            <p className="gate-hint">
+              Test connection fills these in when the endpoint lists its models; otherwise type them yourself.
+            </p>
+          </>
+        )}
         {test && (
-          <p className={test.ok ? 'gate-hint' : 'error'}>
+          // A failed probe is only an error when the probe is what unlocks
+          // Continue; a custom endpoint that doesn't list models is expected, so
+          // it reads as a hint next to the IDs the user typed.
+          <p className={test.ok || custom ? 'gate-hint' : 'error'}>
             {test.ok
               ? modelCount > 0
                 ? `Found ${modelCount} model${modelCount === 1 ? '' : 's'}.` +
                   (test.skippedNoTools ? ` ${test.skippedNoTools} hidden (no tool support).` : '')
                 : test.skippedNoTools
                   ? `The server only has models without tool support — Stem needs a tool-capable model (e.g. llama3.1 or qwen2.5).`
-                  : `The server is running but has no models yet — pull/download one first.`
-              : test.error}
+                  : custom
+                    ? `The endpoint answered but listed no models — enter the model IDs above.`
+                    : `The server is running but has no models yet — pull/download one first.`
+              : custom
+                ? `Couldn't list models (${test.error}) — enter the model IDs above and continue.`
+                : test.error}
           </p>
         )}
         <div className="gate-form-actions">

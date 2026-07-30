@@ -94,11 +94,13 @@ const DEFAULTS: AppSettings = {
   // App-level default model ('provider/modelId'); null = built-in constant.
   // Set after onboarding to match the provider the user signed in with.
   defaults: { model: null },
-  // Local model servers (registered with the backend via the pi-home models.json).
-  // Base URLs are the servers' standard defaults; disabled until the user opts in.
+  // OpenAI-compatible servers (registered with the backend via the pi-home
+  // models.json). Base URLs are the servers' standard defaults; disabled until
+  // the user opts in. `custom` has no default URL — the user supplies it.
   localProviders: {
     ollama: { enabled: false, baseUrl: 'http://localhost:11434' },
-    lmstudio: { enabled: false, baseUrl: 'http://localhost:1234' }
+    lmstudio: { enabled: false, baseUrl: 'http://localhost:1234' },
+    custom: { enabled: false, baseUrl: '' }
   },
   // The phone bridge: off until the user turns it on in Settings (it is the only
   // Stem surface reachable from off-box). The port is what `tailscale serve` gets
@@ -274,14 +276,23 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   const coerceLocal = (id: LocalProviderId): LocalProviderSettings => {
     const r = rawLp[id] ?? {};
     const def = DEFAULTS.localProviders[id];
+    // apiKey/models stay absent rather than empty when unset, so a keyless server
+    // with a server-provided catalog round-trips to exactly the old shape.
+    const apiKey = typeof r.apiKey === 'string' ? r.apiKey.trim() : '';
+    const models = Array.isArray(r.models)
+      ? r.models.filter((m): m is string => typeof m === 'string' && !!m.trim()).map((m) => m.trim())
+      : [];
     return {
       enabled: typeof r.enabled === 'boolean' ? r.enabled : def.enabled,
-      baseUrl: typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : def.baseUrl
+      baseUrl: typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : def.baseUrl,
+      ...(apiKey ? { apiKey } : {}),
+      ...(models.length ? { models } : {})
     };
   };
   const localProviders: LocalProvidersSettings = {
     ollama: coerceLocal('ollama'),
-    lmstudio: coerceLocal('lmstudio')
+    lmstudio: coerceLocal('lmstudio'),
+    custom: coerceLocal('custom')
   };
   const rawMobile = (parsed?.mobile ?? {}) as Partial<MobileSettings>;
   const mobile: MobileSettings = {
@@ -442,7 +453,7 @@ export function updateDefaultModel(model: string | null): Promise<AppSettings> {
   });
 }
 
-/** Patch one local provider (Ollama / LM Studio) and persist; returns the full settings. */
+/** Patch one local provider (Ollama / LM Studio / custom) and persist; returns the full settings. */
 export function updateLocalProvider(id: LocalProviderId, patch: Partial<LocalProviderSettings>): Promise<AppSettings> {
   return enqueue(async () => {
     const cur = await readSettings();

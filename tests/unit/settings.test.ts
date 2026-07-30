@@ -80,6 +80,29 @@ describe('local provider settings', () => {
     const lp = (await readSettings()).localProviders;
     expect(lp.ollama).toEqual({ enabled: false, baseUrl: 'http://localhost:11434' });
     expect(lp.lmstudio).toEqual({ enabled: false, baseUrl: 'http://localhost:1234' });
+    // The custom endpoint has no standard URL — the user supplies one.
+    expect(lp.custom).toEqual({ enabled: false, baseUrl: '' });
+  });
+
+  it('round-trips a custom endpoint with a key and hand-entered model ids', async () => {
+    await updateLocalProvider('custom', {
+      enabled: true,
+      baseUrl: 'https://gw.example.com/v1',
+      apiKey: 'sk-secret',
+      models: [' gpt-4o-ish ', '', 'llama-70b']
+    });
+    expect((await readSettings()).localProviders.custom).toEqual({
+      enabled: true,
+      baseUrl: 'https://gw.example.com/v1',
+      apiKey: 'sk-secret',
+      models: ['gpt-4o-ish', 'llama-70b'] // trimmed, blanks dropped
+    });
+    // Re-adding without a key clears the old one rather than inheriting it.
+    await updateLocalProvider('custom', { apiKey: '', models: [] });
+    expect((await readSettings()).localProviders.custom).toEqual({
+      enabled: true,
+      baseUrl: 'https://gw.example.com/v1'
+    });
   });
 
   it('round-trips enable + custom URL per provider independently', async () => {
@@ -96,7 +119,7 @@ describe('local provider settings', () => {
     writeFileSync(path, JSON.stringify({ localProviders: { ollama: { enabled: 'yes', baseUrl: 42 }, bogus: {} } }));
     const lp = (await readSettings()).localProviders;
     expect(lp.ollama).toEqual({ enabled: false, baseUrl: 'http://localhost:11434' });
-    expect(Object.keys(lp).sort()).toEqual(['lmstudio', 'ollama']);
+    expect(Object.keys(lp).sort()).toEqual(['custom', 'lmstudio', 'ollama']);
   });
 });
 

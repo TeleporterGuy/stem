@@ -160,17 +160,34 @@ export type AuthProviderId = 'anthropic' | 'openai-codex';
 export type ApiKeyProviderId = 'anthropic' | 'openai' | 'openrouter';
 
 /**
- * Local OpenAI-compatible model servers Stem can register with the backend
- * (via the isolated pi-home's models.json). Keyless: they get a placeholder
- * auth.json entry so the backend and Stem's provider filter treat them as
- * signed in.
+ * OpenAI-compatible model servers Stem can register with the backend (via the
+ * isolated pi-home's models.json), as opposed to the providers pi knows about
+ * natively. `ollama`/`lmstudio` are the keyless localhost servers — they get a
+ * placeholder auth.json entry so the backend and Stem's provider filter treat
+ * them as signed in. `custom` is a user-supplied endpoint: any URL, optionally
+ * behind an API key, with the model ids typed by hand (see below).
  */
-export type LocalProviderId = 'ollama' | 'lmstudio';
+export type LocalProviderId = 'ollama' | 'lmstudio' | 'custom';
 
 export interface LocalProviderSettings {
   enabled: boolean;
   /** Server root, e.g. http://localhost:11434 (no path; Stem appends /v1/…). */
   baseUrl: string;
+  /**
+   * Bearer token for endpoints that require one (`custom`). Absent/empty = the
+   * keyless placeholder. Stored here rather than only in auth.json because every
+   * step of the enable flow — probe, models.json write, credential write — needs
+   * it in the same pass, and re-probing later (the 30s local-model refresh) needs
+   * it again without a round-trip through pi.
+   */
+  apiKey?: string;
+  /**
+   * Model ids entered by hand, used verbatim instead of probing GET /v1/models.
+   * Endpoints behind a gateway often don't serve a listing (or serve one far
+   * larger than what the key can actually reach), so `custom` names its models
+   * explicitly; empty/absent means "ask the server".
+   */
+  models?: string[];
 }
 
 export type LocalProvidersSettings = Record<LocalProviderId, LocalProviderSettings>;
@@ -1490,7 +1507,7 @@ export interface StemApi {
    */
   updateLocalProvider(id: LocalProviderId, patch: Partial<LocalProviderSettings>): Promise<ProviderLoginResult>;
   /** Probe a local server's /v1/models without persisting anything. */
-  testLocalProvider(id: LocalProviderId, baseUrl: string): Promise<LocalProviderTestResult>;
+  testLocalProvider(id: LocalProviderId, baseUrl: string, apiKey?: string): Promise<LocalProviderTestResult>;
   /** Remove a provider's credentials (or disable a local provider) and refresh the backend. */
   disconnectProvider(providerId: string): Promise<ProviderLoginResult>;
   /**

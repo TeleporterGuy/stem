@@ -2,6 +2,7 @@ import { handleIpc } from './guard';
 import type { IpcDeps } from './deps';
 import { markOnboardingCompleted, updateLocalProvider } from '../workspace/settings';
 import { probeLocalProvider, syncModelsConfig } from '../pi/models-config';
+import { isLocalProviderId } from '../../shared/providers';
 import type {
   ApiKeyProviderId,
   AuthProviderId,
@@ -9,7 +10,7 @@ import type {
   LocalProviderSettings
 } from '../../shared/types';
 
-/** Provider sign-in (onboarding wizard) + local providers (Ollama / LM Studio). */
+/** Provider sign-in (onboarding wizard) + local providers (Ollama / LM Studio / custom). */
 export function registerAuthIpc(deps: IpcDeps): void {
   handleIpc('auth:providerLogin', async (_e, provider: AuthProviderId) => {
     if (deps.e2e) {
@@ -48,9 +49,9 @@ export function registerAuthIpc(deps: IpcDeps): void {
     if (deps.e2e) return { alive: true };
     return { alive: await deps.providerAuth()!.isAlive(provider) };
   });
-  handleIpc('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string) => {
+  handleIpc('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string, apiKey?: string) => {
     if (deps.e2e) return { ok: true, models: ['stem-e2e-model'] };
-    return probeLocalProvider(baseUrl);
+    return probeLocalProvider(baseUrl, apiKey);
   });
   handleIpc('providers:updateLocal', async (_e, id: LocalProviderId, patch: Partial<LocalProviderSettings>) => {
     if (deps.e2e) return { ok: true, status: await deps.runtime().login() };
@@ -60,8 +61,9 @@ export function registerAuthIpc(deps: IpcDeps): void {
       // models.json first: the credential write goes through pi's provider
       // login, which only knows providers already present in models.json.
       await syncModelsConfig(settings.localProviders);
-      // Placeholder credential for keyless local servers (see ProviderAuth.setApiKey).
-      if (cfg.enabled) await deps.providerAuth()!.setApiKey(id, 'local');
+      // The endpoint's own key, or the placeholder for keyless local servers
+      // (see ProviderAuth.setApiKey).
+      if (cfg.enabled) await deps.providerAuth()!.setApiKey(id, cfg.apiKey?.trim() || 'local');
       else await deps.providerAuth()!.removeProvider(id);
       // pi reads models.json and auth.json only at spawn — restart before
       // onAuthenticated() lists models so the new registry is visible to it.
@@ -75,8 +77,9 @@ export function registerAuthIpc(deps: IpcDeps): void {
     if (deps.e2e) return { ok: true, status: await deps.runtime().status() };
     try {
       await deps.providerAuth()!.removeProvider(providerId);
-      if (providerId === 'ollama' || providerId === 'lmstudio') {
-        const settings = await updateLocalProvider(providerId, { enabled: false });
+      if (isLocalProviderId(providerId)) {
+        // Drop the endpoint's secret with it — re-adding asks for the key again.
+        const settings = await updateLocalProvider(providerId, { enabled: false, apiKey: '', models: [] });
         await syncModelsConfig(settings.localProviders);
       }
       await deps.runtime().restart();

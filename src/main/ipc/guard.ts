@@ -45,7 +45,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'auth:setApiKey': [a.string, a.string],
   'auth:respond': [a.string, a.string],
   'auth:check': [a.string],
-  'providers:testLocal': [a.string, a.string],
+  'providers:testLocal': [a.string, a.string, a.optional(a.nullish(a.string))],
   'providers:updateLocal': [a.string, a.object],
   'providers:disconnect': [a.string],
   'backend:startTurn': [a.object],

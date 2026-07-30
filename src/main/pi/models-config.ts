@@ -6,8 +6,8 @@ import { piModelsConfigPath } from '../workspace/paths';
 import { readSettings } from '../workspace/settings';
 
 // Stem's custom-providers config for the pi backend (models.json under the
-// isolated pi home). Local OpenAI-compatible servers (Ollama, LM Studio) are
-// registered here; pi's model registry reads the file when the process spawns.
+// isolated pi home). OpenAI-compatible servers (Ollama, LM Studio, and a custom
+// endpoint) are registered here; pi's model registry reads the file at spawn.
 // NOTE: pi's RPC mode never re-reads models.json mid-process (only the TUI's
 // /model command refreshes the registry), so every content change must be
 // followed by a runtime restart — callers use syncModelsConfig()'s return value
@@ -68,22 +68,30 @@ async function isToolCapable(base: string, id: string): Promise<boolean> {
 }
 
 /**
- * Ask a local OpenAI-compatible server which models it serves (GET /v1/models),
- * dropping models that can't call tools (see isToolCapable). Never throws —
- * failures come back as { ok:false, error } for the Test UI.
+ * Ask an OpenAI-compatible server which models it serves (GET /v1/models),
+ * dropping models that can't call tools (see isToolCapable). `apiKey` is sent as
+ * a bearer token for endpoints that require one. Never throws — failures come
+ * back as { ok:false, error } for the Test UI.
  */
-export async function probeLocalProvider(baseUrl: string): Promise<LocalProviderTestResult> {
+export async function probeLocalProvider(baseUrl: string, apiKey?: string): Promise<LocalProviderTestResult> {
   const base = normalizeLocalBaseUrl(baseUrl);
   if (!/^https?:\/\//i.test(base)) return { ok: false, error: 'Enter a URL like http://localhost:11434.' };
+  const key = apiKey?.trim();
   try {
-    const res = await fetch(`${base}/v1/models`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    const res = await fetch(`${base}/v1/models`, {
+      ...(key ? { headers: { Authorization: `Bearer ${key}` } } : {}),
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
+    });
     if (!res.ok) return { ok: false, error: `The server answered ${res.status} ${res.statusText}.` };
     const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
     const all = (body.data ?? [])
       .map((m) => (typeof m.id === 'string' ? m.id.trim() : ''))
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b));
-    const capable = await Promise.all(all.map((id) => isToolCapable(base, id)));
+    // Ollama is keyless, so a bearer token means this isn't Ollama — skip the
+    // per-model capability round-trips instead of spraying /api/show at a
+    // third-party endpoint that will only 404 them.
+    const capable = key ? all.map(() => true) : await Promise.all(all.map((id) => isToolCapable(base, id)));
     const models = all.filter((_, i) => capable[i]);
     const skipped = all.length - models.length;
     return { ok: true, models, ...(skipped > 0 ? { skippedNoTools: skipped } : {}) };
@@ -94,13 +102,13 @@ export async function probeLocalProvider(baseUrl: string): Promise<LocalProvider
 }
 
 /** The provider block written for an enabled local server. */
-function localProviderBlock(baseUrl: string, models: PiModelConfig[]): PiProviderConfig {
+function localProviderBlock(baseUrl: string, models: PiModelConfig[], apiKey?: string): PiProviderConfig {
   return {
     baseUrl: `${normalizeLocalBaseUrl(baseUrl)}/v1`,
     api: 'openai-completions',
     // Keyless servers still need a non-empty key for pi to consider the models
     // available (pi's own docs recommend a dummy value).
-    apiKey: 'local',
+    apiKey: apiKey?.trim() || 'local',
     // Local OpenAI-compatible servers generally don't understand the `developer`
     // role or `reasoning_effort` — pi's documented defaults for Ollama & co.
     compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
@@ -159,15 +167,22 @@ export async function syncModelsConfig(localProviders?: LocalProvidersSettings):
   const before = JSON.stringify(config);
 
   for (const id of LOCAL_PROVIDER_IDS) {
-    const { enabled, baseUrl } = settings[id];
+    const { enabled, baseUrl, apiKey, models: manual } = settings[id];
     if (!enabled) {
       delete config.providers[id];
       continue;
     }
-    const probe = await probeLocalProvider(baseUrl);
+    // Hand-entered ids are authoritative: an endpoint that names its models has
+    // opted out of discovery, so don't probe it (and don't let a listing endpoint
+    // it happens to serve override the user's choice).
+    if (manual?.length) {
+      config.providers[id] = localProviderBlock(baseUrl, manual.map((m) => ({ id: m })), apiKey);
+      continue;
+    }
+    const probe = await probeLocalProvider(baseUrl, apiKey);
     const lastKnown = config.providers[id]?.models ?? [];
     const models = probe.ok ? probe.models!.map((m) => ({ id: m })) : lastKnown;
-    config.providers[id] = localProviderBlock(baseUrl, models);
+    config.providers[id] = localProviderBlock(baseUrl, models, apiKey);
   }
 
   const changed = JSON.stringify(config) !== before;

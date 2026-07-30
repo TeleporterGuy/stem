@@ -29,6 +29,7 @@ function settings(patch?: Partial<LocalProvidersSettings>): LocalProvidersSettin
   return {
     ollama: { enabled: false, baseUrl: 'http://localhost:11434' },
     lmstudio: { enabled: false, baseUrl: 'http://localhost:1234' },
+    custom: { enabled: false, baseUrl: '' },
     ...patch
   };
 }
@@ -116,6 +117,18 @@ describe('probeLocalProvider', () => {
     expect(res.models).toEqual(['some-gguf']);
     expect(res.skippedNoTools).toBeUndefined();
   });
+
+  it('sends the api key as a bearer token and skips the Ollama capability probe', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [{ id: 'gw-model' }] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await probeLocalProvider('https://gw.example.com/v1', ' sk-secret ');
+    expect(res).toEqual({ ok: true, models: ['gw-model'] });
+    // Only the listing call — no /api/show round-trip at a third-party endpoint.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { headers?: Record<string, string> }];
+    expect(url).toBe('https://gw.example.com/v1/models');
+    expect(init.headers).toEqual({ Authorization: 'Bearer sk-secret' });
+  });
 });
 
 describe('syncModelsConfig', () => {
@@ -176,6 +189,33 @@ describe('syncModelsConfig', () => {
     const cfg = readConfig();
     expect(cfg.providers['my-vllm'].models).toEqual([{ id: 'custom' }]);
     expect(cfg.providers.ollama).toBeDefined();
+  });
+
+  it('uses hand-entered model ids verbatim and never probes the endpoint', async () => {
+    const fetchMock = vi.fn(async () => new Response('nope', { status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const changed = await syncModelsConfig(
+      settings({
+        custom: { enabled: true, baseUrl: 'https://gw.example.com/v1', apiKey: 'sk-secret', models: ['a', 'b'] }
+      })
+    );
+    expect(changed).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(readConfig().providers.custom).toMatchObject({
+      baseUrl: 'https://gw.example.com/v1',
+      apiKey: 'sk-secret',
+      models: [{ id: 'a' }, { id: 'b' }]
+    });
+  });
+
+  it('probes a keyless custom endpoint that names no models', async () => {
+    stubModels(['discovered']);
+    await syncModelsConfig(settings({ custom: { enabled: true, baseUrl: 'http://box:8000' } }));
+    expect(readConfig().providers.custom).toMatchObject({
+      baseUrl: 'http://box:8000/v1',
+      apiKey: 'local',
+      models: [{ id: 'discovered' }]
+    });
   });
 
   it('quarantines a corrupt models.json instead of parsing it', async () => {
