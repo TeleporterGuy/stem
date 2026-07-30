@@ -29,6 +29,8 @@ import type {
 } from '../../../shared/types';
 import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerName } from '../../../shared/providers';
 import { formatAccelerator, IS_MAC, splitAccelerator } from '../../accel';
+import { localProbeTarget, probeStillDescribes } from '../../localProbe';
+import { RequestGate } from '../../requestGate';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { QrImage } from '../../ui/QrImage';
@@ -619,6 +621,17 @@ function LocalServerAddForm({
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<LocalProviderTestResult | null>(null);
   const [saving, setSaving] = useState(false);
+  // The probe runs for seconds against a URL the user is still typing into, so a
+  // late answer must prove it still belongs to this form before it may speak for
+  // it: a crossed result restores a cleared badge and fills one endpoint's model
+  // ids into another, which Enable then writes to models.json verbatim. The
+  // gate covers switching servers or submitting; the value snapshot covers edits
+  // to the URL or key, which leave the request itself outstanding. `formRef`
+  // mirrors the live values because the post-await closure sees only the ones
+  // captured when the test started.
+  const testGateRef = useRef(new RequestGate());
+  const formRef = useRef({ server, baseUrl, apiKey, models });
+  formRef.current = { server, baseUrl, apiKey, models };
   const custom = server === 'custom';
   const modelList = models
     .split(',')
@@ -626,30 +639,53 @@ function LocalServerAddForm({
     .filter(Boolean);
 
   function pick(id: LocalProviderId) {
+    testGateRef.current.invalidate();
     setServer(id);
     setBaseUrl(settings[id].baseUrl);
     setApiKey('');
     setModels('');
     setTest(null);
+    setTesting(false);
   }
 
   async function runTest() {
+    const request = testGateRef.current.begin();
+    const tested = localProbeTarget(server, baseUrl, apiKey);
+    const speaksForTheForm = () => {
+      const form = formRef.current;
+      return (
+        testGateRef.current.isCurrent(request) &&
+        probeStillDescribes(tested, localProbeTarget(form.server, form.baseUrl, form.apiKey))
+      );
+    };
     setTesting(true);
     setTest(null);
     try {
-      const result = await window.stem.testLocalProvider(server, baseUrl, custom ? apiKey.trim() : undefined);
-      setTest(result);
-      // A listing endpoint that does answer saves the typing — but never
-      // overwrite ids the user already chose.
-      if (custom && result.ok && result.models?.length && !models.trim()) setModels(result.models.join(', '));
+      const result = await window.stem.testLocalProvider(
+        tested.server,
+        tested.baseUrl,
+        custom ? tested.apiKey : undefined
+      );
+      if (speaksForTheForm()) {
+        setTest(result);
+        // A listing endpoint that does answer saves the typing — but never
+        // overwrite ids the user already chose.
+        if (custom && result.ok && result.models?.length && !formRef.current.models.trim())
+          setModels(result.models.join(', '));
+      }
     } catch {
-      setTest({ ok: false, error: 'request failed' });
+      if (speaksForTheForm()) setTest({ ok: false, error: 'request failed' });
     } finally {
-      setTesting(false);
+      // Not snapshot-guarded: an edit mid-probe must still release the button.
+      if (testGateRef.current.isCurrent(request)) setTesting(false);
     }
   }
 
   async function enable() {
+    // Nothing in flight may label the form once it has been submitted — and the
+    // discarded probe no longer owns the button it left in its testing state.
+    testGateRef.current.invalidate();
+    setTesting(false);
     setSaving(true);
     onError(null);
     try {

@@ -10,6 +10,7 @@ import {
   mergeQuickChatHandoff,
   type ThreadState
 } from '../../src/renderer/chatState';
+import { localProbeTarget, probeStillDescribes } from '../../src/renderer/localProbe';
 import { enqueueApproval, removeApproval } from '../../src/renderer/manage/approvalQueue';
 import { Chart } from '../../src/renderer/mdx/components';
 import {
@@ -77,6 +78,44 @@ describe('renderer async race regressions', () => {
     await slowRun;
 
     expect(committed).toEqual(['new selection']);
+  });
+
+  it('refuses a local-provider probe whose endpoint the form has since edited', async () => {
+    // The gate only turns over when the server choice changes; editing the URL
+    // or key in place leaves the request outstanding, so the value snapshot is
+    // what stops endpoint A's catalog from filling in endpoint B's form.
+    const gate = new RequestGate();
+    const form = { server: 'custom' as const, baseUrl: 'https://a.example.com ', apiKey: 'key-a' };
+    const committed: string[][] = [];
+
+    const run = async (probe: Promise<string[]>) => {
+      const token = gate.begin();
+      const sent = localProbeTarget(form.server, form.baseUrl, form.apiKey);
+      const models = await probe;
+      if (gate.isCurrent(token) && probeStillDescribes(sent, localProbeTarget(form.server, form.baseUrl, form.apiKey)))
+        committed.push(models);
+    };
+
+    const edited = deferred<string[]>();
+    const pendingEdited = run(edited.promise);
+    form.baseUrl = 'https://b.example.com';
+    edited.resolve(['a-only-model']);
+    await pendingEdited;
+
+    const rekeyed = deferred<string[]>();
+    const pendingRekeyed = run(rekeyed.promise);
+    form.apiKey = 'key-b';
+    rekeyed.resolve(['reachable-with-key-a']);
+    await pendingRekeyed;
+
+    // Trailing whitespace is not an edit: the probe is sent the trimmed URL.
+    const settled = deferred<string[]>();
+    const pendingSettled = run(settled.promise);
+    form.baseUrl = 'https://b.example.com  ';
+    settled.resolve(['b-model']);
+    await pendingSettled;
+
+    expect(committed).toEqual([['b-model']]);
   });
 
   it('does not let an older DRAFT completion delete or rekey a newer pending start', () => {
