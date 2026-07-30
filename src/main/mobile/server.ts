@@ -5,7 +5,7 @@ import { stat } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { log } from '../log';
 import { presentedToken, requestOriginProblem, type OriginPolicy } from './auth';
-import { isMobileInvocable, isMobilePushable } from './channels';
+import { isMobileInvocable, isMobilePushable, mobilePolicy } from './channels';
 
 // The phone bridge's transport: a node:http server bound to 127.0.0.1 ONLY.
 //
@@ -189,12 +189,31 @@ export async function startMobileServer(opts: MobileServerOptions): Promise<Mobi
       return;
     }
 
+    // For a few channels, being allowlisted is not the whole answer: the phone
+    // may call them, but not with anything, and not for everything they return
+    // (see mobile/channels.ts). A refused argument is the caller's fault, so it
+    // gets a plain 400 with the policy's own words — it never went near a
+    // handler, so it is not a "Rejected local call" and must not be dressed as
+    // one by the catch below.
+    const policy = mobilePolicy(channel);
+    let callArgs: unknown[] = args;
+    if (policy?.args) {
+      try {
+        callArgs = policy.args(args);
+      } catch (e) {
+        log('mobile', 'rejected /rpc', { channel, problem: 'args policy' });
+        sendJson(res, 400, { ok: false, error: String((e as Error)?.message ?? e) });
+        return;
+      }
+    }
+
     try {
       // dispatch runs the same per-channel argsProblem validation the renderer's
       // IPC gets, then the real handler — so a malformed startTurn is refused
       // here for exactly the reason it would be refused at the desk.
-      const result = await opts.dispatch(channel, args);
-      sendJson(res, 200, { ok: true, result: result ?? null });
+      const result = await opts.dispatch(channel, callArgs);
+      const shaped = policy?.result ? policy.result(result) : result;
+      sendJson(res, 200, { ok: true, result: shaped ?? null });
     } catch (e) {
       const error = String((e as Error)?.message ?? e);
       // A rejected-call message is the caller's fault (400); anything else is

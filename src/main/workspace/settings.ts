@@ -335,6 +335,24 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   };
 }
 
+/**
+ * The settings a phone may see. Built by running a hand-picked slice back
+ * through `coerce`, which is what makes the projection FAIL-CLOSED: every field
+ * not named here comes back as its default, so a secret added to AppSettings
+ * later cannot leak because nobody remembered to strip it. What that keeps off
+ * the wire today is `webSearch.credentials`, `retrieval.embeddings.apiKey`,
+ * `retrieval.reranker.apiKey` and every `localProviders.*.apiKey` — none of
+ * which the phone has any use for.
+ *
+ * `customInstructions` is the whole of what it does have a use for: the
+ * instructions approval sheet shows the standing instructions it is asking
+ * about. The return type stays a full AppSettings so the shared renderer code
+ * the phone reuses keeps type-checking.
+ */
+export function mobileSettingsView(s: AppSettings): AppSettings {
+  return coerce({ customInstructions: s.customInstructions });
+}
+
 export async function readSettings(): Promise<AppSettings> {
   try {
     return coerce(JSON.parse(await readFile(settingsStorePath(), 'utf8')) as Partial<AppSettings>);

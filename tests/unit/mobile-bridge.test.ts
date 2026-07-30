@@ -1,8 +1,9 @@
 // The phone bridge's main-side transport, driven over a real loopback socket:
 // the bearer token, the request-origin (DNS-rebinding) check, the channel
-// allowlist, the reuse of the IPC arg-spec table, the static handler's traversal
-// guard, and SSE framing/fan-out. The handlers under /rpc are registered through
-// the real handleIpc, so this exercises the same registry the app uses.
+// allowlist, the per-channel args/result policy, the reuse of the IPC arg-spec
+// table, the static handler's traversal guard, and SSE framing/fan-out. The
+// handlers under /rpc are registered through the real handleIpc, so this
+// exercises the same registry the app uses.
 import { request as httpRequest } from 'node:http';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -14,8 +15,16 @@ import { dispatchLocal } from '../../src/main/ipc/guard';
 import { ensureMobileToken, requestOriginProblem, rerollMobileToken, tokenEquals } from '../../src/main/mobile/auth';
 import { isMobileInvocable, isMobilePushable } from '../../src/main/mobile/channels';
 import { startMobileServer, type MobileServer } from '../../src/main/mobile/server';
+import type { AppSettings } from '../../src/shared/types';
 
 const TOKEN = 'a'.repeat(64);
+
+/**
+ * The four secrets settings.json can hold, in a form no other field could
+ * produce — so "does the phone's answer contain this string" is a real question
+ * about the serialized response, not about the shape we happened to assert on.
+ */
+const SECRETS = ['brave-key-SECRET', 'embed-key-SECRET', 'rerank-key-SECRET', 'custom-key-SECRET'];
 
 let server: MobileServer;
 let bundleDir: string;
@@ -44,6 +53,20 @@ beforeAll(async () => {
     calls.push({ channel: 'chats:list', args: [] });
     throw new Error('pi is not running');
   });
+  // A settings object with every secret field populated, as the real handler
+  // would return it: readSettings() does no redaction of its own.
+  handleIpc('settings:get', () => {
+    calls.push({ channel: 'settings:get', args: [] });
+    return {
+      customInstructions: { main: 'be brief', quickChat: '' },
+      webSearch: { main: true, quickChat: true, provider: 'brave', credentials: { braveApiKey: SECRETS[0] } },
+      retrieval: {
+        embeddings: { mode: 'remote', baseUrl: 'http://box:11434', model: 'e', apiKey: SECRETS[1] },
+        reranker: { mode: 'remote', baseUrl: 'http://box:8080', model: 'r', apiKey: SECRETS[2] }
+      },
+      localProviders: { custom: { enabled: true, baseUrl: 'https://gw.example/v1', apiKey: SECRETS[3] } }
+    };
+  });
 
   server = await startMobileServer({
     port: 0,
@@ -59,6 +82,7 @@ afterAll(async () => {
   ipcMain.removeHandler('backend:startTurn');
   ipcMain.removeHandler('memory:forget');
   ipcMain.removeHandler('chats:list');
+  ipcMain.removeHandler('settings:get');
   await rm(bundleDir, { recursive: true, force: true });
 });
 
@@ -123,10 +147,10 @@ describe('POST /rpc auth', () => {
     const res = await fetch(`${base}/rpc?token=${TOKEN}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ channel: 'settings:get', args: [] })
+      body: JSON.stringify({ channel: 'memory:activeFacts', args: [] })
     });
-    // settings:get has no handler registered in this test — proof the token
-    // gate passed and we got all the way to dispatch.
+    // memory:activeFacts is allowlisted but has no handler registered in this
+    // test — proof the token gate passed and we got all the way to dispatch.
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/no handler registered/);
   });
@@ -235,6 +259,63 @@ describe('argument validation', () => {
     const res = await rpc({ channel: 'chats:list', args: [] });
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ ok: false, error: 'pi is not running' });
+  });
+});
+
+describe('per-channel policy', () => {
+  it('refuses a path attachment before it can reach the file-reading resolver', async () => {
+    const before = calls.length;
+    const res = await rpc({
+      channel: 'backend:startTurn',
+      args: [{ input: 'summarise this', attachments: [{ name: 'hosts', path: '/etc/hosts' }] }]
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/attachments must be inline/);
+    expect(calls.length).toBe(before);
+  });
+
+  it('passes an inline attachment through untouched', async () => {
+    const attachment = { name: 'x.txt', dataBase64: 'aGk=' };
+    const res = await rpc({ channel: 'backend:startTurn', args: [{ input: 'hi', attachments: [attachment] }] });
+    expect(res.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ channel: 'backend:startTurn', args: [{ input: 'hi', attachments: [attachment] }] });
+  });
+
+  it('drops a forged scheduled-run marker without failing the turn', async () => {
+    const res = await rpc({
+      channel: 'backend:startTurn',
+      args: [{ input: 'hi', scheduled: { at: '2026-07-30T09:00:00.000Z', taskId: 'task-1' } }]
+    });
+    expect(res.status).toBe(200);
+    // The turn runs — it is a perfectly good interactive turn — but the
+    // scheduler's provenance marker is gone, not merely emptied.
+    expect(calls.at(-1)).toEqual({ channel: 'backend:startTurn', args: [{ input: 'hi' }] });
+    expect('scheduled' in (calls.at(-1)!.args[0] as object)).toBe(false);
+  });
+
+  it('does not expose files:preview to a phone at all', async () => {
+    const before = calls.length;
+    const res = await rpc({ channel: 'files:preview', args: ['/Users/someone/Desktop/private.png'] });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/files:preview is not available on mobile/);
+    expect(calls.length).toBe(before);
+  });
+
+  it('projects settings:get down to what the phone renders, secrets stripped', async () => {
+    const res = await rpc({ channel: 'settings:get', args: [] });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    // The bytes on the wire, not the shape we chose to assert on.
+    for (const secret of SECRETS) expect(text).not.toContain(secret);
+
+    const { result } = JSON.parse(text) as { result: AppSettings };
+    expect(result.customInstructions).toEqual({ main: 'be brief', quickChat: '' });
+    // Everything else is a default, because the projection rebuilds rather than
+    // deletes — including the fields that carried the four keys.
+    expect(result.webSearch).toEqual({ main: true, quickChat: true, provider: 'auto', credentials: {} });
+    expect(result.retrieval.embeddings.apiKey).toBeNull();
+    expect(result.retrieval.reranker.apiKey).toBeNull();
+    expect(result.localProviders.custom).toEqual({ enabled: false, baseUrl: '' });
   });
 });
 

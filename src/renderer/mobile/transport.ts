@@ -14,8 +14,10 @@ import type { StemApi } from '../../shared/types';
 // the two tables below — which mirror src/main/mobile/channels.ts. A member
 // absent from them is one the phone genuinely cannot have (`getPathForFile`
 // needs Electron's webUtils; the dialogs open pickers on a Mac nobody is sitting
-// at), so asking for it throws by name instead of returning undefined and
-// failing later somewhere unrelated.
+// at; `previewImage` reads an image path off the Mac's disk, and the shared
+// attachments.ts only reaches it for an attachment carrying a `path`, which a
+// phone's never does), so asking for it throws by name instead of returning
+// undefined and failing later somewhere unrelated.
 //
 // Everything the transport touches from the outside — fetch, EventSource, the
 // token store — is injectable, so the tests drive it without opening a socket.
@@ -37,8 +39,6 @@ export const INVOKE_CHANNELS: Readonly<Record<string, string>> = {
 
   addMemoryNote: 'memory:addNote',
   getActiveFacts: 'memory:activeFacts',
-
-  previewImage: 'files:preview',
 
   respondExecApproval: 'exec:resolveApproval',
   respondMcpAdminApproval: 'mcp:adminDecision',
