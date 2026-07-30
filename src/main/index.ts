@@ -1442,7 +1442,7 @@ app.whenReady().then(async () => {
       // one the phone may be showing. It filters by threadId itself, exactly as
       // the main window does — the bridge doesn't track which thread is open.
       sendToMobile('backend:event', event);
-      noteMobileTurnEvent(event.method, threadId);
+      noteMobileTurnEvent(event.method, threadId, (event.params as { turn?: { id?: string } } | undefined)?.turn?.id);
     }
     if (isRecallEnabled()) {
       // Skip capture when the turn read inside a memorize:false connected folder, so

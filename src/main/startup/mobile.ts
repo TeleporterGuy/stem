@@ -3,6 +3,7 @@ import { log } from '../log';
 import { ensureMobileToken, rerollMobileToken, tokenEquals } from '../mobile/auth';
 import { startMobileServer, type MobileServer } from '../mobile/server';
 import { readSettings } from '../workspace/settings';
+import { SettledTurns, isSettledMethod } from '../../shared/settledTurns';
 import type { MobilePairingInfo, StartTurnResult } from '../../shared/types';
 
 /**
@@ -40,6 +41,18 @@ let chain: Promise<void> = Promise.resolve();
  */
 const mobileTurns = new Set<string>();
 
+/**
+ * Turns whose terminal event arrived before `backend:startTurn` returned. The
+ * runtime can settle a turn between acknowledging the prompt and resolving
+ * startTurn() — likeliest on a fast turn in a new chat, which additionally awaits
+ * set_session_name. Without this the terminal event deletes a threadId that has
+ * not been added yet, the late response adds it, and nothing ever removes it:
+ * busyWithin() then reports user activity forever and the scheduler defers every
+ * task until the backend exits. The renderer carries the same guard for the same
+ * ordering (see session/turns.ts).
+ */
+const settledTurns = new SettledTurns();
+
 function enqueue(task: () => Promise<void>): Promise<void> {
   const run = chain.then(task, task);
   chain = run.then(
@@ -57,8 +70,10 @@ function enqueue(task: () => Promise<void>): Promise<void> {
 async function dispatch(channel: string, args: unknown[]): Promise<unknown> {
   const result = await dispatchLocal(channel, args);
   if (channel === 'backend:startTurn') {
-    const threadId = (result as StartTurnResult | undefined)?.threadId;
-    if (threadId) mobileTurns.add(threadId);
+    const started = result as StartTurnResult | undefined;
+    // Consuming means the turn already ended while we were awaiting the
+    // response, so there is nothing live to mark busy.
+    if (started?.threadId && !settledTurns.consume(started.turnId)) mobileTurns.add(started.threadId);
   }
   return result;
 }
@@ -127,10 +142,12 @@ export function pushToMobile(channel: string, payload: unknown): void {
  * Clear a phone turn's busy mark when it ends. Fed from the backend event tap in
  * index.ts, alongside the main window's own run-state tracking.
  */
-export function noteMobileTurnEvent(method: string, threadId: string): void {
-  if (method === 'turn/completed' || method === 'turn/failed' || method === 'turn/aborted') {
-    mobileTurns.delete(threadId);
-  }
+export function noteMobileTurnEvent(method: string, threadId: string, turnId?: string): void {
+  if (!isSettledMethod(method)) return;
+  mobileTurns.delete(threadId);
+  // Keyed by turn, not thread: thread ids recur, so remembering the thread would
+  // suppress the busy mark of the NEXT turn on it.
+  if (turnId) settledTurns.note(turnId);
 }
 
 /** Turns started from the phone that haven't ended yet — the scheduler's guard. */

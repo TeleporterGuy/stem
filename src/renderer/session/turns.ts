@@ -26,35 +26,17 @@ import { optimisticMessageAttachments, resendAttachments, toMessageAttachments }
 import { deletePendingIfCurrent, interruptibleTurnId, pendingStartBlocksSend } from '../pendingTurn';
 import { SessionStore } from './store';
 
-/** Bound on the defensive settled-turn race set. Entries normally disappear when
- * their matching start response arrives a moment later. */
-export const SETTLED_TURN_CAP = 256;
+// The settled-turn guard moved to shared/ when the mobile bridge needed the same
+// rule in the main process (which cannot import from renderer/). Re-exported here
+// so this module stays the one place session code imports turn lifecycle from.
+import { SettledTurns, isSettledMethod, type TurnSettledMethod } from '../../shared/settledTurns';
 
-export type TurnSettledMethod = 'turn/completed' | 'turn/failed' | 'turn/aborted';
-
-function isSettledMethod(method: string): method is TurnSettledMethod {
-  return method === 'turn/completed' || method === 'turn/failed' || method === 'turn/aborted';
-}
-
-/** Terminal events can beat the start-turn IPC response on very fast turns.
- * Remember them briefly so the late response cannot resurrect activeTurnId. */
-export class SettledTurns {
-  private ids = new Set<string>();
-
-  note(turnId: string): void {
-    this.ids.add(turnId);
-    if (this.ids.size > SETTLED_TURN_CAP) {
-      const oldest = this.ids.values().next().value as string | undefined;
-      if (oldest) this.ids.delete(oldest);
-    }
-  }
-
-  /** True (and forgets the id) when this turn already settled — i.e. its terminal
-   * event beat the start IPC response. */
-  consume(turnId: string | null | undefined): boolean {
-    return turnId ? this.ids.delete(turnId) : false;
-  }
-}
+export {
+  SETTLED_TURN_CAP,
+  SettledTurns,
+  isSettledMethod,
+  type TurnSettledMethod
+} from '../../shared/settledTurns';
 
 /** An in-flight send, kept so Escape-to-retract/Stop can recover the turn id (and
  * the original text/attachments) even before startTurn resolves. Keyed by state

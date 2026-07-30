@@ -15,11 +15,15 @@ import { dirname } from 'node:path';
 import { readSettings, updateMobileSettings } from '../../src/main/workspace/settings';
 import { settingsStorePath } from '../../src/main/workspace/paths';
 import { forgetCachedMobileToken } from '../../src/main/mobile/auth';
+import { handleIpc } from '../../src/main/ipc';
 import {
   closeMobileBridge,
+  clearMobileTurns,
   initMobileBridge,
   isMobileBridgeRunning,
   mobilePairingInfo,
+  mobileTurnsInFlight,
+  noteMobileTurnEvent,
   rerollMobilePairing,
   syncMobileBridge
 } from '../../src/main/startup/mobile';
@@ -40,6 +44,19 @@ afterEach(async () => {
   await closeMobileBridge();
   rmSync(settingsPath, { force: true });
 });
+
+interface Deferred {
+  promise: Promise<void>;
+  resolve: () => void;
+}
+
+function deferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 /** Whether anything is accepting connections on the loopback port. */
 function portOpen(port: number): Promise<boolean> {
@@ -185,5 +202,71 @@ describe('re-rolling the token', () => {
     expect(after.token).not.toBe(before.token);
     expect(after.running).toBe(false);
     expect(await portOpen(PORT)).toBe(false);
+  });
+});
+
+// The busy mark the scheduler reads (mobileTurnsInFlight → busyWithin →
+// isUserActive). A phone turn is registered when startTurn's response comes back,
+// but the runtime can settle the turn before that — so the terminal event has to
+// be able to win, or a stranded mark defers every scheduled task for the life of
+// the backend.
+describe('phone turn bookkeeping', () => {
+  /** Set to hold the handler open, so a turn can settle mid-call. */
+  let block: { entered: Deferred; go: Deferred } | null = null;
+
+  handleIpc('backend:startTurn', async () => {
+    if (block) {
+      block.entered.resolve();
+      await block.go.promise;
+    }
+    return { threadId: 'thread-1', turnId: 'turn-1' };
+  });
+
+  async function startTurnFromPhone(token: string): Promise<Response> {
+    return fetch(`http://127.0.0.1:${PORT}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ channel: 'backend:startTurn', args: [{ input: 'hi' }] })
+    });
+  }
+
+  beforeEach(async () => {
+    clearMobileTurns();
+    block = null;
+    await updateMobileSettings({ enabled: true, port: PORT });
+    await syncMobileBridge();
+  });
+
+  it('marks the thread busy and clears it when the turn ends', async () => {
+    const { token } = await mobilePairingInfo();
+    expect((await startTurnFromPhone(token)).status).toBe(200);
+    expect(mobileTurnsInFlight()).toBe(1);
+
+    noteMobileTurnEvent('turn/completed', 'thread-1', 'turn-1');
+    expect(mobileTurnsInFlight()).toBe(0);
+  });
+
+  it('leaves no mark when the turn settles before the start call returns', async () => {
+    const { token } = await mobilePairingInfo();
+    // Hold the handler open so the terminal event can overtake its response.
+    block = { entered: deferred(), go: deferred() };
+    const pending = startTurnFromPhone(token);
+    await block.entered.promise;
+
+    noteMobileTurnEvent('turn/completed', 'thread-1', 'turn-1');
+    block.go.resolve();
+    expect((await pending).status).toBe(200);
+
+    // Before the fix the delete found nothing to remove and the late response
+    // added a mark no further event could clear.
+    expect(mobileTurnsInFlight()).toBe(0);
+  });
+
+  it('does not let one turn settling suppress the next turn on the same thread', async () => {
+    const { token } = await mobilePairingInfo();
+    noteMobileTurnEvent('turn/completed', 'thread-1', 'turn-0');
+    await startTurnFromPhone(token);
+    // turn-1 never settled, so its mark must stand despite thread-1 having.
+    expect(mobileTurnsInFlight()).toBe(1);
   });
 });
