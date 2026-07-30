@@ -33,83 +33,15 @@ import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { QrImage } from '../../ui/QrImage';
 import { EFFORT_LABELS } from '../../modelLabels';
+import {
+  backendSections,
+  backendState,
+  credentialLabel,
+  credentialRequirement,
+  SEARCH_BACKENDS,
+  SEARCH_ENDPOINTS
+} from '../searchBackends';
 import type { ModelTabProps } from './shared';
-
-/**
- * Search backends pi-web-access can use, in the order the picker lists them. `field`
- * is the exact config key that backend's loader reads (they are NOT uniformly
- * `<name>ApiKey` — SearXNG wants a base URL), mirroring SEARCH_BACKENDS in
- * main/pi/web-search.ts. `field: null` means the backend needs no credential.
- *
- * The backend is independent of the model being chatted with: an Ollama chat can
- * search through Exa, a ChatGPT chat through SearXNG.
- */
-const SEARCH_BACKENDS: {
-  id: string;
-  label: string;
-  field: string | null;
-  placeholder?: string;
-  note?: string;
-}[] = [
-  {
-    id: 'auto',
-    label: 'Automatic',
-    field: null,
-    note: 'Tries each configured backend in turn, ending at one that needs no key.'
-  },
-  { id: 'all', label: 'All at once', field: null, note: 'Queries every configured backend and combines the answers.' },
-  {
-    id: 'openai',
-    label: 'ChatGPT / OpenAI',
-    field: 'openaiApiKey',
-    placeholder: 'sk-…',
-    note: 'Free with a ChatGPT sign-in — searches bill to that subscription. A key is only needed without one.'
-  },
-  {
-    id: 'exa',
-    label: 'Exa',
-    field: 'exaApiKey',
-    placeholder: 'exa-…',
-    note: 'Works with no key at all through Exa MCP; a key switches it to the faster direct API.'
-  },
-  { id: 'brave', label: 'Brave', field: 'braveApiKey', placeholder: 'BSA…' },
-  { id: 'tavily', label: 'Tavily', field: 'tavilyApiKey', placeholder: 'tvly-…' },
-  { id: 'perplexity', label: 'Perplexity', field: 'perplexityApiKey', placeholder: 'pplx-…' },
-  { id: 'gemini', label: 'Gemini', field: 'geminiApiKey', placeholder: 'AIza…' },
-  { id: 'parallel', label: 'Parallel', field: 'parallelApiKey' },
-  { id: 'tinyfish', label: 'TinyFish', field: 'tinyfishApiKey', placeholder: 'sk-tinyfish-…' },
-  { id: 'serpdive', label: 'SERPdive', field: 'serpdiveApiKey' },
-  { id: 'anysearch', label: 'AnySearch', field: 'anysearchApiKey' },
-  {
-    id: 'searxng',
-    label: 'SearXNG (self-hosted)',
-    field: 'searxngBaseUrl',
-    placeholder: 'https://search.example.com',
-    note: 'No key or account; nothing leaves your network.'
-  }
-];
-
-/** Field label for a backend's credential: "Exa key" / "SearXNG endpoint". */
-function credentialLabel(b: { label: string; field: string | null }): string {
-  return `${b.label.replace(/ \(self-hosted\)$/, '')} ${b.field?.endsWith('ApiKey') ? 'key' : 'endpoint'}`;
-}
-
-/** Endpoints that tune a backend rather than selecting one. */
-const SEARCH_ENDPOINTS: { field: string; label: string; placeholder: string; hint: string }[] = [
-  {
-    field: 'openaiResponsesUrl',
-    label: 'OpenAI Responses endpoint',
-    placeholder: 'https://api.openai.com/v1/responses',
-    hint: 'Point the OpenAI backend at a compatible gateway instead.'
-  },
-  {
-    field: 'firecrawlBaseUrl',
-    label: 'Firecrawl endpoint',
-    placeholder: 'https://firecrawl.example.com',
-    hint: 'Self-hosted Firecrawl, tried first when a page blocks plain fetching.'
-  },
-  { field: 'firecrawlApiKey', label: 'Firecrawl key', placeholder: 'fc-…', hint: 'Only if your Firecrawl requires one.' }
-];
 
 // Inactivity presets for starting a fresh Quick Chat thread on re-summon.
 // 0 = never (always continue the current session).
@@ -1014,6 +946,10 @@ export function SettingsTab({
     provider: 'auto',
     credentials: {}
   });
+  // Connected AI providers, only so the search picker can tell you that the
+  // ChatGPT backend already works on your sign-in. Kept in step with the
+  // Providers section below, which broadcasts on every connect/disconnect.
+  const [providers, setProviders] = useState<string[]>([]);
   const [escapeAction, setEscapeAction] = useState<EscapeAction>('off');
   const [ci, setCi] = useState<CustomInstructionsSettings>({ main: '', quickChat: '' });
   const [exec, setExec] = useState<ExecSettings | null>(null);
@@ -1033,6 +969,15 @@ export function SettingsTab({
       setExec(s.exec);
     });
     window.stem.getQuickChatShortcutStatus().then(setShortcutStatus);
+  }, []);
+
+  useEffect(() => {
+    const load = (): void => {
+      void window.stem.runtimeStatus().then((s) => setProviders(s.providers ?? []));
+    };
+    load();
+    window.addEventListener('stem:providers-changed', load);
+    return () => window.removeEventListener('stem:providers-changed', load);
   }, []);
 
   function updateExec(patch: Partial<ExecSettings>) {
@@ -1086,6 +1031,7 @@ export function SettingsTab({
   }
 
   const activeBackend = SEARCH_BACKENDS.find((b) => b.id === ws.provider) ?? null;
+  const activeState = activeBackend ? backendState(activeBackend, ws.credentials, providers) : null;
 
   /**
    * Patch one credential. Sent as the whole map because the IPC merges settings
@@ -1154,6 +1100,11 @@ export function SettingsTab({
               no setup at all. <strong>All at once</strong> queries every configured backend and
               combines the answers. Keys below are kept for every backend, so switching between
               them never means re-entering one.
+              <br />
+              The list is grouped by what each backend still wants from you.{' '}
+              <strong>Works with no key</strong> holds the ones you can pick right now — Exa
+              searches through its public endpoint, and ChatGPT rides the sign-in you already
+              have under AI Providers, billing searches to that subscription.
             </InfoTip>
           </span>
           <select
@@ -1162,10 +1113,16 @@ export function SettingsTab({
             value={ws.provider}
             onChange={(e) => updateWebSearch({ provider: e.target.value })}
           >
-            {SEARCH_BACKENDS.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.label}
-              </option>
+            {/* Grouped by what each backend still wants from you, so the rows
+                stay bare names and the heading carries the answer. */}
+            {backendSections(ws.credentials, providers).map((section) => (
+              <optgroup key={section.label} label={section.label}>
+                {section.backends.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
           {/* The selected backend's own field, inline — the common case is
@@ -1174,13 +1131,24 @@ export function SettingsTab({
             <input
               className="ifield"
               type={activeBackend.field.endsWith('ApiKey') ? 'password' : 'url'}
-              placeholder={activeBackend.placeholder}
+              placeholder={
+                activeBackend.placeholder
+                  ? `${activeBackend.placeholder}${activeState?.ready ? ' (optional)' : ''}`
+                  : activeState?.ready
+                    ? 'Optional'
+                    : undefined
+              }
               aria-label={credentialLabel(activeBackend)}
               value={ws.credentials[activeBackend.field] ?? ''}
               onChange={(e) => setCredential(activeBackend.field as string, e.target.value)}
             />
           )}
-          {activeBackend?.note && <em className="muted">{activeBackend.note}</em>}
+          {activeBackend && activeState && (
+            <em className={activeState.ready ? 'muted' : 'muted set-warn'}>
+              {activeState.ready ? '✓' : '!'} {activeState.status}
+              {activeBackend.note ? `. ${activeBackend.note}` : ''}
+            </em>
+          )}
         </div>
 
         <div className="set-block">
@@ -1191,7 +1159,12 @@ export function SettingsTab({
             <>
               {SEARCH_BACKENDS.filter((b) => b.field).map((b) => (
                 <label className="set-block" key={b.field}>
-                  <span className="set-sub">{credentialLabel(b)}</span>
+                  <span className="set-sub">
+                    {credentialLabel(b)}{' '}
+                    {/* Which of these you can leave blank, without selecting each
+                        backend in turn to read its status line. */}
+                    <em className="set-opt">{credentialRequirement(b, ws.credentials, providers)}</em>
+                  </span>
                   <input
                     className="ifield"
                     type={b.field?.endsWith('ApiKey') ? 'password' : 'url'}

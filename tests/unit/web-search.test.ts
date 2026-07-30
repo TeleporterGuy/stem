@@ -7,8 +7,14 @@ import { join } from 'node:path';
 let home = '';
 vi.mock('../../src/main/workspace/paths', () => ({ piHome: () => home }));
 
-const { extractSources, webSearchConfigPath, writeWebSearchConfig, SEARCH_BACKENDS, WEB_SEARCH_FIELDS } =
-  await import('../../src/main/pi/web-search');
+const {
+  buildWebSearchContext,
+  extractSources,
+  webSearchConfigPath,
+  writeWebSearchConfig,
+  SEARCH_BACKENDS,
+  WEB_SEARCH_FIELDS
+} = await import('../../src/main/pi/web-search');
 
 describe('extractSources', () => {
   // The real shape returned by pi-web-access's web_search: a synthesized answer
@@ -153,5 +159,62 @@ describe('writeWebSearchConfig', () => {
     await writeWebSearchConfig({ ...base, credentials: { exaApiKey: 'exa-123' } });
     await writeWebSearchConfig({ ...base, credentials: {} });
     expect(read()).not.toHaveProperty('exaApiKey');
+  });
+});
+
+// The per-turn block that puts the search tools back in the model's view. Without
+// it the injected context listed only routed MCP tools — hundreds of them, browser
+// automation included — and a model asked to "check this link" reached for a
+// browser because nothing nearby said web_search existed.
+describe('buildWebSearchContext', () => {
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'stem-websearch-ctx-'));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const base = { main: true, quickChat: true, provider: 'auto', credentials: {} };
+
+  it('names every search tool the extension registers', async () => {
+    await writeWebSearchConfig(base);
+    const block = buildWebSearchContext(true) ?? '';
+    for (const tool of ['web_search', 'fetch_content', 'source_check', 'get_search_content']) {
+      expect(block).toContain(tool);
+    }
+  });
+
+  it('says these are called directly, not through the MCP router', async () => {
+    await writeWebSearchConfig(base);
+    expect(buildWebSearchContext(true)).toContain('invoke_tool');
+  });
+
+  it('names the backend the search tools will actually use', async () => {
+    await writeWebSearchConfig({ ...base, provider: 'exa' });
+    expect(buildWebSearchContext(true)).toContain('backend: exa');
+  });
+
+  it('spells out the meta-backends rather than printing their ids', async () => {
+    await writeWebSearchConfig(base);
+    expect(buildWebSearchContext(true)).toContain('backend: automatic');
+    await writeWebSearchConfig({ ...base, provider: 'all' });
+    expect(buildWebSearchContext(true)).toContain('every configured backend at once');
+  });
+
+  it('re-reads the backend after the user switches it', async () => {
+    await writeWebSearchConfig({ ...base, provider: 'exa' });
+    expect(buildWebSearchContext(true)).toContain('backend: exa');
+    await writeWebSearchConfig({ ...base, provider: 'brave' });
+    expect(buildWebSearchContext(true)).toContain('backend: brave');
+  });
+
+  it('falls back to auto when the config is missing', () => {
+    expect(buildWebSearchContext(true)).toContain('backend: automatic');
+  });
+
+  // The gate deactivates the tools for the turn, so advertising them would be a lie.
+  it('emits nothing when web search is off for this turn', async () => {
+    await writeWebSearchConfig(base);
+    expect(buildWebSearchContext(false)).toBeNull();
   });
 });

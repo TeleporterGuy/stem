@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from 'node:fs';
 import { access, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -148,6 +149,62 @@ export async function writeWebSearchConfig(settings: WebSearchSettings): Promise
     if (trimmed && WEB_SEARCH_FIELDS.includes(name)) file[name] = trimmed;
   }
   await writeFile(webSearchConfigPath(), JSON.stringify(file, null, 2) + '\n', { mode: 0o600 });
+}
+
+// mtime-cached read of the backend we wrote into web-search.json. That file — not
+// settings.json — is what pi-web-access actually reads, so naming it in the prompt
+// can never claim a backend the search tools aren't using.
+// Keyed on path as well as mtime: the path is fixed in the app, but not under a
+// test that repoints piHome, and a stale hit there would be silent.
+let backendCache: { key: string; provider: string } = { key: '', provider: 'auto' };
+
+function activeBackend(): string {
+  const path = webSearchConfigPath();
+  try {
+    const key = `${path}:${statSync(path).mtimeMs}`;
+    if (key !== backendCache.key) {
+      const raw = JSON.parse(readFileSync(path, 'utf8')) as { provider?: unknown };
+      // writeWebSearchConfig omits `provider` for `auto`, which is also what an
+      // absent/corrupt file should mean — the keyless fallback chain.
+      backendCache = { key, provider: typeof raw.provider === 'string' ? raw.provider : 'auto' };
+    }
+  } catch {
+    backendCache = { key: '', provider: 'auto' };
+  }
+  return backendCache.provider;
+}
+
+/** How the backend reads in the prompt; the meta-values need spelling out. */
+function backendDescription(provider: string): string {
+  if (provider === 'auto') return 'automatic — tries each configured backend, ending at one that needs no key';
+  if (provider === 'all') return 'every configured backend at once';
+  return provider;
+}
+
+/**
+ * The per-turn "Web access" block, injected next to the MCP tool catalog.
+ *
+ * The catalog block enumerates every routed MCP tool by name — often hundreds of
+ * them, including browser-automation servers — right before the user's message,
+ * while the search tools appeared only in the raw tool schemas and in a paragraph
+ * of the appended system prompt far above. A model reading that menu had no local
+ * reason to believe web search existed at all, and reached for a browser to open a
+ * link. Naming these four alongside the catalog puts them back in view.
+ *
+ * Returns null when this turn's gate is off (the tools are deactivated then, so
+ * advertising them would be a lie).
+ */
+export function buildWebSearchContext(enabled: boolean): string | null {
+  if (!enabled) return null;
+  return (
+    `Web access (built-in tools — call these directly, NOT through \`invoke_tool\`):\n` +
+    `  - web_search — search the live web (backend: ${backendDescription(activeBackend())}); ` +
+    `prefer \`queries\` with 2-4 differently-phrased angles over a single query.\n` +
+    `  - fetch_content — fetch one or more URLs and return their readable text ` +
+    `(also YouTube transcripts and GitHub repositories).\n` +
+    `  - source_check — check a claim against web sources, with passage-level citations.\n` +
+    `  - get_search_content — retrieve fuller content from an earlier web_search/fetch_content result.`
+  );
 }
 
 // `web_search` returns one markdown blob: a synthesized answer with inline

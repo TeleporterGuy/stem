@@ -47,21 +47,41 @@ test('every backend is selectable, independent of the chat model', async ({ main
   const values = await mainWindow.getByLabel('Search backend', { exact: true }).evaluate((el) =>
     [...(el as HTMLSelectElement).options].map((o) => o.value)
   );
-  expect(values).toEqual([
-    'auto',
-    'all',
-    'openai',
-    'exa',
-    'brave',
-    'tavily',
-    'perplexity',
-    'gemini',
-    'parallel',
-    'tinyfish',
-    'serpdive',
-    'anysearch',
-    'searxng'
-  ]);
+  // Order follows the readiness sections, so compare as a set.
+  expect([...values].sort()).toEqual(
+    [
+      'auto',
+      'all',
+      'openai',
+      'exa',
+      'brave',
+      'tavily',
+      'perplexity',
+      'gemini',
+      'parallel',
+      'tinyfish',
+      'serpdive',
+      'anysearch',
+      'searxng'
+    ].sort()
+  );
+});
+
+// Which backends cost you nothing to try is the first thing you need from this
+// picker, and it is not derivable from the names — so the list is sectioned by it.
+test('the picker groups backends by what they still need', async ({ mainWindow }) => {
+  await mainWindow.getByRole('button', { name: 'Settings', exact: true }).click();
+
+  const sections = await mainWindow.getByLabel('Search backend', { exact: true }).evaluate((el) =>
+    [...(el as HTMLSelectElement).querySelectorAll('optgroup')].map((g) => ({
+      label: g.label,
+      values: [...g.querySelectorAll('option')].map((o) => o.value)
+    }))
+  );
+  // A fresh profile has no keys and no ChatGPT sign-in, so only two sections.
+  expect(sections.map((s) => s.label)).toEqual(['Works with no key', 'Not set up yet']);
+  expect(sections[0].values).toEqual(['auto', 'all', 'exa']);
+  expect(sections[1].values).toContain('brave');
 });
 
 test('all backend keys are editable at once and survive a backend switch', async ({ mainWindow }) => {

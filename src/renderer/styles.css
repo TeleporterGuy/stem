@@ -1734,6 +1734,12 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .set-label em { font-size: var(--fs-11); color: var(--muted); font-style: normal; }
 .set-block { display: flex; flex-direction: column; gap: var(--sp-3); }
 .set-sub { font-size: var(--fs-11); color: var(--muted); }
+/* A setting that is waiting on you (e.g. a search backend with no key yet) —
+   worth noticing, but not an error, so it tints rather than shouts. */
+.set-warn { color: var(--warn); }
+/* "(optional)" / "(required)" trailing a field label — same size as the label,
+   set apart by weight alone so the label still reads as one line. */
+.set-opt { font-style: normal; opacity: 0.75; }
 .recorder {
   font: inherit;
   font-size: var(--fs-12);

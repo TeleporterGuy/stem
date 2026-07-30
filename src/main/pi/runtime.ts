@@ -67,6 +67,7 @@ import {
 import { authorizeMcp } from './oauth';
 import { syncModelsConfig } from './models-config';
 import {
+  buildWebSearchContext,
   piWebAccessPath,
   TESTED_WEB_ACCESS_VERSION,
   webAccessVersion,
@@ -2150,6 +2151,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // via describe_tool). Keeps the prompt floor flat as more servers are added.
     const catalog = buildMcpCatalogContext();
     if (catalog) blocks.push(catalog);
+    // Right after the catalog, and gated the same way as the tools themselves: the
+    // MCP list can run to hundreds of entries (browser automation among them), and
+    // without this the search tools are the only capability the model can't see
+    // from here. Mirrors the gate written above for this turn.
+    const web = buildWebSearchContext(input.webSearch ?? true);
+    if (web) blocks.push(web);
     if (input.format === 'md') blocks.push(PLAIN_MD_DIRECTIVE);
 
     // Images go to pi natively; text-like files are inlined, binaries noted and dropped.
