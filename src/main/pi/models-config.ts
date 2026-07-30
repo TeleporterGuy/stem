@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { LocalProviderTestResult, LocalProvidersSettings } from '../../shared/types';
+import type { LocalProviderTestResult } from '../../shared/types';
 import { LOCAL_PROVIDER_IDS } from '../../shared/providers';
 import { piModelsConfigPath } from '../workspace/paths';
 import { readSettings } from '../workspace/settings';
@@ -136,17 +137,45 @@ export async function readModelsConfig(): Promise<PiModelsConfig> {
     }
     return { providers: {} };
   } catch {
-    await writeFile(`${path}.corrupt`, raw, 'utf8').catch(() => undefined);
+    // Uniquified like the write below: two readers hitting the same corrupt file
+    // must not overwrite each other's quarantine copy mid-write.
+    await writeFile(`${path}.${process.pid}.${randomUUID()}.corrupt`, raw, 'utf8').catch(() => undefined);
     return { providers: {} };
   }
 }
 
+/**
+ * Write via a temp file named per-writer, not per-path. A shared `<path>.tmp` is
+ * only atomic for a single writer: two concurrent syncs would share one inode, so
+ * one could rename it out from under the other's half-finished write and leave a
+ * truncated models.json — which readModelsConfig then quarantines, silently
+ * dropping every local provider. The `finally` clears the temp on a failed rename
+ * so a crash can't accumulate them.
+ */
 async function writeModelsConfig(config: PiModelsConfig): Promise<void> {
   const path = piModelsConfigPath();
   await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  await writeFile(tmp, JSON.stringify(config, null, 2), 'utf8');
-  await rename(tmp, path); // atomic in the same dir
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, JSON.stringify(config, null, 2), 'utf8');
+    await rename(tmp, path); // atomic in the same dir
+  } finally {
+    await rm(tmp, { force: true }).catch(() => undefined);
+  }
+}
+
+// Serialize syncs through a promise chain (see workspace/settings.ts) so two of
+// them can't interleave their read-modify-write of models.json. The critical
+// section spans the probes, which take seconds — the window this closes is wide.
+let chain: Promise<unknown> = Promise.resolve();
+
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+  const run = chain.then(task, task);
+  chain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
 }
 
 
@@ -158,34 +187,43 @@ async function writeModelsConfig(config: PiModelsConfig): Promise<void> {
  * When a probe fails (server temporarily down), the provider's last-known models
  * are kept so a stopped server doesn't wipe the catalog.
  *
+ * Serialized, and it takes no settings argument on purpose: the settings read
+ * happens inside the critical section, immediately before the write. A caller
+ * that read settings first and handed them over could have that snapshot commit
+ * *after* a disconnect that landed while it was probing — restoring the provider
+ * block and the API key the user had just removed. Enqueue order is not snapshot
+ * order, so serializing alone would not have fixed that.
+ *
  * Returns true when the file content actually changed — the caller must then
  * restart the pi process for the registry to pick it up.
  */
-export async function syncModelsConfig(localProviders?: LocalProvidersSettings): Promise<boolean> {
-  const settings = localProviders ?? (await readSettings()).localProviders;
-  const config = await readModelsConfig();
-  const before = JSON.stringify(config);
+export function syncModelsConfig(): Promise<boolean> {
+  return enqueue(async () => {
+    const settings = (await readSettings()).localProviders;
+    const config = await readModelsConfig();
+    const before = JSON.stringify(config);
 
-  for (const id of LOCAL_PROVIDER_IDS) {
-    const { enabled, baseUrl, apiKey, models: manual } = settings[id];
-    if (!enabled) {
-      delete config.providers[id];
-      continue;
+    for (const id of LOCAL_PROVIDER_IDS) {
+      const { enabled, baseUrl, apiKey, models: manual } = settings[id];
+      if (!enabled) {
+        delete config.providers[id];
+        continue;
+      }
+      // Hand-entered ids are authoritative: an endpoint that names its models has
+      // opted out of discovery, so don't probe it (and don't let a listing endpoint
+      // it happens to serve override the user's choice).
+      if (manual?.length) {
+        config.providers[id] = localProviderBlock(baseUrl, manual.map((m) => ({ id: m })), apiKey);
+        continue;
+      }
+      const probe = await probeLocalProvider(baseUrl, apiKey);
+      const lastKnown = config.providers[id]?.models ?? [];
+      const models = probe.ok ? probe.models!.map((m) => ({ id: m })) : lastKnown;
+      config.providers[id] = localProviderBlock(baseUrl, models, apiKey);
     }
-    // Hand-entered ids are authoritative: an endpoint that names its models has
-    // opted out of discovery, so don't probe it (and don't let a listing endpoint
-    // it happens to serve override the user's choice).
-    if (manual?.length) {
-      config.providers[id] = localProviderBlock(baseUrl, manual.map((m) => ({ id: m })), apiKey);
-      continue;
-    }
-    const probe = await probeLocalProvider(baseUrl, apiKey);
-    const lastKnown = config.providers[id]?.models ?? [];
-    const models = probe.ok ? probe.models!.map((m) => ({ id: m })) : lastKnown;
-    config.providers[id] = localProviderBlock(baseUrl, models, apiKey);
-  }
 
-  const changed = JSON.stringify(config) !== before;
-  if (changed) await writeModelsConfig(config);
-  return changed;
+    const changed = JSON.stringify(config) !== before;
+    if (changed) await writeModelsConfig(config);
+    return changed;
+  });
 }

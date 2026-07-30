@@ -3,12 +3,31 @@
 // keeping last-known models when a probe fails and preserving hand-added
 // third-party provider blocks. Runs against a throwaway models.json via the
 // STEM_PI_MODELS_CONFIG env seam; fetch is stubbed per test.
+//
+// syncModelsConfig takes no settings argument — it reads them inside its own
+// lock, which is what stops a stale snapshot resurrecting a disconnected
+// provider — so the settings module is mocked here and `use()` sets what the
+// next read will see.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeLocalBaseUrl, probeLocalProvider, syncModelsConfig } from '../../src/main/pi/models-config';
 import type { LocalProvidersSettings } from '../../src/shared/types';
+
+const store = vi.hoisted(() => ({ localProviders: null as LocalProvidersSettings | null }));
+
+vi.mock('../../src/main/workspace/settings', () => ({
+  readSettings: async () => ({ localProviders: store.localProviders ?? emptySettings() })
+}));
+
+function emptySettings(): LocalProvidersSettings {
+  return {
+    ollama: { enabled: false, baseUrl: 'http://localhost:11434' },
+    lmstudio: { enabled: false, baseUrl: 'http://localhost:1234' },
+    custom: { enabled: false, baseUrl: '' }
+  };
+}
 
 let dir: string;
 let configPath: string;
@@ -17,6 +36,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'stem-models-config-'));
   configPath = join(dir, 'models.json');
   process.env.STEM_PI_MODELS_CONFIG = configPath;
+  store.localProviders = null;
 });
 
 afterEach(() => {
@@ -26,12 +46,12 @@ afterEach(() => {
 });
 
 function settings(patch?: Partial<LocalProvidersSettings>): LocalProvidersSettings {
-  return {
-    ollama: { enabled: false, baseUrl: 'http://localhost:11434' },
-    lmstudio: { enabled: false, baseUrl: 'http://localhost:1234' },
-    custom: { enabled: false, baseUrl: '' },
-    ...patch
-  };
+  return { ...emptySettings(), ...patch };
+}
+
+/** Point the mocked settings store at `patch` for the next sync. */
+function use(patch?: Partial<LocalProvidersSettings>): void {
+  store.localProviders = settings(patch);
 }
 
 function stubModels(ids: string[]): void {
@@ -134,7 +154,8 @@ describe('probeLocalProvider', () => {
 describe('syncModelsConfig', () => {
   it('writes a provider block for an enabled server and reports change', async () => {
     stubModels(['llama3.1:8b', 'qwen2.5-coder:7b']);
-    const changed = await syncModelsConfig(settings({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } }));
+    use({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
+    const changed = await syncModelsConfig();
     expect(changed).toBe(true);
     const cfg = readConfig();
     expect(cfg.providers.ollama.baseUrl).toBe('http://localhost:11434/v1');
@@ -148,30 +169,33 @@ describe('syncModelsConfig', () => {
   });
 
   it('is a no-op (unchanged) when nothing is enabled and no file exists', async () => {
-    expect(await syncModelsConfig(settings())).toBe(false);
+    use();
+    expect(await syncModelsConfig()).toBe(false);
     expect(existsSync(configPath)).toBe(false);
   });
 
   it('reports no change when a re-sync finds the same models', async () => {
     stubModels(['llama3.1:8b']);
-    const s = settings({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
-    expect(await syncModelsConfig(s)).toBe(true);
-    expect(await syncModelsConfig(s)).toBe(false);
+    use({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
+    expect(await syncModelsConfig()).toBe(true);
+    expect(await syncModelsConfig()).toBe(false);
   });
 
   it('keeps last-known models when the probe fails', async () => {
     stubModels(['llama3.1:8b']);
-    const s = settings({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
-    await syncModelsConfig(s);
+    use({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
+    await syncModelsConfig();
     vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new Error('ECONNREFUSED'))));
-    expect(await syncModelsConfig(s)).toBe(false); // content identical → no restart needed
+    expect(await syncModelsConfig()).toBe(false); // content identical → no restart needed
     expect(readConfig().providers.ollama.models).toEqual([{ id: 'llama3.1:8b' }]);
   });
 
   it('drops the provider block when disabled', async () => {
     stubModels(['llama3.1:8b']);
-    await syncModelsConfig(settings({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } }));
-    expect(await syncModelsConfig(settings())).toBe(true);
+    use({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
+    await syncModelsConfig();
+    use();
+    expect(await syncModelsConfig()).toBe(true);
     expect(readConfig().providers.ollama).toBeUndefined();
   });
 
@@ -185,7 +209,8 @@ describe('syncModelsConfig', () => {
       })
     );
     stubModels(['llama3.1:8b']);
-    await syncModelsConfig(settings({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } }));
+    use({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
+    await syncModelsConfig();
     const cfg = readConfig();
     expect(cfg.providers['my-vllm'].models).toEqual([{ id: 'custom' }]);
     expect(cfg.providers.ollama).toBeDefined();
@@ -194,11 +219,10 @@ describe('syncModelsConfig', () => {
   it('uses hand-entered model ids verbatim and never probes the endpoint', async () => {
     const fetchMock = vi.fn(async () => new Response('nope', { status: 404 }));
     vi.stubGlobal('fetch', fetchMock);
-    const changed = await syncModelsConfig(
-      settings({
-        custom: { enabled: true, baseUrl: 'https://gw.example.com/v1', apiKey: 'sk-secret', models: ['a', 'b'] }
-      })
-    );
+    use({
+      custom: { enabled: true, baseUrl: 'https://gw.example.com/v1', apiKey: 'sk-secret', models: ['a', 'b'] }
+    });
+    const changed = await syncModelsConfig();
     expect(changed).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(readConfig().providers.custom).toMatchObject({
@@ -210,7 +234,8 @@ describe('syncModelsConfig', () => {
 
   it('probes a keyless custom endpoint that names no models', async () => {
     stubModels(['discovered']);
-    await syncModelsConfig(settings({ custom: { enabled: true, baseUrl: 'http://box:8000' } }));
+    use({ custom: { enabled: true, baseUrl: 'http://box:8000' } });
+    await syncModelsConfig();
     expect(readConfig().providers.custom).toMatchObject({
       baseUrl: 'http://box:8000/v1',
       apiKey: 'local',
@@ -221,8 +246,61 @@ describe('syncModelsConfig', () => {
   it('quarantines a corrupt models.json instead of parsing it', async () => {
     writeFileSync(configPath, '{not json');
     stubModels(['m']);
-    await syncModelsConfig(settings({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } }));
-    expect(readFileSync(`${configPath}.corrupt`, 'utf8')).toBe('{not json');
+    use({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
+    await syncModelsConfig();
+    const quarantined = readdirSync(dir).find((f) => f.endsWith('.corrupt'));
+    expect(quarantined).toBeDefined();
+    expect(readFileSync(join(dir, quarantined!), 'utf8')).toBe('{not json');
     expect(readConfig().providers.ollama).toBeDefined();
+  });
+
+  // BUG-003. Two syncs used to share one `<path>.tmp` and run an unserialized
+  // read-modify-write, so they could corrupt the file, reject with ENOENT, or
+  // commit an older settings snapshot on top of a newer one.
+  describe('concurrent syncs', () => {
+    it('serializes overlapping syncs and leaves valid JSON behind', async () => {
+      stubModels(['llama3.1:8b']);
+      use({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
+      const results = await Promise.allSettled([syncModelsConfig(), syncModelsConfig(), syncModelsConfig()]);
+      expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+      expect(readConfig().providers.ollama.models).toEqual([{ id: 'llama3.1:8b' }]);
+      // No temp file survives a completed write.
+      expect(readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+    });
+
+    it('does not resurrect a provider disconnected while an earlier sync was probing', async () => {
+      // The refresh below reads settings while `custom` is still enabled, then
+      // blocks in its probe. The disconnect lands in the middle. Before the fix
+      // the refresh carried its own stale snapshot and could rewrite the block —
+      // and its API key — after the disconnect had removed it.
+      let release: () => void = () => undefined;
+      const probeStarted = new Promise<void>((resolve) => {
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async () => {
+            resolve();
+            await new Promise<void>((r) => {
+              release = r;
+            });
+            return new Response(JSON.stringify({ data: [{ id: 'ghost' }] }), { status: 200 });
+          })
+        );
+      });
+
+      use({ custom: { enabled: true, baseUrl: 'http://box:8000', apiKey: 'sk-should-not-survive' } });
+      const refresh = syncModelsConfig();
+      await probeStarted;
+
+      // The user disconnects mid-probe: settings are flipped, then a second sync
+      // is queued behind the first.
+      use();
+      const disconnect = syncModelsConfig();
+      release();
+      await Promise.all([refresh, disconnect]);
+
+      const raw = readFileSync(configPath, 'utf8');
+      expect(JSON.parse(raw).providers.custom).toBeUndefined();
+      expect(raw).not.toContain('sk-should-not-survive');
+    });
   });
 });

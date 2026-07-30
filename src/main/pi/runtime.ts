@@ -2381,7 +2381,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     try {
       const { localProviders } = await readSettings();
       if (!Object.values(localProviders).some((p) => p.enabled)) return;
-      const changed = await syncModelsConfig(localProviders);
+      const changed = await syncModelsConfig();
       if (changed && this.proc?.running && !this.currentTurn) await this.restart();
     } catch {
       // non-fatal: the model list just stays as pi last loaded it

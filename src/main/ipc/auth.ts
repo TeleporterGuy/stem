@@ -60,7 +60,9 @@ export function registerAuthIpc(deps: IpcDeps): void {
       const cfg = settings.localProviders[id];
       // models.json first: the credential write goes through pi's provider
       // login, which only knows providers already present in models.json.
-      await syncModelsConfig(settings.localProviders);
+      // syncModelsConfig re-reads settings under its own lock — the patch above
+      // is already persisted, so it sees this change or a newer one, never older.
+      await syncModelsConfig();
       // The endpoint's own key, or the placeholder for keyless local servers
       // (see ProviderAuth.setApiKey).
       if (cfg.enabled) await deps.providerAuth()!.setApiKey(id, cfg.apiKey?.trim() || 'local');
@@ -79,8 +81,8 @@ export function registerAuthIpc(deps: IpcDeps): void {
       await deps.providerAuth()!.removeProvider(providerId);
       if (isLocalProviderId(providerId)) {
         // Drop the endpoint's secret with it — re-adding asks for the key again.
-        const settings = await updateLocalProvider(providerId, { enabled: false, apiKey: '', models: [] });
-        await syncModelsConfig(settings.localProviders);
+        await updateLocalProvider(providerId, { enabled: false, apiKey: '', models: [] });
+        await syncModelsConfig();
       }
       await deps.runtime().restart();
     } catch (e) {
