@@ -7,6 +7,60 @@ Scope: the current repository, with emphasis on features added since the previou
 
 This is an identification-only handoff. No application code was changed. Every finding below survived an adversarial second pass that looked for downstream validation, intended-behavior explanations, and existing safeguards.
 
+## Remediation status — complete
+
+All six findings were fixed on 2026-07-30, one commit each. The audit text below
+is retained as the evidence and handoff record; its “Actual” descriptions
+document the pre-fix behavior.
+
+Two findings turned out to be different from the report once the code was
+re-read, and the fixes reflect the code rather than the report:
+
+- **BUG-005 needed more than the gate.** The report assumed rewriting
+  `web-search.json` was sufficient, quoting `writeWebSearchConfig`'s own comment
+  that pi-web-access "re-reads the file lazily (mtime-cached per module)". That
+  comment was wrong: in the installed `pi-web-access@0.15.0`, every backend
+  module (`brave.ts`, `exa.ts`, `tavily.ts`, `searxng.ts`, …) does
+  `if (cachedConfig) return cachedConfig;` with no invalidation, so a key a
+  running backend has already read is frozen until the next spawn. Only
+  `provider` is re-read per call — which is why the pre-existing
+  `'provider' in patch` branch appeared to work. A credential change now also
+  respawns the backend, debounced (Settings persists keys per keystroke) and
+  skipped while a turn is streaming. The false comment was corrected.
+- **BUG-001's `files:preview` had no phone caller at all.** It is reached only
+  from the `att.path` branch of `renderer/attachments.ts`, and a phone's
+  attachments are always base64. Rather than containment-checking it, it was
+  removed from the mobile allowlist — it cannot be restricted globally, because
+  the desktop legitimately previews dialog/drop-picked images from anywhere on
+  disk.
+
+Two smaller things were fixed alongside, both found while verifying:
+
+- `backend:startTurn` also let a phone forge `scheduled`, the scheduler's
+  headless-run marker. It is now dropped from mobile calls.
+- `readModelsConfig`'s `.corrupt` quarantine path raced exactly as the `.tmp`
+  path did, and got the same per-writer naming.
+
+Each fix carries a regression test, and the three with a plausible ordering or
+gating subtlety were confirmed to fail against the unfixed code before being
+committed: the mobile busy-mark race (BUG-004), the models.json disconnect race
+(BUG-003), and the web-search credential-only edit (BUG-005). The first e2e
+attempt at BUG-005 passed against the unfixed handler — it switched backends
+afterwards, which rewrites the config for its own reasons — and was replaced
+with a credential-only test that does not.
+
+Final verification after implementation:
+
+- `npm run typecheck`: passed.
+- `npm run lint`: passed.
+- Production build (`npm run build`): passed.
+- Unit suite: 844 passed across 61 files, 0 skipped. (The audit's own run
+  reported 795 passed / 25 skipped plus six socket failures; this machine did
+  not hit the `listen(127.0.0.1)` `EPERM` restriction the audit sandbox did, so
+  the mobile socket tests ran and passed.)
+- Electron E2E: 45 passed, 5 skipped (the real-credential and Linux-only
+  scenarios the suite skips by design).
+
 ## Summary
 
 | ID | Severity | Area | Result |
