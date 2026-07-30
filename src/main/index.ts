@@ -93,7 +93,7 @@ import {
   updateRetrievalSettings,
   updateSkillsSettings
 } from './workspace/settings';
-import { writeWebSearchConfig } from './pi/web-search';
+import { needsBackendRestart, needsWebSearchConfigWrite, writeWebSearchConfig } from './pi/web-search';
 import { activityLabel } from '../shared/activity';
 import type {
   BackendEventEnvelope,
@@ -837,6 +837,25 @@ let embedManager: EmbedWorkerManager | null = null;
 // loop). Created in the whenReady bootstrap; the worker itself spawns lazily.
 let scanManager: ScanWorkerManager | null = null;
 
+/**
+ * A web-search credential only reaches the search tools on a fresh pi process
+ * (see needsBackendRestart), so an edit has to respawn the backend. Debounced
+ * because the Settings pane persists keys per keystroke — a restart per character
+ * would be absurd — and skipped while a turn is streaming, so pasting a key can
+ * never kill a reply in progress. The next spawn picks the file up regardless, so
+ * a skipped restart costs correctness nothing beyond the current process.
+ */
+const WEB_SEARCH_RESTART_DEBOUNCE_MS = 2_000;
+let webSearchRestartTimer: NodeJS.Timeout | null = null;
+
+function scheduleWebSearchRestart(): void {
+  if (webSearchRestartTimer) clearTimeout(webSearchRestartTimer);
+  webSearchRestartTimer = setTimeout(() => {
+    webSearchRestartTimer = null;
+    if (runtime && !runtime.isTurnRunning()) void runtime.restart().catch(() => undefined);
+  }, WEB_SEARCH_RESTART_DEBOUNCE_MS);
+}
+
 function registerIpc(): void {
   ipcMain.on('renderer:ready', (event) => {
     const win = mainWindow;
@@ -984,10 +1003,11 @@ function registerIpc(): void {
     // gate the bridge reads, based on the originating context) — nothing to do here.
     // A backend/key change is different: it lives in <piHome>/web-search.json, which
     // pi-web-access reads, so rewrite that file whenever those fields move.
-    if ('provider' in patch || 'searxngUrl' in patch || 'apiKeys' in patch) {
+    if (needsWebSearchConfigWrite(patch)) {
       await writeWebSearchConfig(next.webSearch).catch((err: unknown) =>
         log('websearch', 'failed to write web-search.json', { error: String(err) })
       );
+      if (needsBackendRestart(patch)) scheduleWebSearchRestart();
     }
     return next;
   });
@@ -1569,6 +1589,7 @@ app.on('before-quit', (event) => {
   if (quitting || !runtime) return;
   event.preventDefault();
   quitting = true;
+  if (webSearchRestartTimer) clearTimeout(webSearchRestartTimer);
   scheduler?.stop();
   embedManager?.dispose();
   scanManager?.dispose();

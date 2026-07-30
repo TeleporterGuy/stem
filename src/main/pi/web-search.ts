@@ -123,11 +123,34 @@ export const WEB_SEARCH_SECRET_FIELDS: readonly string[] = WEB_SEARCH_FIELDS.fil
 );
 
 /**
+ * Which settings patches have to reach `<piHome>/web-search.json`. Only two
+ * fields of WebSearchSettings live in that file; `main`/`quickChat` are applied
+ * per turn by the runtime. Split out of the IPC handler so the rule is testable —
+ * it used to name `searxngUrl`/`apiKeys`, which the migration reader renamed years
+ * of settings ago, and missed `credentials` entirely, so a key edit was persisted
+ * to settings.json and never reached the search extension at all.
+ */
+export function needsWebSearchConfigWrite(patch: Partial<WebSearchSettings>): boolean {
+  return 'provider' in patch || 'credentials' in patch;
+}
+
+/**
+ * Whether the change also needs a fresh pi process to take effect.
+ *
+ * pi-web-access caches its config per backend module for the life of the process
+ * (`brave.ts`, `exa.ts`, `tavily.ts`, … all do `if (cachedConfig) return cachedConfig`
+ * with no invalidation), so a credential that a running backend has already read
+ * is frozen until the next spawn. `provider` is the exception: the tool handler
+ * re-reads it per call, which is why switching backends has always worked live.
+ */
+export function needsBackendRestart(patch: Partial<WebSearchSettings>): boolean {
+  return 'credentials' in patch;
+}
+
+/**
  * Rewrite `<piHome>/web-search.json` from Stem's settings. Called on startup and
- * whenever the user changes the backend or a credential; pi-web-access re-reads
- * the file lazily (mtime-cached per module), so a key edit takes effect without a
- * backend restart — only `workflow`, read at extension init, would need one, and
- * Stem always pins that to the same value.
+ * whenever the user changes the backend or a credential — see
+ * needsBackendRestart for what the running process does and does not pick up.
  *
  * Credentials are written in the clear, matching how the package reads them. They
  * are the user's own keys under the app's private data dir — the same trust

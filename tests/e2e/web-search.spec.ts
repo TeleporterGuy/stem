@@ -84,7 +84,7 @@ test('the picker groups backends by what they still need', async ({ mainWindow }
   expect(sections[1].values).toContain('brave');
 });
 
-test('all backend keys are editable at once and survive a backend switch', async ({ mainWindow }) => {
+test('all backend keys are editable at once and survive a backend switch', async ({ electronApp, mainWindow }) => {
   await mainWindow.getByRole('button', { name: 'Settings', exact: true }).click();
   await mainWindow.getByRole('button', { name: /all backend keys/ }).click();
 
@@ -106,6 +106,25 @@ test('all backend keys are editable at once and survive a backend switch', async
   // Same optimistic write as above: wait for the store, don't race it.
   await expect.poll(async () => (await savedCreds()).exaApiKey).toBe('exa-key-1');
   expect((await savedCreds()).braveApiKey).toBe('brave-key-1');
+
+  // settings.json is not what the search tools read: pi-web-access reads
+  // <piHome>/web-search.json. Asserting only the former is how a credential edit
+  // could look saved for so long while never reaching the extension (BUG-005).
+  const writtenConfig = () =>
+    electronApp.evaluate(async ({ app }) => {
+      const { readFileSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      try {
+        return JSON.parse(readFileSync(join(app.getPath('userData'), 'pi-home', 'web-search.json'), 'utf8')) as Record<
+          string,
+          string
+        >;
+      } catch {
+        return null;
+      }
+    });
+  await expect.poll(async () => (await writtenConfig())?.exaApiKey).toBe('exa-key-1');
+  expect((await writtenConfig())?.braveApiKey).toBe('brave-key-1');
 });
 
 test('the web-search toggle shows regardless of the selected model', async ({ mainWindow }) => {

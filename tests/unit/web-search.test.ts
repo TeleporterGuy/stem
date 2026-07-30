@@ -10,11 +10,38 @@ vi.mock('../../src/main/workspace/paths', () => ({ piHome: () => home }));
 const {
   buildWebSearchContext,
   extractSources,
+  needsBackendRestart,
+  needsWebSearchConfigWrite,
   webSearchConfigPath,
   writeWebSearchConfig,
   SEARCH_BACKENDS,
   WEB_SEARCH_FIELDS
 } = await import('../../src/main/pi/web-search');
+
+// BUG-005. The IPC handler used to gate the web-search.json rewrite on `provider`
+// plus two names (`searxngUrl`, `apiKeys`) that the settings migration renamed
+// long ago — so a credential-only edit was written to settings.json, shown as
+// saved, and never reached the search extension.
+describe('which web-search patches reach the extension', () => {
+  it('rewrites the config for a credential-only edit', () => {
+    expect(needsWebSearchConfigWrite({ credentials: { braveApiKey: 'k' } })).toBe(true);
+    expect(needsWebSearchConfigWrite({ provider: 'brave' })).toBe(true);
+  });
+
+  it('ignores the per-context toggles, which are applied per turn', () => {
+    expect(needsWebSearchConfigWrite({ main: false })).toBe(false);
+    expect(needsWebSearchConfigWrite({ quickChat: true })).toBe(false);
+    expect(needsWebSearchConfigWrite({})).toBe(false);
+  });
+
+  it('needs a respawn for a credential but not for a backend switch', () => {
+    // Every pi-web-access backend module caches its config for the life of the
+    // process; only `provider` is re-read per call.
+    expect(needsBackendRestart({ credentials: { braveApiKey: 'k' } })).toBe(true);
+    expect(needsBackendRestart({ provider: 'brave' })).toBe(false);
+    expect(needsBackendRestart({ main: false })).toBe(false);
+  });
+});
 
 describe('extractSources', () => {
   // The real shape returned by pi-web-access's web_search: a synthesized answer

@@ -704,6 +704,15 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   /**
+   * Whether a turn is streaming right now. Callers that need to restart the
+   * process to apply a config change (models.json, web-search.json — pi reads
+   * both only at spawn) use this to avoid killing a reply in progress.
+   */
+  isTurnRunning(): boolean {
+    return !!this.currentTurn;
+  }
+
+  /**
    * True when the active turn read inside a memorize:false connected folder, so its
    * assistant reply must be kept out of Recall. The `item/completed` agentMessage is
    * emitted before agent_end clears currentTurn, so the flag is still live at capture.

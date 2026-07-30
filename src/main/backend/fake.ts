@@ -101,6 +101,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
 
   async restart(): Promise<void> {}
 
+  isTurnRunning(): boolean {
+    return !!this.activeTurn;
+  }
+
   async shutdown(): Promise<void> {
     this.clearActiveTimer();
   }

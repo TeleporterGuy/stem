@@ -98,6 +98,8 @@ export interface ChatBackend extends EventEmitter {
   status(): Promise<RuntimeStatus>;
   login(): Promise<RuntimeStatus>;
   restart(): Promise<void>;
+  /** Whether a turn is streaming — a config change that needs a respawn waits. */
+  isTurnRunning(): boolean;
   shutdown(timeoutMs?: number): Promise<void>;
   newConversation(): Promise<void>;
   /** Eagerly spawn the backend process and connect MCP servers so the first turn
