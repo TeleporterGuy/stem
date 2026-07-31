@@ -21,7 +21,8 @@ import { RequestGate } from '../requestGate';
 
 const PROVIDER_LABELS: Record<AuthProviderId, string> = {
   anthropic: 'Claude',
-  'openai-codex': 'ChatGPT'
+  'openai-codex': 'ChatGPT',
+  xai: 'Grok'
 };
 
 // The wizard's pitch is "your data stays on this machine", so it names the
@@ -297,6 +298,13 @@ export function OnboardingGate({
                 Claude Pro or Max subscription. Heads up: using a Claude subscription in a
                 third-party app like Stem can draw on extra usage on top of your plan.
               </span>
+              <button
+                className={deepLink === 'xai' ? 'primary' : 'push'}
+                onClick={() => void startOAuth('xai')}
+              >
+                {deepLink === 'xai' ? 'Reconnect Grok' : 'Continue with Grok'}
+              </button>
+              <span className="gate-hint">SuperGrok or X Premium subscription</span>
             </div>
             <button className="gate-link" onClick={() => dispatch({ type: 'pickApiKey' })}>
               Use an API key instead

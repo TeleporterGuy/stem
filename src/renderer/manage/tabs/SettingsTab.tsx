@@ -179,7 +179,8 @@ function ShortcutRecorder({
 
 const OAUTH_CHOICES: { id: AuthProviderId; hint: string }[] = [
   { id: 'openai-codex', hint: 'Sign in with a ChatGPT Plus or Pro subscription.' },
-  { id: 'anthropic', hint: 'Sign in with a Claude Pro or Max subscription.' }
+  { id: 'anthropic', hint: 'Sign in with a Claude Pro or Max subscription.' },
+  { id: 'xai', hint: 'Sign in with a SuperGrok or X Premium subscription.' }
 ];
 
 /** How a connected provider signed in — shown as the row's secondary line. */
@@ -211,6 +212,10 @@ function ProvidersSection({ deadProvider }: { deadProvider?: string | null }) {
   const [oauth, setOauth] = useState<{
     provider: AuthProviderId;
     authUrl: string | null;
+    // Device-code flows (Grok) never send an auth-url: the browser opens on a
+    // page that asks for this code, so dropping it would leave the user staring
+    // at "Waiting for your browser…" with nothing to type.
+    deviceCode: { userCode: string; verificationUri: string } | null;
     progress: string | null;
     input: { requestId: string; message: string; placeholder?: string } | null;
   } | null>(null);
@@ -232,6 +237,8 @@ function ProvidersSection({ deadProvider }: { deadProvider?: string | null }) {
           switch (e.kind) {
             case 'auth-url':
               return { ...cur, authUrl: e.url };
+            case 'device-code':
+              return { ...cur, deviceCode: { userCode: e.userCode, verificationUri: e.verificationUri } };
             case 'progress':
               return { ...cur, progress: e.message };
             case 'input-request':
@@ -257,7 +264,7 @@ function ProvidersSection({ deadProvider }: { deadProvider?: string | null }) {
 
   async function startOAuth(provider: AuthProviderId) {
     setError(null);
-    setOauth({ provider, authUrl: null, progress: null, input: null });
+    setOauth({ provider, authUrl: null, deviceCode: null, progress: null, input: null });
     try {
       const res = await window.stem.providerLogin(provider);
       if (!res.ok) setError(res.error ?? 'Sign-in failed.');
@@ -418,6 +425,12 @@ function ProvidersSection({ deadProvider }: { deadProvider?: string | null }) {
                 <p className="muted">
                   Finish signing in to {providerName(oauth.provider)} in your browser — Stem continues automatically.
                 </p>
+                {oauth.deviceCode && (
+                  <p className="muted">
+                    Enter code <code className="gate-code">{oauth.deviceCode.userCode}</code> at{' '}
+                    {oauth.deviceCode.verificationUri}
+                  </p>
+                )}
                 {oauth.authUrl && (
                   <p className="muted">
                     Nothing happened? Open this link yourself: <code className="login-cmd">{oauth.authUrl}</code>

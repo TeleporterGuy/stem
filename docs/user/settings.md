@@ -19,8 +19,9 @@ instructions.
 
 Add a provider with:
 
-- **Account**: ChatGPT or Claude sign-in.
-- **API key**: Anthropic, OpenAI, or OpenRouter.
+- **Account**: ChatGPT, Claude, or Grok sign-in. Grok signs in with a code you
+  confirm in the browser (SuperGrok or X Premium).
+- **API key**: Anthropic, OpenAI, OpenRouter, or xAI.
 - **Local server**: Ollama or LM Studio. Stem hides Ollama models without tool
   support; they cannot complete Stem turns.
 

@@ -37,6 +37,20 @@ test('first run: welcome → ChatGPT OAuth → main app', async ({ onboardingApp
   await expect(win.getByPlaceholder(/message/i).or(win.locator('.conversation'))).toBeVisible({ timeout: 15_000 });
 });
 
+// Grok is the one flow with no redirect: pi polls a device code while the user
+// confirms it in the browser. If the code never reaches the UI the screen is just
+// an indefinite "Waiting for your browser…", so assert it is on screen.
+test('first run: Grok device-code sign-in shows the code', async ({ onboardingApp }) => {
+  const win = await mainWindowOf(onboardingApp.app);
+  await win.waitForLoadState('domcontentloaded');
+
+  await win.getByRole('button', { name: 'Get started' }).click();
+  await win.getByRole('button', { name: 'Continue with Grok' }).click();
+
+  await expect(win.locator('.gate-code')).toHaveText('STEM-E2E1');
+  await expect(win.locator('.conversation')).toBeVisible({ timeout: 15_000 });
+});
+
 test('first run: API key path reaches the main app', async ({ onboardingApp }) => {
   const win = await mainWindowOf(onboardingApp.app);
   await win.waitForLoadState('domcontentloaded');
