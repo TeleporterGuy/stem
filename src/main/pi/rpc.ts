@@ -35,6 +35,30 @@ interface Pending {
 
 const REQUEST_TIMEOUT_MS = 120_000;
 
+/** How much stderr to keep for the exit message (see stderrTail). */
+const STDERR_TAIL_CHARS = 4_000;
+/** How much of that tail is quoted back in the exit error itself. */
+const STDERR_QUOTE_CHARS = 300;
+
+/**
+ * The reason a startup failure gives, distilled from the child's stderr: pi
+ * prints its fatal ones there ("Unknown provider …", "Model … not found") and
+ * then exits 1, so an exit message without them carries no cause at all. Colour
+ * codes are stripped (pi paints fatals with chalk) and only the last couple of
+ * non-empty lines are kept — the tail is where the fatal is.
+ */
+export function stderrReason(tail: string): string | null {
+  const lines = tail
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+  const reason = lines.slice(-2).join(' ');
+  return reason.length > STDERR_QUOTE_CHARS ? `${reason.slice(-STDERR_QUOTE_CHARS)}…` : reason;
+}
+
 export interface PiProcessOptions {
   /** argv[0]: a pi binary, or Electron's execPath when running the bundled cli.js. */
   command: string;
@@ -57,6 +81,8 @@ export class PiProcess extends EventEmitter {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private nextId = 1;
   private pending = new Map<string, Pending>();
+  /** Rolling tail of the child's stderr — the only place a fatal explains itself. */
+  private stderrTail = '';
 
   constructor(private readonly options: PiProcessOptions) {
     super();
@@ -64,6 +90,11 @@ export class PiProcess extends EventEmitter {
 
   get running(): boolean {
     return this.proc !== null;
+  }
+
+  /** The child's last stderr, for callers that report a failed startup. */
+  get stderr(): string {
+    return this.stderrTail;
   }
 
   start(): void {
@@ -80,7 +111,11 @@ export class PiProcess extends EventEmitter {
     this.proc = proc;
 
     this.attachJsonlReader(proc.stdout, (line) => this.handleLine(line));
-    proc.stderr.on('data', (chunk: Buffer) => this.emit('stderr', chunk.toString('utf8')));
+    proc.stderr.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      this.stderrTail = (this.stderrTail + text).slice(-STDERR_TAIL_CHARS);
+      this.emit('stderr', text);
+    });
 
     proc.on('error', (error) => {
       this.rejectAll(error);
@@ -88,7 +123,12 @@ export class PiProcess extends EventEmitter {
     });
     proc.on('exit', (code, signal) => {
       this.proc = null;
-      this.rejectAll(new Error(`pi exited (code ${code ?? 'null'}, signal ${signal ?? 'null'}).`));
+      // Quote the child's own last words: an exit code alone ("code 1") is what a
+      // fatal config error looks like from here, and it names nothing.
+      const reason = stderrReason(this.stderrTail);
+      this.rejectAll(
+        new Error(`pi exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})${reason ? `: ${reason}` : '.'}`)
+      );
       this.emit('exit', { code, signal });
     });
   }
