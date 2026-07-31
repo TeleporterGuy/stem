@@ -10,6 +10,7 @@ import type {
   ExecSettings,
   OnboardingSettings,
   LocalEmbedModelId,
+  LocalProviderApi,
   LocalProviderId,
   LocalProviderSettings,
   LocalProvidersSettings,
@@ -282,9 +283,18 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     const models = Array.isArray(r.models)
       ? r.models.filter((m): m is string => typeof m === 'string' && !!m.trim()).map((m) => m.trim())
       : [];
+    // API flavor: only `custom` may opt into anthropic-messages. Ollama/LM Studio
+    // are always openai-completions — a hand-edited settings.json cannot switch
+    // them; the field would be ignored downstream anyway. Persist the flavor
+    // verbatim (both `openai-completions` and `anthropic-messages`) so a saved
+    // settings.json is self-describing and future debugging can tell an explicit
+    // openai-completions pick from an absent field (= not yet configured).
+    const api: LocalProviderApi | undefined =
+      id === 'custom' && (r.api === 'anthropic-messages' || r.api === 'openai-completions') ? r.api : undefined;
     return {
       enabled: typeof r.enabled === 'boolean' ? r.enabled : def.enabled,
       baseUrl: typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : def.baseUrl,
+      ...(api ? { api } : {}),
       ...(apiKey ? { apiKey } : {}),
       ...(models.length ? { models } : {})
     };

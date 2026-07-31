@@ -108,6 +108,60 @@ describe('local provider settings', () => {
     });
   });
 
+  it('round-trips the anthropic-messages flavor on the custom endpoint', async () => {
+    await updateLocalProvider('custom', {
+      enabled: true,
+      baseUrl: 'http://proxy.example:9999/anthropic/v1',
+      api: 'anthropic-messages',
+      apiKey: 'sk-secret',
+      models: ['anthropic--claude-4.8-opus']
+    });
+    expect((await readSettings()).localProviders.custom).toEqual({
+      enabled: true,
+      baseUrl: 'http://proxy.example:9999/anthropic/v1',
+      api: 'anthropic-messages',
+      apiKey: 'sk-secret',
+      models: ['anthropic--claude-4.8-opus']
+    });
+  });
+
+  it('round-trips the openai-completions flavor on the custom endpoint (persisted verbatim, not defaulted-away)', async () => {
+    // Two states must be distinguishable in a saved settings.json:
+    //  - `api: 'openai-completions'` — user hand-picked OpenAI Chat Completions.
+    //  - api field absent — the provider hasn't been through the new flavored
+    //    Enable path (older Stem build, or fresh state).
+    // Both fall back to the openai-completions default downstream, but the
+    // persisted form differs so a future debug read can tell them apart.
+    await updateLocalProvider('custom', {
+      enabled: true,
+      baseUrl: 'http://proxy.example:9999/openai/v1',
+      api: 'openai-completions',
+      apiKey: 'sk-secret',
+      models: ['gpt-x']
+    });
+    expect((await readSettings()).localProviders.custom).toEqual({
+      enabled: true,
+      baseUrl: 'http://proxy.example:9999/openai/v1',
+      api: 'openai-completions',
+      apiKey: 'sk-secret',
+      models: ['gpt-x']
+    });
+  });
+
+  it('strips the api field for ollama/lmstudio (hand-edited settings.json cannot force it)', async () => {
+    // Only `custom` may opt into anthropic-messages; a hand-edited settings.json
+    // trying to set it on ollama must round-trip without the field.
+    await updateLocalProvider('ollama', {
+      enabled: true,
+      baseUrl: 'http://localhost:11434',
+      api: 'anthropic-messages' as never
+    });
+    expect((await readSettings()).localProviders.ollama).toEqual({
+      enabled: true,
+      baseUrl: 'http://localhost:11434'
+    });
+  });
+
   it('round-trips enable + custom URL per provider independently', async () => {
     await updateLocalProvider('ollama', { enabled: true, baseUrl: 'http://box:11434' });
     const lp = (await readSettings()).localProviders;

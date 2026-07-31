@@ -23,6 +23,7 @@ import type {
   WebSearchSettings,
   QuickChatSettings,
   QuickChatShortcutStatus,
+  LocalProviderApi,
   LocalProviderId,
   LocalProvidersSettings,
   LocalProviderTestResult
@@ -618,6 +619,12 @@ function LocalServerAddForm({
   const [baseUrl, setBaseUrl] = useState(settings.ollama.baseUrl);
   const [apiKey, setApiKey] = useState('');
   const [models, setModels] = useState('');
+  // API flavor for the Custom endpoint. Ollama/LM Studio ignore it — always
+  // openai-completions. `null` = auto-detect (default): the Test probe
+  // classifies which chat route the endpoint exposes and snaps the dropdown to
+  // that value. Enable requires a concrete flavor; the button stays disabled
+  // until Test succeeds or the user picks one explicitly.
+  const [api, setApi] = useState<LocalProviderApi | null>(null);
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<LocalProviderTestResult | null>(null);
   const [saving, setSaving] = useState(false);
@@ -630,8 +637,8 @@ function LocalServerAddForm({
   // mirrors the live values because the post-await closure sees only the ones
   // captured when the test started.
   const testGateRef = useRef(new RequestGate());
-  const formRef = useRef({ server, baseUrl, apiKey, models });
-  formRef.current = { server, baseUrl, apiKey, models };
+  const formRef = useRef({ server, baseUrl, apiKey, models, api });
+  formRef.current = { server, baseUrl, apiKey, models, api };
   const custom = server === 'custom';
   const modelList = models
     .split(',')
@@ -644,18 +651,26 @@ function LocalServerAddForm({
     setBaseUrl(settings[id].baseUrl);
     setApiKey('');
     setModels('');
+    // Custom starts on Auto-detect; Ollama/LM Studio are always openai-completions.
+    setApi(id === 'custom' ? null : 'openai-completions');
     setTest(null);
     setTesting(false);
   }
 
   async function runTest() {
     const request = testGateRef.current.begin();
-    const tested = localProbeTarget(server, baseUrl, apiKey);
+    // Auto-detect on Custom sends `undefined` so main runs the OPTIONS probe on
+    // both chat routes; a concrete pick from the dropdown short-circuits that.
+    const probeApi: LocalProviderApi | undefined =
+      server === 'custom' ? (api ?? undefined) : 'openai-completions';
+    const tested = localProbeTarget(server, baseUrl, apiKey, probeApi ?? 'openai-completions');
     const speaksForTheForm = () => {
       const form = formRef.current;
+      const formProbe: LocalProviderApi =
+        form.server === 'custom' ? (form.api ?? 'openai-completions') : 'openai-completions';
       return (
         testGateRef.current.isCurrent(request) &&
-        probeStillDescribes(tested, localProbeTarget(form.server, form.baseUrl, form.apiKey))
+        probeStillDescribes(tested, localProbeTarget(form.server, form.baseUrl, form.apiKey, formProbe))
       );
     };
     setTesting(true);
@@ -664,10 +679,14 @@ function LocalServerAddForm({
       const result = await window.stem.testLocalProvider(
         tested.server,
         tested.baseUrl,
-        custom ? tested.apiKey : undefined
+        custom ? tested.apiKey : undefined,
+        custom ? probeApi : undefined
       );
       if (speaksForTheForm()) {
         setTest(result);
+        // Auto-detect success snaps the dropdown to what actually answered, so
+        // Enable writes the flavor that just tested green.
+        if (custom && result.ok && result.api && api === null) setApi(result.api);
         // A listing endpoint that does answer saves the typing — but never
         // overwrite ids the user already chose.
         if (custom && result.ok && result.models?.length && !formRef.current.models.trim())
@@ -692,6 +711,10 @@ function LocalServerAddForm({
       const res = await window.stem.updateLocalProvider(server, {
         enabled: true,
         baseUrl: baseUrl.trim(),
+        // API flavor only meaningful for `custom`; the coercion in settings
+        // strips it for other providers. Enable is disabled below when a custom
+        // endpoint is still on Auto-detect, so `api` is guaranteed non-null here.
+        api: custom ? (api ?? 'openai-completions') : 'openai-completions',
         // Sent even when empty so re-adding a previously keyed endpoint without
         // one clears the stored key instead of silently inheriting it.
         apiKey: custom ? apiKey.trim() : '',
@@ -704,10 +727,15 @@ function LocalServerAddForm({
     }
   }
 
+  const flavorLabel = (a: LocalProviderApi): string =>
+    a === 'anthropic-messages' ? 'Anthropic Messages' : 'OpenAI Chat Completions';
   const testLabel = test
     ? test.ok
       ? `${test.models?.length ?? 0} model${(test.models?.length ?? 0) === 1 ? '' : 's'} found` +
-        (test.skippedNoTools ? ` (${test.skippedNoTools} without tool support hidden)` : '')
+        (test.skippedNoTools ? ` (${test.skippedNoTools} without tool support hidden)` : '') +
+        // When auto-detect classified the endpoint, name the flavor it picked so
+        // the user can see (and re-confirm) the setting Enable will write.
+        (custom && test.api ? ` — ${flavorLabel(test.api)}` : '')
       : test.error ?? 'failed'
     : null;
 
@@ -716,12 +744,17 @@ function LocalServerAddForm({
       <span className="set-sub">
         Server{' '}
         <InfoTip label="About servers">
-          Any OpenAI-compatible server Stem can register itself, rather than one it already knows.{' '}
-          <strong>Ollama</strong> and <strong>LM Studio</strong> run on this machine and report their own models — LM
-          Studio loads one on first use, so its first reply can take a while. <strong>Custom endpoint</strong> is any
-          other URL: a gateway, a proxy, a server elsewhere on your network. Stem appends <code>/v1</code> to the URL if
-          it isn't there, and sends the key as a bearer token when you give one. Test connection fills the model IDs in
-          when the endpoint lists them; endpoints that serve no listing just need the IDs typed in.
+          Any OpenAI-compatible or Anthropic-compatible server Stem can register itself, rather than one it already
+          knows. <strong>Ollama</strong> and <strong>LM Studio</strong> run on this machine and report their own models
+          — LM Studio loads one on first use, so its first reply can take a while. <strong>Custom endpoint</strong> is
+          any other URL: a gateway, a proxy, a server elsewhere on your network. Leave the flavor on{' '}
+          <em>Auto-detect</em> and Test connection classifies which chat route the endpoint exposes
+          (<code>/v1/chat/completions</code> vs <code>/v1/messages</code>) before listing its models — or pick a
+          flavor by hand if the server is picky about that OPTIONS probe. Stem strips a trailing <code>/v1</code>
+          from your URL and lets the client add the versioned path itself. The key goes on the wire the way the
+          target API expects (<code>Authorization: Bearer</code> for OpenAI-flavored servers, <code>X-Api-Key</code>
+          for Anthropic). Test connection fills the model IDs in when the endpoint lists them; endpoints that serve
+          no listing just need the IDs typed in.
         </InfoTip>
       </span>
       <select
@@ -745,6 +778,26 @@ function LocalServerAddForm({
       />
       {custom && (
         <>
+          <select
+            className="ifield"
+            aria-label="API flavor"
+            value={api ?? ''}
+            onChange={(e) => {
+              // The probe classification depends on the chosen flavor — or on
+              // its absence — so a mid-typed test loses relevance and any
+              // auto-filled models were pulled under the old assumption. Clear
+              // both like URL changes do.
+              testGateRef.current.invalidate();
+              const next = e.target.value as LocalProviderApi | '';
+              setApi(next === '' ? null : next);
+              setTest(null);
+              setModels('');
+            }}
+          >
+            <option value="">Auto-detect (Test to classify)</option>
+            <option value="openai-completions">OpenAI Chat Completions</option>
+            <option value="anthropic-messages">Anthropic Messages</option>
+          </select>
           <input
             className="ifield"
             type="password"
@@ -787,7 +840,7 @@ function LocalServerAddForm({
         <button
           type="button"
           className="push default"
-          disabled={saving || !baseUrl.trim() || (custom && modelList.length === 0)}
+          disabled={saving || !baseUrl.trim() || (custom && modelList.length === 0) || (custom && api === null)}
           onClick={() => void enable()}
         >
           {saving ? 'Enabling…' : 'Enable'}

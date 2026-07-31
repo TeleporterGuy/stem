@@ -14,6 +14,7 @@ import type {
   ExecSettings,
   InstructionsProposal,
   LocalEmbedStatus,
+  LocalProviderApi,
   LocalProviderId,
   LocalProviderSettings,
   LocalRerankStatus,
@@ -56,8 +57,8 @@ const api: StemApi = {
   setApiKey: (provider: ApiKeyProviderId, key: string) => ipcRenderer.invoke('auth:setApiKey', provider, key),
   updateLocalProvider: (id: LocalProviderId, patch: Partial<LocalProviderSettings>) =>
     ipcRenderer.invoke('providers:updateLocal', id, patch),
-  testLocalProvider: (id: LocalProviderId, baseUrl: string, apiKey?: string) =>
-    ipcRenderer.invoke('providers:testLocal', id, baseUrl, apiKey),
+  testLocalProvider: (id: LocalProviderId, baseUrl: string, apiKey?: string, api?: LocalProviderApi) =>
+    ipcRenderer.invoke('providers:testLocal', id, baseUrl, apiKey, api),
   disconnectProvider: (providerId: string) => ipcRenderer.invoke('providers:disconnect', providerId),
   checkAuth: (provider: string) => ipcRenderer.invoke('auth:check', provider),
   completeOnboarding: () => ipcRenderer.invoke('auth:completeOnboarding'),

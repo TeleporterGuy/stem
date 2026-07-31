@@ -45,7 +45,13 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'auth:setApiKey': [a.string, a.string],
   'auth:respond': [a.string, a.string],
   'auth:check': [a.string],
-  'providers:testLocal': [a.string, a.string, a.optional(a.nullish(a.string))],
+  // baseUrl, apiKey?, api? — api is undefined for auto-detect.
+  'providers:testLocal': [
+    a.string,
+    a.string,
+    a.optional(a.nullish(a.string)),
+    a.optional(a.nullish(a.oneOf(['openai-completions', 'anthropic-messages'])))
+  ],
   'providers:updateLocal': [a.string, a.object],
   'providers:disconnect': [a.string],
   'backend:startTurn': [a.object],
