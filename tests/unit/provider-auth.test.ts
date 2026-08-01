@@ -70,6 +70,27 @@ describe('ProviderAuth.login', () => {
     expect(events[1]).toMatchObject({ kind: 'done', ok: true, provider: 'anthropic' });
   });
 
+  // xAI signs in by device code: there is no redirect, so the verification page
+  // has to be opened for the user (pi passes the prefilled URI) AND the code has
+  // to reach the UI — the page asks the user to confirm it matches.
+  it('opens the device verification URI and emits device-code then done', async () => {
+    const openExternal = vi.spyOn(shell, 'openExternal');
+    loginMock.mockImplementation(async (_p, _t, interaction) => {
+      interaction.notify({
+        type: 'device_code',
+        userCode: 'WDJB-MJHT',
+        verificationUri: 'https://auth.x.ai/device?code=WDJB-MJHT'
+      });
+    });
+    const { auth, events } = makeAuth();
+    const res = await auth.login('xai');
+    expect(res.ok).toBe(true);
+    expect(loginMock).toHaveBeenCalledWith('xai', 'oauth', expect.anything());
+    expect(openExternal).toHaveBeenCalledWith('https://auth.x.ai/device?code=WDJB-MJHT');
+    expect(events.map((e) => e.kind)).toEqual(['device-code', 'done']);
+    expect(events[0]).toMatchObject({ userCode: 'WDJB-MJHT', verificationUri: 'https://auth.x.ai/device?code=WDJB-MJHT' });
+  });
+
   it('bridges a prompt through an input-request event and respond()', async () => {
     let answered: string | null = null;
     loginMock.mockImplementation(async (_p, _t, interaction) => {

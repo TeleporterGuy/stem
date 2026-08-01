@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { LocalProviderApi, LocalProviderTestResult } from '../../shared/types';
-import { LOCAL_PROVIDER_IDS } from '../../shared/providers';
+import { LOCAL_PROVIDER_IDS, isLocalProviderId } from '../../shared/providers';
 import { piModelsConfigPath } from '../workspace/paths';
 import { readSettings } from '../workspace/settings';
 
@@ -259,6 +259,31 @@ async function writeModelsConfig(config: PiModelsConfig): Promise<void> {
   }
 }
 
+/**
+ * Whether pi will still recognize `provider` when a spawn names it. Only the
+ * providers Stem registers itself can go missing — they exist for pi purely as
+ * models.json blocks, and a disconnect (or a server that was unreachable when
+ * the catalog was last synced) removes them. pi's built-in providers are always
+ * part of its registry, so everything else answers true.
+ *
+ * Callers use this before handing pi `--provider`: an unknown one is fatal at
+ * startup, not merely unusable.
+ *
+ * Reads the file directly rather than through readModelsConfig(): this is a
+ * query on a hot path (every listModels), and quarantining a corrupt file per
+ * call would litter. Unreadable/unparseable answers false, which is also what
+ * pi sees — it drops the whole config when it doesn't parse or validate.
+ */
+export async function providerIsSpawnable(provider: string): Promise<boolean> {
+  if (!isLocalProviderId(provider)) return true;
+  try {
+    const parsed = JSON.parse(await readFile(piModelsConfigPath(), 'utf8')) as Partial<PiModelsConfig>;
+    return !!parsed?.providers?.[provider]?.models?.length;
+  } catch {
+    return false;
+  }
+}
+
 // Serialize syncs through a promise chain (see workspace/settings.ts) so two of
 // them can't interleave their read-modify-write of models.json. The critical
 // section spans the probes, which take seconds — the window this closes is wide.
@@ -317,7 +342,13 @@ export function syncModelsConfig(): Promise<boolean> {
       const probe = await probeLocalProvider(baseUrl, apiKey, api);
       const lastKnown = config.providers[id]?.models ?? [];
       const models = probe.ok ? probe.models!.map((m) => ({ id: m })) : lastKnown;
-      config.providers[id] = localProviderBlock(baseUrl, models, apiKey, api);
+      // A block with no models is worse than no block: pi builds its provider
+      // list from the models it can see, so an empty one leaves the provider
+      // *unknown* — and a spawn asking for it (`--provider ollama`) then dies
+      // with "Unknown provider", taking every other provider down with it.
+      // Nothing is lost by waiting: the next sync writes it once a probe answers.
+      if (models.length) config.providers[id] = localProviderBlock(baseUrl, models, apiKey, api);
+      else delete config.providers[id];
     }
 
     const changed = JSON.stringify(config) !== before;

@@ -1,6 +1,6 @@
 import { handleIpc } from './guard';
 import type { IpcDeps } from './deps';
-import { markOnboardingCompleted, updateLocalProvider } from '../workspace/settings';
+import { markOnboardingCompleted, readSettings, updateDefaultModel, updateLocalProvider } from '../workspace/settings';
 import { probeLocalProvider, syncModelsConfig } from '../pi/models-config';
 import { isLocalProviderId } from '../../shared/providers';
 import type {
@@ -11,14 +11,34 @@ import type {
   LocalProviderSettings
 } from '../../shared/types';
 
+/** The user code the E2E fake shows for the device-code flow (asserted by the wizard spec). */
+const E2E_DEVICE_CODE = 'STEM-E2E1';
+/** How long that fake keeps the device-code step on screen before completing. */
+const E2E_DEVICE_CODE_HOLD_MS = 750;
+
 /** Provider sign-in (onboarding wizard) + local providers (Ollama / LM Studio / custom). */
 export function registerAuthIpc(deps: IpcDeps): void {
   handleIpc('auth:providerLogin', async (_e, provider: AuthProviderId) => {
     if (deps.e2e) {
       // Scripted fake: surface the URL step, then complete, so the wizard's
       // whole state machine is exercised without a browser or network. The
-      // fake backend flips to authenticated via its login().
-      deps.sendToMain('auth:event', { kind: 'auth-url', url: 'https://oauth.example.test/authorize' });
+      // fake backend flips to authenticated via its login(). xai stands in for
+      // the device-code flow — the only one that shows a user code — so that
+      // branch is reachable hermetically too.
+      if (provider === 'xai') {
+        deps.sendToMain('auth:event', {
+          kind: 'device-code',
+          userCode: E2E_DEVICE_CODE,
+          verificationUri: 'https://oauth.example.test/device'
+        });
+        // A real device flow only completes once the user confirms the code in
+        // the browser, i.e. the code stays on screen. Without a hold the fake
+        // would emit `done` in the same tick and the step would flash past
+        // unobservably — including to the test that guards it renders at all.
+        await new Promise((resolve) => setTimeout(resolve, E2E_DEVICE_CODE_HOLD_MS));
+      } else {
+        deps.sendToMain('auth:event', { kind: 'auth-url', url: 'https://oauth.example.test/authorize' });
+      }
       const status = await deps.runtime().login();
       deps.sendToMain('auth:event', { kind: 'done', ok: true, provider });
       void deps.scheduler()?.start(); // mirror onAuthenticated()
@@ -85,6 +105,13 @@ export function registerAuthIpc(deps: IpcDeps): void {
         await updateLocalProvider(providerId, { enabled: false, apiKey: '', models: [] });
         await syncModelsConfig();
       }
+      // The default model must not outlive the provider that served it: pi refuses
+      // to start when a spawn names a provider it no longer knows, which would
+      // brick the backend for every remaining provider. Cleared here rather than
+      // left to onAuthenticated()'s re-pick, which needs a live model list — and
+      // therefore the very backend the stale default keeps from starting.
+      const { defaults } = await readSettings();
+      if (defaults.model?.startsWith(`${providerId}/`)) await updateDefaultModel(null);
       await deps.runtime().restart();
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };

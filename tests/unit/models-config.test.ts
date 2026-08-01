@@ -12,7 +12,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { normalizeLocalBaseUrl, probeLocalProvider, syncModelsConfig } from '../../src/main/pi/models-config';
+import {
+  normalizeLocalBaseUrl,
+  probeLocalProvider,
+  providerIsSpawnable,
+  syncModelsConfig
+} from '../../src/main/pi/models-config';
 import type { LocalProvidersSettings } from '../../src/shared/types';
 
 const store = vi.hoisted(() => ({ localProviders: null as LocalProvidersSettings | null }));
@@ -244,6 +249,34 @@ describe('probeLocalProvider', () => {
   });
 });
 
+describe('providerIsSpawnable', () => {
+  it('is false for a local provider with no usable block, true once it has models', async () => {
+    // Nothing written yet: pi would not know "custom" exists.
+    expect(await providerIsSpawnable('custom')).toBe(false);
+
+    writeFileSync(configPath, JSON.stringify({ providers: { custom: { baseUrl: 'https://gw/v1', models: [] } } }));
+    expect(await providerIsSpawnable('custom')).toBe(false);
+
+    stubModels(['gw-model']);
+    use({ custom: { enabled: true, baseUrl: 'https://gw.example.com' } });
+    await syncModelsConfig();
+    expect(await providerIsSpawnable('custom')).toBe(true);
+  });
+
+  it('answers false for a corrupt config without quarantining it', async () => {
+    // pi drops a models.json it can't parse, so the provider is unknown there
+    // too — and a read on this path must not leave .corrupt copies behind.
+    writeFileSync(configPath, '{not json');
+    expect(await providerIsSpawnable('ollama')).toBe(false);
+    expect(readdirSync(dir).filter((f) => f.endsWith('.corrupt'))).toEqual([]);
+  });
+
+  it('never second-guesses a provider pi ships with', async () => {
+    expect(await providerIsSpawnable('anthropic')).toBe(true);
+    expect(await providerIsSpawnable('openai-codex')).toBe(true);
+  });
+});
+
 describe('syncModelsConfig', () => {
   it('writes a provider block for an enabled server and reports change', async () => {
     stubModels(['llama3.1:8b', 'qwen2.5-coder:7b']);
@@ -281,6 +314,26 @@ describe('syncModelsConfig', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new Error('ECONNREFUSED'))));
     expect(await syncModelsConfig()).toBe(false); // content identical → no restart needed
     expect(readConfig().providers.ollama.models).toEqual([{ id: 'llama3.1:8b' }]);
+  });
+
+  // Issue #1: an empty block is not a harmless placeholder. pi derives its
+  // provider list from the models it can see, so a block with none leaves the
+  // provider *unknown* — and a spawn naming it exits 1 before answering
+  // anything, taking every other provider down with it.
+  it('writes no provider block at all when a first probe finds nothing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new Error('ECONNREFUSED'))));
+    use({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
+    expect(await syncModelsConfig()).toBe(false);
+    expect(existsSync(configPath)).toBe(false);
+  });
+
+  it('removes a block whose server now serves no models', async () => {
+    stubModels(['llama3.1:8b']);
+    use({ ollama: { enabled: true, baseUrl: 'http://localhost:11434' } });
+    await syncModelsConfig();
+    stubModels([]);
+    expect(await syncModelsConfig()).toBe(true);
+    expect(readConfig().providers.ollama).toBeUndefined();
   });
 
   it('drops the provider block when disabled', async () => {

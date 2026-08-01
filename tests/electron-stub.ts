@@ -7,7 +7,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export const app = {
-  getPath: (name: string) => join(tmpdir(), 'stem-vitest-userdata', name),
+  // Per-process, like the STEM_* paths in setup-unit.ts: test files run in their
+  // own forks, and the stores that live under userData (settings.json above all)
+  // would otherwise be one shared file two suites can delete under each other.
+  getPath: (name: string) => join(tmpdir(), `stem-vitest-userdata-${process.pid}`, name),
   getAppPath: () => process.cwd(),
   isPackaged: false,
   // platform.ts opts into Chromium's Linux global-shortcuts portal at startup.

@@ -1,10 +1,13 @@
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { canonicalPolicyPath, pathInsideAny, PiRuntime, skillSlugForPath } from '../../src/main/pi/runtime';
 import { newTurnContext } from '../../src/main/pi/normalize';
+import { PiProcess, stderrReason } from '../../src/main/pi/rpc';
+import { updateDefaultModel } from '../../src/main/workspace/settings';
+import { settingsStorePath } from '../../src/main/workspace/paths';
 
 const cleanup: string[] = [];
 
@@ -197,6 +200,94 @@ describe('crash-loop breaker', () => {
     internal.cooldownUntil = 0;
     internal.noteProcessExit(4, 60_000);
     expect(internal.spawnStrikes).toBe(0);
+  });
+});
+
+// Issue #1: a custom endpoint whose provider block was gone from models.json
+// (disconnected, or its server unreachable at the last sync) while the persisted
+// default still named it. pi exits 1 on an unknown `--provider`, so EVERY spawn
+// died — listModels, chat, all other providers — and the self-heal that re-picks
+// a default reads a model list, which needs the backend the stale default kills.
+describe('spawn model resolution', () => {
+  it('falls back to the built-in default when the default names an unregistered local provider', async () => {
+    const { runtime, root } = await tempRuntime();
+    const modelsConfig = join(root, 'models.json');
+    const previous = process.env.STEM_PI_MODELS_CONFIG;
+    process.env.STEM_PI_MODELS_CONFIG = modelsConfig;
+    await mkdir(dirname(settingsStorePath()), { recursive: true });
+    const resolve = () =>
+      (runtime as unknown as {
+        resolveDefaultModel: () => Promise<{ provider: string; modelId: string }>;
+      }).resolveDefaultModel();
+    const builtIn = { provider: 'openai-codex', modelId: 'gpt-5.3-codex-spark' };
+    try {
+      await updateDefaultModel('custom/anthropic--claude-4.8-opus');
+      // No models.json at all — pi has never heard of "custom".
+      await expect(resolve()).resolves.toEqual(builtIn);
+
+      // A block with no models reads the same way to pi: the provider list is
+      // built from models, so an empty one leaves the provider unknown.
+      await writeFile(
+        modelsConfig,
+        JSON.stringify({ providers: { custom: { baseUrl: 'https://gw.example.com/v1', models: [] } } })
+      );
+      await expect(resolve()).resolves.toEqual(builtIn);
+
+      // Registered again → the user's choice is honoured.
+      await writeFile(
+        modelsConfig,
+        JSON.stringify({
+          providers: { custom: { baseUrl: 'https://gw.example.com/v1', models: [{ id: 'anthropic--claude-4.8-opus' }] } }
+        })
+      );
+      await expect(resolve()).resolves.toEqual({ provider: 'custom', modelId: 'anthropic--claude-4.8-opus' });
+
+      // Providers pi ships with are always in its registry — models.json says
+      // nothing about them, so they are never second-guessed here.
+      await updateDefaultModel('anthropic/claude-sonnet-4.5');
+      await expect(resolve()).resolves.toEqual({ provider: 'anthropic', modelId: 'claude-sonnet-4.5' });
+    } finally {
+      await updateDefaultModel(null);
+      if (previous === undefined) delete process.env.STEM_PI_MODELS_CONFIG;
+      else process.env.STEM_PI_MODELS_CONFIG = previous;
+    }
+  });
+});
+
+// The same issue's other half: what the user actually saw was "pi exited (code 1,
+// signal null)" — pi prints the reason to stderr and Stem dropped it into the log
+// file, so the failure named nothing it could be fixed by.
+describe('startup failure diagnostics', () => {
+  it('distils a reason from noisy, coloured stderr', () => {
+    expect(stderrReason('')).toBeNull();
+    expect(stderrReason('   \n\n')).toBeNull();
+    expect(stderrReason('\u001b[31mError: Unknown provider "custom".\u001b[39m\n')).toBe(
+      'Error: Unknown provider "custom".'
+    );
+    // The fatal is the tail, not the head: warnings come first.
+    expect(stderrReason('warning: something\nnote: else\nError: Model "x" not found.\n')).toBe(
+      'note: else Error: Model "x" not found.'
+    );
+    expect(stderrReason(`${'x'.repeat(500)}\n`)).toMatch(/^x{300}…$/);
+  });
+
+  it('quotes the child\'s stderr in the exit error a pending request rejects with', async () => {
+    // Stands in for a pi that refuses its `--provider`: prints the fatal, exits 1.
+    const root = await mkdtemp(join(tmpdir(), 'stem-pi-stderr-'));
+    cleanup.push(root);
+    const fake = join(root, 'fake-pi.mjs');
+    await writeFile(fake, 'process.stderr.write(\'Error: Unknown provider "custom".\\n\');\nprocess.exit(1);\n');
+    const proc = new PiProcess({
+      command: process.execPath,
+      prefixArgs: [fake],
+      cwd: root,
+      env: process.env,
+      args: []
+    });
+    proc.start();
+    await expect(proc.request({ type: 'get_state' }, 10_000)).rejects.toThrow(
+      /pi exited \(code 1, signal null\): Error: Unknown provider "custom"\./
+    );
   });
 });
 

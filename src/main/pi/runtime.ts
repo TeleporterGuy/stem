@@ -65,7 +65,7 @@ import {
   writeServiceTierGate
 } from './mcp-config';
 import { authorizeMcp } from './oauth';
-import { syncModelsConfig } from './models-config';
+import { providerIsSpawnable, syncModelsConfig } from './models-config';
 import {
   buildWebSearchContext,
   piWebAccessPath,
@@ -76,7 +76,7 @@ import {
 import { piMcpConfigPath, skillsRoot } from '../workspace/paths';
 import { recordUses } from '../skills/usage';
 import { resolvePi, type PiInvocation } from './locate';
-import { PiProcess, type PiEvent } from './rpc';
+import { PiProcess, stderrReason, type PiEvent } from './rpc';
 import {
   newTurnContext,
   normalizePiEvent,
@@ -356,6 +356,19 @@ function serviceTiersFor(m: PiModel): ModelServiceTier[] {
   return [{ id: 'priority', name: 'Fast', description: '1.5× speed, increased usage' }];
 }
 
+/**
+ * Attach the child's stderr to a startup failure that doesn't already carry it.
+ * PiProcess quotes it on the exit path; this covers the other one — a child that
+ * printed its fatal but hung instead of exiting, so all we have is a readiness
+ * timeout that names nothing.
+ */
+function withStderrReason(e: unknown, stderr: string): Error {
+  const error = e instanceof Error ? e : new Error(String(e));
+  const reason = stderrReason(stderr);
+  if (!reason || error.message.includes(reason)) return error;
+  return new Error(`${error.message} pi said: ${reason}`);
+}
+
 interface SessionFile {
   id: string;
   path: string;
@@ -462,6 +475,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private strikedGen = 0;
   private spawnStrikes = 0;
   private cooldownUntil = 0;
+  /** Why the last spawn failed, so the cooldown can say more than "keeps exiting". */
+  private lastStartError: string | null = null;
   /** Memoized pi-web-access entry point: undefined = unresolved, null = absent. */
   private webAccessPath: string | null | undefined = undefined;
 
@@ -1389,9 +1404,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     if (this.starting) return this.starting;
     const cooldownLeft = this.cooldownUntil - Date.now();
     if (cooldownLeft > 0) {
+      // Carry the cause forward: the spawn that opened the cooldown is the only
+      // one that ever saw it, and every later call answers from here.
       return Promise.reject(new Error(
         `The pi backend keeps exiting right after startup; waiting ${Math.ceil(cooldownLeft / 1000)}s before ` +
-        `trying again. Restarting the backend from Settings retries immediately.`
+        `trying again. Restarting the backend from Settings retries immediately.` +
+        (this.lastStartError ? ` Last error: ${this.lastStartError}` : '')
       ));
     }
     this.starting = this.start().finally(() => {
@@ -1507,15 +1525,21 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // Probe readiness and capture the initial session id/file.
       const state = await proc.request({ type: 'get_state' }, 20_000);
       this.recordState(state.data);
+      this.lastStartError = null;
     } catch (e) {
       // A spawn that never became ready must not linger half-alive: detach it so
       // ensureStarted() doesn't mistake it for a running backend, and count it
       // toward the crash-loop breaker (deduped with the exit handler above).
       if (this.proc === proc) this.proc = null;
       void proc.dispose().catch(() => undefined);
-      log('pi', 'backend failed to become ready', { error: e instanceof Error ? e.message : String(e), gen });
+      // A child that hung instead of exiting (readiness timeout) never went
+      // through PiProcess's exit path, so its stderr hasn't been quoted yet —
+      // attach it here so a startup failure always names its cause.
+      const error = withStderrReason(e, proc.stderr);
+      this.lastStartError = error.message;
+      log('pi', 'backend failed to become ready', { error: error.message, gen });
       this.noteProcessExit(gen, Date.now() - spawnedAt);
-      throw e;
+      throw error;
     }
   }
 
@@ -2086,7 +2110,20 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private async resolveDefaultModel(): Promise<{ provider: string; modelId: string }> {
     try {
       const { defaults } = await readSettings();
-      if (defaults.model) return this.parseModel(defaults.model);
+      if (defaults.model) {
+        const parsed = this.parseModel(defaults.model);
+        // A default naming a local provider that is no longer registered (the
+        // user disconnected it, or its server was down when models.json was last
+        // synced) is not just unusable — pi exits 1 when a spawn names a provider
+        // it doesn't know, so honouring it here would take every OTHER provider
+        // down with it, listModels included. Since onAuthenticated() re-picks the
+        // default from a live model list, and that list needs a running backend,
+        // a stale default would otherwise be unrecoverable from inside the app.
+        if (await providerIsSpawnable(parsed.provider)) return parsed;
+        log('pi', 'default model names an unregistered provider; using the built-in default', {
+          model: defaults.model
+        });
+      }
     } catch {
       // settings unreadable → constant
     }

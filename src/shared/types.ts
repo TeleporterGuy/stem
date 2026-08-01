@@ -154,10 +154,10 @@ export interface RuntimeStatus {
 // ---- Provider sign-in (onboarding wizard) ----
 
 /** Providers the wizard can OAuth into (pi's registered OAuth flows, minus Copilot). */
-export type AuthProviderId = 'anthropic' | 'openai-codex';
+export type AuthProviderId = 'anthropic' | 'openai-codex' | 'xai';
 
 /** Providers accepting a plain API key (written to auth.json as type:'api_key'). */
-export type ApiKeyProviderId = 'anthropic' | 'openai' | 'openrouter';
+export type ApiKeyProviderId = 'anthropic' | 'openai' | 'openrouter' | 'xai';
 
 /**
  * OpenAI-compatible model servers Stem can register with the backend (via the

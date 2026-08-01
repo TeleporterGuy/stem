@@ -7,8 +7,11 @@ import type { AuthProviderId, ApiKeyProviderId, AuthUiEvent, LocalProviderId } f
 // the package exports ModelRuntime, the credential/auth facade that owns the
 // file-locked auth.json store and the provider login flows (the old AuthStorage
 // orchestration API was removed). runtime.login(provider, 'oauth', interaction)
-// runs the full PKCE OAuth flow (anthropic → 127.0.0.1:53692/callback,
-// openai-codex → localhost:1455/auth/callback) and persists the credential;
+// runs the provider's OAuth flow and persists the credential: PKCE against a
+// localhost callback (anthropic → 127.0.0.1:53692/callback, openai-codex →
+// localhost:1455/auth/callback), or an RFC 8628 device code (xai, i.e. a
+// SuperGrok/X Premium subscription — no callback server, just a user code
+// confirmed in the browser);
 // 'api_key' login answers the provider's single "Enter API key" prompt with the
 // stored key. This class bridges the interaction callbacks to the renderer's
 // wizard: events go out as AuthUiEvent pushes; text answers (manual code paste)
@@ -90,6 +93,13 @@ export class ProviderAuth {
               void shell.openExternal(event.url);
               this.emit({ kind: 'auth-url', url: event.url, ...(event.instructions ? { instructions: event.instructions } : {}) });
             } else if (event.type === 'device_code') {
+              // Same treatment as auth_url: the user should land on the page, not
+              // retype a URL. pi passes verification_uri_complete when the provider
+              // offers it (xAI does — the code comes prefilled) and rejects any
+              // non-https URI before it reaches us, so opening it is no more
+              // trusting than the redirect flow. The code still goes to the UI:
+              // the page asks the user to confirm it matches.
+              void shell.openExternal(event.verificationUri);
               this.emit({ kind: 'device-code', userCode: event.userCode, verificationUri: event.verificationUri });
             } else {
               this.emit({ kind: 'progress', message: event.message });
