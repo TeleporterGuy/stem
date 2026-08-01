@@ -154,11 +154,14 @@ async function locateNodeShim(): Promise<string | null> {
 async function findSystemPi(): Promise<string | null> {
   const fromPath = await which('pi');
   if (fromPath) return fromPath;
-  const candidates = [
-    join(homedir(), '.local', 'bin', 'pi'),
-    '/opt/homebrew/bin/pi',
-    '/usr/local/bin/pi'
-  ];
+  // Bundled pi is the normal path; these are fallbacks for a system install.
+  const candidates =
+    process.platform === 'win32'
+      ? [join(homedir(), 'AppData', 'Local', 'pi', 'pi.exe'), join(homedir(), '.local', 'bin', 'pi.exe')]
+      : [
+          join(homedir(), '.local', 'bin', 'pi'),
+          ...(process.platform === 'darwin' ? ['/opt/homebrew/bin/pi', '/usr/local/bin/pi'] : ['/usr/local/bin/pi'])
+        ];
   for (const candidate of candidates) {
     try {
       await access(candidate);
@@ -170,8 +173,27 @@ async function findSystemPi(): Promise<string | null> {
   return null;
 }
 
+/**
+ * Locate `bin` on PATH. Unix uses `/usr/bin/which`; Windows uses `where.exe`
+ * (first match). Failures resolve to null — the caller falls through to
+ * hardcoded candidates or "no system pi".
+ */
 function which(bin: string): Promise<string | null> {
   return new Promise((resolve) => {
+    if (process.platform === 'win32') {
+      execFile('where.exe', [bin], { windowsHide: true }, (error, stdout) => {
+        if (error) resolve(null);
+        else {
+          // where prints one path per line; take the first hit.
+          const first = stdout
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .find(Boolean);
+          resolve(first ?? null);
+        }
+      });
+      return;
+    }
     execFile('/usr/bin/which', [bin], (error, stdout) => {
       if (error) resolve(null);
       else resolve(stdout.trim() || null);

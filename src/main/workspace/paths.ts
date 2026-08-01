@@ -236,8 +236,9 @@ export function recallDbPath(): string {
  * comfortably under the 104-byte sun_path limit at the default location; the
  * endpoint logs-and-skips if an exotic profile path ever pushes past it. On
  * Windows a named pipe (the filesystem path form doesn't exist there); the
- * userData hash keeps profiles/instances apart. Windows branch is untested —
- * groundwork for a later Windows release.
+ * userData hash keeps profiles/instances apart. Listen/close skip unlink/chmod
+ * for pipes (see recall/embed-endpoint.ts). Verified on Windows as part of the
+ * terminal-first port; MCP clients connect with net.connect(pipeName).
  */
 export function embedSocketPath(): string {
   if (process.env.STEM_EMBED_SOCK) return process.env.STEM_EMBED_SOCK;

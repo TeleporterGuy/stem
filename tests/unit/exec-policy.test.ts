@@ -94,6 +94,9 @@ describe('classify', () => {
   it('tier 1 for the static allowlist', () => {
     expect(classify('ls -la', settings).tier).toBe('run');
     expect(classify('git status', settings).tier).toBe('run');
+    expect(classify('dir /b', settings).tier).toBe('run');
+    expect(classify('where git', settings).tier).toBe('run');
+    expect(classify('echo hello', settings).tier).toBe('run');
     expect(classify('agent-browser open https://example.com', settings).tier).toBe('run');
     // Double-quoted URLs/selectors must stay tier 1 (the agent-browser workflow).
     expect(classify('agent-browser open "https://youtube.com/watch?v=x&list=y"', settings).tier).toBe('run');
@@ -173,6 +176,7 @@ describe('buildJudgePrompt', () => {
     expect(prompt).toContain('rm -rf build');
     expect(prompt).toContain('/tmp/work');
     expect(prompt).toMatch(/safe, unsafe, or unsure/);
+    expect(prompt).toMatch(/cmd\.exe on Windows/);
   });
 
   it("embeds the user's request when available, and says so when not", () => {
