@@ -46,10 +46,30 @@ const PROBE_TIMEOUT_MS = 2_500;
  * pi hands the URL to @anthropic-ai/sdk which appends /v1/messages verbatim.
  * Leaving /v1 in either case would double-version the request.
  */
-export function normalizeLocalBaseUrl(raw: string, _api: LocalProviderApi = 'openai-completions'): string {
+export function normalizeLocalBaseUrl(raw: string): string {
   let url = raw.trim().replace(/\/+$/, '');
   url = url.replace(/\/v1$/i, '');
   return url;
+}
+
+/**
+ * The version Anthropic's API requires on every request; @anthropic-ai/sdk sends
+ * the same value, so pi's real turns and our probe agree on the wire format.
+ */
+const ANTHROPIC_VERSION = '2023-06-01';
+
+/**
+ * Auth headers a probe must carry to be answered, in the form the target API
+ * expects. OpenAI-flavored servers take a bearer token; Anthropic takes the key
+ * in `x-api-key` and demands `anthropic-version` on top — a request missing
+ * either is rejected before the endpoint ever looks at the route, so sending
+ * only a bearer would make every Anthropic probe fail a server that works fine
+ * for real turns.
+ */
+function probeHeaders(api: LocalProviderApi, key?: string): Record<string, string> {
+  if (api === 'anthropic-messages')
+    return { 'anthropic-version': ANTHROPIC_VERSION, ...(key ? { 'x-api-key': key } : {}) };
+  return key ? { Authorization: `Bearer ${key}` } : {};
 }
 
 /**
@@ -85,11 +105,15 @@ async function isToolCapable(base: string, id: string): Promise<boolean> {
  * 404 = route absent; anything else (200/400/401/405/…) = route present and
  * the server has an opinion about the request. That opinion may be "needs a
  * key" or "wrong method", both of which still prove the route exists.
+ *
+ * Carries both flavors' auth headers: which one this endpoint speaks is the
+ * very thing being classified, and a header the server doesn't recognize is
+ * ignored rather than rejected.
  */
 async function classifyChatRoutes(base: string, apiKey?: string): Promise<{ oc: boolean; am: boolean }> {
   const key = apiKey?.trim();
-  const headers = key ? { Authorization: `Bearer ${key}` } : undefined;
-  const options = { method: 'OPTIONS', ...(headers ? { headers } : {}), signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) };
+  const headers = { ...probeHeaders('openai-completions', key), ...probeHeaders('anthropic-messages', key) };
+  const options = { method: 'OPTIONS', headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) };
   const [oc, am] = await Promise.allSettled([
     fetch(`${base}/v1/chat/completions`, options),
     fetch(`${base}/v1/messages`, options)
@@ -111,13 +135,13 @@ async function probeOneFlavor(
   apiKey: string | undefined,
   api: LocalProviderApi
 ): Promise<LocalProviderTestResult> {
-  const base = normalizeLocalBaseUrl(baseUrl, api);
+  const base = normalizeLocalBaseUrl(baseUrl);
   if (!/^https?:\/\//i.test(base)) return { ok: false, error: 'Enter a URL like http://localhost:11434.' };
   const key = apiKey?.trim();
   const listUrl = `${base}/v1/models`;
   try {
     const res = await fetch(listUrl, {
-      ...(key ? { headers: { Authorization: `Bearer ${key}` } } : {}),
+      headers: probeHeaders(api, key),
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
     });
     if (!res.ok) return { ok: false, error: `The server answered ${res.status} ${res.statusText}.` };
@@ -166,7 +190,7 @@ export async function probeLocalProvider(
   api?: LocalProviderApi
 ): Promise<LocalProviderTestResult> {
   if (api) return probeOneFlavor(baseUrl, apiKey, api);
-  const base = normalizeLocalBaseUrl(baseUrl, 'openai-completions');
+  const base = normalizeLocalBaseUrl(baseUrl);
   if (!/^https?:\/\//i.test(base)) return { ok: false, error: 'Enter a URL like http://localhost:11434.' };
   const routes = await classifyChatRoutes(base, apiKey);
   // openai-completions wins ties: pre-existing default and more common.
@@ -188,7 +212,7 @@ function localProviderBlock(
   apiKey: string | undefined,
   api: LocalProviderApi
 ): PiProviderConfig {
-  const normalized = normalizeLocalBaseUrl(baseUrl, api);
+  const normalized = normalizeLocalBaseUrl(baseUrl);
   // openai-completions: append /v1 so pi hits /v1/chat/completions (matches the
   // Ollama/LM Studio flow that always did it).
   // anthropic-messages: leave the normalized root as-is — pi's Anthropic client

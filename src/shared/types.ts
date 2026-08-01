@@ -211,10 +211,10 @@ export interface LocalProviderTestResult {
   /** Model ids the server reported (ok only), minus tool-incapable ones. */
   models?: string[];
   /**
-   * Which API flavor answered the probe (ok only). Set when the flavor was
-   * auto-detected; absent when the caller specified a flavor and got back only
-   * that flavor's answer. Renderer uses this to snap the API dropdown to the
-   * detected value so Enable writes the same flavor that just tested green.
+   * Which API flavor answered the probe (ok only) — the caller's own pick when
+   * one was given, otherwise whatever auto-detect settled on. Renderer uses it
+   * to snap the API dropdown to the detected value so Enable writes the same
+   * flavor that just tested green.
    */
   api?: LocalProviderApi;
   /**
@@ -1526,8 +1526,10 @@ export interface StemApi {
    * main probes the server, registers its models with the backend, and restarts it.
    */
   updateLocalProvider(id: LocalProviderId, patch: Partial<LocalProviderSettings>): Promise<ProviderLoginResult>;
-  /** Test connection to a local provider. `api` defaults to `openai-completions` when absent. */
-  /** Probe a local server's /v1/models without persisting anything. */
+  /**
+   * Probe a local server's /v1/models without persisting anything. `api` omitted
+   * = auto-detect the flavor from the routes the endpoint exposes.
+   */
   testLocalProvider(
     id: LocalProviderId,
     baseUrl: string,

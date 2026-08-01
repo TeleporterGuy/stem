@@ -674,6 +674,8 @@ function LocalServerAddForm({
     const request = testGateRef.current.begin();
     // Auto-detect on Custom sends `undefined` so main runs the OPTIONS probe on
     // both chat routes; a concrete pick from the dropdown short-circuits that.
+    // Ollama/LM Studio always name their flavor: they can't be anything but
+    // OpenAI-compatible, so sending it spares them two pointless round-trips.
     const probeApi: LocalProviderApi | undefined =
       server === 'custom' ? (api ?? undefined) : 'openai-completions';
     const tested = localProbeTarget(server, baseUrl, apiKey, probeApi ?? 'openai-completions');
@@ -693,7 +695,7 @@ function LocalServerAddForm({
         tested.server,
         tested.baseUrl,
         custom ? tested.apiKey : undefined,
-        custom ? probeApi : undefined
+        probeApi
       );
       if (speaksForTheForm()) {
         setTest(result);

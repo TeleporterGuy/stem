@@ -78,19 +78,19 @@ describe('normalizeLocalBaseUrl', () => {
     expect(normalizeLocalBaseUrl('  http://box:8080  ')).toBe('http://box:8080');
   });
 
-  it('strips /v1 for anthropic-messages too (@anthropic-ai/sdk appends /v1/messages verbatim)', () => {
+  it('strips /v1 from an anthropic proxy root too (@anthropic-ai/sdk appends /v1/messages verbatim)', () => {
     // Both flavors strip: openai-completions gets /v1 re-appended before writing;
     // anthropic-messages leaves the root as-is because pi passes it to the SDK,
     // which appends /v1/messages itself. Keeping /v1 would produce /v1/v1/messages.
-    expect(normalizeLocalBaseUrl('http://proxy.example.com/anthropic/v1', 'anthropic-messages')).toBe(
+    expect(normalizeLocalBaseUrl('http://proxy.example.com/anthropic/v1')).toBe(
       'http://proxy.example.com/anthropic'
     );
-    expect(normalizeLocalBaseUrl('http://proxy.example.com/anthropic/v1/', 'anthropic-messages')).toBe(
+    expect(normalizeLocalBaseUrl('http://proxy.example.com/anthropic/v1/')).toBe(
       'http://proxy.example.com/anthropic'
     );
     // Real Anthropic base as pasted works either way (with or without /v1).
-    expect(normalizeLocalBaseUrl('https://api.anthropic.com', 'anthropic-messages')).toBe('https://api.anthropic.com');
-    expect(normalizeLocalBaseUrl('https://api.anthropic.com/v1', 'anthropic-messages')).toBe('https://api.anthropic.com');
+    expect(normalizeLocalBaseUrl('https://api.anthropic.com')).toBe('https://api.anthropic.com');
+    expect(normalizeLocalBaseUrl('https://api.anthropic.com/v1')).toBe('https://api.anthropic.com');
   });
 });
 
@@ -218,7 +218,7 @@ describe('probeLocalProvider', () => {
       // Some servers refuse OPTIONS entirely (405) or 404 every unknown path;
       // the fallback keeps the pre-existing default so Ollama/LM Studio still
       // probe as before.
-      const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
         if (init?.method === 'OPTIONS') return new Response(null, { status: 404 });
         return new Response(JSON.stringify({ data: [{ id: 'llama' }] }), { status: 200 });
       });
@@ -229,14 +229,44 @@ describe('probeLocalProvider', () => {
     });
   });
 
-  it('probes {base}/v1/models for anthropic-messages (Anthropic uses the same /v1/models route)', async () => {
+  it('probes {base}/v1/models for anthropic-messages with Anthropic auth, not a bearer token', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [{ id: 'anthropic--claude-4.8-opus' }] }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     // User pastes their proxy URL with /v1; normalization strips it, probe re-adds /v1/models.
-    const res = await probeLocalProvider('http://proxy.example:9999/anthropic/v1', 'sk-secret', 'anthropic-messages');
+    const res = await probeLocalProvider('http://proxy.example:9999/anthropic/v1', ' sk-secret ', 'anthropic-messages');
     expect(res.ok).toBe(true);
     expect(res.models).toEqual(['anthropic--claude-4.8-opus']);
-    expect(fetchMock.mock.calls[0][0]).toBe('http://proxy.example:9999/anthropic/v1/models');
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { headers?: Record<string, string> }];
+    expect(url).toBe('http://proxy.example:9999/anthropic/v1/models');
+    // Anthropic rejects a request without x-api-key + anthropic-version before it
+    // ever looks at the route — a bearer token here would fail an endpoint that
+    // serves real turns fine.
+    expect(init.headers).toEqual({ 'anthropic-version': '2023-06-01', 'x-api-key': 'sk-secret' });
+  });
+
+  it('still sends anthropic-version when the endpoint is keyless', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [{ id: 'a' }] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await probeLocalProvider('http://proxy.example:9999/anthropic', undefined, 'anthropic-messages');
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { headers?: Record<string, string> }];
+    expect(init.headers).toEqual({ 'anthropic-version': '2023-06-01' });
+  });
+
+  it('carries both flavors of auth on the auto-detect OPTIONS probe', async () => {
+    // The classifier does not yet know which flavor answers, so it presents both
+    // credentials; a server ignores the header it does not recognize.
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'OPTIONS') return new Response(null, { status: 404 });
+      return new Response(JSON.stringify({ data: [{ id: 'x' }] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await probeLocalProvider('http://localhost:8080', 'sk-secret');
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { headers?: Record<string, string> }];
+    expect(init.headers).toEqual({
+      Authorization: 'Bearer sk-secret',
+      'anthropic-version': '2023-06-01',
+      'x-api-key': 'sk-secret'
+    });
   });
 
   it('skips the Ollama tool-capability probe for anthropic-messages even without a key', async () => {
@@ -412,6 +442,24 @@ describe('syncModelsConfig', () => {
       compat: {},
       models: [{ id: 'anthropic--claude-4.8-opus' }]
     });
+  });
+
+  // The flavor and issue #1's empty-block guard meet on the same line. A merge
+  // that keeps the flavor but drops the guard writes `custom` with no models —
+  // and every pi spawn dies on "Unknown provider" again, this time for the
+  // provider the flavor was added for.
+  it('writes no anthropic-messages block either when its probe finds nothing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new Error('ECONNREFUSED'))));
+    use({
+      custom: {
+        enabled: true,
+        baseUrl: 'http://proxy.example:9999/anthropic',
+        api: 'anthropic-messages',
+        apiKey: 'sk-secret'
+      }
+    });
+    expect(await syncModelsConfig()).toBe(false);
+    expect(existsSync(configPath)).toBe(false);
   });
 
   it('rejects anthropic-messages on ollama/lmstudio and falls back to openai-completions', async () => {
