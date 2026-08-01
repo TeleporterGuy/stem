@@ -6,6 +6,7 @@ import { isLocalProviderId } from '../../shared/providers';
 import type {
   ApiKeyProviderId,
   AuthProviderId,
+  LocalProviderApi,
   LocalProviderId,
   LocalProviderSettings
 } from '../../shared/types';
@@ -69,9 +70,9 @@ export function registerAuthIpc(deps: IpcDeps): void {
     if (deps.e2e) return { alive: true };
     return { alive: await deps.providerAuth()!.isAlive(provider) };
   });
-  handleIpc('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string, apiKey?: string) => {
+  handleIpc('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string, apiKey?: string, api?: LocalProviderApi) => {
     if (deps.e2e) return { ok: true, models: ['stem-e2e-model'] };
-    return probeLocalProvider(baseUrl, apiKey);
+    return probeLocalProvider(baseUrl, apiKey, api);
   });
   handleIpc('providers:updateLocal', async (_e, id: LocalProviderId, patch: Partial<LocalProviderSettings>) => {
     if (deps.e2e) return { ok: true, status: await deps.runtime().login() };

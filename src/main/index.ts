@@ -175,8 +175,15 @@ app.on('second-instance', (_event, argv) => {
 const appIcon = nativeImage.createFromPath(join(app.getAppPath(), 'build', 'icon.png'));
 
 // In dev, expose a CDP port so tooling (agent-browser) can attach to the UI.
+// 9222 is Chrome's own remote-debugging default — the chrome-cdp skill uses it
+// on the user's local Chrome — so binding it here fails with EADDRINUSE and
+// stderr-spams the terminal. Use 9224 instead: reserved for Stem's dev CDP,
+// no collision with Chrome or Chromium-based tooling that camps 9222/9223.
+// The port isn't functionally load-bearing; a stray collision only loses
+// attach-for-tooling. Attach with --port=9224 or STEM_DEVTOOLS_PORT.
 if (process.env.ELECTRON_RENDERER_URL) {
-  app.commandLine.appendSwitch('remote-debugging-port', '9222');
+  const port = process.env.STEM_DEVTOOLS_PORT ?? '9224';
+  app.commandLine.appendSwitch('remote-debugging-port', port);
 }
 
 // Global shortcuts through the XDG portal on Linux — the only path that works in

@@ -169,10 +169,23 @@ export type ApiKeyProviderId = 'anthropic' | 'openai' | 'openrouter' | 'xai';
  */
 export type LocalProviderId = 'ollama' | 'lmstudio' | 'custom';
 
+/**
+ * Which API flavor the custom endpoint speaks. Ollama and LM Studio are always
+ * OpenAI-compatible; only `custom` may set this to `anthropic-messages` (for
+ * Anthropic's Messages API or a proxy that speaks it). Default (absent) is
+ * `openai-completions` — matches the pre-existing single-flavor behavior.
+ */
+export type LocalProviderApi = 'openai-completions' | 'anthropic-messages';
+
 export interface LocalProviderSettings {
   enabled: boolean;
   /** Server root, e.g. http://localhost:11434 (no path; Stem appends /v1/…). */
   baseUrl: string;
+  /**
+   * API flavor the server speaks. `custom` only — Ollama/LM Studio always use
+   * `openai-completions`. Absent = `openai-completions`.
+   */
+  api?: LocalProviderApi;
   /**
    * Bearer token for endpoints that require one (`custom`). Absent/empty = the
    * keyless placeholder. Stored here rather than only in auth.json because every
@@ -197,6 +210,13 @@ export interface LocalProviderTestResult {
   ok: boolean;
   /** Model ids the server reported (ok only), minus tool-incapable ones. */
   models?: string[];
+  /**
+   * Which API flavor answered the probe (ok only) — the caller's own pick when
+   * one was given, otherwise whatever auto-detect settled on. Renderer uses it
+   * to snap the API dropdown to the detected value so Enable writes the same
+   * flavor that just tested green.
+   */
+  api?: LocalProviderApi;
   /**
    * Models hidden because they can't call tools (Ollama reports capabilities and
    * rejects tool-bearing requests outright — and Stem's turns always carry tools).
@@ -1506,8 +1526,16 @@ export interface StemApi {
    * main probes the server, registers its models with the backend, and restarts it.
    */
   updateLocalProvider(id: LocalProviderId, patch: Partial<LocalProviderSettings>): Promise<ProviderLoginResult>;
-  /** Probe a local server's /v1/models without persisting anything. */
-  testLocalProvider(id: LocalProviderId, baseUrl: string, apiKey?: string): Promise<LocalProviderTestResult>;
+  /**
+   * Probe a local server's /v1/models without persisting anything. `api` omitted
+   * = auto-detect the flavor from the routes the endpoint exposes.
+   */
+  testLocalProvider(
+    id: LocalProviderId,
+    baseUrl: string,
+    apiKey?: string,
+    api?: LocalProviderApi
+  ): Promise<LocalProviderTestResult>;
   /** Remove a provider's credentials (or disable a local provider) and refresh the backend. */
   disconnectProvider(providerId: string): Promise<ProviderLoginResult>;
   /**

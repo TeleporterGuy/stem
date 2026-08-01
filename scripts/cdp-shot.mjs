@@ -1,7 +1,8 @@
-// Attach to the dev Electron renderer over CDP (port 9222) and save a PNG.
+// Attach to the dev Electron renderer over CDP and save a PNG.
 // Usage: node scripts/cdp-shot.mjs [outPath]
+// Port must match the one main opens in dev (src/main/index.ts).
 const out = process.argv[2] || '/tmp/stem-shot.png';
-const port = 9223;
+const port = Number(process.env.STEM_DEVTOOLS_PORT) || 9224;
 
 async function getPageTarget() {
   for (let i = 0; i < 60; i++) {
