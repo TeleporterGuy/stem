@@ -40,6 +40,11 @@ export interface ExecRequest {
    * which classifies the command relative to what the user actually asked for.
    */
   userText?: string;
+  /**
+   * The live chat's `provider/model` id when known. Lets the safety judge pick a
+   * cheap model of the same provider (auth already works for that chat).
+   */
+  currentModel?: string | null;
 }
 
 /** What the ExecService answers a run_command round-trip with. */
@@ -114,7 +119,12 @@ export interface ChatBackend extends EventEmitter {
 
   // recall seam (one-shot completion used by Stem Recall distillation).
   // `opts.model` is a `provider/model` id (null/undefined => the backend default).
-  complete(prompt: string, opts?: { model?: string | null; timeoutMs?: number }): Promise<string>;
+  // `opts.priority` jumps ahead of non-priority waiters when the complete() slot
+  // queue is busy (used by the exec safety judge so distill does not starve it).
+  complete(
+    prompt: string,
+    opts?: { model?: string | null; timeoutMs?: number; priority?: boolean }
+  ): Promise<string>;
   isInternalThread(threadId: string): boolean;
   /** True when the active turn read a memorize:false connected folder → skip Recall capture. */
   isCaptureSuppressed(threadId: string): boolean;

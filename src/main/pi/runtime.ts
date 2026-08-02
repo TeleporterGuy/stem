@@ -78,6 +78,12 @@ import { recordUses } from '../skills/usage';
 import { resolvePi, type PiInvocation } from './locate';
 import { PiProcess, stderrReason, type PiEvent } from './rpc';
 import {
+  completeInternalCwd,
+  ensureCompleteModel,
+  promptComplete,
+  spawnReadyCompleteChild
+} from './complete-worker';
+import {
   newTurnContext,
   normalizePiEvent,
   phaseOfEvents,
@@ -379,14 +385,32 @@ interface SessionFile {
 }
 
 /**
+ * Queue a complete() waiter. Priority entries (exec safety judge) insert before
+ * the first non-priority waiter so distill bursts do not starve the judge.
+ * Exported for unit tests.
+ */
+export function insertCompleteWaiter<T extends { priority: boolean }>(waiters: T[], entry: T): void {
+  if (!entry.priority) {
+    waiters.push(entry);
+    return;
+  }
+  const idx = waiters.findIndex((w) => !w.priority);
+  if (idx === -1) waiters.push(entry);
+  else waiters.splice(idx, 0, entry);
+}
+
+/** Re-export for existing unit tests. */
+export { emptyCompleteError } from './complete-errors';
+
+/**
  * The pi (pi.dev) backend, run in RPC mode as a long-lived subprocess.
  * Normalizes pi's command/event protocol into Stem's canonical backend events
  * and satisfies {@link ChatBackend}.
  *
  * Architectural note: pi RPC holds ONE active session per process. So the
  * foreground process tracks the active thread (switch_session/new_session),
- * and `complete()` uses a separate ephemeral `--no-session` process so recall
- * distillation never clobbers the user's active chat.
+ * and `complete()` uses a separate warm `--no-session` worker (with hardened
+ * cold fallback) so recall distillation / the exec judge never clobber chat.
  */
 export class PiRuntime extends EventEmitter implements ChatBackend {
   private proc: PiProcess | null = null;
@@ -480,10 +504,19 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   /** Memoized pi-web-access entry point: undefined = unresolved, null = absent. */
   private webAccessPath: string | null | undefined = undefined;
 
-  /** complete() spawns a throwaway pi process per call; cap them (queue the rest). */
+  /** complete() uses a warm --no-session worker (+ cold fallback); cap concurrency. */
   private static readonly MAX_COMPLETE_PROCS = 2;
   private completeActive = 0;
-  private completeWaiters: Array<() => void> = [];
+  /** Waiters for a free complete() slot; priority entries jump ahead of normal ones. */
+  private completeWaiters: Array<{ priority: boolean; resolve: () => void }> = [];
+  /** Long-lived --no-session child for completes (judge / distill). */
+  private completeWorker: PiProcess | null = null;
+  /** `provider/modelId` last applied on the warm worker. */
+  private completeWorkerModelKey: string | null = null;
+  /** True while a complete() owns the warm worker. */
+  private completeWorkerBusy = false;
+  /** Coalesce concurrent ensureCompleteWorker() calls. */
+  private completeWorkerStarting: Promise<PiProcess> | null = null;
 
   constructor(private readonly options: RuntimeOptions) {
     super();
@@ -536,6 +569,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
   async prewarm(): Promise<void> {
     await this.ensureStarted();
+    // Warm the complete worker in the background so the first exec judge / distill
+    // call does not pay Electron-as-Node cold start on the critical path.
+    void this.ensureCompleteWorker().catch((e) => {
+      log('pi.complete', 'prewarm complete worker failed', {
+        error: e instanceof Error ? e.message : String(e)
+      });
+    });
   }
 
   async newConversation(): Promise<void> {
@@ -543,6 +583,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   async shutdown(): Promise<void> {
+    await this.disposeCompleteWorker();
     const proc = this.proc;
     this.proc = null;
     this.activeThreadId = null;
@@ -737,15 +778,16 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   /**
-   * One-shot prompt → completion in a throwaway `--no-session` pi process. Backs
-   * the LlmClient seam (Stem Recall distillation); isolated from the user's
-   * active chat so it can't clobber the foreground session.
+   * One-shot prompt → completion on a warm `--no-session` pi worker (cold
+   * fallback when the worker is busy). Backs the LlmClient seam (Recall) and
+   * the exec safety judge; isolated from the user's active chat.
    */
-  async complete(prompt: string, opts?: { model?: string | null; timeoutMs?: number }): Promise<string> {
-    // Every call spawns its own pi process; a burst (distill + consolidation +
-    // summary backfill + scheduled runs) must queue instead of forking a pile of
-    // concurrent children.
-    await this.acquireCompleteSlot();
+  async complete(
+    prompt: string,
+    opts?: { model?: string | null; timeoutMs?: number; priority?: boolean }
+  ): Promise<string> {
+    // Cap concurrent completes; priority (exec judge) skips ahead of distill.
+    await this.acquireCompleteSlot(opts?.priority === true);
     try {
       return await this.completeNow(prompt, opts);
     } finally {
@@ -753,89 +795,140 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
   }
 
-  private acquireCompleteSlot(): Promise<void> {
+  private acquireCompleteSlot(priority: boolean): Promise<void> {
     if (this.completeActive < PiRuntime.MAX_COMPLETE_PROCS) {
       this.completeActive += 1;
       return Promise.resolve();
     }
-    // The slot is handed over directly in releaseCompleteSlot, so completeActive
-    // stays constant across the transfer.
-    return new Promise((resolve) => this.completeWaiters.push(resolve));
+    return new Promise((resolve) => {
+      insertCompleteWaiter(this.completeWaiters, { priority, resolve });
+    });
   }
 
   private releaseCompleteSlot(): void {
     const next = this.completeWaiters.shift();
-    if (next) next();
+    if (next) next.resolve();
     else this.completeActive -= 1;
   }
 
-  private async completeNow(prompt: string, opts?: { model?: string | null; timeoutMs?: number }): Promise<string> {
+  private async completeNow(
+    prompt: string,
+    opts?: { model?: string | null; timeoutMs?: number }
+  ): Promise<string> {
     const timeoutMs = opts?.timeoutMs ?? 120_000;
     const pi = await resolvePi();
     if (!pi) throw new Error('The pi backend could not be located.');
     await this.ensurePiHome();
-    // Memory distillation/consolidation can run on a user-configured model
-    // (Manage → Memory); fall back to the backend default when unset.
     const { provider, modelId } = opts?.model
       ? this.parseModel(opts.model)
       : await this.resolveDefaultModel();
-    const child = new PiProcess({
-      command: pi.command,
-      prefixArgs: pi.prefixArgs,
-      cwd: join(this.options.workspaceRoot, '.stem-internal'),
-      env: this.sanitizedEnv(pi),
-      args: [
-        '--no-session',
-        '--no-builtin-tools',
-        '--no-skills',
-        '--provider',
-        provider,
-        '--model',
-        modelId,
-        '--system-prompt',
-        'You are a precise extraction engine. Follow the instructions exactly and output only what is requested.'
-      ]
-    });
 
-    let text = '';
-    const done = new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        cleanup();
-        log('pi.complete', 'one-shot completion timed out', { timeoutMs, provider, model: modelId });
-        reject(new Error('pi completion timed out.'));
-      }, timeoutMs);
-      const onEvent = (ev: PiEvent): void => {
-        if (ev.type === 'message_end') {
-          const msg = ev.message as { role?: string; content?: { type?: string; text?: string }[] } | undefined;
-          if (msg?.role === 'assistant' && Array.isArray(msg.content)) {
-            const t = msg.content.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
-            if (t) text = t;
-          }
-        } else if (ev.type === 'agent_end') {
-          cleanup();
-          resolve(text);
+    // Prefer the warm worker when idle; if busy, hardened cold spawn so distill
+    // + judge can still run concurrently under MAX_COMPLETE_PROCS.
+    if (!this.completeWorkerBusy) {
+      this.completeWorkerBusy = true;
+      try {
+        const worker = await this.ensureCompleteWorker(provider, modelId);
+        this.completeWorkerModelKey = await ensureCompleteModel(
+          worker,
+          provider,
+          modelId,
+          this.completeWorkerModelKey
+        );
+        return await promptComplete(worker, prompt, timeoutMs, ({ timeoutMs: ms }) => {
+          log('pi.complete', 'one-shot completion timed out', { timeoutMs: ms, provider, model: modelId });
+        });
+      } catch (e) {
+        // Only cold-fallback when the warm worker died / never came up. Timeouts
+        // and rejected prompts should surface to the judge without paying another
+        // Electron cold start.
+        if (!this.completeWorker?.running) {
+          await this.disposeCompleteWorker();
+          log('pi.complete', 'warm worker failed — cold fallback', {
+            error: e instanceof Error ? e.message : String(e)
+          });
+          return await this.completeCold(pi, prompt, provider, modelId, timeoutMs);
         }
-      };
-      const onExit = (): void => {
-        cleanup();
-        resolve(text);
-      };
-      const cleanup = (): void => {
-        clearTimeout(timer);
-        child.off('event', onEvent);
-        child.off('exit', onExit);
-      };
-      child.on('event', onEvent);
-      child.on('exit', onExit);
-    });
+        throw e;
+      } finally {
+        this.completeWorkerBusy = false;
+      }
+    }
 
+    return await this.completeCold(pi, prompt, provider, modelId, timeoutMs);
+  }
+
+  private async completeCold(
+    pi: PiInvocation,
+    prompt: string,
+    provider: string,
+    modelId: string,
+    timeoutMs: number
+  ): Promise<string> {
+    const child = await spawnReadyCompleteChild({
+      pi,
+      cwd: completeInternalCwd(this.options.workspaceRoot),
+      env: this.sanitizedEnv(pi),
+      provider,
+      modelId
+    });
     try {
-      child.start();
-      child.send({ type: 'prompt', message: prompt });
-      return await done;
+      return await promptComplete(child, prompt, timeoutMs, ({ timeoutMs: ms }) => {
+        log('pi.complete', 'one-shot completion timed out', { timeoutMs: ms, provider, model: modelId });
+      });
     } finally {
       void child.dispose().catch(() => {});
     }
+  }
+
+  /**
+   * Ensure the warm --no-session complete worker is up (get_state succeeded).
+   * Spawns with the requested model on first create.
+   */
+  private async ensureCompleteWorker(provider?: string, modelId?: string): Promise<PiProcess> {
+    if (this.completeWorker?.running) return this.completeWorker;
+    if (this.completeWorkerStarting) return this.completeWorkerStarting;
+
+    this.completeWorkerStarting = (async () => {
+      const pi = await resolvePi();
+      if (!pi) throw new Error('The pi backend could not be located.');
+      await this.ensurePiHome();
+      const resolved =
+        provider && modelId
+          ? { provider, modelId }
+          : await this.resolveDefaultModel();
+      const child = await spawnReadyCompleteChild({
+        pi,
+        cwd: completeInternalCwd(this.options.workspaceRoot),
+        env: this.sanitizedEnv(pi),
+        provider: resolved.provider,
+        modelId: resolved.modelId
+      });
+      this.completeWorker = child;
+      this.completeWorkerModelKey = `${resolved.provider}/${resolved.modelId}`;
+      child.on('exit', () => {
+        if (this.completeWorker === child) {
+          this.completeWorker = null;
+          this.completeWorkerModelKey = null;
+        }
+      });
+      log('pi.complete', 'warm complete worker ready', { model: this.completeWorkerModelKey });
+      return child;
+    })();
+
+    try {
+      return await this.completeWorkerStarting;
+    } finally {
+      this.completeWorkerStarting = null;
+    }
+  }
+
+  private async disposeCompleteWorker(): Promise<void> {
+    const worker = this.completeWorker;
+    this.completeWorker = null;
+    this.completeWorkerModelKey = null;
+    this.completeWorkerStarting = null;
+    if (worker) await worker.dispose().catch(() => undefined);
   }
 
   // ---- thread CRUD ----
@@ -1327,13 +1420,25 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         const bridge = this.execBridge;
         if (!bridge) return respond({ ok: false, error: 'Command execution is unavailable.' });
         const req = JSON.parse(payload ?? '{}') as { command?: string; cwd?: string; timeout_ms?: number };
+        // Mirror can be null after a session switch if the turn did not re-apply a
+        // model; fall back to pi's live state so the judge stays on a signed-in provider.
+        let currentModel = this.currentModel;
+        if (!currentModel && this.proc?.running) {
+          const state = await this.proc.request({ type: 'get_state' }).catch(() => null);
+          const data = state?.data as { model?: { provider?: string; id?: string } } | undefined;
+          if (data?.model?.provider && data.model.id) {
+            currentModel = `${data.model.provider}/${data.model.id}`;
+            this.currentModel = currentModel;
+          }
+        }
         const result = await bridge.handleExecRequest({
           command: req.command ?? '',
           cwd: typeof req.cwd === 'string' && req.cwd.trim() ? req.cwd : undefined,
           timeoutMs: typeof req.timeout_ms === 'number' ? req.timeout_ms : undefined,
           threadId: turn?.threadId ?? null,
           isScheduled: turn?.isScheduled === true,
-          userText: turn?.userText
+          userText: turn?.userText,
+          currentModel
         });
         respond(result);
       } catch (e) {

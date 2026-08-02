@@ -780,9 +780,12 @@ export interface ExecApprovalRequest {
    * no "Always allow" button.
    */
   prefixes: string[];
-  /** The LLM judge's verdict that caused the escalation; null = judge skipped/failed. */
-  judgeVerdict: 'unsafe' | 'unsure' | null;
-  /** The judge's short reason, when it gave one. */
+  /**
+   * The LLM judge's verdict that caused the escalation.
+   * null = judge skipped (manual mode); 'failed' = complete() threw before a verdict.
+   */
+  judgeVerdict: 'unsafe' | 'unsure' | 'failed' | null;
+  /** The judge's short reason, or the underlying error when the check failed. */
   judgeReason?: string;
 }
 

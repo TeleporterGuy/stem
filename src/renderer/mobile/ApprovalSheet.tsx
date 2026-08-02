@@ -99,9 +99,11 @@ function ExecCard({ request, store }: { request: ExecApprovalRequest; store: App
   const verdict =
     request.judgeVerdict === 'unsafe'
       ? 'The safety check flagged this command as potentially unsafe'
-      : request.judgeVerdict === 'unsure'
-        ? 'The safety check could not tell whether this command is safe'
-        : 'Manual approval is on — commands only run when you allow them';
+      : request.judgeVerdict === 'failed'
+        ? 'The automatic safety check could not run'
+        : request.judgeVerdict === 'unsure'
+          ? 'The safety check could not tell whether this command is safe'
+          : 'Manual approval is on — commands only run when you allow them';
 
   return (
     <Sheet icon={<Terminal size={15} />} title="Run this command?" error={error}

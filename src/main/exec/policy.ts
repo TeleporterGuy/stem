@@ -253,7 +253,10 @@ const CHEAP_MARKERS = ['haiku', 'mini', 'nano', 'flash', 'lite', 'spark'];
 /**
  * Resolve the judge model: the explicit setting wins; otherwise pick the
  * cheapest-looking model of the current provider (Anthropic → Haiku-class, etc.).
- * Returns null when nothing better is known — complete() then uses its default.
+ * If that provider has no cheap-tier name, reuse the live chat model (or the
+ * list default / first available) — never return null while authenticated models
+ * exist, or complete() falls through to the built-in openai-codex constant and
+ * fails with "No API key" for users signed in only to another provider (e.g. xAI).
  */
 export function resolveJudgeModel(
   settings: Pick<ExecSettings, 'judgeModel'>,
@@ -267,5 +270,9 @@ export function resolveJudgeModel(
     const hit = pool.find((m) => m.id.toLowerCase().includes(marker));
     if (hit) return hit.id;
   }
-  return null;
+  // No cheap-tier name in this provider's catalog (xAI grok-* etc.): stay on the
+  // live chat model, then the app default, then any model we know is signed-in.
+  if (currentModel && (!provider || currentModel.startsWith(`${provider}/`))) return currentModel;
+  const fallback = pool.find((m) => m.isDefault) ?? pool[0] ?? models.find((m) => m.isDefault) ?? models[0];
+  return fallback?.id ?? null;
 }

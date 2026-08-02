@@ -105,7 +105,10 @@ export class PiProcess extends EventEmitter {
       {
         cwd: this.options.cwd,
         env: this.options.env,
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        // GUI Electron on Windows otherwise flashes a console for each throwaway
+        // complete()/judge child (runCommand already sets this).
+        windowsHide: true
       }
     );
     this.proc = proc;
