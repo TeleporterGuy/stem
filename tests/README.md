@@ -109,3 +109,15 @@ notes without asserting.
 Keep `test:perf` out of CI for the same reasons as real mode. Run it before a
 release, and any time you touch the search path, the context builder, or anything
 between send and first token.
+
+One thing to know before you read a search number as a regression: with no search
+credential configured, `web_search` lands on Exa's **free** MCP endpoint, which
+rate-limits. A call it answers costs 0.35–1.4s; a call it 429s falls through the
+chain to the OpenAI backend and costs 4–11s. Both modes show up inside a single
+three-iteration run (8276 / 349 / 8183 ms), so the medians move with how much free
+tier is left rather than with anything in this repo. Instrumented proof, if you
+need to re-derive it: probe `search()` in the vendored `gemini-search.ts` and log
+`errorMessage(err)` on the Exa branch. Configure `exaApiKey` — or any keyed backend
+— in Settings to measure the path without that confound. The tool boundary itself
+is not a suspect: the extension's own clock and Stem's `tool_ms` agree to within
+5ms.

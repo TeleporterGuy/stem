@@ -31,27 +31,27 @@
     }
   },
   "measured": {
-    "note": "Reference points from turn_timings on the author's machine, medians over web-search turns. Native provider-side search (<=2026-07-28): total 39.6s, tool 13.2s avg. Sequential pi-web-access (2026-07-29..08-02, the regression): total 99.8s, tool 127.1s avg. Then, on this harness: concurrent queries, total 15.4s / tool 12.4s; gpt-5.4-mini backing the OpenAI backend, 13.9s / 11.0s; auto reordered so an index lookup beats an inference, the numbers below.",
+    "note": "Reference points from turn_timings on the author's machine, medians over web-search turns. Native provider-side search (<=2026-07-28): total 39.6s, tool 13.2s avg. Sequential pi-web-access (2026-07-29..08-02, the regression): total 99.8s, tool 127.1s avg. Then, on this harness: concurrent queries, total 15.4s / tool 12.4s; gpt-5.4-mini backing the OpenAI backend, 13.9s / 11.0s; auto reordered so an index lookup beats an inference, the numbers below. READ THOSE AS BIMODAL, not as a median with noise: a web_search that Exa answers costs 0.35-1.4s, and one where Exa returns HTTP 429 ('You've hit Exa's free MCP rate limit') falls through the chain to the OpenAI backend and costs 4-11s. Same run, both modes: 8276ms / 349ms / 8183ms. The mix depends on how much of the free tier is left, so the medians here drift with nothing in this repo changing. Configure an exaApiKey (or any keyed backend) in Settings and the 429 mode disappears.",
     "plain": {
-      "totalMs": 1672,
+      "totalMs": 1306,
       "toolMs": 0,
-      "thinkingMs": 50,
-      "answerMs": 146,
-      "ttftMs": 1140
+      "thinkingMs": 76,
+      "answerMs": 102,
+      "ttftMs": 1122
     },
     "web-search": {
-      "totalMs": 10024,
-      "toolMs": 7828,
-      "thinkingMs": 1148,
-      "answerMs": 109,
-      "ttftMs": 9882
+      "totalMs": 10574,
+      "toolMs": 8157,
+      "thinkingMs": 773,
+      "answerMs": 144,
+      "ttftMs": 9878
     },
     "web-search-multi": {
-      "totalMs": 8381,
-      "toolMs": 5912,
-      "thinkingMs": 707,
-      "answerMs": 103,
-      "ttftMs": 7306
+      "totalMs": 10639,
+      "toolMs": 9140,
+      "thinkingMs": 720,
+      "answerMs": 99,
+      "ttftMs": 10546
     }
   }
 }
