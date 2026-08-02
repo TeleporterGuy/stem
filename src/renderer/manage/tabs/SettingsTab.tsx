@@ -39,6 +39,7 @@ import { ModelPicker } from '../../ui/ModelPicker';
 import { QrImage } from '../../ui/QrImage';
 import { EFFORT_LABELS } from '../../modelLabels';
 import {
+  backendOptionLabel,
   backendSections,
   backendState,
   credentialLabel,
@@ -1268,9 +1269,12 @@ export function SettingsTab({
               them never means re-entering one.
               <br />
               The list is grouped by what each backend still wants from you.{' '}
-              <strong>Works with no key</strong> holds the ones you can pick right now — Exa
-              searches through its public endpoint, and ChatGPT rides the sign-in you already
-              have under AI Providers, billing searches to that subscription.
+              <strong>Works with no key</strong> holds the ones you can pick right now — ChatGPT
+              rides the sign-in you already have under AI Providers, billing searches to that
+              subscription, and Exa searches through its public endpoint. That public endpoint is
+              a shared free allowance that resets at midnight UTC, so rows marked{' '}
+              <em>free limit, no key</em> work today but will stop once you run it out. A key
+              from dashboard.exa.ai is the fix, and Exa’s own free tier is far larger.
             </InfoTip>
           </span>
           <select
@@ -1285,7 +1289,7 @@ export function SettingsTab({
               <optgroup key={section.label} label={section.label}>
                 {section.backends.map((b) => (
                   <option key={b.id} value={b.id}>
-                    {b.label}
+                    {backendOptionLabel(b, ws.credentials, providers)}
                   </option>
                 ))}
               </optgroup>
@@ -1310,8 +1314,10 @@ export function SettingsTab({
             />
           )}
           {activeBackend && activeState && (
-            <em className={activeState.ready ? 'muted' : 'muted set-warn'}>
-              {activeState.ready ? '✓' : '!'} {activeState.status}
+            // Three states, not two: broken, fine, and fine-until-it-isn't. The
+            // last one has to be visible without reading as an error.
+            <em className={activeState.ready && !activeState.capped ? 'muted' : 'muted set-warn'}>
+              {!activeState.ready ? '!' : activeState.capped ? '⚠' : '✓'} {activeState.status}
               {activeBackend.note ? `. ${activeBackend.note}` : ''}
             </em>
           )}

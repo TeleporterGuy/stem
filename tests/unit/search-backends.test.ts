@@ -4,6 +4,7 @@
 // resolves them, not as a guess.
 import { describe, expect, it } from 'vitest';
 import {
+  backendOptionLabel,
   backendSections,
   backendState,
   credentialLabel,
@@ -18,9 +19,9 @@ const backend = (id: string) => {
 };
 
 describe('search backend readiness', () => {
-  it('treats the meta-backends as needing nothing', () => {
+  it('treats the meta-backends as needing nothing, once anything is configured', () => {
     for (const id of ['auto', 'all']) {
-      expect(backendState(backend(id), {}, [])).toEqual({
+      expect(backendState(backend(id), { braveApiKey: 'k' }, [])).toEqual({
         ready: true,
         group: 'keyless',
         status: 'nothing to set up'
@@ -28,12 +29,43 @@ describe('search backend readiness', () => {
     }
   });
 
-  it('reports Exa as ready with no key, because it falls back to Exa MCP', () => {
-    expect(backendState(backend('exa'), {}, [])).toEqual({
-      ready: true,
-      group: 'keyless',
-      status: 'no key needed'
-    });
+  // `auto` is the default, so this is the state most people are actually in — and
+  // where it lands (Exa's free allowance) is exactly what the row does not say.
+  it('warns that the meta-backends inherit the cap when no key is set anywhere', () => {
+    for (const id of ['auto', 'all']) {
+      const state = backendState(backend(id), {}, []);
+      expect(state.ready).toBe(true);
+      expect(state.capped).toBe(true);
+      expect(state.status).toMatch(/Exa/);
+    }
+  });
+
+  // Exa without a key is not "free", it is a shared demo allowance that resets at
+  // midnight UTC. Run it out and `auto` falls through to a backend that costs an
+  // inference — or, with nothing else configured, search fails outright for the
+  // rest of the day. Reporting that as a plain "no key needed" is the bug.
+  it('reports Exa as ready without a key, but marks the allowance as capped', () => {
+    const state = backendState(backend('exa'), {}, []);
+    expect(state.ready).toBe(true);
+    expect(state.group).toBe('keyless');
+    expect(state.capped).toBe(true);
+    expect(state.status).toMatch(/add a key/i);
+  });
+
+  it('drops the cap warning once an Exa key is saved', () => {
+    const state = backendState(backend('exa'), { exaApiKey: 'exa-abc' }, []);
+    expect(state.ready).toBe(true);
+    expect(state.capped).toBeUndefined();
+    expect(state.group).toBe('configured');
+  });
+
+  it('says so in the picker row, not only in the status line below it', () => {
+    // The section heading says "Works with no key", which is true and, on its own,
+    // a promise Exa cannot keep. The row has to carry the caveat.
+    expect(backendOptionLabel(backend('exa'), {}, [])).toMatch(/free limit, no key/);
+    expect(backendOptionLabel(backend('exa'), { exaApiKey: 'exa-abc' }, [])).toBe('Exa');
+    expect(backendOptionLabel(backend('brave'), {}, [])).toBe('Brave');
+    expect(backendOptionLabel(backend('openai'), {}, ['openai-codex'])).toBe('ChatGPT / OpenAI');
   });
 
   it('reports ChatGPT as ready once the subscription is signed in, with no key', () => {
@@ -152,8 +184,11 @@ describe('key list annotations', () => {
 
   it('calls a key optional only when something else already unlocks the backend', () => {
     expect(credentialRequirement(backend('brave'), {}, [])).toBe('(required)');
-    expect(credentialRequirement(backend('exa'), {}, [])).toBe('(optional)');
     expect(credentialRequirement(backend('openai'), {}, ['openai-codex'])).toBe('(optional)');
     expect(credentialRequirement(backend('openai'), {}, [])).toMatch(/^\(optional — /);
+    // Optional in the sense that search still runs, not in the sense that you can
+    // leave it and forget about it.
+    expect(credentialRequirement(backend('exa'), {}, [])).toMatch(/^\(optional — .*capped/);
+    expect(credentialRequirement(backend('exa'), { exaApiKey: 'exa-abc' }, [])).toBe('(optional)');
   });
 });

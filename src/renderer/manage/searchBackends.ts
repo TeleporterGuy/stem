@@ -8,8 +8,14 @@
 /**
  * What a backend needs before it will answer a search:
  * - `none` — nothing at all to configure (the meta-backends).
- * - `keyless` — searches with no credential; a key only upgrades the path (Exa
- *   falls back to its public MCP endpoint).
+ * - `keyless` — searches with no credential; a key only upgrades the path.
+ * - `keyless-capped` — searches with no credential, but only so many times. Exa's
+ *   public MCP endpoint is a demo allowance, not a tier: spend it and every call
+ *   returns HTTP 429 with `retry-after` set to the seconds remaining until the
+ *   next UTC midnight. Measured at 12.9 hours locked out, and `auto` then falls
+ *   through to a backend that costs an inference — or, with no ChatGPT sign-in
+ *   and no other key, throws "Auto provider search failed" and web search is
+ *   simply gone for the day. Reads as ready, because it is, but not as free.
  * - `signin` — no key needed *if* the matching account is connected under AI
  *   Providers; otherwise a key. This is the ChatGPT case: pi-web-access resolves
  *   OpenAI auth through pi's model registry first (openai-codex, then openai), so
@@ -17,7 +23,7 @@
  *   Grok works the same way through the `xai` provider.
  * - `required` — dead until its credential is filled in.
  */
-export type KeyNeed = 'none' | 'keyless' | 'signin' | 'required';
+export type KeyNeed = 'none' | 'keyless' | 'keyless-capped' | 'signin' | 'required';
 
 export interface SearchBackend {
   id: string;
@@ -52,7 +58,9 @@ export const SEARCH_BACKENDS: SearchBackend[] = [
     label: 'Automatic',
     field: null,
     need: 'none',
-    note: 'Tries each configured backend in turn, ending at one that needs no key.'
+    note:
+      'Tries each backend that queries an index before any that costs a model inference, ' +
+      'ending at Exa’s keyless route — so with nothing configured, it ends on a capped allowance.'
   },
   {
     id: 'all',
@@ -88,9 +96,12 @@ export const SEARCH_BACKENDS: SearchBackend[] = [
     id: 'exa',
     label: 'Exa',
     field: 'exaApiKey',
-    need: 'keyless',
+    need: 'keyless-capped',
     placeholder: 'exa-…',
-    note: 'The keyless route runs through Exa MCP; a key switches it to the faster direct API.'
+    note:
+      'Without a key it runs on Exa MCP’s shared free allowance, which resets at midnight UTC — ' +
+      'run it out and searches stop until then. A key switches it to the direct API, and Exa’s ' +
+      'own free tier (dashboard.exa.ai/api-keys) covers thousands of searches a month.'
   },
   { id: 'brave', label: 'Brave', field: 'braveApiKey', need: 'required', placeholder: 'BSA…' },
   { id: 'tavily', label: 'Tavily', field: 'tavilyApiKey', need: 'required', placeholder: 'tvly-…' },
@@ -136,6 +147,17 @@ export interface BackendState {
   group: BackendGroup;
   /** Short reason, spelled out under the picker for the selected backend. */
   status: string;
+  /**
+   * Ready, but on borrowed time — a free allowance that will run out and take
+   * search with it. Distinct from `!ready`: nothing is broken yet, so this must
+   * not read as an error, only as something to deal with before it bites.
+   */
+  capped?: boolean;
+}
+
+/** Whether the user has configured no search credential at all. */
+function everyCredentialEmpty(credentials: Record<string, string>): boolean {
+  return SEARCH_BACKENDS.every((b) => !b.field || !credentials[b.field]?.trim());
 }
 
 /**
@@ -151,11 +173,32 @@ export function backendState(
   credentials: Record<string, string>,
   providers: string[]
 ): BackendState {
-  if (b.need === 'none') return { ready: true, group: 'keyless', status: 'nothing to set up' };
+  if (b.need === 'none') {
+    // The meta-backends inherit the cap when there is nothing else to reach: with
+    // no key anywhere, `auto` walks the chain and lands on Exa's free allowance,
+    // and `all` fans out across the same nothing. Worth saying here rather than
+    // only under Exa — `auto` is the default, so it is what most people are on.
+    return everyCredentialEmpty(credentials)
+      ? {
+          ready: true,
+          group: 'keyless',
+          capped: true,
+          status: 'nothing to set up — but with no key anywhere this ends on Exa’s capped free allowance'
+        }
+      : { ready: true, group: 'keyless', status: 'nothing to set up' };
+  }
   if (b.field && credentials[b.field]?.trim()) {
     return { ready: true, group: 'configured', status: `${credentialNoun(b)} saved` };
   }
   if (b.need === 'keyless') return { ready: true, group: 'keyless', status: 'no key needed' };
+  if (b.need === 'keyless-capped') {
+    return {
+      ready: true,
+      group: 'keyless',
+      capped: true,
+      status: 'works without a key, but only so many searches a day — add a key to lift the cap'
+    };
+  }
   if (b.need === 'signin') {
     // A sign-in is not a key, so this belongs with the keyless backends — the
     // whole point being that it costs you nothing extra to pick it.
@@ -169,6 +212,24 @@ export function backendState(
     group: 'unset',
     status: credentialNoun(b) === 'key' ? 'needs a key' : 'needs an endpoint'
   };
+}
+
+/**
+ * How a backend reads as a row in the picker.
+ *
+ * Rows are otherwise bare names on purpose — the section heading carries "what
+ * does this still want from me", and the selected row explains itself underneath.
+ * A capped allowance breaks that rule because it is the one case the heading gets
+ * wrong: "Works with no key" is true of Exa and also, by omission, a promise it
+ * cannot keep past the daily limit. Cheaper to say it in the row than to let
+ * someone find out when search stops answering.
+ */
+export function backendOptionLabel(
+  b: SearchBackend,
+  credentials: Record<string, string>,
+  providers: string[]
+): string {
+  return backendState(b, credentials, providers).capped ? `${b.label} — free limit, no key` : b.label;
 }
 
 /** Section headings, in the order the picker stacks them. */
@@ -204,7 +265,9 @@ export function credentialRequirement(
   providers: string[]
 ): string {
   if (b.need === 'required') return '(required)';
-  return backendState(b, credentials, providers).ready ? '(optional)' : '(optional — but nothing else unlocks it yet)';
+  const state = backendState(b, credentials, providers);
+  if (state.capped) return '(optional — but the keyless route is capped daily)';
+  return state.ready ? '(optional)' : '(optional — but nothing else unlocks it yet)';
 }
 
 /** Endpoints that tune a backend rather than selecting one. */
