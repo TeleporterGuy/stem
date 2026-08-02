@@ -29,8 +29,15 @@ The selected model receives the prompt, attachments, and context Stem adds to th
 turn. A cloud model receives that data on its provider’s service. A local model
 sends it to the server address you configured.
 
-**Native web search** appears only for compatible models. It sends the search to
-that model’s provider and returns cited sources.
+**Web search** works with every model, not only cloud ones, and returns cited
+sources. Under **Web search** you choose the backend that runs the search:
+**Automatic** ends at one that needs no key, or pick a named one and paste its key.
+
+Two backends need no key of their own because a connected account pays for them:
+**ChatGPT / OpenAI** with a ChatGPT sign-in, and **Grok / xAI** with a SuperGrok or
+X Premium sign-in. Grok runs the search inside Grok itself, so each search draws on
+the same allowance as your Grok chats — one question can use a dozen searches. It is
+never picked automatically; select it yourself if you want it.
 
 ## Command approvals
 

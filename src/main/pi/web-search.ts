@@ -24,6 +24,11 @@ import type { SourceRef, WebSearchSettings } from '../../shared/types';
 // The package is a pinned production dependency (never `pi install`ed at runtime:
 // a packaged desktop app has no npm and may have no network on first launch). pi
 // loads it with a second `-e` alongside Stem's own bridge extension.
+//
+// The `xai` backend is not in the published 0.15.0: it comes from
+// patches/pi-web-access+0.15.0.patch, applied by the postinstall hook, and is
+// submitted upstream. When it lands in a release, bump the pin, delete the patch,
+// and drop patch-package from postinstall if nothing else needs it.
 
 const PACKAGE = 'pi-web-access';
 
@@ -80,6 +85,10 @@ export async function webAccessVersion(): Promise<string | null> {
  * Backends with `field: null` need no credential: `auto` walks the chain, `all`
  * fans out across everything configured, and Exa additionally works keyless
  * through its public MCP endpoint (a key just upgrades it to the direct API).
+ *
+ * `xai` is explicit-only in the package — neither `auto` nor `all` will reach for
+ * it — because its searches run inside Grok's own inference and are metered
+ * against the signed-in account. Picking it has to be a decision.
  */
 export const SEARCH_BACKENDS = [
   { id: 'auto', field: null },
@@ -94,6 +103,7 @@ export const SEARCH_BACKENDS = [
   { id: 'tinyfish', field: 'tinyfishApiKey' },
   { id: 'serpdive', field: 'serpdiveApiKey' },
   { id: 'anysearch', field: 'anysearchApiKey' },
+  { id: 'xai', field: 'xaiApiKey', optional: true },
   { id: 'searxng', field: 'searxngBaseUrl' }
 ] as const;
 

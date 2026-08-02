@@ -1,0 +1,470 @@
+diff --git a/node_modules/pi-web-access/gemini-search.ts b/node_modules/pi-web-access/gemini-search.ts
+index d1e9242..4082cbd 100644
+--- a/node_modules/pi-web-access/gemini-search.ts
++++ b/node_modules/pi-web-access/gemini-search.ts
+@@ -14,9 +14,10 @@ import { isTavilyAvailable, searchWithTavily } from "./tavily.ts";
+ import { isSerpdiveAvailable, searchWithSerpdive } from "./serpdive.ts";
+ import { isSearXNGAvailable, searchWithSearXNG } from "./searxng.ts";
+ import { isAnySearchAvailable, searchWithAnySearch } from "./anysearch.ts";
++import { isXaiSearchAvailable, searchWithXai } from "./xai-search.ts";
+ import { getWebSearchConfigPath } from "./utils.ts";
+ 
+-export type SearchProvider = "auto" | "all" | "openai" | "brave" | "parallel" | "tinyfish" | "tavily" | "searxng" | "perplexity" | "gemini" | "exa" | "serpdive" | "anysearch";
++export type SearchProvider = "auto" | "all" | "openai" | "brave" | "parallel" | "tinyfish" | "tavily" | "searxng" | "perplexity" | "gemini" | "exa" | "serpdive" | "anysearch" | "xai";
+ export type ResolvedSearchProvider = Exclude<SearchProvider, "auto" | "all">;
+ export type SearchProviderErrorKind =
+ 	| "transient"
+@@ -74,7 +75,7 @@ export interface AttributedSearchResponse extends SearchResponse {
+ 
+ const CONFIG_PATH = getWebSearchConfigPath();
+ const DEFAULT_SEARCH_MODEL = "gemini-2.5-flash";
+-const VALID_SEARCH_PROVIDERS: SearchProvider[] = ["auto", "all", "openai", "brave", "parallel", "tinyfish", "tavily", "searxng", "perplexity", "gemini", "exa", "serpdive", "anysearch"];
++const VALID_SEARCH_PROVIDERS: SearchProvider[] = ["auto", "all", "openai", "brave", "parallel", "tinyfish", "tavily", "searxng", "perplexity", "gemini", "exa", "serpdive", "anysearch", "xai"];
+ const ALL_SEARCH_PROVIDERS: ResolvedSearchProvider[] = ["searxng", "openai", "exa", "brave", "parallel", "tinyfish", "tavily", "serpdive", "perplexity", "gemini"];
+ const VALID_ROUTING_KINDS = ["transient", "quota", "network"] as const;
+ 
+@@ -279,6 +280,7 @@ async function searchWithResolvedProvider(
+ 	if (provider === "tavily") return { ...(await searchWithTavily(query, options)), provider };
+ 	if (provider === "serpdive") return { ...(await searchWithSerpdive(query, options)), provider };
+ 	if (provider === "anysearch") return { ...(await searchWithAnySearch(query, options)), provider };
++	if (provider === "xai") return { ...(await searchWithXai(query, options, options.extensionContext)), provider };
+ 	if (provider === "perplexity") return { ...(await searchWithPerplexity(query, options)), provider };
+ 	if (provider === "searxng") return { ...(await searchWithSearXNG(query, options)), provider };
+ 	if (provider === "gemini") {
+@@ -304,6 +306,7 @@ async function isResolvedProviderAvailable(provider: ResolvedSearchProvider, opt
+ 	if (provider === "tavily") return isTavilyAvailable();
+ 	if (provider === "serpdive") return isSerpdiveAvailable();
+ 	if (provider === "anysearch") return isAnySearchAvailable();
++	if (provider === "xai") return isXaiSearchAvailable(options.extensionContext);
+ 	if (provider === "perplexity") return isPerplexityAvailable();
+ 	if (provider === "searxng") return isSearXNGAvailable();
+ 	if (provider === "gemini") return isGeminiApiAvailable() || !!(await isGeminiWebAvailable());
+@@ -315,6 +318,7 @@ function providerLabel(provider: ResolvedSearchProvider): string {
+ 	if (provider === "tinyfish") return "TinyFish";
+ 	if (provider === "serpdive") return "SERPdive";
+ 	if (provider === "searxng") return "SearXNG";
++	if (provider === "xai") return "xAI";
+ 	return provider.charAt(0).toUpperCase() + provider.slice(1);
+ }
+ 
+@@ -547,7 +551,7 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
+ 		"  3. Set OPENAI_API_KEY, BRAVE_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY, TAVILY_API_KEY, SERPDIVE_API_KEY, SEARXNG_BASE_URL, EXA_API_KEY, PERPLEXITY_API_KEY, GEMINI_API_KEY, or CLOUDFLARE_API_KEY env vars\n" +
+ 		"  4. Set GOOGLE_GEMINI_BASE_URL with CLOUDFLARE_API_KEY for Cloudflare AI Gateway routing\n" +
+ 		"  5. Sign into gemini.google.com in a supported Chromium-based browser\n" +
+-		"  6. Explicitly select provider: \"anysearch\" for anonymous AnySearch"
++		"  6. Explicitly select provider: \"anysearch\" for anonymous AnySearch, or \"xai\" to search with a Grok subscription"
+ 	);
+ }
+ 
+diff --git a/node_modules/pi-web-access/index.ts b/node_modules/pi-web-access/index.ts
+index 6fbdd10..0590c58 100644
+--- a/node_modules/pi-web-access/index.ts
++++ b/node_modules/pi-web-access/index.ts
+@@ -46,6 +46,7 @@ import { isTavilyAvailable } from "./tavily.ts";
+ import { isSerpdiveAvailable } from "./serpdive.ts";
+ import { isSearXNGAvailable } from "./searxng.ts";
+ import { isAnySearchAvailable } from "./anysearch.ts";
++import { isXaiSearchAvailable } from "./xai-search.ts";
+ import { buildSearchErrorPlan, type SearchErrorDetails, type SearchErrorPlan } from "./render-search-error.ts";
+ import { loadEnabledModelPatterns, modelMatchesEnabledPatterns } from "./summary-model-scope.ts";
+ import {
+@@ -95,6 +96,7 @@ function renderSearchErrorPlan(plan: SearchErrorPlan, expanded: boolean, theme:
+ 
+ interface WebSearchConfig {
+ 	anysearchApiKey?: unknown;
++	xaiApiKey?: unknown;
+ 	tinyfishApiKey?: unknown;
+ 	provider?: string;
+ 	searchProvider?: string;
+@@ -130,6 +132,7 @@ interface ProviderAvailability {
+ 	exa: boolean;
+ 	gemini: boolean;
+ 	anysearch: boolean;
++	xai: boolean;
+ }
+ 
+ type WebSearchWorkflow = "none" | "summary-review" | "auto-summary";
+@@ -234,7 +237,7 @@ function normalizeProviderInput(value: unknown): SearchProvider | undefined {
+ 	if (value === undefined) return undefined;
+ 	if (typeof value !== "string") return "auto";
+ 	const normalized = value.trim().toLowerCase();
+-	const valid: SearchProvider[] = ["auto", "all", "openai", "brave", "parallel", "tinyfish", "tavily", "searxng", "exa", "perplexity", "gemini", "serpdive", "anysearch"];
++	const valid: SearchProvider[] = ["auto", "all", "openai", "brave", "parallel", "tinyfish", "tavily", "searxng", "exa", "perplexity", "gemini", "serpdive", "anysearch", "xai"];
+ 	return valid.includes(normalized as SearchProvider) ? normalized as SearchProvider : "auto";
+ }
+ 
+@@ -296,9 +299,10 @@ async function getProviderAvailability(ctx: ExtensionContext): Promise<ProviderA
+ 		exa: isExaAvailable(),
+ 		gemini: geminiApiAvail || !!geminiWebAvail,
+ 		anysearch: isAnySearchAvailable(),
++		xai: await isXaiSearchAvailable(ctx),
+ 	};
+ 	return {
+-		all: Object.entries(providers).some(([provider, available]) => provider !== "anysearch" && provider !== "gemini" && available) || geminiApiAvail,
++		all: Object.entries(providers).some(([provider, available]) => provider !== "anysearch" && provider !== "xai" && provider !== "gemini" && available) || geminiApiAvail,
+ 		...providers,
+ 	};
+ }
+@@ -1430,7 +1434,7 @@ export default function (pi: ExtensionAPI) {
+ 		name: toolNames.webSearch,
+ 		label: "Web Search",
+ 		description:
+-			`Search the web using OpenAI, Brave, Parallel, TinyFish, Tavily, SearXNG, Exa, Perplexity, Gemini, or AnySearch. Use provider "all" to search every eligible provider except AnySearch simultaneously and combine their responses. Returns an AI-synthesized answer with source citations. OpenAI search uses a Codex subscription or OpenAI API key. AnySearch is available only when explicitly selected. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, auto-selects OpenAI when suitable and available, then Exa, Brave, Parallel, TinyFish, Tavily, Perplexity, Gemini API, or Gemini Web. When SearXNG is configured, it is preferred first for local/private search.`,
++			`Search the web using OpenAI, Brave, Parallel, TinyFish, Tavily, SearXNG, Exa, Perplexity, Gemini, AnySearch, or xAI. Use provider "all" to search every eligible provider except AnySearch and xAI simultaneously and combine their responses. Returns an AI-synthesized answer with source citations. OpenAI search uses a Codex subscription or OpenAI API key; xAI search uses a SuperGrok/X Premium subscription or xAI API key. AnySearch and xAI are available only when explicitly selected — xAI runs the search inside Grok's own inference and is metered against that account. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, auto-selects OpenAI when suitable and available, then Exa, Brave, Parallel, TinyFish, Tavily, Perplexity, Gemini API, or Gemini Web. When SearXNG is configured, it is preferred first for local/private search.`,
+ 		promptSnippet:
+ 			"Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage. Omit provider unless explicitly overriding the configured default.",
+ 		parameters: Type.Object({
+@@ -1443,7 +1447,7 @@ export default function (pi: ExtensionAPI) {
+ 			),
+ 			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains (prefix with - to exclude)" })),
+ 			provider: Type.Optional(
+-				StringEnum(["auto", "all", "openai", "brave", "parallel", "tinyfish", "tavily", "searxng", "exa", "perplexity", "gemini", "serpdive", "anysearch"], { description: "Search provider; use all to search every eligible provider except AnySearch simultaneously, omit this field (preferred) to use the configured provider, or use auto when none is configured" }),
++				StringEnum(["auto", "all", "openai", "brave", "parallel", "tinyfish", "tavily", "searxng", "exa", "perplexity", "gemini", "serpdive", "anysearch", "xai"], { description: "Search provider; use all to search every eligible provider except AnySearch and xAI simultaneously, omit this field (preferred) to use the configured provider, or use auto when none is configured" }),
+ 			),
+ 			workflow: Type.Optional(
+ 				StringEnum(["none", "summary-review", "auto-summary"], {
+@@ -2005,7 +2009,7 @@ export default function (pi: ExtensionAPI) {
+ 			fetchContent: Type.Optional(Type.Boolean({ description: "Fetch up to 5 result pages for exact passage extraction." })),
+ 			recencyFilter: Type.Optional(StringEnum(["day", "week", "month", "year"], { description: "Filter by recency." })),
+ 			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains; prefix with - to exclude." })),
+-			provider: Type.Optional(StringEnum(["auto", "all", "openai", "brave", "parallel", "tinyfish", "tavily", "searxng", "exa", "perplexity", "gemini", "serpdive", "anysearch"], { description: "Search provider; all searches every eligible provider except AnySearch simultaneously." })),
++			provider: Type.Optional(StringEnum(["auto", "all", "openai", "brave", "parallel", "tinyfish", "tavily", "searxng", "exa", "perplexity", "gemini", "serpdive", "anysearch", "xai"], { description: "Search provider; all searches every eligible provider except AnySearch and xAI simultaneously." })),
+ 		}),
+ 		async execute(_callId, params, signal, _onUpdate, ctx) {
+ 			const claim = typeof params.claim === "string" ? params.claim.trim() : "";
+diff --git a/node_modules/pi-web-access/xai-search.ts b/node_modules/pi-web-access/xai-search.ts
+new file mode 100644
+index 0000000..95c25ad
+--- /dev/null
++++ b/node_modules/pi-web-access/xai-search.ts
+@@ -0,0 +1,330 @@
++import { existsSync, readFileSync } from "node:fs";
++import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
++import { activityMonitor } from "./activity.ts";
++import type { SearchOptions, SearchResponse, SearchResult } from "./perplexity.ts";
++import { hasCredentialSource, redactCredential, resolveCredential } from "./credential-source.ts";
++import { getWebSearchConfigPath } from "./utils.ts";
++
++// xAI's Agent Tools API: a hosted `web_search` tool on an OpenAI-compatible
++// Responses endpoint. The search runs inside xAI's own inference, so — unlike
++// every keyed backend here — it is paid for by whatever credential answers for
++// the model, including a SuperGrok / X Premium subscription resolved through
++// pi's model registry.
++//
++// Note for anyone extending this: xAI's older Live Search (`search_parameters`
++// on /v1/chat/completions) is GONE. It now answers 410 with "Live search is
++// deprecated. Please switch to the Agent Tools API". Do not add it back.
++//
++// The request body is deliberately minimal — model, input, tools — because that
++// is the shape verified against a live subscription account. `stream`,
++// `include`, `tool_choice` and `parallel_tool_calls` are all sent by the OpenAI
++// backend but were NOT verified here, and a 400 from an unsupported field would
++// cost the user their search. Sources come back in `web_search_call.action.sources`
++// without asking for them via `include`.
++
++const XAI_RESPONSES_URL = "https://api.x.ai/v1/responses";
++const CONFIG_PATH = getWebSearchConfigPath();
++const SEARCH_TIMEOUT_MS = 60_000;
++
++// Ordered best-first. pi's builtin xai catalog is small and xAI retires models
++// briskly, so this is a preference list, not an assumption: the first one the
++// registry actually knows wins, and an unknown id is skipped rather than sent.
++const AUTH_MODEL_CANDIDATES = ["grok-4.5", "grok-4.3", "grok-build-0.1"] as const;
++
++interface WebSearchConfig {
++	xaiApiKey?: unknown;
++}
++
++interface XaiAuth {
++	apiKey: string;
++	model: string;
++	headers: Record<string, string>;
++}
++
++let cachedConfig: WebSearchConfig | null = null;
++
++function loadConfig(): WebSearchConfig {
++	if (cachedConfig) return cachedConfig;
++	if (!existsSync(CONFIG_PATH)) {
++		cachedConfig = {};
++		return cachedConfig;
++	}
++
++	const raw = readFileSync(CONFIG_PATH, "utf-8");
++	try {
++		cachedConfig = JSON.parse(raw) as WebSearchConfig;
++		return cachedConfig;
++	} catch (err) {
++		const message = err instanceof Error ? err.message : String(err);
++		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
++	}
++}
++
++/**
++ * Resolve auth from pi's model registry first, so a Grok subscription pays for
++ * its own searches and no api key has to be configured at all. Mirrors how the
++ * OpenAI backend picks up a Codex sign-in.
++ */
++async function resolvePiAuth(ctx: ExtensionContext): Promise<XaiAuth | undefined> {
++	for (const modelId of AUTH_MODEL_CANDIDATES) {
++		try {
++			const model = ctx.modelRegistry.find("xai", modelId);
++			if (!model) continue;
++			const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
++			if (resolved.ok && resolved.apiKey) {
++				return { apiKey: resolved.apiKey, model: modelId, headers: resolved.headers ?? {} };
++			}
++		} catch {
++		}
++	}
++	return undefined;
++}
++
++export async function resolveXaiAuth(ctx?: ExtensionContext, signal?: AbortSignal): Promise<XaiAuth | undefined> {
++	if (ctx) {
++		const auth = await resolvePiAuth(ctx);
++		if (auth) return auth;
++	}
++
++	const config = loadConfig();
++	const hasSource = hasCredentialSource({
++		provider: "xAI",
++		configuredValue: config.xaiApiKey,
++		environmentValue: process.env.XAI_API_KEY,
++	});
++	if (!hasSource) return undefined;
++	const apiKey = await resolveCredential({
++		provider: "xAI",
++		configuredValue: config.xaiApiKey,
++		environmentValue: process.env.XAI_API_KEY,
++		signal,
++	});
++	return apiKey ? { apiKey, model: AUTH_MODEL_CANDIDATES[0], headers: {} } : undefined;
++}
++
++export async function isXaiSearchAvailable(ctx?: ExtensionContext): Promise<boolean> {
++	if (ctx && await resolvePiAuth(ctx)) return true;
++	const config = loadConfig();
++	return hasCredentialSource({
++		provider: "xAI",
++		configuredValue: config.xaiApiKey,
++		environmentValue: process.env.XAI_API_KEY,
++	});
++}
++
++function normalizeDomain(value: string): string | null {
++	let input = value.trim().toLowerCase();
++	if (!input) return null;
++	if (input.startsWith("-")) input = input.slice(1).trim();
++	if (!input) return null;
++	try {
++		const parsed = input.includes("://") ? new URL(input) : new URL(`https://${input}`);
++		input = parsed.hostname;
++	} catch {
++		input = input.split("/")[0]?.split(":")[0] ?? "";
++	}
++	input = input.replace(/^\.+|\.+$/g, "");
++	return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(input) ? input : null;
++}
++
++/**
++ * Recency, result count and domain filters are folded into the prompt rather
++ * than sent as tool parameters. xAI's filter field names are not verified, and
++ * an unknown field risks a 400 that costs the whole search; steering through
++ * the instruction text degrades to "the model ignored it" instead.
++ */
++function buildInput(query: string, options: SearchOptions): string {
++	const lines = [
++		"Search the web and answer using only what the web results say.",
++		"Cite your sources inline.",
++	];
++
++	if (options.recencyFilter) {
++		const labels: Record<string, string> = {
++			day: "past 24 hours",
++			week: "past week",
++			month: "past month",
++			year: "past year",
++		};
++		lines.push(`Prefer sources from the ${labels[options.recencyFilter]}.`);
++	}
++
++	if (typeof options.numResults === "number" && Number.isFinite(options.numResults) && options.numResults > 0) {
++		lines.push(`Prefer around ${Math.min(Math.floor(options.numResults), 20)} distinct sources.`);
++	}
++
++	const allowed: string[] = [];
++	const blocked: string[] = [];
++	for (const raw of options.domainFilter ?? []) {
++		const domain = normalizeDomain(raw);
++		if (!domain) continue;
++		const target = raw.trim().startsWith("-") ? blocked : allowed;
++		if (!target.includes(domain)) target.push(domain);
++	}
++	if (allowed.length > 0) lines.push(`Only use sources from: ${allowed.slice(0, 100).join(", ")}.`);
++	if (blocked.length > 0) lines.push(`Do not use sources from: ${blocked.slice(0, 100).join(", ")}.`);
++
++	return `${lines.join(" ")}\n\n${query}`;
++}
++
++function addResult(results: SearchResult[], seen: Set<string>, url: unknown, title: unknown, snippet = ""): void {
++	if (typeof url !== "string" || url.trim().length === 0) return;
++	if (seen.has(url)) return;
++	seen.add(url);
++	results.push({
++		title: typeof title === "string" && title.trim().length > 0 ? title : url,
++		url,
++		snippet,
++	});
++}
++
++function extractSnippetAround(text: string, start: unknown, end: unknown): string {
++	if (typeof start !== "number" || typeof end !== "number" || !text) return "";
++	const before = Math.max(0, start - 100);
++	const after = Math.min(text.length, end + 100);
++	const snippet = text.slice(before, after).replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").trim();
++	return snippet.length > 300 ? `${snippet.slice(0, 297)}...` : snippet;
++}
++
++function extractAnswer(output: unknown[]): string {
++	const parts: string[] = [];
++	for (const item of output) {
++		if (!item || typeof item !== "object" || (item as { type?: unknown }).type !== "message") continue;
++		const content = (item as { content?: unknown }).content;
++		if (!Array.isArray(content)) continue;
++		for (const part of content) {
++			if (!part || typeof part !== "object") continue;
++			const text = (part as { text?: unknown }).text;
++			if (typeof text === "string" && text.trim().length > 0) parts.push(text);
++		}
++	}
++	return parts.join("\n").trim();
++}
++
++/**
++ * Sources live in two places and neither is a top-level `citations` array:
++ * `url_citation` annotations on the answer text (these carry titles and offsets,
++ * so they go first and win the dedupe), and the raw `sources` each
++ * `web_search_call` visited. A third-party extension that reads `data.citations`
++ * silently returns answers with no sources at all — hence both paths here.
++ */
++function extractSearchResults(output: unknown[], numResults: number | undefined): SearchResult[] {
++	const results: SearchResult[] = [];
++	const seenUrls = new Set<string>();
++
++	for (const item of output) {
++		if (!item || typeof item !== "object" || (item as { type?: unknown }).type !== "message") continue;
++		const content = (item as { content?: unknown }).content;
++		if (!Array.isArray(content)) continue;
++		for (const part of content) {
++			if (!part || typeof part !== "object") continue;
++			const text = typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "";
++			const annotations = (part as { annotations?: unknown }).annotations;
++			if (!Array.isArray(annotations)) continue;
++			for (const annotation of annotations) {
++				if (!annotation || typeof annotation !== "object") continue;
++				if ((annotation as { type?: unknown }).type !== "url_citation") continue;
++				addResult(
++					results,
++					seenUrls,
++					(annotation as { url?: unknown }).url,
++					(annotation as { title?: unknown }).title,
++					extractSnippetAround(text, (annotation as { start_index?: unknown }).start_index, (annotation as { end_index?: unknown }).end_index),
++				);
++			}
++		}
++	}
++
++	for (const item of output) {
++		if (!item || typeof item !== "object" || (item as { type?: unknown }).type !== "web_search_call") continue;
++		const value = item as { action?: unknown; sources?: unknown; results?: unknown };
++		const actionSources = value.action && typeof value.action === "object"
++			? (value.action as { sources?: unknown }).sources
++			: undefined;
++		for (const group of [actionSources, value.sources, value.results]) {
++			if (!Array.isArray(group)) continue;
++			for (const source of group) {
++				if (!source || typeof source !== "object") continue;
++				const record = source as Record<string, unknown>;
++				addResult(results, seenUrls, record.url ?? record.source_website_url, record.title ?? record.caption);
++			}
++		}
++	}
++
++	if (typeof numResults === "number" && Number.isFinite(numResults) && numResults > 0) {
++		return results.slice(0, Math.min(Math.floor(numResults), 20));
++	}
++	return results;
++}
++
++export async function searchWithXai(
++	query: string,
++	options: SearchOptions = {},
++	ctx?: ExtensionContext,
++): Promise<SearchResponse> {
++	const auth = await resolveXaiAuth(ctx, options.signal);
++	if (!auth) {
++		throw new Error(
++			"xAI web search unavailable. Either:\n" +
++			"  1. Use /login to sign in with a SuperGrok or X Premium subscription\n" +
++			`  2. Create ${CONFIG_PATH} with { "xaiApiKey": "your-key" }\n` +
++			"  3. Set XAI_API_KEY environment variable",
++		);
++	}
++
++	const activityId = activityMonitor.logStart({ type: "api", query });
++	try {
++		const response = await fetch(XAI_RESPONSES_URL, {
++			method: "POST",
++			headers: {
++				...auth.headers,
++				Authorization: `Bearer ${auth.apiKey}`,
++				"Content-Type": "application/json",
++			},
++			body: JSON.stringify({
++				model: auth.model,
++				input: buildInput(query, options),
++				tools: [{ type: "web_search" }],
++			}),
++			signal: options.signal
++				? AbortSignal.any([AbortSignal.timeout(SEARCH_TIMEOUT_MS), options.signal])
++				: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
++		});
++
++		if (!response.ok) {
++			activityMonitor.logError(activityId, `HTTP ${response.status}`);
++			const errorText = redactCredential(await response.text(), auth.apiKey);
++			throw new Error(`xAI API error ${response.status}: ${errorText.slice(0, 300)}`);
++		}
++
++		let parsed: Record<string, unknown>;
++		try {
++			parsed = await response.json() as Record<string, unknown>;
++		} catch (err) {
++			const message = err instanceof Error ? err.message : String(err);
++			throw new Error(`xAI API returned invalid JSON: ${message}`);
++		}
++		const output = Array.isArray(parsed.output) ? parsed.output : [];
++		const answer = extractAnswer(output);
++		const results = extractSearchResults(output, options.numResults);
++
++		if (!answer && results.length === 0) {
++			throw new Error("xAI web_search returned no answer or sources");
++		}
++
++		activityMonitor.logComplete(activityId, response.status);
++		return { answer, results };
++	} catch (err) {
++		const message = err instanceof Error ? err.message : String(err);
++		const redactedMessage = redactCredential(message, auth.apiKey);
++		if (redactedMessage.toLowerCase().includes("abort")) {
++			activityMonitor.logComplete(activityId, 0);
++		} else {
++			activityMonitor.logError(activityId, redactedMessage);
++		}
++		if (redactedMessage === message) throw err;
++		const redactedError = new Error(redactedMessage);
++		if (err instanceof Error) redactedError.name = err.name;
++		throw redactedError;
++	}
++}

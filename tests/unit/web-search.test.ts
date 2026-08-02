@@ -18,6 +18,10 @@ const {
   WEB_SEARCH_FIELDS
 } = await import('../../src/main/pi/web-search');
 
+// The picker's own catalogue. Both files list the same backends for different
+// consumers, and each says it mirrors the other — but nothing enforced it.
+const { SEARCH_BACKENDS: PICKER_BACKENDS } = await import('../../src/renderer/manage/searchBackends');
+
 // BUG-005. The IPC handler used to gate the web-search.json rewrite on `provider`
 // plus two names (`searxngUrl`, `apiKeys`) that the settings migration renamed
 // long ago — so a credential-only edit was written to settings.json, shown as
@@ -142,6 +146,15 @@ describe('writeWebSearchConfig', () => {
     expect(read().searxngBaseUrl).toBe('https://search.example.com');
   });
 
+  // xai is explicit-only in pi-web-access: `auto` and `all` never reach for it,
+  // so the only way a Grok search ever happens is this field being written.
+  it('pins xai when the user picks Grok, with no key of its own', async () => {
+    await writeWebSearchConfig({ ...base, provider: 'xai' });
+    const file = read();
+    expect(file.provider).toBe('xai');
+    expect(file).not.toHaveProperty('xaiApiKey');
+  });
+
   it('keeps every backend key at once, so switching backends loses nothing', async () => {
     await writeWebSearchConfig({
       ...base,
@@ -167,6 +180,18 @@ describe('writeWebSearchConfig', () => {
     await writeWebSearchConfig({ ...base, credentials });
     const file = read();
     for (const field of WEB_SEARCH_FIELDS) expect(file[field]).toBe(`${field}-value`);
+  });
+
+  // A backend the picker offers but the writer doesn't know is a dead option:
+  // selecting it writes nothing, and the search silently keeps using the old
+  // backend. The reverse — a field only main knows — is unreachable from the UI.
+  it('offers the same backends in the picker and the config writer', () => {
+    const ids = (list: readonly { id: string }[]) => list.map((b) => b.id).sort();
+    expect(ids(PICKER_BACKENDS)).toEqual(ids(SEARCH_BACKENDS));
+    for (const picker of PICKER_BACKENDS) {
+      const main = SEARCH_BACKENDS.find((b) => b.id === picker.id);
+      expect(main?.field ?? null).toBe(picker.field);
+    }
   });
 
   it('exposes a credential field for every backend that needs one', () => {

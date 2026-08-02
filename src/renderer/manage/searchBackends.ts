@@ -14,6 +14,7 @@
  *   Providers; otherwise a key. This is the ChatGPT case: pi-web-access resolves
  *   OpenAI auth through pi's model registry first (openai-codex, then openai), so
  *   a ChatGPT subscription pays for its own searches and `openaiApiKey` stays empty.
+ *   Grok works the same way through the `xai` provider.
  * - `required` — dead until its credential is filled in.
  */
 export type KeyNeed = 'none' | 'keyless' | 'signin' | 'required';
@@ -26,6 +27,12 @@ export interface SearchBackend {
   need: KeyNeed;
   /** Provider ids (as runtimeStatus reports them) whose auth unlocks it keyless. */
   signedInBy?: string[];
+  /**
+   * How that sign-in reads in the status line ("uses your ChatGPT sign-in").
+   * Named per backend rather than derived from `label`, which carries the vendor
+   * ("ChatGPT / OpenAI") where the status wants the account.
+   */
+  signInName?: string;
   placeholder?: string;
   note?: string;
 }
@@ -60,8 +67,22 @@ export const SEARCH_BACKENDS: SearchBackend[] = [
     field: 'openaiApiKey',
     need: 'signin',
     signedInBy: ['openai-codex', 'openai'],
+    signInName: 'ChatGPT',
     placeholder: 'sk-…',
     note: 'Searches bill to the ChatGPT account you connect under AI Providers above.'
+  },
+  {
+    id: 'xai',
+    label: 'Grok / xAI',
+    field: 'xaiApiKey',
+    need: 'signin',
+    signedInBy: ['xai'],
+    signInName: 'Grok',
+    placeholder: 'xai-…',
+    // Worth stating plainly: this is the one backend that spends something the
+    // user also needs for chatting. A single question fans out to roughly a
+    // dozen searches inside Grok's own inference.
+    note: 'Grok searches the web itself. No key needed, but each search draws on the same allowance as your Grok chats.'
   },
   {
     id: 'exa',
@@ -138,9 +159,10 @@ export function backendState(
   if (b.need === 'signin') {
     // A sign-in is not a key, so this belongs with the keyless backends — the
     // whole point being that it costs you nothing extra to pick it.
+    const account = b.signInName ?? b.label;
     return (b.signedInBy ?? []).some((p) => providers.includes(p))
-      ? { ready: true, group: 'keyless', status: 'no key needed — uses your ChatGPT sign-in' }
-      : { ready: false, group: 'unset', status: 'needs a ChatGPT sign-in or a key' };
+      ? { ready: true, group: 'keyless', status: `no key needed — uses your ${account} sign-in` }
+      : { ready: false, group: 'unset', status: `needs a ${account} sign-in or a key` };
   }
   return {
     ready: false,

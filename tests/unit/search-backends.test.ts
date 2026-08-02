@@ -58,6 +58,30 @@ describe('search backend readiness', () => {
     });
   });
 
+  // Grok reaches the same `signin` route through pi's model registry, so the
+  // status line has to name the account the user actually connected. It used to
+  // say "ChatGPT" for every signin backend, which would be simply wrong here.
+  it('reports Grok as ready once the xAI subscription is signed in, and names it', () => {
+    const state = backendState(backend('xai'), {}, ['xai']);
+    expect(state).toEqual({
+      ready: true,
+      group: 'keyless',
+      status: 'no key needed — uses your Grok sign-in'
+    });
+  });
+
+  it('reports Grok as blocked with no sign-in and no key', () => {
+    expect(backendState(backend('xai'), {}, ['openai-codex'])).toEqual({
+      ready: false,
+      group: 'unset',
+      status: 'needs a Grok sign-in or a key'
+    });
+  });
+
+  it('warns that Grok searches share the chat allowance', () => {
+    expect(backend('xai').note).toMatch(/same allowance as your Grok chats/);
+  });
+
   it('lets a pasted key stand in for the sign-in', () => {
     expect(backendState(backend('openai'), { openaiApiKey: 'sk-1' }, [])).toEqual({
       ready: true,

@@ -64,6 +64,7 @@ test('every backend is selectable, independent of the chat model', async ({ main
       'tinyfish',
       'serpdive',
       'anysearch',
+      'xai',
       'searxng'
     ].sort()
   );
