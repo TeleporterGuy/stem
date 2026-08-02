@@ -80,13 +80,22 @@ inference, run one after another — median web-search turn went 39.6s → 99.8s
 average tool time up ~10x (Stem's own `turn_timings` rows say so). Nothing failed;
 nothing measured it either.
 
+Underneath that was a second, larger cost with the same cause: the extension's
+`auto` chain tried an *LLM-mediated* backend second, so every query spent a whole
+extra inference (4–12s, plus ChatGPT quota) on a model whose job was to run the
+query and quote the results — while a plain index lookup one branch below did the
+same work in ~0.4s with no credential at all. The old native path was fast because
+there was no second model; being provider-agnostic never required adding one.
+
 **`tests/unit/web-search-latency.test.ts` (hermetic, in `npm test`)** is the guard
-that would have caught it. It asserts the *shape* of the work rather than a
+that would have caught both. It asserts the *shape* of the work rather than a
 duration: N queries issue N upstream calls, those calls overlap, the call as a
-whole has a deadline that degrades to partial results, and the model behind the
-search is pinned instead of discovered from the registry. A serial implementation
-fails it deterministically, offline, in milliseconds — no network, no flake, and
-no threshold anyone can quietly raise.
+whole has a deadline that degrades to partial results, no backend that runs an
+inference is reached before one that just queries an index, and the model behind
+the fallback backend is pinned instead of discovered from the registry. A serial
+implementation — or an upstream bump that reshuffles the chain — fails it
+deterministically, offline, in milliseconds: no network, no flake, and no threshold
+anyone can quietly raise.
 
 **`tests/e2e/perf.spec.ts` (`npm run test:perf`)** is the backstop for what shape
 cannot prove: real pi, real network, real quota, opt-in via `STEM_PERF=1`. It runs

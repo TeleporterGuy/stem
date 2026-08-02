@@ -15,11 +15,25 @@ import type { SourceRef, WebSearchSettings } from '../../shared/types';
 //
 // pi-web-access registers real pi tools (`web_search`, `fetch_content`,
 // `get_search_content`) that work the same on every provider, because the search
-// happens in the extension rather than inside the provider's own inference. Its
-// OpenAI backend resolves auth through pi's model registry and posts to the Codex
-// Responses endpoint, so a ChatGPT subscription still pays for its own searches
-// exactly as before — and everyone else falls back down the chain to a keyed
-// backend, a self-hosted SearXNG, or keyless Exa MCP.
+// happens in the extension rather than inside the provider's own inference.
+//
+// The catch, and what the patched `auto` chain is about: "the search happens in the
+// extension" does not have to mean "the search costs a model". The package's own
+// ordering tried its OpenAI backend second, which spends a whole extra inference —
+// 4-12s, plus ChatGPT quota — asking a model to run a query and quote the results.
+// The old native trick was fast precisely because it had no such second model: the
+// provider's hosted tool ran inside the chat model's own request. Nothing about
+// being provider-agnostic requires giving that up. So the chain is reordered to try
+// plain index lookups first (self-hosted SearXNG, then any keyed backend, then Exa's
+// keyless MCP endpoint at ~0.4s and no credential at all), and to fall back to an
+// LLM-mediated backend only when every one of them is unreachable. Synthesis then
+// happens where it was always going to happen anyway — in the chat model, which is
+// mid-inference over the results regardless of who fetched them.
+//
+// That ordering is what makes this fast for the users the OpenAI backend never
+// helped in the first place: on Claude, OpenRouter, Ollama or LM Studio there is no
+// Codex subscription to fall back on, so the detour bought them nothing but a place
+// in the queue.
 //
 // The package is a pinned production dependency (never `pi install`ed at runtime:
 // a packaged desktop app has no npm and may have no network on first launch). pi
@@ -33,30 +47,36 @@ import type { SourceRef, WebSearchSettings } from '../../shared/types';
 const PACKAGE = 'pi-web-access';
 
 /**
- * Which model backs the OpenAI search backend. Every query is a full inference on
- * it (the backend posts to the Responses endpoint and lets the provider's hosted
- * web_search run inside that call), so this is the single biggest lever on how
- * long a search takes — and it is NOT the model the user is chatting with.
+ * Which model backs the OpenAI search backend — a FALLBACK path, not the default
+ * one. That backend answers a query by running a whole separate inference (it posts
+ * to the Responses endpoint and lets the provider's hosted web_search run inside
+ * that call), which is 4-12s and a subscription's quota to do what an index lookup
+ * does in under a second. So the patched `auto` chain reaches it only when every
+ * real search engine is unavailable or erroring — see the ordering rule in
+ * tests/unit/web-search-latency.test.ts — and it is reachable directly only if the
+ * user explicitly picks `openai` in settings.
  *
- * Pinned because the package otherwise walks its own candidate ladder and takes
- * the first id present in pi's registry (`AUTH_MODEL_CANDIDATES` in
- * openai-search.ts). Adding a model to the signed-in account would then silently
- * re-point every search at it: no setting changed, no code changed, searches just
- * get slower or dearer. `tests/unit/web-search-latency.test.ts` holds the pin.
+ * Pinned because the package otherwise walks its own candidate ladder and takes the
+ * first id present in pi's registry (`AUTH_MODEL_CANDIDATES` in openai-search.ts).
+ * Adding a model to the signed-in account would then silently re-point every search
+ * at it: no setting changed, no code changed, searches just get slower or dearer.
  *
- * Raise it deliberately, and re-run `npm run test:perf` when you do.
+ * The id is not a maintenance treadmill: models rotate out, and when this one does,
+ * `searchModelCandidates` finds nothing in the registry for it and falls straight
+ * through to that same ladder. A stale pin degrades to the old behaviour rather
+ * than breaking search.
  *
- * `mini` rather than the full `gpt-5.4` because a benchmark of the exact request
- * the backend sends (same instructions, same hosted web_search tool, 3 queries x 2
- * reps) put it at 4.2s median against 6.3s, returning the same number of sources
- * and the same one search round. What is being asked of this model is "run the
- * query, quote what came back" — the reasoning that the larger id is paying for
- * happens in the chat model afterwards, on the results.
+ * `mini` on measurement, not on reputation — same request, same hosted tool, 3
+ * queries x 2 reps: gpt-5.4-mini 4.2s median, gpt-5.6-luna 6.4s (and a 28s tail
+ * where it took three search rounds), gpt-5.4 6.3s, and mini is the cheapest of the
+ * three per token. What this model is asked to do is "run the query, quote what came
+ * back"; the reasoning the bigger ids charge for happens in the chat model
+ * afterwards, on the results.
  *
- * Things that measured WORSE and are not worth retrying: `reasoning.effort: low`
- * (8-12s — a smaller thinking budget makes the hosted model take MORE search
- * rounds, and rounds are what cost), and instructing it to search exactly once
- * (no effect; it already does).
+ * Measured WORSE, not worth retrying: `reasoning.effort: low` (8-12s — a smaller
+ * thinking budget makes the hosted model take MORE search rounds, and rounds are the
+ * unit of cost), and instructing it to search exactly once (no effect; it already
+ * does). Re-run `npm run test:perf` if you change it.
  */
 export const OPENAI_SEARCH_MODEL = 'gpt-5.4-mini';
 

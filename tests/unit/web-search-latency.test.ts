@@ -21,7 +21,7 @@
 //   3. The call as a whole has a deadline, and blowing it degrades to partial
 //      results instead of hanging the turn.
 //   4. The model behind the search is pinned, not "first id found in the registry".
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -196,6 +196,122 @@ describe('the call as a whole is bounded', () => {
     expect(DEFAULT_SEARCH_CONCURRENCY).toBeGreaterThanOrEqual(3);
     // A user is watching a spinner for this long. 4 queries x 60s serial was 4min.
     expect(DEFAULT_SEARCH_BUDGET_MS).toBeLessThanOrEqual(120_000);
+  });
+});
+
+// The second half of the same regression, and the bigger half. Concurrency fixed
+// "four queries take four times as long"; it did nothing about "one query costs a
+// whole model inference".
+//
+// pi-web-access's `auto` chain tried the OpenAI backend second, right after a
+// self-hosted SearXNG — so on any machine signed into a ChatGPT subscription,
+// every search spun up a SECOND model (not the one in the picker) whose entire job
+// was to run the query and quote back what came out. Measured against the same
+// queries: 4-12s for that, versus ~0.4s for Exa's keyless index lookup, which needs
+// no subscription and no API key and therefore works identically for Claude,
+// OpenRouter, Ollama and LM Studio users — who got no benefit from the OpenAI
+// detour at all, only its position in the chain.
+//
+// The rule this pins: in `auto`, no backend that runs an inference may be reached
+// before one that just queries an index. It is a property of the vendored chain,
+// so an upstream bump that reshuffles it fails here rather than in a stopwatch.
+describe('auto never pays for an inference it does not need', () => {
+  const chain = [
+    'searxng',
+    'brave',
+    'parallel',
+    'tinyfish',
+    'tavily',
+    'serpdive',
+    'exa',
+    'openai',
+    'perplexity',
+    'gemini'
+  ] as const;
+
+  /**
+   * Load the vendored auto chain with every backend stubbed, so `search()` returns
+   * the id of whichever one the chain reached first.
+   */
+  async function pickedBackend(available: Partial<Record<(typeof chain)[number], boolean>>) {
+    const called: string[] = [];
+    const stub = (id: string, availableName: string, searchName: string) => {
+      vi.doMock(`pi-web-access/${id === 'openai' ? 'openai-search' : id}.ts`, () => ({
+        [availableName]: () => available[id as (typeof chain)[number]] ?? false,
+        [searchName]: async () => {
+          called.push(id);
+          return { answer: id, results: [] };
+        }
+      }));
+    };
+    stub('searxng', 'isSearXNGAvailable', 'searchWithSearXNG');
+    stub('brave', 'isBraveAvailable', 'searchWithBrave');
+    stub('parallel', 'isParallelAvailable', 'searchWithParallel');
+    stub('tinyfish', 'isTinyFishAvailable', 'searchWithTinyFish');
+    stub('tavily', 'isTavilyAvailable', 'searchWithTavily');
+    stub('serpdive', 'isSerpdiveAvailable', 'searchWithSerpdive');
+    stub('exa', 'isExaAvailable', 'searchWithExa');
+    // The OpenAI backend's availability check is async, and it is the one under test.
+    vi.doMock('pi-web-access/openai-search.ts', () => ({
+      isOpenAISearchAvailable: async () => available.openai ?? false,
+      searchWithOpenAI: async () => {
+        called.push('openai');
+        return { answer: 'openai', results: [] };
+      }
+    }));
+    vi.doMock('pi-web-access/perplexity.ts', () => ({
+      isPerplexityAvailable: () => available.perplexity ?? false,
+      searchWithPerplexity: async () => {
+        called.push('perplexity');
+        return { answer: 'perplexity', results: [] };
+      }
+    }));
+
+    const { search } = await import('pi-web-access/gemini-search.ts');
+    const result = await search('anything', {});
+    return { provider: result.provider, called };
+  }
+
+  const emptyPiHome = mkdtempSync(join(tmpdir(), 'stem-websearch-chain-'));
+
+  beforeEach(() => {
+    vi.resetModules();
+    // No web-search.json => provider `auto`, nothing configured. The chain caches
+    // its config per module, so the reset above matters.
+    process.env.PI_CODING_AGENT_DIR = emptyPiHome;
+  });
+  afterEach(() => {
+    vi.doUnmock('pi-web-access/gemini-search.ts');
+    delete process.env.PI_CODING_AGENT_DIR;
+  });
+
+  it('reaches the keyless index instead of a model, on a subscription machine', async () => {
+    // The exact shipped situation: signed into ChatGPT, no search keys configured.
+    const { provider, called } = await pickedBackend({ openai: true, exa: true });
+    expect(provider).toBe('exa');
+    expect(called).not.toContain('openai');
+  });
+
+  it('prefers a backend the user configured over the keyless default', async () => {
+    const { provider } = await pickedBackend({ brave: true, openai: true, exa: true });
+    expect(provider).toBe('brave');
+  });
+
+  it('still falls back to a model when every index is unreachable', async () => {
+    const { provider } = await pickedBackend({ openai: true, exa: false });
+    expect(provider).toBe('openai');
+  });
+
+  it('orders every no-LLM backend ahead of every LLM-mediated one', async () => {
+    // Read as a property of the chain rather than of one lookup: whichever backends
+    // happen to be available, the first one reached is never an inference while a
+    // plain index lookup is still on the table.
+    const llm = new Set(['openai', 'perplexity', 'gemini']);
+    for (const candidate of chain.filter((c) => !llm.has(c))) {
+      vi.resetModules();
+      const { provider } = await pickedBackend({ [candidate]: true, openai: true, perplexity: true });
+      expect(provider, `${candidate} lost to an LLM-mediated backend`).toBe(candidate);
+    }
   });
 });
 

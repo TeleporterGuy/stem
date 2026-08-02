@@ -6,8 +6,8 @@
       "prompt": "Reply with exactly the single word PONG in uppercase and nothing else.",
       "expect": "pong",
       "budgetMs": {
-        "totalMs": 30000,
-        "ttftMs": 20000
+        "totalMs": 15000,
+        "ttftMs": 10000
       }
     },
     "web-search": {
@@ -15,8 +15,8 @@
       "expect": "node",
       "requireTools": true,
       "budgetMs": {
-        "totalMs": 75000,
-        "toolMs": 50000
+        "totalMs": 35000,
+        "toolMs": 25000
       }
     },
     "web-search-multi": {
@@ -25,33 +25,33 @@
       "expect": "\\w",
       "requireTools": true,
       "budgetMs": {
-        "totalMs": 60000,
-        "toolMs": 45000
+        "totalMs": 30000,
+        "toolMs": 20000
       }
     }
   },
   "measured": {
-    "note": "Reference points from turn_timings on the author's machine, medians over web-search turns. Native provider-side search (<=2026-07-28): total 39.6s, tool 13.2s avg. Sequential pi-web-access (2026-07-29..08-02, the regression): total 99.8s, tool 127.1s avg.",
+    "note": "Reference points from turn_timings on the author's machine, medians over web-search turns. Native provider-side search (<=2026-07-28): total 39.6s, tool 13.2s avg. Sequential pi-web-access (2026-07-29..08-02, the regression): total 99.8s, tool 127.1s avg. Then, on this harness: concurrent queries, total 15.4s / tool 12.4s; gpt-5.4-mini backing the OpenAI backend, 13.9s / 11.0s; auto reordered so an index lookup beats an inference, the numbers below.",
     "plain": {
-      "totalMs": 2365,
+      "totalMs": 1672,
       "toolMs": 0,
-      "thinkingMs": 210,
-      "answerMs": 92,
-      "ttftMs": 2111
+      "thinkingMs": 50,
+      "answerMs": 146,
+      "ttftMs": 1140
     },
     "web-search": {
-      "totalMs": 13893,
-      "toolMs": 11044,
-      "thinkingMs": 611,
-      "answerMs": 150,
-      "ttftMs": 13674
+      "totalMs": 10024,
+      "toolMs": 7828,
+      "thinkingMs": 1148,
+      "answerMs": 109,
+      "ttftMs": 9882
     },
     "web-search-multi": {
-      "totalMs": 10392,
-      "toolMs": 7003,
-      "thinkingMs": 1329,
-      "answerMs": 144,
-      "ttftMs": 10071
+      "totalMs": 8381,
+      "toolMs": 5912,
+      "thinkingMs": 707,
+      "answerMs": 103,
+      "ttftMs": 7306
     }
   }
 }

@@ -1,5 +1,5 @@
 diff --git a/node_modules/pi-web-access/gemini-search.ts b/node_modules/pi-web-access/gemini-search.ts
-index d1e9242..4082cbd 100644
+index d1e9242..7517cb3 100644
 --- a/node_modules/pi-web-access/gemini-search.ts
 +++ b/node_modules/pi-web-access/gemini-search.ts
 @@ -14,9 +14,10 @@ import { isTavilyAvailable, searchWithTavily } from "./tavily.ts";
@@ -47,7 +47,75 @@ index d1e9242..4082cbd 100644
  	return provider.charAt(0).toUpperCase() + provider.slice(1);
  }
  
-@@ -547,7 +551,7 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
+@@ -446,28 +450,6 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
+ 		}
+ 	}
+ 
+-	if (shouldTryOpenAIInAuto(options)) {
+-		try {
+-			if (await isOpenAISearchAvailable(options.extensionContext)) {
+-				const result = await searchWithOpenAI(query, options, options.extensionContext);
+-				return { ...result, provider: "openai" };
+-			}
+-		} catch (err) {
+-			if (isAbortError(err)) throw err;
+-			fallbackErrors.push(`OpenAI: ${errorMessage(err)}`);
+-		}
+-	}
+-
+-	if (isExaAvailable()) {
+-		try {
+-			const result = await searchWithExa(query, options);
+-			if (result) return { ...result, provider: "exa" };
+-		} catch (err) {
+-			if (err instanceof CredentialResolutionError || isAbortError(err)) throw err;
+-			fallbackErrors.push(`Exa: ${errorMessage(err)}`);
+-		}
+-	}
+-
+ 	if (isBraveAvailable()) {
+ 		try {
+ 			const result = await searchWithBrave(query, options);
+@@ -518,6 +500,38 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
+ 		}
+ 	}
+ 
++	// Keyless terminus of the no-LLM half of the chain: Exa's public MCP endpoint
++	// needs no credential and answers in ~0.4s, so `auto` reaches a real search
++	// engine without a subscription, an API key, or a second inference.
++	if (isExaAvailable()) {
++		try {
++			const result = await searchWithExa(query, options);
++			if (result) return { ...result, provider: "exa" };
++		} catch (err) {
++			if (err instanceof CredentialResolutionError || isAbortError(err)) throw err;
++			fallbackErrors.push(`Exa: ${errorMessage(err)}`);
++		}
++	}
++
++	// ---- LLM-mediated backends: a whole model inference per query ----
++	//
++	// These used to sit at the top of the chain, which meant `auto` spent 5-12s and
++	// a subscription's quota on a second model just to run a query and quote the
++	// results back — while an index lookup one branch below did the same job in
++	// under a second. They belong here: reached only when every engine above is
++	// unavailable or erroring, as a genuinely-better-than-nothing fallback.
++	if (shouldTryOpenAIInAuto(options)) {
++		try {
++			if (await isOpenAISearchAvailable(options.extensionContext)) {
++				const result = await searchWithOpenAI(query, options, options.extensionContext);
++				return { ...result, provider: "openai" };
++			}
++		} catch (err) {
++			if (isAbortError(err)) throw err;
++			fallbackErrors.push(`OpenAI: ${errorMessage(err)}`);
++		}
++	}
++
+ 	if (isPerplexityAvailable()) {
+ 		try {
+ 			const result = await searchWithPerplexity(query, options);
+@@ -547,7 +561,7 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
  		"  3. Set OPENAI_API_KEY, BRAVE_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY, TAVILY_API_KEY, SERPDIVE_API_KEY, SEARXNG_BASE_URL, EXA_API_KEY, PERPLEXITY_API_KEY, GEMINI_API_KEY, or CLOUDFLARE_API_KEY env vars\n" +
  		"  4. Set GOOGLE_GEMINI_BASE_URL with CLOUDFLARE_API_KEY for Cloudflare AI Gateway routing\n" +
  		"  5. Sign into gemini.google.com in a supported Chromium-based browser\n" +
