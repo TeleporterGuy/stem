@@ -88,11 +88,13 @@ import {
   updateEscapeAction,
   updateExecSettings,
   updateMemorySettings,
+  updateReleaseNotesSettings,
   updateWebSearch,
   updateQuickChat,
   updateRetrievalSettings,
   updateSkillsSettings
 } from './workspace/settings';
+import { markReleaseNotesRead, releaseNotesSnapshot } from './workspace/release-notes';
 import { needsBackendRestart, needsWebSearchConfigWrite, writeWebSearchConfig } from './pi/web-search';
 import { activityLabel } from '../shared/activity';
 import type {
@@ -106,6 +108,7 @@ import type {
   ModelSummary,
   WebSearchSettings,
   PartialRetrievalSettings,
+  ReleaseNotesSettings,
   RetrievalStage,
   RetrievalTestResult,
   SkillsModelSettings,
@@ -1023,6 +1026,16 @@ function registerIpc(): void {
       if (needsBackendRestart(patch)) scheduleWebSearchRestart();
     }
     return next;
+  });
+  // "What's new": the snapshot carries the whole decision (which sections are
+  // unseen, and the silent marker advance when the popup is switched off), so the
+  // renderer only has to render what it's handed.
+  handleIpc('releaseNotes:get', () => releaseNotesSnapshot());
+  handleIpc('releaseNotes:markSeen', async () => {
+    await markReleaseNotesRead();
+  });
+  handleIpc('settings:updateReleaseNotes', async (_e, patch: Partial<ReleaseNotesSettings>) => {
+    return updateReleaseNotesSettings(patch);
   });
   handleIpc('settings:updateEscapeAction', async (_e, action: EscapeAction) => {
     // Just persist — the renderer reads escapeAction fresh from settings (mount +

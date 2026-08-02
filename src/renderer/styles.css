@@ -2247,6 +2247,33 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 }
 .mcp-approval-head .row-icon { color: var(--accent); display: inline-flex; }
 .task-alert-message { margin: 0 0 4px; font-size: var(--fs-13); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+/* ---- "What's new" release-notes dialog ---- */
+/* Wider and scrolling: this one holds prose, not a two-line question. */
+.release-notes-card { width: min(560px, calc(100vw - 48px)); }
+.release-notes-body {
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  padding-right: var(--sp-2);
+}
+.release-notes-section + .release-notes-section { margin-top: var(--sp-8); padding-top: var(--sp-6); border-top: 0.5px solid var(--hair); }
+.release-notes-version {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  font-size: var(--fs-14);
+  font-weight: 600;
+}
+.release-notes-version span { color: var(--muted); font-size: var(--fs-12); font-weight: 400; }
+/* The notes render through the MDX pipeline, which is tuned for a whole message
+   pane — pull its first/last margins in so the card doesn't gap at the seams. */
+.release-notes-section .mdx > :first-child { margin-top: var(--sp-4); }
+.release-notes-section .mdx > :last-child { margin-bottom: 0; }
+.release-notes-section .mdx h3 { font-size: var(--fs-12); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+/* Preference on the left, actions on the right; the rule separates them from the
+   scrolling body so clipped prose reads as "there's more" rather than "cut off". */
+.release-notes-actions { align-items: center; border-top: 0.5px solid var(--hair); padding-top: var(--sp-6); }
+.release-notes-actions .set-check { margin-right: auto; }
 .mcp-approval-detail {
   display: grid;
   grid-template-columns: max-content 1fr;

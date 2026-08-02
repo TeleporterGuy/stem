@@ -7,6 +7,7 @@ import type {
   EscapeAction,
   MessageMeta,
   ModelSummary,
+  ReleaseNotesSnapshot,
   RuntimeStatus,
   ScheduledTask,
   TaskNotifyPayload,
@@ -25,6 +26,7 @@ import { ExecApprovalCard } from './manage/ExecApprovalCard';
 import { DeleteThreadDialog } from './DeleteThreadDialog';
 import { ActivityIndicator } from './ui/ActivityIndicator';
 import { TaskAlertModal } from './TaskAlertModal';
+import { ReleaseNotesModal } from './ReleaseNotesModal';
 import { DropOverlay } from './files/DropOverlay';
 import { useAutoHideScroll } from './hooks/useAutoHideScroll';
 import { useShallowStable } from './hooks/useShallowStable';
@@ -97,6 +99,14 @@ export default function App() {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [taskAlerts, setTaskAlerts] = useState<TaskNotifyPayload[]>([]);
   const taskAlert = taskAlerts[0] ?? null;
+  // "What's new": set once, after onboarding, when this build has notes the user
+  // hasn't been shown. Null the rest of the time — including for a fresh install,
+  // which main seeds as already-seen so it never opens on a first launch.
+  const [releaseNotes, setReleaseNotes] = useState<ReleaseNotesSnapshot | null>(null);
+  const [releaseNotesShowAll, setReleaseNotesShowAll] = useState(false);
+  // The dialog only opens when the preference is on (main withholds `unseen`
+  // otherwise), so `true` is the state it opens in — not an assumption.
+  const [releaseNotesShowOnUpdate, setReleaseNotesShowOnUpdate] = useState(true);
   // Display-only mirror of pendingDraftFolderRef so the empty-state welcome can
   // tell the user which folder a new draft will be saved in (the ref itself is
   // non-reactive, used only on the send path).
@@ -241,6 +251,18 @@ export default function App() {
       window.removeEventListener('stem:escape-action', onChanged as EventListener);
     };
   }, []);
+
+  // Raise the release notes once the wizard is behind us (main returns nothing
+  // unseen before that). Fetched exactly once per launch — the notes ship inside
+  // the build, so they cannot change while the app is open.
+  const releaseNotesAskedRef = useRef(false);
+  useEffect(() => {
+    if (!onboardingCompleted || releaseNotesAskedRef.current || !window.stem) return;
+    releaseNotesAskedRef.current = true;
+    void window.stem.getReleaseNotes().then((snapshot) => {
+      if (snapshot.unseen.length > 0) setReleaseNotes(snapshot);
+    });
+  }, [onboardingCompleted]);
 
   // A retract request hands its captured text/attachments here; ChatView applies it
   // to the composer on the next render. Routed through App (not a direct setDraft)
@@ -1123,6 +1145,31 @@ export default function App() {
             void openChat(threadId);
           }}
           onDismiss={() => setTaskAlerts((queue) => dismissTaskAlert(queue))}
+        />
+      )}
+      {releaseNotes && (
+        <ReleaseNotesModal
+          title={
+            releaseNotesShowAll ? 'Release notes' : `What's new in Stem ${releaseNotes.appVersion}`
+          }
+          entries={
+            releaseNotesShowAll
+              ? releaseNotes.entries
+              : releaseNotes.entries.filter((e) => releaseNotes.unseen.includes(e.version))
+          }
+          showOnUpdate={releaseNotesShowOnUpdate}
+          onToggleShowOnUpdate={(value) => {
+            setReleaseNotesShowOnUpdate(value);
+            void window.stem.updateReleaseNotesSettings({ showOnUpdate: value });
+          }}
+          onShowAll={releaseNotesShowAll ? undefined : () => setReleaseNotesShowAll(true)}
+          onClose={() => {
+            setReleaseNotes(null);
+            setReleaseNotesShowAll(false);
+            // Mark read on dismissal, not on display: a popup the user never got
+            // to (a crash mid-launch) should still be waiting next time.
+            void window.stem.markReleaseNotesSeen();
+          }}
         />
       )}
       </div>

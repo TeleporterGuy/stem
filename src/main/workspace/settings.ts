@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
+import { app } from 'electron';
 import type {
   AppSettings,
   CustomInstructionsSettings,
@@ -20,6 +21,7 @@ import type {
   WebSearchSettings,
   PartialRetrievalSettings,
   QuickChatSettings,
+  ReleaseNotesSettings,
   RerankerMode,
   RerankerSettings,
   RetrievalSettings,
@@ -92,6 +94,10 @@ const DEFAULTS: AppSettings = {
   // First-run wizard: not completed until the user signs in (or the app first
   // reaches an authenticated status, e.g. seeded from an existing ~/.pi).
   onboarding: { completed: false },
+  // "What's new" popup: on, with nothing recorded as seen yet. A fresh install
+  // seeds lastSeenVersion when onboarding completes, so only an install that
+  // predates this feature ever reaches the popup with a null marker.
+  releaseNotes: { showOnUpdate: true, lastSeenVersion: null },
   // App-level default model ('provider/modelId'); null = built-in constant.
   // Set after onboarding to match the provider the user signed in with.
   defaults: { model: null },
@@ -269,6 +275,17 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   const onboarding: OnboardingSettings = {
     completed: typeof rawOb.completed === 'boolean' ? rawOb.completed : DEFAULTS.onboarding.completed
   };
+  const rawRn = (parsed?.releaseNotes ?? {}) as Partial<ReleaseNotesSettings>;
+  const releaseNotes: ReleaseNotesSettings = {
+    showOnUpdate:
+      typeof rawRn.showOnUpdate === 'boolean' ? rawRn.showOnUpdate : DEFAULTS.releaseNotes.showOnUpdate,
+    // Only a dotted-numeric version is a usable marker; anything else (a hand
+    // edit, an old tag string) reads as "nothing recorded".
+    lastSeenVersion:
+      typeof rawRn.lastSeenVersion === 'string' && /^\d+(\.\d+)*$/.test(rawRn.lastSeenVersion.trim())
+        ? rawRn.lastSeenVersion.trim()
+        : null
+  };
   const rawDef = (parsed?.defaults ?? {}) as Partial<DefaultsSettings>;
   const defaults: DefaultsSettings = {
     model: typeof rawDef.model === 'string' && rawDef.model.trim() ? rawDef.model : null
@@ -339,6 +356,7 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     escapeAction,
     customInstructions,
     onboarding,
+    releaseNotes,
     defaults,
     localProviders,
     mobile
@@ -461,14 +479,43 @@ export function updateExecSettings(patch: Partial<ExecSettings>): Promise<AppSet
   });
 }
 
-/** Mark the first-run wizard finished and persist; returns the full settings. */
+/**
+ * Mark the first-run wizard finished and persist; returns the full settings.
+ *
+ * Also seeds the "what's new" marker to the running version, so a brand-new user
+ * isn't greeted by release notes for versions they were never on. An install
+ * that predates the popup never runs this again, which is exactly how it gets
+ * the null marker that means "show what you're running, once".
+ */
 export function markOnboardingCompleted(): Promise<AppSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
-    const next = coerce({ ...cur, onboarding: { completed: true } });
+    const next = coerce({
+      ...cur,
+      onboarding: { completed: true },
+      releaseNotes: {
+        ...cur.releaseNotes,
+        lastSeenVersion: cur.releaseNotes.lastSeenVersion ?? app.getVersion()
+      }
+    });
     await writeSettings(next);
     return next;
   });
+}
+
+/** Patch the "what's new" popup preference and persist; returns the full settings. */
+export function updateReleaseNotesSettings(patch: Partial<ReleaseNotesSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, releaseNotes: { ...cur.releaseNotes, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Record `version` as the newest release notes the user has been shown. */
+export function markReleaseNotesSeen(version: string): Promise<AppSettings> {
+  return updateReleaseNotesSettings({ lastSeenVersion: version });
 }
 
 /** Set the app-level default model ('provider/modelId' or null) and persist. */

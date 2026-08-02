@@ -85,3 +85,11 @@ on other Spaces** can also show progress for the main Stem window.
 
 On Linux with Wayland, set the command shown in Settings as a desktop keyboard
 shortcut; the recorded global shortcut cannot fire there.
+
+## About
+
+Shows the version you're running — worth quoting when you report a problem.
+
+**Show what's new after an update** opens the release notes once, the first time you
+run a new version; the popup has the same switch if you'd rather turn it off there.
+**View release notes** opens the full history at any time.

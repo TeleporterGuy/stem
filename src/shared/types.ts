@@ -1357,6 +1357,41 @@ export interface OnboardingSettings {
 }
 
 /**
+ * "What's new" popup state.
+ *
+ * `lastSeenVersion` is the newest release the user has already been shown (null
+ * = nothing recorded yet, which for an already-onboarded install means "show
+ * only the version they're running"). It keeps advancing even while
+ * `showOnUpdate` is off, so turning the popup back on doesn't dump a backlog.
+ */
+export interface ReleaseNotesSettings {
+  showOnUpdate: boolean;
+  lastSeenVersion: string | null;
+}
+
+/** One `## <version> — <date>` section of RELEASE_NOTES.md. */
+export interface ReleaseNoteEntry {
+  /** Dotted numeric version, e.g. "0.3.0". */
+  version: string;
+  /** Whatever followed the dash in the heading ("2026-07-29", "Unreleased"), or ''. */
+  label: string;
+  /** The section's Markdown body, heading excluded. */
+  body: string;
+}
+
+/**
+ * What the renderer needs to decide whether to raise the "what's new" popup.
+ * `entries` is already clamped to versions at or below `appVersion`, so notes
+ * written ahead of a release never leak into a build that predates them.
+ */
+export interface ReleaseNotesSnapshot {
+  appVersion: string;
+  entries: ReleaseNoteEntry[];
+  /** Versions of the entries the user hasn't been shown yet, newest first. */
+  unseen: string[];
+}
+
+/**
  * App-level backend defaults. `model` is 'provider/modelId' (same shape as
  * ModelSummary.id); null = the built-in constant. Set after onboarding so the
  * default matches the provider the user actually signed in with.
@@ -1421,6 +1456,8 @@ export interface AppSettings {
   customInstructions: CustomInstructionsSettings;
   /** First-run wizard state. */
   onboarding: OnboardingSettings;
+  /** "What's new" popup: whether to raise it after an update, and what's been seen. */
+  releaseNotes: ReleaseNotesSettings;
   /** App-level backend defaults (default model). */
   defaults: DefaultsSettings;
   /** Local model servers (Ollama, LM Studio) registered with the chat backend. */
@@ -1717,6 +1754,16 @@ export interface StemApi {
   updateWebSearch(patch: Partial<WebSearchSettings>): Promise<AppSettings>;
   /** Set the main-composer Escape-to-retract behavior. */
   updateEscapeAction(action: EscapeAction): Promise<AppSettings>;
+  /**
+   * Release notes for this build, plus which sections the user hasn't seen. Has
+   * side effects in main (see releaseNotesSnapshot) — call it once on startup and
+   * when the About block mounts, not on a timer.
+   */
+  getReleaseNotes(): Promise<ReleaseNotesSnapshot>;
+  /** Record this build's notes as read (called when the popup is dismissed). */
+  markReleaseNotesSeen(): Promise<void>;
+  /** Turn the after-update popup on or off. */
+  updateReleaseNotesSettings(patch: Partial<ReleaseNotesSettings>): Promise<AppSettings>;
   /** Set the model used for memory distillation/tidy-up ({ model: null } = default). */
   updateMemorySettings(patch: Partial<MemoryModelSettings>): Promise<AppSettings>;
   updateSkillsSettings(patch: Partial<SkillsModelSettings>): Promise<AppSettings>;

@@ -6,6 +6,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   markOnboardingCompleted,
+  markReleaseNotesSeen,
   mobileSettingsView,
   readSettings,
   updateCustomInstructions,
@@ -13,6 +14,7 @@ import {
   updateEscapeAction,
   updateExecSettings,
   updateLocalProvider,
+  updateReleaseNotesSettings,
   updateRetrievalSettings,
   updateWebSearch
 } from '../../src/main/workspace/settings';
@@ -75,6 +77,35 @@ describe('onboarding + default-model settings', () => {
     const s = await readSettings();
     expect(s.onboarding.completed).toBe(false);
     expect(s.defaults.model).toBeNull();
+  });
+});
+
+describe('release-notes settings', () => {
+  it('defaults to on with nothing seen', async () => {
+    const s = await readSettings();
+    expect(s.releaseNotes).toEqual({ showOnUpdate: true, lastSeenVersion: null });
+  });
+
+  it('seeds the seen-marker when onboarding completes, so a new user gets no popup', async () => {
+    // '0.0.0' is the electron stub's app.getVersion().
+    expect((await markOnboardingCompleted()).releaseNotes.lastSeenVersion).toBe('0.0.0');
+  });
+
+  it('does not move a marker that already exists', async () => {
+    await markReleaseNotesSeen('0.2.0');
+    expect((await markOnboardingCompleted()).releaseNotes.lastSeenVersion).toBe('0.2.0');
+  });
+
+  it('round-trips the preference and the marker', async () => {
+    expect((await updateReleaseNotesSettings({ showOnUpdate: false })).releaseNotes.showOnUpdate).toBe(false);
+    expect((await markReleaseNotesSeen('1.4.2')).releaseNotes.lastSeenVersion).toBe('1.4.2');
+    const s = await readSettings();
+    expect(s.releaseNotes).toEqual({ showOnUpdate: false, lastSeenVersion: '1.4.2' });
+  });
+
+  it('coerces garbage back to defaults', async () => {
+    writeFileSync(path, JSON.stringify({ releaseNotes: { showOnUpdate: 'yes', lastSeenVersion: 'v-next' } }));
+    expect((await readSettings()).releaseNotes).toEqual({ showOnUpdate: true, lastSeenVersion: null });
   });
 });
 

@@ -1,0 +1,97 @@
+# Stem release notes
+
+What's changed in each version, in plain language. Stem shows the new entries once, the first
+time you open it after an update — you can turn that off in Settings → About.
+
+<!--
+Maintainer notes:
+- One `## <version> — <date>` section per release, newest first. The version is the first token
+  after `##`; everything after the dash is free text ("Unreleased" while a release is in flight).
+- Stem hides any section newer than the running app version, so notes can land here before the
+  release is cut. Cutting a release = bump `version` in package.json, swap "Unreleased" for the
+  date, tag.
+-->
+
+## 0.3.0 — Unreleased
+
+### Added
+
+- **Sign in with xAI (Grok).** Grok joins ChatGPT, Claude, OpenRouter and the local servers in the
+  provider list, with the same in-app sign-in.
+- **Grok web search.** Grok can now be picked as the backend Stem searches the web with.
+- **Custom OpenAI-compatible endpoint.** Point Stem at any server that speaks the OpenAI API —
+  your own proxy, a hosted gateway, a colleague's box — and pick which models it offers. Endpoints
+  that speak the Anthropic Messages API work too; Stem detects which one yours is.
+- **A clearer search picker.** The backend list is grouped by what's actually ready to use (works
+  on your sign-in / needs a key / not configured), and the assistant is told which backend it is
+  searching with, so citations name the right source.
+
+### Fixed
+
+- **Stem now starts properly on Linux.** First run off macOS could fail outright; the installer
+  also now fetches the Electron runtime it needs. The Linux x64 download is roughly half the size
+  it was.
+- **Quick Chat opens on the Space you're actually on**, instead of pulling you back to the one it
+  was last summoned from.
+- **Your phone can no longer read files or API keys off your Mac.** The phone bridge was exposing
+  more of Stem's internals than it should; it is now limited to the chat surface it needs.
+- **A web-search key you edit takes effect immediately** rather than only being saved.
+- **Disconnecting a provider sticks.** Two provider changes at once could resurrect a
+  just-disconnected one.
+- **A slow connection test can't overwrite a newer one's result** in Settings, so the ✓/✗ you see
+  belongs to the endpoint you're looking at.
+- **A phone reply that finishes very fast no longer stalls scheduled tasks** for the rest of the
+  session.
+- **One misconfigured provider no longer breaks every chat** — Stem starts without it instead of
+  refusing to start at all.
+
+## 0.2.0 — 2026-07-29
+
+### Added
+
+- **Stem on your phone.** An opt-in bridge (Settings → Mobile) serves a small Stem client to your
+  phone over your tailnet, so you can carry on a conversation away from the desk.
+- **Web search on every provider.** Search no longer depends on which model you signed in with —
+  it works out of the box on a fresh install, with citations, and you can point it at your own
+  backend or key.
+- **An activity surface.** Stem shows what it's doing while it works — which tool is running, when
+  context is being compacted — instead of a silent spinner.
+- **Run commands.** The assistant can run shell commands for you, behind a tiered approval system:
+  a learned allowlist, then a judge model, then an approval card for anything it isn't sure about.
+  Off-limits paths are always protected, and you can set the mode (assisted / manual / yolo) in
+  Settings.
+- **Connected folders feed memory.** Folders you connect are indexed and Stem learns durable facts
+  from them, so it can answer from your own documents.
+- **Files gets its own tab**, separate from connected folders.
+- **Fact conflicts resolve themselves.** When two remembered facts disagree, Stem classifies the
+  conflict and picks a resolution instead of quietly keeping both.
+- **Checklists you can tick.** Task lists in a reply are interactive.
+- **Skills track their own usage**, so the ones that actually get consulted are visible.
+- **An end-user guide** covering chats, memory, folders and tools (`docs/user`).
+
+### Fixed
+
+- Scheduled runs keep the model the thread was using, and recover instead of failing when a run
+  overflows its context.
+- Typing in the composer no longer re-renders the whole conversation on long threads.
+- Reopened chats show the model and effort each reply was produced with again.
+
+## 0.1.0 — 2026-07-20
+
+The first release. Stem is a private, local-first assistant that runs on your own AI sign-in:
+
+- **Chats** with nested folders, search across every conversation, per-message retry / edit /
+  fork, attachments and image paste, and several chats answering at once.
+- **Quick Chat**, a global-shortcut overlay for a question you don't want to open a window for,
+  plus a status pill that follows you across Spaces.
+- **Stem Recall**, a memory system that is yours rather than the model vendor's: durable facts,
+  episodic recall, relevance ranking with local embeddings, and full control to inspect, pin,
+  correct or erase anything it has remembered.
+- **Rich replies.** Answers render as MDX — tabs, tables, charts, quizzes and forms, not just a
+  wall of text — with a plain-Markdown mode when you want one.
+- **Your tools.** MCP servers (local and remote, with in-app OAuth), read/write file access to a
+  Files place you control, and self-improving skills the assistant curates in the background.
+- **Scheduled tasks** that run on their own and notify you.
+- **Your choice of model** — ChatGPT, Claude, OpenRouter, Ollama or LM Studio — with per-turn
+  control over reasoning effort and speed.
+- **macOS and Linux** builds.

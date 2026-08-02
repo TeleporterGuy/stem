@@ -44,6 +44,10 @@ export interface LaunchOptions {
    *  loads them at start() — the only way to seed the subsystem (creation is
    *  otherwise driven by the assistant's tool through a live backend turn). */
   seedTasks?: ScheduledTask[];
+  /** Partial settings.json written BEFORE launch, so the app starts as an
+   *  existing install would (onboarding already done, a release-notes marker,
+   *  …). Coerced by the settings store on read, so a partial object is fine. */
+  seedSettings?: Record<string, unknown>;
   /** Force real/hermetic backend regardless of STEM_E2E_REAL (default: follow env). */
   real?: boolean;
   /** Extra env overrides for the launch. */
@@ -56,6 +60,7 @@ export interface LaunchedApp {
   app: ElectronApplication;
   userDataDir: string;
   tasksStorePath: string;
+  settingsStorePath: string;
 }
 
 /** Launch the built app with fully isolated state. Seeds the tasks store first
@@ -65,9 +70,11 @@ export interface LaunchedApp {
 export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> {
   const userDataDir = mkdtempSync(join(tmpdir(), 'stem-e2e-'));
   const tasksStorePath = join(userDataDir, 'tasks.json');
+  const settingsStore = join(userDataDir, 'settings.json');
   if (opts.seedTasks) {
     writeFileSync(tasksStorePath, JSON.stringify({ version: 1, tasks: opts.seedTasks }, null, 2));
   }
+  if (opts.seedSettings) writeFileSync(settingsStore, JSON.stringify(opts.seedSettings, null, 2));
   const real = opts.real ?? REAL_BACKEND;
   const app = await electron.launch({
     args: [PROJECT_ROOT, `--user-data-dir=${userDataDir}`, ...(opts.extraArgs ?? [])],
@@ -92,7 +99,7 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
       ...opts.env
     }
   });
-  return { app, userDataDir, tasksStorePath };
+  return { app, userDataDir, tasksStorePath, settingsStorePath: settingsStore };
 }
 
 export const test = base.extend<Fixtures>({

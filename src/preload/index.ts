@@ -26,6 +26,7 @@ import type {
   MobileSettings,
   WebSearchSettings,
   PartialRetrievalSettings,
+  ReleaseNotesSettings,
   RetrievalStage,
   QuickChatAdopt,
   QuickChatFocus,
@@ -242,6 +243,10 @@ const api: StemApi = {
   updateWebSearch: (patch: Partial<WebSearchSettings>) =>
     ipcRenderer.invoke('settings:updateWebSearch', patch),
   updateEscapeAction: (action: EscapeAction) => ipcRenderer.invoke('settings:updateEscapeAction', action),
+  getReleaseNotes: () => ipcRenderer.invoke('releaseNotes:get'),
+  markReleaseNotesSeen: () => ipcRenderer.invoke('releaseNotes:markSeen'),
+  updateReleaseNotesSettings: (patch: Partial<ReleaseNotesSettings>) =>
+    ipcRenderer.invoke('settings:updateReleaseNotes', patch),
   updateMemorySettings: (patch: Partial<MemoryModelSettings>) =>
     ipcRenderer.invoke('settings:updateMemory', patch),
   updateCustomInstructions: (patch: Partial<CustomInstructionsSettings>) =>

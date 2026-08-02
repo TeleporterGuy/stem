@@ -23,11 +23,13 @@ import type {
   WebSearchSettings,
   QuickChatSettings,
   QuickChatShortcutStatus,
+  ReleaseNotesSnapshot,
   LocalProviderApi,
   LocalProviderId,
   LocalProvidersSettings,
   LocalProviderTestResult
 } from '../../../shared/types';
+import { ReleaseNotesModal } from '../../ReleaseNotesModal';
 import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerName } from '../../../shared/providers';
 import { formatAccelerator, IS_MAC, splitAccelerator } from '../../accel';
 import { localProbeTarget, probeStillDescribes } from '../../localProbe';
@@ -1729,6 +1731,69 @@ export function SettingsTab({
       <p className="muted" style={{ marginTop: 'var(--sp-5)' }}>
         Press the shortcut to open the overlay; Escape or the shortcut again hides it.
       </p>
+
+      <AboutSection />
     </div>
+  );
+}
+
+/**
+ * Settings → About: which build this is, and the "what's new" popup that rides
+ * on it. Also the only place the version is shown at all, which is what you want
+ * a user to read back to you when they report something.
+ */
+function AboutSection() {
+  const [notes, setNotes] = useState<ReleaseNotesSnapshot | null>(null);
+  const [showOnUpdate, setShowOnUpdate] = useState(true);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    void window.stem.getReleaseNotes().then(setNotes);
+    void window.stem.getSettings().then((s) => setShowOnUpdate(s.releaseNotes.showOnUpdate));
+  }, []);
+
+  function toggle() {
+    const next = !showOnUpdate;
+    setShowOnUpdate(next); // optimistic; reconcile from the saved settings
+    window.stem.updateReleaseNotesSettings({ showOnUpdate: next }).then((s) =>
+      setShowOnUpdate(s.releaseNotes.showOnUpdate)
+    );
+  }
+
+  return (
+    <>
+      <div className="grp-head">About</div>
+      <div className="formgroup">
+        <div className="set-row">
+          <span className="set-label">
+            <strong>Stem {notes?.appVersion ?? '—'}</strong>
+            <em>The version you're running</em>
+          </span>
+        </div>
+
+        <div className="set-row">
+          <span className="set-label">
+            <strong>Show what's new after an update</strong>
+            <em>Open the release notes once, the first time you run a new version</em>
+          </span>
+          <button
+            className={`switch${showOnUpdate ? ' on' : ''}`}
+            role="switch"
+            aria-checked={showOnUpdate}
+            aria-label="Show what's new after an update"
+            onClick={toggle}
+          />
+        </div>
+
+        <div className="memory-view-actions">
+          <button className="link-btn" onClick={() => setOpen(true)} disabled={!notes}>
+            View release notes
+          </button>
+        </div>
+      </div>
+      {open && notes && (
+        <ReleaseNotesModal title="Release notes" entries={notes.entries} onClose={() => setOpen(false)} />
+      )}
+    </>
   );
 }

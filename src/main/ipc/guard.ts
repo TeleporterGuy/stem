@@ -114,6 +114,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'settings:updateMobile': [a.object],
   'settings:updateCustomInstructions': [a.object],
   'settings:updateRetrieval': [a.object],
+  'settings:updateReleaseNotes': [a.object],
   'settings:testRetrieval': [a.oneOf(['embeddings', 'reranker'])],
   'quickchat:run': [a.object],
   'quickchat:handoff': [a.object]

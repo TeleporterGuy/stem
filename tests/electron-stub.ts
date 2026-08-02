@@ -12,6 +12,9 @@ export const app = {
   // would otherwise be one shared file two suites can delete under each other.
   getPath: (name: string) => join(tmpdir(), `stem-vitest-userdata-${process.pid}`, name),
   getAppPath: () => process.cwd(),
+  // settings.ts seeds the release-notes marker with this when onboarding
+  // completes; release-notes tests pass a version explicitly instead.
+  getVersion: () => '0.0.0',
   isPackaged: false,
   // platform.ts opts into Chromium's Linux global-shortcuts portal at startup.
   // `switches` is stub-only bookkeeping so tests can assert what was appended.
