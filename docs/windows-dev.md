@@ -53,16 +53,28 @@ node node_modules\electron\install.js
 
 On Windows, approved commands run as:
 
-`cmd.exe /d /s /c <command>`
+`cmd.exe /d /s /c "<command>"`
 
 - `/d` disables AutoRun (registry hooks that behave like a login profile).
 - Stem does **not** load PowerShell’s `profile.ps1` for the default path.
+- The command is wrapped in quotes and spawned with `windowsVerbatimArguments` so
+  inner `"` (e.g. PowerShell `-Command "..."`) are not turned into `\"`.
 
 If you need PowerShell from the agent, ask it to run something like:
 
 ```bat
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Write-Output hi"
 ```
+
+A bare `|` is a **cmd** pipe: it splits the line before PowerShell sees it. Put
+PowerShell pipelines inside `-Command "..."`:
+
+```bat
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-Process | Select-Object -First 1 Name"
+```
+
+Or avoid pipes with `(...)` / property access when that is enough
+(e.g. `(Get-Command Get-Process).Name`).
 
 ## Smoke checklist
 

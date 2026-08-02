@@ -38,10 +38,12 @@ export function shellInvocation(
   platform: NodeJS.Platform = process.platform
 ): ShellInvocation {
   if (platform === 'win32') {
-    // /d = no AutoRun (registry hooks that mirror a broken profile), /s /c =
-    // treat the rest as one command string the way CreateProcess expects.
+    // /d = no AutoRun (registry hooks that mirror a broken profile). /s /c + a
+    // quoted payload is the CreateProcess-safe form: cmd strips one outer quote
+    // pair and runs the rest as-is (inner " and | stay intact for PowerShell).
+    // Pair with windowsVerbatimArguments so Node does not turn " into \".
     const comspec = process.env.ComSpec || 'cmd.exe';
-    return { command: comspec, args: ['/d', '/s', '/c', command], detached: false };
+    return { command: comspec, args: ['/d', '/s', '/c', `"${command}"`], detached: false };
   }
   return { command: '/bin/zsh', args: ['-c', command], detached: true };
 }
@@ -190,7 +192,10 @@ export function runCommand(opts: RunCommandOptions): Promise<ExecOutcome> {
         env: opts.env,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: shell.detached,
-        windowsHide: true
+        windowsHide: true,
+        // Keep the /c "..." quotes we built; Node's default Windows quoting
+        // would escape inner " as \" and break PowerShell -Command "...".
+        windowsVerbatimArguments: process.platform === 'win32'
       });
     } catch (e) {
       reject(e instanceof Error ? e : new Error(String(e)));

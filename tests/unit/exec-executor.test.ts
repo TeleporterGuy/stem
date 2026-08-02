@@ -46,7 +46,8 @@ describe('shellInvocation', () => {
 
   it('uses cmd.exe /d /s /c on win32 (no AutoRun)', () => {
     const inv = shellInvocation('echo hi', 'win32');
-    expect(inv.args).toEqual(['/d', '/s', '/c', 'echo hi']);
+    // Quoted /c payload so cmd /s strips one outer pair; inner quotes stay intact.
+    expect(inv.args).toEqual(['/d', '/s', '/c', '"echo hi"']);
     expect(inv.detached).toBe(false);
     // ComSpec may be set; otherwise the default is cmd.exe.
     expect(inv.command.toLowerCase()).toMatch(/cmd\.exe$/);
@@ -122,4 +123,34 @@ describe.skipIf(!canSpawn)('runCommand', () => {
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(outcome.exitCode).not.toBe(0);
   }, 15_000);
+});
+
+// Windows-only: quoted PowerShell -Command and pipes through cmd /d /s /c.
+describe.skipIf(!isWin)('runCommand Windows quoting', () => {
+  const pathEnv = process.env.Path || process.env.PATH || '';
+  const base = { cwd: tmpdir(), timeoutMs: 15_000, env: execEnv(pathEnv) };
+
+  it('evaluates PowerShell -Command "1+1" (not a string literal)', async () => {
+    const command =
+      'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "1+1"';
+    const outcome = await runCommand({ ...base, command });
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.stdout.trim()).toBe('2');
+  });
+
+  it('runs a quoted PowerShell pipeline (pipe stays inside -Command)', async () => {
+    const command =
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Write-Output 'hi' | ForEach-Object { $_ }\"";
+    const outcome = await runCommand({ ...base, command });
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.stdout).toContain('hi');
+    // Must evaluate, not echo the script text back.
+    expect(outcome.stdout).not.toContain('Write-Output');
+  });
+
+  it('still runs a native cmd pipeline', async () => {
+    const outcome = await runCommand({ ...base, command: 'echo hi | findstr hi' });
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.stdout).toContain('hi');
+  });
 });
