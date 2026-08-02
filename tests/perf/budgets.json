@@ -33,25 +33,25 @@
   "measured": {
     "note": "Reference points from turn_timings on the author's machine, medians over web-search turns. Native provider-side search (<=2026-07-28): total 39.6s, tool 13.2s avg. Sequential pi-web-access (2026-07-29..08-02, the regression): total 99.8s, tool 127.1s avg.",
     "plain": {
-      "totalMs": 1305,
+      "totalMs": 2365,
       "toolMs": 0,
-      "thinkingMs": 104,
-      "answerMs": 99,
-      "ttftMs": 1160
+      "thinkingMs": 210,
+      "answerMs": 92,
+      "ttftMs": 2111
     },
     "web-search": {
-      "totalMs": 15378,
-      "toolMs": 12423,
-      "thinkingMs": 654,
-      "answerMs": 136,
-      "ttftMs": 15204
+      "totalMs": 13893,
+      "toolMs": 11044,
+      "thinkingMs": 611,
+      "answerMs": 150,
+      "ttftMs": 13674
     },
     "web-search-multi": {
-      "totalMs": 11741,
-      "toolMs": 9074,
-      "thinkingMs": 1043,
-      "answerMs": 145,
-      "ttftMs": 10916
+      "totalMs": 10392,
+      "toolMs": 7003,
+      "thinkingMs": 1329,
+      "answerMs": 144,
+      "ttftMs": 10071
     }
   }
 }

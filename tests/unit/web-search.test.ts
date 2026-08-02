@@ -236,6 +236,16 @@ describe('buildWebSearchContext', () => {
     }
   });
 
+  // A research turn measured a dozen fetch_content calls, one URL each, ~40s of
+  // wall clock — every one of them a separate model round trip. The tool takes a
+  // `urls` array and fetches it in parallel; nothing was telling the model that.
+  it('tells the model to batch its fetches into one call', async () => {
+    await writeWebSearchConfig(base);
+    const block = buildWebSearchContext(true) ?? '';
+    expect(block).toMatch(/urls/);
+    expect(block).toMatch(/parallel/i);
+  });
+
   it('says these are called directly, not through the MCP router', async () => {
     await writeWebSearchConfig(base);
     expect(buildWebSearchContext(true)).toContain('invoke_tool');

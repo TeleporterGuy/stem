@@ -45,8 +45,20 @@ const PACKAGE = 'pi-web-access';
  * get slower or dearer. `tests/unit/web-search-latency.test.ts` holds the pin.
  *
  * Raise it deliberately, and re-run `npm run test:perf` when you do.
+ *
+ * `mini` rather than the full `gpt-5.4` because a benchmark of the exact request
+ * the backend sends (same instructions, same hosted web_search tool, 3 queries x 2
+ * reps) put it at 4.2s median against 6.3s, returning the same number of sources
+ * and the same one search round. What is being asked of this model is "run the
+ * query, quote what came back" — the reasoning that the larger id is paying for
+ * happens in the chat model afterwards, on the results.
+ *
+ * Things that measured WORSE and are not worth retrying: `reasoning.effort: low`
+ * (8-12s — a smaller thinking budget makes the hosted model take MORE search
+ * rounds, and rounds are what cost), and instructing it to search exactly once
+ * (no effect; it already does).
  */
-export const OPENAI_SEARCH_MODEL = 'gpt-5.4';
+export const OPENAI_SEARCH_MODEL = 'gpt-5.4-mini';
 
 /** The version this integration was written against (mirrors TESTED_PI_VERSION). */
 export const TESTED_WEB_ACCESS_VERSION = '0.15.0';
@@ -251,7 +263,9 @@ export function buildWebSearchContext(enabled: boolean): string | null {
     `  - web_search — search the live web (backend: ${backendDescription(activeBackend())}); ` +
     `prefer \`queries\` with 2-4 differently-phrased angles over a single query.\n` +
     `  - fetch_content — fetch one or more URLs and return their readable text ` +
-    `(also YouTube transcripts and GitHub repositories).\n` +
+    `(also YouTube transcripts and GitHub repositories); pass ALL the URLs you want ` +
+    `in one call's \`urls\` array — they are fetched in parallel, whereas one call ` +
+    `per URL costs a full round trip each.\n` +
     `  - source_check — check a claim against web sources, with passage-level citations.\n` +
     `  - get_search_content — retrieve fuller content from an earlier web_search/fetch_content result.`
   );
