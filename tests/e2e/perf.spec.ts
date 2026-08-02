@@ -31,7 +31,10 @@ const BUDGETS_PATH = fileURLToPath(new URL('../perf/budgets.json', import.meta.u
 
 interface Budgets {
   iterations: number;
-  cases: Record<string, { prompt: string; expect: string; budgetMs: Record<string, number> }>;
+  cases: Record<
+    string,
+    { prompt: string; expect: string; requireTools?: boolean; budgetMs: Record<string, number> }
+  >;
   measured: Record<string, unknown>;
 }
 
@@ -68,6 +71,25 @@ function countTimings(recallDb: string): number {
   return rows[0]?.n ?? 0;
 }
 
+/**
+ * Where the last turn's tool time actually went, per tool call. `toolMs` alone
+ * cannot tell "one slow backend" from "the model called the tool three times" —
+ * and those two need completely different fixes.
+ */
+function lastToolBreakdown(recallDb: string): string[] {
+  const rows = query<{ payload: string }>(
+    recallDb,
+    'SELECT payload FROM turn_activities ORDER BY created_at DESC, rowid DESC LIMIT 1'
+  );
+  if (!rows[0]) return [];
+  try {
+    const payload = JSON.parse(rows[0].payload) as { activity?: { name?: string; type: string; ms?: number }[] };
+    return (payload.activity ?? []).map((a) => `${a.name ?? a.type}=${a.ms ?? '?'}ms`);
+  } catch {
+    return [];
+  }
+}
+
 /** The turn the app just finished, as the app itself accounted for it. */
 function lastTiming(recallDb: string): Timing | null {
   return (
@@ -93,7 +115,15 @@ test.describe('turn latency budgets', () => {
       // Every iteration is a full real turn plus a cold pi spawn on the first.
       test.setTimeout(60_000 + budgets.iterations * 180_000);
 
-      const launched = await launchApp({ real: true, seedSettings: { onboarding: { completed: true } } });
+      // Past onboarding, and no "What's new" popup — a modal over the composer
+      // would be measured as latency.
+      const launched = await launchApp({
+        real: true,
+        seedSettings: {
+          onboarding: { completed: true },
+          releaseNotes: { showOnUpdate: false, lastSeenVersion: null }
+        }
+      });
       const recallDb = join(launched.userDataDir, 'recall.sqlite');
       const samples: Timing[] = [];
       try {
@@ -105,12 +135,18 @@ test.describe('turn latency budgets', () => {
           // which would make later iterations slower for the wrong reason.
           if (i > 0) await win.getByTitle('New conversation').click();
           await send(win, spec.prompt);
+          // Wait on the timing row, NOT on the reply text: the row is written when
+          // the turn settles, whereas a text match resolves on the first streamed
+          // token and would leave the rest of the turn unwaited-for.
+          await expect
+            .poll(() => countTimings(recallDb), { timeout: 200_000, intervals: [1000] })
+            .toBe(i + 1);
           const reply = win.locator('.message-assistant:not(.activity-row) .message-body').last();
-          await expect(reply).toContainText(new RegExp(spec.expect, 'i'), { timeout: 170_000 });
-          // The row is written when the turn settles — a beat after the last token.
-          await expect.poll(() => countTimings(recallDb), { timeout: 20_000 }).toBe(i + 1);
+          await expect(reply).toContainText(new RegExp(spec.expect, 'i'));
           const timing = lastTiming(recallDb);
           if (timing) samples.push(timing);
+          const tools = lastToolBreakdown(recallDb);
+          if (tools.length) console.log(`[perf] ${name} run ${i + 1} tools: ${tools.join(' ')}`);
         }
       } finally {
         await launched.app.close().catch(() => {});
@@ -132,6 +168,11 @@ test.describe('turn latency budgets', () => {
         next.measured = { ...next.measured, [name]: medians };
         writeFileSync(BUDGETS_PATH, JSON.stringify(next, null, 2) + '\n');
         return;
+      }
+
+      // A search turn where the model never searched measures nothing.
+      if (spec.requireTools) {
+        expect(medians.toolMs, `${name} recorded no tool time — did the model actually search?`).toBeGreaterThan(0);
       }
 
       for (const [metric, budget] of Object.entries(spec.budgetMs)) {

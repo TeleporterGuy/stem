@@ -5,15 +5,53 @@
     "plain": {
       "prompt": "Reply with exactly the single word PONG in uppercase and nothing else.",
       "expect": "pong",
-      "budgetMs": { "totalMs": 30000, "ttftMs": 20000 }
+      "budgetMs": {
+        "totalMs": 30000,
+        "ttftMs": 20000
+      }
     },
     "web-search": {
       "prompt": "Search the web and tell me in one sentence what the current stable version of Node.js is.",
-      "expect": ".",
-      "budgetMs": { "totalMs": 75000, "toolMs": 50000 }
+      "expect": "node",
+      "requireTools": true,
+      "budgetMs": {
+        "totalMs": 75000,
+        "toolMs": 50000
+      }
+    },
+    "web-search-multi": {
+      "note": "The regression's exact shape — four queries in ONE web_search call. Serially that was ~13-17s per query; concurrently it is roughly one query's worth of wall clock. The prompt pins the tool usage on purpose: an open-ended research question measures the model's appetite for fetch_content (a dozen sequential page fetches, minutes of variance), not this code path.",
+      "prompt": "Call web_search exactly once, with these four queries: \"Node.js current LTS version\", \"Python latest stable release\", \"Go latest stable release\", \"Rust latest stable release\". Then answer in one short sentence from those results only. Do not fetch any pages and do not search again.",
+      "expect": "\\w",
+      "requireTools": true,
+      "budgetMs": {
+        "totalMs": 60000,
+        "toolMs": 45000
+      }
     }
   },
   "measured": {
-    "note": "Reference points from turn_timings on the author's machine, medians over web-search turns. Native provider-side search (<=2026-07-28): total 39.6s, tool 13.2s avg. Sequential pi-web-access (2026-07-29..08-02, the regression): total 99.8s, tool 127.1s avg."
+    "note": "Reference points from turn_timings on the author's machine, medians over web-search turns. Native provider-side search (<=2026-07-28): total 39.6s, tool 13.2s avg. Sequential pi-web-access (2026-07-29..08-02, the regression): total 99.8s, tool 127.1s avg.",
+    "plain": {
+      "totalMs": 1305,
+      "toolMs": 0,
+      "thinkingMs": 104,
+      "answerMs": 99,
+      "ttftMs": 1160
+    },
+    "web-search": {
+      "totalMs": 15378,
+      "toolMs": 12423,
+      "thinkingMs": 654,
+      "answerMs": 136,
+      "ttftMs": 15204
+    },
+    "web-search-multi": {
+      "totalMs": 11741,
+      "toolMs": 9074,
+      "thinkingMs": 1043,
+      "answerMs": 145,
+      "ttftMs": 10916
+    }
   }
 }
