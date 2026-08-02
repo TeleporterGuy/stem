@@ -65,6 +65,15 @@ export interface ActivityItem {
   /** Short human target: file basename, command, search query. */
   detail?: string;
   status: 'running' | 'ok' | 'error';
+  /**
+   * Wall-clock time the tool took, filled in when it settles.
+   *
+   * Without it `TurnTiming.toolMs` is one opaque number for the whole turn: a
+   * two-minute turn could be one slow web search or forty fast file reads, and
+   * nothing could tell you which. That is how a ~10x web-search latency
+   * regression shipped unnoticed — see tests/unit/web-search-latency.test.ts.
+   */
+  ms?: number;
 }
 
 /** A web source the model consulted, parsed out of a web_search result. */

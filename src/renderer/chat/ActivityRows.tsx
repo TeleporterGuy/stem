@@ -26,6 +26,13 @@ function RowDots() {
   );
 }
 
+function formatDuration(ms: number): string {
+  const s = ms / 1000;
+  if (s < 10) return `${s.toFixed(1)}s`;
+  if (s < 90) return `${Math.round(s)}s`;
+  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+}
+
 export function ActivityRows({ items, running }: { items: ActivityItem[]; running: boolean }) {
   const [open, setOpen] = useState(false);
   if (!items.length) return null;
@@ -59,6 +66,11 @@ export function ActivityRows({ items, running }: { items: ActivityItem[]; runnin
               <span className="activity-row-label" title={label}>
                 {label}
               </span>
+              {/* Only the slow ones: a turn that felt slow should say where it
+                  went, without turning every file read into a stopwatch. */}
+              {!live && item.ms !== undefined && item.ms >= 2000 && (
+                <span className="activity-row-ms">{formatDuration(item.ms)}</span>
+              )}
             </div>
           );
         })}

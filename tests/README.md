@@ -70,3 +70,33 @@ turns hit the network, consume Claude Max / ChatGPT quota, and are non-determini
 Implementation note: the fixture launches Electron via the project ROOT (so
 `app.getAppPath()` is the repo, and the runtime's source-relative paths — e.g. the
 pi extension under `src/main/pi` — resolve), not `dist/main/index.js` directly.
+
+## Latency — two layers, only one of which is a stopwatch
+
+Web search once cost nothing extra: it was the provider's own server-side tool,
+injected into the chat model's request, so it happened *inside* one inference.
+Moving to the vendored pi-web-access extension made every query a separate full
+inference, run one after another — median web-search turn went 39.6s → 99.8s and
+average tool time up ~10x (Stem's own `turn_timings` rows say so). Nothing failed;
+nothing measured it either.
+
+**`tests/unit/web-search-latency.test.ts` (hermetic, in `npm test`)** is the guard
+that would have caught it. It asserts the *shape* of the work rather than a
+duration: N queries issue N upstream calls, those calls overlap, the call as a
+whole has a deadline that degrades to partial results, and the model behind the
+search is pinned instead of discovered from the registry. A serial implementation
+fails it deterministically, offline, in milliseconds — no network, no flake, and
+no threshold anyone can quietly raise.
+
+**`tests/e2e/perf.spec.ts` (`npm run test:perf`)** is the backstop for what shape
+cannot prove: real pi, real network, real quota, opt-in via `STEM_PERF=1`. It runs
+each case in `tests/perf/budgets.json` a few times and asserts the **median** of
+the app's own `turn_timings` rows against a budget, so a failure names a phase
+(build / tool / answer) instead of "the test was slow". Budgets are loose on
+purpose — they catch a 3x, not a 10% drift. Raise one only as a decision, and say
+why in the commit. `STEM_PERF_UPDATE=1 npm run test:perf` refreshes the `measured`
+notes without asserting.
+
+Keep `test:perf` out of CI for the same reasons as real mode. Run it before a
+release, and any time you touch the search path, the context builder, or anything
+between send and first token.

@@ -57,10 +57,18 @@ index d1e9242..4082cbd 100644
  }
  
 diff --git a/node_modules/pi-web-access/index.ts b/node_modules/pi-web-access/index.ts
-index 6fbdd10..0590c58 100644
+index 6fbdd10..6e2d66b 100644
 --- a/node_modules/pi-web-access/index.ts
 +++ b/node_modules/pi-web-access/index.ts
-@@ -46,6 +46,7 @@ import { isTavilyAvailable } from "./tavily.ts";
+@@ -20,6 +20,7 @@ import {
+ 	type StoredSearchData,
+ } from "./storage.ts";
+ import { activityMonitor, type ActivityEntry } from "./activity.ts";
++import { runSearchBatch } from "./search-batch.ts";
+ import { startCuratorServer, type CuratorSearchEntry, type CuratorServerHandle, type IndexedCuratorSearchEntry } from "./curator-server.ts";
+ import {
+ 	buildDeterministicSummary,
+@@ -46,6 +47,7 @@ import { isTavilyAvailable } from "./tavily.ts";
  import { isSerpdiveAvailable } from "./serpdive.ts";
  import { isSearXNGAvailable } from "./searxng.ts";
  import { isAnySearchAvailable } from "./anysearch.ts";
@@ -68,7 +76,7 @@ index 6fbdd10..0590c58 100644
  import { buildSearchErrorPlan, type SearchErrorDetails, type SearchErrorPlan } from "./render-search-error.ts";
  import { loadEnabledModelPatterns, modelMatchesEnabledPatterns } from "./summary-model-scope.ts";
  import {
-@@ -95,6 +96,7 @@ function renderSearchErrorPlan(plan: SearchErrorPlan, expanded: boolean, theme:
+@@ -95,6 +97,7 @@ function renderSearchErrorPlan(plan: SearchErrorPlan, expanded: boolean, theme:
  
  interface WebSearchConfig {
  	anysearchApiKey?: unknown;
@@ -76,7 +84,7 @@ index 6fbdd10..0590c58 100644
  	tinyfishApiKey?: unknown;
  	provider?: string;
  	searchProvider?: string;
-@@ -130,6 +132,7 @@ interface ProviderAvailability {
+@@ -130,6 +133,7 @@ interface ProviderAvailability {
  	exa: boolean;
  	gemini: boolean;
  	anysearch: boolean;
@@ -84,7 +92,7 @@ index 6fbdd10..0590c58 100644
  }
  
  type WebSearchWorkflow = "none" | "summary-review" | "auto-summary";
-@@ -234,7 +237,7 @@ function normalizeProviderInput(value: unknown): SearchProvider | undefined {
+@@ -234,7 +238,7 @@ function normalizeProviderInput(value: unknown): SearchProvider | undefined {
  	if (value === undefined) return undefined;
  	if (typeof value !== "string") return "auto";
  	const normalized = value.trim().toLowerCase();
@@ -93,7 +101,7 @@ index 6fbdd10..0590c58 100644
  	return valid.includes(normalized as SearchProvider) ? normalized as SearchProvider : "auto";
  }
  
-@@ -296,9 +299,10 @@ async function getProviderAvailability(ctx: ExtensionContext): Promise<ProviderA
+@@ -296,9 +300,10 @@ async function getProviderAvailability(ctx: ExtensionContext): Promise<ProviderA
  		exa: isExaAvailable(),
  		gemini: geminiApiAvail || !!geminiWebAvail,
  		anysearch: isAnySearchAvailable(),
@@ -105,7 +113,7 @@ index 6fbdd10..0590c58 100644
  		...providers,
  	};
  }
-@@ -1430,7 +1434,7 @@ export default function (pi: ExtensionAPI) {
+@@ -1430,7 +1435,7 @@ export default function (pi: ExtensionAPI) {
  		name: toolNames.webSearch,
  		label: "Web Search",
  		description:
@@ -114,7 +122,7 @@ index 6fbdd10..0590c58 100644
  		promptSnippet:
  			"Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage. Omit provider unless explicitly overriding the configured default.",
  		parameters: Type.Object({
-@@ -1443,7 +1447,7 @@ export default function (pi: ExtensionAPI) {
+@@ -1443,7 +1448,7 @@ export default function (pi: ExtensionAPI) {
  			),
  			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains (prefix with - to exclude)" })),
  			provider: Type.Optional(
@@ -123,7 +131,84 @@ index 6fbdd10..0590c58 100644
  			),
  			workflow: Type.Optional(
  				StringEnum(["none", "summary-review", "auto-summary"], {
-@@ -2005,7 +2009,7 @@ export default function (pi: ExtensionAPI) {
+@@ -1664,40 +1669,51 @@ export default function (pi: ExtensionAPI) {
+ 			const allInlineContent: ExtractedContent[] = [];
+ 			const resolvedProvider = resolveRequestedProvider(params.provider);
+ 
+-			for (let i = 0; i < queryList.length; i++) {
+-				const query = queryList[i];
+-
+-				onUpdate?.({
+-					content: [{ type: "text", text: `Searching ${i + 1}/${queryList.length}: "${query}"...` }],
+-					details: { phase: "search", progress: i / queryList.length, currentQuery: query },
+-				});
+-
+-				try {
+-					const { answer, results, inlineContent, provider } = await search(query, {
++			// The queries are independent — each returns its own synthesized answer —
++			// so they run through a bounded worker pool with a deadline on the call
++			// as a whole, not one after another. See search-batch.ts.
++			const batch = await runSearchBatch(
++				queryList,
++				{
++					search: (query, _index, batchSignal) => search(query, {
+ 						provider: resolvedProvider,
+ 						numResults: params.numResults,
+ 						recencyFilter,
+ 						domainFilter: params.domainFilter,
+ 						includeContent: params.includeContent,
+-						signal,
++						signal: batchSignal,
+ 						extensionContext: ctx,
+-					});
++					}),
++					onProgress: ({ settled, total, query }) => onUpdate?.({
++						content: [{ type: "text", text: `Searching ${Math.min(settled + 1, total)}/${total}: "${query}"...` }],
++						details: { phase: "search", progress: settled / total, currentQuery: query },
++					}),
++				},
++				{ signal },
++			);
+ 
+-					searchResults.push({ query, answer, results, error: null, provider });
+-					for (const r of results) {
+-						if (!allUrls.includes(r.url)) {
+-							allUrls.push(r.url);
+-						}
++			const requestedProvider = typeof resolvedProvider === "string" && resolvedProvider !== "auto"
++				? resolvedProvider
++				: undefined;
++			for (const entry of batch) {
++				if (!entry.value) {
++					searchResults.push({
++						query: entry.query,
++						answer: "",
++						results: [],
++						error: entry.error ?? "Search failed",
++						provider: requestedProvider,
++					});
++					continue;
++				}
++				const { answer, results, inlineContent, provider } = entry.value;
++				searchResults.push({ query: entry.query, answer, results, error: null, provider });
++				for (const r of results) {
++					if (!allUrls.includes(r.url)) {
++						allUrls.push(r.url);
+ 					}
+-					if (inlineContent) allInlineContent.push(...inlineContent);
+-				} catch (err) {
+-					if (signal?.aborted || isAbortError(err)) throw err;
+-					const message = err instanceof Error ? err.message : String(err);
+-					const requestedProvider = typeof resolvedProvider === "string" && resolvedProvider !== "auto"
+-						? resolvedProvider
+-						: undefined;
+-					searchResults.push({ query, answer: "", results: [], error: message, provider: requestedProvider });
+ 				}
++				if (inlineContent) allInlineContent.push(...inlineContent);
+ 			}
+ 
+ 			let approvedSummary: string | undefined;
+@@ -2005,7 +2021,7 @@ export default function (pi: ExtensionAPI) {
  			fetchContent: Type.Optional(Type.Boolean({ description: "Fetch up to 5 result pages for exact passage extraction." })),
  			recencyFilter: Type.Optional(StringEnum(["day", "week", "month", "year"], { description: "Filter by recency." })),
  			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains; prefix with - to exclude." })),
@@ -132,6 +217,204 @@ index 6fbdd10..0590c58 100644
  		}),
  		async execute(_callId, params, signal, _onUpdate, ctx) {
  			const claim = typeof params.claim === "string" ? params.claim.trim() : "";
+diff --git a/node_modules/pi-web-access/openai-search.ts b/node_modules/pi-web-access/openai-search.ts
+index 50ed5e2..94775ef 100644
+--- a/node_modules/pi-web-access/openai-search.ts
++++ b/node_modules/pi-web-access/openai-search.ts
+@@ -18,6 +18,7 @@ const AUTH_MODEL_CANDIDATES = [
+ interface WebSearchConfig {
+ 	openaiApiKey?: unknown;
+ 	openaiResponsesUrl?: unknown;
++	openaiSearchModel?: unknown;
+ }
+ 
+ interface OpenAIAuth {
+@@ -129,8 +130,26 @@ function resolveConfiguredResponsesUrl(value: unknown): string {
+ 	return url.toString();
+ }
+ 
++/**
++ * `openaiSearchModel` in the config pins which model backs the search. Without it
++ * the ladder below picks whatever heavyweight id happens to be first in the
++ * caller's registry, so adding a model to an account silently changes both the
++ * latency and the cost of every search — a regression nothing would report.
++ */
++function searchModelCandidates(config: WebSearchConfig): { provider: "openai-codex" | "openai"; models: string[] }[] {
++	const pinned = typeof config.openaiSearchModel === "string" ? config.openaiSearchModel.trim() : "";
++	if (!pinned) return AUTH_MODEL_CANDIDATES.map((c) => ({ provider: c.provider, models: [...c.models] }));
++	// Pinned first, then the ladder: an account that cannot serve the pin still
++	// searches instead of falling over.
++	return [
++		{ provider: "openai-codex" as const, models: [pinned] },
++		{ provider: "openai" as const, models: [pinned] },
++		...AUTH_MODEL_CANDIDATES.map((c) => ({ provider: c.provider, models: c.models.filter((m) => m !== pinned) })),
++	];
++}
++
+ async function resolvePiAuth(ctx: ExtensionContext, responsesUrl: string): Promise<OpenAIAuth | undefined> {
+-	for (const candidate of AUTH_MODEL_CANDIDATES) {
++	for (const candidate of searchModelCandidates(loadConfig())) {
+ 		for (const modelId of candidate.models) {
+ 			try {
+ 				const model = ctx.modelRegistry.find(candidate.provider, modelId);
+@@ -172,8 +191,9 @@ export async function resolveOpenAIAuth(ctx?: ExtensionContext, signal?: AbortSi
+ 		environmentValue: process.env.OPENAI_API_KEY,
+ 		signal,
+ 	});
++	const pinned = typeof config.openaiSearchModel === "string" ? config.openaiSearchModel.trim() : "";
+ 	return apiKey
+-		? { provider: "openai", apiKey, model: "gpt-5.4", headers: {}, responsesUrl }
++		? { provider: "openai", apiKey, model: pinned || "gpt-5.4", headers: {}, responsesUrl }
+ 		: undefined;
+ }
+ 
+diff --git a/node_modules/pi-web-access/search-batch.ts b/node_modules/pi-web-access/search-batch.ts
+new file mode 100644
+index 0000000..ec2ec09
+--- /dev/null
++++ b/node_modules/pi-web-access/search-batch.ts
+@@ -0,0 +1,141 @@
++// Fan-out for a multi-query web_search call.
++//
++// One `web_search` with N queries used to be an indexed `for` loop with an
++// `await` inside: N sequential upstream round trips, each of which can be a full
++// model inference (the OpenAI/xAI backends post to a Responses endpoint and let
++// the provider's own hosted search tool run). With a 60s per-query timeout and no
++// ceiling on the call as a whole, a routine 4-query research request could hold a
++// turn for four minutes, and the tool schema actively encourages 2-4 queries.
++//
++// The queries are independent — each returns its own synthesized answer — so the
++// only reason they were serial was the shape of the loop. This runs them through
++// a small worker pool instead and gives the whole call a deadline:
++//
++//   - results stay in query order regardless of completion order,
++//   - a caller abort still aborts the batch (the tool call fails, as before),
++//   - the deadline does NOT: it stops starting new queries, cancels the in-flight
++//     ones, and returns what finished with an error string on the rest. A slow
++//     provider degrades the answer instead of hanging the turn.
++
++/** Concurrent upstream searches. Above ~4 the provider rate-limits are the wall. */
++export const DEFAULT_SEARCH_CONCURRENCY = 4;
++
++/**
++ * Ceiling for the whole call, across every wave. Per-query timeouts are 30-60s
++ * depending on backend, so a serial 4-query call could legitimately run past 4
++ * minutes; this bounds the tool call itself.
++ */
++export const DEFAULT_SEARCH_BUDGET_MS = 90_000;
++
++export interface SearchBatchEntry<T> {
++	query: string;
++	/** The backend's payload, or undefined when the query failed. */
++	value?: T;
++	error: string | null;
++}
++
++export interface SearchBatchDeps<T> {
++	/**
++	 * Run one query. The signal combines the caller's signal with the batch
++	 * deadline — pass it through to the backend so a blown budget actually
++	 * cancels the in-flight request rather than leaking it.
++	 */
++	search: (query: string, index: number, signal: AbortSignal) => Promise<T>;
++	/** Fired when a query starts and again when it settles. */
++	onProgress?: (state: { started: number; settled: number; total: number; query: string }) => void;
++}
++
++export interface SearchBatchOptions {
++	concurrency?: number;
++	budgetMs?: number;
++	signal?: AbortSignal;
++}
++
++function isAbortError(err: unknown): boolean {
++	return err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
++}
++
++/**
++ * Run every query concurrently (bounded), preserving input order in the result.
++ * Throws only when the caller's own signal aborts — every other failure, the
++ * deadline included, comes back as a per-query `error`.
++ */
++export async function runSearchBatch<T>(
++	queries: string[],
++	deps: SearchBatchDeps<T>,
++	options: SearchBatchOptions = {},
++): Promise<SearchBatchEntry<T>[]> {
++	const total = queries.length;
++	const entries: SearchBatchEntry<T>[] = queries.map((query) => ({ query, error: null }));
++	if (total === 0) return entries;
++
++	const budgetMs = options.budgetMs ?? DEFAULT_SEARCH_BUDGET_MS;
++	const concurrency = Math.max(1, Math.min(options.concurrency ?? DEFAULT_SEARCH_CONCURRENCY, total));
++
++	// Separate from the caller's signal on purpose: a blown deadline is a partial
++	// result, not a failed tool call, so the two aborts must stay distinguishable.
++	const deadline = new AbortController();
++	let deadlineFired = false;
++	const timer = setTimeout(() => {
++		deadlineFired = true;
++		deadline.abort();
++	}, budgetMs);
++	// Node keeps the process alive for a pending timer; a batch that finishes
++	// early should not hold the event loop open for the rest of the budget.
++	(timer as unknown as { unref?: () => void }).unref?.();
++
++	const signal = options.signal
++		? AbortSignal.any([options.signal, deadline.signal])
++		: deadline.signal;
++
++	let started = 0;
++	let settled = 0;
++	let next = 0;
++	let callerAborted: unknown;
++
++	const worker = async (): Promise<void> => {
++		for (;;) {
++			if (options.signal?.aborted || deadlineFired || callerAborted !== undefined) return;
++			const index = next++;
++			if (index >= total) return;
++			const query = queries[index];
++			started++;
++			deps.onProgress?.({ started, settled, total, query });
++			try {
++				entries[index].value = await deps.search(query, index, signal);
++			} catch (err) {
++				if (options.signal?.aborted || (isAbortError(err) && !deadlineFired)) {
++					// The turn itself was cancelled — surface it, don't paper over it.
++					callerAborted = err;
++					return;
++				}
++				entries[index].error = deadlineFired && isAbortError(err)
++					? `Search budget of ${Math.round(budgetMs / 1000)}s exceeded before this query finished`
++					: err instanceof Error ? err.message : String(err);
++			} finally {
++				settled++;
++				deps.onProgress?.({ started, settled, total, query });
++			}
++		}
++	};
++
++	try {
++		await Promise.all(Array.from({ length: concurrency }, () => worker()));
++	} finally {
++		clearTimeout(timer);
++	}
++
++	if (callerAborted !== undefined) throw callerAborted;
++
++	// Queries the deadline never let start still have to be accounted for, or the
++	// model silently believes it searched something it did not.
++	if (deadlineFired) {
++		for (const entry of entries) {
++			if (entry.value === undefined && entry.error === null) {
++				entry.error = `Search budget of ${Math.round(budgetMs / 1000)}s exceeded before this query started`;
++			}
++		}
++	}
++
++	return entries;
++}
 diff --git a/node_modules/pi-web-access/xai-search.ts b/node_modules/pi-web-access/xai-search.ts
 new file mode 100644
 index 0000000..95c25ad

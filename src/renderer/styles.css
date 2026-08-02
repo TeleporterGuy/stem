@@ -534,6 +534,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .activity-row-item.error { color: var(--danger); }
 .activity-row-item.live { color: var(--ink); }
 .activity-row-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* How long a slow tool took — quiet, but there when a turn dragged. */
+.activity-row-ms { flex: none; opacity: 0.55; font-variant-numeric: tabular-nums; }
 .activity-rows-summary {
   display: inline-flex;
   align-items: center;

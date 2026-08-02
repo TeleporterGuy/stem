@@ -76,6 +76,8 @@ export interface TurnContext {
   timing?: TurnTimingBreakdown; // stashed by reportTurnTiming so recordTurnEntry can persist it
   /** Tool calls + native web searches this turn, in start order (drives activity rows). */
   activity: ActivityItem[];
+  /** When each tool call started, so `tool_execution_end` can stamp its duration. */
+  activityStartedAt: Map<string, number>;
   /** Web sources recovered from native web search (deduped by url). */
   sources: SourceRef[];
 }
@@ -108,6 +110,7 @@ export function newTurnContext(threadId: string, turnId: string): TurnContext {
     answerMs: 0,
     phase: 'pending',
     activity: [],
+    activityStartedAt: new Map(),
     sources: []
   };
 }
@@ -336,6 +339,7 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
         toolDetail(ev)
       );
       if (!ctx.activity.some((a) => a.id === item.id)) ctx.activity.push(item);
+      if (!ctx.activityStartedAt.has(item.id)) ctx.activityStartedAt.set(item.id, Date.now());
       out.push({
         method: 'item/started',
         params: {
@@ -352,6 +356,10 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       if (!entry) break; // an end without a tracked start (or unkeyed) — nothing to flip
       const result = ev.result as { isError?: boolean; content?: unknown } | undefined;
       entry.status = ev.isError === true || result?.isError === true ? 'error' : 'ok';
+      // Attribute the turn's tool time to the tool that spent it. A slow backend
+      // is otherwise indistinguishable from a chatty one.
+      const startedAt = ctx.activityStartedAt.get(id);
+      if (startedAt !== undefined) entry.ms = Date.now() - startedAt;
       // Web sources for the citations panel. Native search used to stream these on
       // the provider's own event stream (recovered by a codex-only tee); now they
       // come back inside the pi-web-access tool result, as inline markdown links

@@ -1,0 +1,19 @@
+{
+  "note": "Wall-clock budgets for tests/e2e/perf.spec.ts (npm run test:perf). Human-set ceilings, not measurements — raise one only when you have decided the new cost is worth it, and say why in the commit. `measured` is refreshed by STEM_PERF_UPDATE=1 and is context only; nothing asserts on it.",
+  "iterations": 3,
+  "cases": {
+    "plain": {
+      "prompt": "Reply with exactly the single word PONG in uppercase and nothing else.",
+      "expect": "pong",
+      "budgetMs": { "totalMs": 30000, "ttftMs": 20000 }
+    },
+    "web-search": {
+      "prompt": "Search the web and tell me in one sentence what the current stable version of Node.js is.",
+      "expect": ".",
+      "budgetMs": { "totalMs": 75000, "toolMs": 50000 }
+    }
+  },
+  "measured": {
+    "note": "Reference points from turn_timings on the author's machine, medians over web-search turns. Native provider-side search (<=2026-07-28): total 39.6s, tool 13.2s avg. Sequential pi-web-access (2026-07-29..08-02, the regression): total 99.8s, tool 127.1s avg."
+  }
+}

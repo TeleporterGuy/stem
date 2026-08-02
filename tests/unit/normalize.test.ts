@@ -27,6 +27,29 @@ describe('normalize tool activity', () => {
     expect(ctx.activity[0].status).toBe('ok');
   });
 
+  // A turn's toolMs is one number for the whole turn: two minutes in tools looks
+  // identical whether it was one slow web search or forty fast file reads. That
+  // ambiguity is how a ~10x search-latency regression shipped unnoticed, so every
+  // settled tool carries its own duration — see tests/unit/web-search-latency.test.ts.
+  it('stamps each tool call with the time it took', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(ev({ type: 'tool_execution_start', toolCallId: 'c1', toolName: 'web_search' }), ctx);
+    expect(ctx.activity[0].ms).toBeUndefined(); // still running — no duration yet
+    normalizePiEvent(ev({ type: 'tool_execution_end', toolCallId: 'c1', isError: false }), ctx);
+    expect(ctx.activity[0].ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it('attributes time per tool, not per turn', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    for (const id of ['c1', 'c2']) {
+      normalizePiEvent(ev({ type: 'tool_execution_start', toolCallId: id, toolName: 'read' }), ctx);
+    }
+    // Out-of-order completion must not cross the wires.
+    normalizePiEvent(ev({ type: 'tool_execution_end', toolCallId: 'c2', isError: false }), ctx);
+    expect(ctx.activity[0].ms).toBeUndefined();
+    expect(ctx.activity[1].ms).toBeGreaterThanOrEqual(0);
+  });
+
   it('flags an errored tool end', () => {
     const ctx = newTurnContext('t1', 'turn1');
     normalizePiEvent(ev({ type: 'tool_execution_start', toolCallId: 'c1', toolName: 'bash', toolInput: { command: 'ls' } }), ctx);

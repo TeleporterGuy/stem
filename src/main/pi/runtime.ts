@@ -388,6 +388,22 @@ interface SessionFile {
  * and `complete()` uses a separate ephemeral `--no-session` process so recall
  * distillation never clobbers the user's active chat.
  */
+/**
+ * The turn's tool time, attributed. `toolMs` alone says a turn spent two minutes
+ * in tools; this says which ones, so "the search backend got slower" and "the
+ * model called more tools" stop looking identical in the log.
+ */
+function slowestTools(turn: TurnContext): { tools: string[] } | undefined {
+  const settled = turn.activity.filter((a) => typeof a.ms === 'number');
+  if (!settled.length) return undefined;
+  return {
+    tools: settled
+      .sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0))
+      .slice(0, 5)
+      .map((a) => `${a.name ?? a.type}=${a.ms}ms${a.status === 'error' ? '!' : ''}`)
+  };
+}
+
 export class PiRuntime extends EventEmitter implements ChatBackend {
   private proc: PiProcess | null = null;
   private starting: Promise<void> | null = null;
@@ -1750,13 +1766,17 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         ? ''
         : ` recall=${fmt(r.total ?? null)}[facts=${fmt(r.facts ?? null)} embed=${fmt(r.embed ?? null)}` +
           ` rerank=${fmt(r.rerank ?? null)} search=${fmt(r.search ?? null)}]`;
-    console.log(
-      `[turn timing] build=${fmt(breakdown.buildMs)}${recallStr} ` +
-        `think=${fmt(breakdown.thinkingMs)} tools=${fmt(breakdown.toolMs)} answer=${fmt(breakdown.answerMs)} ` +
-        `send→first=${fmt(breakdown.sendToFirstTokenMs)} ` +
-        `first→end=${fmt(breakdown.firstTokenToEndMs)} total=${fmt(breakdown.totalMs)}` +
-        (breakdown.ensureMs ? ` (ensure=${breakdown.ensureMs}ms)` : '')
-    );
+    const line =
+      `build=${fmt(breakdown.buildMs)}${recallStr} ` +
+      `think=${fmt(breakdown.thinkingMs)} tools=${fmt(breakdown.toolMs)} answer=${fmt(breakdown.answerMs)} ` +
+      `send→first=${fmt(breakdown.sendToFirstTokenMs)} ` +
+      `first→end=${fmt(breakdown.firstTokenToEndMs)} total=${fmt(breakdown.totalMs)}` +
+      (breakdown.ensureMs ? ` (ensure=${breakdown.ensureMs}ms)` : '');
+    console.log(`[turn timing] ${line}`);
+    // Also to stem.log, with the per-tool split. console.log only reaches a dev
+    // terminal, so a shipped build left no trace of where a slow turn went — a
+    // two-minute web-search turn logged nothing at all.
+    log('perf', `turn ${line}`, slowestTools(turn));
     // Stash for recordTurnEntry to persist once the assistant entry id resolves.
     turn.timing = breakdown;
     this.emitEvent('turn/timing', breakdown);

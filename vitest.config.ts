@@ -10,7 +10,16 @@ export default defineConfig({
     include: ['tests/unit/**/*.test.ts'],
     setupFiles: ['tests/setup-unit.ts'],
     pool: 'forks',
-    environment: 'node'
+    environment: 'node',
+    server: {
+      deps: {
+        // pi-web-access ships TypeScript sources (pi loads them through its own
+        // loader). Node refuses to strip types under node_modules, so the search
+        // fan-out under test has to go through vite's transform, not be
+        // externalized like a normal dependency.
+        inline: [/pi-web-access/]
+      }
+    }
   },
   resolve: {
     alias: {

@@ -32,6 +32,22 @@ import type { SourceRef, WebSearchSettings } from '../../shared/types';
 
 const PACKAGE = 'pi-web-access';
 
+/**
+ * Which model backs the OpenAI search backend. Every query is a full inference on
+ * it (the backend posts to the Responses endpoint and lets the provider's hosted
+ * web_search run inside that call), so this is the single biggest lever on how
+ * long a search takes — and it is NOT the model the user is chatting with.
+ *
+ * Pinned because the package otherwise walks its own candidate ladder and takes
+ * the first id present in pi's registry (`AUTH_MODEL_CANDIDATES` in
+ * openai-search.ts). Adding a model to the signed-in account would then silently
+ * re-point every search at it: no setting changed, no code changed, searches just
+ * get slower or dearer. `tests/unit/web-search-latency.test.ts` holds the pin.
+ *
+ * Raise it deliberately, and re-run `npm run test:perf` when you do.
+ */
+export const OPENAI_SEARCH_MODEL = 'gpt-5.4';
+
 /** The version this integration was written against (mirrors TESTED_PI_VERSION). */
 export const TESTED_WEB_ACCESS_VERSION = '0.15.0';
 
@@ -174,7 +190,8 @@ export async function writeWebSearchConfig(settings: WebSearchSettings): Promise
     // over RPC and renders its own activity rows. It does check `ctx.hasUI`, but
     // relying on that inference would put a stray localhost server one upstream
     // refactor away, so pin it explicitly.
-    workflow: 'none'
+    workflow: 'none',
+    openaiSearchModel: OPENAI_SEARCH_MODEL
   };
   if (settings.provider && settings.provider !== 'auto') file.provider = settings.provider;
   for (const [name, value] of Object.entries(settings.credentials ?? {})) {
