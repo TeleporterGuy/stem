@@ -14,7 +14,38 @@ re-cloning the repo does not wipe that folder.
 1. Download the **Windows x64** Node.js **24+** binary zip from
    [nodejs.org](https://nodejs.org/) (the zip, not the MSI).
 2. Extract somewhere you can write, e.g. `%USERPROFILE%\tools\node-v24.x.x-win-x64`.
-3. Put that folder on your **session** PATH (do not need a permanent system PATH):
+3. Put that folder on your PATH. Prefer a **user** PATH entry (no admin). You do
+   **not** need a system-wide PATH.
+
+### User PATH via Windows GUI (recommended for day-to-day use)
+
+This persists for your account in new terminals and apps. No admin prompt.
+
+1. Press **Win**, type `environment`, open **Edit environment variables for your
+   account** (not “Edit the system environment variables”).
+2. Under **User variables**, select **Path** → **Edit** → **New**.
+3. Add the full folder that contains `node.exe`, e.g.
+   `C:\Users\<you>\tools\node-v24.x.x-win-x64`
+   (same path as step 2; expand `%USERPROFILE%` yourself in the dialog).
+4. **OK** out of all dialogs.
+5. **Close and reopen** any open terminals (and Cursor / VS Code if they were
+   already running) so they pick up the new PATH.
+6. Verify:
+
+```bat
+where node
+node -v
+npm -v
+```
+
+`where node` should list your extracted folder first.
+
+When you upgrade Node later, edit that same user Path entry (or add a new one and
+remove the old) so it points at the new extract folder.
+
+### Session-only PATH (temporary)
+
+Useful for a one-off check without changing account settings.
 
 **cmd.exe (preferred when PowerShell profiles are broken):**
 
