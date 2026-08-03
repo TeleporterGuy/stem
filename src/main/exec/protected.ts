@@ -1,5 +1,5 @@
 import { readFileSync, realpathSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { win32 as pathWin32, posix as pathPosix } from 'node:path';
 import { protectedRootsPath } from '../workspace/paths';
 
 // Main-side twin of the bridge extension's protected-roots gate (which cannot be
@@ -8,20 +8,59 @@ import { protectedRootsPath } from '../workspace/paths';
 // guard: we can't tell whether a command would read or write inside a protected
 // root, so any reference to one blocks the command. Defense-in-depth, not a
 // sandbox — the assistant can still read those folders with its read/grep tools.
+//
+// Path shapes are host-specific, so the scan is too: a POSIX-only pathish match
+// sees nothing in `type C:\folder\secrets.txt`, which would leave the gate off
+// entirely on Windows for exactly the read-only commands that reach tier 1.
 
-/** Absolute-path-looking tokens inside a command string (plain or ~-prefixed). */
-const PATHISH_RE = /(?:~|\/)[^\s'"`;|&<>]+/g;
+/** Absolute-path-looking tokens under zsh (plain or ~-prefixed). */
+const POSIX_PATHISH_RE = /(?:~|\/)[^\s'"`;|&<>]+/g;
+// The same under cmd.exe: drive-absolute (`C:\…` or `C:/…`), UNC (`\\server\…`),
+// or `~\…`. Deliberately no bare-`/` alternative — on Windows that is how flags
+// are written (`dir /b`, `del /q`), and matching those would block commands on
+// paths that were never mentioned.
+const WINDOWS_PATHISH_RE = /(?:[A-Za-z]:[\\/]|\\\\|~[\\/])[^\s'"`;|&<>]*/g;
+/** `%APPDATA%\…` — cmd expands these before it parses the line, so we must too. */
+const WINDOWS_ENV_RE = /%([A-Za-z_][A-Za-z0-9_()]*)%/g;
 
-function canonicalish(p: string): string {
+interface Host {
+  win: boolean;
+  resolve: (p: string) => string;
+  sep: string;
+  homeVar: string;
+  pathish: RegExp;
+}
+
+function host(platform: NodeJS.Platform): Host {
+  const win = platform === 'win32';
+  const p = win ? pathWin32 : pathPosix;
+  return {
+    win,
+    resolve: (raw) => p.resolve(raw),
+    sep: p.sep,
+    homeVar: win ? 'USERPROFILE' : 'HOME',
+    pathish: win ? WINDOWS_PATHISH_RE : POSIX_PATHISH_RE
+  };
+}
+
+function canonicalish(p: string, h: Host): string {
+  const resolved = h.resolve(p);
   try {
-    return realpathSync(resolve(p));
+    return realpathSync(resolved);
   } catch {
-    return resolve(p);
+    return resolved;
   }
 }
 
-function isInside(path: string, root: string): boolean {
-  return path === root || path.startsWith(root + sep);
+/** NTFS is case-insensitive; a `c:\foo` reference must still hit a `C:\foo` root. */
+function comparable(p: string, h: Host): string {
+  return h.win ? p.toLowerCase() : p;
+}
+
+function isInside(path: string, root: string, h: Host): boolean {
+  const a = comparable(path, h);
+  const b = comparable(root, h);
+  return a === b || a.startsWith(b + h.sep);
 }
 
 export interface ProtectedScanResult {
@@ -34,7 +73,11 @@ export interface ProtectedScanResult {
  * home). Missing file = no read-only folders (the normal state before the first
  * publish); a present-but-corrupt file throws — the caller must fail closed.
  */
-export function readProtectedRoots(path: string = protectedRootsPath()): string[] {
+export function readProtectedRoots(
+  path: string = protectedRootsPath(),
+  platform: NodeJS.Platform = process.platform
+): string[] {
+  const h = host(platform);
   let raw: string;
   try {
     raw = readFileSync(path, 'utf8');
@@ -43,7 +86,20 @@ export function readProtectedRoots(path: string = protectedRootsPath()): string[
   }
   const parsed = JSON.parse(raw) as { roots?: unknown };
   if (!Array.isArray(parsed.roots)) throw new Error('protected-roots.json has no roots array');
-  return parsed.roots.filter((r): r is string => typeof r === 'string' && !!r).map(canonicalish);
+  return parsed.roots.filter((r): r is string => typeof r === 'string' && !!r).map((r) => canonicalish(r, h));
+}
+
+/** Every path-looking token in a command, with ~ and (on Windows) %VAR% expanded. */
+function pathTokens(command: string, h: Host): string[] {
+  const home = process.env[h.homeVar] ?? '';
+  const text = h.win
+    ? command.replace(WINDOWS_ENV_RE, (whole, name: string) => process.env[name] ?? whole)
+    : command;
+  const out: string[] = [];
+  for (const match of text.match(h.pathish) ?? []) {
+    out.push(match.startsWith('~') ? home + match.slice(1) : match);
+  }
+  return out;
 }
 
 /**
@@ -53,11 +109,13 @@ export function readProtectedRoots(path: string = protectedRootsPath()): string[
 export function scanProtected(
   command: string,
   cwd: string,
-  rootsPath: string = protectedRootsPath()
+  rootsPath: string = protectedRootsPath(),
+  platform: NodeJS.Platform = process.platform
 ): ProtectedScanResult {
+  const h = host(platform);
   let roots: string[];
   try {
-    roots = readProtectedRoots(rootsPath);
+    roots = readProtectedRoots(rootsPath, platform);
   } catch {
     return {
       blocked: true,
@@ -66,14 +124,10 @@ export function scanProtected(
   }
   if (!roots.length) return { blocked: false };
 
-  const home = process.env.HOME ?? '';
-  const targets = [cwd];
-  for (const match of command.match(PATHISH_RE) ?? []) {
-    targets.push(match.startsWith('~') ? home + match.slice(1) : match);
-  }
+  const targets = [cwd, ...pathTokens(command, h)];
   for (const target of targets) {
-    const canonical = canonicalish(target);
-    const hit = roots.find((root) => isInside(canonical, root));
+    const canonical = canonicalish(target, h);
+    const hit = roots.find((root) => isInside(canonical, root, h));
     if (hit) {
       return {
         blocked: true,
