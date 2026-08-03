@@ -18,7 +18,10 @@ const { applyAdjudication, bumpAdjudicationAttempts, getConflictsForAdjudication
 // Exported so tests dispatch fake-LLM replies on the constant instead of a
 // brittle regex over prompt wording.
 export const ADJUDICATE_PROMPT_HEADER = 'You are resolving a conflict between two remembered facts about the same user.';
-const MAX_PER_PASS = 5;
+// Sized against the relation-check pass, which can raise up to 25 conflicts per
+// cycle (reconcile.ts) — at 5 the backlog only ever grew. The producer is also
+// depth-gated (recall-tasks.ts), so the two bounds meet in the middle.
+const MAX_PER_PASS = 15;
 const MAX_REWRITE_FACTS = 4;
 export const MAX_ADJUDICATE_ATTEMPTS = 3;
 

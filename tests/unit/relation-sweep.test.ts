@@ -241,6 +241,113 @@ describe('consolidation prompt dates', () => {
   });
 });
 
+describe('conflict lifecycle fixes', () => {
+  it('still sweeps a fresh fact that is already conflicted, but conflict-only', async () => {
+    const neighbour = seedFact('The user has switched to Firefox as their web browser.', [1, 0, 0]);
+    const other = seedFact('The user pays 5 euro for hosting.', [0, 1, 0]);
+    const fresh = seedFact('The user uses Arc Browser on macOS.', [0.95, 0.3, 0]);
+    store.createFactConflict(other, fresh, 'extractor-named');
+    expect(store.getFactDetails(fresh)?.status).toBe('conflicted');
+    const llm = verdictLlm('b_supersedes_a');
+    // Before the fix the sweep returned immediately for a non-active fresh fact,
+    // so one extractor-named conflict switched the safety net off entirely.
+    expect(await sweepFactAgainstNeighbours(fresh, MODEL, llm, { directUser: true })).toBe(true);
+    expect(llm.calls).toBe(1);
+    // A disputed fact has no supersede authority — the neighbour is contested, not retired.
+    expect(store.getFactDetails(neighbour)?.status).toBe('conflicted');
+    expect(store.getFactDetails(neighbour)?.supersededBy).toBeNull();
+    expect(store.getMemoryConflicts()).toHaveLength(2);
+  });
+
+  it('a pending pair with a temporarily conflicted side stays queued and is judged once the conflict settles', async () => {
+    const a = seedFact('The fee is 129 euro per month.', [1, 0, 0]);
+    const b = seedFact('The fee is 134 euro per month.', [0.99, 0.1, 0]);
+    const c = seedFact('The user lives in Bratislava.', [0, 1, 0]);
+    store.enqueueRelationChecks([[a, b]], 'coinject');
+    const conflictId = store.createFactConflict(a, c, 'unrelated dispute')!;
+    expect(store.countOpenConflicts()).toBe(1);
+    const gated = verdictLlm('contradicts');
+    // Before the fix this settled the (a, b) row as terminal 'stale', killing it unjudged.
+    expect(await processPendingRelationChecks(gated)).toEqual({ checked: 0, conflicts: 0 });
+    expect(gated.calls).toBe(0);
+    expect(relationRows()[0].verdict).toBeNull();
+    store.resolveMemoryConflict(conflictId, 'keep_both');
+    expect(await processPendingRelationChecks(verdictLlm('contradicts'))).toEqual({ checked: 1, conflicts: 1 });
+  });
+
+  // Note: supersedeFact mangles the norm key, so a restatement after a
+  // supersede inserts a NEW fact (the sweep judges the fresh pair). The
+  // norm-intact superseded state these tests exercise comes from expiry.
+  it('a restatement without authority does not revive an expired fact', () => {
+    const past = Math.floor(Date.now() / 1000) - 86_400;
+    const oldId = store.upsertFact('The user flies to Vienna on 12 July.', { source: 'distilled', validUntil: past })!;
+    expect(store.expireFacts()).toBe(1);
+    expect(store.upsertFact('The user flies to Vienna on 12 July.', 'distilled')).toBe(oldId);
+    expect(store.getFactDetails(oldId)?.status).toBe('superseded');
+  });
+
+  it('an authoritative restatement revives the fact and clears its pair memos for re-sweep', () => {
+    const past = Math.floor(Date.now() / 1000) - 86_400;
+    const oldId = store.upsertFact('The user flies to Vienna on 12 July.', { source: 'distilled', validUntil: past })!;
+    const otherId = store.upsertFact('The user uses Arc Browser.', 'distilled')!;
+    expect(store.expireFacts()).toBe(1);
+    store.recordRelationResult(oldId, otherId, 'compatible', 'sweep');
+    expect(store.upsertFact('The user flies to Vienna on 12 July.', { source: 'explicit' })).toBe(oldId);
+    expect(store.getFactDetails(oldId)?.status).toBe('active');
+    // The memoized verdict is wiped so the sweep can re-judge the revived pair.
+    expect(relationRows()).toHaveLength(0);
+  });
+
+  it('directUser distilled claims also carry revive authority via reviveSuperseded', () => {
+    const past = Math.floor(Date.now() / 1000) - 86_400;
+    const oldId = store.upsertFact('The user flies to Vienna on 12 July.', { source: 'distilled', validUntil: past })!;
+    expect(store.expireFacts()).toBe(1);
+    expect(store.upsertFact('The user flies to Vienna on 12 July.', { source: 'distilled', reviveSuperseded: true })).toBe(oldId);
+    expect(store.getFactDetails(oldId)?.status).toBe('active');
+  });
+
+  it('a keep-both resolution is durable against extractor re-raises through distill', async () => {
+    const existing = store.upsertFact('The fee is 129 euro per month.', 'distilled')!;
+    const maxId = (store.dbHandle().prepare('SELECT COALESCE(MAX(id), 0) AS id FROM messages').get() as { id: number }).id;
+    store.recordMessage({ threadId: 'fee', turnId: 'fee1', role: 'user', text: 'Actually the fee is 134 euro now.' });
+    const [message] = store.getMessagesForDistillFrom(maxId + 1);
+    let relationCalls = 0;
+    const llm: LlmClient = {
+      complete: async (prompt: string) => {
+        if (prompt.includes(RELATION_PROMPT_HEADER)) {
+          relationCalls += 1;
+          return JSON.stringify({ verdict: 'contradicts' });
+        }
+        return JSON.stringify({
+          claims: [{
+            text: 'The fee is 134 euro per month.',
+            category: 'other',
+            sensitivity: 'standard',
+            validUntil: null,
+            evidenceMessageIds: [message.id],
+            supersedesFactIds: [],
+            conflictsWithFactIds: [existing]
+          }]
+        });
+      }
+    };
+    expect(await distill.distillNewMessages(llm)).toBe(1);
+    expect(relationCalls).toBe(1);
+    const [conflict] = store.getMemoryConflicts();
+    expect(conflict).toBeDefined();
+    store.resolveMemoryConflict(conflict.id, 'keep_both');
+    // The same claim re-distilled: the pair is memoized (via its resolved
+    // conflict), so the user's keep-both decision is not re-litigated.
+    store.recordMessage({ threadId: 'fee', turnId: 'fee2', role: 'user', text: 'Yes, 134 euro per month is right.' });
+    expect(await distill.distillNewMessages(llm)).toBe(1);
+    expect(relationCalls).toBe(1);
+    expect(store.getMemoryConflicts()).toHaveLength(0);
+    // This suite shares one DB: hand the message table and distill cursor back
+    // clean so the (order-dependent) Firefox regression below starts from id 1.
+    store.resetEpisodic({ skipVacuum: true });
+  });
+});
+
 describe('the Firefox regression, end to end through distill', () => {
   it('retires a stale differently-worded fact the extractor never named', async () => {
     const stale = store.upsertFact('The user has switched to Firefox as their web browser.', 'distilled')!;

@@ -121,6 +121,13 @@ export interface FactWriteOptions {
   validFrom?: number | null;
   validUntil?: number | null;
   evidence?: Omit<FactEvidence, 'id'>[];
+  /**
+   * May this write bring a superseded fact under the same norm back to life?
+   * Defaults to true for source 'explicit' (the user's word), false otherwise —
+   * distill passes true only for directUser claims. Without authority, a mere
+   * restatement of retired text must not undo a supersede decision.
+   */
+  reviveSuperseded?: boolean;
 }
 
 
@@ -1480,6 +1487,11 @@ export class RecallStore {
     const source = opts.source ?? 'distilled';
     const now = this.nowSeconds();
     const confidence = Math.min(1, Math.max(0, opts.confidence ?? (source === 'explicit' ? 1 : 0.9)));
+    const revive = opts.reviveSuperseded ?? source === 'explicit';
+    // Snapshot the prior row so a superseded→active flip below is detectable.
+    const prior = handle.prepare(`SELECT id, status FROM facts WHERE norm = ?`).get(norm) as
+      | { id: number; status: string }
+      | undefined;
     // A correction can change the text under an existing norm — drop any cached
     // vector so it's re-embedded against the new text on the next inject.
     handle.prepare(`DELETE FROM fact_vectors WHERE fact_id IN (SELECT id FROM facts WHERE norm = ?)`).run(norm);
@@ -1499,7 +1511,9 @@ export class RecallStore {
            -- because nothing seeds 'sensitive' by default — only a classifier decision does.
            sensitivity = CASE WHEN facts.sensitivity = 'sensitive' THEN facts.sensitivity ELSE excluded.sensitivity END,
            confidence = MAX(facts.confidence, excluded.confidence),
-           status = CASE WHEN facts.status = 'superseded' THEN excluded.status ELSE facts.status END,
+           -- Reactivation needs authority (see FactWriteOptions.reviveSuperseded):
+           -- an unauthorized restatement refreshes the row but leaves it retired.
+           status = CASE WHEN facts.status = 'superseded' AND ? = 1 THEN excluded.status ELSE facts.status END,
            pinned = MAX(facts.pinned, excluded.pinned),
            updated_at = excluded.updated_at,
            valid_from = COALESCE(excluded.valid_from, facts.valid_from),
@@ -1518,9 +1532,17 @@ export class RecallStore {
         now,
         now,
         opts.validFrom ?? null,
-        opts.validUntil ?? null
+        opts.validUntil ?? null,
+        revive ? 1 : 0
       ) as { id: number } | undefined;
     const id = row?.id ?? null;
+    if (id != null && revive && prior?.status === 'superseded' && prior.id === id && (opts.status ?? 'active') === 'active') {
+      // Legitimate resurrection: wipe the pair memos so the neighbour sweep
+      // re-judges the revived fact — above all against whatever superseded it.
+      // Pairs that went through fact_conflicts stay owned by the conflict
+      // machinery (isRelationChecked still sees them there).
+      handle.prepare(`DELETE FROM fact_relation_checks WHERE fact_a = ? OR fact_b = ?`).run(id, id);
+    }
     if (id != null && opts.evidence?.length) this.addFactEvidence(id, opts.evidence);
     return id;
   };
@@ -1792,6 +1814,14 @@ export class RecallStore {
   };
 
 
+  /** Open conflicts, cheaply — gates the relation-check producer pass. */
+  countOpenConflicts = (): number => {
+    return (this.open().prepare(
+      `SELECT COUNT(*) AS n FROM fact_conflicts WHERE status = 'open'`
+    ).get() as { n: number }).n;
+  };
+
+
   getMemoryConflicts = (): MemoryConflict[] => {
     const rows = this.open().prepare(
       `SELECT id, fact_a AS factA, fact_b AS factB, reason, created_at AS createdAt
@@ -1934,8 +1964,13 @@ export class RecallStore {
       const factB = this.getFactDetails(r.factB);
       if (factA?.status === 'active' && factB?.status === 'active') {
         out.push({ id: r.id, origin: r.origin, factA, factB });
-      } else {
+      } else if (!factA || factA.status === 'superseded' || !factB || factB.status === 'superseded') {
         this.recordRelationVerdict(r.id, 'stale');
+      } else {
+        // A side sitting in another open conflict is temporary — it returns to
+        // 'active' when that conflict settles. Leave the pair pending for a
+        // later pass; 'stale' is terminal and would kill it unjudged.
+        continue;
       }
     }
     return out;

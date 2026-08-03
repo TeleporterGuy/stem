@@ -8,7 +8,7 @@ import { classifyRelation, evidenceDateOf, sweepFactAgainstNeighbours, type Swee
 import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
 import { recallStore, type StoredMessage, type TurnInjectedFacts } from './store';
-const { factTermSearch, getDupCosine, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUnconsumedTurnDocs, getUngradedTurnFacts, markTurnDocsConsumed, markTurnFactsGraded, recordFactUsage, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
+const { enqueueRelationChecks, factTermSearch, getDupCosine, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUnconsumedTurnDocs, getUngradedTurnFacts, isRelationChecked, markTurnDocsConsumed, markTurnFactsGraded, recordFactUsage, recordRelationResult, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
 
 // Level 1: the reflection pass. Periodically reads conversation that's new since
 // its last run and distills durable, stable facts about the user into the facts
@@ -623,6 +623,8 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
       category: claim.category,
       sensitivity: claim.sensitivity,
       confidence: directUser ? 0.9 : 0.55,
+      // Only the user's own restatement may bring a retired fact back to life.
+      reviveSuperseded: directUser,
       validUntil: claim.validUntil,
       evidence: [
         ...evidenceMessages.map((m) => ({
@@ -660,17 +662,26 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
       const raiseVerified = async (targetId: number, reason: string): Promise<boolean> => {
         const target = getFactDetails(targetId);
         if (!target || target.id === id || target.status !== 'active') return true;
+        // Same memo and budget discipline as the neighbour sweep: an already
+        // judged pair (including one the user resolved as "keep both") is never
+        // re-litigated, and classify calls come out of the shared batch budget —
+        // over-budget pairs queue for the background pass instead.
+        if (isRelationChecked(id, targetId)) return true;
+        if (sweepBudget.remaining <= 0) {
+          enqueueRelationChecks([[id, targetId]], 'sweep');
+          return true;
+        }
+        sweepBudget.remaining -= 1;
         const verdict = await classifyRelation(
           { text: target.text, evidenceDate: evidenceDateOf(target) },
           { text: claim.text, evidenceDate: incomingDate },
           llm
         );
         if (getFactsGeneration() !== factsGeneration) return false;
-        if (verdict === 'compatible') return true;
         const current = getFactDetails(targetId);
-        if (current && current.status === 'active' && current.text === target.text) {
-          createFactConflict(target.id, id, reason);
-        }
+        if (!current || current.status !== 'active' || current.text !== target.text) return true;
+        recordRelationResult(id, targetId, verdict, 'sweep');
+        if (verdict !== 'compatible') createFactConflict(target.id, id, reason);
         return true;
       };
       for (const targetId of claim.supersedesFactIds) {

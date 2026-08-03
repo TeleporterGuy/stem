@@ -8,10 +8,18 @@ import { processPendingRelationChecks, relationSweepBackfillDone, stepRelationSw
 import { adjudicateOpenConflicts } from '../recall/adjudicate';
 import { consolidateFacts } from '../recall/consolidate';
 import { getMemoryRebuildStatus, runMemoryRebuildStep } from '../recall/rebuild';
+import { recallStore } from '../recall/store';
 import { curateSkills } from '../skills/curate';
 import { getEmbeddingsClient } from '../recall/retrieval';
 import type { LlmClient } from '../recall/llm';
 import type { ChatBackend } from '../backend';
+
+/**
+ * Above this many open conflicts the relation-check pass stops raising new
+ * ones. With the adjudicator resolving up to 15 per cycle, a gated backlog is
+ * back under the gate within ~two cycles.
+ */
+const OPEN_CONFLICT_GATE = 20;
 
 export interface RecallTasks {
   /** (Re)arm the debounced confirmed-rebuild stepper (no-op unless running). */
@@ -108,9 +116,19 @@ export function initRecallTasks(deps: {
         // Classify queued fact pairs (sweep overflow, co-injected discoveries,
         // backfill) BEFORE adjudication, so any conflicts this raises are
         // resolved in the same cycle rather than lingering a full debounce.
-        await activity.track('memory.relationCheck', 'Cross-checking memory', () => processPendingRelationChecks(recallLlm), (r) => ({
+        // Depth-gated: when the adjudicator is this far behind, classifying
+        // more pairs would only push more facts into 'conflicted' limbo — let
+        // the backlog drain first (the queue keeps the pairs).
+        await activity.track('memory.relationCheck', 'Cross-checking memory', () => {
+          if (recallStore.countOpenConflicts() > OPEN_CONFLICT_GATE) {
+            return Promise.resolve({ checked: 0, conflicts: 0, gated: true });
+          }
+          return processPendingRelationChecks(recallLlm);
+        }, (r) => ({
           worked: r.checked > 0,
-          detail: `Checked ${r.checked} pair${r.checked === 1 ? '' : 's'}, raised ${r.conflicts} conflict${r.conflicts === 1 ? '' : 's'}`
+          detail: 'gated' in r && r.gated
+            ? 'Paused while conflicts drain'
+            : `Checked ${r.checked} pair${r.checked === 1 ? '' : 's'}, raised ${r.conflicts} conflict${r.conflicts === 1 ? '' : 's'}`
         }));
         // Auto-resolve open fact conflicts (non-explicit pairs only) before the
         // consolidation check, so reactivated winners and rewrite replacements

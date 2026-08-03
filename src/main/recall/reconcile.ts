@@ -203,11 +203,15 @@ function neighbourIdsOf(factId: number, vectors: Map<number, Float32Array>, acti
  *
  * Authority mirrors the extractor-named path in distill.ts exactly: the sweep
  * may auto-supersede a neighbour only when the model says the NEW fact
- * supersedes it, the new fact is directly user-stated, and the neighbour is
- * neither explicit nor pinned. Every other non-compatible verdict raises an
- * ordinary conflict for the adjudicator/Conflicts card. Pairs beyond the
- * pass's classify budget are queued for the background pass instead of judged
- * inline, so a chatty session can't stall distillation.
+ * supersedes it, the new fact is directly user-stated AND still undisputed,
+ * and the neighbour is neither explicit nor pinned. Every other non-compatible
+ * verdict raises an ordinary conflict for the adjudicator/Conflicts card.
+ * Pairs beyond the pass's classify budget are queued for the background pass
+ * instead of judged inline, so a chatty session can't stall distillation.
+ *
+ * A `conflicted` fresh fact still gets swept (conflict-only): raising one
+ * extractor-named conflict must not switch off the extractor-independent
+ * safety net for the very fact that just proved contentious.
  *
  * Returns false when a facts reset invalidated the pass (mirror of
  * raiseVerified in distill.ts) — the caller must stop writing.
@@ -220,7 +224,7 @@ export async function sweepFactAgainstNeighbours(
 ): Promise<boolean> {
   const factsGeneration = getFactsGeneration();
   const fresh = getFactDetails(factId);
-  if (!fresh || fresh.status !== 'active') return true;
+  if (!fresh || (fresh.status !== 'active' && fresh.status !== 'conflicted')) return true;
   const activeIds = new Set(getAllFacts().filter((f) => f.status === 'active').map((f) => f.id));
   const targets = neighbourIdsOf(factId, getFactVectors(model), activeIds)
     .filter((id) => !opts.skipIds?.has(id))
@@ -247,8 +251,11 @@ export async function sweepFactAgainstNeighbours(
     if (!currentFresh || currentFresh.text !== fresh.text) return true;
     recordRelationResult(factId, targetId, verdict, 'sweep');
     if (verdict === 'compatible') continue;
+    // Re-read the fresh fact's status at act time: a conflict raised earlier in
+    // this very loop flips it to 'conflicted', and a disputed fact must not
+    // retire neighbours on its own say-so.
     const mayAutoSupersede =
-      verdict === 'b_supersedes_a' && opts.directUser
+      verdict === 'b_supersedes_a' && opts.directUser && currentFresh.status === 'active'
       && currentTarget.source !== 'explicit' && !currentTarget.pinned;
     if (mayAutoSupersede) {
       supersedeFact(targetId, factId);
@@ -282,11 +289,17 @@ export async function processPendingRelationChecks(
     if (getFactsGeneration() !== factsGeneration) break;
     const a = getFactDetails(pending.factA.id);
     const b = getFactDetails(pending.factB.id);
-    if (a?.status !== 'active' || a.text !== pending.factA.text
-      || b?.status !== 'active' || b.text !== pending.factB.text) {
+    // 'stale' is terminal — reserve it for sides that are gone, superseded, or
+    // reworded. A side that merely entered another conflict while we were
+    // classifying stays pending: it returns to 'active' when that conflict
+    // settles, and killing the pair here would leave it unjudged forever.
+    const gone = (f: typeof a, snap: { text: string }): boolean =>
+      !f || f.status === 'superseded' || f.text !== snap.text;
+    if (gone(a, pending.factA) || gone(b, pending.factB)) {
       recordRelationVerdict(pending.id, 'stale');
       continue;
     }
+    if (a!.status !== 'active' || b!.status !== 'active') continue;
     recordRelationVerdict(pending.id, verdict);
     checked += 1;
     if (verdict !== 'compatible') {
