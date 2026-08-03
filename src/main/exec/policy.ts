@@ -282,16 +282,19 @@ export function parseJudgeVerdict(text: string): JudgeVerdict {
   return reason ? { verdict, reason } : { verdict };
 }
 
-// Cheap-model markers, in preference order, for the auto judge pick.
-const CHEAP_MARKERS = ['haiku', 'mini', 'nano', 'flash', 'lite', 'spark'];
+// Cheap-model markers, in preference order, for the auto judge pick. Names only —
+// ModelSummary carries no price or tier, so this is the whole signal there is.
+const CHEAP_MARKERS = ['haiku', 'mini', 'nano', 'flash', 'lite', 'spark', 'fast', 'small', 'turbo'];
 
 /**
- * Resolve the judge model: the explicit setting wins; otherwise pick the
+ * Resolve the judge model: the explicit setting wins; otherwise the
  * cheapest-looking model of the current provider (Anthropic → Haiku-class, etc.).
- * If that provider has no cheap-tier name, reuse the live chat model (or the
- * list default / first available) — never return null while authenticated models
- * exist, or complete() falls through to the built-in openai-codex constant and
- * fails with "No API key" for users signed in only to another provider (e.g. xAI).
+ *
+ * When that provider publishes no cheap-tier name, fall back to a model we know
+ * is signed in rather than null: null makes complete() use its built-in
+ * openai-codex default, which fails with "No API key" for anyone signed in only
+ * to another provider. The judge then runs on the chat's own model — correct but
+ * not cheap, which is why Settings says so rather than promising "cheapest".
  */
 export function resolveJudgeModel(
   settings: Pick<ExecSettings, 'judgeModel'>,
@@ -305,9 +308,7 @@ export function resolveJudgeModel(
     const hit = pool.find((m) => m.id.toLowerCase().includes(marker));
     if (hit) return hit.id;
   }
-  // No cheap-tier name in this provider's catalog (xAI grok-* etc.): stay on the
-  // live chat model, then the app default, then any model we know is signed-in.
-  if (currentModel && (!provider || currentModel.startsWith(`${provider}/`))) return currentModel;
-  const fallback = pool.find((m) => m.isDefault) ?? pool[0] ?? models.find((m) => m.isDefault) ?? models[0];
-  return fallback?.id ?? null;
+  // `provider` is derived from currentModel whenever there is one, so this is
+  // already a same-provider pick; pool/models only matter when there is not.
+  return currentModel ?? pool.find((m) => m.isDefault)?.id ?? pool[0]?.id ?? null;
 }

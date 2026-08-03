@@ -1542,12 +1542,20 @@ export function SettingsTab({
 
             {exec.approvalMode === 'assisted' && (
               <div className="set-block">
-                <span className="set-sub">Safety-check model</span>
+                <span className="set-sub">
+                  Safety-check model{' '}
+                  <InfoTip label="About the safety-check model">
+                    On <b>Auto</b>, Stem uses the cheapest model your chat's provider offers — a
+                    Haiku, mini, or flash tier. A provider that publishes no cheap tier gets checked
+                    by the chat's own model instead, so the check stays on a provider you're signed
+                    in to. Pick a model here to pin it.
+                  </InfoTip>
+                </span>
                 <ModelPicker
                   models={models}
                   value={exec.judgeModel}
                   onChange={(id) => updateExec({ judgeModel: id })}
-                  emptyLabel="Auto (cheapest)"
+                  emptyLabel="Auto"
                   ariaLabel="Safety-check model"
                 />
               </div>

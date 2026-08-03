@@ -174,14 +174,10 @@ export class ExecService implements ExecBridge {
     try {
       const runtime = this.deps.runtime();
       const models = await this.listModelsCached();
-      // Prefer a cheap model of the live chat's provider; never leave model unset
-      // when the user has signed-in models (null → complete() uses the built-in
-      // openai-codex constant, which fails for xAI-only / Anthropic-only installs).
-      const model =
-        resolveJudgeModel(settings, models, currentModel ?? null) ??
-        models.find((m) => m.isDefault)?.id ??
-        models[0]?.id ??
-        null;
+      // Prefer a cheap model of the live chat's provider. resolveJudgeModel only
+      // answers null when it was handed no models at all — complete() then uses
+      // its own default, which is the best available answer anyway.
+      const model = resolveJudgeModel(settings, models, currentModel ?? null);
       const reply = await runtime.complete(buildJudgePrompt(command, cwd, userText), {
         model,
         timeoutMs: JUDGE_TIMEOUT_MS,

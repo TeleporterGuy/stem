@@ -277,14 +277,27 @@ describe('resolveJudgeModel', () => {
     expect(resolveJudgeModel({ judgeModel: null }, [], null)).toBeNull();
   });
 
-  it('reuses the live chat model when the provider has no cheap-tier name (e.g. xAI)', () => {
-    const xai = [
-      model('xai/grok-4.5', 'xai', true),
-      model('xai/grok-4.3', 'xai')
-    ];
+  it("recognises the cheap tier under names that aren't -mini/-haiku", () => {
+    // The frontier model is the fallback, so a provider whose small tier is
+    // called something else was paying frontier prices on every judged command.
+    const xai = [model('xai/grok-4.5', 'xai', true), model('xai/grok-4-fast', 'xai')];
+    expect(resolveJudgeModel({ judgeModel: null }, xai, 'xai/grok-4.5')).toBe('xai/grok-4-fast');
+    const other = [model('acme/big-1', 'acme', true), model('acme/big-1-turbo', 'acme')];
+    expect(resolveJudgeModel({ judgeModel: null }, other, 'acme/big-1')).toBe('acme/big-1-turbo');
+  });
+
+  it('reuses the live chat model when the provider really has no cheap tier', () => {
+    const xai = [model('xai/grok-4.5', 'xai', true), model('xai/grok-4.3', 'xai')];
     expect(resolveJudgeModel({ judgeModel: null }, xai, 'xai/grok-4.5')).toBe('xai/grok-4.5');
     // No currentModel: still must not return null while signed-in models exist
     // (null would make complete() spawn the built-in openai-codex default).
     expect(resolveJudgeModel({ judgeModel: null }, xai, null)).toBe('xai/grok-4.5');
+  });
+
+  it('stays on the chat provider rather than borrowing a cheap model from another', () => {
+    // Reaching across providers would pick a model the user may not be signed in
+    // to — the failure this fallback exists to prevent.
+    const mixed = [model('xai/grok-4.5', 'xai', true), model('anthropic/claude-haiku-4', 'anthropic')];
+    expect(resolveJudgeModel({ judgeModel: null }, mixed, 'xai/grok-4.5')).toBe('xai/grok-4.5');
   });
 });
