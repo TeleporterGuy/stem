@@ -2,10 +2,9 @@ import { access, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { SkillSummary } from '../../shared/types';
+import { DISABLED_MARKER, syncSkillsIgnore } from '../skills/ignore';
 import { readUsage } from '../skills/usage';
 import { skillsRoot } from './paths';
-
-const DISABLED_MARKER = '.disabled';
 
 interface FrontMatter {
   name?: string;
@@ -80,6 +79,8 @@ export async function setSkillEnabled(slug: string, enabled: boolean): Promise<S
   } else if (!(await exists(marker))) {
     await writeFile(marker, 'disabled by Stem\n', 'utf8');
   }
+  // The marker is what the UI reads; the ignore file is what the backend reads.
+  syncSkillsIgnore();
   return listSkills();
 }
 

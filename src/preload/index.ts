@@ -38,7 +38,9 @@ import type {
   QuickChatStatus,
   ScheduledRunPayload,
   ScheduledTask,
-  SkillsModelSettings,
+  SkillProposal,
+  SkillsMode,
+  SkillsSettings,
   StartTurnInput,
   StemApi,
   TaskNotifyPayload,
@@ -83,7 +85,9 @@ const api: StemApi = {
   listSkills: () => ipcRenderer.invoke('skills:list'),
   setSkillEnabled: (slug: string, enabled: boolean) => ipcRenderer.invoke('skills:setEnabled', slug, enabled),
   curateSkills: () => ipcRenderer.invoke('skills:curate'),
-  distillSkillsNow: () => ipcRenderer.invoke('skills:distillNow'),
+  learnFromLastTurn: (threadId: string, focus?: string) => ipcRenderer.invoke('skills:learn', threadId, focus),
+  skillsResetStatus: () => ipcRenderer.invoke('skills:resetStatus'),
+  resetSkills: (exportFirst: boolean, mode: SkillsMode) => ipcRenderer.invoke('skills:reset', exportFirst, mode),
   onSkillsChanged: (listener: () => void) => {
     const handler = () => listener();
     ipcRenderer.on('skills:changed', handler);
@@ -164,6 +168,18 @@ const api: StemApi = {
   },
   respondInstructionsApproval: (id: number | string, accept: boolean, surface: 'main' | 'quickChat', text: string) =>
     ipcRenderer.invoke('instructions:resolveApproval', id, accept, surface, text),
+  onSkillApproval: (listener: (proposal: SkillProposal) => void) => {
+    const handler = (_e: unknown, proposal: SkillProposal) => listener(proposal);
+    ipcRenderer.on('skills:approvalRequest', handler);
+    return () => ipcRenderer.removeListener('skills:approvalRequest', handler);
+  },
+  onSkillApprovalResolved: (listener: (payload: ApprovalResolvedPayload) => void) => {
+    const handler = (_e: unknown, payload: ApprovalResolvedPayload) => listener(payload);
+    ipcRenderer.on('skills:approvalResolved', handler);
+    return () => ipcRenderer.removeListener('skills:approvalResolved', handler);
+  },
+  respondSkillApproval: (id: number | string, accept: boolean, skill: { name: string; description: string; body: string }) =>
+    ipcRenderer.invoke('skills:resolveApproval', id, accept, skill),
   updateExecSettings: (patch: Partial<ExecSettings>) => ipcRenderer.invoke('settings:updateExec', patch),
   onExecApproval: (listener: (request: ExecApprovalRequest) => void) => {
     const handler = (_e: unknown, request: ExecApprovalRequest) => listener(request);
@@ -251,7 +267,7 @@ const api: StemApi = {
     ipcRenderer.invoke('settings:updateMemory', patch),
   updateCustomInstructions: (patch: Partial<CustomInstructionsSettings>) =>
     ipcRenderer.invoke('settings:updateCustomInstructions', patch),
-  updateSkillsSettings: (patch: Partial<SkillsModelSettings>) =>
+  updateSkillsSettings: (patch: Partial<SkillsSettings>) =>
     ipcRenderer.invoke('settings:updateSkills', patch),
   updateRetrievalSettings: (patch: PartialRetrievalSettings) =>
     ipcRenderer.invoke('settings:updateRetrieval', patch),

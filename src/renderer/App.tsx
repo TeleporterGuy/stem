@@ -22,6 +22,8 @@ import { ShortcutHint, useShortcut } from './shortcuts';
 import { ManagePanel } from './manage/ManagePanel';
 import { McpApprovalCard } from './manage/McpApprovalCard';
 import { InstructionsApprovalCard } from './manage/InstructionsApprovalCard';
+import { SkillApprovalCard } from './manage/SkillApprovalCard';
+import { SkillsResetDialog } from './manage/SkillsResetDialog';
 import { ExecApprovalCard } from './manage/ExecApprovalCard';
 import { DeleteThreadDialog } from './DeleteThreadDialog';
 import { ActivityIndicator } from './ui/ActivityIndicator';
@@ -1092,6 +1094,7 @@ export default function App() {
           serviceTier={serviceTier}
           format={format}
           draftFolderName={draftFolderName}
+          threadId={activeThreadId}
           onChangeEffort={setEffort}
           onChangeSpeed={setServiceTier}
           onChangeFormat={setFormat}
@@ -1129,6 +1132,12 @@ export default function App() {
       <DropOverlay onDropToChat={onDropToChat} />
       <McpApprovalCard />
       <InstructionsApprovalCard />
+      <SkillApprovalCard />
+      {/* Main window only. The skills migration asks the user to choose a standing
+          setting and to accept a deletion — a settings-shaped decision, which the
+          Quick Chat overlay is the wrong place for: it is opened for one question
+          and dismissed. It waits here until the main window is opened. */}
+      <SkillsResetDialog />
       <ExecApprovalCard />
       {pendingDelete && (
         <DeleteThreadDialog

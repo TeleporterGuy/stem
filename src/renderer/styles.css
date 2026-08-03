@@ -624,7 +624,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .composer-field.note-mode { border-color: var(--accent); }
 .note-chip { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .note-chip > svg { color: var(--accent); }
-/* Transient post-save feedback where the chip was ("Saved to memory" / why not). */
+/* Transient feedback where the chip was — the composer's only notice row. `/note`
+   reports its save here ("Saved to memory" / why not), `/learn` its outcome. */
 .note-flash {
   display: inline-flex; align-items: center; gap: var(--sp-3);
   padding: 3px 2px;
@@ -2295,7 +2296,9 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 
 /* Custom-instructions textareas (Settings + approval card). */
 .ci-textarea,
-.instructions-approval-text {
+.instructions-approval-text,
+.skill-approval-input,
+.skill-approval-body {
   font: inherit;
   width: 100%;
   resize: vertical;
@@ -2307,12 +2310,26 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   line-height: 1.5;
 }
 .ci-textarea:focus,
-.instructions-approval-text:focus {
+.instructions-approval-text:focus,
+.skill-approval-input:focus,
+.skill-approval-body:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--shadow-focus);
 }
 .instructions-approval-text { margin-top: 10px; }
+
+/* Skill approval card: a whole SKILL.md, editable. Wider than the other cards
+   because the body is a numbered procedure, and reflowing one into a 440px column
+   makes it unreadable at exactly the moment the user is meant to read it. */
+.skill-approval-card { width: min(560px, calc(100vw - 48px)); }
+.skill-approval-field { display: block; margin-top: 10px; }
+.skill-approval-field > span { display: block; margin-bottom: var(--sp-2); font-size: var(--fs-12); color: var(--muted); }
+.skill-approval-body {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-12);
+  max-height: 44vh;
+}
 
 /* run_command approval card: the command awaiting the user's decision. */
 .exec-approval-command {

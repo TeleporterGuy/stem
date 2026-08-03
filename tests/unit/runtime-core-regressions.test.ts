@@ -3,7 +3,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { canonicalPolicyPath, pathInsideAny, PiRuntime, skillSlugForPath } from '../../src/main/pi/runtime';
+import { canonicalPolicyPath, pathInsideAny, PiRuntime } from '../../src/main/pi/runtime';
 import { newTurnContext } from '../../src/main/pi/normalize';
 import { PiProcess, stderrReason } from '../../src/main/pi/rpc';
 import { updateDefaultModel } from '../../src/main/workspace/settings';
@@ -822,84 +822,7 @@ describe('interactive overflow self-heal', () => {
   });
 });
 
-describe('skillSlugForPath', () => {
-  it('maps nested paths to the first segment under the skills root and rejects outsiders', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'stem-skill-slug-'));
-    cleanup.push(root);
-    const skills = join(root, 'skills');
-    await mkdir(join(skills, 'brew-coffee', 'scripts'), { recursive: true });
-    await writeFile(join(skills, 'brew-coffee', 'SKILL.md'), 'x');
-    await writeFile(join(skills, 'brew-coffee', 'scripts', 'go.sh'), 'x');
-
-    expect(skillSlugForPath(join(skills, 'brew-coffee', 'SKILL.md'), skills, root)).toBe('brew-coffee');
-    expect(skillSlugForPath(join(skills, 'brew-coffee', 'scripts', 'go.sh'), skills, root)).toBe('brew-coffee');
-    // The root itself and paths outside it are not a skill.
-    expect(skillSlugForPath(skills, skills, root)).toBeNull();
-    expect(skillSlugForPath(join(root, 'elsewhere.txt'), skills, root)).toBeNull();
-  });
-
-  it('resolves relative spellings against cwd', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'stem-skill-slug-rel-'));
-    cleanup.push(root);
-    const skills = join(root, 'skills');
-    await mkdir(join(skills, 'foo'), { recursive: true });
-    await writeFile(join(skills, 'foo', 'SKILL.md'), 'x');
-
-    expect(skillSlugForPath('skills/foo/SKILL.md', skills, root)).toBe('foo');
-    expect(skillSlugForPath('unrelated/foo.md', skills, root)).toBeNull();
-  });
-
-  it('canonicalizes a symlinked skills root so aliased reads still attribute', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'stem-skill-slug-sym-'));
-    cleanup.push(root);
-    const real = join(root, 'real-skills');
-    const alias = join(root, 'alias-skills');
-    await mkdir(join(real, 'bar'), { recursive: true });
-    await writeFile(join(real, 'bar', 'SKILL.md'), 'x');
-    await symlink(real, alias);
-
-    expect(skillSlugForPath(join(alias, 'bar', 'SKILL.md'), real, root)).toBe('bar');
-    expect(skillSlugForPath(join(real, 'bar', 'SKILL.md'), alias, root)).toBe('bar');
-  });
-});
-
-describe('skill usage detection', () => {
-  it('collects consulted skill slugs per turn, consultative tools only', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'stem-skill-detect-'));
-    cleanup.push(root);
-    const skills = join(root, 'skills');
-    const workspace = join(root, 'workspace');
-    await mkdir(join(skills, 'brew-coffee'), { recursive: true });
-    await mkdir(workspace, { recursive: true });
-    await writeFile(join(skills, 'brew-coffee', 'SKILL.md'), 'x');
-    const prevSkillsDir = process.env.STEM_SKILLS_DIR;
-    process.env.STEM_SKILLS_DIR = skills;
-    try {
-      const runtime = new PiRuntime({
-        piHome: join(root, 'pi'),
-        sessionsDir: join(root, 'sessions'),
-        workspaceRoot: workspace,
-        seedGlobalAuth: false
-      });
-      const turn = newTurnContext('thread', 'skill-turn');
-      const internal = runtime as unknown as {
-        currentTurn: typeof turn;
-        onPiEvent: (event: Record<string, unknown>) => void;
-      };
-      internal.currentTurn = turn;
-      const read = (id: string, tool: string, path: string) =>
-        internal.onPiEvent({ type: 'tool_execution_start', toolName: tool, toolCallId: id, args: { path } });
-
-      read('r1', 'read', join(skills, 'brew-coffee', 'SKILL.md'));
-      read('r2', 'read', join(skills, 'brew-coffee', 'SKILL.md')); // re-read: still one use
-      read('r3', 'write', join(skills, 'brew-coffee', 'SKILL.md')); // authoring ≠ use
-      read('r4', 'read', join(workspace, 'notes.md')); // outside the skills root
-      read('r5', 'ls', skills); // the root itself is not a skill
-
-      expect([...(turn.skillsUsed ?? [])]).toEqual(['brew-coffee']);
-    } finally {
-      if (prevSkillsDir === undefined) delete process.env.STEM_SKILLS_DIR;
-      else process.env.STEM_SKILLS_DIR = prevSkillsDir;
-    }
-  });
-});
+// skillSlugForPath and the read-inside-a-skill-folder usage detector were deleted
+// with the retrieval takeover: skill bodies are inlined into the turn now, so no
+// tool ever reads a SKILL.md and there is no path to attribute. Usage is the
+// injected-then-graded loop instead — see tests/unit/skills-grade.test.ts.

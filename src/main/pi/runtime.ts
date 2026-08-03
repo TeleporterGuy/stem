@@ -28,6 +28,7 @@ import type {
   ModelServiceTier,
   ModelSummary,
   RuntimeStatus,
+  SkillProposal,
   StartTurnInput,
   StartTurnResult
 } from '../../shared/types';
@@ -51,6 +52,7 @@ import { getPrivateRoots } from '../workspace/connected-folders';
 import { resolveAttachments, type PiImageContent } from './attachments';
 import { captureUserMessage } from '../recall/capture';
 import type { ApprovalId, ChatBackend, ExecBridge, TaskBridge } from '../backend/types';
+import type { SkillBridge } from '../skills/bridge';
 import {
   buildMcpCatalogContext,
   ensureMcpConfig,
@@ -74,17 +76,22 @@ import {
   writeWebSearchConfig
 } from './web-search';
 import { piMcpConfigPath, skillsRoot } from '../workspace/paths';
-import { recordUses } from '../skills/usage';
+import { readUsage, recordGrades, recordInjections, recordUses } from '../skills/usage';
+import { formatSkillsBlock, selectSkills, type SkillUsageStat } from '../skills/inject';
+import { listSkillRecords } from '../skills/store';
+import { gradeSkillUse } from '../skills/grade';
 import { resolvePi, type PiInvocation } from './locate';
 import { PiProcess, stderrReason, type PiEvent } from './rpc';
 import {
   newTurnContext,
   normalizePiEvent,
   phaseOfEvents,
+  snapshotTurnTrace,
   toolCallActivity,
   toTurnUsage,
   type NormalizedEvent,
   type PiUsage,
+  type SettledTurnTrace,
   type TurnContext,
   type TurnTimingBreakdown
 } from './normalize';
@@ -99,6 +106,7 @@ import {
   ENV_SKILLS_DIR,
   EXEC_BRIDGE_TITLE,
   INSTRUCTIONS_APPROVAL_TITLE,
+  SKILL_BRIDGE_TITLE,
   SKILLS_REV_FILE,
   TASK_BRIDGE_TITLE,
   toolArgsOf
@@ -163,11 +171,30 @@ function titleFromInput(input: string): string {
 // target path under. Probed on the raw pi event for the memory-taint check.
 const TOOL_PATH_KEYS = ['path', 'file_path', 'filename'] as const;
 
-// Tools whose touch inside a skill folder counts as CONSULTING that skill for
-// usage tracking. An allowlist, not "everything but edit/write": a future tool
-// that merely carries a path arg must not count, and edits are authoring, not
-// use (agent authoring goes through manage_skill in the bridge anyway).
-const SKILL_CONSULT_TOOLS = new Set(['read', 'grep', 'find', 'ls']);
+
+// How many settled turns keep their tool trace in memory (see `recentTurns`).
+const RECENT_TURNS_KEPT = 3;
+
+/**
+ * A per-turn lookup of the injected/graded counters that feed the ranking blend.
+ * Read fresh each turn rather than cached: the sidecar is a few hundred bytes and
+ * three different things write it (this loop, the curator, a removal), so a cache
+ * would silently freeze the feedback signal. A skill never injected returns
+ * undefined and ranks exactly neutral.
+ */
+function skillUsageLookup(): (slug: string) => SkillUsageStat | undefined {
+  const { skills } = readUsage();
+  return (slug) => {
+    const entry = skills[slug];
+    if (!entry?.injected) return undefined;
+    return { timesInjected: entry.injected, timesUsed: entry.used ?? 0, lastGradedAt: entry.lastGradedAt };
+  };
+}
+
+// How long a skill approval card waits before it counts as a "no". Matches the
+// instructions card: long enough to read a whole SKILL.md, short enough that a
+// forgotten card does not pin a pi tool call open for the rest of the session.
+const SKILL_APPROVAL_TIMEOUT_MS = 120_000;
 
 /** Pull the target file/dir path out of a raw pi tool_execution_start event, if any. */
 function readToolPath(ev: PiEvent): string | null {
@@ -285,18 +312,6 @@ function canonicalPolicyReadPath(target: string, cwd: string): string {
     }
   }
   return canonicalizePolicyAbsolutePath(resolved);
-}
-
-/**
- * Slug (first path segment under `root`) named by a tool-target path, or null
- * when the path is the root itself or outside it. Canonicalizes both sides like
- * pathInsideAny so relative/`~`/symlinked spellings resolve to the same skill.
- */
-export function skillSlugForPath(target: string, root: string, cwd: string): string | null {
-  const abs = canonicalPolicyReadPath(target, cwd);
-  const r = canonicalPolicyPath(root, cwd);
-  if (abs === r || !abs.startsWith(r + sep)) return null;
-  return abs.slice(r.length + 1).split(sep)[0] || null;
 }
 
 /** True when `target` (resolved against cwd if relative) is at/inside any of `roots`. */
@@ -455,6 +470,26 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * agent_end, when no live turn exists) can still be surfaced on its bubble.
    */
   private lastSettledTurn: { threadId: string; turnId: string } | null = null;
+  /**
+   * The last few settled turns, newest last, for skill authoring after the fact.
+   * `/learn` and the "Save as skill" button both act on a turn the user has
+   * already read, by which time its TurnContext is long gone. Three is enough to
+   * survive a couple of short follow-ups ("thanks", "and the other one?") without
+   * turning into a transcript we'd have to reason about privacy for.
+   */
+  private recentTurns: SettledTurnTrace[] = [];
+  /** Wired by main: called with each settled turn's trace (see setTurnSettledHook). */
+  private onTurnSettled: ((turn: SettledTurnTrace) => void | Promise<void>) | null = null;
+  /**
+   * Pending skill approval cards → the resolver that settles the held manage_skill
+   * request. Unlike the admin/instructions approvals, the card is not the pi
+   * elicitation itself: the elicitation stays parked inside an awaited promise in
+   * handleSkillBridgeRequest, so the id here is minted by main.
+   */
+  private skillApprovals = new Map<
+    string,
+    (outcome: { approved: boolean; skill?: { name: string; description: string; body: string } }) => void
+  >();
   /** Pending stem-admin approvals, keyed by the bridge's extension_ui_request id. */
   private adminApprovals = new Set<string>();
   /** Immutable proposal snapshot paired with each pending admin approval. */
@@ -470,6 +505,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private taskBridge: TaskBridge | null = null;
   /** Wired by main to route the assistant's run_command tool. */
   private execBridge: ExecBridge | null = null;
+  /** Wired by main to route the assistant's manage_skill tool through the validator + policy. */
+  private skillBridge: SkillBridge | null = null;
   /** Set when an admin add/remove was approved; reloads MCP servers at turn end. */
   private pendingMcpReload = false;
   /** Set when a skill was written this turn (or by the curator); reloads at turn end. */
@@ -750,6 +787,20 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    */
   isCaptureSuppressed(threadId: string): boolean {
     return this.currentTurn?.threadId === threadId && this.currentTurn.memoryTainted === true;
+  }
+
+  /**
+   * The newest retained turn on `threadId` (or on any thread when omitted), for
+   * authoring a skill after the fact. Returns null once the turn has aged out of
+   * the ring — deliberately: a `/learn` aimed at a turn nobody remembers should
+   * say so rather than invent a procedure from the thread text alone.
+   */
+  recentTurnTrace(threadId?: string): SettledTurnTrace | null {
+    for (let i = this.recentTurns.length - 1; i >= 0; i -= 1) {
+      const turn = this.recentTurns[i];
+      if (!threadId || turn.threadId === threadId) return turn;
+    }
+    return null;
   }
 
   /**
@@ -1295,6 +1346,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private settleAllApprovals(): void {
     for (const id of [...this.adminApprovals]) this.settleAdminApproval(id);
     for (const id of [...this.instructionsApprovals]) this.settleInstructionsApproval(id);
+    // Skill cards: deny. The pi child that asked is gone, so an approval could
+    // never be delivered back to its tool call anyway.
+    for (const settle of [...this.skillApprovals.values()]) settle({ approved: false });
     // Exec: deny pending approval cards and kill running commands — the pi child
     // that asked is gone, so their results could never be delivered anyway.
     this.execBridge?.settleAll();
@@ -1324,6 +1378,19 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
   setExecBridge(bridge: ExecBridge | null): void {
     this.execBridge = bridge;
+  }
+
+  setSkillBridge(bridge: SkillBridge | null): void {
+    this.skillBridge = bridge;
+  }
+
+  /**
+   * Subscribe to settled turns, in-process. One hook, not an emitter: there is
+   * exactly one consumer (the skills pass) and the payload — full tool arguments
+   * and results — is not something to hand out broadly.
+   */
+  setTurnSettledHook(hook: ((turn: SettledTurnTrace) => void | Promise<void>) | null): void {
+    this.onTurnSettled = hook;
   }
 
   /**
@@ -1364,6 +1431,96 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * the CURRENT turn's threadId (the only authoritative source — the extension can't
    * know Stem's thread id) and answer with a JSON result string the tool returns.
    */
+  /**
+   * Handle the manage_skill tool's ctx.ui.input round-trip (sentinel
+   * SKILL_BRIDGE_TITLE). Everything the write needs — the validator, the mode, the
+   * card — is main-process state the bridge extension cannot reach, so the whole
+   * decision runs here and the held request is answered with a JSON result the
+   * tool hands straight back to the model.
+   */
+  private handleSkillBridgeRequest(id: string, payload: string | undefined): void {
+    // Answer the process that ASKED, not whatever `this.proc` happens to be by the
+    // time we reply. Unlike the exec bridge, this request can be parked behind an
+    // approval card for two minutes — long enough for a restart to have replaced
+    // the process, whose elicitation table knows nothing about this id. Matches
+    // how the instructions approval latches `requestProcess`.
+    const requestProcess = this.proc;
+    const respond = (value: unknown): void => {
+      if (this.proc !== requestProcess) return;
+      requestProcess?.send({ type: 'extension_ui_response', id, value: JSON.stringify(value) });
+    };
+    const isScheduled = this.currentTurn?.isScheduled === true;
+    void (async () => {
+      try {
+        const bridge = this.skillBridge;
+        if (!bridge) return respond({ ok: false, text: 'Saving skills is unavailable right now.' });
+        const req = JSON.parse(payload ?? '{}') as Record<string, unknown>;
+        const op = req.op === 'remove' ? 'remove' : 'save';
+        const result = await bridge.handleRequest(
+          op === 'remove'
+            ? { op: 'remove', name: String(req.name ?? '') }
+            : {
+                op: 'save',
+                // Anything other than an explicit 'user' is treated as the
+                // assistant's own idea, so a missing or garbled flag fails toward
+                // asking rather than toward writing.
+                initiatedBy: req.initiated_by === 'user' ? 'user' : 'assistant',
+                name: String(req.name ?? ''),
+                description: String(req.description ?? ''),
+                body: String(req.content ?? req.body ?? ''),
+                expectExisting: req.expect_existing === true
+              },
+          { isScheduled }
+        );
+        respond(result);
+      } catch (e) {
+        respond({ ok: false, text: e instanceof Error ? e.message : String(e) });
+      }
+    })();
+  }
+
+  /**
+   * Raise a skill approval card and resolve when the user answers. Resolves
+   * `{ approved: false }` on timeout and on a process restart — a card nobody
+   * answered must never become a silent write. Public because main hands it to
+   * the SkillBridge as its approval hook; only the runtime knows which turn is
+   * live and can reach the renderer.
+   */
+  requestSkillApproval(proposal: {
+    name: string;
+    description: string;
+    body: string;
+    isPatch: boolean;
+  }): Promise<{ approved: boolean; skill?: { name: string; description: string; body: string } }> {
+    const id = `skill-${randomUUID()}`;
+    return new Promise((resolve) => {
+      const settle = (outcome: { approved: boolean; skill?: { name: string; description: string; body: string } }): void => {
+        if (!this.skillApprovals.delete(id)) return;
+        this.emitEvent('skills/approvalResolved', { id });
+        resolve(outcome);
+      };
+      this.skillApprovals.set(id, settle);
+      this.emitEvent('skills/approvalRequest', {
+        id,
+        threadId: this.currentTurn?.threadId ?? '',
+        name: proposal.name,
+        description: proposal.description,
+        body: proposal.body,
+        isPatch: proposal.isPatch,
+        origin: 'assistant'
+      } satisfies SkillProposal);
+      setTimeout(() => settle({ approved: false }), SKILL_APPROVAL_TIMEOUT_MS);
+    });
+  }
+
+  /** Answer a pending skill approval from the card. False when it already expired. */
+  resolveSkillApproval(id: ApprovalId, accept: boolean, skill?: { name: string; description: string; body: string }): boolean {
+    const settle = this.skillApprovals.get(String(id));
+    if (!settle) return false;
+    settle({ approved: accept, skill });
+    return true;
+  }
+
   private handleTaskBridgeRequest(id: string, payload: string | undefined): void {
     const respond = (value: unknown): void =>
       this.proc?.send({ type: 'extension_ui_response', id, value: JSON.stringify(value) });
@@ -1492,6 +1649,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         // they stay registered under the denylist, just inactive until activated.
         '--exclude-tools',
         'bash',
+        // Stem selects skills itself and inlines them into the per-turn context
+        // (skills/inject.ts). pi's own discovery broadcasts every skill's
+        // name+description into the SYSTEM prompt unconditionally, which is both
+        // a duplicate of what we inject and the reason no precision signal could
+        // exist before: an injection count identical for every skill measures
+        // nothing. Turning it off is what makes the ranking loop possible.
+        '--no-skills',
         '-e',
         piExtensionPath(),
         // Web search for every provider (web_search / source_check /
@@ -1588,6 +1752,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         this.handleExecBridgeRequest(id, ev.placeholder as string | undefined);
         return;
       }
+      // The manage_skill round-trip: the contract validator, the Off/Ask/Auto
+      // policy, and the approval card all live in main, so the write happens
+      // there and this request is held open until it settles.
+      if (ev.method === 'input' && ev.title === SKILL_BRIDGE_TITLE) {
+        this.handleSkillBridgeRequest(id, ev.placeholder as string | undefined);
+        return;
+      }
       // No UI for other dialogs yet — dismiss them safely.
       if (ev.method === 'confirm') this.proc?.send({ type: 'extension_ui_response', id, confirmed: false });
       else if (ev.method === 'select' || ev.method === 'input' || ev.method === 'editor')
@@ -1628,22 +1799,19 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
     if (!this.currentTurn) return;
     const turn = this.currentTurn;
-    // Path-carrying tool calls feed two checks off the RAW event (the normalizer
-    // truncates the path to a basename, losing the dir for matching):
-    // - memory privacy: a read inside a memorize:false connected folder taints
-    //   the turn so its assistant reply never enters Recall;
-    // - skill usage: a consultative tool inside a skill's folder marks that
-    //   skill used this turn (deduped by the Set; flushed in settleTurn).
+    // Memory privacy, checked off the RAW event because the normalizer truncates
+    // the path to a basename and loses the directory the match needs: a read
+    // inside a memorize:false connected folder taints the turn so its assistant
+    // reply never enters Recall.
+    //
+    // This used to also detect skill usage — a read/grep landing inside a skill's
+    // folder. That signal is gone by construction now: bodies are inlined into the
+    // turn, so nothing reads a SKILL.md any more. Usage is the injected-then-graded
+    // loop instead (skills/grade.ts, flushed in settleTurn).
     if (ev.type === 'tool_execution_start') {
       const p = readToolPath(ev);
-      if (p) {
-        if (!turn.memoryTainted && turn.privateRoots?.length && pathInsideAny(p, turn.privateRoots, this.options.workspaceRoot)) {
-          turn.memoryTainted = true;
-        }
-        if (SKILL_CONSULT_TOOLS.has(String(ev.toolName ?? '').toLowerCase())) {
-          const slug = skillSlugForPath(p, skillsRoot(), this.options.workspaceRoot);
-          if (slug) (turn.skillsUsed ??= new Set()).add(slug);
-        }
+      if (p && !turn.memoryTainted && turn.privateRoots?.length && pathInsideAny(p, turn.privateRoots, this.options.workspaceRoot)) {
+        turn.memoryTainted = true;
       }
     }
     const { events, done } = normalizePiEvent(ev, turn);
@@ -1678,14 +1846,39 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       this.pendingSkillReload = true;
       this.emitEvent('skills/changed');
     }
-    // Flush this turn's skill consultations (once per skill per turn) to the
-    // usage sidecar. Sidecar-only: refresh an open Skills tab, but no
-    // pendingSkillReload — pi ignores non-skill files, nothing to reload.
-    if (turn.skillsUsed?.size && recordUses([...turn.skillsUsed]) > 0) {
+    // Close the usage loop for the skills whose bodies went into this turn: the
+    // injections were counted when the message was built, and this is where they
+    // are graded. Sidecar-only — refresh an open Skills tab, but no
+    // pendingSkillReload, since pi ignores non-skill files.
+    const injected = turn.skillsInjected ?? [];
+    if (injected.length > 0) {
+      const used = gradeSkillUse(injected, turn.trace);
+      recordGrades(
+        injected.map((s) => s.slug),
+        used
+      );
+      // `recordUses` still drives the human-facing "used N×" line in the Manage
+      // panel, which predates the loop and means the same thing to a reader.
+      if (used.length > 0) recordUses(used);
       this.emitEvent('skills/changed');
     }
     this.currentTurn = null;
     this.lastSettledTurn = { threadId: turn.threadId, turnId: turn.turnId };
+    const snapshot = snapshotTurnTrace(turn, now);
+    this.recentTurns.push(snapshot);
+    if (this.recentTurns.length > RECENT_TURNS_KEPT) this.recentTurns.shift();
+    // Hand the settled turn to main so the skills pass can look at it. In-process
+    // and deliberately not on the event stream: the snapshot carries raw tool
+    // arguments and results, which have no business crossing to the renderer.
+    // Fire-and-forget — the pass makes a model call, and a turn must never wait
+    // on it or fail because of it.
+    if (this.onTurnSettled) {
+      try {
+        void this.onTurnSettled(snapshot);
+      } catch {
+        // a throwing subscriber is its own problem, not this turn's
+      }
+    }
     // Map this live turn's minted id to its persisted entry id so a later
     // fork/edit targets the right pi entry — and persist the turn's timing.
     void this.recordTurnEntry(turn);
@@ -2209,6 +2402,32 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         // Debug surface only — never let it break a turn.
       }
     }
+    // Stem's own skill selection, in place of the backend's (spawned --no-skills).
+    // Ranked against this message, top bodies inlined, the rest listed by name.
+    // Sits after recall and before files so the model reads "what I remember" and
+    // "how I do this" together, ahead of the ambient context blocks.
+    try {
+      const selection = await selectSkills(input.input, listSkillRecords(), { usage: skillUsageLookup() });
+      const skillsBlock = formatSkillsBlock(selection);
+      if (skillsBlock) {
+        blocks.push(skillsBlock);
+        // The denominator of the usage loop. Only inlined skills count: a skill
+        // listed by name was never given its steps, so it had no chance to be
+        // followed and grading it either way would be noise.
+        const inlined = selection.inlined.map((s) => s.slug);
+        if (inlined.length > 0) {
+          recordInjections(inlined);
+          if (this.currentTurn?.threadId === threadId) this.currentTurn.skillsInjected = selection.inlined;
+        }
+      }
+    } catch (error) {
+      // Skills are an enhancement; a turn must never fail because one could not
+      // be ranked.
+      log('pi', 'skill selection failed; sending the turn without skills', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
     const files = await buildFilesContext();
     if (files) blocks.push(files);
     const connected = await buildConnectedFoldersContext();

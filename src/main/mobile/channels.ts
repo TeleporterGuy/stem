@@ -77,6 +77,7 @@ export const MOBILE_INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   'exec:resolveApproval',
   'mcp:adminDecision',
   'instructions:resolveApproval',
+  'skills:resolveApproval',
 
   // Read-only settings. The phone reads exactly one field out of this:
   // `customInstructions.main`, which the instructions approval sheet shows as
@@ -155,6 +156,8 @@ export const MOBILE_PUSH_CHANNELS: ReadonlySet<string> = new Set([
   'mcp:adminApprovalResolved',
   'instructions:approvalRequest',
   'instructions:approvalResolved',
+  'skills:approvalRequest',
+  'skills:approvalResolved',
 
   // MCP tool availability, so the phone's activity rows can name tools correctly.
   'mcp:status'

@@ -10,6 +10,7 @@ import { ChatView } from '../chat/ChatView';
 import { EFFORT_LABELS } from '../modelLabels';
 import { McpApprovalCard } from '../manage/McpApprovalCard';
 import { InstructionsApprovalCard } from '../manage/InstructionsApprovalCard';
+import { SkillApprovalCard } from '../manage/SkillApprovalCard';
 import { ExecApprovalCard } from '../manage/ExecApprovalCard';
 import { NOTE_CONFIRM_MS, detectNoteTrigger, useNoteMode } from '../noteMode';
 import { EMPTY_STATE, appendSystemMessage, type ThreadState } from '../chatState';
@@ -517,6 +518,7 @@ export function QuickChat() {
         </div>
         <McpApprovalCard />
         <InstructionsApprovalCard />
+        <SkillApprovalCard />
         <ExecApprovalCard />
       </div>
     );
@@ -611,6 +613,7 @@ export function QuickChat() {
       </div>
       <McpApprovalCard />
       <InstructionsApprovalCard />
+      <SkillApprovalCard />
       <ExecApprovalCard />
     </div>
   );

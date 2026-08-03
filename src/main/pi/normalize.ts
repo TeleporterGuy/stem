@@ -1,7 +1,8 @@
 import type { PiEvent } from './rpc';
 import type { ActivityItem, SourceRef, TurnUsage } from '../../shared/types';
 import { stripCiteMarkers } from '../../shared/citations';
-import { toolArgsOf } from './protocol';
+import { SECRET_ENVELOPE_KEY, toolArgsOf } from './protocol';
+import type { InlinedSkill } from '../skills/inject';
 import { extractSources } from './web-search';
 
 // Translate pi's RPC event stream into Stem's canonical backend events (the
@@ -64,6 +65,13 @@ export interface TurnContext {
    */
   skillsUsed?: Set<string>;
   /**
+   * Skills whose full body was inlined into this turn's context. Set by the
+   * message builder, graded at turn end (skills/grade.ts), and — when the turn
+   * earns a skill write — what routes authoring to PATCH the skill that was
+   * already loaded rather than adding a near-duplicate beside it.
+   */
+  skillsInjected?: InlinedSkill[];
+  /**
    * True for an autonomous scheduled-task run. Set by PiRuntime.startTurn from the
    * scheduler's input marker; the exec bridge uses it to reject commands that would
    * need a manual approval nobody is present to give.
@@ -80,6 +88,120 @@ export interface TurnContext {
   activityStartedAt: Map<string, number>;
   /** Web sources recovered from native web search (deduped by url). */
   sources: SourceRef[];
+  /**
+   * What the assistant actually DID this turn — arguments in, results out — kept
+   * only in memory for the length of the turn (plus PiRuntime's short ring of
+   * settled turns). Skill authoring reads this; `activity` is the display row and
+   * has already thrown the substance away (paths shrink to a basename, results are
+   * dropped entirely). See TRACE_* for the caps.
+   */
+  trace: TraceEntry[];
+  /** Characters of args+results retained so far, against TRACE_TURN_MAX_CHARS. */
+  traceChars: number;
+}
+
+/**
+ * One tool call as the skill author sees it. `name` is already unwrapped from the
+ * MCP router's invoke_tool meta-tool, so a skill can name the real tool.
+ */
+export interface TraceEntry {
+  id: string;
+  name?: string;
+  /** JSON of the call's arguments, truncated. Absent when over budget or redacted. */
+  args?: string;
+  /** The result's text content, truncated. Absent until tool_execution_end. */
+  result?: string;
+  isError?: boolean;
+}
+
+// Retention caps. A skill is a few hundred bytes of procedure, so the trace only
+// has to be long enough to reconstruct one — not to replay the turn. The per-turn
+// ceiling is what actually bounds memory: a runaway loop of failing tool calls
+// would otherwise accumulate without limit inside a single turn.
+export const TRACE_ARGS_MAX_CHARS = 600;
+export const TRACE_RESULT_MAX_CHARS = 2_000;
+export const TRACE_TURN_MAX_CHARS = 24_000;
+
+/**
+ * A settled turn, reduced to what skill authoring needs. PiRuntime keeps a short
+ * ring of these so `/learn` can reach the turn that just ended — by the time the
+ * user reads the reply and decides it was worth keeping, the TurnContext is gone.
+ * Nothing here is persisted; the ring dies with the process.
+ */
+export interface SettledTurnTrace {
+  threadId: string;
+  turnId: string;
+  endedAt: number;
+  userText: string;
+  assistantText: string;
+  trace: TraceEntry[];
+  /** Skills consulted this turn — routes authoring to patch rather than create. */
+  skillsUsed: string[];
+  /** The turn read inside a memorize:false folder: never author from it. */
+  memoryTainted: boolean;
+  isScheduled: boolean;
+}
+
+export function snapshotTurnTrace(turn: TurnContext, endedAt: number): SettledTurnTrace {
+  return {
+    threadId: turn.threadId,
+    turnId: turn.turnId,
+    endedAt,
+    userText: turn.userText ?? '',
+    assistantText: turn.assistantText,
+    trace: turn.trace,
+    skillsUsed: [...(turn.skillsUsed ?? [])],
+    memoryTainted: turn.memoryTainted === true,
+    isScheduled: turn.isScheduled === true
+  };
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}\n…[truncated]` : text;
+}
+
+/**
+ * Argument names whose VALUE is a credential rather than a fact about the task.
+ * `add_mcp_server` takes `env` (a token the user typed), `headers`
+ * (`Authorization: Bearer …`) and `oauthClientSecret` as plain tool arguments, and
+ * this trace is fed to a model when a skill is authored. A skill never needs the
+ * secret — "set MCP_TOKEN in env" is the reusable part — so the value is dropped
+ * and the key kept, which also leaves the shape of the call legible.
+ */
+const SECRET_ARG_KEY_RE = /(token|secret|password|passwd|apikey|api_key|authorization|credential|cookie|bearer)/i;
+
+/** Replace credential-looking values, recursively. Depth-capped against cycles. */
+function redactSecrets(value: unknown, depth = 0): unknown {
+  if (depth > 6 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((v) => redactSecrets(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    // `env` and `headers` are containers of credentials rather than credentials
+    // themselves, so their KEYS survive and their values do not.
+    if (SECRET_ARG_KEY_RE.test(key)) out[key] = '[redacted]';
+    else if ((key === 'env' || key === 'headers') && v && typeof v === 'object' && !Array.isArray(v)) {
+      out[key] = Object.fromEntries(Object.keys(v as Record<string, unknown>).map((k) => [k, '[redacted]']));
+    } else out[key] = redactSecrets(v, depth + 1);
+  }
+  return out;
+}
+
+/**
+ * Serialize a call's arguments for the trace, or return undefined to keep them
+ * out. Encrypted-secret envelopes are dropped wholesale rather than truncated —
+ * a partial ciphertext is no safer than a whole one, and no skill needs it.
+ */
+function traceArgs(args: Record<string, unknown> | undefined): string | undefined {
+  if (!args) return undefined;
+  let json: string;
+  try {
+    json = JSON.stringify(redactSecrets(args));
+  } catch {
+    return undefined;
+  }
+  if (!json || json === '{}') return undefined;
+  if (json.includes(SECRET_ENVELOPE_KEY)) return undefined;
+  return truncate(json, TRACE_ARGS_MAX_CHARS);
 }
 
 /** The breakdown object PiRuntime.reportTurnTiming builds and emits as `turn/timing`. */
@@ -111,7 +233,9 @@ export function newTurnContext(threadId: string, turnId: string): TurnContext {
     phase: 'pending',
     activity: [],
     activityStartedAt: new Map(),
-    sources: []
+    sources: [],
+    trace: [],
+    traceChars: 0
   };
 }
 
@@ -340,6 +464,14 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       );
       if (!ctx.activity.some((a) => a.id === item.id)) ctx.activity.push(item);
       if (!ctx.activityStartedAt.has(item.id)) ctx.activityStartedAt.set(item.id, Date.now());
+      // The entry is recorded even when the turn is over its retention budget, so
+      // the tool COUNT stays honest for the authoring gate; only the payload is
+      // dropped.
+      if (!ctx.trace.some((t) => t.id === item.id)) {
+        const args = ctx.traceChars < TRACE_TURN_MAX_CHARS ? traceArgs(nested) : undefined;
+        ctx.traceChars += args?.length ?? 0;
+        ctx.trace.push({ id: item.id, name: item.name, args });
+      }
       out.push({
         method: 'item/started',
         params: {
@@ -356,6 +488,18 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       if (!entry) break; // an end without a tracked start (or unkeyed) — nothing to flip
       const result = ev.result as { isError?: boolean; content?: unknown } | undefined;
       entry.status = ev.isError === true || result?.isError === true ? 'error' : 'ok';
+      // Retain the outcome for skill authoring. A failure is worth more than a
+      // success here — it is what turns a list of steps into a warning about the
+      // dead end — so errors are kept even once the budget is spent.
+      const traced = ctx.trace.find((t) => t.id === id);
+      if (traced) {
+        traced.isError = entry.status === 'error';
+        const text = resultText(result).trim();
+        if (text && (traced.isError || ctx.traceChars < TRACE_TURN_MAX_CHARS)) {
+          traced.result = truncate(text, TRACE_RESULT_MAX_CHARS);
+          ctx.traceChars += traced.result.length;
+        }
+      }
       // Attribute the turn's tool time to the tool that spent it. A slow backend
       // is otherwise indistinguishable from a chatty one.
       const startedAt = ctx.activityStartedAt.get(id);

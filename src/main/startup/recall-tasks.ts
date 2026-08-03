@@ -8,7 +8,6 @@ import { adjudicateOpenConflicts } from '../recall/adjudicate';
 import { consolidateFacts } from '../recall/consolidate';
 import { getMemoryRebuildStatus, runMemoryRebuildStep } from '../recall/rebuild';
 import { curateSkills } from '../skills/curate';
-import { distillSkillsFromMessages } from '../skills/distill';
 import { getEmbeddingsClient } from '../recall/retrieval';
 import type { LlmClient } from '../recall/llm';
 import type { ChatBackend } from '../backend';
@@ -121,16 +120,11 @@ export function initRecallTasks(deps: {
             detail: `Merged ${r.merged}, corrected ${r.corrected}, dropped ${r.dropped}`
           }));
         }
-        // Skills acquisition: a separate single-purpose pass over the same new
-        // messages (own watermark) — the in-turn manage_skill nudge alone never
-        // fires. Uses the skills model; a write reloads pi so the skill activates.
-        const newSkills = await activity.track(
-          'skills.distill',
-          'Learning skills',
-          () => distillSkillsFromMessages(skillsLlm),
-          (n) => ({ worked: n > 0, detail: `Saved ${n} skill${n === 1 ? '' : 's'}` })
-        );
-        if (newSkills > 0) await deps.runtime().requestSkillReload();
+        // Skills acquisition used to run here as a backlog pass over the same new
+        // messages. It's gone: the recall DB stores only prose, so it was
+        // reconstructing procedures from narration of tool calls it could never
+        // see. Acquisition now happens in settleTurn (skills/settle.ts) off the
+        // just-finished turn's real tool trace, which leaves no backlog behind.
       } catch {
         // non-fatal
       } finally {
@@ -172,10 +166,10 @@ export function initRecallTasks(deps: {
     curating = true;
     try {
       const res = await activity.track('skills.curate', 'Curating skills', () => curateSkills(skillsLlm), (r) => ({
-        worked: r.merged + r.patched + r.archived > 0,
-        detail: `Merged ${r.merged}, patched ${r.patched}, archived ${r.archived}`
+        worked: r.merged + r.archived > 0,
+        detail: `Merged ${r.merged}, archived ${r.archived}`
       }));
-      if (res.merged || res.patched || res.archived) await deps.runtime().requestSkillReload();
+      if (res.merged || res.archived) await deps.runtime().requestSkillReload();
     } catch {
       // non-fatal
     } finally {

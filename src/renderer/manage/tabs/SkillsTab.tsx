@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Wand2, RefreshCw } from 'lucide-react';
+import { Wand2 } from 'lucide-react';
 import type {
   ModelSummary,
+  SkillsMode,
   SkillSummary
 } from '../../../shared/types';
 import { InfoTip } from '../../ui/InfoTip';
@@ -11,12 +12,15 @@ import { holdFullSpin } from './shared';
 export function SkillsTab({ models }: { models: ModelSummary[] }) {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [tidying, setTidying] = useState(false);
-  const [collecting, setCollecting] = useState(false);
   // null => use the backend default model for the curator.
   const [curatorModel, setCuratorModel] = useState<string | null>(null);
+  const [mode, setMode] = useState<SkillsMode>('ask');
   useEffect(() => {
     window.stem.listSkills().then(setSkills);
-    window.stem.getSettings().then((s) => setCuratorModel(s.skills.model));
+    window.stem.getSettings().then((s) => {
+      setCuratorModel(s.skills.model);
+      setMode(s.skills.mode);
+    });
     // Refresh when the assistant auto-creates/patches a skill or the curator runs.
     return window.stem.onSkillsChanged(() => {
       window.stem.listSkills().then(setSkills);
@@ -26,6 +30,11 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
   function selectCuratorModel(id: string | null) {
     setCuratorModel(id);
     window.stem.updateSkillsSettings({ model: id }).then((s) => setCuratorModel(s.skills.model));
+  }
+
+  function selectMode(next: SkillsMode) {
+    setMode(next);
+    window.stem.updateSkillsSettings({ mode: next }).then((s) => setMode(s.skills.mode));
   }
 
   async function toggle(slug: string, enabled: boolean) {
@@ -41,18 +50,9 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
     }
   }
 
-  // "Collect now": rerun the skill distiller over the whole chat backlog (not just
-  // a list refresh) — the returned list already reflects anything it wrote.
-  async function collect() {
-    setCollecting(true);
-    try {
-      setSkills(await holdFullSpin(window.stem.distillSkillsNow()));
-    } finally {
-      setCollecting(false);
-    }
-  }
-
-  // Stem auto-authors and tidies skills; a manual "Tidy up" runs the curator now.
+  // There is no "Collect now" button: nothing accumulates to collect. Skills are
+  // written at the end of the turn that earned them, so the only manual action
+  // left here is the curator's "Tidy up".
   const hasAgentSkills = skills.some((s) => s.source === 'agent');
 
   // "Jun 12", with the year added once it isn't this year's date.
@@ -86,15 +86,6 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
               <Wand2 size={15} className={tidying ? 'spin' : undefined} />
             </button>
           )}
-          <button
-            className="link-btn icon-only"
-            onClick={collect}
-            disabled={collecting}
-            data-label={collecting ? 'Collecting…' : 'Collect now'}
-            aria-label="Scan recent chats for new skills now"
-          >
-            <RefreshCw size={15} className={collecting ? 'spin' : undefined} />
-          </button>
         </span>
       </div>
       {skills.length === 0 ? (
@@ -128,6 +119,35 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
           ))}
         </div>
       )}
+
+      <div className="grp-head grp-head-row">
+        Saving skills
+        <InfoTip label="About saving skills">
+          <strong>Only when I ask</strong> — Stem never saves a skill on its own. It can still
+          suggest one in its reply, and it saves it if you say yes. <strong>Ask first</strong> —
+          Stem proposes a skill and you approve it in a card. <strong>Save automatically</strong> —
+          Stem saves what it learns and tells you here.
+        </InfoTip>
+      </div>
+      <div className="formgroup">
+        <div className="seg-ctl">
+          <button className={mode === 'off' ? 'active' : ''} onClick={() => selectMode('off')}>
+            Only when I ask
+          </button>
+          <button className={mode === 'ask' ? 'active' : ''} onClick={() => selectMode('ask')}>
+            Ask first
+          </button>
+          <button className={mode === 'auto' ? 'active' : ''} onClick={() => selectMode('auto')}>
+            Save automatically
+          </button>
+        </div>
+        {/* The part people read the wrong way round: all three values constrain
+            Stem's own initiative, never a request the user made out loud. */}
+        <p className="muted">
+          Asking Stem to save a skill always works, whichever of these you pick — the setting only
+          limits what Stem does unprompted.
+        </p>
+      </div>
 
       <div className="grp-head grp-head-row">
         Curator model

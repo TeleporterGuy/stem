@@ -1,5 +1,5 @@
 // What the phone can DO once it is connected: capture a note instead of running
-// a turn, answer the three approvals a turn can block on, attach a photo, and
+// a turn, answer the four approvals a turn can block on, attach a photo, and
 // continue a thread started at the desk without silently changing its model.
 //
 // The transport itself is covered by mobile-client.test.ts; this is the layer
@@ -12,6 +12,7 @@ import type {
   ExecApprovalRequest,
   InstructionsProposal,
   McpAdminProposal,
+  SkillProposal,
   ThreadTurnSettings,
   TurnAttachment
 } from '../../src/shared/types';
@@ -111,6 +112,8 @@ function fakeApprovalApi() {
     onMcpAdminApprovalResolved: on('mcp:adminApprovalResolved'),
     onInstructionsApproval: on('instructions:approvalRequest'),
     onInstructionsApprovalResolved: on('instructions:approvalResolved'),
+    onSkillApproval: on('skills:approvalRequest'),
+    onSkillApprovalResolved: on('skills:approvalResolved'),
     respondExecApproval: async (id, decision) => {
       answered.push({ channel: 'exec:resolveApproval', args: [id, decision] });
     },
@@ -119,6 +122,9 @@ function fakeApprovalApi() {
     },
     respondInstructionsApproval: async (id, accept, surface, text) => {
       answered.push({ channel: 'instructions:resolveApproval', args: [id, accept, surface, text] });
+    },
+    respondSkillApproval: async (id, accept, skill) => {
+      answered.push({ channel: 'skills:resolveApproval', args: [id, accept, skill] });
     }
   };
 
@@ -146,6 +152,15 @@ const instructionsProposal = (id: number): InstructionsProposal => ({
   threadId: 't-1',
   action: 'append',
   incomingText: 'Answer briefly.'
+});
+const skillProposal = (id: number): SkillProposal => ({
+  id,
+  threadId: 't-1',
+  name: 'renew-transit-pass',
+  description: 'Renew the monthly transit pass from the operator’s site.',
+  body: '## When to use\nThe pass is expiring.\n',
+  isPatch: false,
+  origin: 'assistant'
 });
 
 describe('approvals on the phone', () => {
@@ -176,6 +191,7 @@ describe('approvals on the phone', () => {
     bridge.emit('exec:approvalRequest', execRequest('a1'));
     bridge.emit('mcp:adminApproval', mcpProposal(7));
     bridge.emit('instructions:approvalRequest', instructionsProposal(9));
+    bridge.emit('skills:approvalRequest', skillProposal(11));
 
     // Answered at the desk: main broadcasts the resolution to every surface, and
     // the phone's card has to go with it — otherwise it sits there proposing a
@@ -186,6 +202,9 @@ describe('approvals on the phone', () => {
     expect(store.get().mcp).toEqual([]);
     bridge.emit('instructions:approvalResolved', { id: 9 });
     expect(store.get().instructions).toEqual([]);
+    // A skill approval also expires on its own timer, and the same event retracts it.
+    bridge.emit('skills:approvalResolved', { id: 11 });
+    expect(store.get().skills).toEqual([]);
     expect(headApproval(store.get())).toBeNull();
 
     // A resolution for something never queued (or already gone) changes nothing.
@@ -200,6 +219,7 @@ describe('approvals on the phone', () => {
     const store = createApprovalStore(bridge.api);
     const detach = store.attach();
 
+    bridge.emit('skills:approvalRequest', skillProposal(11));
     bridge.emit('mcp:adminApproval', mcpProposal(7));
     bridge.emit('exec:approvalRequest', execRequest('a1'));
     bridge.emit('exec:approvalRequest', execRequest('a2'));
@@ -210,6 +230,9 @@ describe('approvals on the phone', () => {
     expect(headApproval(store.get())).toMatchObject({ kind: 'exec', request: { id: 'a2' } });
     bridge.emit('exec:approvalResolved', { id: 'a2' });
     expect(headApproval(store.get())).toMatchObject({ kind: 'mcp', proposal: { id: 7 } });
+    // Last even though it arrived first: a skill proposal blocks nothing on screen.
+    bridge.emit('mcp:adminApprovalResolved', { id: 7 });
+    expect(headApproval(store.get())).toMatchObject({ kind: 'skill', proposal: { id: 11 } });
     detach();
   });
 
@@ -239,6 +262,24 @@ describe('approvals on the phone', () => {
       args: [9, true, 'main', 'Answer briefly.']
     });
     expect(store.get().instructions).toEqual([]);
+
+    bridge.emit('skills:approvalRequest', skillProposal(11));
+    await store.resolveSkill(11, true, skillProposal(11));
+    // The phone cannot edit a skill, so the proposal's own text is what goes back
+    // — the desk's card is the surface that can rewrite one.
+    expect(bridge.answered[3]).toEqual({
+      channel: 'skills:resolveApproval',
+      args: [
+        11,
+        true,
+        {
+          name: 'renew-transit-pass',
+          description: 'Renew the monthly transit pass from the operator’s site.',
+          body: '## When to use\nThe pass is expiring.\n'
+        }
+      ]
+    });
+    expect(store.get().skills).toEqual([]);
     detach();
   });
 
@@ -260,7 +301,7 @@ describe('approvals on the phone', () => {
     const bridge = fakeApprovalApi();
     const store = createApprovalStore(bridge.api);
     const detach = store.attach();
-    expect(bridge.listening()).toBe(6);
+    expect(bridge.listening()).toBe(8);
 
     detach();
     expect(bridge.listening()).toBe(0);

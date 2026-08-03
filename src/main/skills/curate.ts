@@ -4,20 +4,28 @@ import { parse as parseYaml } from 'yaml';
 import { skillsRoot } from '../workspace/paths';
 import { isRecallEnabled } from '../workspace/memory';
 import type { LlmClient } from '../recall/llm';
+import { DISABLED_MARKER, syncSkillsIgnore } from './ignore';
+import { saveSkill } from './store';
 import { mergeUsage, pruneUsage, readUsage, type SkillsUsage } from './usage';
 
 // Level-2 cleanup for self-authored skills, mirroring recall/consolidate.ts for
-// durable facts. The assistant only ever ADDS or patches skills via manage_skill,
+// durable facts. The assistant only ever ADDS or updates skills via manage_skill,
 // so over time the library accumulates near-duplicate procedures and stale ones.
-// This pass periodically asks the LLM for merge/patch/archive operations, then
-// applies them with the same KEEP-by-default posture and a drop-fraction guard.
+// This pass periodically asks the LLM for merge/archive operations, then applies
+// them with the same KEEP-by-default posture and a drop-fraction guard.
+//
+// It used to also PATCH bodies, and no longer does. Body edits belong to the
+// assistant at the moment it uses a skill and finds it wrong: that is when the
+// evidence exists. A periodic pass rewriting bodies it has no failure evidence for
+// can only degrade a working skill on the strength of how it reads — and it is the
+// one mechanism that ran continuously over the library this rebuild deletes.
 //
 // It ONLY ever touches agent-authored skills (metadata.stem.source === 'agent').
 // User-dropped and bundled skills are never read into the prompt nor modified.
 // Archiving is reversible: it sets the same `.disabled` marker the Manage panel
-// uses (see workspace/skills.ts), so pi stops loading the skill but the file stays.
+// uses (see workspace/skills.ts) and republishes the ignore file (skills/ignore.ts),
+// so pi stops loading the skill but the file stays.
 
-const DISABLED_MARKER = '.disabled';
 // Below this many agent skills an automatic pass isn't worth a model call.
 const MIN_SKILLS = 3;
 // Reject the whole batch if it would retire more than this fraction of the set.
@@ -27,10 +35,9 @@ const MAX_PROMPT_CHARS = 80_000;
 
 export interface CurateResult {
   merged: number;
-  patched: number;
   archived: number;
 }
-const ZERO: CurateResult = { merged: 0, patched: 0, archived: 0 };
+const ZERO: CurateResult = { merged: 0, archived: 0 };
 
 interface AgentSkill {
   slug: string;
@@ -46,32 +53,30 @@ interface AgentSkill {
 }
 
 interface CurateOps {
-  merge: { slugs: string[]; name: string; description: string; content: string }[];
-  patch: { slug: string; content: string }[];
+  merge: { slugs: string[]; description: string; content: string }[];
   archive: string[];
 }
-const EMPTY_OPS: CurateOps = { merge: [], patch: [], archive: [] };
+const EMPTY_OPS: CurateOps = { merge: [], archive: [] };
 
-const INSTRUCTIONS = `You maintain a library of an assistant's self-authored SKILL files. Each skill is a reusable procedure with a name, a one-line description (what it does and when to use it), and a step-by-step body. Over time the library accumulates near-duplicate skills, skills superseded by a better one, and skills with sloppy or incomplete bodies.
+const INSTRUCTIONS = `You maintain a library of an assistant's self-authored SKILL files. Each skill is a reusable procedure with a name, a one-line description (what it does and when to use it), and a step-by-step body. Over time the library accumulates near-duplicate skills and skills superseded by a better one.
 
 Return ONLY a JSON object (no prose, no markdown fences) with this shape:
 {
-  "merge":   [{"slugs": ["winner-slug","loser-slug"], "name": "...", "description": "...", "content": "<combined body>"}],
-  "patch":   [{"slug": "<slug>", "content": "<improved full body>"}],
+  "merge":   [{"slugs": ["winner-slug","loser-slug"], "description": "...", "content": "<combined body>"}],
   "archive": ["<slug of a stale/superseded/useless skill>"]
 }
 
 Rules:
-- DEFAULT TO KEEP. Only act on skills you are confident are duplicates, superseded, or clearly wrong. If unsure, leave a skill out of all three lists.
-- merge: combine skills that cover the SAME task. The FIRST slug in "slugs" is kept and rewritten with your "name"/"description"/"content"; the rest are retired. List at least two slugs.
-- patch: only to fix a clearly wrong or incomplete body; return the FULL improved body (no front-matter, no fences).
+- DEFAULT TO KEEP. Only act on skills you are confident are duplicates or superseded. If unsure, leave a skill out of both lists.
+- merge: combine skills that cover the SAME task. The FIRST slug in "slugs" is kept, keeps its name, and is rewritten with your "description" and "content"; the rest are retired. List at least two slugs. Keep the body under 4096 bytes with the headings "## When to use", "## Steps", "## Verification", in that order.
 - archive: only a skill made redundant or obsolete by another, or one that is clearly not a reusable procedure.
+- Do NOT improve, tidy, or reword a body you are keeping. You cannot see whether it works; the assistant fixes a skill when it uses one and finds it wrong.
 - Usage counts are advisory, never decisive on their own. A skill NEVER used since tracking began, created after tracking started and more than ~30 days ago, is a strong archive candidate. A skill that WAS used but has been dormant since is a WEAK signal — seasonal or rarely-needed procedures are legitimate; keep it by default.
 - Use ONLY the slugs listed below. Never invent a skill or a slug.
-- If nothing needs changing, return {"merge":[],"patch":[],"archive":[]}.`;
+- If nothing needs changing, return {"merge":[],"archive":[]}.`;
 
 /** Parse the leading `---` YAML front-matter; tolerant of a missing/garbled block. */
-export function parseFront(text: string): { name?: string; description?: string; source?: string; version?: number; created?: string } {
+function parseFront(text: string): { name?: string; description?: string; source?: string; version?: number; created?: string } {
   const match = /^---\n([\s\S]*?)\n---/.exec(text);
   if (!match) return {};
   try {
@@ -93,24 +98,6 @@ export function parseFront(text: string): { name?: string; description?: string;
 function stripFront(text: string): string {
   const match = /^---\n[\s\S]*?\n---\n?/.exec(text);
   return (match ? text.slice(match[0].length) : text).trim();
-}
-
-/** Compose a SKILL.md (agent-authored), refreshing `updated`. Also used by the
- *  skill distiller (distill.ts) for brand-new skills (version 1, created now). */
-export function composeSkillMd(s: { name: string; description: string; body: string; version: number; created: string }): string {
-  const fm = [
-    '---',
-    `name: ${JSON.stringify(s.name)}`,
-    `description: ${JSON.stringify(s.description)}`,
-    'metadata:',
-    '  stem:',
-    '    source: agent',
-    `    version: ${s.version}`,
-    `    created: ${JSON.stringify(s.created)}`,
-    `    updated: ${JSON.stringify(new Date().toISOString())}`,
-    '---'
-  ].join('\n');
-  return `${fm}\n\n${s.body.trim()}\n`;
 }
 
 /** Load only the agent-authored skills (never user/bundled ones). */
@@ -187,30 +174,20 @@ export function parseCurate(output: string): CurateOps {
     for (const m of obj.merge) {
       if (!m || typeof m !== 'object') continue;
       const slugs = (m as { slugs?: unknown }).slugs;
-      const name = (m as { name?: unknown }).name;
       const description = (m as { description?: unknown }).description;
       const content = (m as { content?: unknown }).content;
       if (
         Array.isArray(slugs) &&
         slugs.every((s) => typeof s === 'string') &&
         slugs.length >= 2 &&
-        typeof name === 'string' &&
         typeof description === 'string' &&
         typeof content === 'string' &&
         content.trim()
       ) {
-        merge.push({ slugs: slugs as string[], name, description, content });
-      }
-    }
-  }
-  const patch: CurateOps['patch'] = [];
-  if (Array.isArray(obj.patch)) {
-    for (const p of obj.patch) {
-      if (!p || typeof p !== 'object') continue;
-      const slug = (p as { slug?: unknown }).slug;
-      const content = (p as { content?: unknown }).content;
-      if (typeof slug === 'string' && typeof content === 'string' && content.trim()) {
-        patch.push({ slug, content });
+        // A merge never renames: the winner's slug IS its name, and a rename
+        // would mean a new directory rather than a merge. Any `name` the model
+        // sends is dropped here rather than silently half-applied.
+        merge.push({ slugs: slugs as string[], description, content });
       }
     }
   }
@@ -218,7 +195,7 @@ export function parseCurate(output: string): CurateOps {
   if (Array.isArray(obj.archive)) {
     for (const s of obj.archive) if (typeof s === 'string') archive.push(s);
   }
-  return { merge, patch, archive };
+  return { merge, archive };
 }
 
 /**
@@ -230,7 +207,6 @@ export function clampCurate(ops: CurateOps, known: Set<string>, total: number): 
   const merge = ops.merge
     .map((m) => ({ ...m, slugs: m.slugs.filter((s) => known.has(s)) }))
     .filter((m) => m.slugs.length >= 2);
-  const patch = ops.patch.filter((p) => known.has(p.slug));
   const archive = ops.archive.filter((s) => known.has(s));
 
   // Bound the model's blast radius, but always allow at least one retirement —
@@ -241,7 +217,7 @@ export function clampCurate(ops: CurateOps, known: Set<string>, total: number): 
   const limit = Math.max(1, Math.floor(MAX_DROP_FRACTION * total));
   if (wouldRetire > limit) return { ...EMPTY_OPS };
 
-  return { merge, patch, archive };
+  return { merge, archive };
 }
 
 /** Disable a skill (reversible) by writing the `.disabled` marker the app uses. */
@@ -252,50 +228,32 @@ function archiveSkill(slug: string): void {
 function applyCurate(skills: AgentSkill[], ops: CurateOps): CurateResult {
   const bySlug = new Map(skills.map((s) => [s.slug, s]));
   let merged = 0;
-  let patched = 0;
   let archived = 0;
 
   for (const m of ops.merge) {
     const [winnerSlug, ...losers] = m.slugs;
     const winner = bySlug.get(winnerSlug);
     if (!winner) continue;
+    // Through saveSkill, so a merged body meets the same contract as every other
+    // write — and, more importantly, so a merge that would produce an invalid
+    // skill writes nothing rather than half of one. Losers are only deleted once
+    // the winner is safely on disk; the group is left for a later cycle otherwise.
+    const written = saveSkill(
+      { name: winnerSlug, description: m.description || winner.description, body: m.content },
+      { expectExisting: true, origin: 'unknown' }
+    );
+    if (!written.ok) continue;
     try {
-      writeFileSync(
-        join(skillsRoot(), winnerSlug, 'SKILL.md'),
-        composeSkillMd({
-          name: m.name || winner.name,
-          description: m.description || winner.description,
-          body: m.content,
-          version: winner.version + 1,
-          created: winner.created
-        }),
-        'utf8'
-      );
       for (const loser of losers) {
         if (loser === winnerSlug) continue;
         rmSync(join(skillsRoot(), loser), { recursive: true, force: true });
       }
-      // Proven utility survives the merge: winner inherits the losers' counts.
-      mergeUsage(winnerSlug, losers);
-      merged += 1;
     } catch {
-      // best-effort; leave this group for a later cycle
+      // best-effort; a loser left behind is a duplicate, not a broken library
     }
-  }
-
-  for (const p of ops.patch) {
-    const s = bySlug.get(p.slug);
-    if (!s) continue;
-    try {
-      writeFileSync(
-        join(skillsRoot(), p.slug, 'SKILL.md'),
-        composeSkillMd({ name: s.name, description: s.description, body: p.content, version: s.version + 1, created: s.created }),
-        'utf8'
-      );
-      patched += 1;
-    } catch {
-      // best-effort
-    }
+    // Proven utility survives the merge: winner inherits the losers' counts.
+    mergeUsage(winnerSlug, losers);
+    merged += 1;
   }
 
   for (const slug of ops.archive) {
@@ -307,7 +265,11 @@ function applyCurate(skills: AgentSkill[], ops: CurateOps): CurateResult {
     }
   }
 
-  return { merged, patched, archived };
+  // Republish the ignore file once for the whole batch — merges delete losers and
+  // archives add markers, and both change what the backend should stop loading.
+  if (merged || archived) syncSkillsIgnore();
+
+  return { merged, archived };
 }
 
 /**

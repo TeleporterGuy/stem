@@ -17,6 +17,18 @@ function fakeLlm(reply: string): LlmClient {
   return { complete: async () => reply };
 }
 
+// A merged body is written through saveSkill now, so it has to meet the same
+// contract as every other write — the curator is no longer a back door around it.
+const MERGED_BODY = `## When to use
+When the user asks for coffee.
+
+## Steps
+1. Boil water.
+2. Pour it over the grounds.
+
+## Verification
+The cup is full and the kettle is empty.`;
+
 function writeSkill(slug: string, opts: { source?: 'agent' | 'user'; version?: number; body?: string }): void {
   const src = opts.source ?? 'agent';
   const fm = [
@@ -42,23 +54,29 @@ beforeEach(() => {
 afterAll(() => rmSync(skillsDir, { recursive: true, force: true }));
 
 describe('parseCurate', () => {
-  it('parses merge/patch/archive and tolerates fences/prose', () => {
-    const ops = parseCurate('here you go:\n{"merge":[{"slugs":["a","b"],"name":"A","description":"d","content":"x"}],"patch":[{"slug":"c","content":"y"}],"archive":["d"]}');
+  it('parses merge/archive and tolerates fences/prose', () => {
+    const ops = parseCurate('here you go:\n{"merge":[{"slugs":["a","b"],"description":"d","content":"x"}],"archive":["d"]}');
     expect(ops.merge).toHaveLength(1);
     expect(ops.merge[0].slugs).toEqual(['a', 'b']);
-    expect(ops.patch[0].slug).toBe('c');
     expect(ops.archive).toEqual(['d']);
   });
 
+  it('ignores a patch op, which the curator no longer performs', () => {
+    // Body edits moved to the assistant, which fixes a skill when it uses one and
+    // finds it wrong — the only moment there is evidence of what is actually
+    // broken. A model still emitting the retired op must not be obeyed.
+    const ops = parseCurate('{"merge":[],"patch":[{"slug":"c","content":"rewritten"}],"archive":[]}');
+    expect(ops).toEqual({ merge: [], archive: [] });
+  });
+
   it('drops malformed ops (merge needs >=2 slugs, content non-empty)', () => {
-    const ops = parseCurate('{"merge":[{"slugs":["a"],"name":"A","description":"d","content":"x"}],"patch":[{"slug":"c","content":"  "}],"archive":[1]}');
+    const ops = parseCurate('{"merge":[{"slugs":["a"],"description":"d","content":"x"}],"archive":[1]}');
     expect(ops.merge).toHaveLength(0);
-    expect(ops.patch).toHaveLength(0);
     expect(ops.archive).toHaveLength(0);
   });
 
   it('returns empty ops on non-JSON', () => {
-    expect(parseCurate('no json here')).toEqual({ merge: [], patch: [], archive: [] });
+    expect(parseCurate('no json here')).toEqual({ merge: [], archive: [] });
   });
 });
 
@@ -66,19 +84,18 @@ describe('clampCurate', () => {
   it('drops ops naming unknown slugs', () => {
     const known = new Set(['a', 'b']);
     const ops = clampCurate(
-      { merge: [{ slugs: ['a', 'zzz'], name: 'A', description: 'd', content: 'x' }], patch: [{ slug: 'nope', content: 'y' }], archive: ['b', 'ghost'] },
+      { merge: [{ slugs: ['a', 'zzz'], description: 'd', content: 'x' }], archive: ['b', 'ghost'] },
       known,
       4
     );
     expect(ops.merge).toHaveLength(0); // 'a' alone after filtering 'zzz' → <2 slugs
-    expect(ops.patch).toHaveLength(0);
     expect(ops.archive).toEqual(['b']);
   });
 
   it('rejects a batch that would retire more than 40% of the set', () => {
     const known = new Set(['a', 'b', 'c', 'd', 'e']);
-    const ops = clampCurate({ merge: [], patch: [], archive: ['a', 'b', 'c'] }, known, 5); // 3/5 = 60%
-    expect(ops).toEqual({ merge: [], patch: [], archive: [] });
+    const ops = clampCurate({ merge: [], archive: ['a', 'b', 'c'] }, known, 5); // 3/5 = 60%
+    expect(ops).toEqual({ merge: [], archive: [] });
   });
 });
 
@@ -90,8 +107,7 @@ describe('curateSkills', () => {
 
     const llm = fakeLlm(
       JSON.stringify({
-        merge: [{ slugs: ['make-coffee', 'brew-coffee'], name: 'make-coffee', description: 'brew coffee', content: 'Step 1. Boil water.' }],
-        patch: [],
+        merge: [{ slugs: ['make-coffee', 'brew-coffee'], description: 'Brew a pot when the user asks for coffee.', content: MERGED_BODY }],
         archive: []
       })
     );
@@ -110,11 +126,16 @@ describe('curateSkills', () => {
     writeSkill('keep-a', { source: 'agent' });
     writeSkill('keep-b', { source: 'agent' });
 
-    const llm = fakeLlm(JSON.stringify({ merge: [], patch: [], archive: ['old-way'] }));
+    const llm = fakeLlm(JSON.stringify({ merge: [], archive: ['old-way'] }));
     const res = await curateSkills(llm, { force: true });
     expect(res.archived).toBe(1);
     expect(existsSync(join(skillsDir, 'old-way', '.disabled'))).toBe(true);
     expect(existsSync(join(skillsDir, 'old-way', 'SKILL.md'))).toBe(true); // not deleted
+    // ...and it actually leaves the prompt: the marker alone is invisible to the
+    // backend, so the archive has to reach the ignore file too.
+    const ignore = readFileSync(join(skillsDir, '.gitignore'), 'utf8');
+    expect(ignore).toContain('old-way/');
+    expect(ignore).not.toContain('keep-a/');
   });
 
   it('feeds usage stats into the prompt (tracked, never-used, tracking-since header)', async () => {
@@ -127,7 +148,7 @@ describe('curateSkills', () => {
     const llm: LlmClient = {
       complete: async (prompt: string) => {
         seen = prompt;
-        return '{"merge":[],"patch":[],"archive":[]}';
+        return '{"merge":[],"archive":[]}';
       }
     };
     await curateSkills(llm, { force: true });
@@ -145,8 +166,7 @@ describe('curateSkills', () => {
 
     const llm = fakeLlm(
       JSON.stringify({
-        merge: [{ slugs: ['make-coffee', 'brew-coffee'], name: 'make-coffee', description: 'brew coffee', content: 'Step 1.' }],
-        patch: [],
+        merge: [{ slugs: ['make-coffee', 'brew-coffee'], description: 'Brew a pot when the user asks for coffee.', content: MERGED_BODY }],
         archive: []
       })
     );
@@ -169,6 +189,6 @@ describe('curateSkills', () => {
     };
     const res = await curateSkills(llm, { force: true });
     expect(called).toBe(false);
-    expect(res).toEqual({ merged: 0, patched: 0, archived: 0 });
+    expect(res).toEqual({ merged: 0, archived: 0 });
   });
 });

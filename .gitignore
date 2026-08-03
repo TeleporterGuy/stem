@@ -13,6 +13,9 @@ release/
 # Files-place verification probe build output
 .files-build/
 
+# Skill retrieval eval build output (embed-catalog, compiled to CJS)
+.skills-build/
+
 # Playwright E2E artifacts
 test-results/
 playwright-report/
@@ -25,3 +28,9 @@ playwright-report/
 
 # Local Obsidian vault state for docs/ (per-machine editor layout)
 docs/.obsidian/
+
+# Harvested from the user's real session logs by scripts/skill-fixtures.mjs, so it
+# holds actual conversation content. Regenerate with `npm run fixtures:skills`
+# rather than committing it. (skill-retrieval-golden.json IS hand-authored and is
+# committed — it is a synthetic library on purpose, so the gate stays stable.)
+tests/fixtures/skill-authoring-golden.json

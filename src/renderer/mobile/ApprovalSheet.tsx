@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { Globe, HardDrive, Pencil, Plug, Terminal } from 'lucide-react';
+import { GraduationCap, Globe, HardDrive, Pencil, Plug, Terminal } from 'lucide-react';
 import type {
   ExecApprovalRequest,
   ExecDecision,
   InstructionsProposal,
-  McpAdminProposal
+  McpAdminProposal,
+  SkillProposal
 } from '../../shared/types';
 import { headApproval, resolvedInstructionsText, type ApprovalStore } from './approvals';
 
@@ -36,6 +37,9 @@ export function ApprovalSheet({ store }: { store: ApprovalStore }) {
   }
   if (pending.kind === 'mcp') {
     return <McpCard key={String(pending.proposal.id)} proposal={pending.proposal} store={store} />;
+  }
+  if (pending.kind === 'skill') {
+    return <SkillCard key={String(pending.proposal.id)} proposal={pending.proposal} store={store} />;
   }
   return (
     <InstructionsCard key={String(pending.proposal.id)} proposal={pending.proposal} store={store} />
@@ -173,6 +177,46 @@ function McpCard({ proposal, store }: { proposal: McpAdminProposal; store: Appro
       ) : (
         <p className="m-sheet-note">The assistant wants to remove this server from your configuration.</p>
       )}
+    </Sheet>
+  );
+}
+
+function SkillCard({ proposal, store }: { proposal: SkillProposal; store: ApprovalStore }) {
+  const { busy, error, decide } = useDecision();
+  const answer = (accept: boolean): void =>
+    decide(() => store.resolveSkill(proposal.id, accept, proposal));
+
+  return (
+    <Sheet
+      icon={<GraduationCap size={15} />}
+      title={proposal.isPatch ? 'Update skill' : 'Save skill'}
+      error={error}
+      actions={
+        <>
+          <button type="button" className="m-sheet-btn primary" disabled={busy} onClick={() => answer(true)}>
+            Accept
+          </button>
+          {/* Declining is the ordinary answer to a suggestion, so it is a plain
+              button here — nothing was lost, and Stem can propose again. */}
+          <button type="button" className="m-sheet-btn" disabled={busy} onClick={() => answer(false)}>
+            Decline
+          </button>
+        </>
+      }
+    >
+      {/* No textarea, unlike the desk's card: correcting a 4 KB procedure through
+          a phone keyboard is not a workflow anyone would finish, and a half-fixed
+          skill is worse than a declined one. The phone answers yes or no; the desk
+          is where a skill gets rewritten. */}
+      <p className="m-sheet-note">
+        {proposal.isPatch
+          ? 'This replaces the saved skill of the same name. Stem follows it on later turns.'
+          : 'Stem wants to save this procedure and follow it on later turns.'}
+      </p>
+      <p className="m-sheet-note">
+        <strong>{proposal.name}</strong> — {proposal.description}
+      </p>
+      <pre className="m-sheet-pre wrap">{proposal.body}</pre>
     </Sheet>
   );
 }

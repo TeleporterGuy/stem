@@ -12,6 +12,7 @@ import {
   SECRET_ENVELOPE_KEY,
   SECRET_VALUE_PREFIX,
   SERVICE_TIER_GATE_FILE,
+  SKILL_BRIDGE_TITLE,
   SKILLS_REV_FILE,
   TASK_BRIDGE_TITLE,
   TESTED_PI_VERSION,
@@ -45,6 +46,9 @@ describe('sentinel titles match the bridge extension', () => {
   it('exec bridge', () => {
     expect(extensionConst('EXEC_BRIDGE_TITLE')).toBe(EXEC_BRIDGE_TITLE);
   });
+  it('skill bridge', () => {
+    expect(extensionConst('SKILL_BRIDGE_TITLE')).toBe(SKILL_BRIDGE_TITLE);
+  });
 });
 
 describe('web-search tools match the bridge extension', () => {
@@ -62,10 +66,17 @@ describe('gate files referenced by the bridge extension', () => {
   it.each([
     NATIVE_SEARCH_GATE_FILE,
     SERVICE_TIER_GATE_FILE,
-    PROTECTED_ROOTS_FILE,
-    SKILLS_REV_FILE
+    PROTECTED_ROOTS_FILE
   ])('%s', (file) => {
     expect(extensionSource).toContain(`'${file}'`);
+  });
+
+  // SKILLS_REV_FILE deliberately has no twin any more. The extension used to write
+  // SKILL.md itself and touch the rev file to announce it; skill writes now
+  // round-trip to main (SKILL_BRIDGE_TITLE), which owns both the write and the
+  // rev bump — so a reference here would mean the old path had come back.
+  it('no longer writes skills itself', () => {
+    expect(extensionSource).not.toContain(`'${SKILLS_REV_FILE}'`);
   });
 
   it(`falls back to ${MCP_OAUTH_FILE} next to the config`, () => {

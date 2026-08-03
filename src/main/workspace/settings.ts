@@ -25,7 +25,7 @@ import type {
   RerankerMode,
   RerankerSettings,
   RetrievalSettings,
-  SkillsModelSettings
+  SkillsSettings
 } from '../../shared/types';
 import { settingsStorePath } from './paths';
 
@@ -56,9 +56,12 @@ const DEFAULTS: AppSettings = {
   webSearch: { main: true, quickChat: true, provider: 'auto', credentials: {} },
   // Memory distillation/tidy-up model; null = the backend default.
   memory: { model: null },
-  // Background skills-curator model; null = the backend default. Separate from the
-  // memory model so curation (which can be a harder task) can use a stronger model.
-  skills: { model: null },
+  // Background skills model; null = the backend default. Separate from the memory
+  // model so authoring and curation (harder tasks) can use a stronger model.
+  // `ask` is the default mode: the library this replaces was built by a pass that
+  // wrote silently, and 23 of its 25 skills were never used once. Showing the user
+  // what is about to be saved is the cheapest available check on that.
+  skills: { model: null, mode: 'ask' },
   // Command execution: on by default with the tiered policy as the guard rail.
   // approvalMode 'assisted' = allowlist → LLM judge → approval card ('manual'
   // skips the judge, 'yolo' skips everything but the protected-roots guard);
@@ -237,9 +240,13 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   const mem: MemoryModelSettings = {
     model: typeof rawMem.model === 'string' && rawMem.model.trim() ? rawMem.model : null
   };
-  const rawSkills = (parsed?.skills ?? {}) as Partial<SkillsModelSettings>;
-  const skills: SkillsModelSettings = {
-    model: typeof rawSkills.model === 'string' && rawSkills.model.trim() ? rawSkills.model : null
+  const rawSkills = (parsed?.skills ?? {}) as Partial<SkillsSettings>;
+  const skills: SkillsSettings = {
+    model: typeof rawSkills.model === 'string' && rawSkills.model.trim() ? rawSkills.model : null,
+    // Anything unrecognized falls back to the default rather than to `off`: a
+    // settings file written by an older build has no `mode` at all, and silently
+    // turning the feature off for those users is the wrong failure direction.
+    mode: rawSkills.mode === 'off' || rawSkills.mode === 'auto' ? rawSkills.mode : DEFAULTS.skills.mode
   };
   const rawExec = (parsed?.exec ?? {}) as Partial<ExecSettings>;
   const exec: ExecSettings = {
@@ -460,7 +467,7 @@ export function updateCustomInstructions(patch: Partial<CustomInstructionsSettin
 }
 
 /** Patch the skills-curator model setting and persist; returns the full settings. */
-export function updateSkillsSettings(patch: Partial<SkillsModelSettings>): Promise<AppSettings> {
+export function updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<AppSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, skills: { ...cur.skills, ...patch } });

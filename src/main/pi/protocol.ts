@@ -53,6 +53,16 @@ export const TASK_BRIDGE_TITLE = 'stem-task-bridge';
  */
 export const EXEC_BRIDGE_TITLE = 'stem-exec-bridge';
 
+/**
+ * manage_skill tool round-trip (`input`): the write payload rides in
+ * `placeholder`; PiRuntime routes it to the main-process SkillBridge, which owns
+ * the contract validator, the Off/Ask/Auto policy, and the approval card. The
+ * bridge extension used to write SKILL.md itself with almost no validation —
+ * that is why this round-trip exists, and why the answer can take minutes (main
+ * may hold it open behind a card).
+ */
+export const SKILL_BRIDGE_TITLE = 'stem-skill-bridge';
+
 // ---- gate files (basenames under the pi home, mtime-polled by the bridge) ----
 
 /**

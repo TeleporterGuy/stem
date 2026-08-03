@@ -16,6 +16,8 @@ import {
   mergeUsage,
   pruneUsage,
   readUsage,
+  recordGrades,
+  recordInjections,
   recordUses
 } from '../../src/main/skills/usage';
 import { listSkills } from '../../src/main/workspace/skills';
@@ -80,6 +82,27 @@ describe('readUsage', () => {
     expect(usage.trackingSince).toBe('2026-01-01T00:00:00.000Z');
     expect(Object.keys(usage.skills)).toEqual(['ok']);
   });
+
+  it('keeps an entry that has only ever been injected', () => {
+    // Zero uses against many injections is not an empty record — it is the
+    // denominator of a skill nobody follows, and dropping it as uninteresting
+    // would erase the one signal that demotes it.
+    writeFileSync(
+      usageFile,
+      JSON.stringify({
+        trackingSince: '2026-01-01T00:00:00.000Z',
+        skills: { ignored: { injected: 9, used: 0, lastGradedAt: 1_760_000_000 } }
+      }),
+      'utf8'
+    );
+    expect(readUsage().skills.ignored).toEqual({
+      count: 0,
+      lastUsedAt: '',
+      injected: 9,
+      used: 0,
+      lastGradedAt: 1_760_000_000
+    });
+  });
 });
 
 describe('recordUses', () => {
@@ -99,6 +122,85 @@ describe('recordUses', () => {
   });
 });
 
+describe('recordInjections', () => {
+  it('accumulates the denominator without touching the use count', () => {
+    writeSkill('brew-coffee');
+    expect(recordInjections(['brew-coffee'])).toBe(1);
+    recordInjections(['brew-coffee']);
+    expect(readUsage().skills['brew-coffee']).toEqual({ count: 0, lastUsedAt: '', injected: 2 });
+  });
+
+  it('leaves an existing consult count alone', () => {
+    writeSkill('brew-coffee');
+    recordUses(['brew-coffee'], new Date('2026-07-01T10:00:00.000Z'));
+    recordInjections(['brew-coffee']);
+    expect(readUsage().skills['brew-coffee']).toEqual({
+      count: 1,
+      lastUsedAt: '2026-07-01T10:00:00.000Z',
+      injected: 1
+    });
+  });
+
+  it('ignores slugs with no SKILL.md and writes nothing when none are real', () => {
+    writeSkill('brew-coffee');
+    expect(recordInjections(['brew-coffee', '.skills-rev', 'ghost'])).toBe(1);
+    expect(Object.keys(readUsage().skills)).toEqual(['brew-coffee']);
+    rmSync(usageFile, { force: true });
+    expect(recordInjections(['ghost'])).toBe(0);
+    expect(existsSync(usageFile)).toBe(false);
+  });
+});
+
+describe('recordGrades', () => {
+  it('bumps the numerator only for the skills the turn followed', () => {
+    writeSkill('followed');
+    writeSkill('ignored');
+    recordInjections(['followed', 'ignored']);
+    recordGrades(['followed', 'ignored'], ['followed'], new Date('2026-07-01T10:00:00.000Z'));
+    const usage = readUsage();
+    expect(usage.skills.followed?.used).toBe(1);
+    expect(usage.skills.ignored?.used).toBe(0);
+  });
+
+  it('moves the decay anchor for every injected skill, hit or miss', () => {
+    // Without this, a demoted skill's penalty decays back to neutral on the
+    // strength of nothing having happened — the miss has to be an observation,
+    // not an absence of one.
+    writeSkill('followed');
+    writeSkill('ignored');
+    recordInjections(['followed', 'ignored']);
+    const at = new Date('2026-07-01T10:00:00.000Z');
+    recordGrades(['followed', 'ignored'], ['followed'], at);
+    const seconds = Math.floor(at.getTime() / 1000);
+    expect(readUsage().skills.followed?.lastGradedAt).toBe(seconds);
+    expect(readUsage().skills.ignored?.lastGradedAt).toBe(seconds);
+  });
+
+  it('accumulates across turns', () => {
+    writeSkill('brew-coffee');
+    recordInjections(['brew-coffee']);
+    recordGrades(['brew-coffee'], ['brew-coffee'], new Date('2026-07-01T10:00:00.000Z'));
+    recordInjections(['brew-coffee']);
+    recordGrades(['brew-coffee'], [], new Date('2026-07-02T10:00:00.000Z'));
+    expect(readUsage().skills['brew-coffee']).toMatchObject({ injected: 2, used: 1 });
+  });
+
+  it('ignores slugs with no SKILL.md, even when graded as used', () => {
+    // A skill can be removed or merged between the injection and the grade, and a
+    // ledger entry for a directory that is gone would resurrect the slug in the
+    // curator prompt.
+    writeSkill('brew-coffee');
+    recordInjections(['brew-coffee']);
+    recordGrades(['brew-coffee', 'ghost'], ['brew-coffee', 'ghost'], new Date('2026-07-01T10:00:00.000Z'));
+    expect(Object.keys(readUsage().skills)).toEqual(['brew-coffee']);
+  });
+
+  it('does not write when nothing injected was a real skill', () => {
+    recordGrades(['ghost'], ['ghost']);
+    expect(existsSync(usageFile)).toBe(false);
+  });
+});
+
 describe('mergeUsage', () => {
   it('sums counts, keeps the latest lastUsedAt, and removes losers', () => {
     writeSkill('winner');
@@ -111,6 +213,24 @@ describe('mergeUsage', () => {
     const usage = readUsage();
     expect(usage.skills.winner).toEqual({ count: 3, lastUsedAt: '2026-06-02T00:00:00.000Z' });
     expect(usage.skills['loser-a']).toBeUndefined();
+  });
+
+  it('sums the loop counters and keeps the latest grade anchor', () => {
+    // A merge must not cost the winner its evidence: the loser's injections are
+    // what its description earned, and losing them would let a proven skill look
+    // brand new to the ranking blend.
+    writeSkill('winner');
+    writeSkill('loser');
+    recordInjections(['winner', 'loser']);
+    recordGrades(['winner'], ['winner'], new Date('2026-06-01T00:00:00.000Z'));
+    recordGrades(['loser'], ['loser'], new Date('2026-06-05T00:00:00.000Z'));
+    mergeUsage('winner', ['loser']);
+    expect(readUsage().skills.winner).toMatchObject({
+      injected: 2,
+      used: 2,
+      lastGradedAt: Math.floor(new Date('2026-06-05T00:00:00.000Z').getTime() / 1000)
+    });
+    expect(readUsage().skills.loser).toBeUndefined();
   });
 
   it('is a no-op when no loser was ever tracked', () => {

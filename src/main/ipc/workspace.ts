@@ -13,13 +13,15 @@ import {
 import { getFolderIndexStatuses, seedFolderLearnMarks, syncFolderIndexes } from '../folder-index';
 import { recallStore } from '../recall/store';
 import { workspaceRoot } from '../workspace/paths';
-import { readSettings, updateMobileSettings } from '../workspace/settings';
+import { readSettings, updateMobileSettings, updateSkillsSettings } from '../workspace/settings';
+import { resetSkills, skillsResetStatus } from '../skills/reset';
+import { learnFromLastTurn } from '../startup/skills';
 import { imagePreviewDataUrl } from '../pi/attachments';
 import { curateSkills } from '../skills/curate';
-import { drainSkillDistill } from '../skills/distill';
 import { mobilePairingInfo, rerollMobilePairing, syncMobileBridge } from '../startup/mobile';
 import type { LlmClient } from '../recall/llm';
-import type { ConnectedFolderPatch, MobileSettings, ScheduledTask, TaskSchedulePatch } from '../../shared/types';
+import type { ApprovalId } from '../backend/types';
+import type { ConnectedFolderPatch, MobileSettings, ScheduledTask, SkillsMode, TaskSchedulePatch } from '../../shared/types';
 
 /**
  * Skills, the Files place, connected folders, file dialogs, scheduled tasks, and
@@ -27,7 +29,33 @@ import type { ConnectedFolderPatch, MobileSettings, ScheduledTask, TaskScheduleP
  */
 export function registerWorkspaceIpc(deps: IpcDeps): void {
   handleIpc('skills:list', () => listSkills());
-  handleIpc('skills:setEnabled', (_e, slug: string, enabled: boolean) => setSkillEnabled(slug, enabled));
+  handleIpc('skills:setEnabled', async (_e, slug: string, enabled: boolean) => {
+    const skills = await setSkillEnabled(slug, enabled);
+    // Toggling rewrites the ignore file, which only takes effect on a rescan —
+    // without this the switch stayed cosmetic until the next backend restart.
+    await deps.runtime().requestSkillReload();
+    return skills;
+  });
+  handleIpc(
+    'skills:resolveApproval',
+    (_e, id: ApprovalId, accept: boolean, skill?: { name: string; description: string; body: string }) => {
+      // The write itself happens inside the held manage_skill call (SkillBridge),
+      // not here — that keeps one code path for validation and one for the reload,
+      // and lets the tool tell the model exactly what happened.
+      deps.runtime().resolveSkillApproval(id, accept, skill);
+    }
+  );
+  handleIpc('skills:learn', (_e, threadId: string, focus?: string) => learnFromLastTurn(threadId, focus));
+  handleIpc('skills:resetStatus', () => skillsResetStatus());
+  handleIpc('skills:reset', async (_e, exportFirst: boolean, mode: SkillsMode) => {
+    const result = resetSkills({ export: exportFirst });
+    // The dialog is also where the user picks how automatic skills should be, so
+    // the answer lands with the migration rather than needing a second trip to
+    // Settings that most people would never make.
+    await updateSkillsSettings({ mode });
+    await deps.runtime().requestSkillReload();
+    return result;
+  });
   handleIpc('skills:curate', async () => {
     // Same hidden one-shot seam the curator uses; `force` bypasses the size floor
     // so a manual "Tidy up" always runs. Reload so pi rescans the updated skills.
@@ -38,17 +66,9 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     await deps.runtime().requestSkillReload();
     return listSkills();
   });
-  handleIpc('skills:distillNow', async () => {
-    // Manual "collect now": drain the whole message backlog through the skill
-    // distiller (force bypasses the min-batch gate), then reload so any new
-    // skill activates immediately.
-    const llm: LlmClient = {
-      complete: async (prompt) => deps.runtime().complete(prompt, { model: (await readSettings()).skills.model })
-    };
-    const written = await drainSkillDistill(llm);
-    if (written > 0) await deps.runtime().requestSkillReload();
-    return listSkills();
-  });
+  // There is no `skills:distillNow` any more. Its "Collect now" swept the chat
+  // backlog for skills, but the recall DB holds no tool calls to sweep; skills
+  // are now written at the end of the turn that earned them (skills/settle.ts).
 
   handleIpc('files:list', () => listFiles());
   handleIpc('files:add', (_e, paths: string[], subdir?: string) => addFiles(paths, subdir));

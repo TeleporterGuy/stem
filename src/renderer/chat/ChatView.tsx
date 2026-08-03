@@ -119,6 +119,9 @@ interface ChatViewProps {
   draftFolderName: string | null;
   /** Show the context-fill meter in the controls row. Off in Quick Chat (too narrow). */
   showContextMeter?: boolean;
+  /** The thread the composer's `/learn` saves a skill from. Passed only by the main
+   *  window; null while the chat is still an unsent draft. */
+  threadId?: string | null;
   onChangeEffort: (effort: string) => void;
   onChangeSpeed: (serviceTier: string | null) => void;
   onChangeFormat: (format: 'md' | 'mdx') => void;
@@ -282,6 +285,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   format,
   draftFolderName,
   showContextMeter = true,
+  threadId,
   onChangeEffort,
   onChangeSpeed,
   onChangeFormat,
@@ -654,6 +658,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
         serviceTier={serviceTier}
         format={format}
         showContextMeter={showContextMeter}
+        threadId={threadId}
         onChangeEffort={onChangeEffort}
         onChangeSpeed={onChangeSpeed}
         onChangeFormat={onChangeFormat}

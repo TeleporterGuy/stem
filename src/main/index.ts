@@ -55,6 +55,7 @@ import type { TaskScheduler } from './scheduler';
 import { initTaskScheduler } from './startup/scheduler';
 import type { ExecService } from './exec/service';
 import { initExecService } from './startup/exec';
+import { initSkills } from './startup/skills';
 import {
   clearMobileTurns,
   closeMobileBridge,
@@ -111,7 +112,7 @@ import type {
   ReleaseNotesSettings,
   RetrievalStage,
   RetrievalTestResult,
-  SkillsModelSettings,
+  SkillsSettings,
   QuickChatHandoff,
   QuickChatPrompt,
   QuickChatSettings,
@@ -1047,7 +1048,7 @@ function registerIpc(): void {
     // each memory turn, so the change applies to the next distill/tidy-up.
     return updateMemorySettings(patch);
   });
-  handleIpc('settings:updateSkills', async (_e, patch: Partial<SkillsModelSettings>) => {
+  handleIpc('settings:updateSkills', async (_e, patch: Partial<SkillsSettings>) => {
     // Just persist — the curator's LlmClient reads the model fresh from settings on
     // each pass, so the change applies to the next curation run.
     return updateSkillsSettings(patch);
@@ -1356,6 +1357,19 @@ app.whenReady().then(async () => {
     }
   });
 
+  // Skills (the manage_skill tool): the write, the contract validator, and the
+  // Off/Ask/Auto policy all live in main. The approval card rides the backend
+  // event stream (unlike exec's, which is main-owned end to end), so there is
+  // nothing to emit here — see the skills/approval* cases in the event router.
+  initSkills({
+    runtime,
+    busyWithin,
+    onChanged: () => {
+      void runtime?.requestSkillReload();
+      sendToMain('skills:changed', undefined);
+    }
+  });
+
   // Background-activity feed for the toolbar indicator. Wired before the passes
   // below start reporting; main window only, since that is where the icon lives.
   setActivityEmitter((snapshot) => mainWindow?.webContents.send('activity:changed', snapshot));
@@ -1419,6 +1433,20 @@ app.whenReady().then(async () => {
       sendToMain('instructions:approvalRequest', event.params);
       quickChatWindow?.webContents.send('instructions:approvalRequest', event.params);
       sendToMobile('instructions:approvalRequest', event.params);
+      return;
+    }
+    if (event.method === 'skills/approvalRequest') {
+      const approvalThreadId = (event.params as { threadId?: string } | undefined)?.threadId;
+      if (approvalThreadId && overlay.owns(approvalThreadId)) showQuickChat(false);
+      sendToMain('skills:approvalRequest', event.params);
+      quickChatWindow?.webContents.send('skills:approvalRequest', event.params);
+      sendToMobile('skills:approvalRequest', event.params);
+      return;
+    }
+    if (event.method === 'skills/approvalResolved') {
+      sendToMain('skills:approvalResolved', event.params);
+      quickChatWindow?.webContents.send('skills:approvalResolved', event.params);
+      sendToMobile('skills:approvalResolved', event.params);
       return;
     }
     if (event.method === 'instructions/approvalResolved') {

@@ -43,6 +43,7 @@ export const INVOKE_CHANNELS: Readonly<Record<string, string>> = {
   respondExecApproval: 'exec:resolveApproval',
   respondMcpAdminApproval: 'mcp:adminDecision',
   respondInstructionsApproval: 'instructions:resolveApproval',
+  respondSkillApproval: 'skills:resolveApproval',
 
   getSettings: 'settings:get'
 };
@@ -57,6 +58,8 @@ export const EVENT_CHANNELS: Readonly<Record<string, string>> = {
   onMcpAdminApprovalResolved: 'mcp:adminApprovalResolved',
   onInstructionsApproval: 'instructions:approvalRequest',
   onInstructionsApprovalResolved: 'instructions:approvalResolved',
+  onSkillApproval: 'skills:approvalRequest',
+  onSkillApprovalResolved: 'skills:approvalResolved',
 
   onMcpStatus: 'mcp:status'
 };

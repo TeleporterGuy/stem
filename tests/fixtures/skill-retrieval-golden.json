@@ -1,0 +1,115 @@
+{
+  "_comment": [
+    "HAND-AUTHORED, NOT HARVESTED. The point of this fixture is to be a stable gate:",
+    "if it were built from the user's real skill library, every skill written or pruned",
+    "would move the numbers and the floors would stop meaning anything. The library",
+    "below is synthetic but shaped like a real one — twelve skills a personal assistant",
+    "would plausibly accumulate, several of them deliberately adjacent (lunch menu vs",
+    "restaurant booking, invoice reminder vs VAT return) so a query has to discriminate",
+    "rather than just find the only plausible entry.",
+    "Descriptions follow the contract in src/main/skills/contract.ts: one sentence, at",
+    "most 160 characters, saying WHEN to reach for the skill and never restating the name.",
+    "langPair mirrors recall-golden.json: the user writes Slovak about half the time, and",
+    "skill descriptions are English, so sk->en is a real retrieval condition and gets its",
+    "own floor."
+  ],
+  "skills": [
+    {
+      "name": "extract-video-captions",
+      "description": "When someone wants what a video says without watching it, pull the auto-generated transcript rather than describing frames."
+    },
+    {
+      "name": "scrape-daily-lunch-menu",
+      "description": "Reach for this when the question is what a specific restaurant is serving today and the answer lives on a page that changes daily."
+    },
+    {
+      "name": "book-restaurant-table",
+      "description": "Use when a place and a time are named and a reservation has to be placed through the venue's own booking widget."
+    },
+    {
+      "name": "track-parcel-delivery",
+      "description": "For a tracking number whose current whereabouts are wanted, when the carrier's public page is the only source of truth."
+    },
+    {
+      "name": "check-flight-status",
+      "description": "When a departure or arrival time is in doubt on the day of travel and the airline's schedule page has to be read directly."
+    },
+    {
+      "name": "renew-domain-registration",
+      "description": "Use when a domain is close to expiry and the renewal has to be pushed through the registrar's control panel before it lapses."
+    },
+    {
+      "name": "file-vat-return-slovakia",
+      "description": "For the quarterly submission to the Slovak tax portal, where the form order and the deadline both matter."
+    },
+    {
+      "name": "draft-invoice-reminder-email",
+      "description": "When a customer is late paying and a polite chaser has to go out that still keeps the door open."
+    },
+    {
+      "name": "compare-lease-buyout-offers",
+      "description": "Use when a car is coming off lease and the question is whether the buyout price beats what the market would pay."
+    },
+    {
+      "name": "diagnose-home-assistant-automation",
+      "description": "When an automation silently stops firing and the trace log has to be read to find which condition blocked it."
+    },
+    {
+      "name": "reset-router-port-forwarding",
+      "description": "For the case where a self-hosted service stops answering from outside the house after the ISP rotates the address."
+    },
+    {
+      "name": "convert-heic-photos",
+      "description": "When iPhone photos will not open on a machine that expects ordinary image files and a batch has to be converted."
+    }
+  ],
+  "queries": [
+    { "id": "q1", "text": "summarise this youtube video for me, I don't want to sit through 40 minutes", "expectSlug": "extract-video-captions", "langPair": "en->en" },
+    { "id": "q2", "text": "what's the daily menu at the bistro across the street today?", "expectSlug": "scrape-daily-lunch-menu", "langPair": "en->en" },
+    { "id": "q3", "text": "book us a table at Modrá Hviezda for Friday at seven", "expectSlug": "book-restaurant-table", "langPair": "en->en" },
+    { "id": "q4", "text": "where is my package right now, tracking number is CE123456789SK", "expectSlug": "track-parcel-delivery", "langPair": "en->en" },
+    { "id": "q5", "text": "is the Vienna flight delayed this morning?", "expectSlug": "check-flight-status", "langPair": "en->en" },
+    { "id": "q6", "text": "awantech.sk expires in two weeks, sort the renewal out", "expectSlug": "renew-domain-registration", "langPair": "en->en" },
+    { "id": "q7", "text": "I need to submit the quarterly VAT to the tax office", "expectSlug": "file-vat-return-slovakia", "langPair": "en->en" },
+    { "id": "q8", "text": "this client still hasn't paid the September invoice, write them something", "expectSlug": "draft-invoice-reminder-email", "langPair": "en->en" },
+    { "id": "q9", "text": "the lease ends in March, is it worth buying the car out or selling it", "expectSlug": "compare-lease-buyout-offers", "langPair": "en->en" },
+    { "id": "q10", "text": "the lights automation hasn't run in three days and I don't know why", "expectSlug": "diagnose-home-assistant-automation", "langPair": "en->en" },
+    { "id": "q11", "text": "I can't reach my nextcloud from outside anymore, worked yesterday", "expectSlug": "reset-router-port-forwarding", "langPair": "en->en" },
+    { "id": "q12", "text": "these photos from my phone won't open on the laptop", "expectSlug": "convert-heic-photos", "langPair": "en->en" },
+    { "id": "q13", "text": "čo dnes varia na obed v tej reštaurácii pri kancelárii?", "expectSlug": "scrape-daily-lunch-menu", "langPair": "sk->en" },
+    { "id": "q14", "text": "prosím pozri o čom je toto video, nechce sa mi to pozerať celé", "expectSlug": "extract-video-captions", "langPair": "sk->en" },
+    { "id": "q15", "text": "kde je moja zásielka, mala prísť už včera", "expectSlug": "track-parcel-delivery", "langPair": "sk->en" },
+    { "id": "q16", "text": "zákazník stále nezaplatil faktúru, napíš mu slušnú upomienku", "expectSlug": "draft-invoice-reminder-email", "langPair": "sk->en" },
+    { "id": "q17", "text": "automatizácia so svetlami sa už tri dni nespustila, netuším prečo", "expectSlug": "diagnose-home-assistant-automation", "langPair": "sk->en" },
+    { "id": "q18", "text": "fotky z iphonu sa mi nedajú otvoriť na notebooku", "expectSlug": "convert-heic-photos", "langPair": "sk->en" },
+    { "id": "q19", "text": "o dva týždne mi vyprší doména, treba ju predĺžiť", "expectSlug": "renew-domain-registration", "langPair": "sk->en" },
+    { "id": "q20", "text": "mešká ráno let do Viedne?", "expectSlug": "check-flight-status", "langPair": "sk->en" }
+  ],
+  "floors": {
+    "_comment": [
+      "Baseline observed with multilingual-e5-small (the app default) over these 20 queries,",
+      "ranking `name\\ndescription` exactly as skillVectorText does in src/main/skills/vectors.ts:",
+      "overall recall@1 0.750 / @3 0.900 / @5 1.000, mrr 0.839; sk->en recall@1 0.500 / @3 0.750 /",
+      "@5 1.000, mrr 0.681. Each floor sits about one query below that — 1/20 overall, 1/8 on",
+      "sk->en — so a single query flipping does not fail the gate but a systematic regression does.",
+      "sk->en is floored lower on purpose rather than fixed by rewriting the queries: e5 squashes",
+      "cross-language similarity (the same effect recall-golden.json documents), and a fixture",
+      "tuned until the number looked good would stop reporting that."
+    ],
+    "skills-description": {
+      "recall@1": 0.7,
+      "recall@3": 0.85,
+      "recall@5": 0.95,
+      "mrr": 0.78
+    },
+    "byLangPair": {
+      "sk->en": {
+        "skills-description": {
+          "recall@3": 0.625,
+          "recall@5": 0.875,
+          "mrr": 0.6
+        }
+      }
+    }
+  }
+}

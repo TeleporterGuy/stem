@@ -7,13 +7,24 @@ import {
   useState
 } from 'react';
 import { Square, ArrowUp, Paperclip, File, X, Check, NotebookPen } from 'lucide-react';
-import type { ChatMessage, EscapeAction, ModelSummary, TurnAttachment } from '../../shared/types';
+import type {
+  ChatMessage,
+  EscapeAction,
+  ModelSummary,
+  SkillLearnResult,
+  TurnAttachment
+} from '../../shared/types';
 import { ContextMeter } from './ContextMeter';
 import { ShortcutHint, useShortcut } from '../shortcuts';
 import { EFFORT_LABELS } from '../modelLabels';
 import { NOTE_CONFIRM_MS, detectNoteTrigger, noteBodyValid, useNoteMode } from '../noteMode';
 
 const MAX_COMPOSER_HEIGHT = 180;
+
+// How long a `/learn` outcome stays up. Much longer than the note flash: main
+// writes these as full sentences explaining what was (or wasn't) saved, not as a
+// two-word confirmation that can be read at a glance.
+const LEARN_NOTICE_MS = 8000;
 
 // Read a File's bytes into a base64 TurnAttachment (for clipboard/dropped data
 // with no on-disk path). Module-level: it depends on nothing in the component.
@@ -27,6 +38,19 @@ function fileToAttachment(file: File): Promise<TurnAttachment> {
     };
     reader.readAsDataURL(file);
   });
+}
+
+// `/learn [focus]` saves a skill from the turn that just finished instead of
+// sending the draft to the model. Matched at submit rather than while typing —
+// unlike `/note` this is a one-shot action, not a mode the composer sits in.
+//
+// `/learn` is the only command the composer intercepts. That is why this is a
+// literal match and not a command table: a framework for one command would be
+// mostly guesses about the second one. Add it when there is a second one.
+export function detectLearnCommand(text: string): { focus: string } | null {
+  if (text === '/learn') return { focus: '' };
+  if (text.startsWith('/learn ')) return { focus: text.slice('/learn '.length).trim() };
+  return null;
 }
 
 /** Imperative surface so App can push files into the composer (drop overlay). */
@@ -53,6 +77,9 @@ interface ComposerProps {
   onChangeSpeed: (serviceTier: string | null) => void;
   onChangeFormat: (format: 'md' | 'mdx') => void;
   reportDraft: boolean;
+  /** The thread `/learn` saves from. Null in an unsent draft and absent in Quick
+   *  Chat; either way the draft takes the normal send path. */
+  threadId?: string | null;
   onDraftChange?: (text: string) => void;
   onNoteSaved?: () => void;
 }
@@ -81,6 +108,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   onChangeSpeed,
   onChangeFormat,
   reportDraft,
+  threadId,
   onDraftChange,
   onNoteSaved
 }: ComposerProps, ref) {
@@ -132,6 +160,34 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // `/note` / `//` quick-note capture: saves the draft straight to memory, no turn.
   const { noteMode, flash: noteFlash, enterNoteMode, exitNoteMode, toggleNoteMode, saveNote } = useNoteMode();
 
+  // `/learn` gets its own pending state rather than borrowing `running`: it starts
+  // no turn, and on ask mode it stays outstanding until the user answers the
+  // approval card — which may be a while, so nothing here may block the composer.
+  const [learning, setLearning] = useState(false);
+  const [learnNotice, setLearnNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const learnTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (learnTimer.current != null) window.clearTimeout(learnTimer.current);
+  }, []);
+
+  // Main phrases every outcome for the user — including the refusals — so its
+  // message is shown as written rather than re-explained here.
+  const runLearn = useCallback(async (thread: string, focus: string) => {
+    if (learnTimer.current != null) window.clearTimeout(learnTimer.current);
+    setLearnNotice(null);
+    setLearning(true);
+    let result: SkillLearnResult;
+    try {
+      result = await window.stem.learnFromLastTurn(thread, focus || undefined);
+    } catch {
+      result = { ok: false, message: 'Couldn’t save a skill — try restarting Stem.' };
+    } finally {
+      setLearning(false);
+    }
+    setLearnNotice({ ok: result.ok, text: result.message });
+    learnTimer.current = window.setTimeout(() => setLearnNotice(null), LEARN_NOTICE_MS);
+  }, []);
+
   function submit() {
     const text = draft.trim();
     if (noteMode) {
@@ -145,6 +201,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       return;
     }
     if ((!text && attachments.length === 0) || running) return;
+    const learn = detectLearnCommand(text);
+    if (learn && threadId) {
+      // A second `/learn` while one is still outstanding is dropped, but the draft
+      // still clears — the alternative is sending the literal text to the model.
+      if (!learning) void runLearn(threadId, learn.focus);
+      setArmed(false);
+      setDraft('');
+      return;
+    }
     setArmed(false);
     onSend(text, attachments);
     setDraft('');
@@ -327,6 +392,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               {noteFlash === 'off' && 'Memory is off — note not saved'}
               {noteFlash === 'secret' && 'Looks like a credential — not saved'}
               {noteFlash === 'error' && 'Couldn’t save the note — try restarting Stem'}
+            </span>
+          </div>
+        )}
+        {(learning || learnNotice) && (
+          <div className="composer-attachments">
+            <span
+              className={`note-flash${learnNotice?.ok ? ' ok' : ''}`}
+              role="status"
+              aria-live="polite"
+            >
+              {learnNotice?.ok && <Check size={13} />}
+              {/* Deliberately not "Saving…": on ask mode this sits here while the
+                  approval card waits, and nothing is saved until it's answered. */}
+              {learnNotice?.text ?? 'Learning from the last reply…'}
             </span>
           </div>
         )}

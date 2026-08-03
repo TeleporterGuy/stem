@@ -29,7 +29,10 @@
     "dist:mac": "npm run build && electron-builder --mac --publish never",
     "dist:linux": "npm run build && electron-builder --linux --publish never",
     "eval:retrieval": "node scripts/recall-eval.mjs",
-    "eval:memory": "node scripts/memory-eval.mjs"
+    "eval:memory": "node scripts/memory-eval.mjs",
+    "eval:skills": "node scripts/skill-author-eval.mjs",
+    "eval:skill-retrieval": "node scripts/skill-retrieval-eval.mjs",
+    "fixtures:skills": "node scripts/skill-fixtures.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.82.0",

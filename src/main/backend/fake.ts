@@ -263,6 +263,12 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
 
   async requestSkillReload(): Promise<void> {}
 
+  resolveSkillApproval(): boolean {
+    return false;
+  }
+
+  setSkillBridge(): void {}
+
   setTaskBridge(_bridge: TaskBridge | null): void {}
 
   setExecBridge(_bridge: ExecBridge | null): void {}

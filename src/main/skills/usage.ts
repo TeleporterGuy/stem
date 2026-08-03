@@ -18,6 +18,18 @@ export const SKILLS_USAGE_FILE = '.skills-usage.json';
 export interface SkillUsageEntry {
   count: number;
   lastUsedAt: string; // ISO
+  /**
+   * Times this skill was put in front of the model, and times the turn then
+   * showed evidence of following it. Both feed the ranking blend (see
+   * skills/inject.ts) the same way `times_injected`/`times_used` feed fact
+   * ranking. Optional because entries written before the loop existed have
+   * neither — a missing pair ranks exactly neutral, which is the right default
+   * for a skill nobody has observed yet.
+   */
+  injected?: number;
+  used?: number;
+  /** Unix seconds of the last observation; the decay anchor for the usage rate. */
+  lastGradedAt?: number;
 }
 
 export interface SkillsUsage {
@@ -49,10 +61,20 @@ export function readUsage(): SkillsUsage {
     const skills: Record<string, SkillUsageEntry> = {};
     for (const [slug, entry] of Object.entries(data.skills ?? {})) {
       if (!entry || typeof entry !== 'object') continue;
-      const { count, lastUsedAt } = entry as Partial<SkillUsageEntry>;
-      if (typeof count === 'number' && Number.isInteger(count) && count > 0 && typeof lastUsedAt === 'string') {
-        skills[slug] = { count, lastUsedAt };
-      }
+      const { count, lastUsedAt, injected, used, lastGradedAt } = entry as Partial<SkillUsageEntry>;
+      const counted = typeof count === 'number' && Number.isInteger(count) && count > 0 && typeof lastUsedAt === 'string';
+      const graded = typeof injected === 'number' && injected > 0;
+      // An entry that has only ever been injected is still worth keeping — that is
+      // the denominator of a skill nobody follows, which is exactly the signal the
+      // ranking blend needs to demote it.
+      if (!counted && !graded) continue;
+      skills[slug] = {
+        count: counted ? (count as number) : 0,
+        lastUsedAt: counted ? (lastUsedAt as string) : '',
+        ...(typeof injected === 'number' && injected >= 0 ? { injected } : {}),
+        ...(typeof used === 'number' && used >= 0 ? { used } : {}),
+        ...(typeof lastGradedAt === 'number' && lastGradedAt > 0 ? { lastGradedAt } : {})
+      };
     }
     return { trackingSince: data.trackingSince, skills };
   } catch {
@@ -100,10 +122,51 @@ export function recordUses(slugs: string[], at: Date = new Date()): number {
   const iso = at.toISOString();
   for (const slug of real) {
     const entry = usage.skills[slug];
-    usage.skills[slug] = { count: (entry?.count ?? 0) + 1, lastUsedAt: iso };
+    usage.skills[slug] = { ...entry, count: (entry?.count ?? 0) + 1, lastUsedAt: iso };
   }
   writeUsage(usage);
   return real.length;
+}
+
+/**
+ * Record that these skills were put in front of the model this turn — the
+ * denominator of the injected-then-graded loop. Called once per turn from the
+ * message builder; `recordGrades` supplies the numerator at turn end.
+ */
+export function recordInjections(slugs: string[]): number {
+  const real = slugs.filter(isSkillSlug);
+  if (real.length === 0) return 0;
+  const usage = readUsage();
+  for (const slug of real) {
+    const entry = usage.skills[slug] ?? { count: 0, lastUsedAt: '' };
+    usage.skills[slug] = { ...entry, injected: (entry.injected ?? 0) + 1 };
+  }
+  writeUsage(usage);
+  return real.length;
+}
+
+/**
+ * Record the outcome of a graded turn: `used` slugs get their numerator bumped,
+ * and every injected slug gets its decay anchor moved so a skill that keeps being
+ * offered and keeps being ignored actually falls in the ranking. Without touching
+ * the anchor on a miss, a demoted skill's penalty would decay back to neutral on
+ * the strength of nothing having happened.
+ */
+export function recordGrades(injected: string[], used: string[], at: Date = new Date()): void {
+  const real = injected.filter(isSkillSlug);
+  if (real.length === 0) return;
+  const usage = readUsage();
+  const hit = new Set(used);
+  const seconds = Math.floor(at.getTime() / 1000);
+  for (const slug of real) {
+    const entry = usage.skills[slug] ?? { count: 0, lastUsedAt: '' };
+    usage.skills[slug] = {
+      ...entry,
+      used: (entry.used ?? 0) + (hit.has(slug) ? 1 : 0),
+      lastGradedAt: seconds
+    };
+  }
+  writeUsage(usage);
 }
 
 /**
@@ -114,15 +177,28 @@ export function mergeUsage(winner: string, losers: string[]): void {
   const usage = readUsage();
   const tracked = losers.filter((slug) => slug !== winner && usage.skills[slug]);
   if (tracked.length === 0) return;
-  let count = usage.skills[winner]?.count ?? 0;
-  let lastUsedAt = usage.skills[winner]?.lastUsedAt ?? '';
+  const win = usage.skills[winner];
+  let count = win?.count ?? 0;
+  let lastUsedAt = win?.lastUsedAt ?? '';
+  let injected = win?.injected ?? 0;
+  let used = win?.used ?? 0;
+  let lastGradedAt = win?.lastGradedAt ?? 0;
   for (const slug of tracked) {
     const entry = usage.skills[slug];
     count += entry.count;
+    injected += entry.injected ?? 0;
+    used += entry.used ?? 0;
     if (entry.lastUsedAt > lastUsedAt) lastUsedAt = entry.lastUsedAt;
+    if ((entry.lastGradedAt ?? 0) > lastGradedAt) lastGradedAt = entry.lastGradedAt ?? 0;
     delete usage.skills[slug];
   }
-  usage.skills[winner] = { count, lastUsedAt };
+  usage.skills[winner] = {
+    count,
+    lastUsedAt,
+    ...(injected ? { injected } : {}),
+    ...(used ? { used } : {}),
+    ...(lastGradedAt ? { lastGradedAt } : {})
+  };
   writeUsage(usage);
 }
 

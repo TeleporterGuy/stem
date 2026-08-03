@@ -12,6 +12,7 @@ import type {
   StartTurnResult,
   ThreadTurnSettings
 } from '../../shared/types';
+import type { SkillBridge } from '../skills/bridge';
 
 /**
  * The seam the backend uses to reach the scheduled-tasks subsystem (which lives in
@@ -164,6 +165,15 @@ export interface ChatBackend extends EventEmitter {
   // Skills: apply out-of-band skill changes (the background curator) by reloading
   // the backend, deferring to turn end if a turn is in flight.
   requestSkillReload(): Promise<void>;
+  /**
+   * Answer a pending skill approval card. `skill` is the card's final text, which
+   * the user may have edited; main re-validates it before writing. False when the
+   * card had already expired or been answered.
+   */
+  resolveSkillApproval(id: ApprovalId, accept: boolean, skill?: { name: string; description: string; body: string }): boolean;
+  // Skills: wire the bridge the assistant's manage_skill tool routes through.
+  // Pass null to detach. No-op on a backend without skills.
+  setSkillBridge(bridge: SkillBridge | null): void;
 
   // Scheduled tasks: wire the bridge the assistant's schedule_task/notify_user
   // tools route through. Pass null to detach. No-op on a backend without scheduling.

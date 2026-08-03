@@ -13,7 +13,11 @@ const { recordMessage } = recallStore;
 // things the user said, so they must never enter recall.
 const SYNTHETIC_MARKERS = [
   '<permissions instructions>',
+  // pi's own skills preamble (now unused — the backend is spawned --no-skills)
+  // and Stem's replacement for it. Both are procedures Stem injected, not
+  // anything the user said.
   '<skills_instructions>',
+  '<stem_skills',
   '<INSTRUCTIONS>',
   '# AGENTS.md instructions',
   'Stored Stem memory notes',

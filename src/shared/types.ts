@@ -763,6 +763,47 @@ export interface InstructionsProposal {
   suggestedSurface?: 'main' | 'quickChat';
 }
 
+/**
+ * The assistant wants to save a procedure as a skill and the mode is `ask`, so the
+ * write waits on a card. `id` is the bridge's elicitation id — pass it back to
+ * apply or cancel.
+ *
+ * The card shows the whole file because that is the point: a skill is followed on
+ * later turns, so an unreviewed one is a standing instruction nobody read. The
+ * user can edit the text before accepting.
+ */
+export interface SkillProposal {
+  id: number | string;
+  threadId: string;
+  /** Slug and heading of the proposed skill; also the folder name. */
+  name: string;
+  description: string;
+  /** The full body, front-matter excluded. */
+  body: string;
+  /** True when this would overwrite an existing skill rather than add one. */
+  isPatch: boolean;
+  /** Which surface asked: a live tool call, the end-of-turn pass, or `/learn`. */
+  origin: 'assistant' | 'turn' | 'learn';
+}
+
+/** Outcome of `/learn`. `message` is written to be shown to the user verbatim. */
+export type SkillLearnResult =
+  | { ok: true; slug: string; saved: boolean; message: string }
+  | { ok: false; message: string };
+
+/** State of the one-time migration off the pre-rebuild skill library. */
+export interface SkillsResetStatus {
+  needed: boolean;
+  count: number;
+}
+
+/** What the migration did. `exportFolder` is a subfolder name under Files. */
+export interface SkillsResetResult {
+  exported: number;
+  exportFolder: string;
+  removed: number;
+}
+
 /** Main -> renderer: a pending approval was answered or expired. */
 export interface ApprovalResolvedPayload {
   id: string;
@@ -985,7 +1026,6 @@ export type ActivityKind =
   | 'memory.summaryEmbed'
   | 'memory.summaryBackfill'
   | 'memory.rebuild'
-  | 'skills.distill'
   | 'skills.curate'
   | 'folders.scan'
   | 'folders.embed'
@@ -1203,10 +1243,25 @@ export interface MemoryModelSettings {
   model: string | null;
 }
 
-/** Model used for the background skills curator (merge/patch/archive of auto-created skills). */
-export interface SkillsModelSettings {
+/**
+ * How Stem saves skills of its own accord:
+ * - `off`  — never. It may still SUGGEST one in its reply, and if you say yes it
+ *            saves it; the mode limits Stem's initiative, not your instructions.
+ * - `ask`  — it proposes, you approve in a card. The default.
+ * - `auto` — it saves silently and tells you in the Manage panel.
+ *
+ * None of the three affects a skill the user asks for outright ("save that as a
+ * skill"), which always writes once it passes the contract. That request is the
+ * highest-precision authoring signal there is, and refusing it in `off` would
+ * contradict the mode's own label.
+ */
+export type SkillsMode = 'off' | 'ask' | 'auto';
+
+/** Skills: the automatic-authoring policy plus the model that does the writing. */
+export interface SkillsSettings {
   /** `provider/model` id; null = the backend default. */
   model: string | null;
+  mode: SkillsMode;
 }
 
 /**
@@ -1455,7 +1510,7 @@ export interface AppSettings {
   quickChat: QuickChatSettings;
   webSearch: WebSearchSettings;
   memory: MemoryModelSettings;
-  skills: SkillsModelSettings;
+  skills: SkillsSettings;
   /** Command execution (run_command) policy: enable switch, judge model, learned allowlist. */
   exec: ExecSettings;
   retrieval: RetrievalSettings;
@@ -1608,10 +1663,26 @@ export interface StemApi {
 
   listSkills(): Promise<SkillSummary[]>;
   setSkillEnabled(slug: string, enabled: boolean): Promise<SkillSummary[]>;
-  /** Run the skills curator now (merge duplicates, patch, archive). Returns fresh list. */
+  /**
+   * `/learn [focus]` — save a skill from the turn that just finished on this
+   * thread. Bypasses the automatic gate (the user asked), but still respects the
+   * mode: on `ask` the approval card appears as usual.
+   */
+  learnFromLastTurn(threadId: string, focus?: string): Promise<SkillLearnResult>;
+  /**
+   * Whether the one-time skills migration still needs asking about, and how many
+   * skills it would affect. `needed: false` on a fresh install — the question only
+   * makes sense to someone with a library to lose.
+   */
+  skillsResetStatus(): Promise<SkillsResetStatus>;
+  /**
+   * Carry out the migration: optionally copy the old skills into Files as plain
+   * Markdown, delete them, and record the automatic-skills mode the user picked in
+   * the same dialog.
+   */
+  resetSkills(exportFirst: boolean, mode: SkillsMode): Promise<SkillsResetResult>;
+  /** Run the skills curator now (merge duplicates, archive stale ones). Returns fresh list. */
   curateSkills(): Promise<SkillSummary[]>;
-  /** Run the skill distiller now over the whole message backlog. Returns fresh list. */
-  distillSkillsNow(): Promise<SkillSummary[]>;
   /** Fired after skills change (auto-create/patch by the assistant, or the curator). */
   onSkillsChanged(listener: () => void): () => void;
 
@@ -1775,7 +1846,7 @@ export interface StemApi {
   updateReleaseNotesSettings(patch: Partial<ReleaseNotesSettings>): Promise<AppSettings>;
   /** Set the model used for memory distillation/tidy-up ({ model: null } = default). */
   updateMemorySettings(patch: Partial<MemoryModelSettings>): Promise<AppSettings>;
-  updateSkillsSettings(patch: Partial<SkillsModelSettings>): Promise<AppSettings>;
+  updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<AppSettings>;
   /** Patch the standing custom instructions (e.g. { main } or { quickChat }). */
   updateCustomInstructions(patch: Partial<CustomInstructionsSettings>): Promise<AppSettings>;
   /** Assistant proposed a custom-instructions change; fired so the UI can show a card. */
@@ -1791,6 +1862,20 @@ export interface StemApi {
     accept: boolean,
     surface: 'main' | 'quickChat',
     text: string
+  ): Promise<void>;
+  /** Stem wants to save a skill and the mode is `ask`; fired so the UI can show a card. */
+  onSkillApproval(listener: (proposal: SkillProposal) => void): () => void;
+  /** Fired when a skill approval is answered or expires. */
+  onSkillApprovalResolved(listener: (payload: ApprovalResolvedPayload) => void): () => void;
+  /**
+   * Apply/cancel a proposed skill. On accept, main writes the card's final text
+   * (the user may have edited it) through the same validator every other path
+   * uses, then releases the tool.
+   */
+  respondSkillApproval(
+    id: number | string,
+    accept: boolean,
+    skill: { name: string; description: string; body: string }
   ): Promise<void>;
   /** Patch the command-execution policy (enable switch, judge model, allowlist). */
   updateExecSettings(patch: Partial<ExecSettings>): Promise<AppSettings>;
