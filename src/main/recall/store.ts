@@ -969,11 +969,35 @@ export class RecallStore {
    * Persist one message. Idempotent per turn: re-capturing the same
    * (thread, turn, role, text) is a no-op, while the user legitimately repeating
    * the same text in a later turn creates a distinct episodic message.
+   *
+   * A turn's assistant reply can be captured several times as it grows — one turn
+   * can hold several assistant messages (see pi/normalize.ts), and each completed
+   * one carries the reply SO FAR. Later captures therefore supersede the earlier,
+   * shorter version of the same turn rather than piling up nested near-duplicates.
    */
   recordMessage = (input: RecordMessageInput): void => {
     const text = input.text.trim();
     if (!text) return;
     const handle = this.open();
+    if (input.turnId) {
+      const superseded = handle
+        .prepare(
+          // A literal prefix test — LIKE would read `%`/`_` inside a stored reply as
+          // wildcards, and a false positive here deletes someone's message.
+          `SELECT id FROM messages
+            WHERE thread_id = ? AND turn_id = ? AND role = ?
+              AND text <> ? AND substr(?, 1, length(text)) = text`
+        )
+        .all(input.threadId, input.turnId, input.role, text, text) as { id: number }[];
+      for (const row of superseded) {
+        // No FK cascade — drop the cached vectors in the same pass (episodic
+        // embedding runs at turn end, so normally there are none yet).
+        handle.prepare(`DELETE FROM message_vectors WHERE message_id = ?`).run(row.id);
+        handle.prepare(`DELETE FROM message_chunk_vectors WHERE message_id = ?`).run(row.id);
+        handle.prepare(`DELETE FROM message_chunks WHERE message_id = ?`).run(row.id);
+        handle.prepare(`DELETE FROM messages WHERE id = ?`).run(row.id);
+      }
+    }
     handle
       .prepare(
         `INSERT OR IGNORE INTO messages (thread_id, turn_id, role, ts, cwd, text, dedup_key)

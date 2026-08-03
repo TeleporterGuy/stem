@@ -27,6 +27,16 @@ export interface TurnContext {
   threadId: string;
   turnId: string;
   assistantText: string;
+  /**
+   * The turn's assistant text up to and including the last message that ended
+   * CLEANLY. A turn can hold several assistant messages (see message_end), and each
+   * one joins the reply rather than replacing it — but only once it ends cleanly,
+   * because pi retries a failed message inside the same run by replaying the whole
+   * reply, and appending to a committed prefix would duplicate it.
+   */
+  committedText: string;
+  /** A message committed and the next text delta opens a new one: separate them. */
+  pendingJoin: boolean;
   errored: boolean;
   aborted: boolean;
   errorMessage?: string;
@@ -225,6 +235,8 @@ export function newTurnContext(threadId: string, turnId: string): TurnContext {
     threadId,
     turnId,
     assistantText: '',
+    committedText: '',
+    pendingJoin: false,
     errored: false,
     aborted: false,
     thinkingMs: 0,
@@ -444,10 +456,16 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       const ame = ev.assistantMessageEvent as AssistantMessageEvent | undefined;
       if (!ame) break;
       if (ame.type === 'text_delta' && typeof ame.delta === 'string') {
-        ctx.assistantText += ame.delta;
+        // These are the first tokens of a NEW assistant message in a turn that
+        // already has one (see message_end). Open it as its own block — in the
+        // stream too, not just in the accumulated text, so the live bubble reads
+        // the same as the settled one instead of fusing two paragraphs.
+        const delta = ctx.pendingJoin ? `\n\n${ame.delta}` : ame.delta;
+        ctx.pendingJoin = false;
+        ctx.assistantText += delta;
         out.push({
           method: 'item/agentMessage/delta',
-          params: { threadId, turnId, itemId: turnId, delta: ame.delta }
+          params: { threadId, turnId, itemId: turnId, delta }
         });
       } else if (ame.type === 'thinking_start') {
         out.push({ method: 'item/started', params: { item: { type: 'reasoning', id: turnId }, threadId, turnId } });
@@ -561,7 +579,22 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
         ctx.errored = false;
         ctx.errorMessage = undefined;
       }
-      if (text) ctx.assistantText = text;
+      // One turn can carry several assistant messages: a message that stops on a
+      // tool call is followed by another once the tool returns, and the web-access
+      // extension nudges a fresh one (sendMessage triggerTurn) when a background
+      // URL fetch lands — sometimes after the answer was already written. They are
+      // consecutive parts of ONE reply: the renderer keys a single bubble on the
+      // turn id, so joining them is what keeps the earlier parts on screen. Before
+      // this, the last message REPLACED everything the user had already read.
+      if (text) {
+        ctx.assistantText = ctx.committedText ? `${ctx.committedText}\n\n${text}` : text;
+        // Errored/aborted messages are left uncommitted so pi's in-run retry — which
+        // replays the whole reply — overwrites the partial instead of appending to it.
+        if (!ctx.errored && !ctx.aborted) {
+          ctx.committedText = ctx.assistantText;
+          ctx.pendingJoin = true;
+        }
+      }
       // Emit the authoritative completed message (renderer replaces streamed deltas).
       if (text || (!ctx.errored && !ctx.aborted)) {
         out.push({

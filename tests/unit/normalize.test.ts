@@ -173,3 +173,69 @@ describe('normalize turn outcome', () => {
     expect(end.events.at(-1)).toMatchObject({ method: 'turn/aborted' });
   });
 });
+
+// The renderer keys ONE bubble per turn (`assistant-${turnId}`) and an
+// item/completed replaces its content, so whatever the last assistant message of a
+// turn says is what the user is left looking at. A turn routinely holds more than
+// one: the web-access extension nudges a fresh message (sendMessage triggerTurn)
+// when a background URL fetch lands, sometimes after the answer is already written.
+// A real reply — a microwave comparison with prices and a verdict — was replaced on
+// screen by a trailing "so the Beko is the best buy" one-liner because of this.
+describe('normalize: several assistant messages in one turn', () => {
+  const delta = (text: string) =>
+    ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } });
+  const assistantEnd = (text: string, stopReason = 'stop') =>
+    ev({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text }], stopReason }
+    });
+  const completedTexts = (events: { method: string; params: unknown }[]) =>
+    events
+      .filter((e) => e.method === 'item/completed')
+      .map((e) => ((e.params as { item: { text?: string } }).item.text ?? ''));
+
+  it('joins them into one reply instead of letting the last one replace it', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(delta('## Odporúčam Beko'), ctx);
+    const first = normalizePiEvent(assistantEnd('## Odporúčam Beko'), ctx);
+    expect(completedTexts(first.events)).toEqual(['## Odporúčam Beko']);
+
+    const second = normalizePiEvent(assistantEnd('Beko je najlepšia kúpa.'), ctx);
+    expect(completedTexts(second.events)).toEqual(['## Odporúčam Beko\n\nBeko je najlepšia kúpa.']);
+    expect(ctx.assistantText).toBe('## Odporúčam Beko\n\nBeko je najlepšia kúpa.');
+  });
+
+  it('separates them in the delta stream too, so the live bubble matches', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(delta('first'), ctx);
+    normalizePiEvent(assistantEnd('first'), ctx);
+    const next = normalizePiEvent(delta('second'), ctx);
+    expect(next.events[0]).toMatchObject({
+      method: 'item/agentMessage/delta',
+      params: { delta: '\n\nsecond' }
+    });
+    expect(ctx.assistantText).toBe('first\n\nsecond');
+  });
+
+  // A message that stops on a tool call carries no text; the separator has to wait
+  // for the next message that actually says something.
+  it('holds the separator across a text-less tool-call message', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(delta('checking'), ctx);
+    normalizePiEvent(assistantEnd('checking', 'toolUse'), ctx);
+    normalizePiEvent(assistantEnd('', 'toolUse'), ctx);
+    normalizePiEvent(delta('done'), ctx);
+    expect(ctx.assistantText).toBe('checking\n\ndone');
+  });
+
+  // pi retries a failed message inside the same run by REPLAYING the whole reply.
+  // The partial must not survive as a committed prefix for the replay to append to.
+  it('replaces rather than joins when pi retries a failed message', () => {
+    const ctx = newTurnContext('t1', 'turn1');
+    normalizePiEvent(delta('half an ans'), ctx);
+    normalizePiEvent(assistantEnd('half an ans', 'error'), ctx);
+    const retry = normalizePiEvent(assistantEnd('the whole answer'), ctx);
+    expect(completedTexts(retry.events)).toEqual(['the whole answer']);
+    expect(ctx.assistantText).toBe('the whole answer');
+  });
+});
