@@ -27,7 +27,10 @@ if (required && current < required) {
   problems.push(
     `Node ${process.versions.node} is too old — Stem needs Node ${required} or newer ` +
       `(node:sqlite, used by the recall store, is only flag-free on ${required}+).\n` +
-      `      Install it with nvm (\`nvm install\`, which reads .nvmrc), fnm, mise, or your package manager.`
+      `      Install it with nvm (\`nvm install\`, which reads .nvmrc), fnm, mise, or your package manager.\n` +
+      `      On Windows without admin rights, use the portable Node ${required}+ zip and put it on your\n` +
+      `      session PATH (see docs/windows-dev.md). Prefer cmd.exe, or PowerShell with -NoProfile, if\n` +
+      `      profile.ps1 is blocked.`
   );
 }
 

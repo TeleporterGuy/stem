@@ -1599,16 +1599,21 @@ function registerExecTool(pi) {
     name: 'run_command',
     label: 'Run command',
     description:
-      'Run a shell command on the user\'s macOS machine (zsh, login-shell PATH — Homebrew/npm CLIs like ' +
-      '`agent-browser` work). Use it to drive CLIs, git, build tools, or quick scripts — NOT to read files ' +
+      'Run a shell command on the user\'s machine. On macOS/Linux Stem uses zsh with the login-shell PATH ' +
+      '(Homebrew/npm CLIs like `agent-browser` work). On Windows Stem uses cmd.exe (/d /s /c — no AutoRun); ' +
+      'if you need PowerShell, invoke it explicitly as `powershell.exe -NoProfile -ExecutionPolicy Bypass ' +
+      '-Command "..."` so a broken profile.ps1 cannot block the run. A bare `|` is a cmd pipe (it splits ' +
+      'before PowerShell) — put PowerShell pipelines inside `-Command "..."` (or use `(...)` / property ' +
+      'access instead). Use this to drive CLIs, git, build tools, or quick scripts — NOT to read files ' +
       '(use the dedicated read/grep/find/ls tools). By default the command runs in an isolated Stem ' +
       'workspace folder; pass `cwd` only when it must run in a specific existing directory. Folders ' +
-      'connected read-only are blocked entirely. Safe commands run immediately; others are screened by an ' +
-      'automatic safety check and may pause for the user\'s approval (denied automatically in scheduled ' +
-      'runs — prefer simple, clearly-safe commands there). Always quote arguments containing special ' +
-      'characters (&, ?, ;, spaces) — e.g. agent-browser open "https://example.com/watch?v=x&t=1" — an ' +
-      'unquoted & or ; changes what the shell runs and forces the approval path. Output is captured with ' +
-      'the exit code and truncated past 64KB per stream; default timeout 60s (max 300s via `timeout_ms`).',
+      'connected read-only are blocked entirely. Safe commands run immediately; others are screened by ' +
+      'an automatic safety check and may pause for the user\'s approval (denied automatically in ' +
+      'scheduled runs — prefer simple, clearly-safe commands there). Always quote arguments containing ' +
+      'special characters (&, ?, ;, spaces) — e.g. agent-browser open "https://example.com/watch?v=x&t=1" ' +
+      '— an unquoted & or ; changes what the shell runs and forces the approval path. Output is captured ' +
+      'with the exit code and truncated past 64KB per stream; default timeout 60s (max 300s via ' +
+      '`timeout_ms`).',
     parameters: {
       type: 'object',
       properties: {

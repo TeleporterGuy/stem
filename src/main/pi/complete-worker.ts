@@ -1,0 +1,156 @@
+import { join } from 'node:path';
+import type { PiInvocation } from './locate';
+import { emptyCompleteError } from './complete-errors';
+import { PiProcess, stderrReason, type PiEvent } from './rpc';
+
+// Shared helpers for one-shot LLM completes (exec safety judge, Recall distill).
+// Kept out of PiRuntime so readiness + prompt ack can be unit-tested without a
+// full Electron spawn. The warm worker lives in PiRuntime; this module runs one
+// prompt on an already-started PiProcess (or cold-starts a throwaway child).
+
+/** Budget for get_state after spawn — fail fast instead of burning the LLM timer. */
+export const COMPLETE_READY_TIMEOUT_MS = 20_000;
+
+export const COMPLETE_SYSTEM_PROMPT =
+  'You are a precise extraction engine. Follow the instructions exactly and output only what is requested.';
+
+export interface CompleteChildOptions {
+  pi: PiInvocation;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  provider: string;
+  modelId: string;
+}
+
+/** Spawn a --no-session complete child, start it, and wait until get_state succeeds. */
+export async function spawnReadyCompleteChild(opts: CompleteChildOptions): Promise<PiProcess> {
+  const child = new PiProcess({
+    command: opts.pi.command,
+    prefixArgs: opts.pi.prefixArgs,
+    cwd: opts.cwd,
+    env: opts.env,
+    args: [
+      '--no-session',
+      '--no-builtin-tools',
+      '--no-skills',
+      '--provider',
+      opts.provider,
+      '--model',
+      opts.modelId,
+      '--system-prompt',
+      COMPLETE_SYSTEM_PROMPT
+    ]
+  });
+  child.start();
+  try {
+    const state = await child.request({ type: 'get_state' }, COMPLETE_READY_TIMEOUT_MS);
+    if (!state.success) {
+      throw new Error(state.error ?? 'pi complete worker failed get_state.');
+    }
+  } catch (e) {
+    const reason = stderrReason(child.stderr);
+    void child.dispose().catch(() => {});
+    const err = e instanceof Error ? e : new Error(String(e));
+    if (reason && !err.message.includes(reason)) {
+      throw new Error(`${err.message} pi said: ${reason}`);
+    }
+    throw err;
+  }
+  return child;
+}
+
+/**
+ * Switch the complete child's model when it differs from the last known key.
+ * Returns the new `provider/modelId` key.
+ */
+export async function ensureCompleteModel(
+  child: PiProcess,
+  provider: string,
+  modelId: string,
+  currentKey: string | null
+): Promise<string> {
+  const key = `${provider}/${modelId}`;
+  if (currentKey === key) return key;
+  const res = await child.request({ type: 'set_model', provider, modelId }, COMPLETE_READY_TIMEOUT_MS);
+  if (!res.success) throw new Error(res.error ?? `pi could not select model "${key}".`);
+  return key;
+}
+
+/**
+ * Attach listeners, accept a prompt via RPC request (fail if rejected), then wait
+ * for assistant text. The LLM timer starts only after the prompt is accepted.
+ */
+export async function promptComplete(
+  child: PiProcess,
+  prompt: string,
+  llmTimeoutMs: number,
+  logTimeout?: (info: { timeoutMs: number }) => void
+): Promise<string> {
+  let text = '';
+  let settle!: (result: { ok: true; text: string } | { ok: false; error: Error }) => void;
+  let settled = false;
+
+  const outcome = new Promise<{ ok: true; text: string } | { ok: false; error: Error }>((resolve) => {
+    settle = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+  });
+
+  let timer: NodeJS.Timeout | null = null;
+  const onEvent = (ev: PiEvent): void => {
+    if (ev.type === 'message_end') {
+      const msg = ev.message as { role?: string; content?: { type?: string; text?: string }[] } | undefined;
+      if (msg?.role === 'assistant' && Array.isArray(msg.content)) {
+        const t = msg.content.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
+        if (t) text = t;
+      }
+    } else if (ev.type === 'agent_end') {
+      if (text) settle({ ok: true, text });
+      else settle({ ok: false, error: emptyCompleteError(child.stderr) });
+    }
+  };
+  const onExit = (): void => {
+    if (text) settle({ ok: true, text });
+    else settle({ ok: false, error: emptyCompleteError(child.stderr) });
+  };
+
+  child.on('event', onEvent);
+  child.on('exit', onExit);
+
+  const cleanup = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    child.off('event', onEvent);
+    child.off('exit', onExit);
+  };
+
+  try {
+    const res = await child.request({ type: 'prompt', message: prompt }, llmTimeoutMs);
+    if (!res.success) {
+      throw new Error(res.error ?? 'pi rejected the prompt.');
+    }
+    // LLM budget starts only after pi accepted the prompt (cold start is outside).
+    timer = setTimeout(() => {
+      logTimeout?.({ timeoutMs: llmTimeoutMs });
+      settle({ ok: false, error: new Error('pi completion timed out.') });
+    }, llmTimeoutMs);
+
+    const result = await outcome;
+    if (!result.ok) throw result.error;
+    return result.text;
+  } catch (e) {
+    settle({ ok: false, error: e instanceof Error ? e : new Error(String(e)) });
+    const result = await outcome;
+    if (!result.ok) throw result.error;
+    return result.text;
+  } finally {
+    cleanup();
+  }
+}
+
+/** Join path for the complete child's cwd under the Stem workspace. */
+export function completeInternalCwd(workspaceRoot: string): string {
+  return join(workspaceRoot, '.stem-internal');
+}

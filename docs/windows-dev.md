@@ -1,0 +1,121 @@
+# Windows development (experimental)
+
+Stem’s released installers target macOS and Linux. **Windows is a terminal-first
+dev port**: you can clone, install, and run from a user account **without admin
+rights**, using a portable Node.js zip. Packaging (NSIS/portable exe) is not
+included yet.
+
+Personal data still lives outside the clone, under `%APPDATA%\Stem\` (and
+`%APPDATA%\Stem Profiles\` for `--fresh` / `--profile=`). Reinstalling Node or
+re-cloning the repo does not wipe that folder.
+
+## Portable Node (no admin)
+
+1. Download the **Windows x64** Node.js **24+** binary zip from
+   [nodejs.org](https://nodejs.org/) (the zip, not the MSI).
+2. Extract somewhere you can write, e.g. `%USERPROFILE%\tools\node-v24.x.x-win-x64`.
+3. Put that folder on your PATH. Prefer a **user** PATH entry (no admin). You do
+   **not** need a system-wide PATH.
+
+### User PATH via Windows GUI (recommended for day-to-day use)
+
+This persists for your account in new terminals and apps. No admin prompt.
+
+1. Press **Win**, type `environment`, open **Edit environment variables for your
+   account** (not “Edit the system environment variables”).
+2. Under **User variables**, select **Path** → **Edit** → **New**.
+3. Add the full folder that contains `node.exe`, e.g.
+   `C:\Users\<you>\tools\node-v24.x.x-win-x64`
+   (same path as step 2; expand `%USERPROFILE%` yourself in the dialog).
+4. **OK** out of all dialogs.
+5. **Close and reopen** any open terminals (and Cursor / VS Code if they were
+   already running) so they pick up the new PATH.
+6. Verify:
+
+```bat
+where node
+node -v
+npm -v
+```
+
+`where node` should list your extracted folder first.
+
+When you upgrade Node later, edit that same user Path entry (or add a new one and
+remove the old) so it points at the new extract folder.
+
+### Session-only PATH (temporary)
+
+Useful for a one-off check without changing account settings.
+
+**cmd.exe (preferred when PowerShell profiles are broken):**
+
+```bat
+set PATH=%USERPROFILE%\tools\node-v24.x.x-win-x64;%PATH%
+node -v
+npm -v
+```
+
+**PowerShell — always skip the profile** if `profile.ps1` errors or is blocked:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$env:PATH = \"$env:USERPROFILE\tools\node-v24.x.x-win-x64;$env:PATH\"; node -v; npm -v"
+```
+
+Or open a `-NoProfile` shell first, then set PATH for that session.
+
+## Clone and run
+
+```bat
+git clone https://github.com/TeleporterGuy/stem.git
+cd stem
+git checkout feat/windows-dev-port
+npm install
+npm run preflight
+npm run dev
+```
+
+If `preflight` says Electron’s binary is missing:
+
+```bat
+node node_modules\electron\install.js
+```
+
+## Shell Stem uses for `run_command`
+
+On Windows, approved commands run as:
+
+`cmd.exe /d /s /c "<command>"`
+
+- `/d` disables AutoRun (registry hooks that behave like a login profile).
+- Stem does **not** load PowerShell’s `profile.ps1` for the default path.
+- The command is wrapped in quotes and spawned with `windowsVerbatimArguments` so
+  inner `"` (e.g. PowerShell `-Command "..."`) are not turned into `\"`.
+
+If you need PowerShell from the agent, ask it to run something like:
+
+```bat
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Write-Output hi"
+```
+
+A bare `|` is a **cmd** pipe: it splits the line before PowerShell sees it. Put
+PowerShell pipelines inside `-Command "..."`:
+
+```bat
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-Process | Select-Object -First 1 Name"
+```
+
+Or avoid pipes with `(...)` / property access when that is enough
+(e.g. `(Get-Command Get-Process).Name`).
+
+## Smoke checklist
+
+1. `node -v` ≥ 24 and `npm -v` with portable Node on PATH.
+2. `npm install` → `npm run preflight` → `npm run dev` opens Stem.
+3. Complete onboarding / chat with a provider.
+4. Ask Stem to run `echo hello`, `dir`, or `git status` — expect a normal result
+   (or an approval card), not a spawn/`zsh` error.
+5. Confirm a broken `profile.ps1` did not fire for those default commands.
+6. Optional: have Stem run the `-NoProfile` PowerShell one-liner above.
+7. Check that `%APPDATA%\Stem\` appears and survives a restart.
+8. Memory / search: if hybrid embeddings fail, check the main log for
+   `embed-endpoint` / named-pipe errors (FTS-only fallback is safe but weaker).

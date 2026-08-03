@@ -158,10 +158,14 @@ export function startEmbedEndpoint(opts: {
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => {
-          try {
-            unlinkSync(opts.socketPath);
-          } catch {
-            // Already gone.
+          // Named pipes are not filesystem entries — unlink would throw or
+          // target the wrong thing. Unix sockets still need cleanup.
+          if (!isPipe) {
+            try {
+              unlinkSync(opts.socketPath);
+            } catch {
+              // Already gone.
+            }
           }
           resolve();
         });

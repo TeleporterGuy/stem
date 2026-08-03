@@ -102,8 +102,13 @@ Native **web search** uses your provider's built-in search — no separate searc
 
 ## Getting started
 
-Runs on macOS and Linux. Development needs **Node.js 24 or newer** (`node:sqlite`, which backs the
-recall store, is only flag-free from 24). There's an `.nvmrc`, so `nvm use` picks the right one.
+Runs on **macOS and Linux** (release installers). **Windows** can run from source
+for development — see [Windows development](docs/windows-dev.md) (portable Node,
+no admin; experimental).
+
+Development needs **Node.js 24 or newer** (`node:sqlite`, which backs the
+recall store, is only flag-free from 24). There's an `.nvmrc`, so `nvm use` picks the right one
+on macOS/Linux; on Windows use a [portable Node zip](docs/windows-dev.md) if you lack admin rights.
 
 ```bash
 npm install

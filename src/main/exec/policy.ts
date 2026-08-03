@@ -29,6 +29,12 @@ const STATIC_ALLOWLIST = new Set([
   'file',
   'stat',
   'date',
+  // Windows cmd.exe equivalents of common read-only probes.
+  'dir',
+  'where',
+  'type',
+  'cd',
+  'echo',
   'git status',
   'git log',
   'git diff',
@@ -191,20 +197,20 @@ export function buildJudgePrompt(command: string, cwd: string, userIntent?: stri
   const intent = (userIntent ?? '').trim().slice(0, 800);
   return [
     'An AI assistant working on a request from its user wants to run a shell command on',
-    "the user's macOS machine. Classify whether the command is safe to run without",
-    'asking the user first. Reply with exactly one word — safe, unsafe, or unsure —',
-    'optionally followed on the same line by a very short reason.',
+    "the user's machine (zsh on macOS/Linux, cmd.exe on Windows). Classify whether the",
+    'command is safe to run without asking the user first. Reply with exactly one word',
+    '— safe, unsafe, or unsure — optionally followed on the same line by a very short reason.',
     '',
     "- safe: the command plausibly serves the user's request and does not destroy data,",
     '  change system or account state, or install software the user did not ask for.',
     '  Reading files, fetching or downloading content, opening pages or apps, and',
-    '  writing inside the working directory or /tmp are all safe when the request calls',
-    "  for them. Sending the user's own files or data somewhere is safe only when the",
-    '  request asks for exactly that.',
+    '  writing inside the working directory or a system temp folder are all safe when',
+    "  the request calls for them. Sending the user's own files or data somewhere is",
+    '  safe only when the request asks for exactly that.',
     '- unsafe: deletes or overwrites data unrelated to the request or outside the',
-    '  working directory and /tmp, changes system or account state, sends local files,',
-    '  secrets, or personal data anywhere the user did not ask for, installs software',
-    "  unprompted, or clearly does not serve the user's request.",
+    '  working directory and temp folders, changes system or account state, sends local',
+    '  files, secrets, or personal data anywhere the user did not ask for, installs',
+    "  software unprompted, or clearly does not serve the user's request.",
     '- unsure: you cannot tell.',
     '',
     intent
@@ -247,7 +253,10 @@ const CHEAP_MARKERS = ['haiku', 'mini', 'nano', 'flash', 'lite', 'spark'];
 /**
  * Resolve the judge model: the explicit setting wins; otherwise pick the
  * cheapest-looking model of the current provider (Anthropic → Haiku-class, etc.).
- * Returns null when nothing better is known — complete() then uses its default.
+ * If that provider has no cheap-tier name, reuse the live chat model (or the
+ * list default / first available) — never return null while authenticated models
+ * exist, or complete() falls through to the built-in openai-codex constant and
+ * fails with "No API key" for users signed in only to another provider (e.g. xAI).
  */
 export function resolveJudgeModel(
   settings: Pick<ExecSettings, 'judgeModel'>,
@@ -261,5 +270,9 @@ export function resolveJudgeModel(
     const hit = pool.find((m) => m.id.toLowerCase().includes(marker));
     if (hit) return hit.id;
   }
-  return null;
+  // No cheap-tier name in this provider's catalog (xAI grok-* etc.): stay on the
+  // live chat model, then the app default, then any model we know is signed-in.
+  if (currentModel && (!provider || currentModel.startsWith(`${provider}/`))) return currentModel;
+  const fallback = pool.find((m) => m.isDefault) ?? pool[0] ?? models.find((m) => m.isDefault) ?? models[0];
+  return fallback?.id ?? null;
 }

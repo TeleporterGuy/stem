@@ -94,6 +94,9 @@ describe('classify', () => {
   it('tier 1 for the static allowlist', () => {
     expect(classify('ls -la', settings).tier).toBe('run');
     expect(classify('git status', settings).tier).toBe('run');
+    expect(classify('dir /b', settings).tier).toBe('run');
+    expect(classify('where git', settings).tier).toBe('run');
+    expect(classify('echo hello', settings).tier).toBe('run');
     expect(classify('agent-browser open https://example.com', settings).tier).toBe('run');
     // Double-quoted URLs/selectors must stay tier 1 (the agent-browser workflow).
     expect(classify('agent-browser open "https://youtube.com/watch?v=x&list=y"', settings).tier).toBe('run');
@@ -117,6 +120,15 @@ describe('classify', () => {
   it('judges unknown commands', () => {
     expect(classify('rm -rf build', settings).tier).toBe('judge');
     expect(classify('git commit -m x', settings).tier).toBe('judge');
+  });
+
+  it('judges Windows PowerShell one-liners (not on the static allowlist)', () => {
+    // Windows smoke checklist uses this shape; it must hit the LLM judge in assisted mode.
+    const cmd =
+      'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "1+1"';
+    const cls = classify(cmd, settings);
+    expect(cls.tier).toBe('judge');
+    expect(cls.prefixes).toEqual(['powershell.exe']);
   });
 
   it('judges chains with any non-allowlisted segment', () => {
@@ -173,6 +185,7 @@ describe('buildJudgePrompt', () => {
     expect(prompt).toContain('rm -rf build');
     expect(prompt).toContain('/tmp/work');
     expect(prompt).toMatch(/safe, unsafe, or unsure/);
+    expect(prompt).toMatch(/cmd\.exe on Windows/);
   });
 
   it("embeds the user's request when available, and says so when not", () => {
@@ -221,8 +234,19 @@ describe('resolveJudgeModel', () => {
     );
   });
 
-  it('falls back to the default provider, then to null', () => {
+  it('falls back to the default provider cheap model, then null on an empty list', () => {
     expect(resolveJudgeModel({ judgeModel: null }, models, null)).toBe('anthropic/claude-haiku-4');
     expect(resolveJudgeModel({ judgeModel: null }, [], null)).toBeNull();
+  });
+
+  it('reuses the live chat model when the provider has no cheap-tier name (e.g. xAI)', () => {
+    const xai = [
+      model('xai/grok-4.5', 'xai', true),
+      model('xai/grok-4.3', 'xai')
+    ];
+    expect(resolveJudgeModel({ judgeModel: null }, xai, 'xai/grok-4.5')).toBe('xai/grok-4.5');
+    // No currentModel: still must not return null while signed-in models exist
+    // (null would make complete() spawn the built-in openai-codex default).
+    expect(resolveJudgeModel({ judgeModel: null }, xai, null)).toBe('xai/grok-4.5');
   });
 });

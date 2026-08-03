@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
 
-// Spawns approved run_command commands. Runs in main (the privileged process),
-// via `/bin/zsh -c` with the user's LOGIN-shell PATH — a GUI app's environment
-// lacks Homebrew/npm bin dirs, so without this `agent-browser` & co. would be
-// "command not found" even when installed.
+// Spawns approved run_command commands. Runs in main (the privileged process).
+// On macOS/Linux: `/bin/zsh -c` with the user's LOGIN-shell PATH — a GUI app's
+// environment lacks Homebrew/npm bin dirs, so without this `agent-browser` & co.
+// would be "command not found" even when installed.
+// On Windows: `cmd.exe /d /s /c` (no AutoRun; avoids a broken PowerShell
+// profile.ps1). PATH comes from the process environment (Path/PATH).
 
 export const DEFAULT_TIMEOUT_MS = 60_000;
 export const MAX_TIMEOUT_MS = 300_000;
@@ -19,46 +21,98 @@ export interface ExecOutcome {
   truncated: boolean;
 }
 
-let loginPathPromise: Promise<string> | null = null;
+/** How STEM invokes the host shell for run_command (exported for unit tests). */
+export interface ShellInvocation {
+  command: string;
+  args: string[];
+  /** POSIX process-group kill via negative PID; false on Windows (taskkill). */
+  detached: boolean;
+}
 
 /**
- * Resolve the user's login-shell PATH once and cache it. Falls back to the
- * process PATH if the probe fails (then only system binaries are reachable).
+ * Build the argv used to run one user command. Pure so Mac CI can assert the
+ * Windows shape without needing cmd.exe.
  */
-export function resolveLoginPath(): Promise<string> {
+export function shellInvocation(
+  command: string,
+  platform: NodeJS.Platform = process.platform
+): ShellInvocation {
+  if (platform === 'win32') {
+    // /d = no AutoRun (registry hooks that mirror a broken profile). /s /c + a
+    // quoted payload is the CreateProcess-safe form: cmd strips one outer quote
+    // pair and runs the rest as-is (inner " and | stay intact for PowerShell).
+    // Pair with windowsVerbatimArguments so Node does not turn " into \".
+    const comspec = process.env.ComSpec || 'cmd.exe';
+    return { command: comspec, args: ['/d', '/s', '/c', `"${command}"`], detached: false };
+  }
+  return { command: '/bin/zsh', args: ['-c', command], detached: true };
+}
+
+/** Human label for tool descriptions / judge prompts. */
+export function hostShellLabel(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? 'Windows (cmd.exe)' : 'macOS/Linux (zsh)';
+}
+
+let loginPathPromise: Promise<string> | null = null;
+
+/** Test seam: clear the cached PATH so unit tests can re-probe. */
+export function resetLoginPathCacheForTests(): void {
+  loginPathPromise = null;
+}
+
+/**
+ * Resolve the PATH exec children should use once and cache it.
+ * Unix: login-shell zsh (`-lc`) so Homebrew/npm bins are visible.
+ * Windows: process Path/PATH (GUI apps already inherit the user environment;
+ * there is no zsh to probe). Falls back to an empty string if unset.
+ */
+export function resolveLoginPath(
+  platform: NodeJS.Platform = process.platform
+): Promise<string> {
   if (!loginPathPromise) {
-    loginPathPromise = new Promise<string>((resolve) => {
-      const fallback = (): void => resolve(process.env.PATH ?? '');
-      try {
-        const probe = spawn('/bin/zsh', ['-lc', 'printf %s "$PATH"'], { stdio: ['ignore', 'pipe', 'ignore'] });
-        let out = '';
-        const timer = setTimeout(() => {
-          probe.kill('SIGKILL');
-          fallback();
-        }, 5000);
-        probe.stdout.on('data', (chunk: Buffer) => {
-          if (out.length < 32_768) out += chunk.toString('utf8');
-        });
-        probe.on('error', () => {
-          clearTimeout(timer);
-          fallback();
-        });
-        probe.on('exit', () => {
-          clearTimeout(timer);
-          resolve(out.trim() || (process.env.PATH ?? ''));
-        });
-      } catch {
-        fallback();
-      }
-    });
+    loginPathPromise = platform === 'win32' ? Promise.resolve(windowsPath()) : probeZshLoginPath();
   }
   return loginPathPromise;
+}
+
+function windowsPath(): string {
+  return process.env.Path || process.env.PATH || '';
+}
+
+function probeZshLoginPath(): Promise<string> {
+  return new Promise<string>((resolve) => {
+    const fallback = (): void => resolve(process.env.PATH ?? '');
+    try {
+      const probe = spawn('/bin/zsh', ['-lc', 'printf %s "$PATH"'], {
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      let out = '';
+      const timer = setTimeout(() => {
+        probe.kill('SIGKILL');
+        fallback();
+      }, 5000);
+      probe.stdout.on('data', (chunk: Buffer) => {
+        if (out.length < 32_768) out += chunk.toString('utf8');
+      });
+      probe.on('error', () => {
+        clearTimeout(timer);
+        fallback();
+      });
+      probe.on('exit', () => {
+        clearTimeout(timer);
+        resolve(out.trim() || (process.env.PATH ?? ''));
+      });
+    } catch {
+      fallback();
+    }
+  });
 }
 
 /**
  * The environment exec children get: the user's env minus Stem/pi internals.
  * Deliberately NOT the pi runtime's sanitizedEnv — that one is pi-oriented and
  * injects PI_CODING_AGENT_DIR etc., none of which a user command should see.
+ * On Windows both Path and PATH are set so cmd.exe and Node children agree.
  */
 export function execEnv(loginPath: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
@@ -67,6 +121,7 @@ export function execEnv(loginPath: string): NodeJS.ProcessEnv {
     env[key] = value;
   }
   env.PATH = loginPath;
+  if (process.platform === 'win32') env.Path = loginPath;
   return env;
 }
 
@@ -85,20 +140,62 @@ export interface RunCommandOptions {
 }
 
 /**
- * Run one shell command to completion with output caps and a process-group kill
- * on timeout/abort. `detached: true` puts the child in its own group so killing
- * `-pid` also reaches grandchildren (a spawned build, a browser helper); a true
- * daemon that double-forks into its own session intentionally escapes this.
+ * Kill a hung/aborted child and its descendants.
+ * Unix: process-group SIGKILL (child was spawned detached).
+ * Windows: taskkill /T tree kill, then child.kill() as fallback.
+ */
+function killChildTree(child: ReturnType<typeof spawn>, detached: boolean): void {
+  const pid = child.pid;
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    try {
+      spawn('taskkill', ['/T', '/F', '/PID', String(pid)], {
+        stdio: 'ignore',
+        windowsHide: true
+      }).unref();
+    } catch {
+      // fall through
+    }
+    try {
+      child.kill();
+    } catch {
+      // already gone
+    }
+    return;
+  }
+  try {
+    if (detached) process.kill(-pid, 'SIGKILL');
+    else child.kill('SIGKILL');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // already gone
+    }
+  }
+}
+
+/**
+ * Run one shell command to completion with output caps and a process-group /
+ * process-tree kill on timeout/abort. On Unix, `detached: true` puts the child
+ * in its own group so killing `-pid` also reaches grandchildren; a true daemon
+ * that double-forks into its own session intentionally escapes this. On
+ * Windows, taskkill /T covers the tree without relying on POSIX process groups.
  */
 export function runCommand(opts: RunCommandOptions): Promise<ExecOutcome> {
   return new Promise<ExecOutcome>((resolve, reject) => {
+    const shell = shellInvocation(opts.command);
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn('/bin/zsh', ['-c', opts.command], {
+      child = spawn(shell.command, shell.args, {
         cwd: opts.cwd,
         env: opts.env,
         stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true
+        detached: shell.detached,
+        windowsHide: true,
+        // Keep the /c "..." quotes we built; Node's default Windows quoting
+        // would escape inner " as \" and break PowerShell -Command "...".
+        windowsVerbatimArguments: process.platform === 'win32'
       });
     } catch (e) {
       reject(e instanceof Error ? e : new Error(String(e)));
@@ -127,19 +224,7 @@ export function runCommand(opts: RunCommandOptions): Promise<ExecOutcome> {
       stderr = capture(stderr, chunk);
     });
 
-    const killGroup = (): void => {
-      const pid = child.pid;
-      if (!pid) return;
-      try {
-        process.kill(-pid, 'SIGKILL');
-      } catch {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // already gone
-        }
-      }
-    };
+    const killGroup = (): void => killChildTree(child, shell.detached);
 
     const timer = setTimeout(() => {
       timedOut = true;

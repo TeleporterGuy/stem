@@ -18,8 +18,11 @@ import { scanProtected } from './protected';
 const APPROVAL_TIMEOUT_MS = 120_000;
 // complete() spawns a throwaway pi process per call and may queue behind Recall
 // distillation completes, so cold-start alone can eat >10s — 15s timed out in
-// practice and dumped perfectly fine commands onto approval cards.
-const JUDGE_TIMEOUT_MS = 30_000;
+// practice and dumped perfectly fine commands onto approval cards. Windows
+// Electron-as-Node cold start needs more headroom than 30s (Windows especially).
+export const JUDGE_TIMEOUT_MS = 60_000;
+/** Cap how much of a complete() error we paste into the approval card. */
+const JUDGE_ERROR_REASON_MAX = 200;
 /** listModels() is an RPC to the backend; cache it — the judge runs per command. */
 const MODELS_CACHE_TTL_MS = 5 * 60_000;
 /** Concurrent command cap; further tool calls queue rather than forking shells. */
@@ -93,10 +96,10 @@ export class ExecService implements ExecBridge {
       // Tier 2 (assisted mode only): one-word LLM judge classification (intent-aware
       // when the turn's user message is known); errors/timeouts escalate. Manual mode
       // skips straight to the card — judgeVerdict stays null so it can say so.
-      let judgeVerdict: 'unsafe' | 'unsure' | null = null;
+      let judgeVerdict: 'unsafe' | 'unsure' | 'failed' | null = null;
       let judgeReason: string | undefined;
       if (settings.approvalMode === 'assisted') {
-        const verdict = await this.judge(command, cwd, settings, req.userText);
+        const verdict = await this.judge(command, cwd, settings, req.userText, req.currentModel);
         if (verdict.verdict === 'safe') return this.run(command, cwd, req);
         judgeVerdict = verdict.verdict;
         judgeReason = verdict.reason;
@@ -165,21 +168,32 @@ export class ExecService implements ExecBridge {
     command: string,
     cwd: string,
     settings: ExecSettings,
-    userText?: string
-  ): Promise<{ verdict: 'safe' | 'unsafe' | 'unsure'; reason?: string }> {
+    userText?: string,
+    currentModel?: string | null
+  ): Promise<{ verdict: 'safe' | 'unsafe' | 'unsure' | 'failed'; reason?: string }> {
     try {
       const runtime = this.deps.runtime();
-      const model = resolveJudgeModel(settings, await this.listModelsCached(), null);
+      const models = await this.listModelsCached();
+      // Prefer a cheap model of the live chat's provider; never leave model unset
+      // when the user has signed-in models (null → complete() uses the built-in
+      // openai-codex constant, which fails for xAI-only / Anthropic-only installs).
+      const model =
+        resolveJudgeModel(settings, models, currentModel ?? null) ??
+        models.find((m) => m.isDefault)?.id ??
+        models[0]?.id ??
+        null;
       const reply = await runtime.complete(buildJudgePrompt(command, cwd, userText), {
         model,
-        timeoutMs: JUDGE_TIMEOUT_MS
+        timeoutMs: JUDGE_TIMEOUT_MS,
+        priority: true
       });
       return parseJudgeVerdict(reply);
     } catch (e) {
-      log('exec', 'judge failed — escalating to approval', {
-        error: e instanceof Error ? e.message : String(e)
-      });
-      return { verdict: 'unsure', reason: 'The safety check could not run.' };
+      const detail = (e instanceof Error ? e.message : String(e)).trim() || 'unknown error';
+      const clipped =
+        detail.length > JUDGE_ERROR_REASON_MAX ? `${detail.slice(0, JUDGE_ERROR_REASON_MAX - 1)}…` : detail;
+      log('exec', 'judge failed — escalating to approval', { error: detail });
+      return { verdict: 'failed', reason: clipped };
     }
   }
 
