@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agentsMdPath, filesRoot, legacyCodexHome, piHome, skillsRoot, workspaceRoot } from './paths';
 
@@ -107,28 +107,6 @@ and no JavaScript expressions ({ … }). Use only standard Markdown: headings, l
 fenced code blocks, tables, blockquotes, and emphasis. This overrides the component allowance
 in the base instructions for this turn.`;
 
-const DEFAULT_AGENTS_MD = `# Stem Assistant
-
-${STEM_ASSISTANT_INSTRUCTIONS}`;
-
-/**
- * Write `content` unless it is already there — a regenerate, not a seed. AGENTS.md
- * is generated from STEM_ASSISTANT_INSTRUCTIONS, and pi loads it from the backend
- * cwd on top of the same text we pass as --append-system-prompt. Written once and
- * never refreshed, an old install's copy went stale and then contradicted the live
- * system prompt: an AGENTS.md from before the interactive components existed still
- * says "use ONLY these components" and lists three of them, and that narrower,
- * later instruction suppresses the rest.
- */
-async function writeIfStale(path: string, content: string): Promise<void> {
-  try {
-    if ((await readFile(path, 'utf8')) === content) return;
-  } catch {
-    // missing or unreadable — (re)write it below
-  }
-  await writeFile(path, content, 'utf8');
-}
-
 /** Create the isolated environment on first run. Idempotent. */
 export async function ensureWorkspace(): Promise<void> {
   await mkdir(piHome(), { recursive: true });
@@ -140,7 +118,16 @@ export async function ensureWorkspace(): Promise<void> {
   // The persistent "Files" place the user drops files into (read by the agent).
   await mkdir(filesRoot(), { recursive: true });
 
-  await writeIfStale(agentsMdPath(), DEFAULT_AGENTS_MD);
+  // AGENTS.md is a leftover from the codex backend, which read the instructions off
+  // disk. pi gets them as --append-system-prompt (see pi/runtime.ts), and ALSO loads
+  // an AGENTS.md sitting in its cwd — so keeping the file meant shipping the same
+  // ~4KB of instructions twice per turn. Worse, it was only ever written when
+  // absent: a copy from before the interactive components existed still said "use
+  // ONLY these components" over a list of three, and that narrower, later
+  // instruction suppressed DataTable/Chart/Tabs for the life of the install. The
+  // system prompt is the single source now, so the duplicate is removed. No-op once
+  // it's gone.
+  await rm(agentsMdPath(), { force: true }).catch(() => {});
 
   // One-time cleanup: remove the retired codex backend's home so no unused data
   // is left on disk. No-op once it's gone. (pi's MCP config + admin tools are

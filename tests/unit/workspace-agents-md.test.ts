@@ -1,35 +1,29 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { STEM_ASSISTANT_INSTRUCTIONS, ensureWorkspace } from '../../src/main/workspace/bootstrap';
+import { ensureWorkspace } from '../../src/main/workspace/bootstrap';
 import { agentsMdPath } from '../../src/main/workspace/paths';
 
-// AGENTS.md is generated from STEM_ASSISTANT_INSTRUCTIONS, and pi loads it from the
-// backend cwd IN ADDITION to the same text we pass as --append-system-prompt. It used
-// to be seeded once and never rewritten, so a copy written before the interactive
-// components existed kept telling the model "use ONLY these components" over a list
-// of three — a narrower instruction that suppressed DataTable/Chart/Tabs for the life
-// of the install.
+// AGENTS.md is a leftover from the codex backend. pi receives the instructions as
+// --append-system-prompt AND loads any AGENTS.md in its cwd, so the file was a
+// second copy of the same ~4KB every turn — and, being written only when absent, a
+// copy from before the interactive components existed went on telling the model
+// "use ONLY these components" over a list of three, suppressing the rest.
 
-describe('AGENTS.md stays in step with the instructions it is generated from', () => {
-  it('rewrites a stale copy on startup', async () => {
+describe('the duplicate AGENTS.md in the backend cwd', () => {
+  it('is removed on startup', async () => {
     const path = agentsMdPath();
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, '# Stem Assistant\n\nOnly <Callout> exists.\n', 'utf8');
 
     await ensureWorkspace();
 
-    const written = readFileSync(path, 'utf8');
-    expect(written).toContain(STEM_ASSISTANT_INSTRUCTIONS);
-    expect(written).toContain('<DataTable');
-    expect(written).not.toContain('Only <Callout> exists.');
+    expect(existsSync(path)).toBe(false);
   });
 
-  it('is idempotent — a current copy is left byte-identical', async () => {
-    const path = agentsMdPath();
+  it('is not recreated, and a second pass over a clean workspace is a no-op', async () => {
     await ensureWorkspace();
-    const first = readFileSync(path, 'utf8');
     await ensureWorkspace();
-    expect(readFileSync(path, 'utf8')).toBe(first);
+    expect(existsSync(agentsMdPath())).toBe(false);
   });
 });

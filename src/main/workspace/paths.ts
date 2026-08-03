@@ -109,6 +109,11 @@ export function workspaceRoot(): string {
   return join(userDataRoot(), 'workspace');
 }
 
+/**
+ * Where pi would pick up a project-instructions file from its cwd. Stem no longer
+ * writes one — the instructions go in as --append-system-prompt — so this exists
+ * only so bootstrap can delete the copy older installs were seeded with.
+ */
 export function agentsMdPath(): string {
   return join(workspaceRoot(), 'AGENTS.md');
 }
