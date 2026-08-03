@@ -4,7 +4,7 @@ import { getEmbeddingsClient } from './retrieval';
 import { cosineSim } from './vector';
 import { isRecallEnabled } from '../workspace/memory';
 import * as activity from '../activity';
-import { classifyRelation, evidenceDateOf } from './reconcile';
+import { classifyRelation, evidenceDateOf, sweepFactAgainstNeighbours, type SweepBudget } from './reconcile';
 import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
 import { recallStore, type StoredMessage, type TurnInjectedFacts } from './store';
@@ -606,6 +606,10 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   const scored = await scoreCandidatesAgainstFacts(claims.map((c) => c.text));
   if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
   const dupThreshold = getDupCosine();
+  // One classify budget for the whole batch's neighbour sweeps, so a segment
+  // that yields many claims cannot turn distillation into an unbounded run of
+  // model calls; over-budget pairs queue for the background pass instead.
+  const sweepBudget: SweepBudget = { remaining: 20 };
   let dupSeen = false;
   let i = -1;
   for (const claim of claims) {
@@ -683,6 +687,19 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
         if (!(await raiseVerified(targetId, 'The available evidence is ambiguous.'))) {
           return advanceWithoutWriting();
         }
+      }
+      // Extractor-independent pass: the ids above are only the facts the model
+      // was shown; a stale fact worded differently never appears in them. Sweep
+      // the new fact's embedding neighbours too (skipping what was just
+      // handled), with the same directUser authority gate.
+      if (scored) {
+        const named = new Set([...claim.supersedesFactIds, ...claim.conflictsWithFactIds]);
+        const intact = await sweepFactAgainstNeighbours(id, scored.model, llm, {
+          directUser,
+          skipIds: named,
+          budget: sweepBudget
+        });
+        if (!intact) return advanceWithoutWriting();
       }
     }
   }

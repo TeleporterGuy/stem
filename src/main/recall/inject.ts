@@ -5,9 +5,9 @@ import { searchFolderDocs, type FolderDocHit } from '../folder-index';
 import { scanSummariesOffThread } from './scan';
 import { getEmbeddingsClient, getRerankClient } from './retrieval';
 import type { EmbeddingsClient } from './embeddings';
-import { dot, magnitude } from './vector';
+import { cosineSim, dot, magnitude } from './vector';
 import { recallStore, MAX_PINNED_FACTS, type Fact, type FactTier, type InjectedDocRef } from './store';
-const { dbHandle, getInjectableFacts, getFactsGeneration, getFactsMissingVector, getFactVectors, getUsageWeight, upsertFactVectorForSnapshot, getMaxRelevantFacts, getFactCosineM, getFactRerankK } = recallStore;
+const { dbHandle, enqueueRelationChecks, getInjectableFacts, getFactsGeneration, getFactsMissingVector, getFactVectors, getUsageWeight, upsertFactVectorForSnapshot, getMaxRelevantFacts, getFactCosineM, getFactRerankK } = recallStore;
 
 // Builds the per-turn recall context Stem prepends to the user's message.
 // Two parts: Level-1 durable facts and Level-2 episodic hits relevant to the
@@ -167,7 +167,8 @@ async function selectRelevantFacts(
   facts: Fact[],
   getQueryEmbedding: QueryEmbedGetter,
   timings: RecallTimings | undefined,
-  factsGeneration: number
+  factsGeneration: number,
+  vectorSink?: { vectors?: Map<number, Float32Array> }
 ): Promise<Fact[]> {
   const qe = await getQueryEmbedding();
   if (getFactsGeneration() !== factsGeneration) throw new Error('facts reset during selection');
@@ -188,6 +189,7 @@ async function selectRelevantFacts(
   if (timings) timings.embed = (timings.embed ?? 0) + (Date.now() - embStart);
 
   const vectors = getFactVectors(model);
+  if (vectorSink) vectorSink.vectors = vectors;
   const candidates = cosineTopM(qVec, facts, vectors, getFactCosineM());
   const k = Math.min(getFactRerankK(), getMaxRelevantFacts());
 
@@ -209,6 +211,43 @@ async function selectRelevantFacts(
     }
   }
   return candidates.slice(0, k);
+}
+
+/**
+ * Two selected facts this close are describing the same subject — exactly the
+ * pairs whose disagreement matters, because they land in the same context
+ * window together. Lower than the sweep's classify-worthy floor would flood
+ * the queue with topical siblings; 0.60 keeps it to genuine same-subject pairs.
+ */
+export const COINJECT_MIN_COSINE = 0.6;
+
+/**
+ * The async co-injection guard's discovery half: queue every not-yet-classified
+ * same-subject pair among this turn's chosen facts for the background relation
+ * pass. No model calls and no measurable latency here — pairwise cosine over at
+ * most ~16 in-memory vectors plus a few INSERT OR IGNOREs. The pairs that
+ * actually co-occur in real turns get classified first, which is the right
+ * priority order for a backlog of unknown size. Resolution stays where it
+ * always was: conflicts raised later by processPendingRelationChecks flow
+ * through the disputed-representative logic on subsequent turns.
+ */
+function enqueueCoinjectedPairs(facts: Fact[], vectors: Map<number, Float32Array> | undefined): void {
+  if (!vectors || facts.length < 2) return;
+  try {
+    const pairs: Array<[number, number]> = [];
+    for (let a = 0; a < facts.length; a++) {
+      const va = vectors.get(facts[a].id);
+      if (!va) continue;
+      for (let b = a + 1; b < facts.length; b++) {
+        const vb = vectors.get(facts[b].id);
+        if (!vb || vb.length !== va.length) continue;
+        if (cosineSim(va, vb) >= COINJECT_MIN_COSINE) pairs.push([facts[a].id, facts[b].id]);
+      }
+    }
+    if (pairs.length > 0) enqueueRelationChecks(pairs, 'coinject');
+  } catch {
+    // Discovery is best-effort; a store hiccup must never cost the turn.
+  }
 }
 
 /**
@@ -234,8 +273,9 @@ async function chooseFacts(
     .filter((f) => candidateIds.has(f.id))
     .map((f) => ({ ...f, selectionReason: 'lexical' as const }));
   let semantic: Fact[] = [];
+  const vectorSink: { vectors?: Map<number, Float32Array> } = {};
   try {
-    semantic = await selectRelevantFacts(userText, candidates, getQueryEmbedding, timings, factsGeneration);
+    semantic = await selectRelevantFacts(userText, candidates, getQueryEmbedding, timings, factsGeneration, vectorSink);
   } catch {
     // Lexical results below remain the safe, model-free fallback.
   }
@@ -251,6 +291,7 @@ async function chooseFacts(
     if (relevant.length >= limit) break;
   }
   const facts = [...pinned, ...relevant];
+  enqueueCoinjectedPairs(facts, vectorSink.vectors);
   const hasSemantic = relevant.some((f) => f.selectionReason === 'semantic');
   const hasLexical = relevant.some((f) => f.selectionReason === 'lexical');
   const tier: FactTier = hasSemantic && hasLexical

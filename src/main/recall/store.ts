@@ -139,6 +139,17 @@ export type AdjudicationDecision =
   | { kind: 'both' }
   | { kind: 'rewrite'; texts: string[] };
 
+/** Which discovery path queued a relation check (see enqueueRelationChecks). */
+export type RelationCheckOrigin = 'sweep' | 'coinject' | 'backfill';
+
+/** A queued pair hydrated for the background classify pass. */
+export interface PendingRelationCheck {
+  id: number;
+  origin: string;
+  factA: FactDetails;
+  factB: FactDetails;
+}
+
 
 /**
  * Newest evidence timestamp of a fact, or null when it has none. Evidence rows
@@ -674,6 +685,22 @@ export class RecallStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_conflict_pair
         ON fact_conflicts(MIN(fact_a, fact_b), MAX(fact_a, fact_b)) WHERE status = 'open';
+
+      -- Memo + work queue for pairwise relation classification (the neighbour
+      -- sweep, the co-injection guard, and the retroactive backfill). One row per
+      -- unordered pair (fact_a < fact_b); verdict NULL = queued for the background
+      -- classify pass, non-NULL = already judged, never re-spend a model call.
+      CREATE TABLE IF NOT EXISTS fact_relation_checks (
+        id         INTEGER PRIMARY KEY,
+        fact_a     INTEGER NOT NULL,
+        fact_b     INTEGER NOT NULL,
+        verdict    TEXT,
+        origin     TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        checked_at INTEGER
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_relation_pair
+        ON fact_relation_checks(fact_a, fact_b);
 
       CREATE TABLE IF NOT EXISTS message_chunks (
         message_id  INTEGER NOT NULL,
@@ -1822,6 +1849,122 @@ export class RecallStore {
 
 
   /**
+   * Queue unordered fact pairs for relation classification. INSERT OR IGNORE on
+   * the normalized (min, max) pair makes re-enqueueing free, so every discovery
+   * path (write-time sweep overflow, co-injection, backfill) can fire blind.
+   * Pairs that ever reached fact_conflicts are skipped — the conflict machinery
+   * already owns their resolution, whatever its outcome was.
+   */
+  enqueueRelationChecks = (pairs: Array<[number, number]>, origin: RelationCheckOrigin): number => {
+    const handle = this.open();
+    const insert = handle.prepare(
+      `INSERT OR IGNORE INTO fact_relation_checks (fact_a, fact_b, verdict, origin, created_at)
+       SELECT ?, ?, NULL, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM fact_conflicts
+         WHERE MIN(fact_a, fact_b) = ? AND MAX(fact_a, fact_b) = ?
+       )`
+    );
+    let queued = 0;
+    for (const [x, y] of pairs) {
+      if (x === y) continue;
+      const a = Math.min(x, y);
+      const b = Math.max(x, y);
+      queued += insert.run(a, b, origin, this.nowSeconds(), a, b).changes as number;
+    }
+    return queued;
+  };
+
+
+  /** Has this unordered pair already been classified (or conflicted)? */
+  isRelationChecked = (x: number, y: number): boolean => {
+    const a = Math.min(x, y);
+    const b = Math.max(x, y);
+    const row = this.open().prepare(
+      `SELECT EXISTS(
+         SELECT 1 FROM fact_relation_checks WHERE fact_a = ? AND fact_b = ? AND verdict IS NOT NULL
+       ) OR EXISTS(
+         SELECT 1 FROM fact_conflicts WHERE MIN(fact_a, fact_b) = ? AND MAX(fact_a, fact_b) = ?
+       ) AS n`
+    ).get(a, b, a, b) as { n: number };
+    return row.n === 1;
+  };
+
+
+  /**
+   * Pending relation checks hydrated for the background classify pass, oldest
+   * first. Rows whose sides are no longer both active are settled as 'stale' on
+   * the way out — the pair's disagreement (if any) was resolved by other means.
+   */
+  getPendingRelationChecks = (limit: number): PendingRelationCheck[] => {
+    const handle = this.open();
+    const out: PendingRelationCheck[] = [];
+    // Over-fetch so a run that settles stale rows still fills the limit.
+    const rows = handle.prepare(
+      `SELECT id, fact_a AS factA, fact_b AS factB, origin
+       FROM fact_relation_checks WHERE verdict IS NULL ORDER BY created_at ASC, id ASC LIMIT ?`
+    ).all(limit * 4) as Array<{ id: number; factA: number; factB: number; origin: string }>;
+    for (const r of rows) {
+      if (out.length >= limit) break;
+      const factA = this.getFactDetails(r.factA);
+      const factB = this.getFactDetails(r.factB);
+      if (factA?.status === 'active' && factB?.status === 'active') {
+        out.push({ id: r.id, origin: r.origin, factA, factB });
+      } else {
+        this.recordRelationVerdict(r.id, 'stale');
+      }
+    }
+    return out;
+  };
+
+
+  recordRelationVerdict = (id: number, verdict: string): void => {
+    this.open().prepare(
+      `UPDATE fact_relation_checks SET verdict = ?, checked_at = ? WHERE id = ?`
+    ).run(verdict.slice(0, 40), this.nowSeconds(), id);
+  };
+
+
+  /**
+   * Memoize a verdict for an unordered pair judged outside the queue (the
+   * write-time sweep classifies inline). Upserts so a pending row left by an
+   * earlier discovery path is settled rather than duplicated.
+   */
+  recordRelationResult = (x: number, y: number, verdict: string, origin: RelationCheckOrigin): void => {
+    if (x === y) return;
+    const a = Math.min(x, y);
+    const b = Math.max(x, y);
+    const now = this.nowSeconds();
+    this.open().prepare(
+      `INSERT INTO fact_relation_checks (fact_a, fact_b, verdict, origin, created_at, checked_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(fact_a, fact_b) DO UPDATE SET verdict = excluded.verdict, checked_at = excluded.checked_at`
+    ).run(a, b, verdict.slice(0, 40), origin, now, now);
+  };
+
+
+  /** Pending-queue depth, for the background pass's activity row. */
+  pendingRelationCheckCount = (): number => {
+    return (this.open().prepare(
+      `SELECT COUNT(*) AS n FROM fact_relation_checks WHERE verdict IS NULL`
+    ).get() as { n: number }).n;
+  };
+
+
+  /**
+   * Newest evidence timestamp per fact in one query — the batch analog of
+   * newestEvidenceTs for consumers that render many facts (the consolidation
+   * prompt, the neighbour sweep) and must not load full evidence for each.
+   */
+  getNewestEvidenceTsByFact = (): Map<number, number> => {
+    const rows = this.open().prepare(
+      `SELECT fact_id AS factId, MAX(ts) AS ts FROM fact_evidence GROUP BY fact_id`
+    ).all() as Array<{ factId: number; ts: number }>;
+    return new Map(rows.map((r) => [r.factId, r.ts]));
+  };
+
+
+  /**
    * Apply one adjudicator decision transactionally. `expected` pins the exact pair
    * the model judged — the conflict must still be open on those ids with those
    * texts, or nothing is applied (facts can be superseded, rewritten, or reset
@@ -1932,6 +2075,7 @@ export class RecallStore {
     handle.prepare(`DELETE FROM fact_vectors WHERE fact_id = ?`).run(id);
     handle.prepare(`DELETE FROM fact_evidence WHERE fact_id = ?`).run(id);
     handle.prepare(`DELETE FROM fact_conflicts WHERE fact_a = ? OR fact_b = ?`).run(id, id);
+    handle.prepare(`DELETE FROM fact_relation_checks WHERE fact_a = ? OR fact_b = ?`).run(id, id);
     handle.prepare(`UPDATE facts SET superseded_by = NULL WHERE superseded_by = ?`).run(id);
     handle.prepare(`DELETE FROM facts WHERE id = ?`).run(id);
   };
@@ -2543,10 +2687,14 @@ export class RecallStore {
       handle.exec('DELETE FROM fact_vectors');
       handle.exec('DELETE FROM fact_evidence');
       handle.exec('DELETE FROM fact_conflicts');
+      handle.exec('DELETE FROM fact_relation_checks');
       handle.exec('DELETE FROM facts');
       // Fact ids in the per-turn injected log are now dangling — drop it too.
       handle.exec('DELETE FROM turn_injected_facts');
       handle.exec(`DELETE FROM meta WHERE key = 'consolidate_pending'`);
+      // The relation-sweep backfill's coverage claim is about the rows that no
+      // longer exist — a rebuilt store must be re-enumerated from the start.
+      handle.exec(`DELETE FROM meta WHERE key IN ('relation_sweep_cursor', 'relation_sweep_done')`);
       // Clearing facts is also a cancellation barrier for an active rebuild.
       // Removing its progress returns it to the explicit-consent "available" state.
       // The v1 flag deliberately survives: it describes the store's TRANSCRIPTS
@@ -2618,8 +2766,21 @@ export class RecallStore {
         const survivor = Math.min(...present);
         for (const id of present) if (id !== survivor) mergeSurvivor.set(id, survivor);
       }
+      // The survivor absorbs each loser's evidence rows (copy, not move — the
+      // loser keeps its own provenance for the audit/restore path). Without this
+      // the min-id survivor keeps only its own, older evidence, and every merge
+      // silently destroys the absorbed assertion's truth-recency — which then
+      // poisons any "later evidence wins" comparison downstream.
+      const copyEvidence = handle.prepare(
+        `INSERT OR IGNORE INTO fact_evidence
+           (fact_id, message_id, thread_id, role, ts, excerpt, origin, folder_id, rel_path)
+         SELECT ?, message_id, thread_id, role, ts, excerpt, origin, folder_id, rel_path
+         FROM fact_evidence WHERE fact_id = ?`
+      );
       for (const id of mergeLoserIds) {
-        merged += retire.run(mergeSurvivor.get(id) ?? null, this.nowSeconds(), id).changes as number;
+        const survivor = mergeSurvivor.get(id);
+        if (survivor != null) copyEvidence.run(survivor, id);
+        merged += retire.run(survivor ?? null, this.nowSeconds(), id).changes as number;
       }
       for (const id of dropIds) {
         dropped += retire.run(null, this.nowSeconds(), id).changes as number;

@@ -1019,6 +1019,8 @@ export interface MemoryRebuildStatus {
 export type ActivityKind =
   | 'memory.distill'
   | 'memory.summaries'
+  | 'memory.relationCheck'
+  | 'memory.relationSweepBackfill'
   | 'memory.adjudicate'
   | 'memory.consolidate'
   | 'memory.episodicEmbed'

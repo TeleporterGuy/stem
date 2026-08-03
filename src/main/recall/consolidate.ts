@@ -5,7 +5,7 @@ import { getEmbeddingsClient } from './retrieval';
 import { cosineSim } from './vector';
 import type { LlmClient } from './llm';
 import { recallStore, type ConsolidationOps, type ConsolidationResult, type Fact } from './store';
-const { applyConsolidation, getAllFacts, getConsolidateChunkSize, getFactsGeneration, getFactsMissingVector, getFactVectors, setMeta, upsertFactVectorForSnapshot } = recallStore;
+const { applyConsolidation, getAllFacts, getConsolidateChunkSize, getFactsGeneration, getFactsMissingVector, getFactVectors, getNewestEvidenceTsByFact, setMeta, upsertFactVectorForSnapshot } = recallStore;
 
 // Level 1 cleanup: the consolidation pass. Distillation only ever ADDS facts and
 // can only dedup byte-for-byte (normalizeFact), so over time the set accumulates
@@ -48,6 +48,7 @@ Rules:
 - merge: group facts that express the SAME underlying fact (rewordings, or one subsuming another). Give the cleanest single statement as "text". Do not merge facts that are merely related but distinct.
 - correct: only when a fact is factually wrong given a later fact — keep the corrected truth.
 - drop: only a fact another fact already fully covers or directly contradicts, OR a fact about a one-off dated event (a trip, reservation, appointment, deadline) whose date is clearly in the past. A fact without a date is never stale — keep it.
+- When two facts directly contradict, keep the one with the later evidence date — unless a date stated inside the text says otherwise (evidence dates are message times and can lie).
 - A fact annotated "(injected N×, never used)" has repeatedly been offered to the assistant without ever mattering to a reply. Treat that as SUPPORTING evidence when deciding whether it is redundant or stale — but usage alone is NEVER a reason to drop a fact that is unique and plausibly true.
 - NEVER drop, merge, or alter a fact marked PROTECTED — the user explicitly asked to remember it.
 - Keep wording as short third-person statements ("The user ...").
@@ -156,12 +157,19 @@ export function clampOps(
 /** A fact must fail this often before its disuse is worth telling the model. */
 const NEVER_USED_MIN_INJECTIONS = 5;
 
-export function buildPrompt(facts: Fact[]): string {
+export function buildPrompt(facts: Fact[], evidenceTs?: Map<number, number>): string {
   const lines = facts
     .map((f) => {
+      // Evidence date, not updated_at: consolidation itself bumps updated_at, so
+      // only the newest evidence row says when a fact was actually last asserted.
+      // Without a date per line, the "later, more accurate fact" and stale-event
+      // rules have nothing to stand on but id order — which is wrong whenever an
+      // old fact was re-asserted after a newer-id one.
+      const ts = evidenceTs?.get(f.id);
+      const dated = ts != null ? ` (evidence dated ${new Date(ts * 1000).toISOString().slice(0, 10)})` : '';
       const neverUsed = f.timesInjected >= NEVER_USED_MIN_INJECTIONS && f.timesUsed === 0;
       const marks = `${isProtected(f) ? '  (PROTECTED)' : ''}${neverUsed ? `  (injected ${f.timesInjected}×, never used)` : ''}`;
-      return `[${f.id}] ${f.text}${marks}`;
+      return `[${f.id}]${dated} ${f.text}${marks}`;
     })
     .join('\n');
   const today = new Date().toISOString().slice(0, 10);
@@ -280,6 +288,7 @@ async function runConsolidation(
   const chunks = facts.length <= getConsolidateChunkSize() ? [facts] : await chunkFacts(facts, factsGeneration);
   if (getFactsGeneration() !== factsGeneration) return ZERO;
   const protectedIds = new Set(facts.filter(isProtected).map((f) => f.id));
+  const evidenceTs = getNewestEvidenceTsByFact();
 
   const reviewedChunks: Array<{
     ops: ConsolidationOps;
@@ -291,7 +300,7 @@ async function runConsolidation(
   for (const chunk of chunks) {
     let chunkOps: ConsolidationOps;
     try {
-      chunkOps = parseConsolidation(await llm.complete(buildPrompt(chunk)));
+      chunkOps = parseConsolidation(await llm.complete(buildPrompt(chunk, evidenceTs)));
     } catch {
       if (getFactsGeneration() !== factsGeneration) return ZERO;
       failedChunks += 1; // leave this chunk for a later cycle

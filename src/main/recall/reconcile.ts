@@ -1,8 +1,15 @@
 
 import type { FactDetails } from '../../shared/types';
 import type { LlmClient } from './llm';
+import { getEmbeddingsClient } from './retrieval';
+import { cosineSim } from './vector';
 import { newestEvidenceTs, recallStore } from './store';
-const { createFactConflict, getFactDetails, getFactsGeneration, getInjectableFacts, supersedeFact } = recallStore;
+const {
+  createFactConflict, enqueueRelationChecks, getAllFacts, getFactDetails, getFactsGeneration,
+  getFactsMissingVector, getFactVectors, getInjectableFacts, getMeta, getPendingRelationChecks,
+  isRelationChecked, recordRelationResult, recordRelationVerdict, setMeta, supersedeFact,
+  upsertFactVectorForSnapshot
+} = recallStore;
 
 interface ReconcileReply {
   supersedeIds?: unknown;
@@ -149,4 +156,199 @@ Return ONLY JSON {"supersedeIds":[],"conflictIds":[]}.
   for (const id of ids(parsed.conflictIds)) {
     if (valid.has(id)) createFactConflict(id, factId, 'A new explicit memory may contradict this fact.');
   }
+}
+
+// ---------------------------------------------------------------------------
+// The neighbour sweep: extractor-independent truth maintenance.
+//
+// The extractor's supersedesFactIds only ever name facts it was shown, so a
+// stale fact worded differently from the new one ("switched to Firefox" vs
+// "uses Arc rather than Zen") survives every update that should have retired
+// it — and, being topically perfect, keeps winning injection. The sweep takes
+// candidate selection away from the model: every new fact is compared against
+// its top embedding neighbours, and classifyRelation decides the relation.
+// Verdicts are memoized in fact_relation_checks so no pair costs two model
+// calls, ever.
+
+/** Only pairs at least this semantically close are worth a classify call. */
+export const SWEEP_MIN_COSINE = 0.55;
+/** Neighbours examined per new fact. */
+export const SWEEP_NEIGHBOURS = 5;
+/** Conflict reason for sweep- and queue-discovered disagreements. */
+export const SWEEP_CONFLICT_REASON = 'A semantically similar memory may contradict this fact.';
+
+/** Mutable classify-call budget shared across one distillation pass. */
+export interface SweepBudget {
+  remaining: number;
+}
+
+/** Top embedding neighbours of `factId` among the other active facts. */
+function neighbourIdsOf(factId: number, vectors: Map<number, Float32Array>, activeIds: Set<number>): number[] {
+  const own = vectors.get(factId);
+  if (!own) return [];
+  const scored: Array<{ id: number; score: number }> = [];
+  for (const [id, vec] of vectors) {
+    if (id === factId || !activeIds.has(id)) continue;
+    const score = cosineSim(own, vec);
+    if (score >= SWEEP_MIN_COSINE) scored.push({ id, score });
+  }
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, SWEEP_NEIGHBOURS)
+    .map((s) => s.id);
+}
+
+/**
+ * Sweep one freshly written fact against its embedding neighbours.
+ *
+ * Authority mirrors the extractor-named path in distill.ts exactly: the sweep
+ * may auto-supersede a neighbour only when the model says the NEW fact
+ * supersedes it, the new fact is directly user-stated, and the neighbour is
+ * neither explicit nor pinned. Every other non-compatible verdict raises an
+ * ordinary conflict for the adjudicator/Conflicts card. Pairs beyond the
+ * pass's classify budget are queued for the background pass instead of judged
+ * inline, so a chatty session can't stall distillation.
+ *
+ * Returns false when a facts reset invalidated the pass (mirror of
+ * raiseVerified in distill.ts) — the caller must stop writing.
+ */
+export async function sweepFactAgainstNeighbours(
+  factId: number,
+  model: string,
+  llm: LlmClient,
+  opts: { directUser: boolean; skipIds?: ReadonlySet<number>; budget?: SweepBudget }
+): Promise<boolean> {
+  const factsGeneration = getFactsGeneration();
+  const fresh = getFactDetails(factId);
+  if (!fresh || fresh.status !== 'active') return true;
+  const activeIds = new Set(getAllFacts().filter((f) => f.status === 'active').map((f) => f.id));
+  const targets = neighbourIdsOf(factId, getFactVectors(model), activeIds)
+    .filter((id) => !opts.skipIds?.has(id))
+    .filter((id) => !isRelationChecked(factId, id));
+  for (const targetId of targets) {
+    if (opts.budget && opts.budget.remaining <= 0) {
+      enqueueRelationChecks([[factId, targetId]], 'sweep');
+      continue;
+    }
+    const target = getFactDetails(targetId);
+    if (!target || target.status !== 'active') continue;
+    if (opts.budget) opts.budget.remaining -= 1;
+    const verdict = await classifyRelation(
+      { text: target.text, evidenceDate: evidenceDateOf(target) },
+      { text: fresh.text, evidenceDate: evidenceDateOf(fresh) },
+      llm
+    );
+    if (getFactsGeneration() !== factsGeneration) return false;
+    // The classify call was async: only act if both sides are still the rows
+    // the model judged.
+    const currentTarget = getFactDetails(targetId);
+    const currentFresh = getFactDetails(factId);
+    if (!currentTarget || currentTarget.status !== 'active' || currentTarget.text !== target.text) continue;
+    if (!currentFresh || currentFresh.text !== fresh.text) return true;
+    recordRelationResult(factId, targetId, verdict, 'sweep');
+    if (verdict === 'compatible') continue;
+    const mayAutoSupersede =
+      verdict === 'b_supersedes_a' && opts.directUser
+      && currentTarget.source !== 'explicit' && !currentTarget.pinned;
+    if (mayAutoSupersede) {
+      supersedeFact(targetId, factId);
+    } else {
+      createFactConflict(targetId, factId, SWEEP_CONFLICT_REASON);
+    }
+  }
+  return true;
+}
+
+/**
+ * Classify queued pairs (sweep overflow, co-injection discoveries, backfill).
+ * Deliberately conflict-only: rows here have no directUser authority attached,
+ * so a supersede-direction verdict still just raises a conflict and lets the
+ * adjudicator — which runs right after this pass in the distill chain — apply
+ * its own, capped authority.
+ */
+export async function processPendingRelationChecks(
+  llm: LlmClient,
+  limit = 25
+): Promise<{ checked: number; conflicts: number }> {
+  let checked = 0;
+  let conflicts = 0;
+  const factsGeneration = getFactsGeneration();
+  for (const pending of getPendingRelationChecks(limit)) {
+    const verdict = await classifyRelation(
+      { text: pending.factA.text, evidenceDate: evidenceDateOf(pending.factA) },
+      { text: pending.factB.text, evidenceDate: evidenceDateOf(pending.factB) },
+      llm
+    );
+    if (getFactsGeneration() !== factsGeneration) break;
+    const a = getFactDetails(pending.factA.id);
+    const b = getFactDetails(pending.factB.id);
+    if (a?.status !== 'active' || a.text !== pending.factA.text
+      || b?.status !== 'active' || b.text !== pending.factB.text) {
+      recordRelationVerdict(pending.id, 'stale');
+      continue;
+    }
+    recordRelationVerdict(pending.id, verdict);
+    checked += 1;
+    if (verdict !== 'compatible') {
+      createFactConflict(pending.factA.id, pending.factB.id, SWEEP_CONFLICT_REASON);
+      conflicts += 1;
+    }
+  }
+  return { checked, conflicts };
+}
+
+// ---------------------------------------------------------------------------
+// Retroactive backfill: enumerate neighbour pairs for facts that predate the
+// sweep. Enumeration is vectors-only (no model calls); the pairs land in the
+// same pending queue processPendingRelationChecks drains over idle time.
+
+const BACKFILL_CURSOR_KEY = 'relation_sweep_cursor';
+const BACKFILL_DONE_KEY = 'relation_sweep_done';
+
+export function relationSweepBackfillDone(): boolean {
+  return getMeta(BACKFILL_DONE_KEY) === '1';
+}
+
+/**
+ * Advance the backfill by one batch of active facts: embed any missing vectors
+ * for the batch, enqueue each fact's ≥SWEEP_MIN_COSINE neighbours, move the
+ * cursor. Returns how many pairs were queued and whether the whole store has
+ * been covered. A missing/unready embeddings client leaves the cursor alone —
+ * the pass just retries on a later tick.
+ */
+export async function stepRelationSweepBackfill(batchSize = 25): Promise<{ done: boolean; enqueued: number }> {
+  if (relationSweepBackfillDone()) return { done: true, enqueued: 0 };
+  const factsGeneration = getFactsGeneration();
+  const emb = getEmbeddingsClient();
+  if (!emb || !(await emb.available())) return { done: false, enqueued: 0 };
+  const model = (await emb.modelId()) ?? '';
+  if (!model || getFactsGeneration() !== factsGeneration) return { done: false, enqueued: 0 };
+
+  const cursor = Number.parseInt(getMeta(BACKFILL_CURSOR_KEY) ?? '0', 10) || 0;
+  const active = getAllFacts().filter((f) => f.status === 'active');
+  const batch = active.filter((f) => f.id > cursor).sort((a, b) => a.id - b.id).slice(0, batchSize);
+  if (batch.length === 0) {
+    setMeta(BACKFILL_DONE_KEY, '1');
+    return { done: true, enqueued: 0 };
+  }
+
+  // Same embed-then-snapshot-write pattern as consolidate's chunkFacts: the
+  // batch's facts must have vectors or their neighbourhoods are invisible.
+  const batchIds = new Set(batch.map((f) => f.id));
+  const missing = getFactsMissingVector(model).filter((f) => batchIds.has(f.id));
+  if (missing.length > 0) {
+    const vecs = await emb.embed(missing.map((f) => f.text), 'passage');
+    if (getFactsGeneration() !== factsGeneration) return { done: false, enqueued: 0 };
+    missing.forEach((f, i) => upsertFactVectorForSnapshot(f.id, f.text, factsGeneration, model, vecs[i]));
+  }
+
+  const vectors = getFactVectors(model);
+  const activeIds = new Set(active.map((f) => f.id));
+  const pairs: Array<[number, number]> = [];
+  for (const fact of batch) {
+    for (const id of neighbourIdsOf(fact.id, vectors, activeIds)) pairs.push([fact.id, id]);
+  }
+  const enqueued = enqueueRelationChecks(pairs, 'backfill');
+  setMeta(BACKFILL_CURSOR_KEY, String(batch[batch.length - 1].id));
+  return { done: false, enqueued };
 }

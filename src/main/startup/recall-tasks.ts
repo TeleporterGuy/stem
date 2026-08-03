@@ -4,6 +4,7 @@ import * as activity from '../activity';
 import { embedNewMessages } from '../recall/embed-episodic';
 import { backfillSummaries, refreshRecentSummaries } from '../recall/summarize';
 import { distillNewMessages, shouldConsolidate } from '../recall/distill';
+import { processPendingRelationChecks, relationSweepBackfillDone, stepRelationSweepBackfill } from '../recall/reconcile';
 import { adjudicateOpenConflicts } from '../recall/adjudicate';
 import { consolidateFacts } from '../recall/consolidate';
 import { getMemoryRebuildStatus, runMemoryRebuildStep } from '../recall/rebuild';
@@ -104,6 +105,13 @@ export function initRecallTasks(deps: {
           worked: n > 0,
           detail: `Summarised ${n} chat${n === 1 ? '' : 's'}`
         }));
+        // Classify queued fact pairs (sweep overflow, co-injected discoveries,
+        // backfill) BEFORE adjudication, so any conflicts this raises are
+        // resolved in the same cycle rather than lingering a full debounce.
+        await activity.track('memory.relationCheck', 'Cross-checking memory', () => processPendingRelationChecks(recallLlm), (r) => ({
+          worked: r.checked > 0,
+          detail: `Checked ${r.checked} pair${r.checked === 1 ? '' : 's'}, raised ${r.conflicts} conflict${r.conflicts === 1 ? '' : 's'}`
+        }));
         // Auto-resolve open fact conflicts (non-explicit pairs only) before the
         // consolidation check, so reactivated winners and rewrite replacements
         // are visible to the same cycle's tidy pass.
@@ -199,6 +207,28 @@ export function initRecallTasks(deps: {
   };
   setTimeout(() => void runSummaryBackfill(), 3 * 60_000);
   setInterval(() => void runSummaryBackfill(), 30 * 60_000);
+
+  // Retroactive relation sweep: facts distilled before the neighbour sweep
+  // existed have never been cross-checked against their semantic neighbours.
+  // Enumerate their pairs batch-by-batch (vectors only — the model calls happen
+  // in the relationCheck pass above) until the cursor covers the store, then
+  // stop for good. Opportunistic like the other backfills.
+  const runRelationSweepBackfill = async (): Promise<void> => {
+    if (!isRecallEnabled() || relationSweepBackfillDone()) return;
+    if (deps.busyWithin(30_000)) return;
+    try {
+      await activity.track(
+        'memory.relationSweepBackfill',
+        'Mapping related memories',
+        () => stepRelationSweepBackfill(),
+        (r) => ({ worked: r.enqueued > 0, detail: r.done ? 'Coverage complete' : `Queued ${r.enqueued} pair${r.enqueued === 1 ? '' : 's'}` })
+      );
+    } catch {
+      // non-fatal
+    }
+  };
+  setTimeout(() => void runRelationSweepBackfill(), 4 * 60_000);
+  setInterval(() => void runRelationSweepBackfill(), 10 * 60_000);
 
   // Kick off a distillation pass shortly after startup so any messages captured
   // before the app last quit get turned into durable facts. The episodic embed
