@@ -63,6 +63,11 @@ export class FolderIndexStore {
 
   constructor(private readonly dbPath: () => string) {}
 
+  /** The index's on-disk file — the recall scan worker opens its own connection to it. */
+  file(): string {
+    return this.dbPath();
+  }
+
   private open(): DatabaseSync {
     if (this.db) return this.db;
     const handle = new DatabaseSync(this.dbPath());

@@ -8,7 +8,7 @@ import { classifyRelation, evidenceDateOf, sweepFactAgainstNeighbours, type Swee
 import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
 import { recallStore, type StoredMessage, type TurnInjectedFacts } from './store';
-const { enqueueRelationChecks, factTermSearch, getDupCosine, getEpisodicGeneration, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUnconsumedTurnDocs, getUngradedTurnFacts, isRelationChecked, markTurnDocsConsumed, markTurnFactsGraded, recordFactUsage, recordRelationResult, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
+const { enqueueRelationChecks, factTermSearch, getAllFacts, getDupCosine, getEpisodicGeneration, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUnconsumedTurnDocs, getUngradedTurnFacts, isRelationChecked, markTurnDocsConsumed, markTurnFactsGraded, recordFactUsage, recordRelationResult, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
 
 // Level 1: the reflection pass. Periodically reads conversation that's new since
 // its last run and distills durable, stable facts about the user into the facts
@@ -658,6 +658,16 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   // that yields many claims cannot turn distillation into an unbounded run of
   // model calls; over-budget pairs queue for the background pass instead.
   const sweepBudget: SweepBudget = { remaining: 20 };
+  // One snapshot of the vectors + active ids for the whole batch's sweeps
+  // (N claims used to mean N full store scans and N vector-map builds). Kept
+  // current for THIS batch's own inserts below; status flips are re-checked
+  // per target inside the sweep, so residual staleness is harmless.
+  const prefetched = scored
+    ? {
+        vectors: getFactVectors(scored.model),
+        activeIds: new Set(getAllFacts().filter((f) => f.status === 'active').map((f) => f.id))
+      }
+    : null;
   let dupSeen = false;
   let i = -1;
   for (const claim of claims) {
@@ -705,6 +715,10 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
       // We already hold this fact's fresh passage vector — cache it so neither
       // the ready-hook backfill nor inject's lazy path re-embeds it.
       upsertFactVector(id, scored.model, scored.vecs[i]);
+      if (prefetched) {
+        prefetched.vectors.set(id, scored.vecs[i]);
+        prefetched.activeIds.add(id);
+      }
       if (scored.maxSims[i] >= dupThreshold) dupSeen = true;
     }
     if (id != null) {
@@ -757,12 +771,13 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
       // was shown; a stale fact worded differently never appears in them. Sweep
       // the new fact's embedding neighbours too (skipping what was just
       // handled), with the same directUser authority gate.
-      if (scored) {
+      if (scored && prefetched) {
         const named = new Set([...claim.supersedesFactIds, ...claim.conflictsWithFactIds]);
         const intact = await sweepFactAgainstNeighbours(id, scored.model, llm, {
           directUser,
           skipIds: named,
-          budget: sweepBudget
+          budget: sweepBudget,
+          prefetched
         });
         if (!intact) return advanceWithoutWriting();
       }

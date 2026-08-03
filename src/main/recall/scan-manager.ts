@@ -1,6 +1,6 @@
 import type { WorkerTransport } from './embed-worker-host';
 import type { ScanRequestOptions, ScanWorkerOutMessage } from './scan-worker';
-import type { CoreSearchHit, CoreSummaryHit } from './search-core';
+import type { CoreDocHit, CoreSearchHit, CoreSummaryHit, DocScanOptions } from './search-core';
 
 // Main-process side of the recall scan worker: owns the utility-process
 // lifecycle (lazy spawn on first request, respawn on crash with a strike cap)
@@ -15,6 +15,8 @@ export interface ScanWorkerManager {
   scanMessages(vec: Float32Array, model: string, opts: ScanRequestOptions): Promise<CoreSearchHit[]>;
   /** Cosine top-N over thread-summary vectors, off the main event loop. */
   scanSummaries(vec: Float32Array, model: string, opts: ScanRequestOptions): Promise<CoreSummaryHit[]>;
+  /** Cosine top-N over one folder index's doc vectors (its own db file), off the main event loop. */
+  scanDocs(dbFile: string, vec: Float32Array, model: string, opts: DocScanOptions): Promise<CoreDocHit[]>;
   /** Episodic size-cap enforcement (prune + VACUUM). Resolves with rows deleted. */
   maintain(): Promise<number>;
   /** Plain VACUUM (disk reclaim after an episodic reset). */
@@ -76,7 +78,7 @@ export function createScanWorkerManager(deps: {
     // budget so a long-lived worker that eventually crashes gets fresh respawns.
     strikes = 0;
     const value =
-      msg.type === 'message-hits' || msg.type === 'summary-hits'
+      msg.type === 'message-hits' || msg.type === 'summary-hits' || msg.type === 'doc-hits'
         ? msg.hits
         : msg.type === 'maintained'
           ? msg.deleted
@@ -145,6 +147,12 @@ export function createScanWorkerManager(deps: {
     scanSummaries(vec, model, opts) {
       return request<CoreSummaryHit[]>(
         (id) => ({ type: 'scan-summaries', id, vec, model, ...opts }),
+        scanTimeoutMs
+      );
+    },
+    scanDocs(dbFile, vec, model, opts) {
+      return request<CoreDocHit[]>(
+        (id) => ({ type: 'scan-docs', id, vec, model, dbFile, ...opts }),
         scanTimeoutMs
       );
     },

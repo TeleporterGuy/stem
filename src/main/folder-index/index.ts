@@ -7,6 +7,7 @@ import { folderIndexDbPath, folderIndexDir } from '../workspace/paths';
 import { isRecallEnabled } from '../workspace/memory';
 import { getEmbeddingsClient } from '../recall/retrieval';
 import { hybridSearchDocs, type CoreDocHit, type EmbedQueryFn } from '../recall/search-core';
+import { scanDocsOffThread } from '../recall/scan';
 import type { LlmClient } from '../recall/llm';
 import { recallStore } from '../recall/store';
 import { log } from '../log';
@@ -295,10 +296,15 @@ export async function searchFolderDocs(
   const perFolder = await Promise.all(
     folders.map(async (f) => {
       try {
-        const hits = await hybridSearchDocs(storeFor(f.id).handle(), userText, {
+        const store = storeFor(f.id);
+        const hits = await hybridSearchDocs(store.handle(), userText, {
           limit,
           snippetChars: opts.snippetChars,
-          embedQuery: opts.embedQuery
+          embedQuery: opts.embedQuery,
+          // The O(N) cosine scan over doc_vectors runs in the recall scan
+          // worker when it's up — this sits on the chat-turn hot path and
+          // grows linearly with vault size (in-process fallback inside).
+          semanticScan: (qe, scanOpts) => scanDocsOffThread(store.file(), () => store.handle(), qe, scanOpts)
         });
         return hits.map((h) => ({
           ...h,

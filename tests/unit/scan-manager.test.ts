@@ -97,6 +97,15 @@ describe('scan worker manager', () => {
     await expect(p2).resolves.toBe(3);
   });
 
+  it('routes scan-docs to the worker with the folder db file', async () => {
+    const { mgr, workers } = manager();
+    const p = mgr.scanDocs('/tmp/folder-index.sqlite', new Float32Array([1]), 'm', { limit: 3, minCosine: 0.7 });
+    const sentMsg = workers[0].sent[1];
+    expect(sentMsg).toMatchObject({ type: 'scan-docs', dbFile: '/tmp/folder-index.sqlite', model: 'm', limit: 3 });
+    workers[0].emit({ type: 'doc-hits', id: sentMsg.id as number, hits: [] });
+    expect(await p).toEqual([]);
+  });
+
   it('rejects on an error reply and on a timeout, leaving later requests working', async () => {
     const { mgr, workers } = manager({ scanTimeoutMs: 20 });
     const failing = mgr.scanSummaries(new Float32Array([1]), 'm', SCAN_OPTS);

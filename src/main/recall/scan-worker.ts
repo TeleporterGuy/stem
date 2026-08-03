@@ -1,9 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import {
+  semanticSearchDocsCore,
   semanticSearchMessagesCore,
   semanticSearchSummariesCore,
+  type CoreDocHit,
   type CoreSearchHit,
   type CoreSummaryHit,
+  type DocScanOptions,
   type SemanticScanOptions
 } from './search-core';
 import { enforceEpisodicLimitCore } from './maintenance-core';
@@ -25,12 +28,14 @@ export type ScanWorkerInMessage =
   | { type: 'init'; dbPath: string }
   | ({ type: 'scan-messages'; id: number; vec: Float32Array; model: string } & ScanRequestOptions)
   | ({ type: 'scan-summaries'; id: number; vec: Float32Array; model: string } & ScanRequestOptions)
+  | ({ type: 'scan-docs'; id: number; vec: Float32Array; model: string; dbFile: string } & DocScanOptions)
   | { type: 'maintain'; id: number }
   | { type: 'vacuum'; id: number };
 
 export type ScanWorkerOutMessage =
   | { type: 'message-hits'; id: number; hits: CoreSearchHit[] }
   | { type: 'summary-hits'; id: number; hits: CoreSummaryHit[] }
+  | { type: 'doc-hits'; id: number; hits: CoreDocHit[] }
   | { type: 'maintained'; id: number; deleted: number }
   | { type: 'vacuumed'; id: number }
   | { type: 'error'; id: number; message: string };
@@ -62,6 +67,32 @@ function fail(id: number, err: unknown): void {
   post({ type: 'error', id, message: err instanceof Error ? err.message : String(err) });
 }
 
+// Folder-index handles, one read-only connection per index file, kept warm
+// across requests. Evicted on any error (a folder can be disconnected and its
+// index deleted at any time) — the caller falls back in-process and the next
+// request reopens.
+const docDbs = new Map<string, DatabaseSync>();
+
+function openDocDb(dbFile: string): DatabaseSync {
+  let handle = docDbs.get(dbFile);
+  if (!handle) {
+    handle = new DatabaseSync(dbFile, { readOnly: true });
+    handle.exec('PRAGMA busy_timeout = 5000;');
+    docDbs.set(dbFile, handle);
+  }
+  return handle;
+}
+
+function evictDocDb(dbFile: string): void {
+  const handle = docDbs.get(dbFile);
+  docDbs.delete(dbFile);
+  try {
+    handle?.close();
+  } catch {
+    // Already broken — eviction is what matters.
+  }
+}
+
 port.on('message', (e: { data: ScanWorkerInMessage }) => {
   const msg = e.data;
   if (msg.type === 'init') {
@@ -83,6 +114,18 @@ port.on('message', (e: { data: ScanWorkerInMessage }) => {
           id: msg.id,
           hits: semanticSearchSummariesCore(open(), msg.vec, msg.model, msg)
         });
+        return;
+      case 'scan-docs':
+        try {
+          post({
+            type: 'doc-hits',
+            id: msg.id,
+            hits: semanticSearchDocsCore(openDocDb(msg.dbFile), msg.vec, msg.model, msg)
+          });
+        } catch (err) {
+          evictDocDb(msg.dbFile);
+          fail(msg.id, err);
+        }
         return;
       case 'maintain':
         post({ type: 'maintained', id: msg.id, deleted: enforceEpisodicLimitCore(open(), dbPath ?? '') });

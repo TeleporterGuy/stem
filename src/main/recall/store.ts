@@ -1630,27 +1630,38 @@ export class RecallStore {
    * createFactConflict unpins, so a doc-vs-doc pair (both 0.55) yields none.
    */
   private getDisputedRepresentatives = (): Fact[] => {
-    const pairs = this.open().prepare(
+    const handle = this.open();
+    const pairs = handle.prepare(
       `SELECT fact_a AS factA, fact_b AS factB FROM fact_conflicts WHERE status = 'open'`
     ).all() as Array<{ factA: number; factB: number }>;
     if (pairs.length === 0) return [];
+    // This runs on the pre-turn hot path (via getInjectableFacts): hydrate every
+    // involved fact in ONE query and take evidence recency from the batch
+    // helper, instead of the old 4 queries per open conflict.
+    const ids = [...new Set(pairs.flatMap((p) => [p.factA, p.factB]))];
+    const rows = handle
+      .prepare(`SELECT ${FACT_SELECT} FROM facts WHERE id IN (${ids.map(() => '?').join(', ')})`)
+      .all(...ids) as Array<Record<string, unknown>>;
+    const byId = new Map(rows.map((r) => {
+      const fact = this.mapFact(r);
+      return [fact.id, fact] as const;
+    }));
+    const evidenceTs = this.getNewestEvidenceTsByFact();
     const now = this.nowSeconds();
     const picked = new Map<number, Fact>();
     for (const pair of pairs) {
-      const sides = [this.getFactDetails(pair.factA), this.getFactDetails(pair.factB)]
-        .filter((f): f is FactDetails => f?.status === 'conflicted');
+      const sides = [byId.get(pair.factA), byId.get(pair.factB)]
+        .filter((f): f is Fact => f?.status === 'conflicted');
       if (sides.length === 0) continue;
       const rep = sides.find((f) => f.source === 'explicit')
         ?? sides.reduce((best, f) => {
-          const bestTs = newestEvidenceTs(best) ?? best.updatedAt;
-          const ts = newestEvidenceTs(f) ?? f.updatedAt;
+          const bestTs = evidenceTs.get(best.id) ?? best.updatedAt;
+          const ts = evidenceTs.get(f.id) ?? f.updatedAt;
           return ts > bestTs || (ts === bestTs && f.id > best.id) ? f : best;
         });
       if (rep.validUntil != null && rep.validUntil < now) continue;
       if (!(rep.confidence >= 0.7 || rep.source === 'explicit' || rep.source === 'legacy')) continue;
-      if (!picked.has(rep.id)) {
-        picked.set(rep.id, (({ evidence: _evidence, ...fact }: FactDetails): Fact => ({ ...fact, disputed: true }))(rep));
-      }
+      if (!picked.has(rep.id)) picked.set(rep.id, { ...rep, disputed: true });
     }
     return [...picked.values()];
   };

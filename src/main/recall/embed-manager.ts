@@ -339,7 +339,6 @@ export function createEmbedWorkerManager(deps: {
         transport.send({ type: 'load-rerank', spec: target, cacheDir: deps.cacheDir() });
         return;
       }
-      if (transport) stop();
       rerankSpec = target;
       respawns = 0;
       spawnProcess();

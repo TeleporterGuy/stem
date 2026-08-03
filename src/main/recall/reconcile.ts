@@ -220,13 +220,24 @@ export async function sweepFactAgainstNeighbours(
   factId: number,
   model: string,
   llm: LlmClient,
-  opts: { directUser: boolean; skipIds?: ReadonlySet<number>; budget?: SweepBudget }
+  opts: {
+    directUser: boolean;
+    skipIds?: ReadonlySet<number>;
+    budget?: SweepBudget;
+    /**
+     * Caller-maintained snapshot of the fact vectors and active ids, so a batch
+     * of sweeps doesn't reload the whole store per fact (distill sweeps once
+     * per claim). Staleness is safe: every target is re-read before any write.
+     */
+    prefetched?: { vectors: Map<number, Float32Array>; activeIds: Set<number> };
+  }
 ): Promise<boolean> {
   const factsGeneration = getFactsGeneration();
   const fresh = getFactDetails(factId);
   if (!fresh || (fresh.status !== 'active' && fresh.status !== 'conflicted')) return true;
-  const activeIds = new Set(getAllFacts().filter((f) => f.status === 'active').map((f) => f.id));
-  const targets = neighbourIdsOf(factId, getFactVectors(model), activeIds)
+  const activeIds = opts.prefetched?.activeIds
+    ?? new Set(getAllFacts().filter((f) => f.status === 'active').map((f) => f.id));
+  const targets = neighbourIdsOf(factId, opts.prefetched?.vectors ?? getFactVectors(model), activeIds)
     .filter((id) => !opts.skipIds?.has(id))
     .filter((id) => !isRelationChecked(factId, id));
   for (const targetId of targets) {

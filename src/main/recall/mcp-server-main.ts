@@ -194,33 +194,56 @@ function folderReachable(path: unknown): boolean {
   }
 }
 
+// Folder-index handles, kept warm across calls (page cache + prepared
+// statements) — a fresh open/close per folder per call threw both away. Keyed
+// by db file; evicted on error or when the manifest no longer lists the file,
+// which preserves the deliberate per-call manifest freshness.
+const folderDbs = new Map<string, DatabaseSync>();
+
+function folderDbFor(dbFile: string): DatabaseSync {
+  let db = folderDbs.get(dbFile);
+  if (!db) {
+    db = new DatabaseSync(dbFile, { readOnly: true });
+    db.exec('PRAGMA busy_timeout = 5000;');
+    folderDbs.set(dbFile, db);
+  }
+  return db;
+}
+
+function evictFolderDb(dbFile: string): void {
+  const db = folderDbs.get(dbFile);
+  folderDbs.delete(dbFile);
+  try {
+    db?.close();
+  } catch {
+    // Already closed/broken.
+  }
+}
+
 async function searchFolderDocs(query: string, limit: unknown, folder: unknown): Promise<FolderDocHit[]> {
   const max = clampLimit(limit, 8, 20);
   const wanted = typeof folder === 'string' && folder.trim() ? folder.trim().toLowerCase() : null;
   const entries = readFolderManifest().filter(
     (f) => (!wanted || f.label.toLowerCase().includes(wanted)) && folderReachable(f.path)
   );
+  // Drop handles for folders that left the manifest (disconnected, re-indexed).
+  const live = new Set(entries.map((e) => e.dbFile));
+  for (const file of [...folderDbs.keys()]) {
+    if (!live.has(file)) evictFolderDb(file);
+  }
   const embedQuery = embedOnce(query);
   const all: FolderDocHit[] = [];
   for (const entry of entries) {
-    let db: DatabaseSync | null = null;
     try {
-      db = new DatabaseSync(entry.dbFile, { readOnly: true });
-      db.exec('PRAGMA busy_timeout = 5000;');
-      const hits = await hybridSearchDocs(db, query, {
+      const hits = await hybridSearchDocs(folderDbFor(entry.dbFile), query, {
         limit: max,
         snippetChars: 600,
         embedQuery
       });
       all.push(...hits.map((h) => ({ ...h, folderLabel: entry.label })));
     } catch {
-      // A missing/locked index just contributes no hits.
-    } finally {
-      try {
-        db?.close();
-      } catch {
-        // Already closed.
-      }
+      // A missing/locked index just contributes no hits; reopen fresh next call.
+      evictFolderDb(entry.dbFile);
     }
   }
   return all.sort((a, b) => b.score - a.score).slice(0, max);

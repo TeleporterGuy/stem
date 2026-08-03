@@ -1,10 +1,14 @@
+import type { DatabaseSync } from 'node:sqlite';
 import type { ScanWorkerManager } from './scan-manager';
 import type { ScanRequestOptions } from './scan-worker';
 import {
+  semanticSearchDocsCore,
   semanticSearchMessagesCore,
   semanticSearchSummariesCore,
+  type CoreDocHit,
   type CoreSearchHit,
   type CoreSummaryHit,
+  type DocScanOptions,
   type QueryEmbedding
 } from './search-core';
 import { recallStore } from './store';
@@ -51,6 +55,27 @@ export async function scanSummariesOffThread(
     }
   }
   return semanticSearchSummariesCore(dbHandle(), qe.vec, qe.model, opts);
+}
+
+/**
+ * Cosine leg of a folder-index document search, off-thread when possible. The
+ * folder index is its own db file, so the worker gets its path; the in-process
+ * fallback uses the caller's live handle (same degrade rule as messages).
+ */
+export async function scanDocsOffThread(
+  dbFile: string,
+  fallbackHandle: () => DatabaseSync,
+  qe: QueryEmbedding,
+  opts: DocScanOptions
+): Promise<CoreDocHit[]> {
+  if (manager) {
+    try {
+      return await manager.scanDocs(dbFile, qe.vec, qe.model, opts);
+    } catch {
+      // fall through to the in-process scan
+    }
+  }
+  return semanticSearchDocsCore(fallbackHandle(), qe.vec, qe.model, opts);
 }
 
 /**

@@ -705,7 +705,9 @@ export function semanticSearchSummariesCore(
       const denom = qMag * Math.sqrt(mag);
       const cos = denom === 0 ? 0 : dot / denom;
       if (cos < opts.minCosine) continue;
-      scored.push({
+      // Streaming top-N like the message scan — no full above-threshold
+      // materialization (each row carries the whole summary text).
+      insertTopN(scored, {
         id: row.id as number,
         threadId: row.threadId as string,
         text: row.text as string,
@@ -713,10 +715,9 @@ export function semanticSearchSummariesCore(
         lastTs: row.lastTs as number,
         score: cos,
         cosine: cos
-      });
+      }, cos, opts.limit);
     }
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, opts.limit);
+    return scored;
   } catch {
     return [];
   }
@@ -774,11 +775,24 @@ export async function hybridSearchSummaries(
 // recall.sqlite. Shared here so the main process and the stem-recall MCP
 // server search folder indexes with identical mechanics.
 
+/** Resolved options for one doc cosine scan (minCosine already read from the folder db). */
+export interface DocScanOptions {
+  limit: number;
+  minCosine: number;
+  snippetChars?: number;
+}
+
 export interface DocSearchOptions {
   limit?: number;
   /** Max characters of a semantic hit's excerpt (FTS hits use the FTS snippet). */
   snippetChars?: number;
   embedQuery?: EmbedQueryFn;
+  /**
+   * Override for the cosine leg — run the O(N) scan somewhere other than the
+   * caller's event loop (same contract as HybridMessageOptions.semanticScan).
+   * A throw degrades to FTS-only.
+   */
+  semanticScan?: (qe: QueryEmbedding, opts: DocScanOptions) => Promise<CoreDocHit[]>;
 }
 
 /**
@@ -864,7 +878,9 @@ export function semanticSearchDocsCore(
       const cos = denom === 0 ? 0 : dot / denom;
       if (cos < opts.minCosine) continue;
       const text = row.text as string;
-      scored.push({
+      // Streaming top-N — every scored row used to carry the doc's full text
+      // into an unbounded array before the sort.
+      insertTopN(scored, {
         id: row.id as number,
         relPath: row.relPath as string,
         title: row.title as string,
@@ -873,10 +889,9 @@ export function semanticSearchDocsCore(
         snippet: text.length <= snippetChars ? text : `${text.slice(0, snippetChars - 1)}…`,
         score: cos,
         cosine: cos
-      });
+      }, cos, opts.limit);
     }
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, opts.limit);
+    return scored;
   } catch {
     return [];
   }
@@ -898,11 +913,14 @@ export async function hybridSearchDocs(
     try {
       const qe = await opts.embedQuery();
       if (qe) {
-        sem = semanticSearchDocsCore(db, qe.vec, qe.model, {
+        const scanOpts: DocScanOptions = {
           limit: SEMANTIC_CANDIDATES,
           minCosine: readDocMinCosine(db),
           snippetChars: opts.snippetChars
-        });
+        };
+        sem = opts.semanticScan
+          ? await opts.semanticScan(qe, scanOpts)
+          : semanticSearchDocsCore(db, qe.vec, qe.model, scanOpts);
       }
     } catch {
       // Semantic leg optional.
