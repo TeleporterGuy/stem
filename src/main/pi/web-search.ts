@@ -39,10 +39,12 @@ import type { SourceRef, WebSearchSettings } from '../../shared/types';
 // a packaged desktop app has no npm and may have no network on first launch). pi
 // loads it with a second `-e` alongside Stem's own bridge extension.
 //
-// The `xai` backend is not in the published 0.15.0: it comes from
-// patches/pi-web-access+0.15.0.patch, applied by the postinstall hook, and is
-// submitted upstream. When it lands in a release, bump the pin, delete the patch,
-// and drop patch-package from postinstall if nothing else needs it.
+// The `xai` backend is upstream as of 0.18.0 (PR #196, landed via #209), so it is
+// no longer patched in. What patches/pi-web-access+0.18.0.patch still carries is
+// Stem's own latency work, which has not been submitted upstream: the concurrent
+// multi-query fan-out in search-batch.ts, its wiring in index.ts, and the `auto`
+// chain reordering in gemini-search.ts. Until those land, postinstall keeps
+// running patch-package.
 
 const PACKAGE = 'pi-web-access';
 
@@ -56,15 +58,17 @@ const PACKAGE = 'pi-web-access';
  * tests/unit/web-search-latency.test.ts — and it is reachable directly only if the
  * user explicitly picks `openai` in settings.
  *
- * Pinned because the package otherwise walks its own candidate ladder and takes the
- * first id present in pi's registry (`AUTH_MODEL_CANDIDATES` in openai-search.ts).
- * Adding a model to the signed-in account would then silently re-point every search
- * at it: no setting changed, no code changed, searches just get slower or dearer.
+ * Pinned because the package otherwise picks for itself: `pickSearchModel` in
+ * openai-search.ts sorts the registry's OpenAI models and prefers a "terra" id, then
+ * the newest bare mainline id. Adding a model to the signed-in account would then
+ * silently re-point every search at it: no setting changed, no code changed,
+ * searches just get slower or dearer.
  *
- * The id is not a maintenance treadmill: models rotate out, and when this one does,
- * `searchModelCandidates` finds nothing in the registry for it and falls straight
- * through to that same ladder. A stale pin degrades to the old behaviour rather
- * than breaking search.
+ * Since 0.18.0 the pin is upstream (`openaiSearchModel`), and it is a hard override
+ * rather than a preference — the registry is consulted only for the credential, and
+ * this id is sent verbatim. So unlike the patched version this replaced, a rotated-
+ * out id does NOT degrade to the package's own choice; it fails the request. Re-check
+ * this constant when OpenAI retires a model.
  *
  * `mini` on measurement, not on reputation — same request, same hosted tool, 3
  * queries x 2 reps: gpt-5.4-mini 4.2s median, gpt-5.6-luna 6.4s (and a 28s tail
@@ -81,7 +85,7 @@ const PACKAGE = 'pi-web-access';
 export const OPENAI_SEARCH_MODEL = 'gpt-5.4-mini';
 
 /** The version this integration was written against (mirrors TESTED_PI_VERSION). */
-export const TESTED_WEB_ACCESS_VERSION = '0.15.0';
+export const TESTED_WEB_ACCESS_VERSION = '0.18.0';
 
 /**
  * `<piHome>/web-search.json` — pi-web-access reads its whole configuration from
