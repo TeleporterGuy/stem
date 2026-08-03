@@ -130,6 +130,8 @@ export interface HybridOptions extends SearchOptions {
    * search share one embed per turn). Absent/null result/throw → FTS-only.
    */
   getQueryEmbedding?: () => Promise<QueryEmbedding | null>;
+  /** Restrict hits to these roles before top-k (see MessageSearchOptions.roles). */
+  roles?: Array<'user' | 'assistant'>;
   /** Optional sink: wall time of the semantic leg (cosine scan + fusion), ms. */
   timingSink?: { semantic?: number };
 }
@@ -145,6 +147,7 @@ export async function searchMemoryHybrid(rawQuery: string, options: HybridOption
   return hybridSearchMessages(dbHandle(), rawQuery, {
     limit: options.limit ?? 5,
     excludeThreadId: options.excludeThreadId,
+    roles: options.roles,
     embedQuery: options.getQueryEmbedding as EmbedQueryFn | undefined,
     // The O(N) cosine scan runs in the scan worker when available, keeping the
     // chat-turn hot path off the main event loop (in-process fallback inside).

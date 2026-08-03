@@ -193,16 +193,31 @@ export function bytesToFloat32(u8: Uint8Array): Float32Array {
 }
 
 /**
+ * Recency blend for the episodic corpora (messages + summaries). The store
+ * spans years by design (100 MB cap), and pure RRF gave a two-year-old message
+ * exactly the same standing as last week's on equal rank — while the fact tier
+ * already blends recency (search.ts). Sized against RRF's own steps: one
+ * adjacent-rank gap near the top is ~2.5e-4 and grows toward the tail, so the
+ * full boost lets a fresh hit win over a one-rank-better but months-old
+ * neighbour and can never jump two ranks. Validated against the
+ * recall-golden.json floors (scripts/recall-eval.mjs).
+ */
+export const EPISODIC_RECENCY_WEIGHT = 2.5e-4;
+export const EPISODIC_RECENCY_HALF_LIFE_DAYS = 30;
+
+/**
  * Fuse two ranked lists by reciprocal rank fusion. Returns fused hits, best
  * first, ties broken by `tiebreak` (higher wins). The first list's hit object
  * wins on id collisions (it usually carries the richer snippet); the second
- * leg's evidence fields are grafted on via `graft`.
+ * leg's evidence fields are grafted on via `graft`. When `recencyTs` is given
+ * (Unix seconds of the hit), the blend above is folded into the score.
  */
 function rrfFuse<T extends { id: number }>(
   lists: T[][],
   limit: number,
   tiebreak: (hit: T) => number,
-  graft: (prior: T, other: T) => void
+  graft: (prior: T, other: T) => void,
+  recencyTs?: (hit: T) => number
 ): Array<T & { score: number }> {
   const merged = new Map<number, T>();
   const rrf = new Map<number, number>();
@@ -214,8 +229,14 @@ function rrfFuse<T extends { id: number }>(
       else graft(prior, hit);
     });
   }
+  const now = Date.now() / 1000;
+  const boost = (hit: T): number => {
+    if (!recencyTs) return 0;
+    const ageDays = Math.max(0, (now - recencyTs(hit)) / 86_400);
+    return EPISODIC_RECENCY_WEIGHT * Math.exp(-ageDays / EPISODIC_RECENCY_HALF_LIFE_DAYS);
+  };
   return [...merged.values()]
-    .map((hit) => ({ ...hit, score: rrf.get(hit.id) ?? 0 }))
+    .map((hit) => ({ ...hit, score: (rrf.get(hit.id) ?? 0) + boost(hit) }))
     .sort((a, b) => b.score - a.score || tiebreak(b) - tiebreak(a))
     .slice(0, limit);
 }
@@ -228,6 +249,13 @@ export interface MessageSearchOptions {
   excludeThreadId?: string | null;
   /** Max characters of a semantic hit's excerpt (FTS hits use the FTS snippet). */
   snippetChars?: number;
+  /**
+   * Restrict hits to these roles BEFORE top-k, not after: inject wants user
+   * messages only, and long assistant replies (more chunks, more shots at the
+   * gate) otherwise consume the whole candidate budget. Absent = all roles
+   * (the MCP search_past_chats drill-down deliberately surfaces both).
+   */
+  roles?: CoreRole[];
 }
 
 /**
@@ -243,7 +271,11 @@ export function ftsSearchMessages(
   if (!match) return [];
   const limit = opts.limit ?? FTS_CANDIDATES;
   const exclude = opts.excludeThreadId ?? null;
+  const roles = opts.roles?.length ? opts.roles : null;
   try {
+    // `roles` values come from the closed CoreRole union — the interpolation
+    // only ever adds bound placeholders, never user text.
+    const roleSql = roles ? ` AND m.role IN (${roles.map(() => '?').join(', ')})` : '';
     const rows = db
       .prepare(
         `SELECT m.id AS id, m.thread_id AS threadId, m.turn_id AS turnId, m.role AS role,
@@ -253,11 +285,11 @@ export function ftsSearchMessages(
          FROM messages_fts
          JOIN messages m ON m.id = messages_fts.rowid
          WHERE messages_fts MATCH ?
-           AND (? IS NULL OR m.thread_id <> ?)
+           AND (? IS NULL OR m.thread_id <> ?)${roleSql}
          ORDER BY score
          LIMIT ?`
       )
-      .all(match, exclude, exclude, limit) as Array<Record<string, unknown>>;
+      .all(match, exclude, exclude, ...(roles ?? []), limit) as Array<Record<string, unknown>>;
     return rows
       .map((r) => ({
         id: r.id as number,
@@ -291,10 +323,11 @@ export function semanticSearchMessagesCore(
   db: DatabaseSync,
   qVec: Float32Array,
   model: string,
-  opts: { limit: number; minCosine: number; excludeThreadId?: string | null; snippetChars?: number }
+  opts: { limit: number; minCosine: number; excludeThreadId?: string | null; snippetChars?: number; roles?: CoreRole[] }
 ): CoreSearchHit[] {
   if (opts.limit <= 0) return [];
   const exclude = opts.excludeThreadId ?? null;
+  const roleSet = opts.roles?.length ? new Set<string>(opts.roles) : null;
   const snippetChars = opts.snippetChars ?? 400;
   const qMag = Math.sqrt(qVec.reduce((s, v) => s + v * v, 0));
   if (qMag === 0) return [];
@@ -332,6 +365,7 @@ export function semanticSearchMessagesCore(
       : [model, exclude, exclude];
     const top: CoreSearchHit[] = [];
     for (const row of stmt.iterate(...params) as Iterable<Record<string, unknown>>) {
+      if (roleSet && !roleSet.has(row.role as string)) continue;
       const vec = bytesToFloat32(row.vec as Uint8Array);
       if (vec.length !== qVec.length) continue;
       let dot = 0;
@@ -407,6 +441,8 @@ export interface SemanticScanOptions {
   minCosine: number;
   excludeThreadId: string | null;
   snippetChars?: number;
+  /** Same contract as MessageSearchOptions.roles; rides the scan-worker message. */
+  roles?: CoreRole[];
 }
 
 export interface HybridMessageOptions extends MessageSearchOptions {
@@ -436,7 +472,8 @@ export async function hybridSearchMessages(
   const limit = opts.limit ?? 5;
   const fts = ftsSearchMessages(db, rawQuery, {
     limit: FTS_CANDIDATES,
-    excludeThreadId: opts.excludeThreadId
+    excludeThreadId: opts.excludeThreadId,
+    roles: opts.roles
   });
 
   let sem: CoreSearchHit[] = [];
@@ -449,7 +486,8 @@ export async function hybridSearchMessages(
           limit: SEMANTIC_CANDIDATES,
           minCosine: readSemanticMinCosine(db),
           excludeThreadId: opts.excludeThreadId ?? null,
-          snippetChars: opts.snippetChars
+          snippetChars: opts.snippetChars,
+          roles: opts.roles
         };
         sem = opts.semanticScan
           ? await opts.semanticScan(qe, scanOpts)
@@ -464,7 +502,7 @@ export async function hybridSearchMessages(
   // higher = better) for every caller — raw bm25 leaking through here inverted
   // any downstream cross-source sort. Ordering is unchanged (RRF is monotone
   // in bm25 rank); the per-leg evidence stays in ftsScore.
-  if (sem.length === 0) return rrfFuse([fts], limit, (h) => h.ts, () => {});
+  if (sem.length === 0) return rrfFuse([fts], limit, (h) => h.ts, () => {}, (h) => h.ts);
 
   // First sighting wins (FTS hits carry the real snippet); the other leg's
   // evidence is grafted onto it.
@@ -474,7 +512,8 @@ export async function hybridSearchMessages(
     (h) => h.ts,
     (prior, other) => {
       prior.cosine = prior.cosine ?? other.cosine;
-    }
+    },
+    (h) => h.ts
   );
 }
 
@@ -506,14 +545,25 @@ export function ftsSearchFacts(db: DatabaseSync, rawQuery: string, limit = FTS_C
 }
 
 /**
- * Cosine top-N over fact_vectors. No min-cosine floor: facts are short and few,
- * so RRF sorts out weak hits. [] on any failure (e.g. old DB without the table).
+ * The semantic floor for explicit fact search. Matches the injection path's
+ * STANDARD_FACT_MIN_COSINE (inject.ts): below it a "hit" is just the nearest
+ * stored fact to an arbitrary query, not a match.
+ */
+export const FACT_SEARCH_MIN_COSINE = 0.72;
+
+/**
+ * Cosine top-N over fact_vectors, floored at `minCosine`. RRF only reranks
+ * what the legs supply — without a floor this leg always filled its quota, so
+ * search_facts returned the user's nearest personal facts for ANY query and
+ * its "no matching facts" reply was effectively dead code.
+ * [] on any failure (e.g. old DB without the table).
  */
 export function semanticSearchFactsCore(
   db: DatabaseSync,
   qVec: Float32Array,
   model: string,
-  limit: number
+  limit: number,
+  minCosine = FACT_SEARCH_MIN_COSINE
 ): CoreFactHit[] {
   const qMag = Math.sqrt(qVec.reduce((s, v) => s + v * v, 0));
   if (qMag === 0 || limit <= 0) return [];
@@ -536,7 +586,9 @@ export function semanticSearchFactsCore(
         mag += vec[i] * vec[i];
       }
       const denom = qMag * Math.sqrt(mag);
-      scored.push({ id: row.id as number, text: row.text as string, score: denom === 0 ? 0 : dot / denom });
+      const cos = denom === 0 ? 0 : dot / denom;
+      if (cos < minCosine) continue;
+      scored.push({ id: row.id as number, text: row.text as string, score: cos });
     }
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, limit);
@@ -703,14 +755,15 @@ export async function hybridSearchSummaries(
     }
   }
   // Same one-scale rule as hybridSearchMessages: FTS-only still returns RRF scores.
-  if (sem.length === 0) return rrfFuse([fts], limit, (h) => h.lastTs, () => {});
+  if (sem.length === 0) return rrfFuse([fts], limit, (h) => h.lastTs, () => {}, (h) => h.lastTs);
   return rrfFuse(
     [fts, sem],
     limit,
     (h) => h.lastTs,
     (prior, other) => {
       prior.cosine = prior.cosine ?? other.cosine;
-    }
+    },
+    (h) => h.lastTs
   );
 }
 

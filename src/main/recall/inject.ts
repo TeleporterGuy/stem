@@ -375,6 +375,10 @@ export async function buildRecallContext(
     searchMemoryHybrid(userText, {
       limit: MAX_HITS * 4,
       excludeThreadId: options.currentThreadId ?? null,
+      // Filtered before top-k, not after: assistant replies are longer (more
+      // chunks, more shots at the cosine gate) and otherwise consume the whole
+      // candidate budget even when strong user matches sit just past it.
+      roles: ['user'],
       getQueryEmbedding,
       timingSink: timings
     }),

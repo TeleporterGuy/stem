@@ -24,7 +24,8 @@ import * as retrieval from '../../src/main/recall/retrieval';
 import {
   hybridSearchMessages,
   hybridSearchSummaries,
-  ftsSearchSummaries
+  ftsSearchSummaries,
+  semanticSearchFactsCore
 } from '../../src/main/recall/search-core';
 
 // Recall v3: shared retrieval core, thread summaries, usage-informed ranking.
@@ -62,7 +63,10 @@ describe('shared search core parity (main process vs MCP-server path)', () => {
         embedQuery: embed
       });
       expect(viaCore.map((h) => h.id)).toEqual(viaMain.map((h) => h.id));
-      expect(viaCore.map((h) => h.score)).toEqual(viaMain.map((h) => h.score));
+      // Scores carry a wall-clock recency blend now, so two calls made
+      // microseconds apart agree to ~1e-12, not bit-exactly. Ordering (above)
+      // is the parity contract; scores just need to match to that precision.
+      viaCore.forEach((h, i) => expect(h.score).toBeCloseTo(viaMain[i].score, 9));
     } finally {
       ro.close();
     }
@@ -830,5 +834,55 @@ describe('FTS-only strong-raw gate (no embeddings)', () => {
     expect(ctx).toContain('pastConversations');
     expect(ctx).toContain('pastUserMessages');
     expect(ctx).toContain('ClusterIssuer');
+  });
+});
+
+describe('role-filtered episodic search', () => {
+  it('assistant-heavy top-k no longer starves user hits', async () => {
+    store.resetEpisodic();
+    // Unrelated mass so the query terms carry real idf (bm25 collapses toward
+    // the noise ceiling when every stored message matches).
+    for (let i = 0; i < 30; i++) {
+      store.recordMessage({
+        threadId: `rf-noise-${i % 6}`,
+        role: i % 2 ? 'user' : 'assistant',
+        text: `Unrelated filler ${i}: groceries, laundry rotation, and watering the balcony plants on Thursday.`
+      });
+    }
+    // Twenty assistant messages all lexically strong for the query — before the
+    // role filter moved into SQL, these consumed the entire candidate budget
+    // and the post-hoc role filter left nothing.
+    for (let i = 0; i < 20; i++) {
+      store.recordMessage({
+        threadId: `rf-${i}`,
+        role: 'assistant',
+        text: `The deployment pipeline uses the blue-green deployment strategy variant ${i} for the api service rollout.`
+      });
+    }
+    store.recordMessage({
+      threadId: 'rf-user',
+      role: 'user',
+      text: 'Our deployment pipeline should use the blue-green strategy for the api service.'
+    });
+    const hits = await search.searchMemoryHybrid('blue-green deployment pipeline for the api service', {
+      limit: 12,
+      roles: ['user']
+    });
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.role === 'user')).toBe(true);
+  });
+});
+
+describe('search_facts semantic floor', () => {
+  it('refuses nearest-neighbour "hits" below the cosine floor', () => {
+    store.resetFacts();
+    const id = store.upsertFact('The user has a cat named Miso.', 'distilled', { confidence: 0.9 })!;
+    store.upsertFactVector(id, MODEL, Float32Array.from([1, 0]));
+    const db = store.dbHandle();
+    // Orthogonal query: the nearest stored fact is not a match. Without the
+    // floor this leg always filled its quota and the MCP tool returned the
+    // user's nearest personal facts for ANY query.
+    expect(semanticSearchFactsCore(db, Float32Array.from([0, 1]), MODEL, 5)).toHaveLength(0);
+    expect(semanticSearchFactsCore(db, Float32Array.from([1, 0]), MODEL, 5)).toHaveLength(1);
   });
 });
