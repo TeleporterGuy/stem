@@ -1341,9 +1341,23 @@ export function SettingsTab({
           {activeBackend && activeState && (
             // Three states, not two: broken, fine, and fine-until-it-isn't. The
             // last one has to be visible without reading as an error.
+            //
+            // The line itself stays a glanceable verdict. Everything that explains
+            // it — why this backend is in that state, and how the chain treats it —
+            // goes behind the (i), because the version that ran the whole
+            // explanation inline was long enough that nobody read either half.
             <em className={activeState.ready && !activeState.capped ? 'muted' : 'muted set-warn'}>
               {!activeState.ready ? '!' : activeState.capped ? '⚠' : '✓'} {activeState.status}
-              {activeBackend.note ? `. ${activeBackend.note}` : ''}
+              {(activeState.detail || activeBackend.note) && (
+                <>
+                  {' '}
+                  <InfoTip label={`About ${activeBackend.label}`}>
+                    {activeState.detail}
+                    {activeState.detail && activeBackend.note && <br />}
+                    {activeBackend.note}
+                  </InfoTip>
+                </>
+              )}
             </em>
           )}
         </div>

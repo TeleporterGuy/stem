@@ -37,7 +37,22 @@ describe('search backend readiness', () => {
       const state = backendState(backend(id), {}, []);
       expect(state.ready).toBe(true);
       expect(state.capped).toBe(true);
-      expect(state.status).toMatch(/Exa/);
+      // The verdict stays a glance; where it lands and why is the ⓘ's job.
+      expect(state.status).toBe('nothing to set up');
+      expect(state.detail).toMatch(/Exa/);
+      expect(state.detail).toMatch(/search stops until/);
+    }
+  });
+
+  // The status line is read at a glance or not at all, so it carries the verdict
+  // and nothing else. The previous version ran the verdict, the chain ordering and
+  // the fallback story together on one line and was skipped whole.
+  it('keeps every status line short, leaving the explaining to detail', () => {
+    for (const b of SEARCH_BACKENDS) {
+      for (const provs of [[], ['openai-codex', 'xai']]) {
+        const { status } = backendState(b, {}, provs);
+        expect(status.length, `${b.id}: "${status}"`).toBeLessThanOrEqual(50);
+      }
     }
   });
 
@@ -50,7 +65,8 @@ describe('search backend readiness', () => {
       const state = backendState(backend(id), {}, ['openai-codex']);
       expect(state.ready).toBe(true);
       expect(state.capped).toBeUndefined();
-      expect(state.status).toMatch(/ChatGPT covers searches once it runs out/);
+      expect(state.status).toBe('nothing to set up');
+      expect(state.detail).toMatch(/picks up searches once that runs out/);
     }
   });
 
@@ -61,8 +77,8 @@ describe('search backend readiness', () => {
   // The correction users actually need: `auto` puts index lookups above the
   // inference-backed backends, so being signed into ChatGPT does not mean
   // searches run through it. Exa still answers first.
-  it('says in the note that a ChatGPT sign-in is the fallback, not the first choice', () => {
-    expect(backend('auto').note).toMatch(/fallback, not the first choice/);
+  it('says in the note that being signed into ChatGPT does not route searches through it', () => {
+    expect(backend('auto').note).toMatch(/does not mean searches run through it/);
   });
 
   // A key for a backend `auto` can never reach must not make `auto` read as sorted.
@@ -82,7 +98,8 @@ describe('search backend readiness', () => {
   it('holds Bright Data unready until both the key and the SERP zone are set', () => {
     const keyOnly = backendState(backend('brightdata'), { brightdataApiKey: 'bd-1' }, []);
     expect(keyOnly.ready).toBe(false);
-    expect(keyOnly.status).toMatch(/also needs a SERP zone/);
+    expect(keyOnly.status).toBe('needs a SERP zone too');
+    expect(keyOnly.detail).toMatch(/will not answer without it/);
 
     const both = backendState(
       backend('brightdata'),
@@ -106,7 +123,8 @@ describe('search backend readiness', () => {
     expect(state.ready).toBe(true);
     expect(state.group).toBe('keyless');
     expect(state.capped).toBe(true);
-    expect(state.status).toMatch(/add a key/i);
+    expect(state.status).toBe('works without a key');
+    expect(state.detail).toMatch(/stops once you run it out/);
   });
 
   it('drops the cap warning once an Exa key is saved', () => {

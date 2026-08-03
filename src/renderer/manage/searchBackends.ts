@@ -82,10 +82,13 @@ export const SEARCH_BACKENDS: SearchBackend[] = [
     label: 'Automatic',
     field: null,
     need: 'none',
+    // The ordering rule only — where *your* configuration lands in it is the
+    // state's `detail`, so the two read as one explanation instead of repeating
+    // each other.
     note:
-      'Tries each backend that queries an index before any that costs a model inference, ' +
-      'ending at Exa’s keyless route. A ChatGPT sign-in sits below that as the fallback, ' +
-      'not the first choice — so being signed in does not mean searches run through ChatGPT.'
+      'Backends that look a query up in an index are tried first; the ones that spend a whole ' +
+      'model inference to run it for you — ChatGPT, Perplexity, Gemini — come last. So being ' +
+      'signed into ChatGPT does not mean searches run through it. Pick it by name for that.'
   },
   {
     id: 'all',
@@ -221,8 +224,17 @@ export interface BackendState {
   ready: boolean;
   /** Which picker section it belongs to. */
   group: BackendGroup;
-  /** Short reason, spelled out under the picker for the selected backend. */
+  /**
+   * The verdict, and only the verdict — a glanceable half-line under the picker.
+   * Anything that explains, qualifies or instructs belongs in `detail`, because a
+   * status line long enough to need reading is one nobody reads.
+   */
   status: string;
+  /**
+   * The rest of the story, shown behind the (i) beside the status rather than
+   * inline. Sentences, not a fragment: this is read deliberately or not at all.
+   */
+  detail?: string;
   /**
    * Ready, but on borrowed time — a free allowance that will run out and take
    * search with it. Distinct from `!ready`: nothing is broken yet, so this must
@@ -287,15 +299,22 @@ export function backendState(
       return {
         ready: true,
         group: 'keyless',
-        status:
-          'nothing to set up — Exa’s keyless route answers first, and ChatGPT covers searches once it runs out'
+        status: 'nothing to set up',
+        detail:
+          'With no search key saved, this lands on Exa’s keyless route, which is a shared free ' +
+          'allowance that resets at midnight UTC. Your ChatGPT subscription sits below it and ' +
+          'picks up searches once that runs out, so the allowance costs you speed rather than search.'
       };
     }
     return {
       ready: true,
       group: 'keyless',
       capped: true,
-      status: 'nothing to set up — but with no key anywhere this ends on Exa’s capped free allowance'
+      status: 'nothing to set up',
+      detail:
+        'With no key anywhere, this lands on Exa’s keyless route — a shared free allowance that ' +
+        'resets at midnight UTC, with nothing underneath it. Run it out and search stops until ' +
+        'then. A key from dashboard.exa.ai, or a ChatGPT sign-in under AI Providers, fixes that.'
     };
   }
   if (isSet(credentials, b.field)) {
@@ -303,7 +322,12 @@ export function backendState(
     // its own availability check returns false, so reporting "configured" here
     // would put an unusable backend in the ready section.
     if (b.also && !isSet(credentials, b.also.field)) {
-      return { ready: false, group: 'unset', status: `${credentialNoun(b)} saved, but it also needs a ${b.also.noun}` };
+      return {
+        ready: false,
+        group: 'unset',
+        status: `needs a ${b.also.noun} too`,
+        detail: `The ${credentialNoun(b)} is saved, but ${b.label} checks the ${b.also.noun} first and will not answer without it.`
+      };
     }
     return { ready: true, group: 'configured', status: `${credentialNoun(b)} saved` };
   }
@@ -313,7 +337,10 @@ export function backendState(
       ready: true,
       group: 'keyless',
       capped: true,
-      status: 'works without a key, but only so many searches a day — add a key to lift the cap'
+      status: 'works without a key',
+      detail:
+        'The keyless route is a shared free allowance that resets at midnight UTC, so it works ' +
+        'today but stops once you run it out. Adding a key switches it to the direct API.'
     };
   }
   if (b.need === 'signin') {

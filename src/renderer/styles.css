@@ -1473,6 +1473,10 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   box-shadow: var(--shadow-pop);
   font-size: var(--fs-12);
   font-weight: 400;
+  /* Reset every inherited type style, not just some: the popup reads the same
+     wherever the ⓘ is anchored, including inside the italic <em> that carries a
+     backend's status line. */
+  font-style: normal;
   letter-spacing: normal;
   text-transform: none;
   color: var(--muted);
