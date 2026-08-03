@@ -1604,7 +1604,9 @@ function registerExecTool(pi) {
       'if you need PowerShell, invoke it explicitly as `powershell.exe -NoProfile -ExecutionPolicy Bypass ' +
       '-Command "..."` so a broken profile.ps1 cannot block the run. A bare `|` is a cmd pipe (it splits ' +
       'before PowerShell) — put PowerShell pipelines inside `-Command "..."` (or use `(...)` / property ' +
-      'access instead). Use this to drive CLIs, git, build tools, or quick scripts — NOT to read files ' +
+      'access instead). Quote with double quotes there: cmd does not treat `\'` as a quote, so a ' +
+      'single-quoted argument goes to the safety check instead of running. ' +
+      'Use this to drive CLIs, git, build tools, or quick scripts — NOT to read files ' +
       '(use the dedicated read/grep/find/ls tools). By default the command runs in an isolated Stem ' +
       'workspace folder; pass `cwd` only when it must run in a specific existing directory. Folders ' +
       'connected read-only are blocked entirely. Safe commands run immediately; others are screened by ' +
