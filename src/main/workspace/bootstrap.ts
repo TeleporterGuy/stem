@@ -1,4 +1,4 @@
-import { access, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agentsMdPath, filesRoot, legacyCodexHome, piHome, skillsRoot, workspaceRoot } from './paths';
 
@@ -111,12 +111,22 @@ const DEFAULT_AGENTS_MD = `# Stem Assistant
 
 ${STEM_ASSISTANT_INSTRUCTIONS}`;
 
-async function writeIfMissing(path: string, content: string): Promise<void> {
+/**
+ * Write `content` unless it is already there — a regenerate, not a seed. AGENTS.md
+ * is generated from STEM_ASSISTANT_INSTRUCTIONS, and pi loads it from the backend
+ * cwd on top of the same text we pass as --append-system-prompt. Written once and
+ * never refreshed, an old install's copy went stale and then contradicted the live
+ * system prompt: an AGENTS.md from before the interactive components existed still
+ * says "use ONLY these components" and lists three of them, and that narrower,
+ * later instruction suppresses the rest.
+ */
+async function writeIfStale(path: string, content: string): Promise<void> {
   try {
-    await access(path);
+    if ((await readFile(path, 'utf8')) === content) return;
   } catch {
-    await writeFile(path, content, 'utf8');
+    // missing or unreadable — (re)write it below
   }
+  await writeFile(path, content, 'utf8');
 }
 
 /** Create the isolated environment on first run. Idempotent. */
@@ -130,7 +140,7 @@ export async function ensureWorkspace(): Promise<void> {
   // The persistent "Files" place the user drops files into (read by the agent).
   await mkdir(filesRoot(), { recursive: true });
 
-  await writeIfMissing(agentsMdPath(), DEFAULT_AGENTS_MD);
+  await writeIfStale(agentsMdPath(), DEFAULT_AGENTS_MD);
 
   // One-time cleanup: remove the retired codex backend's home so no unused data
   // is left on disk. No-op once it's gone. (pi's MCP config + admin tools are
