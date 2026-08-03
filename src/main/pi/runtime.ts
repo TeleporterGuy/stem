@@ -86,6 +86,7 @@ import {
   completeInternalCwd,
   ensureCompleteModel,
   promptComplete,
+  resetCompleteConversation,
   spawnReadyCompleteChild
 } from './complete-worker';
 import {
@@ -568,6 +569,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private completeWorkerModelKey: string | null = null;
   /** True while a complete() owns the warm worker. */
   private completeWorkerBusy = false;
+  /** The worker has run a prompt, so its conversation must be cleared before the next. */
+  private completeWorkerDirty = false;
+  /** Cleared for good if pi ever refuses to reset the worker — cold spawns from then on. */
+  private completeWorkerReusable = true;
   /** Coalesce concurrent ensureCompleteWorker() calls. */
   private completeWorkerStarting: Promise<PiProcess> | null = null;
 
@@ -892,16 +897,35 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
     // Prefer the warm worker when idle; if busy, hardened cold spawn so distill
     // + judge can still run concurrently under MAX_COMPLETE_PROCS.
-    if (!this.completeWorkerBusy) {
+    if (this.completeWorkerReusable && !this.completeWorkerBusy) {
       this.completeWorkerBusy = true;
       try {
         const worker = await this.ensureCompleteWorker(provider, modelId);
+        if (this.completeWorkerDirty) {
+          try {
+            await resetCompleteConversation(worker);
+          } catch (e) {
+            // Correctness over warmth. A worker we cannot clear would feed the
+            // last prompt into this one, so retire it and stop warm-starting —
+            // that is exactly the throwaway-per-call behaviour this replaced.
+            this.completeWorkerReusable = false;
+            await this.disposeCompleteWorker();
+            log('pi.complete', 'complete worker will not reset — falling back to cold spawns', {
+              error: e instanceof Error ? e.message : String(e)
+            });
+            return await this.completeCold(pi, prompt, provider, modelId, timeoutMs);
+          }
+          this.completeWorkerDirty = false;
+          // new_session drops the model selection along with the conversation.
+          this.completeWorkerModelKey = null;
+        }
         this.completeWorkerModelKey = await ensureCompleteModel(
           worker,
           provider,
           modelId,
           this.completeWorkerModelKey
         );
+        this.completeWorkerDirty = true;
         return await promptComplete(worker, prompt, timeoutMs, ({ timeoutMs: ms }) => {
           log('pi.complete', 'one-shot completion timed out', { timeoutMs: ms, provider, model: modelId });
         });
@@ -973,10 +997,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       });
       this.completeWorker = child;
       this.completeWorkerModelKey = `${resolved.provider}/${resolved.modelId}`;
+      this.completeWorkerDirty = false;
       child.on('exit', () => {
         if (this.completeWorker === child) {
           this.completeWorker = null;
           this.completeWorkerModelKey = null;
+          this.completeWorkerDirty = false;
         }
       });
       log('pi.complete', 'warm complete worker ready', { model: this.completeWorkerModelKey });
@@ -995,6 +1021,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     this.completeWorker = null;
     this.completeWorkerModelKey = null;
     this.completeWorkerStarting = null;
+    this.completeWorkerDirty = false;
     if (worker) await worker.dispose().catch(() => undefined);
   }
 

@@ -60,6 +60,25 @@ export async function spawnReadyCompleteChild(opts: CompleteChildOptions): Promi
 }
 
 /**
+ * Clear the worker's conversation before reusing it.
+ *
+ * pi RPC holds ONE in-memory session per process, and `--no-session` only stops
+ * it being written to disk — it does not make prompts independent. Without this,
+ * a reused worker carries every previous prompt forward: a Recall distill's
+ * memory text lands in the exec judge's context (and the judge's verdicts in the
+ * next distill's), and the context grows without bound until it overflows.
+ *
+ * Throws when pi will not reset the session; the caller must retire the worker
+ * rather than prompt it again, since there is no other way to get a clean one.
+ * Note that new_session also drops the model selection, so the caller has to
+ * re-apply it afterwards.
+ */
+export async function resetCompleteConversation(child: PiProcess): Promise<void> {
+  const res = await child.request({ type: 'new_session' }, COMPLETE_READY_TIMEOUT_MS);
+  if (!res.success) throw new Error(res.error ?? 'pi could not reset the complete worker session.');
+}
+
+/**
  * Switch the complete child's model when it differs from the last known key.
  * Returns the new `provider/modelId` key.
  */

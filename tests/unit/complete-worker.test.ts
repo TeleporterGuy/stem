@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   COMPLETE_READY_TIMEOUT_MS,
   ensureCompleteModel,
-  promptComplete
+  promptComplete,
+  resetCompleteConversation
 } from '../../src/main/pi/complete-worker';
 import type { PiProcess, PiResponse } from '../../src/main/pi/rpc';
 
@@ -19,6 +20,27 @@ function mockChild(handlers: {
   Object.defineProperty(ee, 'running', { get: () => true });
   return ee;
 }
+
+describe('resetCompleteConversation', () => {
+  it('sends new_session so the next prompt starts clean', async () => {
+    const request = vi.fn(async () => ({ type: 'response' as const, command: 'new_session', success: true }));
+    const child = mockChild({ request });
+    await expect(resetCompleteConversation(child)).resolves.toBeUndefined();
+    expect(request).toHaveBeenCalledWith({ type: 'new_session' }, COMPLETE_READY_TIMEOUT_MS);
+  });
+
+  it('throws when pi will not reset — the caller must retire the worker', async () => {
+    const child = mockChild({
+      request: async () => ({
+        type: 'response',
+        command: 'new_session',
+        success: false,
+        error: 'sessions are disabled'
+      })
+    });
+    await expect(resetCompleteConversation(child)).rejects.toThrow(/sessions are disabled/);
+  });
+});
 
 describe('ensureCompleteModel', () => {
   it('skips set_model when the key already matches', async () => {
@@ -94,6 +116,8 @@ describe('promptComplete', () => {
     await expect(promptComplete(child, 'hi', 5_000)).rejects.toThrow(/no text/);
   });
 
+  // Note this covers the transport only — the child keeps one conversation, so
+  // real reuse must call resetCompleteConversation() between prompts.
   it('can run two prompts on the same child (warm reuse)', async () => {
     let n = 0;
     const child = mockChild({
