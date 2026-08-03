@@ -953,7 +953,7 @@ export interface FactEvidence {
   timestamp: number;
   excerpt: string;
   /** 'folder_doc' = an indexed connected-folder file (folderId/relPath set). */
-  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'legacy' | 'folder_doc';
+  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'legacy' | 'folder_doc' | 'segment_context';
   /** Connected-folder id, for 'folder_doc' evidence. */
   folderId?: string | null;
   /** Folder-relative file path, for 'folder_doc' evidence. */

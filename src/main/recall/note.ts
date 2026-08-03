@@ -170,6 +170,10 @@ export async function processExplicitNote(factId: number, llm: LlmClient): Promi
     if (fact.text.length > LONG_NOTE_THRESHOLD) {
       const ids = await extractNoteFacts(factId, llm);
       for (const id of ids) await reconcileExplicitFact(id, llm);
+      // Extraction failing (model down, unparseable reply, concurrent edit)
+      // must not leave the raw blob unreconciled: a pasted note contradicting
+      // stored facts would silently coexist with them until some later pass.
+      if (ids.length === 0) await reconcileExplicitFact(factId, llm);
     } else {
       const survivingId = await normalizeExplicitNote(factId, llm);
       await reconcileExplicitFact(survivingId, llm);

@@ -168,6 +168,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     return false;
   }
 
+  flushPendingUserCapture(): void {
+    // The fake backend captures nothing.
+  }
+
   // ---- thread CRUD ----
 
   async listThreads(): Promise<ChatSummary[]> {

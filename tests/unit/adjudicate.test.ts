@@ -6,6 +6,7 @@ import {
 } from '../../src/main/recall/adjudicate';
 import type { LlmClient } from '../../src/main/recall/llm';
 import { recallStore as store } from '../../src/main/recall/store';
+import * as retrieval from '../../src/main/recall/retrieval';
 
 afterAll(() => store.close());
 beforeEach(() => {
@@ -72,6 +73,34 @@ describe('adjudicateOpenConflicts', () => {
     }
     expect(store.getAutoResolvedConflicts()[0]?.resolution).toBe('auto_rewrite');
     expect(store.getMemoryConflicts()).toHaveLength(0);
+  });
+
+  it('queues rewrite replacements for the neighbour sweep when embeddings are up', async () => {
+    const embeddings = {
+      available: async () => true,
+      modelId: async () => 'adj-model',
+      embed: async (texts: string[]) => texts.map(() => Float32Array.from([1, 0]))
+    };
+    retrieval.setRetrievalClients({ embeddings, rerank: null });
+    try {
+      const neighbour = store.upsertFact('The user pays 40 euro monthly for car insurance.', 'distilled')!;
+      store.upsertFactVector(neighbour, 'adj-model', Float32Array.from([1, 0]));
+      seedConflict('The user has PZP with Kooperativa.', 'The car has GAP insurance from Fortegra.');
+      const res = await adjudicateOpenConflicts(reply({
+        outcome: 'rewrite',
+        facts: ['The user has PZP insurance with Kooperativa.']
+      }));
+      expect(res.resolved).toBe(1);
+      // Replacements never pass distillation's write-time sweep, and the
+      // one-shot backfill has stamped itself done — without this queue entry
+      // they were the only facts never cross-checked against a neighbour.
+      const pending = store.dbHandle().prepare(
+        `SELECT COUNT(*) AS n FROM fact_relation_checks WHERE verdict IS NULL AND origin = 'sweep'`
+      ).get() as { n: number };
+      expect(pending.n).toBeGreaterThan(0);
+    } finally {
+      retrieval.setRetrievalClients({ embeddings: null, rerank: null });
+    }
   });
 
   it('skips a rewrite with too many replacement facts (conflict stays open)', async () => {

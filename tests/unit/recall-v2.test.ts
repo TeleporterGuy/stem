@@ -292,6 +292,35 @@ describe('Recall v2 authority and lifecycle', () => {
   });
 });
 
+describe('uncited-claim evidence backfill', () => {
+  it('caps segment provenance at the last 3 user messages and labels it', async () => {
+    store.resetEpisodic();
+    for (let i = 0; i < 6; i++) {
+      store.recordMessage({ threadId: 'seg', role: 'user', text: `Segment message number ${i} with plenty of ordinary content.` });
+    }
+    // No citations at all -> the claim is uncited; before the cap it inherited
+    // EVERY user message in the batch as convincing-looking evidence.
+    await distill.distillNewMessages(extractorLlm(structuredClaim({ text: 'The user enjoys long evening walks' }), 'compatible'));
+    const fact = store.getFactDetails(store.getAllFacts().find((f) => /evening walks/.test(f.text))!.id)!;
+    expect(fact.confidence).toBe(0.55);
+    expect(fact.evidence).toHaveLength(3);
+    expect(fact.evidence.every((e) => e.origin === 'segment_context')).toBe(true);
+  });
+});
+
+describe('distill prompt budgets', () => {
+  it('bounds the known-facts block by characters, and 0 disables it', () => {
+    for (let i = 0; i < 80; i++) {
+      store.upsertFact(`Fact ${i}: ${'detail '.repeat(30)}${i}`, 'distilled');
+    }
+    const block = distill.knownFactsBlock(undefined, 2_000);
+    expect(block.length).toBeGreaterThan(0);
+    // Budget plus the block header line.
+    expect(block.length).toBeLessThanOrEqual(2_100);
+    expect(distill.knownFactsBlock(undefined, 0)).toBe('');
+  });
+});
+
 describe('Recall v2 injection trust boundary', () => {
   it('uses sensitive facts only for a direct match and excludes low-confidence assistant claims', async () => {
     store.upsertFact('The user has diabetes', { category: 'health', sensitivity: 'sensitive', confidence: 0.9 });

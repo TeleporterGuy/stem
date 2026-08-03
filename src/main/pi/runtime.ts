@@ -748,11 +748,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       }
 
       if (isRecallEnabled()) {
-        try {
-          captureUserMessage({ threadId, turnId, text: input.input, cwd: this.options.workspaceRoot });
-        } catch {
-          // non-fatal; the live turn is already streaming
-        }
+        // Deferred, not captured: at prompt time the turn's memorize:false
+        // verdict is unknowable (the taint is only set once the assistant reads
+        // a private folder). The message is flushed by flushPendingUserCapture
+        // on the first unsuppressed capture event, or at settleTurn — so a
+        // suppressed turn's prompt never touches the recall DB at all.
+        turn.pendingUserCapture = { text: input.input, cwd: this.options.workspaceRoot };
       }
       return { threadId, turnId };
     });
@@ -818,6 +819,25 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    */
   isCaptureSuppressed(threadId: string): boolean {
     return this.currentTurn?.threadId === threadId && this.currentTurn.memoryTainted === true;
+  }
+
+  /**
+   * Capture the live turn's held-back user message (see pendingUserCapture) —
+   * called by main just before it captures assistant material for the thread,
+   * which keeps the user message's row id below its reply's. No-op when there
+   * is nothing pending, the thread doesn't match, or the turn is tainted.
+   */
+  flushPendingUserCapture(threadId: string): void {
+    const turn = this.currentTurn;
+    if (!turn || turn.threadId !== threadId || turn.memoryTainted) return;
+    const pending = turn.pendingUserCapture;
+    if (!pending) return;
+    turn.pendingUserCapture = undefined;
+    try {
+      captureUserMessage({ threadId: turn.threadId, turnId: turn.turnId, text: pending.text, cwd: pending.cwd });
+    } catch {
+      // non-fatal; the live turn is already streaming
+    }
   }
 
   /**
@@ -1964,6 +1984,18 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * until agent_settled (see onPiEvent). */
   private settleTurn(turn: TurnContext, now: number): void {
     turn.endedAt = now;
+    // A turn that produced no capturable assistant event still records its user
+    // message — unless it ended tainted, in which case the held-back prompt is
+    // simply dropped (memorize:false must keep the whole turn out of Recall).
+    if (!turn.memoryTainted && turn.pendingUserCapture) {
+      const pending = turn.pendingUserCapture;
+      turn.pendingUserCapture = undefined;
+      try {
+        captureUserMessage({ threadId: turn.threadId, turnId: turn.turnId, text: pending.text, cwd: pending.cwd });
+      } catch {
+        // non-fatal
+      }
+    }
     this.advancePhase(turn, [], now); // flush the trailing segment
     this.reportTurnTiming(turn);
     // Web sources recovered by the tee ride out at turn end (the assistant

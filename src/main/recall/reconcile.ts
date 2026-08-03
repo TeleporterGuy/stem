@@ -310,6 +310,39 @@ export async function processPendingRelationChecks(
   return { checked, conflicts };
 }
 
+/**
+ * Queue `factIds` for classification against their embedding neighbours —
+ * vectors-only, no model calls (the pending queue's classify pass does those).
+ * For facts minted OUTSIDE distillation's write-time sweep — adjudication's
+ * rewrite replacements above all, which are near-duplicates of their
+ * neighbourhood by construction and otherwise never get cross-checked (the
+ * one-shot backfill has long since stamped itself done). Best-effort: missing
+ * embeddings just mean no enumeration this time.
+ */
+export async function enqueueNeighbourChecksFor(factIds: number[]): Promise<number> {
+  if (factIds.length === 0) return 0;
+  const factsGeneration = getFactsGeneration();
+  const emb = getEmbeddingsClient();
+  if (!emb || !(await emb.available())) return 0;
+  const model = (await emb.modelId()) ?? '';
+  if (!model || getFactsGeneration() !== factsGeneration) return 0;
+  const idSet = new Set(factIds);
+  const missing = getFactsMissingVector(model).filter((f) => idSet.has(f.id));
+  if (missing.length > 0) {
+    const vecs = await emb.embed(missing.map((f) => f.text), 'passage');
+    if (getFactsGeneration() !== factsGeneration) return 0;
+    missing.forEach((f, i) => upsertFactVectorForSnapshot(f.id, f.text, factsGeneration, model, vecs[i]));
+  }
+  const vectors = getFactVectors(model);
+  const activeIds = new Set(getAllFacts().filter((f) => f.status === 'active').map((f) => f.id));
+  const pairs: Array<[number, number]> = [];
+  for (const id of factIds) {
+    if (!activeIds.has(id)) continue;
+    for (const nid of neighbourIdsOf(id, vectors, activeIds)) pairs.push([id, nid]);
+  }
+  return pairs.length > 0 ? enqueueRelationChecks(pairs, 'sweep') : 0;
+}
+
 // ---------------------------------------------------------------------------
 // Retroactive backfill: enumerate neighbour pairs for facts that predate the
 // sweep. Enumeration is vectors-only (no model calls); the pairs land in the

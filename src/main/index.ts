@@ -1523,6 +1523,9 @@ app.whenReady().then(async () => {
       // its (potentially confidential) reply never enters Recall. scheduleDistill still
       // runs — it only processes already-captured messages.
       if (!(threadId && runtime!.isCaptureSuppressed(threadId))) {
+        // The user message is held back until the turn's suppression verdict is
+        // knowable; flushing it here keeps its row id below its reply's.
+        if (threadId) runtime!.flushPendingUserCapture(threadId);
         captureFromEvent(event); // tap assistant replies into Stem Recall (all threads)
       }
       if (event.method === 'turn/completed') {

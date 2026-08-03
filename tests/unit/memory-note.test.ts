@@ -251,3 +251,23 @@ describe('long notes: extractNoteFacts', () => {
     expect(store.getAllFacts().filter((f) => f.status === 'active')).toHaveLength(3);
   });
 });
+
+describe('long-note extraction failure fallback', () => {
+  it('reconciles the raw note when extraction returns nothing', async () => {
+    const existing = store.upsertFact('The user rents a flat in Bratislava.', 'distilled')!;
+    const noteText = `I bought an apartment in Nitra. ${'More context about the purchase and the mortgage details. '.repeat(20)}`;
+    expect(noteText.length).toBeGreaterThan(LONG_NOTE_THRESHOLD);
+    const factId = store.upsertFact(noteText, { source: 'explicit', confidence: 1 })!;
+    const llm = {
+      complete: async (prompt: string) =>
+        prompt.includes('Return ONLY JSON {"supersedeIds":[],"conflictIds":[]}')
+          ? JSON.stringify({ supersedeIds: [existing], conflictIds: [] })
+          : 'garbled nonsense the extractor cannot parse'
+    };
+    // Extraction fails (unparseable reply) -> before the fix the raw blob was
+    // never reconciled and silently coexisted with the facts it contradicts.
+    await processExplicitNote(factId, llm);
+    expect(store.getFactDetails(existing)?.status).toBe('superseded');
+    expect(store.getFactDetails(existing)?.supersededBy).toBe(factId);
+  });
+});

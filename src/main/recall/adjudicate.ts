@@ -2,7 +2,7 @@ import type { FactDetails } from '../../shared/types';
 import { log } from '../log';
 import { PENDING_KEY } from './distill';
 import type { LlmClient } from './llm';
-import { evidenceDateOf } from './reconcile';
+import { enqueueNeighbourChecksFor, evidenceDateOf } from './reconcile';
 import { recallStore, type AdjudicationDecision, type ConflictForAdjudication } from './store';
 const { applyAdjudication, bumpAdjudicationAttempts, getConflictsForAdjudication, getFactsGeneration, getMeta, setMeta } = recallStore;
 
@@ -113,12 +113,13 @@ export async function adjudicateOpenConflicts(llm: LlmClient): Promise<{ resolve
         skipped += 1;
         continue;
       }
+      const sink: { newFactIds?: number[] } = {};
       const applied = applyAdjudication(conflict.id, decision, {
         aId: conflict.factA.id,
         aText: conflict.factA.text,
         bId: conflict.factB.id,
         bText: conflict.factB.text
-      });
+      }, sink);
       if (!applied) {
         skipped += 1;
         continue;
@@ -128,6 +129,13 @@ export async function adjudicateOpenConflicts(llm: LlmClient): Promise<{ resolve
       if (decision.kind === 'rewrite') {
         const pending = (Number.parseInt(getMeta(PENDING_KEY) ?? '0', 10) || 0) + decision.texts.length;
         setMeta(PENDING_KEY, String(pending));
+        // And, uniquely, facts that never pass distillation's write-time sweep —
+        // embed them and queue their neighbour pairs for the background pass.
+        try {
+          await enqueueNeighbourChecksFor(sink.newFactIds ?? []);
+        } catch {
+          // Best-effort; a dead embedder must not fail the adjudication pass.
+        }
       }
     }
     if (resolved > 0 || skipped > 0) log('adjudicate', 'conflict adjudication pass', { resolved, skipped });

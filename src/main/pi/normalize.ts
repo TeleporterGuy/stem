@@ -69,6 +69,13 @@ export interface TurnContext {
   privateRoots?: string[];
   memoryTainted?: boolean;
   /**
+   * The user's message, held back from Recall until the turn's memorize:false
+   * verdict is knowable (the taint is set when the assistant reads a private
+   * folder — after the prompt). Flushed on the first unsuppressed capture event
+   * of the turn, or at settle; never captured when the turn ends tainted.
+   */
+  pendingUserCapture?: { text: string; cwd?: string };
+  /**
    * Slugs of skills consulted this turn (a read/grep/find/ls inside the skill's
    * folder). A Set so a skill counts at most once per turn; flushed to the usage
    * sidecar by PiRuntime.settleTurn.

@@ -961,13 +961,31 @@ export class RecallStore {
     if (built?.value !== '1') {
       try {
         handle.exec(`INSERT INTO facts_fts(facts_fts) VALUES('rebuild')`);
-        if (this.factsTrigram) handle.exec(`INSERT INTO facts_trigram(facts_trigram) VALUES('rebuild')`);
       } catch {
         // A rebuild failure must never block startup; triggers still keep new facts synced.
       }
       handle
         .prepare(`INSERT INTO meta(key, value) VALUES('facts_index_built', '1') ON CONFLICT(key) DO UPDATE SET value = '1'`)
         .run();
+    }
+    // The trigram index gets its OWN build flag: trigram availability is decided
+    // per-session (the guarded CREATE above), so a store first opened on a SQLite
+    // without trigram support must backfill when a later session gains it —
+    // under the shared flag it kept a silently partial index forever.
+    if (this.factsTrigram) {
+      const trigramBuilt = handle.prepare(`SELECT value FROM meta WHERE key = 'facts_trigram_built'`).get() as
+        | { value: string }
+        | undefined;
+      if (trigramBuilt?.value !== '1') {
+        try {
+          handle.exec(`INSERT INTO facts_trigram(facts_trigram) VALUES('rebuild')`);
+          handle
+            .prepare(`INSERT INTO meta(key, value) VALUES('facts_trigram_built', '1') ON CONFLICT(key) DO UPDATE SET value = '1'`)
+            .run();
+        } catch {
+          // Retry on a later open; the flag stays unset.
+        }
+      }
     }
 
     this.db = handle;
@@ -2052,7 +2070,9 @@ export class RecallStore {
   applyAdjudication = (
     conflictId: number,
     decision: AdjudicationDecision,
-    expected: { aId: number; aText: string; bId: number; bText: string }
+    expected: { aId: number; aText: string; bId: number; bText: string },
+    /** Optional out-param: filled with a rewrite's replacement fact ids so the caller can queue them for the neighbour sweep. */
+    sink?: { newFactIds?: number[] }
   ): boolean => {
     const handle = this.open();
     handle.exec('BEGIN');
@@ -2117,6 +2137,7 @@ export class RecallStore {
           else this.supersedeFact(originalId, successor);
         }
         settleIds.push(...survivors);
+        if (sink) sink.newFactIds = [...survivors];
         resolution = 'auto_rewrite';
       }
       handle.prepare(

@@ -259,14 +259,27 @@ function gradableTurns(batch: DistillBatch): Array<{ row: TurnInjectedFacts; rep
     .map((row) => ({ row, reply: assistantByTurn.get(row.turnId)! }));
 }
 
+/** Char budget for the usage-grading block — turn count is capped, but N facts × 200 chars per turn was not. */
+export const USAGE_BLOCK_CHAR_BUDGET = 4_000;
+
 /** The "Injected facts per assistant reply" prompt section. Empty when nothing to grade. */
-function buildUsageBlock(turns: Array<{ row: TurnInjectedFacts; reply: StoredMessage }>): string {
+function buildUsageBlock(
+  turns: Array<{ row: TurnInjectedFacts; reply: StoredMessage }>,
+  charBudget = USAGE_BLOCK_CHAR_BUDGET
+): string {
   const lines: string[] = [];
+  let total = 0;
   for (const { row, reply } of turns) {
     const facts = getFactsByIds(row.factIds);
     if (facts.length === 0) continue;
     const listed = facts.map((f) => `[fact:${f.id}] ${f.text.slice(0, 200)}`).join('; ');
-    lines.push(`[message:${reply.id}] was written with these facts available: ${listed}`);
+    const line = `[message:${reply.id}] was written with these facts available: ${listed}`;
+    // Grading rides free on the distill call — it must never be the thing that
+    // overflows the model's context. Ungraded turns fall back to the lexical
+    // heuristic (applyUsageGrades), so dropping a line costs precision, not data.
+    if (total + line.length > charBudget) break;
+    total += line.length;
+    lines.push(line);
   }
   return lines.length
     ? `\n\nInjected facts per assistant reply (grade these in factUsage):\n${lines.join('\n')}`
@@ -333,6 +346,12 @@ export function parseFacts(output: string): string[] {
 }
 
 export const KNOWN_FACTS_CAP = 100;
+// The row cap alone did not bound the block — 100 facts of up to 300 chars
+// (500 via the note path) is ~30 kB, twice the transcript budget. A small
+// local memory model overflows, replies truncated garbage, and the segment is
+// eventually abandoned after MAX_PARSE_STRIKES — deterministically, since each
+// retry sent the same oversized prompt.
+export const KNOWN_FACTS_CHAR_BUDGET = 12_000;
 // How many of the cap's slots relevance may claim before recency fills the rest,
 // and how many transcript terms feed the lexical probe (facts are few and the
 // FTS index small, so a wide OR query stays cheap).
@@ -350,15 +369,21 @@ const KNOWN_FACTS_QUERY_TERMS = 200;
  * skip known facts restates them under new wording, minting duplicate rows and
  * bogus "this supersedes that" links between two facts that say the same thing.
  */
-export function knownFactsBlock(context?: string): string {
-  const picked: Array<{ id: number; source: string; text: string }> = [];
+export function knownFactsBlock(context?: string, charBudget = KNOWN_FACTS_CHAR_BUDGET): string {
+  const picked: string[] = [];
   const seen = new Set<number>();
+  let total = 0;
   const add = (facts: Array<{ id: number; source: string; text: string }>) => {
     for (const f of facts) {
       if (picked.length >= KNOWN_FACTS_CAP) break;
       if (seen.has(f.id)) continue;
+      const line = `- [fact:${f.id} source:${f.source}] ${f.text}`;
+      // Relevance-picked facts run first, so the budget drops the recency
+      // filler before it ever drops a likely-duplicate's dedup hint.
+      if (total + line.length > charBudget) break;
       seen.add(f.id);
-      picked.push(f);
+      picked.push(line);
+      total += line.length;
     }
   };
   if (context) {
@@ -366,7 +391,7 @@ export function knownFactsBlock(context?: string): string {
     if (match) add(factTermSearch(match, KNOWN_FACTS_RELEVANT));
   }
   add(getFacts(KNOWN_FACTS_CAP));
-  const known = picked.map((f) => `- [fact:${f.id} source:${f.source}] ${f.text}`).join('\n');
+  const known = picked.join('\n');
   return known ? `\n\nKnown facts (do not restate these):\n${known}` : '';
 }
 
@@ -535,16 +560,26 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
     return 0;
   };
 
+  // A prior parse strike often means the model choked on the prompt itself
+  // (truncated or garbled reply) — shrink the optional blocks before spending
+  // the next strike on the same prompt: half budgets on strike one, transcript
+  // only from strike two. Without this the retries were deterministic failures.
+  const priorStrikes = readParseStrikes(cursor);
+  const blockScale = priorStrikes >= 2 ? 0 : priorStrikes === 1 ? 0.5 : 1;
+
   // Show the model what it already knows so it returns only new/corrected facts
   // (curbs reworded duplicates the norm-based dedup can't catch). Raw message
   // texts feed the relevance probe — the transcript's [message:...] prefixes
   // would pollute it with metadata tokens.
-  const knownBlock = knownFactsBlock(batch.messages.map((m) => m.text).join('\n'));
+  const knownBlock = knownFactsBlock(
+    batch.messages.map((m) => m.text).join('\n'),
+    Math.floor(KNOWN_FACTS_CHAR_BUDGET * blockScale)
+  );
 
   // Usage grading rides on the same call: the batch's assistant replies whose
   // injected-fact sets are still ungraded get listed for the model to judge.
   const usageTurns = gradableTurns(batch);
-  const usageBlock = buildUsageBlock(usageTurns);
+  const usageBlock = buildUsageBlock(usageTurns, Math.floor(USAGE_BLOCK_CHAR_BUDGET * blockScale));
 
   // Folder-doc excerpts these turns saw (learn-on-use), citable as [doc:n].
   const docsBlock = buildDocsBlock(batch.docs);
@@ -602,8 +637,12 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
     // just never earns the direct-user treatment (docs aren't the user's words).
     if (claim.evidenceMessageIds.length === 0 && claim.evidenceDocIds.length === 0) {
       uncited.add(claim);
-      claim.evidenceMessageIds = batch.messages.filter((m) => m.role === 'user').map((m) => m.id);
-      if (claim.evidenceMessageIds.length === 0) claim.evidenceMessageIds = batch.messages.map((m) => m.id);
+      // Segment-level provenance, not a citation: cap it to the last few user
+      // messages instead of the whole batch — one uncited claim used to attach
+      // ~20 kB of unrelated transcript as its most convincing-looking evidence
+      // (rows the Facts UI shows as support and the adjudicator quotes).
+      claim.evidenceMessageIds = batch.messages.filter((m) => m.role === 'user').map((m) => m.id).slice(-3);
+      if (claim.evidenceMessageIds.length === 0) claim.evidenceMessageIds = batch.messages.map((m) => m.id).slice(-3);
     }
   }
 
@@ -643,7 +682,12 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
           role: m.role,
           timestamp: m.ts,
           excerpt: m.text,
-          origin: (directUser && m.role === 'user' ? 'user_message' : 'assistant_claim') as 'user_message' | 'assistant_claim'
+          // Backfilled rows are labeled as what they are so the UI and the
+          // adjudicator can tell a real citation from segment context.
+          origin: (uncited.has(claim)
+            ? 'segment_context'
+            : directUser && m.role === 'user' ? 'user_message' : 'assistant_claim') as
+            'user_message' | 'assistant_claim' | 'segment_context'
         })),
         ...evidenceDocs.map((d) => ({
           messageId: null,
