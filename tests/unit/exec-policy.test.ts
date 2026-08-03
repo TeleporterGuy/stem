@@ -92,11 +92,8 @@ describe('classify', () => {
   const settings = { allowlist: ['git push', 'npm'] };
 
   it('tier 1 for the static allowlist', () => {
-    expect(classify('ls -la', settings).tier).toBe('run');
-    expect(classify('git status', settings).tier).toBe('run');
-    expect(classify('dir /b', settings).tier).toBe('run');
-    expect(classify('where git', settings).tier).toBe('run');
-    expect(classify('echo hello', settings).tier).toBe('run');
+    expect(classify('ls -la', settings, 'darwin').tier).toBe('run');
+    expect(classify('git status', settings, 'darwin').tier).toBe('run');
     expect(classify('agent-browser open https://example.com', settings).tier).toBe('run');
     // Double-quoted URLs/selectors must stay tier 1 (the agent-browser workflow).
     expect(classify('agent-browser open "https://youtube.com/watch?v=x&list=y"', settings).tier).toBe('run');
@@ -126,9 +123,50 @@ describe('classify', () => {
     // Windows smoke checklist uses this shape; it must hit the LLM judge in assisted mode.
     const cmd =
       'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "1+1"';
-    const cls = classify(cmd, settings);
+    const cls = classify(cmd, settings, 'win32');
     expect(cls.tier).toBe('judge');
     expect(cls.prefixes).toEqual(['powershell.exe']);
+  });
+
+  it('keeps the cmd.exe allowlist off zsh, and the zsh one off cmd.exe', () => {
+    // `dir`/`type`/`echo` exist to make cmd.exe usable; on zsh they would widen
+    // tier 1 for no reason. `ls`/`cat` under cmd would auto-run into "not
+    // recognized" — better to let the judge see an unknown command.
+    expect(classify('dir /b', settings, 'win32').tier).toBe('run');
+    expect(classify('type notes.txt', settings, 'win32').tier).toBe('run');
+    expect(classify('where git', settings, 'win32').tier).toBe('run');
+    expect(classify('dir /b', settings, 'darwin').tier).toBe('judge');
+    expect(classify('echo hello', settings, 'darwin').tier).toBe('judge');
+    expect(classify('ls -la', settings, 'win32').tier).toBe('judge');
+    // Shared entries hold on both.
+    expect(classify('git status', settings, 'win32').tier).toBe('run');
+    expect(classify('rg needle', settings, 'darwin').tier).toBe('run');
+  });
+
+  it("does not let cmd.exe's non-quoting of ' smuggle a second command past tier 1", () => {
+    // cmd.exe has no single-quote quoting: it sees the bare `&` and runs whoami.
+    // A POSIX parse reads the whole thing as one protected argument to `cat`.
+    const smuggle = "cat 'a & whoami & rem '";
+    expect(classify(smuggle, settings, 'darwin').tier).toBe('run');
+    expect(classify(smuggle, settings, 'win32').tier).toBe('judge');
+    // Same shape through the entries this port added, and through a pipe.
+    expect(classify("type 'x & whoami & rem '", settings, 'win32').tier).toBe('judge');
+    expect(classify("dir 'x | whoami | rem '", settings, 'win32').tier).toBe('judge');
+    // %VAR% expands before cmd parses the line, so a variable can inject too.
+    expect(classify('echo %INJECT%', settings, 'win32').tier).toBe('judge');
+    expect(classify('echo "%INJECT%"', settings, 'win32').tier).toBe('judge');
+    // ^ is cmd's escape character.
+    expect(classify('dir ^& whoami', settings, 'win32').tier).toBe('judge');
+  });
+
+  it('keeps Windows paths on tier 1 (\\ is a separator to cmd, not an escape)', () => {
+    // The protected-roots scan is what gates paths on Windows; making `\` meta
+    // here would push every `type C:\…` onto the judge and stop the allowlist
+    // from doing anything useful.
+    expect(classify('type C:\\Users\\me\\notes.txt', settings, 'win32').tier).toBe('run');
+    expect(classify('dir "C:\\Program Files"', settings, 'win32').tier).toBe('run');
+    // Still meta on zsh, where it really is an escape.
+    expect(classify('cat a\\ b', settings, 'darwin').tier).toBe('judge');
   });
 
   it('judges chains with any non-allowlisted segment', () => {

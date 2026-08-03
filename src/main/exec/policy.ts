@@ -10,12 +10,19 @@ import type { ExecSettings, ModelSummary } from '../../shared/types';
 // matched on their own — the whole command auto-runs only when EVERY segment
 // clears an allowlist (a compound like `git status && rm -rf /` must never
 // auto-run on the strength of its head). Any other shell metacharacter outside
-// single quotes (redirects, substitution, background `&`, escapes) disqualifies
-// tier 1 entirely, and a command word containing a path separator never matches
-// (an allowlisted `git` must not admit `./git`).
+// quotes (redirects, substitution, background `&`, escapes) disqualifies tier 1
+// entirely, and a command word containing a path separator never matches (an
+// allowlisted `git` must not admit `./git`).
+//
+// The parse is PLATFORM-SPECIFIC because the two host shells disagree about
+// quoting, and a parser that models the wrong one hands out tier 1 for commands
+// the shell will happily split. See WINDOWS_HARD_META below.
 
-/** Commands that are read-only or clearly harmless; matched against the parsed prefix. */
-const STATIC_ALLOWLIST = new Set([
+/** Read-only probes that mean the same thing on both host shells. */
+const SHARED_ALLOWLIST = ['rg', 'git status', 'git log', 'git diff', 'git show', 'git branch', 'agent-browser'];
+
+/** POSIX (zsh) read-only probes. */
+const POSIX_ALLOWLIST = [
   'ls',
   'cat',
   'pwd',
@@ -23,25 +30,24 @@ const STATIC_ALLOWLIST = new Set([
   'tail',
   'wc',
   'grep',
-  'rg',
   'find',
   'which',
   'file',
   'stat',
-  'date',
-  // Windows cmd.exe equivalents of common read-only probes.
-  'dir',
-  'where',
-  'type',
-  'cd',
-  'echo',
-  'git status',
-  'git log',
-  'git diff',
-  'git show',
-  'git branch',
-  'agent-browser'
-]);
+  'date'
+];
+
+/**
+ * cmd.exe equivalents. Deliberately NOT merged into one cross-platform set: the
+ * POSIX names do not exist under cmd (they would auto-run straight into "not
+ * recognized"), and `dir`/`type`/`echo` must not widen the zsh tier-1 surface
+ * for a platform that never sees them.
+ */
+const WINDOWS_ALLOWLIST = ['dir', 'type', 'where', 'echo', 'cd'];
+
+function staticAllowlist(platform: NodeJS.Platform): Set<string> {
+  return new Set([...SHARED_ALLOWLIST, ...(platform === 'win32' ? WINDOWS_ALLOWLIST : POSIX_ALLOWLIST)]);
+}
 
 /** One chained command within a compound (or the whole thing when not chained). */
 export interface ParsedSegment {
@@ -62,11 +68,26 @@ export interface ParsedCommand {
 // with plain arguments". Chain separators (&&, ||, |, ;, newline) are handled
 // by the segment split instead. Backslash-escapes are treated as meta too —
 // rare, and conservative is cheap.
-const HARD_META_CHARS = new Set(['>', '<', '`', '$', '(', ')', '{', '}', '\\', '\r']);
+const POSIX_HARD_META = new Set(['>', '<', '`', '$', '(', ')', '{', '}', '\\', '\r']);
 // Inside double quotes only expansion characters stay live — `&`, `|`, `(` etc.
 // are literal there, and flagging them threw every double-quoted URL/CSS selector
 // (agent-browser's bread and butter) out of tier 1 and onto the judge.
-const DQUOTE_META_CHARS = new Set(['$', '`', '\\']);
+const POSIX_DQUOTE_META = new Set(['$', '`', '\\']);
+
+// cmd.exe is not zsh, and the differences are exactly the ones that decide
+// whether a command can smuggle a second command past tier 1:
+//   '   NOT a quote character. `cat 'a & whoami & rem '` reads as protected to a
+//       POSIX parser, but cmd sees the bare `&` and runs whoami. Hard meta, and
+//       single-quote *regions* are not honoured at all (see parseCommand).
+//   %   %VAR% expands before the line is parsed, so a variable holding `& …`
+//       injects a command. Hard meta.
+//   ^   cmd's escape character — `^&` hides a separator from a naive scan.
+//   \   NOT special: it is the path separator. Treating it as meta would push
+//       every `type C:\…` onto the judge and make the Windows allowlist useless.
+//   $ ` are ordinary characters under cmd; ( ) { } still group/parse, so they stay.
+const WINDOWS_HARD_META = new Set(['>', '<', '(', ')', '{', '}', "'", '%', '^', '\r']);
+// Double quotes in cmd suppress separators but NOT %VAR% expansion.
+const WINDOWS_DQUOTE_META = new Set(['%']);
 
 // A learnable subcommand must be the token immediately after the command word
 // and look like a bare word. A URL, path, format string, or flag value
@@ -87,8 +108,15 @@ function makeSegment(tokens: string[]): ParsedSegment {
  * Quote-aware parse of a shell command string into allowlist-matchable segments.
  * Not a full shell parser — anything with shell semantics beyond "commands
  * chained with plain arguments" comes back `hasShellMeta` and is left to the judge.
+ *
+ * `platform` selects which shell's quoting rules to model; it must match the
+ * shell `shellInvocation()` will actually spawn, or tier 1 is decided against a
+ * grammar the host does not use.
  */
-export function parseCommand(command: string): ParsedCommand {
+export function parseCommand(command: string, platform: NodeJS.Platform = process.platform): ParsedCommand {
+  const win = platform === 'win32';
+  const hardMeta = win ? WINDOWS_HARD_META : POSIX_HARD_META;
+  const dquoteMeta = win ? WINDOWS_DQUOTE_META : POSIX_DQUOTE_META;
   const segments: ParsedSegment[] = [];
   let tokens: string[] = [];
   let current = '';
@@ -120,14 +148,16 @@ export function parseCommand(command: string): ParsedCommand {
     if (quote === '"') {
       if (ch === '"') quote = null;
       else {
-        if (DQUOTE_META_CHARS.has(ch)) hasShellMeta = true;
+        if (dquoteMeta.has(ch)) hasShellMeta = true;
         current += ch;
       }
       inToken = true;
       continue;
     }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
+    // Under cmd.exe `'` opens nothing — it falls through to the hard-meta check
+    // below, so a single-quoted region can never hide a separator.
+    if (ch === '"' || (ch === "'" && !win)) {
+      quote = ch as "'" | '"';
       inToken = true;
       continue;
     }
@@ -151,7 +181,7 @@ export function parseCommand(command: string): ParsedCommand {
       endSegment(); // both `|` (pipe) and `||` (or) join two plain commands
       continue;
     }
-    if (HARD_META_CHARS.has(ch)) hasShellMeta = true;
+    if (hardMeta.has(ch)) hasShellMeta = true;
     current += ch;
     inToken = true;
   }
@@ -175,14 +205,19 @@ export interface Classification {
 }
 
 /** Decide whether a command may auto-run (tier 1) or must be judged. */
-export function classify(command: string, settings: Pick<ExecSettings, 'allowlist'>): Classification {
-  const parsed = parseCommand(command);
+export function classify(
+  command: string,
+  settings: Pick<ExecSettings, 'allowlist'>,
+  platform: NodeJS.Platform = process.platform
+): Classification {
+  const parsed = parseCommand(command, platform);
   if (parsed.hasShellMeta || !parsed.segments.length) {
     return { tier: 'judge', prefixes: [], hasShellMeta: parsed.hasShellMeta };
   }
   const user = new Set(settings.allowlist);
+  const allowed = staticAllowlist(platform);
   const uncovered = parsed.segments.filter(
-    (seg) => !seg.candidates.some((c) => STATIC_ALLOWLIST.has(c) || user.has(c))
+    (seg) => !seg.candidates.some((c) => allowed.has(c) || user.has(c))
   );
   const prefixes = [...new Set(uncovered.map((seg) => seg.prefix).filter(Boolean))];
   return { tier: uncovered.length ? 'judge' : 'run', prefixes, hasShellMeta: false };
