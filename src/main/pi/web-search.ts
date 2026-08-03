@@ -138,9 +138,15 @@ export async function webAccessVersion(): Promise<string | null> {
  * fans out across everything configured, and Exa additionally works keyless
  * through its public MCP endpoint (a key just upgrades it to the direct API).
  *
- * `xai` is explicit-only in the package — neither `auto` nor `all` will reach for
- * it — because its searches run inside Grok's own inference and are metered
- * against the signed-in account. Picking it has to be a decision.
+ * Four backends are explicit-only in the package — neither `auto` nor `all` will
+ * reach for them, so they answer only when picked by name. `xai` because its
+ * searches run inside Grok's own inference and are metered against the signed-in
+ * account; `anysearch`, `brightdata` and `serpbase` because the package keeps them
+ * out of ALL_SEARCH_PROVIDERS and the fallback chain. Picking one has to be a
+ * decision.
+ *
+ * `brightdata` is also the one backend a key alone does not configure: it needs a
+ * SERP-type zone as well, and its own availability check tests the zone first.
  */
 export const SEARCH_BACKENDS = [
   { id: 'auto', field: null },
@@ -154,6 +160,13 @@ export const SEARCH_BACKENDS = [
   { id: 'parallel', field: 'parallelApiKey' },
   { id: 'tinyfish', field: 'tinyfishApiKey' },
   { id: 'serpdive', field: 'serpdiveApiKey' },
+  { id: 'kagi', field: 'kagiApiKey' },
+  { id: 'ollama', field: 'ollamaApiKey' },
+  { id: 'search1api', field: 'search1apiApiKey' },
+  { id: 'searchinfinity', field: 'searchinfinityApiKey' },
+  { id: 'querit', field: 'queritApiKey' },
+  { id: 'brightdata', field: 'brightdataApiKey', alsoField: 'brightdataSerpZone' },
+  { id: 'serpbase', field: 'serpbaseApiKey' },
   { id: 'anysearch', field: 'anysearchApiKey' },
   { id: 'xai', field: 'xaiApiKey', optional: true },
   { id: 'searxng', field: 'searxngBaseUrl' }
@@ -170,13 +183,20 @@ export const SEARCH_BACKENDS = [
  * - `firecrawlBaseUrl`/`firecrawlApiKey` supply a self-hosted Firecrawl, first in
  *   the chain that `fetch_content` falls back to when a page blocks plain fetching.
  * - `cloudflareApiKey` backs the Gemini-via-Cloudflare path.
+ * - `brightdataUnlockerZone` is the other half of Bright Data's Web Unlocker, a
+ *   paid `fetch_content` fallback. It reuses `brightdataApiKey` but is a different
+ *   zone type from the SERP zone the search backend wants.
  */
 export const WEB_SEARCH_FIELDS: readonly string[] = [
-  ...SEARCH_BACKENDS.flatMap((b) => (b.field ? [b.field as string] : [])),
+  ...SEARCH_BACKENDS.flatMap((b) => [
+    ...(b.field ? [b.field as string] : []),
+    ...('alsoField' in b && b.alsoField ? [b.alsoField as string] : [])
+  ]),
   'cloudflareApiKey',
   'openaiResponsesUrl',
   'firecrawlBaseUrl',
-  'firecrawlApiKey'
+  'firecrawlApiKey',
+  'brightdataUnlockerZone'
 ];
 
 /** Fields holding a secret (masked in the UI); the rest are endpoints. */

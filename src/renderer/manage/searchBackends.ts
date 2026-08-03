@@ -25,12 +25,36 @@
  */
 export type KeyNeed = 'none' | 'keyless' | 'keyless-capped' | 'signin' | 'required';
 
+/**
+ * A second config key a backend also refuses to run without. Only Bright Data has
+ * one: `isBrightDataAvailable()` checks the zone *before* the key, so a saved key
+ * on its own is not "configured", it is a backend that will fail when picked.
+ */
+export interface SearchBackendExtra {
+  field: string;
+  /** Field label in the key list ("Bright Data SERP zone"). */
+  label: string;
+  placeholder?: string;
+  hint?: string;
+  /** How the status line names it when it is the missing half. */
+  noun: string;
+}
+
 export interface SearchBackend {
   id: string;
   label: string;
   /** Config key pi-web-access reads for this backend, or null if it takes none. */
   field: string | null;
+  /** A second key the same backend also requires. See SearchBackendExtra. */
+  also?: SearchBackendExtra;
   need: KeyNeed;
+  /**
+   * Never reached by `auto` or `all` — pi-web-access keeps these out of both the
+   * fallback chain and the fan-out, so they answer only when picked by name. That
+   * makes them invisible to the meta-backends' readiness: a saved AnySearch key
+   * does not mean `auto` has anywhere to go.
+   */
+  explicitOnly?: boolean;
   /** Provider ids (as runtimeStatus reports them) whose auth unlocks it keyless. */
   signedInBy?: string[];
   /**
@@ -60,14 +84,17 @@ export const SEARCH_BACKENDS: SearchBackend[] = [
     need: 'none',
     note:
       'Tries each backend that queries an index before any that costs a model inference, ' +
-      'ending at Exa’s keyless route — so with nothing configured, it ends on a capped allowance.'
+      'ending at Exa’s keyless route. A ChatGPT sign-in sits below that as the fallback, ' +
+      'not the first choice — so being signed in does not mean searches run through ChatGPT.'
   },
   {
     id: 'all',
     label: 'All at once',
     field: null,
     need: 'none',
-    note: 'Queries every configured backend and combines the answers.'
+    note:
+      'Queries every configured backend at once and combines the answers. The explicit-only ' +
+      'ones — Grok, AnySearch, Bright Data, SerpBase — stay out of it.'
   },
   {
     id: 'openai',
@@ -87,6 +114,7 @@ export const SEARCH_BACKENDS: SearchBackend[] = [
     signedInBy: ['xai'],
     signInName: 'Grok',
     placeholder: 'xai-…',
+    explicitOnly: true,
     // Worth stating plainly: this is the one backend that spends something the
     // user also needs for chatting. A single question fans out to roughly a
     // dozen searches inside Grok's own inference.
@@ -112,7 +140,44 @@ export const SEARCH_BACKENDS: SearchBackend[] = [
   { id: 'parallel', label: 'Parallel', field: 'parallelApiKey', need: 'required' },
   { id: 'tinyfish', label: 'TinyFish', field: 'tinyfishApiKey', need: 'required', placeholder: 'sk-tinyfish-…' },
   { id: 'serpdive', label: 'SERPdive', field: 'serpdiveApiKey', need: 'required' },
-  { id: 'anysearch', label: 'AnySearch', field: 'anysearchApiKey', need: 'required' },
+  { id: 'kagi', label: 'Kagi', field: 'kagiApiKey', need: 'required' },
+  {
+    id: 'ollama',
+    label: 'Ollama Cloud',
+    field: 'ollamaApiKey',
+    need: 'required',
+    // Named "Ollama Cloud" because the obvious reading of a bare "Ollama" here is
+    // the local server people run models on, which has nothing to do with this —
+    // the key is for ollama.com's hosted web search API.
+    note: 'Ollama’s hosted web search (ollama.com), not the local server you run models on.'
+  },
+  { id: 'search1api', label: 'Search1API', field: 'search1apiApiKey', need: 'required' },
+  { id: 'searchinfinity', label: 'Searchinfinity', field: 'searchinfinityApiKey', need: 'required' },
+  { id: 'querit', label: 'Querit', field: 'queritApiKey', need: 'required' },
+  {
+    id: 'brightdata',
+    label: 'Bright Data',
+    field: 'brightdataApiKey',
+    need: 'required',
+    explicitOnly: true,
+    also: {
+      field: 'brightdataSerpZone',
+      label: 'Bright Data SERP zone',
+      placeholder: 'serp_api1',
+      noun: 'SERP zone',
+      hint: 'The zone must be of Bright Data type serp — an unblocker zone is priced differently and will not work.'
+    },
+    note: 'Needs both a key and a SERP zone, and is never reached by Automatic or All at once.'
+  },
+  {
+    id: 'serpbase',
+    label: 'SerpBase',
+    field: 'serpbaseApiKey',
+    need: 'required',
+    explicitOnly: true,
+    note: 'Google SERP results. Never reached by Automatic or All at once — pick it by name.'
+  },
+  { id: 'anysearch', label: 'AnySearch', field: 'anysearchApiKey', need: 'required', explicitOnly: true },
   {
     id: 'searxng',
     label: 'SearXNG (self-hosted)',
@@ -126,6 +191,17 @@ export const SEARCH_BACKENDS: SearchBackend[] = [
 /** "key" / "endpoint" — SearXNG is the one backend whose credential is a URL. */
 export function credentialNoun(b: Pick<SearchBackend, 'field'>): string {
   return b.field?.endsWith('ApiKey') ? 'key' : 'endpoint';
+}
+
+/**
+ * What kind of `<input>` a config field wants. A key is masked, an endpoint is a
+ * URL the browser can validate, and a Bright Data zone is neither — it is a bare
+ * account-scoped name, so validating it as a URL would reject every valid value.
+ */
+export function credentialInputType(field: string): 'password' | 'url' | 'text' {
+  if (field.endsWith('ApiKey')) return 'password';
+  if (field.endsWith('Url') || field.endsWith('BaseUrl')) return 'url';
+  return 'text';
 }
 
 /** Field label for a backend's credential: "Exa key" / "SearXNG endpoint". */
@@ -155,9 +231,31 @@ export interface BackendState {
   capped?: boolean;
 }
 
-/** Whether the user has configured no search credential at all. */
-function everyCredentialEmpty(credentials: Record<string, string>): boolean {
-  return SEARCH_BACKENDS.every((b) => !b.field || !credentials[b.field]?.trim());
+const isSet = (credentials: Record<string, string>, field?: string | null): boolean =>
+  !!field && !!credentials[field]?.trim();
+
+/**
+ * Whether `auto` reaches a real search engine before it ever gets to Exa.
+ *
+ * Only the index backends count. Explicit-only ones are skipped because neither
+ * meta-backend can reach them however well configured they are — a saved AnySearch
+ * or Bright Data key must not make `auto` read as sorted. `openai` is skipped for
+ * a different reason: it *is* reachable, but it sits BELOW Exa in the chain, so it
+ * is a backstop rather than the thing that answers (see chatGptBackstop).
+ */
+function hasIndexBackend(credentials: Record<string, string>): boolean {
+  return SEARCH_BACKENDS.some((b) => !b.explicitOnly && b.need === 'required' && isSet(credentials, b.field));
+}
+
+/**
+ * Whether the one inference-backed backend `auto` and `all` can reach is open —
+ * by sign-in or by pasted key. It does not stop `auto` landing on Exa first, but
+ * it does mean a spent Exa allowance is a slower search rather than no search.
+ */
+function chatGptBackstop(credentials: Record<string, string>, providers: string[]): boolean {
+  const openai = SEARCH_BACKENDS.find((b) => b.id === 'openai');
+  if (!openai) return false;
+  return isSet(credentials, openai.field) || (openai.signedInBy ?? []).some((p) => providers.includes(p));
 }
 
 /**
@@ -174,20 +272,39 @@ export function backendState(
   providers: string[]
 ): BackendState {
   if (b.need === 'none') {
-    // The meta-backends inherit the cap when there is nothing else to reach: with
-    // no key anywhere, `auto` walks the chain and lands on Exa's free allowance,
-    // and `all` fans out across the same nothing. Worth saying here rather than
-    // only under Exa — `auto` is the default, so it is what most people are on.
-    return everyCredentialEmpty(credentials)
-      ? {
-          ready: true,
-          group: 'keyless',
-          capped: true,
-          status: 'nothing to set up — but with no key anywhere this ends on Exa’s capped free allowance'
-        }
-      : { ready: true, group: 'keyless', status: 'nothing to set up' };
+    // Three outcomes, not two, because "is `auto` fine?" depends on WHERE in the
+    // chain it lands, not merely on whether some key exists somewhere.
+    //
+    // An index backend (or a keyed Exa) answers before the cap is ever in play.
+    // With neither, `auto` lands on Exa's shared demo allowance — and whether that
+    // is a warning turns on the backstop below it: a ChatGPT subscription makes a
+    // spent allowance a slower search, no subscription makes it no search at all.
+    // `auto` is the default, so this is the line most people read.
+    if (hasIndexBackend(credentials) || isSet(credentials, 'exaApiKey')) {
+      return { ready: true, group: 'keyless', status: 'nothing to set up' };
+    }
+    if (chatGptBackstop(credentials, providers)) {
+      return {
+        ready: true,
+        group: 'keyless',
+        status:
+          'nothing to set up — Exa’s keyless route answers first, and ChatGPT covers searches once it runs out'
+      };
+    }
+    return {
+      ready: true,
+      group: 'keyless',
+      capped: true,
+      status: 'nothing to set up — but with no key anywhere this ends on Exa’s capped free allowance'
+    };
   }
-  if (b.field && credentials[b.field]?.trim()) {
+  if (isSet(credentials, b.field)) {
+    // Bright Data is the one backend a saved key does not finish: without the zone
+    // its own availability check returns false, so reporting "configured" here
+    // would put an unusable backend in the ready section.
+    if (b.also && !isSet(credentials, b.also.field)) {
+      return { ready: false, group: 'unset', status: `${credentialNoun(b)} saved, but it also needs a ${b.also.noun}` };
+    }
     return { ready: true, group: 'configured', status: `${credentialNoun(b)} saved` };
   }
   if (b.need === 'keyless') return { ready: true, group: 'keyless', status: 'no key needed' };
@@ -284,5 +401,15 @@ export const SEARCH_ENDPOINTS: { field: string; label: string; placeholder: stri
     placeholder: 'https://firecrawl.example.com',
     hint: 'Self-hosted Firecrawl, tried first when a page blocks plain fetching.'
   },
-  { field: 'firecrawlApiKey', label: 'Firecrawl key', placeholder: 'fc-…', hint: 'Only if your Firecrawl requires one.' }
+  { field: 'firecrawlApiKey', label: 'Firecrawl key', placeholder: 'fc-…', hint: 'Only if your Firecrawl requires one.' },
+  {
+    field: 'brightdataUnlockerZone',
+    label: 'Bright Data Web Unlocker zone',
+    placeholder: 'unblocker1',
+    // Belongs here rather than under the Bright Data backend: this zone is a paid
+    // fallback for fetching a page, not for searching, and it is a different Bright
+    // Data zone type from the SERP one. Sharing the same brightdataApiKey is the
+    // only thing the two have in common.
+    hint: 'Paid page-fetch fallback, reusing the Bright Data key above. Zone must be of type unblocker.'
+  }
 ];

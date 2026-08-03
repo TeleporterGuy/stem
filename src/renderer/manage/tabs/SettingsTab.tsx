@@ -42,6 +42,7 @@ import {
   backendOptionLabel,
   backendSections,
   backendState,
+  credentialInputType,
   credentialLabel,
   credentialRequirement,
   SEARCH_BACKENDS,
@@ -1268,6 +1269,13 @@ export function SettingsTab({
               combines the answers. Keys below are kept for every backend, so switching between
               them never means re-entering one.
               <br />
+              Automatic orders that chain by cost, not by what you have signed into: every backend
+              that looks something up in an index comes first, then Exa’s keyless route, and only
+              then the ones that spend a whole model inference to run the query for you. So a
+              ChatGPT subscription does <em>not</em> mean your searches go through ChatGPT — it
+              is the fallback for when everything above it is missing or failing. Pick{' '}
+              <strong>ChatGPT / OpenAI</strong> by name if you want it every time.
+              <br />
               The list is grouped by what each backend still wants from you.{' '}
               <strong>Works with no key</strong> holds the ones you can pick right now — ChatGPT
               rides the sign-in you already have under AI Providers, billing searches to that
@@ -1275,6 +1283,10 @@ export function SettingsTab({
               a shared free allowance that resets at midnight UTC, so rows marked{' '}
               <em>free limit, no key</em> work today but will stop once you run it out. A key
               from dashboard.exa.ai is the fix, and Exa’s own free tier is far larger.
+              <br />
+              A few backends — Grok, AnySearch, Bright Data, SerpBase — are never reached by
+              Automatic or All at once, whatever you configure. They answer only when selected by
+              name.
             </InfoTip>
           </span>
           <select
@@ -1300,7 +1312,7 @@ export function SettingsTab({
           {activeBackend?.field && (
             <input
               className="ifield"
-              type={activeBackend.field.endsWith('ApiKey') ? 'password' : 'url'}
+              type={credentialInputType(activeBackend.field)}
               placeholder={
                 activeBackend.placeholder
                   ? `${activeBackend.placeholder}${activeState?.ready ? ' (optional)' : ''}`
@@ -1311,6 +1323,19 @@ export function SettingsTab({
               aria-label={credentialLabel(activeBackend)}
               value={ws.credentials[activeBackend.field] ?? ''}
               onChange={(e) => setCredential(activeBackend.field as string, e.target.value)}
+            />
+          )}
+          {/* Bright Data's second half. Inline beside the key rather than hidden in
+              the full key list, because a key on its own leaves the backend dead
+              and the status line right below already says so. */}
+          {activeBackend?.also && (
+            <input
+              className="ifield"
+              type={credentialInputType(activeBackend.also.field)}
+              placeholder={activeBackend.also.placeholder}
+              aria-label={activeBackend.also.label}
+              value={ws.credentials[activeBackend.also.field] ?? ''}
+              onChange={(e) => setCredential(activeBackend.also!.field, e.target.value)}
             />
           )}
           {activeBackend && activeState && (
@@ -1339,12 +1364,28 @@ export function SettingsTab({
                   </span>
                   <input
                     className="ifield"
-                    type={b.field?.endsWith('ApiKey') ? 'password' : 'url'}
+                    type={credentialInputType(b.field as string)}
                     placeholder={b.placeholder}
                     aria-label={credentialLabel(b)}
                     value={ws.credentials[b.field as string] ?? ''}
                     onChange={(e) => setCredential(b.field as string, e.target.value)}
                   />
+                  {b.also && (
+                    <>
+                      <span className="set-sub">
+                        {b.also.label} <em className="set-opt">(required)</em>
+                      </span>
+                      <input
+                        className="ifield"
+                        type={credentialInputType(b.also.field)}
+                        placeholder={b.also.placeholder}
+                        aria-label={b.also.label}
+                        value={ws.credentials[b.also.field] ?? ''}
+                        onChange={(e) => setCredential(b.also!.field, e.target.value)}
+                      />
+                      {b.also.hint && <em className="muted">{b.also.hint}</em>}
+                    </>
+                  )}
                 </label>
               ))}
               {SEARCH_ENDPOINTS.map((f) => (

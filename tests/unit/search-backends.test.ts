@@ -7,6 +7,7 @@ import {
   backendOptionLabel,
   backendSections,
   backendState,
+  credentialInputType,
   credentialLabel,
   credentialRequirement,
   SEARCH_BACKENDS
@@ -38,6 +39,62 @@ describe('search backend readiness', () => {
       expect(state.capped).toBe(true);
       expect(state.status).toMatch(/Exa/);
     }
+  });
+
+  // The cap is only fatal with nothing underneath it. A ChatGPT subscription is
+  // reachable from `auto` (below Exa) and from `all`, so a spent allowance costs
+  // an inference rather than the day's searches — warning about it as if search
+  // were about to stop is simply wrong for anyone signed in.
+  it('drops the cap warning for the meta-backends when a ChatGPT sign-in backs them', () => {
+    for (const id of ['auto', 'all']) {
+      const state = backendState(backend(id), {}, ['openai-codex']);
+      expect(state.ready).toBe(true);
+      expect(state.capped).toBeUndefined();
+      expect(state.status).toMatch(/ChatGPT covers searches once it runs out/);
+    }
+  });
+
+  it('accepts a pasted OpenAI key as the same backstop', () => {
+    expect(backendState(backend('auto'), { openaiApiKey: 'sk-1' }, []).capped).toBeUndefined();
+  });
+
+  // The correction users actually need: `auto` puts index lookups above the
+  // inference-backed backends, so being signed into ChatGPT does not mean
+  // searches run through it. Exa still answers first.
+  it('says in the note that a ChatGPT sign-in is the fallback, not the first choice', () => {
+    expect(backend('auto').note).toMatch(/fallback, not the first choice/);
+  });
+
+  // A key for a backend `auto` can never reach must not make `auto` read as sorted.
+  it('ignores explicit-only backends when judging whether the metas have somewhere to go', () => {
+    for (const field of ['anysearchApiKey', 'xaiApiKey', 'serpbaseApiKey']) {
+      const state = backendState(backend('auto'), { [field]: 'k' }, []);
+      expect(state.capped).toBe(true);
+    }
+    // An index backend does count — it answers before Exa is ever reached.
+    expect(backendState(backend('auto'), { braveApiKey: 'BSA-1' }, []).capped).toBeUndefined();
+    // So does an Exa key, which lifts the cap on the route `auto` lands on.
+    expect(backendState(backend('auto'), { exaApiKey: 'exa-1' }, []).capped).toBeUndefined();
+  });
+
+  // isBrightDataAvailable() checks the zone before the key, so a key alone is a
+  // backend that fails when picked — it must not sit in the ready section.
+  it('holds Bright Data unready until both the key and the SERP zone are set', () => {
+    const keyOnly = backendState(backend('brightdata'), { brightdataApiKey: 'bd-1' }, []);
+    expect(keyOnly.ready).toBe(false);
+    expect(keyOnly.status).toMatch(/also needs a SERP zone/);
+
+    const both = backendState(
+      backend('brightdata'),
+      { brightdataApiKey: 'bd-1', brightdataSerpZone: 'serp_api1' },
+      []
+    );
+    expect(both).toEqual({ ready: true, group: 'configured', status: 'key saved' });
+  });
+
+  it('names Ollama Cloud so it does not read as the local server', () => {
+    expect(backend('ollama').label).toBe('Ollama Cloud');
+    expect(backend('ollama').note).toMatch(/not the local server/);
   });
 
   // Exa without a key is not "free", it is a shared demo allowance that resets at
@@ -180,6 +237,15 @@ describe('key list annotations', () => {
   it('names the credential after what it actually is', () => {
     expect(credentialLabel(backend('exa'))).toBe('Exa key');
     expect(credentialLabel(backend('searxng'))).toBe('SearXNG endpoint');
+  });
+
+  // A Bright Data zone is a bare account-scoped name. Typed as a URL — which the
+  // old `endsWith('ApiKey') ? password : url` rule would have done — the browser
+  // rejects every valid value.
+  it('picks an input type per field, not just key-or-URL', () => {
+    expect(credentialInputType('braveApiKey')).toBe('password');
+    expect(credentialInputType('searxngBaseUrl')).toBe('url');
+    expect(credentialInputType('brightdataSerpZone')).toBe('text');
   });
 
   it('calls a key optional only when something else already unlocks the backend', () => {

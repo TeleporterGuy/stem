@@ -191,7 +191,22 @@ describe('writeWebSearchConfig', () => {
     for (const picker of PICKER_BACKENDS) {
       const main = SEARCH_BACKENDS.find((b) => b.id === picker.id);
       expect(main?.field ?? null).toBe(picker.field);
+      // Bright Data's second field has to travel too: the picker collects the zone
+      // but the writer decides what reaches web-search.json, so a mismatch here
+      // means the user fills a box whose value is dropped on the way out.
+      const mainAlso = main && 'alsoField' in main ? main.alsoField : undefined;
+      expect(mainAlso ?? null).toBe(picker.also?.field ?? null);
     }
+  });
+
+  it('passes through the second half of a two-field backend', async () => {
+    await writeWebSearchConfig({
+      ...base,
+      credentials: { brightdataApiKey: 'bd-1', brightdataSerpZone: 'serp_api1' }
+    });
+    const file = JSON.parse(readFileSync(webSearchConfigPath(), 'utf-8'));
+    expect(file.brightdataApiKey).toBe('bd-1');
+    expect(file.brightdataSerpZone).toBe('serp_api1');
   });
 
   it('exposes a credential field for every backend that needs one', () => {
