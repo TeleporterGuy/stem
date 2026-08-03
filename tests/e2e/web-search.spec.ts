@@ -6,6 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect } from './electron';
+import { SEARCH_BACKENDS } from '../../src/renderer/manage/searchBackends';
 
 test('the Settings tab exposes the web-search backend picker', async ({ mainWindow }) => {
   await mainWindow.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -49,25 +50,13 @@ test('every backend is selectable, independent of the chat model', async ({ main
   const values = await mainWindow.getByLabel('Search backend', { exact: true }).evaluate((el) =>
     [...(el as HTMLSelectElement).options].map((o) => o.value)
   );
-  // Order follows the readiness sections, so compare as a set.
-  expect([...values].sort()).toEqual(
-    [
-      'auto',
-      'all',
-      'openai',
-      'exa',
-      'brave',
-      'tavily',
-      'perplexity',
-      'gemini',
-      'parallel',
-      'tinyfish',
-      'serpdive',
-      'anysearch',
-      'xai',
-      'searxng'
-    ].sort()
-  );
+  // Against the catalogue rather than a copy of it: a hand-written list here is a
+  // second place to remember, and the one time it was forgotten — seven backends
+  // added in 0.18.0 — it failed the build on main rather than catching anything.
+  // Still a real check, because the picker groups, filters and renders the
+  // catalogue on its way to the DOM, and this asserts nothing is lost or invented
+  // in between. Order follows the readiness sections, so compare as a set.
+  expect([...values].sort()).toEqual(SEARCH_BACKENDS.map((b) => b.id).sort());
 });
 
 // Which backends cost you nothing to try is the first thing you need from this
