@@ -177,6 +177,14 @@ function firstExistingSkill(slugs: string[]): { name: string; description: strin
  * Every failure is swallowed after a log line. This runs behind the user's back
  * on a turn they have already read; there is no reply to attach an error to, and
  * nothing here is worth a visible failure.
+ *
+ * Which is exactly why every outcome is logged and not just the save. A pass that
+ * declined, one whose draft failed the contract twice, one whose model call timed
+ * out, and one that never ran at all are four different problems, and without a
+ * line each they are one indistinguishable silence — the fire rate this whole
+ * design is tuned around becomes unobservable in the only place it is real. So:
+ * one line per turn that reaches here, except the two that carry no information
+ * (mode `off`, and below the gate with no tool calls at all).
  */
 async function runEndOfTurnPass(turn: SettledTurnTrace, bridge: SkillBridge, runtime: Partial<PiRuntime>): Promise<void> {
   try {
@@ -186,7 +194,30 @@ async function runEndOfTurnPass(turn: SettledTurnTrace, bridge: SkillBridge, run
       complete: async (prompt) => runtime.complete!(prompt, { model: settings.skills.model })
     };
     const outcome = await settleSkills(turn, settings.skills.mode, llm);
-    if (!outcome.decision.fire || !outcome.author?.ok) return;
+    if (!outcome.decision.fire) {
+      // Below the gate on a turn that called nothing is the overwhelming majority
+      // of turns and says nothing anyone would read; every other skip is a
+      // decision worth being able to see afterwards.
+      if (turn.trace.length > 0) {
+        log('skills', 'end-of-turn pass skipped', {
+          threadId: turn.threadId,
+          reason: outcome.decision.reason,
+          tools: turn.trace.length
+        });
+      }
+      return;
+    }
+    if (!outcome.author?.ok) {
+      log('skills', 'end-of-turn pass wrote nothing', {
+        threadId: turn.threadId,
+        reason: outcome.author?.reason ?? 'no-outcome',
+        detail: outcome.author?.detail,
+        attempts: outcome.author?.attempts,
+        tools: turn.trace.length,
+        patching: outcome.decision.existing?.name
+      });
+      return;
+    }
 
     const result = await bridge.handleRequest(
       {

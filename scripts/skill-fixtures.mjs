@@ -31,6 +31,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 // they change there, change them here.
 const TRACE_ARGS_MAX_CHARS = 600;
 const TRACE_RESULT_MAX_CHARS = 2_000;
+const TRACE_TURN_MAX_CHARS = 24_000;
 const SECRET_ENVELOPE_KEY = '__stemenc__'; // src/main/pi/protocol.ts
 
 // Selection rules. POSITIVE_MIN_TOOLS matches the backtest in SKILLS-REBUILD.md
@@ -139,6 +140,15 @@ function readSession(path) {
  * Tool calls come from assistant `toolCall` blocks; their outcomes come from the
  * `toolResult` messages that follow, joined on toolCallId — which is where the real
  * `isError` flag lives (nothing infers errors from result text here).
+ *
+ * The per-turn budget is applied here for the same reason the per-entry caps are:
+ * a fixture that carries evidence production would have dropped grades a prompt
+ * nobody ships. A long browser turn blows through 24k around the twentieth call,
+ * and everything after it reaches the author as a bare tool name — so the gate
+ * has to see it that way too. Charged in traversal order (args at the call, the
+ * result when it lands), which matches the runtime for the one-call-at-a-time
+ * traces this reads; a model that emitted several calls in one message would
+ * charge them slightly earlier here than the runtime does.
  */
 function turnsOf(messages, sessionId) {
   const turns = [];
@@ -154,7 +164,7 @@ function turnsOf(messages, sessionId) {
     if (m.role === 'user') {
       close();
       const prose = userProse(blockText(m.content));
-      current = { sessionId, index: turns.length, userText: prose, assistantText: '', trace: [] };
+      current = { sessionId, index: turns.length, userText: prose, assistantText: '', trace: [], traceChars: 0 };
       byCallId.clear();
       continue;
     }
@@ -166,8 +176,9 @@ function turnsOf(messages, sessionId) {
         if (b?.type !== 'toolCall') continue;
         const { name, args } = unwrapTool(b.name, b.arguments);
         const entry = { name: name ?? 'tool' };
-        const rendered = traceArgs(args);
+        const rendered = current.traceChars < TRACE_TURN_MAX_CHARS ? traceArgs(args) : undefined;
         if (rendered) entry.args = rendered;
+        current.traceChars += rendered?.length ?? 0;
         current.trace.push(entry);
         if (typeof b.id === 'string') byCallId.set(b.id, entry);
       }
@@ -178,7 +189,12 @@ function turnsOf(messages, sessionId) {
       if (!entry) continue;
       if (m.isError === true) entry.isError = true;
       const text = blockText(m.content).trim();
-      if (text) entry.result = truncate(text, TRACE_RESULT_MAX_CHARS);
+      // A failure keeps its result whatever the budget says: the error text is the
+      // dead end a skill exists to record. Same exemption as the runtime's.
+      if (text && (entry.isError || current.traceChars < TRACE_TURN_MAX_CHARS)) {
+        entry.result = truncate(text, TRACE_RESULT_MAX_CHARS);
+        current.traceChars += entry.result.length;
+      }
     }
   }
   close();
