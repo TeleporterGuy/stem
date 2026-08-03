@@ -10,7 +10,7 @@
 //     src/main/recall/capture.ts src/main/recall/distill.ts src/main/recall/consolidate.ts \
 //     --outDir .recall-build \
 //     --module commonjs --moduleResolution node --target es2022 --skipLibCheck \
-//     --esModuleInterop --rootDir src
+//     --esModuleInterop --rootDir src --noCheck
 //   printf '{"type":"commonjs"}' > .recall-build/package.json
 //   STEM_RECALL_DB="$PWD/.recall-build/verify.sqlite" ELECTRON_RUN_AS_NODE=1 \
 //     ./node_modules/.bin/electron scripts/recall-verify.mjs
@@ -23,7 +23,10 @@ const require = createRequire(import.meta.url);
 // Compiled output must live inside the repo so Node resolves `electron` from the
 // project's node_modules (a /tmp build can't). See header for the tsc command.
 const BUILD = fileURLToPath(new URL('../.recall-build/main/recall/', import.meta.url));
-const store = require(`${BUILD}/store.js`);
+// The store module exports the RecallStore instance as `recallStore`
+// (module-global functions went away in the class refactor).
+const storeModule = require(`${BUILD}/store.js`);
+const store = storeModule.recallStore;
 const search = require(`${BUILD}/search.js`);
 const inject = require(`${BUILD}/inject.js`);
 const distill = require(`${BUILD}/distill.js`);
@@ -87,8 +90,10 @@ check('fact correction updates source', facts.find((f) => /cardiology follow-up/
 
 // --- 7. inject: builds a context block with facts + relevant hits, excluding current thread ---
 const ctx = await inject.buildRecallContext('what is my UZ Gent cardiology appointment', { currentThreadId: 'B' });
-check('inject includes durable facts', /durable facts/i.test(ctx ?? ''));
-check('inject includes the recalled health snippet', /UZ Gent/.test(ctx ?? ''));
+// v3 payload: facts ride in a JSON block, and the correction above made the
+// stored text lowercase (latest write wins the text), so match case-blind.
+check('inject includes durable facts', /"facts":\[\{/.test(ctx ?? ''));
+check('inject includes the recalled health snippet', /uz gent/i.test(ctx ?? ''));
 check('inject mentions the search tool', /search_past_chats/.test(ctx ?? ''));
 
 // --- 8. distillation: parsing (JSON + bullets + secret filtering) ---
@@ -134,7 +139,8 @@ const consolidateLlm = {
 };
 const res = await consolidate.consolidateFacts(consolidateLlm);
 const afterFacts = store.getAllFacts();
-check('consolidate merges reworded duplicates into one', afterFacts.filter((f) => /Bratislava/.test(f.text)).length === 1 && res.merged === 1);
+// Merge losers survive as superseded audit rows now — count only active facts.
+check('consolidate merges reworded duplicates into one', afterFacts.filter((f) => f.status === 'active' && /Bratislava/.test(f.text)).length === 1 && res.merged === 1);
 check('consolidate never drops a protected fact', afterFacts.some((f) => /HomeNet/.test(f.text)) && res.dropped === 0);
 
 // --- 12. consolidation: a correction rewrites text in place ---
@@ -182,6 +188,6 @@ store.upsertFact('The user keeps another fact', 'distilled');
 store.resetEpisodic();
 check('resetEpisodic clears messages but keeps facts', store.messageCount() === 0 && store.getFacts().length === 1);
 
-store.closeForTest();
+storeModule.closeForTest();
 console.log(failures === 0 ? '\nALL_PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

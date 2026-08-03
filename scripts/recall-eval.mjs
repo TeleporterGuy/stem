@@ -53,7 +53,10 @@ if (!skipBuild) {
       'tsc', ...files,
       '--outDir', '.recall-build',
       '--module', 'commonjs', '--moduleResolution', 'node', '--target', 'es2022',
-      '--skipLibCheck', '--esModuleInterop', '--rootDir', 'src'
+      // noCheck: the graph type-includes the worker-host files, whose
+      // import.meta is a TS1343 under commonjs. They are import-type-only, so
+      // the emitted JS the eval loads never touches them.
+      '--skipLibCheck', '--esModuleInterop', '--rootDir', 'src', '--noCheck'
     ],
     { cwd: ROOT, stdio: 'inherit' }
   );
@@ -67,7 +70,10 @@ process.env.STEM_RECALL_DB = dbPath;
 for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) rmSync(p, { force: true });
 
 const require = createRequire(import.meta.url);
-const store = require(join(BUILD, 'store.js'));
+// The store module exports the RecallStore instance as `recallStore`
+// (module-global functions went away in the class refactor).
+const storeModule = require(join(BUILD, 'store.js'));
+const store = storeModule.recallStore;
 const search = require(join(BUILD, 'search.js'));
 const inject = require(join(BUILD, 'inject.js'));
 const retrieval = require(join(BUILD, 'retrieval.js'));
@@ -272,4 +278,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 console.log('\nALL FLOORS PASS');
-store.closeForTest();
+storeModule.closeForTest();

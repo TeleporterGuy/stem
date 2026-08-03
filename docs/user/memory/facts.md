@@ -48,8 +48,9 @@ Actions appear on a fact:
 ## What Stem chooses
 
 Stem normally sends only facts relevant to the current message, not the whole store.
-Sensitive facts need a more direct match. Conflicted, expired, and unconfirmed
-details inferred by Stem are excluded.
+Sensitive facts need a more direct match. Expired and unconfirmed details inferred
+by Stem are excluded. While two facts disagree, one side may still be sent, marked
+as **disputed** so the model treats it as uncertain rather than forgetting both.
 
 Selected facts go to the model used for that chat—local or cloud.
 
@@ -64,7 +65,10 @@ use.
   Memory. A remote model receives transcript excerpts and may use provider quota.
 - **Tidy up automatically** — merges duplicates and drops stale facts after the chosen
   number of new facts.
-- **Conflicts** — keep the newer fact, the older fact, or both.
+- **Conflicts** — keep the newer fact, the older fact, or both. Stem also resolves
+  conflicts between inferred facts on its own in the background (keeping the better
+  supported side, keeping both, or rewriting them into corrected statements); a
+  conflict that involves something you stated explicitly is always left for you.
 
 Leave **Relevance ranking (advanced)** at its default unless fact matching is poor.
 Built-in matching runs locally. A configured server receives fact text and each

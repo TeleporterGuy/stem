@@ -438,7 +438,7 @@ export function buildDistillBatch(cursor: DistillCursor, maxChars = MAX_TRANSCRI
   const seenDocs = new Set<string>();
   for (const row of docRows) {
     for (const d of row.docs) {
-      const key = `${d.folderId} ${d.relPath}`;
+      const key = `${d.folderId}\x00${d.relPath}`;
       if (seenDocs.has(key) || docs.length >= MAX_BATCH_DOCS) continue;
       seenDocs.add(key);
       docs.push({
