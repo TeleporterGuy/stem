@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
@@ -7,6 +7,8 @@ import {
   execEnv,
   MAX_TIMEOUT_MS,
   OUTPUT_CAP_BYTES,
+  resetLoginPathCacheForTests,
+  resolveLoginPath,
   runCommand,
   shellInvocation
 } from '../../src/main/exec/executor';
@@ -52,6 +54,23 @@ describe('shellInvocation', () => {
     expect(inv.command.toLowerCase()).toMatch(/cmd\.exe$/);
   });
 
+});
+
+describe('resolveLoginPath', () => {
+  afterEach(() => resetLoginPathCacheForTests());
+
+  it('caches per platform, so the parameter keeps working after the first call', async () => {
+    process.env.STEM_TEST_WINPATH = 'x';
+    try {
+      const win = await resolveLoginPath('win32');
+      expect(win).toBe(process.env.Path || process.env.PATH || '');
+      // A single cache would hand this back the win32 answer.
+      const posix = await resolveLoginPath('darwin');
+      expect(posix).toContain('/');
+    } finally {
+      delete process.env.STEM_TEST_WINPATH;
+    }
+  });
 });
 
 describe('execEnv', () => {
