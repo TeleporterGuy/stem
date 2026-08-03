@@ -223,16 +223,30 @@ export function classify(
   return { tier: uncovered.length ? 'judge' : 'run', prefixes, hasShellMeta: false };
 }
 
+/** How to describe the host shell to the judge — one shell, the one that will run. */
+export function hostShellLabel(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? 'a Windows machine, under cmd.exe' : "the user's machine, under zsh";
+}
+
 /**
  * The one-shot classification prompt for the safety judge. Safety is judged
  * relative to the user's request when it is available — a download the user
  * asked for is expected; the same download out of nowhere is not.
+ *
+ * The prompt names the one shell that will actually run the command: what is
+ * destructive in cmd is not what is destructive in zsh, and asking about both
+ * at once only invites the model to hedge.
  */
-export function buildJudgePrompt(command: string, cwd: string, userIntent?: string): string {
+export function buildJudgePrompt(
+  command: string,
+  cwd: string,
+  userIntent?: string,
+  platform: NodeJS.Platform = process.platform
+): string {
   const intent = (userIntent ?? '').trim().slice(0, 800);
   return [
-    'An AI assistant working on a request from its user wants to run a shell command on',
-    "the user's machine (zsh on macOS/Linux, cmd.exe on Windows). Classify whether the",
+    `An AI assistant working on a request from its user wants to run a shell command on`,
+    `${hostShellLabel(platform)}. Classify whether the`,
     'command is safe to run without asking the user first. Reply with exactly one word',
     '— safe, unsafe, or unsure — optionally followed on the same line by a very short reason.',
     '',

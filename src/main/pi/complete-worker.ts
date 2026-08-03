@@ -11,6 +11,21 @@ import { PiProcess, stderrReason, type PiEvent } from './rpc';
 /** Budget for get_state after spawn — fail fast instead of burning the LLM timer. */
 export const COMPLETE_READY_TIMEOUT_MS = 20_000;
 
+/**
+ * Queue a complete() waiter. Priority entries (the exec safety judge) insert
+ * before the first non-priority waiter, so a burst of Recall distills cannot
+ * leave a command's safety check waiting behind all of them.
+ */
+export function insertCompleteWaiter<T extends { priority: boolean }>(waiters: T[], entry: T): void {
+  if (!entry.priority) {
+    waiters.push(entry);
+    return;
+  }
+  const idx = waiters.findIndex((w) => !w.priority);
+  if (idx === -1) waiters.push(entry);
+  else waiters.splice(idx, 0, entry);
+}
+
 export const COMPLETE_SYSTEM_PROMPT =
   'You are a precise extraction engine. Follow the instructions exactly and output only what is requested.';
 

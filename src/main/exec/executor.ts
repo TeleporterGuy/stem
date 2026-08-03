@@ -48,16 +48,11 @@ export function shellInvocation(
   return { command: '/bin/zsh', args: ['-c', command], detached: true };
 }
 
-/** Human label for tool descriptions / judge prompts. */
-export function hostShellLabel(platform: NodeJS.Platform = process.platform): string {
-  return platform === 'win32' ? 'Windows (cmd.exe)' : 'macOS/Linux (zsh)';
-}
-
-let loginPathPromise: Promise<string> | null = null;
+const loginPathCache = new Map<NodeJS.Platform, Promise<string>>();
 
 /** Test seam: clear the cached PATH so unit tests can re-probe. */
 export function resetLoginPathCacheForTests(): void {
-  loginPathPromise = null;
+  loginPathCache.clear();
 }
 
 /**
@@ -65,14 +60,17 @@ export function resetLoginPathCacheForTests(): void {
  * Unix: login-shell zsh (`-lc`) so Homebrew/npm bins are visible.
  * Windows: process Path/PATH (GUI apps already inherit the user environment;
  * there is no zsh to probe). Falls back to an empty string if unset.
+ *
+ * Cached per platform, not globally: one cache would hand a caller passing
+ * 'win32' whatever the first caller resolved, which makes the parameter a seam
+ * that only works once.
  */
-export function resolveLoginPath(
-  platform: NodeJS.Platform = process.platform
-): Promise<string> {
-  if (!loginPathPromise) {
-    loginPathPromise = platform === 'win32' ? Promise.resolve(windowsPath()) : probeZshLoginPath();
-  }
-  return loginPathPromise;
+export function resolveLoginPath(platform: NodeJS.Platform = process.platform): Promise<string> {
+  const cached = loginPathCache.get(platform);
+  if (cached) return cached;
+  const promise = platform === 'win32' ? Promise.resolve(windowsPath()) : probeZshLoginPath();
+  loginPathCache.set(platform, promise);
+  return promise;
 }
 
 function windowsPath(): string {
@@ -112,16 +110,20 @@ function probeZshLoginPath(): Promise<string> {
  * The environment exec children get: the user's env minus Stem/pi internals.
  * Deliberately NOT the pi runtime's sanitizedEnv — that one is pi-oriented and
  * injects PI_CODING_AGENT_DIR etc., none of which a user command should see.
- * On Windows both Path and PATH are set so cmd.exe and Node children agree.
+ *
+ * Environment names are case-insensitive on Windows but the object we build is
+ * not, so the copy is made without whichever casing of PATH the host used and
+ * the platform's own spelling is written back — otherwise the child inherits
+ * both `Path` and `PATH` and which one wins is anyone's guess.
  */
-export function execEnv(loginPath: string): NodeJS.ProcessEnv {
+export function execEnv(loginPath: string, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (key.startsWith('STEM_') || key.startsWith('PI_') || key === 'ELECTRON_RUN_AS_NODE') continue;
+    if (key.toUpperCase() === 'PATH') continue;
     env[key] = value;
   }
-  env.PATH = loginPath;
-  if (process.platform === 'win32') env.Path = loginPath;
+  env[platform === 'win32' ? 'Path' : 'PATH'] = loginPath;
   return env;
 }
 

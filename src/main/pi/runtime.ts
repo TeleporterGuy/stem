@@ -85,6 +85,7 @@ import { PiProcess, stderrReason, type PiEvent } from './rpc';
 import {
   completeInternalCwd,
   ensureCompleteModel,
+  insertCompleteWaiter,
   promptComplete,
   resetCompleteConversation,
   spawnReadyCompleteChild
@@ -399,24 +400,6 @@ interface SessionFile {
   createdAt: number;
   updatedAt: number;
 }
-
-/**
- * Queue a complete() waiter. Priority entries (exec safety judge) insert before
- * the first non-priority waiter so distill bursts do not starve the judge.
- * Exported for unit tests.
- */
-export function insertCompleteWaiter<T extends { priority: boolean }>(waiters: T[], entry: T): void {
-  if (!entry.priority) {
-    waiters.push(entry);
-    return;
-  }
-  const idx = waiters.findIndex((w) => !w.priority);
-  if (idx === -1) waiters.push(entry);
-  else waiters.splice(idx, 0, entry);
-}
-
-/** Re-export for existing unit tests. */
-export { emptyCompleteError } from './complete-errors';
 
 /**
  * The pi (pi.dev) backend, run in RPC mode as a long-lived subprocess.

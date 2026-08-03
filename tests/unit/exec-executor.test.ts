@@ -5,7 +5,6 @@ import {
   clampTimeout,
   DEFAULT_TIMEOUT_MS,
   execEnv,
-  hostShellLabel,
   MAX_TIMEOUT_MS,
   OUTPUT_CAP_BYTES,
   runCommand,
@@ -53,10 +52,6 @@ describe('shellInvocation', () => {
     expect(inv.command.toLowerCase()).toMatch(/cmd\.exe$/);
   });
 
-  it('labels the host shell for tool/judge copy', () => {
-    expect(hostShellLabel('win32')).toContain('cmd.exe');
-    expect(hostShellLabel('darwin')).toContain('zsh');
-  });
 });
 
 describe('execEnv', () => {
@@ -64,7 +59,7 @@ describe('execEnv', () => {
     process.env.STEM_TEST_SECRET = 'x';
     process.env.PI_TEST_DIR = 'y';
     try {
-      const env = execEnv('/opt/homebrew/bin:/usr/bin');
+      const env = execEnv('/opt/homebrew/bin:/usr/bin', 'darwin');
       expect(env.PATH).toBe('/opt/homebrew/bin:/usr/bin');
       expect(env.STEM_TEST_SECRET).toBeUndefined();
       expect(env.PI_TEST_DIR).toBeUndefined();
@@ -76,6 +71,17 @@ describe('execEnv', () => {
       delete process.env.STEM_TEST_SECRET;
       delete process.env.PI_TEST_DIR;
     }
+  });
+
+  it('writes PATH under one casing only', () => {
+    // Windows env names are case-insensitive but a plain object is not: setting
+    // both Path and PATH leaves the child with two entries and no rule for which
+    // of them wins.
+    const win = execEnv('C:\\tools;C:\\Windows', 'win32');
+    expect(win.Path).toBe('C:\\tools;C:\\Windows');
+    expect(Object.keys(win).filter((k) => k.toUpperCase() === 'PATH')).toEqual(['Path']);
+    const posix = execEnv('/usr/bin', 'darwin');
+    expect(Object.keys(posix).filter((k) => k.toUpperCase() === 'PATH')).toEqual(['PATH']);
   });
 });
 

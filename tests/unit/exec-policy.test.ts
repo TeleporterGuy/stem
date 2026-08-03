@@ -223,7 +223,17 @@ describe('buildJudgePrompt', () => {
     expect(prompt).toContain('rm -rf build');
     expect(prompt).toContain('/tmp/work');
     expect(prompt).toMatch(/safe, unsafe, or unsure/);
-    expect(prompt).toMatch(/cmd\.exe on Windows/);
+  });
+
+  it('names the one shell that will run the command, not both', () => {
+    // What is destructive under cmd is not what is destructive under zsh;
+    // describing both invites the model to hedge into `unsure`.
+    const win = buildJudgePrompt('del /q x', 'C:\\work', undefined, 'win32');
+    expect(win).toContain('cmd.exe');
+    expect(win).not.toContain('zsh');
+    const mac = buildJudgePrompt('rm -rf build', '/tmp/work', undefined, 'darwin');
+    expect(mac).toContain('zsh');
+    expect(mac).not.toContain('cmd.exe');
   });
 
   it("embeds the user's request when available, and says so when not", () => {
