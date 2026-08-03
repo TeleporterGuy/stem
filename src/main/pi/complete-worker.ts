@@ -146,7 +146,10 @@ export async function promptComplete(
   };
 
   try {
-    const res = await child.request({ type: 'prompt', message: prompt }, llmTimeoutMs);
+    // Accepting a prompt is a local ack, not the completion — budget it like the
+    // other RPCs. Passing llmTimeoutMs here made the worst case two full LLM
+    // budgets back to back (a 60s judge blocking a tool call for 120s).
+    const res = await child.request({ type: 'prompt', message: prompt }, COMPLETE_READY_TIMEOUT_MS);
     if (!res.success) {
       throw new Error(res.error ?? 'pi rejected the prompt.');
     }

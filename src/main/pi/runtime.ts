@@ -573,6 +573,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private completeWorkerDirty = false;
   /** Cleared for good if pi ever refuses to reset the worker — cold spawns from then on. */
   private completeWorkerReusable = true;
+  /** Bumped by every dispose, so a spawn still in flight knows it has been superseded. */
+  private completeWorkerGeneration = 0;
   /** Coalesce concurrent ensureCompleteWorker() calls. */
   private completeWorkerStarting: Promise<PiProcess> | null = null;
 
@@ -930,16 +932,20 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           log('pi.complete', 'one-shot completion timed out', { timeoutMs: ms, provider, model: modelId });
         });
       } catch (e) {
-        // Only cold-fallback when the warm worker died / never came up. Timeouts
-        // and rejected prompts should surface to the judge without paying another
-        // Electron cold start.
-        if (!this.completeWorker?.running) {
-          await this.disposeCompleteWorker();
-          log('pi.complete', 'warm worker failed — cold fallback', {
-            error: e instanceof Error ? e.message : String(e)
-          });
-          return await this.completeCold(pi, prompt, provider, modelId, timeoutMs);
-        }
+        // Retire the worker whatever went wrong. A timeout or a rejected prompt
+        // leaves pi mid-turn on a process we cannot clear, and prompting it
+        // again just collects "Agent is already processing" from then on — one
+        // slow judge would otherwise put an approval card in front of every
+        // command until the app restarted.
+        const died = !this.completeWorker?.running;
+        await this.disposeCompleteWorker();
+        log('pi.complete', 'warm worker failed — retired', {
+          error: e instanceof Error ? e.message : String(e),
+          died
+        });
+        // Only pay a second cold start when the worker never came up; a call
+        // that already burned its whole timeout should surface now, not twice.
+        if (died) return await this.completeCold(pi, prompt, provider, modelId, timeoutMs);
         throw e;
       } finally {
         this.completeWorkerBusy = false;
@@ -981,6 +987,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     if (this.completeWorkerStarting) return this.completeWorkerStarting;
 
     this.completeWorkerStarting = (async () => {
+      // prewarm() starts this in the background, so a quit during startup can
+      // dispose "the worker" while this spawn is still in flight. Without the
+      // generation check the assignment below would resurrect it and leak a pi
+      // child past shutdown.
+      const generation = this.completeWorkerGeneration;
       const pi = await resolvePi();
       if (!pi) throw new Error('The pi backend could not be located.');
       await this.ensurePiHome();
@@ -995,6 +1006,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         provider: resolved.provider,
         modelId: resolved.modelId
       });
+      if (generation !== this.completeWorkerGeneration) {
+        void child.dispose().catch(() => {});
+        throw new Error('The complete worker was shut down while starting.');
+      }
       this.completeWorker = child;
       this.completeWorkerModelKey = `${resolved.provider}/${resolved.modelId}`;
       this.completeWorkerDirty = false;
@@ -1018,6 +1033,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
   private async disposeCompleteWorker(): Promise<void> {
     const worker = this.completeWorker;
+    this.completeWorkerGeneration += 1;
     this.completeWorker = null;
     this.completeWorkerModelKey = null;
     this.completeWorkerStarting = null;

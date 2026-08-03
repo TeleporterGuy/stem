@@ -88,6 +88,19 @@ describe('promptComplete', () => {
     await expect(promptComplete(child, 'classify this', 5_000)).rejects.toThrow(/already processing/);
   });
 
+  it('budgets the prompt ack separately from the LLM wait', async () => {
+    // The ack is local; giving it the LLM budget made the worst case two full
+    // budgets back to back (a 60s judge blocking a tool call for 120s).
+    const request = vi.fn(async (_command: Record<string, unknown>, _timeoutMs?: number) => ({
+      type: 'response' as const,
+      command: 'prompt',
+      success: false
+    }));
+    const child = mockChild({ request });
+    await expect(promptComplete(child, 'hi', 60_000)).rejects.toThrow();
+    expect(request.mock.calls[0]?.[1]).toBe(COMPLETE_READY_TIMEOUT_MS);
+  });
+
   it('returns assistant text after prompt accept + agent_end', async () => {
     const child = mockChild({
       request: async (cmd) => {
