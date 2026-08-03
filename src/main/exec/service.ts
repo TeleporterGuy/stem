@@ -21,8 +21,22 @@ const APPROVAL_TIMEOUT_MS = 120_000;
 // practice and dumped perfectly fine commands onto approval cards. Windows
 // Electron-as-Node cold start needs more headroom than 30s (Windows especially).
 export const JUDGE_TIMEOUT_MS = 60_000;
-/** Cap how much of a complete() error we paste into the approval card. */
-const JUDGE_ERROR_REASON_MAX = 200;
+/**
+ * Why the safety check couldn't answer, in words the approval card can use.
+ * The exception text itself goes to the log — `pi exited (code 1, signal null)`
+ * is a cause for us, not for someone deciding whether to run a command. Returns
+ * undefined when there is nothing to add beyond "it could not run", which the
+ * card already says.
+ */
+function judgeFailureReason(detail: string): string | undefined {
+  // Lowercase fragments: the card renders these after "…could not run: ".
+  const lower = detail.toLowerCase();
+  if (lower.includes('timed out')) return 'it did not answer in time';
+  if (lower.includes('no api key') || lower.includes('unknown provider') || lower.includes('not found'))
+    return 'no model was available to run it';
+  if (lower.includes('could not be located')) return 'the pi backend could not start';
+  return undefined;
+}
 /** listModels() is an RPC to the backend; cache it — the judge runs per command. */
 const MODELS_CACHE_TTL_MS = 5 * 60_000;
 /** Concurrent command cap; further tool calls queue rather than forking shells. */
@@ -186,10 +200,9 @@ export class ExecService implements ExecBridge {
       return parseJudgeVerdict(reply);
     } catch (e) {
       const detail = (e instanceof Error ? e.message : String(e)).trim() || 'unknown error';
-      const clipped =
-        detail.length > JUDGE_ERROR_REASON_MAX ? `${detail.slice(0, JUDGE_ERROR_REASON_MAX - 1)}…` : detail;
       log('exec', 'judge failed — escalating to approval', { error: detail });
-      return { verdict: 'failed', reason: clipped };
+      const reason = judgeFailureReason(detail);
+      return reason ? { verdict: 'failed', reason } : { verdict: 'failed' };
     }
   }
 

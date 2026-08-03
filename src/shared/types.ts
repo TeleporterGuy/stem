@@ -835,7 +835,10 @@ export interface ExecApprovalRequest {
    * null = judge skipped (manual mode); 'failed' = complete() threw before a verdict.
    */
   judgeVerdict: 'unsafe' | 'unsure' | 'failed' | null;
-  /** The judge's short reason, or the underlying error when the check failed. */
+  /**
+   * The judge's short reason, or — when the check failed — why it could not run,
+   * in the same lowercase-fragment shape. The underlying error goes to the log.
+   */
   judgeReason?: string;
 }
 

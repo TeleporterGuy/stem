@@ -30,7 +30,7 @@ function model(id: string, provider: string, isDefault = false): ModelSummary {
 function baseSettings(): AppSettings {
   return {
     exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] }
-  } as AppSettings;
+  } as unknown as AppSettings;
 }
 
 describe('insertCompleteWaiter', () => {
@@ -118,7 +118,7 @@ describe('ExecService judge', () => {
     expect(approvals[0]?.judgeVerdict).toBe('unsure');
   });
 
-  it('escalates with judgeVerdict failed and the real error when complete throws', async () => {
+  it('escalates with judgeVerdict failed, saying why in the card\'s voice', async () => {
     completeImpl = async () => {
       throw new Error('pi completion timed out.');
     };
@@ -132,6 +132,37 @@ describe('ExecService judge', () => {
     expect(result.ok).toBe(false);
     expect(approvals).toHaveLength(1);
     expect(approvals[0]?.judgeVerdict).toBe('failed');
-    expect(approvals[0]?.judgeReason).toContain('pi completion timed out.');
+    // Renders as "The automatic safety check could not run: it did not answer in
+    // time." — the exception text belongs in the log, not on the card.
+    expect(approvals[0]?.judgeReason).toBe('it did not answer in time');
+  });
+
+  it('says nothing beyond "could not run" when the cause has no user-facing form', async () => {
+    completeImpl = async () => {
+      throw new Error('pi exited (code 1, signal null): TypeError: x is not a function');
+    };
+    await service.handleExecRequest({
+      command: PS,
+      cwd,
+      threadId: 't1',
+      isScheduled: false,
+      currentModel: 'anthropic/claude-opus-4'
+    });
+    expect(approvals[0]?.judgeVerdict).toBe('failed');
+    expect(approvals[0]?.judgeReason).toBeUndefined();
+  });
+
+  it('names a missing model, the one cause the user can act on', async () => {
+    completeImpl = async () => {
+      throw new Error('No API key configured for provider "xai".');
+    };
+    await service.handleExecRequest({
+      command: PS,
+      cwd,
+      threadId: 't1',
+      isScheduled: false,
+      currentModel: 'xai/grok-4.5'
+    });
+    expect(approvals[0]?.judgeReason).toBe('no model was available to run it');
   });
 });
