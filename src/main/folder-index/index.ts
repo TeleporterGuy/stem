@@ -314,6 +314,9 @@ export async function searchFolderDocs(
   );
   return perFolder
     .flat()
+    // Sound only because hybridSearchDocs returns RRF scores on every path
+    // (search-core.ts) — one folder on raw bm25 would sort inverted here and
+    // always lose to an embedded folder's positive scores.
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }

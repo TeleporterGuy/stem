@@ -267,7 +267,10 @@ export function ftsSearchMessages(
         ts: r.ts as number,
         text: r.text as string,
         snippet: r.snippet as string,
-        score: r.score as number
+        score: r.score as number,
+        // Carried on every path (fused or FTS-only): inject's strong-raw gate
+        // reads it, and the fused hit's `score` is rewritten to the RRF scale.
+        ftsScore: r.score as number
       }))
       .filter((h) => h.score <= FTS_SCORE_CEILING);
   } catch {
@@ -457,12 +460,16 @@ export async function hybridSearchMessages(
     }
     if (opts.timingSink) opts.timingSink.semantic = Date.now() - semStart;
   }
-  if (sem.length === 0) return fts.slice(0, limit);
+  // Single-list RRF on the FTS-only path keeps `score` on one scale (RRF,
+  // higher = better) for every caller — raw bm25 leaking through here inverted
+  // any downstream cross-source sort. Ordering is unchanged (RRF is monotone
+  // in bm25 rank); the per-leg evidence stays in ftsScore.
+  if (sem.length === 0) return rrfFuse([fts], limit, (h) => h.ts, () => {});
 
   // First sighting wins (FTS hits carry the real snippet); the other leg's
   // evidence is grafted onto it.
   return rrfFuse(
-    [fts.map((h) => ({ ...h, ftsScore: h.score })), sem],
+    [fts, sem],
     limit,
     (h) => h.ts,
     (prior, other) => {
@@ -600,7 +607,8 @@ export function ftsSearchSummaries(
         text: r.text as string,
         firstTs: r.firstTs as number,
         lastTs: r.lastTs as number,
-        score: r.score as number
+        score: r.score as number,
+        ftsScore: r.score as number
       }))
       .filter((h) => h.score <= FTS_SCORE_CEILING);
   } catch {
@@ -694,9 +702,10 @@ export async function hybridSearchSummaries(
       // Semantic leg optional.
     }
   }
-  if (sem.length === 0) return fts.slice(0, limit);
+  // Same one-scale rule as hybridSearchMessages: FTS-only still returns RRF scores.
+  if (sem.length === 0) return rrfFuse([fts], limit, (h) => h.lastTs, () => {});
   return rrfFuse(
-    [fts.map((h) => ({ ...h, ftsScore: h.score })), sem],
+    [fts, sem],
     limit,
     (h) => h.lastTs,
     (prior, other) => {
@@ -759,7 +768,8 @@ export function ftsSearchDocs(
         mtime: r.mtime as number,
         text: r.text as string,
         snippet: r.snippet as string,
-        score: r.score as number
+        score: r.score as number,
+        ftsScore: r.score as number
       }))
       .filter((h) => total < DOC_FTS_GATE_MIN_DOCS || h.score <= FTS_SCORE_CEILING);
   } catch {
@@ -845,9 +855,14 @@ export async function hybridSearchDocs(
       // Semantic leg optional.
     }
   }
-  if (sem.length === 0) return fts.slice(0, limit);
+  // One-scale rule (see hybridSearchMessages). For docs it is load-bearing
+  // beyond a single index: folder-index/index.ts merges hits ACROSS folder
+  // indexes by `score`, and raw bm25 here (negative, more-negative = better)
+  // both inverted the FTS-only ranking and lost against any embedded folder's
+  // positive RRF scores.
+  if (sem.length === 0) return rrfFuse([fts], limit, (h) => h.mtime, () => {});
   return rrfFuse(
-    [fts.map((h) => ({ ...h, ftsScore: h.score })), sem],
+    [fts, sem],
     limit,
     (h) => h.mtime,
     (prior, other) => {

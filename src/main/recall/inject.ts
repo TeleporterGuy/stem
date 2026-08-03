@@ -18,9 +18,10 @@ const { dbHandle, enqueueRelationChecks, getInjectableFacts, getFactsGeneration,
 // the current message — embed the query, cosine-shortlist, then rerank — and only
 // those clearing their sensitivity's cosine gate are injected, capped at
 // getMaxRelevantFacts(). If embeddings are disabled/unreachable, we fall back to a
-// model-free lexical (BM25 + trigram) tier that is still query-aware; if even that
-// finds no signal, a turn injects only pinned facts (possibly none) rather than
-// breaking.
+// model-free lexical (BM25 + trigram) tier that is still query-aware and keeps
+// its own sensitivity bar (see SENSITIVE_LEXICAL_MAX_BM25 in search.ts); if even
+// that finds no signal, a turn injects only pinned facts (possibly none) rather
+// than breaking.
 
 const MAX_HITS = 3;
 // Per-leg noise gates (bm25 ceiling, semantic min-cosine) live inside the hybrid

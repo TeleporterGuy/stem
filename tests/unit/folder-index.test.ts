@@ -314,6 +314,26 @@ describe('embedMissingDocVectors + hybridSearchDocs', () => {
     }
   });
 
+  it('FTS-only search ranks best-first on the shared RRF scale (no embeddings)', async () => {
+    const root = freshFolder();
+    writeFileSync(join(root, 'strong.md'), 'Vienna hotel booking: the Vienna hotel reservation and booking confirmation for the Vienna trip.');
+    writeFileSync(join(root, 'weak.md'), 'A note that mentions a hotel once among unrelated grocery lists and errands.');
+    const store = freshStore();
+    try {
+      await scanFolder(store, root);
+      const hits = await hybridSearchDocs(store.handle(), 'vienna hotel booking', { limit: 3 });
+      expect(hits.map((h) => h.relPath)).toEqual(['strong.md', 'weak.md']);
+      // RRF scale on every path: positive, higher = better. Raw bm25 leaking
+      // through the FTS-only path (negative, more-negative = better) inverted
+      // this ordering and the cross-folder merge in folder-index/index.ts.
+      expect(hits.every((h) => h.score > 0)).toBe(true);
+      expect(hits[0].score).toBeGreaterThan(hits[1].score);
+      expect(hits[0].ftsScore).toBeLessThan(0);
+    } finally {
+      store.close();
+    }
+  });
+
   it('short docs are FTS-searchable but never queued for embedding', async () => {
     const root = freshFolder();
     writeFileSync(join(root, 'tiny.md'), 'ok thanks');

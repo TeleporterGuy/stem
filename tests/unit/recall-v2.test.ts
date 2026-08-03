@@ -302,6 +302,27 @@ describe('Recall v2 injection trust boundary', () => {
     expect((await inject.previewFacts('tell me about my sailboat')).facts).toHaveLength(0);
   });
 
+  it('at scale, the lexical tier holds sensitive facts to a strong term match', async () => {
+    // Enough active facts that bm25 magnitudes are meaningful — below
+    // FACT_LEXICAL_GATE_MIN_FACTS the gates deliberately stand down (in a tiny
+    // store a term match IS a direct match; see the small-store case above).
+    for (let i = 0; i < 40; i++) {
+      store.upsertFact(`Filler note ${i}: weekly errand management and grocery planning round ${i}`, { confidence: 0.9 });
+    }
+    store.upsertFact('The user takes insulin for diabetes management', {
+      category: 'health',
+      sensitivity: 'sensitive',
+      confidence: 0.9
+    });
+    // One incidental low-signal shared word ('management') is not a direct
+    // match — before the gate this injected the sensitive fact.
+    const weak = await inject.previewFacts('any management tips for my team offsite?');
+    expect(weak.facts.map((f) => f.text)).not.toContain('The user takes insulin for diabetes management');
+    // A genuinely direct query still clears the stricter sensitive bar.
+    const strong = await inject.previewFacts('remind me about my insulin and diabetes management');
+    expect(strong.facts.map((f) => f.text)).toContain('The user takes insulin for diabetes management');
+  });
+
   it('limits pinned facts to five and uses pinned-only when no relevance signal exists', async () => {
     const ids = Array.from({ length: 6 }, (_, i) => store.upsertFact(`Pinned memory ${i}`, 'explicit')!);
     ids.slice(0, 5).forEach((id) => expect(store.setFactPinned(id, true)).toBe(true));

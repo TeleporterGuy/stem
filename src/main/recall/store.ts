@@ -1826,6 +1826,14 @@ export class RecallStore {
   };
 
 
+  /** Active facts, cheaply — sizes the lexical tier's bm25 noise gates. */
+  countActiveFacts = (): number => {
+    return (this.open().prepare(
+      `SELECT COUNT(*) AS n FROM facts WHERE status = 'active'`
+    ).get() as { n: number }).n;
+  };
+
+
   /** Open conflicts, cheaply — gates the relation-check producer pass. */
   countOpenConflicts = (): number => {
     return (this.open().prepare(

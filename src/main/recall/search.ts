@@ -2,13 +2,14 @@
 import {
   buildMatchQuery as coreBuildMatchQuery,
   buildTrigramQuery,
+  FTS_SCORE_CEILING,
   hybridSearchMessages,
   type EmbedQueryFn,
   type QueryEmbedding
 } from './search-core';
 import { scanMessagesOffThread } from './scan';
 import { recallStore, type SearchHit, type SearchOptions, type Fact } from './store';
-const { search: storeSearch, dbHandle, factTermSearch, factTrigramSearch } = recallStore;
+const { search: storeSearch, countActiveFacts, dbHandle, factTermSearch, factTrigramSearch } = recallStore;
 
 // The stable retrieval interface. Everything in the MAIN process that recalls
 // past conversation goes through here; the mechanics live in search-core.ts,
@@ -45,11 +46,30 @@ export function recencyWeight(ageDays: number): number {
 }
 
 /**
+ * A sensitive fact on the lexical tier needs a materially strong term match, not
+ * just any token overlap — the counterpart of its stricter 0.82 cosine gate on
+ * the semantic tier (inject.ts). Well below the -0.1 noise ceiling.
+ */
+export const SENSITIVE_LEXICAL_MAX_BM25 = -1;
+
+/**
+ * Below this many active facts both lexical bm25 gates are skipped: bm25
+ * magnitudes scale with IDF, and in a small store every score collapses toward
+ * 0 — the same scale-awareness as ftsSearchDocs' DOC_FTS_GATE_MIN_DOCS. The
+ * one-incidental-shared-word leak the gates exist for is a large-store
+ * phenomenon; in a 20-fact store a term match IS a direct match.
+ */
+export const FACT_LEXICAL_GATE_MIN_FACTS = 32;
+
+/**
  * Lexical (BM25) relevance ranking of durable facts against a raw user message —
- * the no-embeddings fallback tier. Exact term matches rank first (bm25, with a mild
- * recency blend so near-ties prefer fresher facts); trigram substring matches
- * (inflected/partial forms the term index misses) fill any remaining room. Returns
- * up to `limit` facts, best first; empty when the query has no searchable terms or
+ * the no-embeddings fallback tier. Exact term matches rank first (bm25-gated like
+ * every other FTS leg, with a mild recency blend so near-ties prefer fresher
+ * facts); trigram substring matches (inflected/partial forms the term index
+ * misses) fill any remaining room. Sensitivity keeps a stricter bar here too:
+ * sensitive facts need a strong bm25 match and never ride the trigram fill,
+ * whose recency ordering carries no relevance signal at all. Returns up to
+ * `limit` facts, best first; empty when the query has no searchable terms or
  * nothing matches — callers then fall back to recency.
  */
 export function rankFactsLexically(rawQuery: string, limit: number, nowSec?: number): Fact[] {
@@ -60,8 +80,11 @@ export function rankFactsLexically(rawQuery: string, limit: number, nowSec?: num
 
   const termMatch = buildMatchQuery(rawQuery);
   if (termMatch) {
+    const gated = countActiveFacts() >= FACT_LEXICAL_GATE_MIN_FACTS;
     // Pull a pool wider than `limit`, then re-sort with the recency blend folded in.
     factTermSearch(termMatch, Math.max(limit * 4, limit))
+      .filter((f) => !gated || f.score <= FTS_SCORE_CEILING)
+      .filter((f) => f.sensitivity !== 'sensitive' || !gated || f.score <= SENSITIVE_LEXICAL_MAX_BM25)
       .map((f) => ({ f, blended: f.score - FACT_RECENCY_WEIGHT * recencyWeight((now - f.updatedAt) / 86400) }))
       .sort((a, b) => a.blended - b.blended)
       .forEach(({ f }) => {
@@ -75,7 +98,7 @@ export function rankFactsLexically(rawQuery: string, limit: number, nowSec?: num
     const trigMatch = buildTrigramQuery(rawQuery);
     if (trigMatch) {
       for (const f of factTrigramSearch(trigMatch, limit)) {
-        if (seen.has(f.id)) continue;
+        if (seen.has(f.id) || f.sensitivity === 'sensitive') continue;
         seen.add(f.id);
         ranked.push(f);
         if (ranked.length >= limit) break;

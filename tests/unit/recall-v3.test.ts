@@ -780,3 +780,55 @@ describe('reset recall is a hard cancellation barrier (episodic generation)', ()
     expect(store.getAllFacts().some((f) => /Hetzner/.test(f.text))).toBe(false);
   });
 });
+
+describe('FTS-only strong-raw gate (no embeddings)', () => {
+  it('keeps a near-verbatim lexical raw hit alongside summary hits', async () => {
+    store.resetEpisodic();
+    retrieval.setRetrievalClients({ embeddings: null, rerank: null });
+    // Enough unrelated mass that bm25 magnitudes are realistic — in a
+    // near-empty store every score collapses toward 0 and the noise gates
+    // (rightly) strain everything out.
+    for (let i = 0; i < 25; i++) {
+      store.recordMessage({
+        threadId: `noise-${i % 5}`,
+        role: 'user',
+        text: `Unrelated filler note ${i}: groceries, laundry rotation, and a reminder to water the balcony plants on Thursday.`
+      });
+      if (i < 5) {
+        store.upsertSummary({
+          threadId: `noise-${i}`,
+          text: `Talked through household planning number ${i}: groceries, laundry and plant watering schedules.`,
+          firstTs: 1,
+          lastTs: 2,
+          newMessageCount: 5,
+          lastMessageId: i + 1
+        });
+      }
+    }
+    // A thread whose summary matches the query — its presence used to silence
+    // the raw leg entirely, because FTS-only hits carried no ftsScore for the
+    // strong-raw gate to read.
+    store.recordMessage({ threadId: 'sum-t', role: 'user', text: 'Let us discuss the ingress upgrade plan for the cluster.' });
+    store.upsertSummary({
+      threadId: 'sum-t',
+      text: 'Discussed the cluster ingress upgrade: cert-manager renewal flow and the letsencrypt issuer rotation.',
+      firstTs: 1,
+      lastTs: 2,
+      newMessageCount: 1,
+      lastMessageId: 1
+    });
+    // An uncovered thread holding a near-verbatim answer to the query.
+    store.recordMessage({
+      threadId: 'raw-t',
+      role: 'user',
+      text: 'The cert-manager letsencrypt ClusterIssuer for the stem ingress lives in the platform-certs namespace.'
+    });
+    const ctx = await buildRecallContext(
+      'cert-manager letsencrypt clusterissuer stem ingress platform-certs namespace',
+      {}
+    );
+    expect(ctx).toContain('pastConversations');
+    expect(ctx).toContain('pastUserMessages');
+    expect(ctx).toContain('ClusterIssuer');
+  });
+});
