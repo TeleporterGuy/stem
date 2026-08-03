@@ -8,7 +8,7 @@ import { classifyRelation, evidenceDateOf, sweepFactAgainstNeighbours, type Swee
 import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
 import { recallStore, type StoredMessage, type TurnInjectedFacts } from './store';
-const { enqueueRelationChecks, factTermSearch, getDupCosine, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUnconsumedTurnDocs, getUngradedTurnFacts, isRelationChecked, markTurnDocsConsumed, markTurnFactsGraded, recordFactUsage, recordRelationResult, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
+const { enqueueRelationChecks, factTermSearch, getDupCosine, getEpisodicGeneration, getFacts, getFactDetails, getFactsByIds, getFactVectors, getFactsGeneration, getMessagesForDistillFrom, getMeta, getTidyThreshold, getUnconsumedTurnDocs, getUngradedTurnFacts, isRelationChecked, markTurnDocsConsumed, markTurnFactsGraded, recordFactUsage, recordRelationResult, setMeta, supersedeFact, createFactConflict, upsertFact, upsertFactVector } = recallStore;
 
 // Level 1: the reflection pass. Periodically reads conversation that's new since
 // its last run and distills durable, stable facts about the user into the facts
@@ -514,6 +514,12 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   const batch = buildDistillBatch(cursor);
   if (!batch) return 0;
   const factsGeneration = getFactsGeneration();
+  // Reset recall mid-pass is a hard cancellation: message rowids are reused
+  // after its VACUUM, so a cursor (or strike record) written for THIS batch
+  // would silently skip freshly captured messages in the new store — and fact
+  // evidence written now would resurrect erased transcript text.
+  const episodicGeneration = getEpisodicGeneration();
+  const episodicIntact = () => getEpisodicGeneration() === episodicGeneration;
 
   // The segment's injected-doc rows are consumed whenever the segment is —
   // written or abandoned — so they can never be cited twice or linger.
@@ -522,6 +528,7 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   };
 
   const advanceWithoutWriting = () => {
+    if (!episodicIntact()) return 0;
     setMeta(CURSOR_KEY, JSON.stringify(batch.nextCursor));
     setMeta(WATERMARK, String(Math.max(0, batch.nextCursor.messageId - 1)));
     consumeDocRows();
@@ -551,6 +558,7 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
       `${DISTILL_INSTRUCTIONS}\n\nToday's date: ${today}.${knownBlock}${usageBlock}${docsBlock}\n\nTranscript:\n${batch.transcript}`
     );
     const parsed = parseDistillOutput(reply);
+    if (!episodicIntact()) return 0;
     if (!parsed.recognized) {
       // Garbage reply. Retry this exact segment on a later run (grading rides
       // along: ungraded rows stay ungraded) — but only MAX_PARSE_STRIKES times,
@@ -577,6 +585,7 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   // The user may have cleared facts while the model call was in flight. Treat
   // the reviewed transcript as consumed, but never resurrect its facts.
   if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
+  if (!episodicIntact()) return 0;
   applyUsageGrades(usageTurns, usageGrades);
 
   const byId = new Map(batch.messages.map((m) => [m.id, m]));
@@ -614,6 +623,7 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   let i = -1;
   for (const claim of claims) {
     if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
+    if (!episodicIntact()) return 0;
     i += 1;
     const evidenceMessages = claim.evidenceMessageIds.map((id) => byId.get(id)).filter((m): m is StoredMessage => !!m);
     const evidenceDocs = claim.evidenceDocIds.map((key) => docByKey.get(key)).filter((d): d is DistillBatchDoc => !!d);
@@ -716,6 +726,7 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   }
 
   if (getFactsGeneration() !== factsGeneration) return advanceWithoutWriting();
+  if (!episodicIntact()) return 0;
 
   // Mark new material for the consolidation pass to clean up later.
   if (claims.length > 0) {

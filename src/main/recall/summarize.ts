@@ -3,7 +3,7 @@ import { getEmbeddingsClient } from './retrieval';
 import { isRecallEnabled } from '../workspace/memory';
 import type { LlmClient } from './llm';
 import { recallStore, MAX_MERGED_SEGMENT_CHARS, MAX_SEGMENT_CHARS, MAX_SUMMARY_CHARS, type StoredMessage, type SummarySegmentRow } from './store';
-const { addSummarySegment, getSummaryByThread, getSummarySegments, getThreadMessagesAfter, getThreadsNeedingSummary, markSummaryRebuilt, replaceSummarySegments, upsertSummary, upsertSummaryVector } = recallStore;
+const { addSummarySegment, getEpisodicGeneration, getSummaryByThread, getSummarySegments, getThreadMessagesAfter, getThreadsNeedingSummary, markSummaryRebuilt, replaceSummarySegments, upsertSummary, upsertSummaryVector } = recallStore;
 
 // Level 1.5: one rolling English summary per thread — what the conversation
 // covered, decided and left open — revised whenever the distill debounce finds
@@ -151,14 +151,14 @@ function buildWindow(threadId: string, afterId: number): SummaryWindow | null {
 }
 
 /** Cache the fresh summary vector so search doesn't wait for a backfill pass. Best-effort. */
-async function embedSummary(summaryId: number, text: string): Promise<void> {
+async function embedSummary(summaryId: number, text: string, intact: () => boolean): Promise<void> {
   try {
     const emb = getEmbeddingsClient();
     if (!emb || !(await emb.available())) return;
     const model = (await emb.modelId()) ?? '';
     if (!model) return;
     const [vec] = await emb.embed([text], 'passage');
-    if (vec) upsertSummaryVector(summaryId, model, vec);
+    if (vec && intact()) upsertSummaryVector(summaryId, model, vec);
   } catch {
     // Non-fatal — getSummariesMissingVector picks it up later.
   }
@@ -176,7 +176,7 @@ function segmentLine(s: SummarySegmentRow): string {
  * Best-effort: returns the rebuilt text, or null to retry on a later pass
  * (the revision counter stays past the threshold until a rebuild succeeds).
  */
-async function rebuildFromSegments(threadId: string, llm: LlmClient): Promise<string | null> {
+async function rebuildFromSegments(threadId: string, llm: LlmClient, intact: () => boolean): Promise<string | null> {
   let segments = getSummarySegments(threadId);
   if (segments.length < 2) {
     // Nothing to gain over the current rolling text — stop retrying for now.
@@ -198,7 +198,7 @@ async function rebuildFromSegments(threadId: string, llm: LlmClient): Promise<st
         `${MERGE_INSTRUCTIONS}\n\nMini-summaries:\n${toMerge.map(segmentLine).join('\n')}`
       );
       const merged = parseSummary(reply);
-      if (!merged) return null;
+      if (!merged || !intact()) return null;
       replaceSummarySegments(threadId, toMerge.map((s) => s.id), {
         text: merged,
         firstTs: toMerge[0].firstTs,
@@ -222,6 +222,10 @@ async function rebuildFromSegments(threadId: string, llm: LlmClient): Promise<st
  * unmoved and the next pass retries.
  */
 export async function refreshThreadSummary(threadId: string, llm: LlmClient): Promise<boolean> {
+  // Reset recall while a model call is in flight is a hard cancellation: every
+  // write below is gated so erased content is never resurrected.
+  const episodicGeneration = getEpisodicGeneration();
+  const intact = () => getEpisodicGeneration() === episodicGeneration;
   const prior = getSummaryByThread(threadId);
   const window = buildWindow(threadId, prior?.lastMessageId ?? 0);
   if (!window) return false;
@@ -257,7 +261,7 @@ export async function refreshThreadSummary(threadId: string, llm: LlmClient): Pr
   } catch {
     return false; // watermark unmoved — retried on the next distill touch
   }
-  if (!parsed.summary) return false;
+  if (!parsed.summary || !intact()) return false;
 
   const segmentId = parsed.segment
     ? addSummarySegment({
@@ -288,8 +292,8 @@ export async function refreshThreadSummary(threadId: string, llm: LlmClient): Pr
   const row = getSummaryByThread(threadId);
   if (row && !row.segmentsGap && row.revisionsSinceRebuild >= REBUILD_EVERY) {
     try {
-      const rebuilt = await rebuildFromSegments(threadId, llm);
-      if (rebuilt) {
+      const rebuilt = await rebuildFromSegments(threadId, llm, intact);
+      if (rebuilt && intact()) {
         upsertSummary({
           threadId,
           text: rebuilt,
@@ -305,7 +309,7 @@ export async function refreshThreadSummary(threadId: string, llm: LlmClient): Pr
       // Keep the rolling revision; the rebuild retries on a later pass.
     }
   }
-  await embedSummary(id, finalText.slice(0, MAX_SUMMARY_CHARS));
+  await embedSummary(id, finalText.slice(0, MAX_SUMMARY_CHARS), intact);
   return true;
 }
 

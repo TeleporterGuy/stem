@@ -734,3 +734,49 @@ describe('consolidation usage hints', () => {
     expect(prompt).toContain('NEVER a reason to drop a fact that is unique and plausibly true');
   });
 });
+
+describe('reset recall is a hard cancellation barrier (episodic generation)', () => {
+  it('a summary refresh whose model call straddles the reset writes nothing back', async () => {
+    store.resetEpisodic();
+    store.recordMessage({ threadId: 'wipe-1', role: 'user', text: 'Plan the Vienna trip: 800 euro budget, three hotel candidates, and the train times please.' });
+    store.recordMessage({ threadId: 'wipe-1', role: 'assistant', text: 'Vienna trip planned — 800 euro budget, hotel shortlist of three, trains at 07:12 and 09:40.' });
+    const llm = {
+      complete: async () => {
+        // The user hits Reset recall while the summary call is in flight.
+        store.resetEpisodic({ skipVacuum: true });
+        return JSON.stringify({ summary: 'Planned a Vienna trip with an 800 euro budget and three hotel options.' });
+      }
+    };
+    // Before the barrier this resurrected the erased thread as a summary row.
+    expect(await refreshThreadSummary('wipe-1', llm)).toBe(false);
+    expect(store.getSummaryByThread('wipe-1')).toBeNull();
+  });
+
+  it('a distill pass whose model call straddles the reset writes neither facts nor a cursor', async () => {
+    store.resetFacts();
+    store.resetEpisodic();
+    store.recordMessage({ threadId: 'wipe-2', role: 'user', text: 'My monthly hosting fee is 5 euro at Hetzner, billed on the first.' });
+    const [message] = store.getMessagesForDistillFrom(1);
+    const llm = {
+      complete: async () => {
+        store.resetEpisodic({ skipVacuum: true });
+        return JSON.stringify({
+          claims: [{
+            text: 'The user pays 5 euro per month for Hetzner hosting.',
+            category: 'other',
+            sensitivity: 'standard',
+            validUntil: null,
+            evidenceMessageIds: [message.id],
+            supersedesFactIds: [],
+            conflictsWithFactIds: []
+          }]
+        });
+      }
+    };
+    expect(await distillNewMessages(llm)).toBe(0);
+    // A cursor written now would point into the wiped store's reused rowids.
+    expect(store.getMeta(CURSOR_KEY)).toBeNull();
+    // And no fact derived from the erased transcript was resurrected.
+    expect(store.getAllFacts().some((f) => /Hetzner/.test(f.text))).toBe(false);
+  });
+});

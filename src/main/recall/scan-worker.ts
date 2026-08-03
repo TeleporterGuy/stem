@@ -51,7 +51,9 @@ function open(): DatabaseSync {
   // The main process owns the schema; this connection only reads/prunes. A write
   // colliding with the main process (or a main write colliding with our VACUUM)
   // waits instead of throwing SQLITE_BUSY.
-  handle.exec('PRAGMA busy_timeout = 5000;');
+  // Mirrors the main-process handle (store.ts): must outlast one VACUUM round
+  // held by the other side, not just a brief write lock.
+  handle.exec('PRAGMA busy_timeout = 60000;');
   db = handle;
   return handle;
 }

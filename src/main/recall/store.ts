@@ -333,6 +333,7 @@ export const MAX_MERGED_SEGMENT_CHARS = 1400;
 
 
 const FACTS_GENERATION_KEY = 'facts_generation';
+const EPISODIC_GENERATION_KEY = 'episodic_generation';
 
 
 // ---- consolidation (Level 1 cleanup) ----
@@ -517,8 +518,10 @@ export class RecallStore {
     const handle = new DatabaseSync(this.dbPath());
     handle.exec('PRAGMA journal_mode = WAL;');
     // The scan worker (scan-worker.ts) VACUUMs on its own connection; a main-process
-    // write landing in that brief exclusive window must wait, not throw SQLITE_BUSY.
-    handle.exec('PRAGMA busy_timeout = 5000;');
+    // write landing in that exclusive window must wait, not throw SQLITE_BUSY. Sized
+    // to outlast one VACUUM round of a ~100 MB store (the prune loop's budget is
+    // 120 s total, ~8 rounds) — 5 s was shorter than a single round.
+    handle.exec('PRAGMA busy_timeout = 60000;');
     handle.exec(`
       CREATE TABLE IF NOT EXISTS messages (
         id        INTEGER PRIMARY KEY,
@@ -986,39 +989,48 @@ export class RecallStore {
     const text = input.text.trim();
     if (!text) return;
     const handle = this.open();
-    if (input.turnId) {
-      const superseded = handle
-        .prepare(
-          // A literal prefix test — LIKE would read `%`/`_` inside a stored reply as
-          // wildcards, and a false positive here deletes someone's message.
-          `SELECT id FROM messages
-            WHERE thread_id = ? AND turn_id = ? AND role = ?
-              AND text <> ? AND substr(?, 1, length(text)) = text`
-        )
-        .all(input.threadId, input.turnId, input.role, text, text) as { id: number }[];
-      for (const row of superseded) {
-        // No FK cascade — drop the cached vectors in the same pass (episodic
-        // embedding runs at turn end, so normally there are none yet).
-        handle.prepare(`DELETE FROM message_vectors WHERE message_id = ?`).run(row.id);
-        handle.prepare(`DELETE FROM message_chunk_vectors WHERE message_id = ?`).run(row.id);
-        handle.prepare(`DELETE FROM message_chunks WHERE message_id = ?`).run(row.id);
-        handle.prepare(`DELETE FROM messages WHERE id = ?`).run(row.id);
+    // Supersede + insert must be atomic: a failed insert after the deletes would
+    // silently lose the turn's whole reply (capture swallows errors by design).
+    handle.exec('BEGIN');
+    try {
+      if (input.turnId) {
+        const superseded = handle
+          .prepare(
+            // A literal prefix test — LIKE would read `%`/`_` inside a stored reply as
+            // wildcards, and a false positive here deletes someone's message.
+            `SELECT id FROM messages
+              WHERE thread_id = ? AND turn_id = ? AND role = ?
+                AND text <> ? AND substr(?, 1, length(text)) = text`
+          )
+          .all(input.threadId, input.turnId, input.role, text, text) as { id: number }[];
+        for (const row of superseded) {
+          // No FK cascade — drop the cached vectors in the same pass (episodic
+          // embedding runs at turn end, so normally there are none yet).
+          handle.prepare(`DELETE FROM message_vectors WHERE message_id = ?`).run(row.id);
+          handle.prepare(`DELETE FROM message_chunk_vectors WHERE message_id = ?`).run(row.id);
+          handle.prepare(`DELETE FROM message_chunks WHERE message_id = ?`).run(row.id);
+          handle.prepare(`DELETE FROM messages WHERE id = ?`).run(row.id);
+        }
       }
+      handle
+        .prepare(
+          `INSERT OR IGNORE INTO messages (thread_id, turn_id, role, ts, cwd, text, dedup_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          input.threadId,
+          input.turnId ?? null,
+          input.role,
+          input.ts ?? this.nowSeconds(),
+          input.cwd ?? null,
+          text,
+          this.dedupKey(input.threadId, input.turnId, input.role, text)
+        );
+      handle.exec('COMMIT');
+    } catch (err) {
+      handle.exec('ROLLBACK');
+      throw err;
     }
-    handle
-      .prepare(
-        `INSERT OR IGNORE INTO messages (thread_id, turn_id, role, ts, cwd, text, dedup_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        input.threadId,
-        input.turnId ?? null,
-        input.role,
-        input.ts ?? this.nowSeconds(),
-        input.cwd ?? null,
-        text,
-        this.dedupKey(input.threadId, input.turnId, input.role, text)
-      );
   };
 
 
@@ -2691,8 +2703,15 @@ export class RecallStore {
    */
   resetEpisodic = (options: { skipVacuum?: boolean } = {}): void => {
     const handle = this.open();
+    const nextGeneration = this.getEpisodicGeneration() + 1;
     handle.exec('BEGIN');
     try {
+      // Cancellation barrier for in-flight summarize/distill/rebuild passes —
+      // the same role FACTS_GENERATION_KEY plays for resetFacts.
+      handle.prepare(
+        `INSERT INTO meta(key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+      ).run(EPISODIC_GENERATION_KEY, String(nextGeneration));
       handle.exec('DELETE FROM messages');
       handle.exec('DELETE FROM message_vectors');
       handle.exec('DELETE FROM message_chunk_vectors');
@@ -2727,6 +2746,18 @@ export class RecallStore {
   /** Monotonic epoch used to invalidate asynchronous fact writers after a reset. */
   getFactsGeneration = (): number => {
     return Number.parseInt(this.getMeta(FACTS_GENERATION_KEY) ?? '0', 10) || 0;
+  };
+
+
+  /**
+   * Monotonic epoch for the episodic side, bumped by resetEpisodic. Summarize,
+   * distill and rebuild snapshot it before their model calls and drop every
+   * write when it moved: without this barrier an in-flight pass would resurrect
+   * erased content and — after the VACUUM reuses message rowids — persist a
+   * cursor that makes distillation skip freshly captured messages.
+   */
+  getEpisodicGeneration = (): number => {
+    return Number.parseInt(this.getMeta(EPISODIC_GENERATION_KEY) ?? '0', 10) || 0;
   };
 
 

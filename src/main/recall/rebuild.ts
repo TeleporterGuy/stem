@@ -13,6 +13,7 @@ import { recallStore, V1_FACTS_MIGRATED_KEY, type StoredMessage } from './store'
 const {
   countFactsBySource,
   createFactConflict,
+  getEpisodicGeneration,
   getFactDetails,
   getFactsGeneration,
   getMeta,
@@ -99,6 +100,9 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
   const status = getMemoryRebuildStatus();
   if (status.state !== 'running') return status;
   const factsGeneration = getFactsGeneration();
+  // Reset recall mid-batch reuses message rowids (VACUUM) — a cursor persisted
+  // for this batch would point into the erased store. Same barrier as facts.
+  const episodicGeneration = getEpisodicGeneration();
   const cursor: DistillCursor = { messageId: status.cursorMessageId, offset: status.cursorOffset };
   const batch = buildDistillBatch(cursor);
   if (!batch) return save({ ...status, state: 'complete', processedMessages: status.totalMessages });
@@ -113,6 +117,7 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
     const messages = new Map(batch.messages.map((m) => [m.id, m]));
     for (const claim of claims) {
       if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
+      if (getEpisodicGeneration() !== episodicGeneration) return getMemoryRebuildStatus();
       const validIds = claim.evidenceMessageIds.filter((id) => messages.has(id));
       // Backfilled evidence is provenance, not authority (see distill.ts): only a
       // claim whose own citations resolved gets 0.9 confidence and supersede power.
@@ -173,6 +178,7 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
       }
     }
     if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
+    if (getEpisodicGeneration() !== episodicGeneration) return getMemoryRebuildStatus();
     const completedMessages = batch.messages.filter((m) => m.id < batch.nextCursor.messageId).length;
     // Re-read: the model call above takes seconds, and the user may have paused
     // meanwhile. Persist this batch's progress, but never resurrect 'running' over
