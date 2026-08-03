@@ -15,7 +15,6 @@ Pick the feature you see in Stem.
 | [Connected folders](user/connected-folders.md) | Use folders where they already live |
 | [Scheduled tasks](user/scheduled-tasks.md) | Run a prompt later or repeatedly |
 | [Settings](user/settings.md) | Choose providers, permissions, and defaults |
-| [Windows development](windows-dev.md) | Experimental: portable Node, no admin, `npm run dev` |
 
 ## Demo profile
 
@@ -28,3 +27,9 @@ Maya, a fictional independent developer and consultant. Recurring connected fold
 - `Invoices`
 
 Realistic setup. No real personal or company data.
+
+## Running from source
+
+Not a feature you see in Stem — notes for building it.
+
+- [Windows development](windows-dev.md) — portable Node, no admin rights, `npm run dev`. Experimental.
