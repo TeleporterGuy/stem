@@ -1,6 +1,6 @@
 import type { EmbeddingsClient } from './embeddings';
 import { recallStore } from './store';
-const { getMessageEmbedWatermark, getMessagesForEmbedding, replaceMessageChunks, setMessageEmbedWatermark, upsertMessageChunkVector, upsertMessageVector } = recallStore;
+const { getEpisodicGeneration, getMessageEmbedWatermark, getMessagesForEmbedding, replaceMessageChunks, setMessageEmbedWatermark, upsertMessageChunkVector, upsertMessageVector } = recallStore;
 
 // Background embedding of captured messages for semantic episodic search.
 // Watermark-driven (meta key, model-tagged) and always off the turn path: the
@@ -89,6 +89,14 @@ export async function embedNewMessages(
     if (!(await emb.available())) return written;
     const model = await emb.modelId();
     if (!model) return written;
+    // Reset recall mid-pass reuses message rowids (VACUUM), so every write below
+    // an await belongs to the erased store. The watermark is the one that hurts:
+    // getMessagesForEmbedding selects `WHERE id > watermark`, so resurrecting it
+    // would leave every message captured after the reset unembedded until new
+    // rowids climb back past the pre-reset high-water mark. Same barrier as
+    // summarize/distill.
+    const episodicGeneration = getEpisodicGeneration();
+    const intact = () => getEpisodicGeneration() === episodicGeneration;
     for (;;) {
       const batch = getMessagesForEmbedding(getMessageEmbedWatermark(model), batchSize);
       if (batch.length === 0) break;
@@ -101,6 +109,7 @@ export async function embedNewMessages(
         for (let i = 0; i < embeddable.length; i += 64) {
           const slice = embeddable.slice(i, i + 64);
           const vecs = await emb.embed(slice.map((e) => e.text), 'passage');
+          if (!intact()) return written;
           slice.forEach((e, j) => {
             upsertMessageChunkVector(e.messageId, e.chunkIndex, model, vecs[j]);
             // Keep the v1 lead-vector path populated until every consumer has
@@ -110,6 +119,7 @@ export async function embedNewMessages(
         }
         written += new Set(embeddable.map((e) => e.messageId)).size;
       }
+      if (!intact()) return written;
       setMessageEmbedWatermark(model, batch[batch.length - 1].id);
     }
   } catch {

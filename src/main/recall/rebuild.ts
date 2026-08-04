@@ -192,9 +192,13 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
       lastError: undefined
     });
   } catch (error) {
-    // A reset invalidates the in-flight model call and clears rebuild progress.
-    // Its rejection must not recreate that progress as a stale failed run.
+    // Either reset — facts or episodic — invalidates the in-flight model call
+    // and clears rebuild progress; resetEpisodic deletes the progress row
+    // outright. Its rejection must not recreate that progress as a stale failed
+    // run, which a legacy-fact store would then show as "Memory rebuild failed"
+    // right after a clean reset.
     if (getFactsGeneration() !== factsGeneration) return getMemoryRebuildStatus();
+    if (getEpisodicGeneration() !== episodicGeneration) return getMemoryRebuildStatus();
     const latest = getMemoryRebuildStatus();
     return save({
       ...latest,

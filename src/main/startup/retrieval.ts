@@ -6,7 +6,7 @@ import { embedNewMessages } from '../recall/embed-episodic';
 import { scanAllIndexedFolders } from '../folder-index';
 import { getEmbeddingsClient, setRetrievalClients } from '../recall/retrieval';
 import { startEmbedEndpoint } from '../recall/embed-endpoint';
-import { createHttpEmbeddingsClient } from '../recall/embeddings';
+import { createHttpEmbeddingsClient, type EmbeddingsClient } from '../recall/embeddings';
 import { createHttpRerankClient } from '../recall/rerank';
 import { EMBED_CATALOG, localModelCacheKey } from '../recall/embed-catalog';
 import { createEmbedWorkerManager, type EmbedWorkerManager } from '../recall/embed-manager';
@@ -19,7 +19,7 @@ import { spawnScanWorker } from '../recall/scan-worker-host';
 import { setScanWorkerManager } from '../recall/scan';
 import * as activity from '../activity';
 import { recallStore } from '../recall/store';
-const { getFactsGeneration, getFactsMissingVector, pruneMessageVectorsExceptModel, pruneSummaryVectorsExceptModel, pruneVectorsExceptModel, getSummariesMissingVector, upsertFactVectorForSnapshot, upsertSummaryVector } = recallStore;
+const { getEpisodicGeneration, getFactsGeneration, getFactsMissingVector, pruneMessageVectorsExceptModel, pruneSummaryVectorsExceptModel, pruneVectorsExceptModel, getSummariesMissingVector, upsertFactVectorForSnapshot, upsertSummaryVector } = recallStore;
 
 export interface RetrievalRuntime {
   embedManager: EmbedWorkerManager;
@@ -55,6 +55,37 @@ function trackModelStatus(
   if (status.state === 'ready') {
     activity.endByKind(kind, { worked: true, detail: status.dim ? `Ready · ${status.dim}-dim` : 'Ready' });
   }
+}
+
+/**
+ * Backfill thread-summary vectors (Level 1.5 search) for the freshly-ready
+ * model. Every upsert sits under an await, so the pass snapshots the episodic
+ * epoch and drops its writes when a "Reset recall" moved it: reset deletes the
+ * summaries and the VACUUM lets new ones reclaim those ids, and a late upsert
+ * would bind an old embedding to an unrelated summary. Returns how many
+ * summaries were embedded.
+ */
+export async function backfillSummaryVectors(emb: EmbeddingsClient, model: string): Promise<number> {
+  const episodicGeneration = getEpisodicGeneration();
+  const intact = () => getEpisodicGeneration() === episodicGeneration;
+  pruneSummaryVectorsExceptModel(model);
+  const missing = getSummariesMissingVector(model);
+  const handle = activity.begin('memory.summaryEmbed', 'Embedding chat summaries', { stepped: true });
+  let done = 0;
+  for (let i = 0; i < missing.length; i += 64) {
+    if (!intact()) break;
+    const batch = missing.slice(i, i + 64);
+    const vecs = await emb.embed(batch.map((s) => s.text), 'passage');
+    if (!intact()) break;
+    batch.forEach((s, j) => upsertSummaryVector(s.id, model, vecs[j]));
+    done += batch.length;
+    activity.progress(handle, { done, total: missing.length });
+  }
+  activity.end(handle, {
+    worked: done > 0,
+    detail: `Embedded ${done.toLocaleString()} summar${done === 1 ? 'y' : 'ies'}`
+  });
+  return done;
 }
 
 /**
@@ -159,21 +190,7 @@ export function initRetrieval(deps: {
           detail: `Embedded ${factsDone.toLocaleString()} fact${factsDone === 1 ? '' : 's'}`
         });
         // Same hygiene + backfill for thread-summary vectors (Level 1.5 search).
-        pruneSummaryVectorsExceptModel(key);
-        const summariesMissing = getSummariesMissingVector(key);
-        const summaryHandle = activity.begin('memory.summaryEmbed', 'Embedding chat summaries', { stepped: true });
-        let summariesDone = 0;
-        for (let i = 0; i < summariesMissing.length; i += 64) {
-          const batch = summariesMissing.slice(i, i + 64);
-          const vecs = await localEmbeddings.embed(batch.map((s) => s.text), 'passage');
-          batch.forEach((s, j) => upsertSummaryVector(s.id, key, vecs[j]));
-          summariesDone += batch.length;
-          activity.progress(summaryHandle, { done: summariesDone, total: summariesMissing.length });
-        }
-        activity.end(summaryHandle, {
-          worked: summariesDone > 0,
-          detail: `Embedded ${summariesDone.toLocaleString()} summar${summariesDone === 1 ? 'y' : 'ies'}`
-        });
+        await backfillSummaryVectors(localEmbeddings, key);
         // Same hygiene + backfill for the episodic message vectors (semantic
         // episodic search). Watermark-driven and self-guarding, so a concurrent
         // post-turn kick can't double-embed.
