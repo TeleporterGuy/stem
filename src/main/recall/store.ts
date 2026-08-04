@@ -326,6 +326,19 @@ const SEGMENT_SELECT = `id, thread_id AS threadId, text, first_ts AS firstTs, la
   message_count AS messageCount, last_message_id AS lastMessageId, created_at AS createdAt`;
 
 
+/**
+ * Which open conflicts the autonomous adjudicator may act on: under the attempt
+ * cap, both sides still present, and neither side explicit (the user's word is
+ * only ever adjudicated by the user). ONE definition, shared by the selection
+ * query and the gate's count — a count over a wider predicate would keep the
+ * producer pass switched off waiting for conflicts the adjudicator never picks
+ * up. Takes the attempt cap as its single bound parameter.
+ */
+const ADJUDICABLE_CONFLICT_WHERE = `status = 'open' AND adjudicate_attempts < ?
+  AND EXISTS (SELECT 1 FROM facts a WHERE a.id = fact_a AND a.source <> 'explicit')
+  AND EXISTS (SELECT 1 FROM facts b WHERE b.id = fact_b AND b.source <> 'explicit')`;
+
+
 /** Hard cap on stored segment text (merged compaction segments may be longer). */
 export const MAX_SEGMENT_CHARS = 700;
 
@@ -711,6 +724,10 @@ export class RecallStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_relation_pair
         ON fact_relation_checks(fact_a, fact_b);
+      -- The queue's read pattern: pending rows, oldest first. Without it that is a
+      -- full scan plus a sort over a table that only grows.
+      CREATE INDEX IF NOT EXISTS idx_fact_relation_pending
+        ON fact_relation_checks(verdict, created_at);
 
       CREATE TABLE IF NOT EXISTS message_chunks (
         message_id  INTEGER NOT NULL,
@@ -1009,7 +1026,12 @@ export class RecallStore {
     const handle = this.open();
     // Supersede + insert must be atomic: a failed insert after the deletes would
     // silently lose the turn's whole reply (capture swallows errors by design).
-    handle.exec('BEGIN');
+    // IMMEDIATE, not deferred: the supersede SELECT below would otherwise open a
+    // read snapshot that the first DELETE has to upgrade, and in WAL an upgrade
+    // whose snapshot another connection has already outrun fails with
+    // SQLITE_BUSY_SNAPSHOT *without* consulting the busy handler. Taking the
+    // write lock up front puts the wait back under busy_timeout.
+    handle.exec('BEGIN IMMEDIATE');
     try {
       if (input.turnId) {
         const superseded = handle
@@ -1567,6 +1589,12 @@ export class RecallStore {
       ) as { id: number } | undefined;
     const id = row?.id ?? null;
     if (id != null && revive && prior?.status === 'superseded' && prior.id === id && (opts.status ?? 'active') === 'active') {
+      // A revival is almost always a revival from EXPIRY (supersedeFact mangles the
+      // norm key, so a restatement can't land on a row retired any other way). The
+      // DO UPDATE above keeps the old valid_until, which sweepExpiredFacts would
+      // re-apply within the minute — clear it, exactly as restoreSupersededFact
+      // does, unless this write carried a fresh expiry of its own.
+      handle.prepare(`UPDATE facts SET valid_until = ? WHERE id = ?`).run(opts.validUntil ?? null, id);
       // Legitimate resurrection: wipe the pair memos so the neighbour sweep
       // re-judges the revived fact — above all against whatever superseded it.
       // Pairs that went through fact_conflicts stay owned by the conflict
@@ -1855,19 +1883,35 @@ export class RecallStore {
   };
 
 
-  /** Active facts, cheaply — sizes the lexical tier's bm25 noise gates. */
-  countActiveFacts = (): number => {
-    return (this.open().prepare(
-      `SELECT COUNT(*) AS n FROM facts WHERE status = 'active'`
-    ).get() as { n: number }).n;
+  /**
+   * Every fact row, cheaply — sizes the lexical tier's bm25 noise gate. Counts
+   * ALL statuses on purpose: the gate asks whether bm25 magnitudes are meaningful
+   * yet, and IDF/avgdl come from facts_fts, which the triggers keep populated for
+   * superseded rows too (retiring a fact flips its status, it doesn't delete it).
+   */
+  countFacts = (): number => {
+    return (this.open().prepare(`SELECT COUNT(*) AS n FROM facts`).get() as { n: number }).n;
   };
 
 
-  /** Open conflicts, cheaply — gates the relation-check producer pass. */
+  /** Open conflicts, cheaply — including the ones only the user can settle. */
   countOpenConflicts = (): number => {
     return (this.open().prepare(
       `SELECT COUNT(*) AS n FROM fact_conflicts WHERE status = 'open'`
     ).get() as { n: number }).n;
+  };
+
+
+  /**
+   * Open conflicts the autonomous adjudicator can still act on — the gate for the
+   * relation-check producer pass. Explicit-side and attempt-exhausted conflicts
+   * are excluded because nothing but the user will ever clear them, and a backlog
+   * of those would switch the producer off for good.
+   */
+  countAdjudicableConflicts = (maxAttempts: number): number => {
+    return (this.open().prepare(
+      `SELECT COUNT(*) AS n FROM fact_conflicts WHERE ${ADJUDICABLE_CONFLICT_WHERE}`
+    ).get(maxAttempts) as { n: number }).n;
   };
 
 
@@ -1924,21 +1968,22 @@ export class RecallStore {
 
 
   /**
-   * Open conflicts eligible for autonomous adjudication: attempts under the cap,
-   * neither side explicit (the user's word is only ever adjudicated by the user),
-   * both facts still present. Oldest first.
+   * Open conflicts eligible for autonomous adjudication (ADJUDICABLE_CONFLICT_WHERE),
+   * hydrated with both sides. Oldest first.
    */
   getConflictsForAdjudication = (limit: number, maxAttempts: number): ConflictForAdjudication[] => {
     const rows = this.open().prepare(
       `SELECT id, fact_a AS factA, fact_b AS factB, reason, adjudicate_attempts AS attempts
-       FROM fact_conflicts WHERE status = 'open' AND adjudicate_attempts < ?
+       FROM fact_conflicts WHERE ${ADJUDICABLE_CONFLICT_WHERE}
        ORDER BY created_at ASC, id ASC LIMIT ?`
     ).all(maxAttempts, limit) as Array<{ id: number; factA: number; factB: number; reason: string; attempts: number }>;
     return rows.flatMap((r) => {
       const factA = this.getFactDetails(r.factA);
       const factB = this.getFactDetails(r.factB);
+      // Both sides are guaranteed present by the predicate; this is hydration, not
+      // a second copy of it — re-stating the eligibility rules here is what let the
+      // gate's count drift away from this query in the first place.
       if (!factA || !factB) return [];
-      if (factA.source === 'explicit' || factB.source === 'explicit') return [];
       return [{ id: r.id, reason: r.reason, attempts: r.attempts, factA, factB }];
     });
   };
@@ -2003,9 +2048,23 @@ export class RecallStore {
     const handle = this.open();
     const out: PendingRelationCheck[] = [];
     // Over-fetch so a run that settles stale rows still fills the limit.
+    //
+    // A pair with a side in another open conflict is not judgeable yet, and it is
+    // excluded HERE rather than skipped after the fetch: a conflict that only the
+    // user can settle keeps its pairs pending forever, and since they are also the
+    // oldest rows they used to fill the whole window on every pass — past ~limit*4
+    // of them the queue returned zero work indefinitely while ready pairs waited
+    // behind them. Filtering in SQL keeps them queued (they come back the moment
+    // the conflict settles, unlike terminal 'stale') without letting them occupy
+    // the window.
     const rows = handle.prepare(
       `SELECT id, fact_a AS factA, fact_b AS factB, origin
-       FROM fact_relation_checks WHERE verdict IS NULL ORDER BY created_at ASC, id ASC LIMIT ?`
+       FROM fact_relation_checks r
+       WHERE r.verdict IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM facts f WHERE f.id IN (r.fact_a, r.fact_b) AND f.status = 'conflicted'
+         )
+       ORDER BY r.created_at ASC, r.id ASC LIMIT ?`
     ).all(limit * 4) as Array<{ id: number; factA: number; factB: number; origin: string }>;
     for (const r of rows) {
       if (out.length >= limit) break;
@@ -2015,11 +2074,6 @@ export class RecallStore {
         out.push({ id: r.id, origin: r.origin, factA, factB });
       } else if (!factA || factA.status === 'superseded' || !factB || factB.status === 'superseded') {
         this.recordRelationVerdict(r.id, 'stale');
-      } else {
-        // A side sitting in another open conflict is temporary — it returns to
-        // 'active' when that conflict settles. Leave the pair pending for a
-        // later pass; 'stale' is terminal and would kill it unjudged.
-        continue;
       }
     }
     return out;
@@ -2086,7 +2140,11 @@ export class RecallStore {
     sink?: { newFactIds?: number[] }
   ): boolean => {
     const handle = this.open();
-    handle.exec('BEGIN');
+    // IMMEDIATE for the same reason as recordMessage: this reads the conflict and
+    // both sides before writing, and a deferred snapshot upgrade bypasses the busy
+    // handler entirely (SQLITE_BUSY_SNAPSHOT) whenever a background pass committed
+    // in between.
+    handle.exec('BEGIN IMMEDIATE');
     try {
       const row = handle.prepare(
         `SELECT fact_a AS factA, fact_b AS factB FROM fact_conflicts WHERE id = ? AND status = 'open'`

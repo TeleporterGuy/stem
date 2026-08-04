@@ -9,7 +9,7 @@ import {
 } from './search-core';
 import { scanMessagesOffThread } from './scan';
 import { recallStore, type SearchHit, type SearchOptions, type Fact } from './store';
-const { search: storeSearch, countActiveFacts, dbHandle, factTermSearch, factTrigramSearch } = recallStore;
+const { search: storeSearch, countFacts, dbHandle, factTermSearch, factTrigramSearch } = recallStore;
 
 // The stable retrieval interface. Everything in the MAIN process that recalls
 // past conversation goes through here; the mechanics live in search-core.ts,
@@ -49,15 +49,42 @@ export function recencyWeight(ageDays: number): number {
  * A sensitive fact on the lexical tier needs a materially strong term match, not
  * just any token overlap — the counterpart of its stricter 0.82 cosine gate on
  * the semantic tier (inject.ts). Well below the -0.1 noise ceiling.
+ *
+ * Do NOT reach for a different constant here to make this bar separate a direct
+ * match from an incidental one: bm25 cannot express that distinction, and the two
+ * are ordered the wrong way round. Measured on a live store, single-term matches,
+ * more-negative = stronger:
+ *
+ *   N=2    "what should I know about my diabetes?"      -0.000001  (direct)
+ *   N=3    "any management tips for my team offsite?"   -0.465973  (incidental)
+ *   N=21   "what should I know about my diabetes?"      -2.592862  (direct)
+ *   N=21   "any management tips for my team offsite?"   -2.036765  (incidental)
+ *
+ * The match to admit is the WEAKER of each pair, so every threshold shape —
+ * constant, corpus-scaled, ratio-to-top-hit, outlier-vs-pool — admits the leak
+ * whenever it admits the direct hit. (-0.000001 is fts5's clamped-IDF floor: at
+ * N=2, n=1 the IDF term is log(1)=0 and it substitutes an epsilon, so that score
+ * carries no match strength at all.) What actually suppresses an incidental hit
+ * at scale is the noise ceiling below, once the shared word is common enough for
+ * its IDF to collapse — which is why this bar stands down with it.
+ *
+ * The separating signal is semantic, and the semantic tier's scale-free 0.82
+ * cosine gate is where sensitive facts are really protected. See the sensitive
+ * case in tests/unit/recall-v2.test.ts, which pins the measurement.
  */
 export const SENSITIVE_LEXICAL_MAX_BM25 = -1;
 
 /**
- * Below this many active facts both lexical bm25 gates are skipped: bm25
+ * Below this many facts both lexical bm25 gates are skipped: bm25
  * magnitudes scale with IDF, and in a small store every score collapses toward
  * 0 — the same scale-awareness as ftsSearchDocs' DOC_FTS_GATE_MIN_DOCS. The
- * one-incidental-shared-word leak the gates exist for is a large-store
+ * one-incidental-shared-word noise the ceiling exists for is a large-store
  * phenomenon; in a 20-fact store a term match IS a direct match.
+ *
+ * Sized against ALL facts, not just active ones: bm25's IDF and avgdl come from
+ * the whole facts_fts index, which keeps a row per superseded fact too (retiring
+ * a fact flips its status, it doesn't delete it). A store with 28 active and 300
+ * superseded facts has full-scale bm25.
  */
 export const FACT_LEXICAL_GATE_MIN_FACTS = 32;
 
@@ -80,7 +107,10 @@ export function rankFactsLexically(rawQuery: string, limit: number, nowSec?: num
 
   const termMatch = buildMatchQuery(rawQuery);
   if (termMatch) {
-    const gated = countActiveFacts() >= FACT_LEXICAL_GATE_MIN_FACTS;
+    // One count per query: chooseFacts' getInjectableFacts() can't stand in for it,
+    // since the gate is sized against every fact row and that list holds only the
+    // active, injectable ones.
+    const gated = countFacts() >= FACT_LEXICAL_GATE_MIN_FACTS;
     // Pull a pool wider than `limit`, then re-sort with the recency blend folded in.
     factTermSearch(termMatch, Math.max(limit * 4, limit))
       .filter((f) => !gated || f.score <= FTS_SCORE_CEILING)

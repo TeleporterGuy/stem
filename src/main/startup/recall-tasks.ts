@@ -5,7 +5,7 @@ import { embedNewMessages } from '../recall/embed-episodic';
 import { backfillSummaries, refreshRecentSummaries } from '../recall/summarize';
 import { distillNewMessages, shouldConsolidate } from '../recall/distill';
 import { processPendingRelationChecks, relationSweepBackfillDone, stepRelationSweepBackfill } from '../recall/reconcile';
-import { adjudicateOpenConflicts } from '../recall/adjudicate';
+import { MAX_ADJUDICATE_ATTEMPTS, adjudicateOpenConflicts } from '../recall/adjudicate';
 import { consolidateFacts } from '../recall/consolidate';
 import { getMemoryRebuildStatus, runMemoryRebuildStep } from '../recall/rebuild';
 import { recallStore } from '../recall/store';
@@ -15,9 +15,12 @@ import type { LlmClient } from '../recall/llm';
 import type { ChatBackend } from '../backend';
 
 /**
- * Above this many open conflicts the relation-check pass stops raising new
- * ones. With the adjudicator resolving up to 15 per cycle, a gated backlog is
- * back under the gate within ~two cycles.
+ * Above this many ADJUDICABLE open conflicts the relation-check pass stops
+ * raising new ones. With the adjudicator resolving up to 15 per cycle, a gated
+ * backlog is back under the gate within ~two cycles. Conflicts the adjudicator
+ * can't touch (an explicit side, or attempts exhausted) are excluded on purpose:
+ * only the user drains those, so counting them would switch the pass off until
+ * they open the Conflicts card — possibly for good.
  */
 const OPEN_CONFLICT_GATE = 20;
 
@@ -120,7 +123,7 @@ export function initRecallTasks(deps: {
         // more pairs would only push more facts into 'conflicted' limbo — let
         // the backlog drain first (the queue keeps the pairs).
         await activity.track('memory.relationCheck', 'Cross-checking memory', () => {
-          if (recallStore.countOpenConflicts() > OPEN_CONFLICT_GATE) {
+          if (recallStore.countAdjudicableConflicts(MAX_ADJUDICATE_ATTEMPTS) > OPEN_CONFLICT_GATE) {
             return Promise.resolve({ checked: 0, conflicts: 0, gated: true });
           }
           return processPendingRelationChecks(recallLlm);
