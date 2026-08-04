@@ -18,11 +18,20 @@ const { enqueueRelationChecks, factTermSearch, getAllFacts, getDupCosine, getEpi
 const WATERMARK = 'distill_watermark';
 export const CURSOR_KEY = 'distill_cursor_v2';
 // Strike counter for replies that parse to nothing recognizable at the current
-// cursor. The segment is retried (cursor unmoved) until MAX_PARSE_STRIKES, then
-// abandoned — bounded, visible-in-meta loss instead of either silent loss on the
-// first bad reply or a poison segment wedging distillation forever.
+// cursor — and for completions the model rejected outright as too large. The
+// segment is retried (cursor unmoved) until MAX_PARSE_STRIKES, then abandoned —
+// bounded, visible-in-meta loss instead of either silent loss on the first bad
+// reply or a poison segment wedging distillation forever.
 export const PARSE_STRIKES_KEY = 'distill_parse_strikes';
 export const MAX_PARSE_STRIKES = 3;
+// Consecutive completion failures at the current cursor — the shrink half only,
+// deliberately NOT strikes. A model that rejects an oversized prompt phrases it
+// however its server likes (the motivating case is a local one, the least
+// predictable of all), so OVERSIZE_ERROR_RE cannot be the only thing that makes
+// the next attempt smaller. This counter never abandons the segment and never
+// moves the cursor: an offline stretch then costs nothing but a leaner prompt on
+// the retry. Cleared by any completion that returns at all.
+export const COMPLETION_ERRORS_KEY = 'distill_completion_errors';
 const MAX_MESSAGES_PER_RUN = 200;
 export const MAX_TRANSCRIPT_CHARS = 16000;
 export const DISTILL_OVERLAP_CHARS = 256;
@@ -395,9 +404,45 @@ export function knownFactsBlock(context?: string, charBudget = KNOWN_FACTS_CHAR_
   return known ? `\n\nKnown facts (do not restate these):\n${known}` : '';
 }
 
-/** Parse strikes recorded for exactly this cursor position; anything else → 0. */
-function readParseStrikes(cursor: DistillCursor): number {
-  const raw = getMeta(PARSE_STRIKES_KEY);
+/**
+ * The batch thread an uncited claim most likely came from. A batch is a slice of
+ * the message stream, not of one conversation, so the messages that happen to
+ * end it can belong to a chat the claim has nothing to do with. The claim was
+ * written from the transcript, so its wording is the only link back: score each
+ * thread by how many of the claim's content tokens its messages carry, best
+ * wins. Null on a tie or a total miss — the caller then falls back to the whole
+ * batch, which is where the claim came from either way.
+ */
+function likelyClaimThread(claimText: string, messages: StoredMessage[]): string | null {
+  const wanted = new Set(lexTokens(claimText, 3).filter((t) => t !== 'user'));
+  if (wanted.size === 0) return null;
+  const hitsByThread = new Map<string, Set<string>>();
+  for (const m of messages) {
+    for (const token of lexTokens(m.text, 3)) {
+      if (!wanted.has(token)) continue;
+      const hits = hitsByThread.get(m.threadId) ?? new Set<string>();
+      hits.add(token);
+      hitsByThread.set(m.threadId, hits);
+    }
+  }
+  let best: string | null = null;
+  let bestHits = 0;
+  let tied = false;
+  for (const [threadId, hits] of hitsByThread) {
+    if (hits.size > bestHits) {
+      best = threadId;
+      bestHits = hits.size;
+      tied = false;
+    } else if (hits.size === bestHits) {
+      tied = true;
+    }
+  }
+  return tied ? null : best;
+}
+
+/** A counter recorded for exactly this cursor position; anything else → 0. */
+function readCursorCount(key: string, cursor: DistillCursor): number {
+  const raw = getMeta(key);
   if (!raw) return 0;
   try {
     const p = JSON.parse(raw) as Partial<DistillCursor & { count: number }>;
@@ -405,9 +450,28 @@ function readParseStrikes(cursor: DistillCursor): number {
       return Math.max(0, p.count!);
     }
   } catch {
-    // Stale/corrupt → no strikes.
+    // Stale/corrupt → no count.
   }
   return 0;
+}
+
+/** Record `count` against this cursor under `key`, the shape readCursorCount reads. */
+function writeCursorCount(key: string, cursor: DistillCursor, count: number): void {
+  setMeta(key, JSON.stringify({ ...cursor, count }));
+}
+
+// A completion failure the retry can never survive: the model refused the prompt
+// for its size, so only the MAX_PARSE_STRIKES escape can ever free the segment.
+// Matched on the message because the backend hands the server's own wording
+// through (complete-worker appends "pi said: ..."). Deliberately narrow — a
+// strike spends the segment's budget toward abandonment, and a network blip or a
+// local server that is merely down must never cost the backlog its transcripts.
+// Wordings this misses still shrink, via COMPLETION_ERRORS_KEY.
+const OVERSIZE_ERROR_RE =
+  /context[_ -]?length|context[_ -]?window|maximum context|too many tokens|prompt is too (?:long|large)|input is too (?:long|large)|payload too large|request entity too large|\b413\b/i;
+
+function isOversizePromptError(error: unknown): boolean {
+  return OVERSIZE_ERROR_RE.test(error instanceof Error ? error.message : String(error));
 }
 
 export function readDistillCursor(): DistillCursor {
@@ -564,8 +628,12 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   // (truncated or garbled reply) — shrink the optional blocks before spending
   // the next strike on the same prompt: half budgets on strike one, transcript
   // only from strike two. Without this the retries were deterministic failures.
-  const priorStrikes = readParseStrikes(cursor);
-  const blockScale = priorStrikes >= 2 ? 0 : priorStrikes === 1 ? 0.5 : 1;
+  // A prior completion error shrinks on the same ladder without being a strike
+  // (see COMPLETION_ERRORS_KEY): whichever counter is higher sets the step.
+  const priorStrikes = readCursorCount(PARSE_STRIKES_KEY, cursor);
+  const priorErrors = readCursorCount(COMPLETION_ERRORS_KEY, cursor);
+  const shrinkStep = Math.max(priorStrikes, priorErrors);
+  const blockScale = shrinkStep >= 2 ? 0 : shrinkStep === 1 ? 0.5 : 1;
 
   // Show the model what it already knows so it returns only new/corrected facts
   // (curbs reworded duplicates the norm-based dedup can't catch). Raw message
@@ -594,13 +662,16 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
     );
     const parsed = parseDistillOutput(reply);
     if (!episodicIntact()) return 0;
+    // The model answered, whatever it said — the run of completion failures is
+    // over and the next attempt starts from full-size blocks again.
+    if (priorErrors > 0) setMeta(COMPLETION_ERRORS_KEY, '');
     if (!parsed.recognized) {
       // Garbage reply. Retry this exact segment on a later run (grading rides
       // along: ungraded rows stay ungraded) — but only MAX_PARSE_STRIKES times,
       // then give the segment up so it can't wedge distillation forever.
-      const strikes = readParseStrikes(cursor) + 1;
+      const strikes = readCursorCount(PARSE_STRIKES_KEY, cursor) + 1;
       if (strikes < MAX_PARSE_STRIKES) {
-        setMeta(PARSE_STRIKES_KEY, JSON.stringify({ ...cursor, count: strikes }));
+        writeCursorCount(PARSE_STRIKES_KEY, cursor, strikes);
         return 0;
       }
       setMeta(PARSE_STRIKES_KEY, '');
@@ -615,6 +686,27 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
     // swallow: returning 0 is indistinguishable from "nothing to distill" at the
     // call site, which is how a broken memory model stayed invisible for so long.
     activity.fail('memory.distill', error, 'Distilling facts');
+    // A reset mid-call makes any record for this cursor meaningless — same
+    // reasoning as episodicIntact above.
+    if (!episodicIntact()) return 0;
+    // Every failure shrinks the next attempt, whatever it was: the next run
+    // rebuilds this same segment, so a smaller prompt is the only thing that can
+    // change the outcome, and an oversize rejection is not required to say so in
+    // words this file recognizes. Costs nothing when the model was merely down.
+    writeCursorCount(COMPLETION_ERRORS_KEY, cursor, priorErrors + 1);
+    // A recognized oversize rejection additionally strikes: it will fail
+    // identically forever, so the segment also needs the escape a garbage reply
+    // gets. Nothing else may abandon a segment on a failure to answer.
+    if (isOversizePromptError(error)) {
+      const strikes = readCursorCount(PARSE_STRIKES_KEY, cursor) + 1;
+      if (strikes < MAX_PARSE_STRIKES) {
+        writeCursorCount(PARSE_STRIKES_KEY, cursor, strikes);
+        return 0;
+      }
+      setMeta(PARSE_STRIKES_KEY, '');
+      setMeta(COMPLETION_ERRORS_KEY, '');
+      return advanceWithoutWriting();
+    }
     return 0;
   }
   // The user may have cleared facts while the model call was in flight. Treat
@@ -640,9 +732,14 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
       // Segment-level provenance, not a citation: cap it to the last few user
       // messages instead of the whole batch — one uncited claim used to attach
       // ~20 kB of unrelated transcript as its most convincing-looking evidence
-      // (rows the Facts UI shows as support and the adjudicator quotes).
-      claim.evidenceMessageIds = batch.messages.filter((m) => m.role === 'user').map((m) => m.id).slice(-3);
-      if (claim.evidenceMessageIds.length === 0) claim.evidenceMessageIds = batch.messages.map((m) => m.id).slice(-3);
+      // (rows the Facts UI shows as support and the adjudicator quotes). Scope
+      // the cap to the claim's own thread first: a batch spans conversations, so
+      // the batch's last three messages are just whichever chat ended it, and
+      // attaching those is worse than the noisy whole-batch it replaced.
+      const thread = likelyClaimThread(claim.text, batch.messages);
+      const source = thread ? batch.messages.filter((m) => m.threadId === thread) : batch.messages;
+      claim.evidenceMessageIds = source.filter((m) => m.role === 'user').map((m) => m.id).slice(-3);
+      if (claim.evidenceMessageIds.length === 0) claim.evidenceMessageIds = source.map((m) => m.id).slice(-3);
     }
   }
 
