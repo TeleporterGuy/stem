@@ -12,10 +12,17 @@ Maintainer notes:
   date, tag.
 -->
 
-## 0.3.0 — Unreleased
+## 0.3.0 — 2026-08-04
 
 ### Added
 
+- **Skills that earn their place.** Skills are rebuilt around what the assistant actually did —
+  the real tool trace of a turn, not its narration of one — and are checked against a contract
+  before they are saved. Stem now picks the few skills relevant to your message instead of
+  broadcasting every description at every turn.
+- **Memory that keeps itself true.** A new fact is checked against what Stem already knows, so an
+  outdated one is retired even when it is worded nothing like its replacement. Merging facts keeps
+  the dates they were asserted on, and disagreements Stem can settle on its own are settled.
 - **Sign in with xAI (Grok).** Grok joins ChatGPT, Claude, OpenRouter and the local servers in the
   provider list, with the same in-app sign-in.
 - **Grok web search.** Grok can now be picked as the backend Stem searches the web with.
@@ -25,9 +32,27 @@ Maintainer notes:
 - **A clearer search picker.** The backend list is grouped by what's actually ready to use (works
   on your sign-in / needs a key / not configured), and the assistant is told which backend it is
   searching with, so citations name the right source.
+- **Web search is faster.** Several queries now run at once, pages are fetched in batches, and the
+  model that runs the search itself was swapped for a quicker one — the answers and sources held
+  up in benchmarking, because the thinking happens in your chat model afterwards either way.
+- **This popup.** Stem shows what changed once, the first time you open it after an update.
+  Settings → About turns it off and keeps the full history.
 
 ### Fixed
 
+- **Memory no longer argues with itself.** Conflicting facts are raised and resolved at rates that
+  actually match, a fact retired by mistake can't quietly come back, and "Reset recall" is now a
+  hard stop — a background pass that was already running can't resurrect anything after it.
+- **Memory works without embeddings.** When the local embedding model is off or still loading, the
+  keyword-only fallback keeps its promises instead of silently dropping results or ranking your
+  documents backwards.
+- **"Memory used in this chat" tells the truth about the past.** A conflict raised (or resolved)
+  after a turn no longer rewrites what that turn is shown to have been told.
+- **A reply that arrives in several pieces stays whole** instead of losing everything but the last
+  piece.
+- **Running commands is steadier.** The safety check no longer times out or runs on the expensive
+  model, it says why it refused without pasting an exception at you, and it reads Windows paths
+  and PowerShell quoting correctly.
 - **Stem now starts properly on Linux.** First run off macOS could fail outright; the installer
   also now fetches the Electron runtime it needs. The Linux x64 download is roughly half the size
   it was.
