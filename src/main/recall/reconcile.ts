@@ -291,28 +291,50 @@ export async function processPendingRelationChecks(
   let checked = 0;
   let conflicts = 0;
   const factsGeneration = getFactsGeneration();
+  // Is this row still worth judging? The batch is hydrated in one shot, so it
+  // is evaluated twice per row: before the classify call, because queue pairs
+  // cluster on shared neighbours and one conflict raised early in a pass
+  // invalidates later rows (a call spent on those is simply thrown away), and
+  // again after it, because the await is a window for the user and the rest of
+  // the pass to move underneath the verdict.
+  //
+  // 'stale' is terminal — reserve it for sides that are gone, superseded, or
+  // reworded, and for pairs the conflict machinery has already judged. A side
+  // that merely entered another conflict stays pending ('wait'): it returns to
+  // 'active' when that conflict settles, and killing the pair here would leave
+  // it unjudged forever.
+  const gate = (p: { factA: FactDetails; factB: FactDetails }): 'ok' | 'stale' | 'wait' => {
+    const a = getFactDetails(p.factA.id);
+    const b = getFactDetails(p.factB.id);
+    const gone = (f: typeof a, snap: { text: string }): boolean =>
+      !f || f.status === 'superseded' || f.text !== snap.text;
+    if (gone(a, p.factA) || gone(b, p.factB)) return 'stale';
+    // The pair may have been settled by hand while the row sat queued: a
+    // keep-both resolution returns both sides to 'active' and leaves the
+    // conflict row 'resolved', and idx_fact_conflict_pair is partial on
+    // status='open' — so re-classifying would insert a SECOND open conflict and
+    // re-litigate a decision the user already made.
+    if (isRelationChecked(p.factA.id, p.factB.id)) return 'stale';
+    return a!.status === 'active' && b!.status === 'active' ? 'ok' : 'wait';
+  };
   for (const pending of getPendingRelationChecks(limit)) {
+    const before = gate(pending);
+    if (before === 'stale') recordRelationVerdict(pending.id, 'stale');
+    if (before !== 'ok') continue;
     const verdict = await classifyRelation(
       { text: pending.factA.text, evidenceDate: evidenceDateOf(pending.factA) },
       { text: pending.factB.text, evidenceDate: evidenceDateOf(pending.factB) },
       llm
     );
-    if (getFactsGeneration() !== factsGeneration) break;
-    const a = getFactDetails(pending.factA.id);
-    const b = getFactDetails(pending.factB.id);
-    // 'stale' is terminal — reserve it for sides that are gone, superseded, or
-    // reworded. A side that merely entered another conflict while we were
-    // classifying stays pending: it returns to 'active' when that conflict
-    // settles, and killing the pair here would leave it unjudged forever.
-    const gone = (f: typeof a, snap: { text: string }): boolean =>
-      !f || f.status === 'superseded' || f.text !== snap.text;
-    if (gone(a, pending.factA) || gone(b, pending.factB)) {
-      recordRelationVerdict(pending.id, 'stale');
-      continue;
-    }
-    if (a!.status !== 'active' || b!.status !== 'active') continue;
-    recordRelationVerdict(pending.id, verdict);
+    // Counts calls spent, not rows settled: the pass paid for this pair either
+    // way, and a row invalidated mid-call must not make the activity row read
+    // "Checked 0 pairs" after a cycle of model calls.
     checked += 1;
+    if (getFactsGeneration() !== factsGeneration) break;
+    const after = gate(pending);
+    if (after === 'stale') recordRelationVerdict(pending.id, 'stale');
+    if (after !== 'ok') continue;
+    recordRelationVerdict(pending.id, verdict);
     if (verdict !== 'compatible') {
       createFactConflict(pending.factA.id, pending.factB.id, SWEEP_CONFLICT_REASON);
       conflicts += 1;
