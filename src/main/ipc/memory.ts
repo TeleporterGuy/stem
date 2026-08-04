@@ -129,8 +129,12 @@ export function registerMemoryIpc(deps: IpcDeps): void {
       source: f.source,
       sensitivity: f.sensitivity,
       reason: rec.reasons[f.id] ?? f.selectionReason,
-      // An injected fact that is (still) conflicted was a disputed representative.
-      ...(f.status === 'conflicted' ? { disputed: true } : {})
+      // What the model was told on THAT turn, not what the fact looks like now:
+      // a conflict raised since would otherwise backdate itself onto a turn that
+      // saw the fact as settled, and one resolved since would erase a label the
+      // turn really carried. Rows written before the flag existed have no
+      // recorded answer, so they fall back to the old current-status guess.
+      ...((rec.disputed[f.id] ?? (f.status === 'conflicted')) ? { disputed: true } : {})
     }));
     return { facts, tier: rec.tier };
   });

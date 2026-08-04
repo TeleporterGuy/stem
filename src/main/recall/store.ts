@@ -1184,10 +1184,16 @@ export class RecallStore {
   };
 
 
-  /** Record the durable facts injected on `threadId`'s latest turn. Best-effort. */
+  /**
+   * Record the durable facts injected on `threadId`'s latest turn. Best-effort.
+   *
+   * `disputed` is written for every entry, never omitted when false: the audit UI
+   * distinguishes "recorded as not disputed" from "recorded before the flag
+   * existed", and an omitted key would collapse the two (see getActiveFactIds).
+   */
   setActiveFacts = (
     threadId: string,
-    facts: Array<number | { id: number; reason?: FactSelectionReason }>,
+    facts: Array<number | { id: number; reason?: FactSelectionReason; disputed?: boolean }>,
     tier: FactTier
   ): void => {
     const handle = this.open();
@@ -1200,14 +1206,30 @@ export class RecallStore {
            tier = excluded.tier,
            updated_at = excluded.updated_at`
       )
-      .run(threadId, JSON.stringify(facts), tier, this.nowSeconds());
+      .run(
+        threadId,
+        JSON.stringify(
+          facts.map((f) => (typeof f === 'number' ? f : { id: f.id, reason: f.reason, disputed: !!f.disputed }))
+        ),
+        tier,
+        this.nowSeconds()
+      );
   };
 
 
-  /** Read a thread's last injected fact ids + tier, or null if none recorded. */
+  /**
+   * Read a thread's last injected fact ids + tier, or null if none recorded.
+   *
+   * `disputed[id]` is the flag as it was AT INJECTION TIME, which is the only
+   * honest answer for an audit surface — a fact's current status says nothing
+   * about whether the model was told it was contested on that turn. `undefined`
+   * means the row predates the flag (a bare id, or an object without the key);
+   * callers decide what to show for those, since the value is genuinely unknown.
+   */
   getActiveFactIds = (threadId: string): {
     factIds: number[];
     reasons: Record<number, FactSelectionReason | undefined>;
+    disputed: Record<number, boolean | undefined>;
     tier: FactTier;
   } | null => {
     const handle = this.open();
@@ -1217,6 +1239,7 @@ export class RecallStore {
     if (!row) return null;
     let factIds: number[] = [];
     const reasons: Record<number, FactSelectionReason | undefined> = {};
+    const disputed: Record<number, boolean | undefined> = {};
     try {
       const parsed = JSON.parse(row.factIds);
       if (Array.isArray(parsed)) {
@@ -1225,13 +1248,14 @@ export class RecallStore {
           else if (value && typeof value === 'object' && typeof value.id === 'number') {
             factIds.push(value.id);
             reasons[value.id] = value.reason;
+            if (typeof value.disputed === 'boolean') disputed[value.id] = value.disputed;
           }
         }
       }
     } catch {
       // Corrupt JSON — treat as no recorded set rather than throwing.
     }
-    return { factIds, reasons, tier: row.tier as FactTier };
+    return { factIds, reasons, disputed, tier: row.tier as FactTier };
   };
 
 

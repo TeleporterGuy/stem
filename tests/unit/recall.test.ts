@@ -586,15 +586,41 @@ describe('Stem Recall — active facts', () => {
 
     store.setActiveFacts('THREAD-X', [b.id, missing, a.id], 'embedding');
     const rec = store.getActiveFactIds('THREAD-X');
-    expect(rec).toEqual({ factIds: [b.id, missing, a.id], reasons: {}, tier: 'embedding' });
+    expect(rec).toEqual({ factIds: [b.id, missing, a.id], reasons: {}, disputed: {}, tier: 'embedding' });
 
     const resolved = store.getFactsByIds(rec!.factIds);
     expect(resolved.map((f) => f.id)).toEqual([b.id, a.id]); // order preserved, missing dropped
 
     // Upsert replaces the row for the same thread.
     store.setActiveFacts('THREAD-X', [a.id], 'all');
-    expect(store.getActiveFactIds('THREAD-X')).toEqual({ factIds: [a.id], reasons: {}, tier: 'all' });
+    expect(store.getActiveFactIds('THREAD-X')).toEqual({ factIds: [a.id], reasons: {}, disputed: {}, tier: 'all' });
 
     expect(store.getActiveFactIds('NO-SUCH-THREAD')).toBeNull();
+  });
+
+  it('records the disputed flag as it was at injection time, and keeps legacy rows unknown', () => {
+    store.resetFacts();
+    store.upsertFact('The user was disputed when injected', 'distilled');
+    store.upsertFact('The user was settled when injected', 'distilled');
+    const [a, b] = store.getAllFacts();
+
+    store.setActiveFacts(
+      'THREAD-D',
+      [{ id: a.id, disputed: true }, { id: b.id, reason: 'lexical' }],
+      'embedding'
+    );
+    const rec = store.getActiveFactIds('THREAD-D')!;
+    // false is RECORDED, not omitted — that is what makes it distinguishable
+    // from a row written before the flag existed.
+    expect(rec.disputed).toEqual({ [a.id]: true, [b.id]: false });
+
+    // Legacy shapes — a bare id and an object without the key — stay unknown, so
+    // the IPC layer can keep guessing from current status for them alone.
+    store.setActiveFacts('THREAD-L', [a.id], 'embedding');
+    expect(store.getActiveFactIds('THREAD-L')!.disputed[a.id]).toBeUndefined();
+    store.dbHandle()
+      .prepare(`UPDATE active_facts SET fact_ids = ? WHERE thread_id = ?`)
+      .run(JSON.stringify([{ id: a.id, reason: 'lexical' }]), 'THREAD-L');
+    expect(store.getActiveFactIds('THREAD-L')!.disputed[a.id]).toBeUndefined();
   });
 });

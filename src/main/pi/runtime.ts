@@ -2546,7 +2546,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       try {
         setActiveFacts(
           threadId,
-          chosen.facts.map((f) => ({ id: f.id, reason: f.selectionReason })),
+          chosen.facts.map((f) => ({ id: f.id, reason: f.selectionReason, disputed: !!f.disputed })),
           chosen.tier
         );
         // Also log this turn's injected set for the distill pass to grade
