@@ -17,6 +17,7 @@ import type {
   ActiveFacts,
   FactTier,
   FactDetails,
+  FactStatus,
   MemoryConflict,
   AutoResolvedConflict,
   MemoryRebuildStatus
@@ -389,6 +390,17 @@ function tierLabel(t: FactTier): string {
 }
 
 /**
+ * The chip a non-active fact wears. 'conflicted' is the store's status name;
+ * "conflicting" is the one word the user sees for it everywhere — this chip,
+ * mobile's memory peek, and the docs.
+ */
+const FACT_STATUS_LABEL: Record<FactStatus, string> = {
+  active: 'active',
+  conflicted: 'conflicting',
+  superseded: 'superseded'
+};
+
+/**
  * [newer, older] — the same ordering `resolveMemoryConflict` applies in the store,
  * id as the tiebreak. "Keep newer" is unusable unless the card shows which is which.
  */
@@ -654,7 +666,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                       <Lock size={10} />
                     </HoverTip>
                   )}
-                  {f.status && f.status !== 'active' && <span className="chip">{f.status}</span>}
+                  {f.status && f.status !== 'active' && <span className="chip">{FACT_STATUS_LABEL[f.status]}</span>}
                   {f.pinned && <span className="chip"><Pin size={10} /> pinned</span>}
                   {(f.timesInjected ?? 0) > 0 && (
                     <HoverTip
@@ -893,8 +905,9 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
             </button>
             <InfoTip label="How facts are selected">
               Stem always selects relevant active facts instead of sending the whole memory store.
-              Sensitive facts require a direct keyword match or a stronger semantic match;
-              conflicted, expired, and unconfirmed assistant claims are excluded.
+              Sensitive facts require a direct keyword match or a stronger semantic match, and expired
+              or unconfirmed assistant claims are excluded. While two facts conflict, one side may still
+              be sent — marked conflicting, so the model treats it as uncertain instead of forgetting both.
             </InfoTip>
           </div>
           {showRetrieval && (

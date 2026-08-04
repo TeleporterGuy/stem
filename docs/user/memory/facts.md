@@ -31,7 +31,7 @@ The source appears on each fact. One-off completed task details are normally ski
 Expand **Stored memory**. A fact can show:
 
 - its source and category;
-- **sensitive**, **pinned**, **draft**, or **injected**;
+- **sensitive**, **pinned**, **draft**, **injected**, or **conflicting**;
 - confidence and supporting evidence in its details.
 
 **Draft** means the fact would be used for the message currently being written.
@@ -48,14 +48,47 @@ Actions appear on a fact:
 ## What Stem chooses
 
 Stem normally sends only facts relevant to the current message, not the whole store.
-Sensitive facts need a more direct match. Expired and unconfirmed details inferred
-by Stem are excluded. While two facts disagree, one side may still be sent, marked
-as **disputed** so the model treats it as uncertain rather than forgetting both.
+Sensitive facts need a more direct match. Expired details are never sent, and a
+low-confidence guess Stem inferred stays out until you **Confirm** or pin it. While two
+facts disagree, one side may still be sent, marked as **conflicting** so the model treats
+it as uncertain rather than forgetting both.
 
 Selected facts go to the model used for that chat—local or cloud.
 
 Use **Preview draft** in **Stored memory** to see which facts the current message would
 use.
+
+## When two facts disagree
+
+Stem cross-checks stored facts against each other in the background. When two of them
+cannot both be true, the pair becomes a conflict: both facts are marked **conflicting**,
+neither stays pinned, and a **Conflicts** card appears above **Stored memory** with
+**Keep newer**, **Keep older**, and **Keep both**.
+
+Until the conflict is settled, Stem still sends one side of it — what you stated
+explicitly, or otherwise the side with the newest evidence — marked as conflicting so
+the model treats it as uncertain. Nothing is sent if that side has expired or is an
+unconfirmed guess.
+
+Conflicts between two details Stem inferred are also settled for you in the background.
+A conflict where one side is something you stated explicitly is always left for you.
+For the rest, Stem may:
+
+- **supersede one side** — the better supported statement stays, the other moves to
+  **Superseded**;
+- **keep both** — they turned out to describe different things, and both go back to
+  normal;
+- **rewrite both** — each was partly right, so they are replaced by shorter corrected
+  statements, and the originals move to **Superseded**.
+
+The twenty most recent of these are listed under **Recently auto-resolved**, below the
+**Conflicts** card. Expand it to see both statements, which one was **Kept** and which
+**Superseded**, what was done, and when.
+
+To overrule one: **Restore** the superseded statement from the **Superseded** list in
+**Stored memory**, and **Forget permanently** the one you do not want. Anything Stem
+wrote during a rewrite is an ordinary fact — forget it the same way. When Stem cannot
+tell which side is right, it leaves the conflict in the **Conflicts** card for you.
 
 ## Settings that matter
 
@@ -65,10 +98,6 @@ use.
   Memory. A remote model receives transcript excerpts and may use provider quota.
 - **Tidy up automatically** — merges duplicates and drops stale facts after the chosen
   number of new facts.
-- **Conflicts** — keep the newer fact, the older fact, or both. Stem also resolves
-  conflicts between inferred facts on its own in the background (keeping the better
-  supported side, keeping both, or rewriting them into corrected statements); a
-  conflict that involves something you stated explicitly is always left for you.
 
 Leave **Relevance ranking (advanced)** at its default unless fact matching is poor.
 Built-in matching runs locally. A configured server receives fact text and each
