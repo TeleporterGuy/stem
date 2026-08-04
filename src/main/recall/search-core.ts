@@ -851,50 +851,65 @@ export function semanticSearchDocsCore(
   model: string,
   opts: { limit: number; minCosine: number; snippetChars?: number }
 ): CoreDocHit[] {
+  try {
+    return semanticSearchDocsCoreOrThrow(db, qVec, model, opts);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The same scan with SQLite failures left to propagate. Only the scan worker
+ * wants this: it searches a folder index over a cached handle it does not own,
+ * and a swallowed failure there is indistinguishable from "nothing matched" —
+ * the caller resolves happily and never falls back in-process (scan.ts).
+ */
+export function semanticSearchDocsCoreOrThrow(
+  db: DatabaseSync,
+  qVec: Float32Array,
+  model: string,
+  opts: { limit: number; minCosine: number; snippetChars?: number }
+): CoreDocHit[] {
   if (opts.limit <= 0) return [];
   const snippetChars = opts.snippetChars ?? 400;
   const qMag = Math.sqrt(qVec.reduce((s, v) => s + v * v, 0));
   if (qMag === 0) return [];
-  try {
-    const scored: CoreDocHit[] = [];
-    const rows = db
-      .prepare(
-        `SELECT v.doc_id AS id, v.vec AS vec, d.rel_path AS relPath, d.title AS title,
-                d.mtime AS mtime, d.text AS text
-         FROM doc_vectors v JOIN docs d ON d.id = v.doc_id
-         WHERE v.model = ?`
-      )
-      .iterate(model) as Iterable<Record<string, unknown>>;
-    for (const row of rows) {
-      const vec = bytesToFloat32(row.vec as Uint8Array);
-      if (vec.length !== qVec.length) continue;
-      let dot = 0;
-      let mag = 0;
-      for (let i = 0; i < vec.length; i++) {
-        dot += vec[i] * qVec[i];
-        mag += vec[i] * vec[i];
-      }
-      const denom = qMag * Math.sqrt(mag);
-      const cos = denom === 0 ? 0 : dot / denom;
-      if (cos < opts.minCosine) continue;
-      const text = row.text as string;
-      // Streaming top-N — every scored row used to carry the doc's full text
-      // into an unbounded array before the sort.
-      insertTopN(scored, {
-        id: row.id as number,
-        relPath: row.relPath as string,
-        title: row.title as string,
-        mtime: row.mtime as number,
-        text,
-        snippet: text.length <= snippetChars ? text : `${text.slice(0, snippetChars - 1)}…`,
-        score: cos,
-        cosine: cos
-      }, cos, opts.limit);
+  const scored: CoreDocHit[] = [];
+  const rows = db
+    .prepare(
+      `SELECT v.doc_id AS id, v.vec AS vec, d.rel_path AS relPath, d.title AS title,
+              d.mtime AS mtime, d.text AS text
+       FROM doc_vectors v JOIN docs d ON d.id = v.doc_id
+       WHERE v.model = ?`
+    )
+    .iterate(model) as Iterable<Record<string, unknown>>;
+  for (const row of rows) {
+    const vec = bytesToFloat32(row.vec as Uint8Array);
+    if (vec.length !== qVec.length) continue;
+    let dot = 0;
+    let mag = 0;
+    for (let i = 0; i < vec.length; i++) {
+      dot += vec[i] * qVec[i];
+      mag += vec[i] * vec[i];
     }
-    return scored;
-  } catch {
-    return [];
+    const denom = qMag * Math.sqrt(mag);
+    const cos = denom === 0 ? 0 : dot / denom;
+    if (cos < opts.minCosine) continue;
+    const text = row.text as string;
+    // Streaming top-N — every scored row used to carry the doc's full text
+    // into an unbounded array before the sort.
+    insertTopN(scored, {
+      id: row.id as number,
+      relPath: row.relPath as string,
+      title: row.title as string,
+      mtime: row.mtime as number,
+      text,
+      snippet: text.length <= snippetChars ? text : `${text.slice(0, snippetChars - 1)}…`,
+      score: cos,
+      cosine: cos
+    }, cos, opts.limit);
   }
+  return scored;
 }
 
 /**

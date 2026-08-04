@@ -220,14 +220,22 @@ function evictFolderDb(dbFile: string): void {
   }
 }
 
-async function searchFolderDocs(query: string, limit: unknown, folder: unknown): Promise<FolderDocHit[]> {
+/** Which index files are currently held open — the eviction scope, for tests. */
+export function cachedFolderDbFiles(): string[] {
+  return [...folderDbs.keys()];
+}
+
+export async function searchFolderDocs(query: string, limit: unknown, folder: unknown): Promise<FolderDocHit[]> {
   const max = clampLimit(limit, 8, 20);
   const wanted = typeof folder === 'string' && folder.trim() ? folder.trim().toLowerCase() : null;
-  const entries = readFolderManifest().filter(
+  const manifest = readFolderManifest();
+  const entries = manifest.filter(
     (f) => (!wanted || f.label.toLowerCase().includes(wanted)) && folderReachable(f.path)
   );
   // Drop handles for folders that left the manifest (disconnected, re-indexed).
-  const live = new Set(entries.map((e) => e.dbFile));
+  // Derived from the WHOLE manifest, not this call's filtered slice: a
+  // `folder:`-scoped query must not close every other folder's warm handle.
+  const live = new Set(manifest.map((e) => e.dbFile));
   for (const file of [...folderDbs.keys()]) {
     if (!live.has(file)) evictFolderDb(file);
   }

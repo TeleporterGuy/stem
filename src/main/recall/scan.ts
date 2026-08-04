@@ -78,6 +78,32 @@ export async function scanDocsOffThread(
   return semanticSearchDocsCore(fallbackHandle(), qe.vec, qe.model, opts);
 }
 
+// A healthy worker acknowledges an eviction in microseconds; this cap is only
+// about a wedged one, whose request would otherwise sit for the full scan
+// timeout. Deleting the index is the user-visible operation and must not wait
+// on the worker to be well.
+const EVICT_WAIT_MS = 2_000;
+
+/**
+ * Tell the worker to drop its cached handle on one folder index, before the
+ * file is deleted. Briefly awaited — on Windows the delete fails outright while
+ * the worker still holds the file open — but it can neither fail nor stall the
+ * caller: a worker that is down, wedged or absent gives up its turn after
+ * EVICT_WAIT_MS, and the worker re-checks file identity on reuse regardless, so
+ * a missed eviction still self-heals.
+ */
+export async function evictDocScanHandle(dbFile: string): Promise<void> {
+  if (!manager) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    manager.evictDocDb(dbFile).catch(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, EVICT_WAIT_MS);
+    })
+  ]);
+  clearTimeout(timer);
+}
+
 /**
  * Episodic size-cap enforcement (prune + VACUUM), fire-and-forget. Runs in the
  * worker when available; only a worker failure falls back to the synchronous

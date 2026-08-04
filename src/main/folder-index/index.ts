@@ -7,7 +7,7 @@ import { folderIndexDbPath, folderIndexDir } from '../workspace/paths';
 import { isRecallEnabled } from '../workspace/memory';
 import { getEmbeddingsClient } from '../recall/retrieval';
 import { hybridSearchDocs, type CoreDocHit, type EmbedQueryFn } from '../recall/search-core';
-import { scanDocsOffThread } from '../recall/scan';
+import { evictDocScanHandle, scanDocsOffThread } from '../recall/scan';
 import type { LlmClient } from '../recall/llm';
 import { recallStore } from '../recall/store';
 import { log } from '../log';
@@ -63,14 +63,17 @@ async function indexedFolders() {
 }
 
 /**
- * Drop one folder's index entirely: close the handle and delete the DB file
- * (plus WAL/SHM siblings). Called when the folder is disconnected or its
- * index option is turned off.
+ * Drop one folder's index entirely: close every handle on it — ours and the
+ * scan worker's — and delete the DB file (plus WAL/SHM siblings). Called when
+ * the folder is disconnected or its index option is turned off. Folder ids are
+ * stable UUIDs, so turning the index back on reuses this exact path: a handle
+ * that survives here reads a deleted index for the rest of the process.
  */
 export async function dropFolderIndex(folderId: string): Promise<void> {
   stores.get(folderId)?.close();
   stores.delete(folderId);
   const base = folderIndexDbPath(folderId);
+  await evictDocScanHandle(base);
   for (const suffix of ['', '-wal', '-shm']) {
     await rm(`${base}${suffix}`, { force: true }).catch(() => undefined);
   }

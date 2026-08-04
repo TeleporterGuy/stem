@@ -17,6 +17,12 @@ export interface ScanWorkerManager {
   scanSummaries(vec: Float32Array, model: string, opts: ScanRequestOptions): Promise<CoreSummaryHit[]>;
   /** Cosine top-N over one folder index's doc vectors (its own db file), off the main event loop. */
   scanDocs(dbFile: string, vec: Float32Array, model: string, opts: DocScanOptions): Promise<CoreDocHit[]>;
+  /**
+   * Close the worker's cached handle on one folder index, awaited before main
+   * deletes the file — Windows can't unlink a file the worker still holds open.
+   * Resolves immediately when no worker is running (it holds nothing then).
+   */
+  evictDocDb(dbFile: string): Promise<void>;
   /** Episodic size-cap enforcement (prune + VACUUM). Resolves with rows deleted. */
   maintain(): Promise<number>;
   /** Plain VACUUM (disk reclaim after an episodic reset). */
@@ -155,6 +161,12 @@ export function createScanWorkerManager(deps: {
         (id) => ({ type: 'scan-docs', id, vec, model, dbFile, ...opts }),
         scanTimeoutMs
       );
+    },
+    evictDocDb(dbFile) {
+      // Deliberately does not go through ensure(): dropping an index must never
+      // be the thing that spawns a worker.
+      if (!transport) return Promise.resolve();
+      return request<void>((id) => ({ type: 'evict-doc-db', id, dbFile }), scanTimeoutMs);
     },
     maintain() {
       return request<number>((id) => ({ type: 'maintain', id }), maintainTimeoutMs);

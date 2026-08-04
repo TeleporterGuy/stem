@@ -106,6 +106,23 @@ describe('scan worker manager', () => {
     expect(await p).toEqual([]);
   });
 
+  it('evicts a folder handle over a live worker, and never spawns one to do it', async () => {
+    const { mgr, workers } = manager();
+    // Nothing has been scanned yet, so no worker exists — and no worker holds
+    // the handle either. Dropping an index must not be what starts one.
+    await expect(mgr.evictDocDb('/tmp/folder-index.sqlite')).resolves.toBeUndefined();
+    expect(workers).toHaveLength(0);
+
+    const scan = mgr.scanDocs('/tmp/folder-index.sqlite', new Float32Array([1]), 'm', { limit: 3, minCosine: 0.7 });
+    workers[0].emit({ type: 'doc-hits', id: workers[0].sent[1].id as number, hits: [] });
+    await scan;
+    const p = mgr.evictDocDb('/tmp/folder-index.sqlite');
+    const sentMsg = workers[0].sent.at(-1)!;
+    expect(sentMsg).toMatchObject({ type: 'evict-doc-db', dbFile: '/tmp/folder-index.sqlite' });
+    workers[0].emit({ type: 'doc-db-evicted', id: sentMsg.id as number });
+    await expect(p).resolves.toBeUndefined();
+  });
+
   it('rejects on an error reply and on a timeout, leaving later requests working', async () => {
     const { mgr, workers } = manager({ scanTimeoutMs: 20 });
     const failing = mgr.scanSummaries(new Float32Array([1]), 'm', SCAN_OPTS);
@@ -173,6 +190,8 @@ describe('scan.ts fallback seam', () => {
     const fake: ScanWorkerManager = {
       scanMessages: async () => [HIT],
       scanSummaries: async () => [],
+      scanDocs: async () => [],
+      evictDocDb: async () => undefined,
       maintain: async () => 0,
       vacuum: async () => undefined,
       dispose: () => undefined
@@ -188,6 +207,12 @@ describe('scan.ts fallback seam', () => {
         throw new Error('worker down');
       },
       scanSummaries: async () => {
+        throw new Error('worker down');
+      },
+      scanDocs: async () => {
+        throw new Error('worker down');
+      },
+      evictDocDb: async () => {
         throw new Error('worker down');
       },
       maintain: async () => {
