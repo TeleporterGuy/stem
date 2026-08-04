@@ -12,9 +12,12 @@
 // Needs node:sqlite (Node ≥ 23.4). On older node, run the same file as
 //   ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron scripts/recall-eval.mjs
 //
-// Tiers: fts (today's lexical path) always runs; semantic + hybrid run once the
-// Phase B modules (embed-episodic.ts, searchMemoryHybrid) exist in the build —
-// until then they're skipped with a note, so this script is useful from Phase A on.
+// Tiers: fts (today's lexical path) always runs; semantic + hybrid need the
+// Phase B modules (embed-episodic.ts, searchMemoryHybrid) in the build, and the
+// summaries tiers need the v3 store functions. A tier that does not run is
+// reported and skipped here — and then FAILS at the floors, because every tier
+// the fixture floors is a tier that must run. A tier quietly dropping out is the
+// regression the floors exist to catch (see checkFloors in tests/eval/score.mjs).
 import { spawnSync } from 'node:child_process';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -85,7 +88,7 @@ try {
   // Not built yet — semantic/hybrid tiers are skipped below.
 }
 
-const { aggregate, checkFloors, loadFixture, scoreRanking } = await import('../tests/eval/score.mjs');
+const { aggregate, checkFloors, formatViolation, loadFixture, scoreRanking } = await import('../tests/eval/score.mjs');
 const { seedCorpus } = await import('../tests/eval/seed.mjs');
 
 const fixture = loadFixture(
@@ -273,9 +276,18 @@ const violations = checkFloors(agg, fixture.floors);
 if (violations.length > 0) {
   console.error('\nFLOOR VIOLATIONS:');
   for (const v of violations) {
-    console.error(`  ${v.tier}${v.langPair ? `/${v.langPair}` : ''} ${v.metric}: ${fmt(v.actual)} < floor ${v.floor}`);
+    console.error(`  ${formatViolation(v, fmt)}`);
   }
-  process.exit(1);
+} else {
+  console.log('\nALL FLOORS PASS');
 }
-console.log('\nALL FLOORS PASS');
 storeModule.closeForTest();
+// Release the ORT session before the process ends. Left to garbage collection it
+// aborts on teardown ("mutex lock failed") — the same ORT fragility documented in
+// embed-catalog.ts — and the SIGABRT replaced the old `process.exit(1)` verdict
+// with exit 134, making a failed floor indistinguishable from a crash. That path
+// used to be near-unreachable; now that an absent tier fails, it is the normal
+// way this script reports. `process.exitCode` rather than `process.exit()`:
+// exiting immediately cuts the dispose short and the abort comes back.
+await extractor.dispose();
+process.exitCode = violations.length > 0 ? 1 : 0;

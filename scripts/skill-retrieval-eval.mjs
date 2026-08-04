@@ -63,7 +63,7 @@ if (!skipBuild) {
 const require = createRequire(import.meta.url);
 const catalog = require(join(BUILD_DIR, 'main', 'recall', 'embed-catalog.js'));
 
-const { aggregate, checkFloors, scoreRanking } = await import('../tests/eval/score.mjs');
+const { aggregate, checkFloors, formatViolation, scoreRanking } = await import('../tests/eval/score.mjs');
 
 const fixture = JSON.parse(readFileSync(join(ROOT, 'tests', 'fixtures', 'skill-retrieval-golden.json'), 'utf8'));
 
@@ -160,7 +160,7 @@ const violations = checkFloors(agg, fixture.floors);
 if (violations.length > 0) {
   console.error('\nFLOOR VIOLATIONS:');
   for (const v of violations) {
-    console.error(`  ${v.tier}${v.langPair ? `/${v.langPair}` : ''} ${v.metric}: ${fmt(v.actual)} < floor ${v.floor}`);
+    console.error(`  ${formatViolation(v, fmt)}`);
   }
 } else {
   console.log('\nALL FLOORS PASS');

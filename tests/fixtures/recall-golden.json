@@ -1451,7 +1451,7 @@
     }
   ],
   "floors": {
-    "_note": "Aggregate regression floors per tier, set slightly below the values measured on 2026-07-04 with multilingual-e5-small (the default; e5-base measured no better): fts .538/.465, semantic .731/.660, hybrid .769/.670, facts-embedding 1.0/.938, hybrid sk->en recall@5 .50. The fts values also hold by construction (direct queries share exact tokens). Summaries tiers measured 2026-07-10 (e5-small, summary min-cosine 0.78): summaries-hybrid 1.0/1.0 overall AND sk->en — English-canonical summaries close the cross-language gap that caps raw-message hybrid at .50; summaries-fts .375 by construction (5 of 8 queries are lexOverlap:false).",
+    "_note": "This list IS the set of tiers that must run: a floored tier missing from a run's aggregate is a violation, not a skip (checkFloors in tests/eval/score.mjs). Deleting a floor is the only way to retire a tier, which is deliberate — the eval once silently narrowed to the FTS tier alone and still printed ALL FLOORS PASS. Aggregate regression floors per tier, set slightly below the values measured on 2026-07-04 with multilingual-e5-small (the default; e5-base measured no better): fts .538/.465, semantic .731/.660, hybrid .769/.670, facts-embedding 1.0/.938, hybrid sk->en recall@5 .50. The fts values also hold by construction (direct queries share exact tokens). Summaries tiers measured 2026-07-10 (e5-small, summary min-cosine 0.78): summaries-hybrid 1.0/1.0 overall AND sk->en — English-canonical summaries close the cross-language gap that caps raw-message hybrid at .50; summaries-fts .375 by construction (5 of 8 queries are lexOverlap:false).",
     "fts": {
       "recall@5": 0.4,
       "mrr": 0.25

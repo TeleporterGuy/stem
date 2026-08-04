@@ -11,7 +11,7 @@ import * as search from '../../src/main/recall/search';
 import * as inject from '../../src/main/recall/inject';
 import * as retrieval from '../../src/main/recall/retrieval';
 import { ftsSearchSummaries } from '../../src/main/recall/search-core';
-import { aggregate, checkFloors, loadFixture, mrr, recallAtK, scoreRanking } from '../eval/score.mjs';
+import { aggregate, checkFloors, formatViolation, loadFixture, mrr, recallAtK, scoreRanking } from '../eval/score.mjs';
 import { seedCorpus } from '../eval/seed.mjs';
 
 const fixture = loadFixture(
@@ -60,16 +60,26 @@ describe('retrieval eval — scorer math', () => {
     expect(agg.byTierLangPair.fts['sk->en']['recall@5']).toBe(0);
   });
 
-  it('checkFloors reports violations and skips absent tiers', () => {
+  it('checkFloors reports violations, and an absent tier is itself a violation', () => {
     const agg = aggregate([{ tier: 'fts', langPair: 'en->en', metrics: scoreRanking(['y'], ['x']) }]);
     const violations = checkFloors(agg, {
       fts: { 'recall@5': 0.5 },
-      hybrid: { 'recall@5': 0.9 }, // tier not run → skipped, not violated
+      hybrid: { 'recall@5': 0.9 }, // tier not run → violated, never skipped
       byLangPair: { 'en->en': { fts: { mrr: 0.5 } } }
     });
-    expect(violations).toHaveLength(2);
-    expect(violations.some((v) => v.tier === 'hybrid')).toBe(false);
+    expect(violations).toHaveLength(3);
+    expect(violations.some((v) => v.tier === 'hybrid' && v.missing)).toBe(true);
     expect(violations.some((v) => v.langPair === 'en->en')).toBe(true);
+  });
+
+  it('a floored tier that degraded to a sibling is reported as a degradation', () => {
+    // chooseFacts swallows embedding failures and degrades to `lexical`, so a
+    // dead embedder renames the tier rather than lowering its score.
+    const agg = aggregate([{ tier: 'facts-lexical', langPair: 'en->en', metrics: scoreRanking(['x'], ['x']) }]);
+    const violations = checkFloors(agg, { 'facts-embedding': { 'recall@5': 0.85 } });
+    expect(violations).toHaveLength(1);
+    expect(violations[0].ran).toEqual(['facts-lexical']);
+    expect(formatViolation(violations[0])).toMatch(/DEGRADED to facts-lexical/);
   });
 
   it('loadFixture rejects an expected id that is not in the corpus', () => {
@@ -100,7 +110,10 @@ describe('retrieval eval — FTS tier over the golden corpus', () => {
       langPair: q.langPair,
       metrics: scoreRanking(ftsRanking(q.text), q.expected)
     }));
-    const violations = checkFloors(aggregate(rows), fixture.floors);
+    // Only the fts floor: this spec runs one tier, and checkFloors now counts an
+    // unrun floored tier as a violation. The full floor set is the eval script's
+    // job (scripts/recall-eval.mjs), which runs every tier.
+    const violations = checkFloors(aggregate(rows), { fts: fixture.floors.fts });
     expect(violations, JSON.stringify(violations)).toEqual([]);
   });
 });
@@ -133,7 +146,7 @@ describe('retrieval eval — summaries FTS tier (Recall v3)', () => {
       langPair: q.langPair,
       metrics: scoreRanking(summariesFtsRanking(q.text), q.expected)
     }));
-    const violations = checkFloors(aggregate(rows), fixture.floors);
+    const violations = checkFloors(aggregate(rows), { 'summaries-fts': fixture.floors['summaries-fts'] });
     expect(violations, JSON.stringify(violations)).toEqual([]);
   });
 });

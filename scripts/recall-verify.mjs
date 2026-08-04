@@ -57,7 +57,39 @@ store.recordMessage({
   role: 'assistant',
   text: 'Your UZ Gent cardiology appointment is on June 30; Dr. Janssens noted slightly elevated cholesterol and asked for a follow-up blood test.'
 });
+// The same appointment in the user's own words. buildRecallContext filters its
+// episodic leg to roles: ['user'] before top-k, so an assistant-only thread is
+// structurally uninjectable and check 7's snippet assertion would match nothing
+// but the durable fact — restating the line above it.
+store.recordMessage({
+  threadId: 'A',
+  turnId: 't2',
+  role: 'user',
+  text: 'Remind me when my UZ Gent cardiology appointment is, I want to book the day off'
+});
 store.recordMessage({ threadId: 'B', turnId: 't9', role: 'user', text: 'how do decoder-only LLMs differ from BERT' });
+
+// Unrelated filler, so check 7 stands on its own. The hybrid episodic leg gates
+// its FTS side on bm25 (FTS_SCORE_CEILING = -0.1) and bm25 scales with IDF, so in
+// a corpus this small the gate — not relevance — is the binding constraint: with
+// only the four messages above, "uz"/"gent"/"cardiology" sit in half the corpus,
+// every score rounds to -0.0000, nothing clears the gate, and check 7 goes back
+// to passing vacuously on the durable fact alone. Measured: these threads take
+// the query to bm25 -5.3. Without them it still clears, but only at -1.2 and only
+// because check 5 happens to seed thread C before check 7 reads — the kind of
+// accidental coupling that let this assertion rot in the first place.
+for (const [threadId, role, text] of [
+  ['D', 'user', 'Which gravel tyres roll fastest on wet limestone?'],
+  ['D', 'assistant', 'A 42 mm file tread with a reinforced casing is the usual compromise there.'],
+  ['E', 'user', 'My sourdough starter smells like acetone this week.'],
+  ['E', 'assistant', 'That is a hungry starter — feed it twice daily at a warmer room temperature.'],
+  ['F', 'user', 'Any recommendations for a slow sci-fi novel about archives?'],
+  ['F', 'assistant', 'Try the one about a generation ship losing its library; reviewers liked its pacing.'],
+  ['G', 'user', 'The invoice service keeps timing out under load.'],
+  ['G', 'assistant', 'Profile the serialization path first; it is usually the CPU-bound step.']
+]) {
+  store.recordMessage({ threadId, turnId: `${threadId}1`, role, text });
+}
 
 // --- 1. cross-chat recall: querying in B finds A's health content ---
 const hits = search.searchMemory('what is my UZ Gent cardiology appointment', { excludeThreadId: 'B', limit: 5 });
@@ -92,9 +124,15 @@ check('fact correction updates source', facts.find((f) => /cardiology follow-up/
 const ctx = await inject.buildRecallContext('what is my UZ Gent cardiology appointment', { currentThreadId: 'B' });
 // v3 payload: facts ride in a JSON block, and the correction above made the
 // stored text lowercase (latest write wins the text), so match case-blind.
-check('inject includes durable facts', /"facts":\[\{/.test(ctx ?? ''));
-check('inject includes the recalled health snippet', /uz gent/i.test(ctx ?? ''));
-check('inject mentions the search tool', /search_past_chats/.test(ctx ?? ''));
+// FTS snippets wrap matched terms in «», which would split "UZ Gent" — strip the
+// markers so the assertions read on plain text.
+const ctxPlain = (ctx ?? '').replace(/[«»]/g, '');
+check('inject includes durable facts', /"facts":\[\{/.test(ctxPlain));
+// Anchored inside pastUserMessages, not on the whole block: the durable fact
+// asserted above also says "UZ Gent", so an unanchored match proves nothing
+// about episodic recall.
+check('inject includes the recalled health snippet as a past user message', /"pastUserMessages":\[[^\]]*uz gent/i.test(ctxPlain));
+check('inject mentions the search tool', /search_past_chats/.test(ctxPlain));
 
 // --- 8. distillation: parsing (JSON + bullets + secret filtering) ---
 const pf = distill.parseFacts('Here you go:\n["The user lives in Slovakia", "The user prefers Slovak"]');
