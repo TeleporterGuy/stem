@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startStemServer, type StemServerProcess } from './stem-server';
 import type { ScheduledTask } from '../../src/shared/types';
 
 // Launch via the project ROOT (not dist/main/index.js directly) so Electron
@@ -54,6 +55,13 @@ export interface LaunchOptions {
   env?: Record<string, string>;
   /** Extra argv for the launch (e.g. `--quick-chat` for the cold summon path). */
   extraArgs?: string[];
+  /**
+   * Start `stem-server` as a SEPARATE process against the same state dir and
+   * point the app at it with STEM_SERVER_URL, instead of the app starting one
+   * in-process. Two processes, one machine — the Phase 1 definition of done.
+   * See tests/e2e/stem-server.ts and external-server.spec.ts.
+   */
+  externalServer?: boolean;
 }
 
 export interface LaunchedApp {
@@ -61,6 +69,8 @@ export interface LaunchedApp {
   userDataDir: string;
   tasksStorePath: string;
   settingsStorePath: string;
+  /** The separately-started server, when `externalServer` asked for one. */
+  server: StemServerProcess | null;
 }
 
 /** Launch the built app with fully isolated state. Seeds the tasks store first
@@ -76,15 +86,26 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
   }
   if (opts.seedSettings) writeFileSync(settingsStore, JSON.stringify(opts.seedSettings, null, 2));
   const real = opts.real ?? REAL_BACKEND;
+  // Isolate the Stem-owned stores onto throwaway paths (same seam the unit tests
+  // and the old probes use). Hoisted out of the env literal because an external
+  // server has to be given the identical set — the two processes are only one
+  // Stem if they agree about where every store lives.
+  const storeEnv = {
+    STEM_RECALL_DB: join(userDataDir, 'recall.sqlite'),
+    STEM_FILES_DIR: join(userDataDir, 'files'),
+    STEM_TASKS_STORE: tasksStorePath
+  };
+  // Started BEFORE the app: it writes the device registry the desktop reads its
+  // own bearer token out of, and the app's first act is to connect.
+  const server = opts.externalServer
+    ? await startStemServer({ stateDir: userDataDir, storeEnv, real })
+    : null;
   const app = await electron.launch({
     args: [PROJECT_ROOT, `--user-data-dir=${userDataDir}`, ...(opts.extraArgs ?? [])],
     env: {
       ...process.env,
-      // Isolate the Stem-owned stores onto throwaway paths (same seam the unit
-      // tests and the old probes use).
-      STEM_RECALL_DB: join(userDataDir, 'recall.sqlite'),
-      STEM_FILES_DIR: join(userDataDir, 'files'),
-      STEM_TASKS_STORE: tasksStorePath,
+      ...storeEnv,
+      ...(server ? { STEM_SERVER_URL: server.url } : {}),
       // macOS: run the instance as a non-activating accessory app so a suite
       // that launches one Electron per spec never steals focus or yanks the
       // user to the Space the run started on (see BACKGROUND in desktop/index.ts).
@@ -104,7 +125,19 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
       ...opts.env
     }
   });
-  return { app, userDataDir, tasksStorePath, settingsStorePath: settingsStore };
+  return { app, userDataDir, tasksStorePath, settingsStorePath: settingsStore, server };
+}
+
+/**
+ * Tear a launched app down: the window, then the server it was talking to (in
+ * that order — killing the server first turns every in-flight RPC into an
+ * "unreachable" the app would log on its way out), then the state dir. Errors
+ * are swallowed: a cleanup that throws replaces a real failure with its own.
+ */
+export async function closeApp(launched: LaunchedApp): Promise<void> {
+  await launched.app.close().catch(() => {});
+  await launched.server?.stop().catch(() => {});
+  rmSync(launched.userDataDir, { recursive: true, force: true });
 }
 
 export const test = base.extend<Fixtures>({

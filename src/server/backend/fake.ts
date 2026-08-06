@@ -21,6 +21,7 @@ import { readTasks } from '../workspace/tasks';
 // Turn scripting via markers in the prompt text:
 //   [e2e:hang] — stream one delta, then stay running until interrupted
 //   [e2e:fail] — fail the turn after one delta
+//   [e2e:exec] — call run_command mid-turn, through the real ExecService
 //   otherwise  — stream "Echo: <text>" in a few deltas, then complete
 //
 // STEM_E2E_ONBOARDING starts the fake UNAUTHENTICATED; login() (wired to the
@@ -75,6 +76,7 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
   private threads = new Map<string, FakeThread>();
   private seq = 0;
   private activeTurn: ActiveTurn | null = null;
+  private execBridge: ExecBridge | null = null;
 
   constructor(private readonly options: FakeBackendOptions) {
     super();
@@ -275,7 +277,16 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
 
   setTaskBridge(_bridge: TaskBridge | null): void {}
 
-  setExecBridge(_bridge: ExecBridge | null): void {}
+  /**
+   * Held rather than dropped, so `[e2e:exec]` can drive the REAL ExecService —
+   * its policy tiers, its approval card, its spawn. The approval path is the one
+   * place where a server-owned decision has to reach a window and come back, and
+   * with `approvalMode: 'manual'` seeded it does so without an LLM judge in the
+   * way, which is what makes it usable as a hermetic test.
+   */
+  setExecBridge(bridge: ExecBridge | null): void {
+    this.execBridge = bridge;
+  }
 
   // ---- scripted turn execution ----
 
@@ -293,11 +304,15 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
       words.slice(2 * third).length ? ' ' + words.slice(2 * third).join(' ') : ''
     ].filter(Boolean);
 
-    const steps: Array<() => void> = [];
+    const steps: Array<() => void | Promise<void>> = [];
     steps.push(() =>
       this.emitEvent('item/started', { item: { type: 'reasoning', id: turnId }, threadId, turnId })
     );
     let streamed = '';
+    // What run_command answered, appended to the reply so a test can assert on
+    // the rendered turn rather than on the card alone. Empty for every turn that
+    // does not ask for a command.
+    let execTail = '';
     const deltasToEmit = turn.hang || fail ? chunks.slice(0, 1) : chunks;
     for (const chunk of deltasToEmit) {
       steps.push(() => {
@@ -305,6 +320,28 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
         this.emitEvent('item/agentMessage/delta', { threadId, turnId, itemId: turnId, delta: chunk });
       });
     }
+    // [e2e:exec]: a run_command round-trip mid-turn, exactly as pi's tool would
+    // make it. Everything past the seam is real — the policy tiers, the approval
+    // card that has to reach a window and come back, the spawn. The command is a
+    // harmless echo that no allowlist covers, so it lands on the approval tier.
+    if (!fail && !turn.hang && text.includes('[e2e:exec]')) {
+      steps.push(async () => {
+        const bridge = this.execBridge;
+        if (!bridge) {
+          execTail = '\n\n[exec unavailable]';
+          return;
+        }
+        const result = await bridge.handleExecRequest({
+          command: 'echo stem-e2e-approved',
+          threadId,
+          isScheduled: false,
+          userText: text
+        });
+        execTail = result.ok ? `\n\n[exec ok] ${result.text.trim()}` : `\n\n[exec refused] ${result.error}`;
+        this.emitEvent('item/agentMessage/delta', { threadId, turnId, itemId: turnId, delta: execTail });
+      });
+    }
+
     if (fail) {
       steps.push(() => {
         if (this.activeTurn?.turnId === turnId) this.activeTurn = null;
@@ -318,9 +355,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     } else if (!turn.hang) {
       steps.push(() => {
         if (this.activeTurn?.turnId === turnId) this.activeTurn = null;
-        this.recordAssistant(turn, reply);
+        const final = reply + execTail;
+        this.recordAssistant(turn, final);
         this.emitEvent('item/completed', {
-          item: { type: 'agentMessage', id: turnId, text: reply },
+          item: { type: 'agentMessage', id: turnId, text: final },
           threadId,
           turnId
         });
@@ -339,14 +377,18 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     }
     // [e2e:hang]: no terminal step — the turn stays running until interruptTurn.
 
-    const step = (i: number): void => {
+    const step = async (i: number): Promise<void> => {
       if (this.activeTurn?.turnId !== turnId) return; // interrupted/superseded
-      steps[i]();
+      await steps[i]();
+      // Re-checked after the await: the exec step can sit on an approval card for
+      // as long as the user takes, and Stop during that window must not resume
+      // the script afterwards.
+      if (this.activeTurn?.turnId !== turnId) return;
       if (i + 1 < steps.length) {
-        turn.timer = setTimeout(() => step(i + 1), STEP_MS);
+        turn.timer = setTimeout(() => void step(i + 1), STEP_MS);
       }
     };
-    turn.timer = setTimeout(() => step(0), STEP_MS);
+    turn.timer = setTimeout(() => void step(0), STEP_MS);
   }
 
   /** Emit the terminal event for an interrupt, persisting nothing extra. */
