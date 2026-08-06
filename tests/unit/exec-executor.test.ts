@@ -11,7 +11,7 @@ import {
   resolveLoginPath,
   runCommand,
   shellInvocation
-} from '../../src/main/exec/executor';
+} from '../../src/server/exec/executor';
 
 // The run_command spawn layer: real shell children with output caps, timeouts,
 // and process-tree kills. Spawn tests are gated on the host shell being present

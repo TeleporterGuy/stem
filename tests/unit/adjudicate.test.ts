@@ -3,10 +3,10 @@ import {
   ADJUDICATE_PROMPT_HEADER,
   MAX_ADJUDICATE_ATTEMPTS,
   adjudicateOpenConflicts
-} from '../../src/main/recall/adjudicate';
-import type { LlmClient } from '../../src/main/recall/llm';
-import { recallStore as store } from '../../src/main/recall/store';
-import * as retrieval from '../../src/main/recall/retrieval';
+} from '../../src/server/recall/adjudicate';
+import type { LlmClient } from '../../src/server/recall/llm';
+import { recallStore as store } from '../../src/server/recall/store';
+import * as retrieval from '../../src/server/recall/retrieval';
 
 afterAll(() => store.close());
 beforeEach(() => {

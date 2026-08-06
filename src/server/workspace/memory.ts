@@ -10,7 +10,7 @@ const { deleteFact, deleteThreadSummary, getAllFacts, getEpisodicLimitBytes, get
 // This module owns:
 //  - the explicit "remember that …" fast-path (writes a durable Level-1 fact),
 //  - the on/off toggle + the Manage-panel "Stored memory" view.
-// Episodic capture/search/injection live in src/main/recall/.
+// Episodic capture/search/injection live in src/server/recall/.
 
 const RECALL_ENABLED_KEY = 'recall_enabled';
 

@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { FolderIndexStore } from '../../src/main/folder-index/store';
-import { createScanWorkerManager } from '../../src/main/recall/scan-manager';
-import type { WorkerTransport } from '../../src/main/recall/embed-worker-host';
-import type { ScanWorkerInMessage, ScanWorkerOutMessage } from '../../src/main/recall/scan-worker';
-import { evictDocScanHandle, scanDocsOffThread, setScanWorkerManager } from '../../src/main/recall/scan';
-import { folderIndexDbPath, folderIndexDir } from '../../src/main/workspace/paths';
+import { FolderIndexStore } from '../../src/server/folder-index/store';
+import { createScanWorkerManager } from '../../src/server/recall/scan-manager';
+import type { WorkerTransport } from '../../src/server/recall/embed-worker-host';
+import type { ScanWorkerInMessage, ScanWorkerOutMessage } from '../../src/server/recall/scan-worker';
+import { evictDocScanHandle, scanDocsOffThread, setScanWorkerManager } from '../../src/server/recall/scan';
+import { folderIndexDbPath, folderIndexDir } from '../../src/server/workspace/paths';
 
 // The folder-index doc handles the scan worker and the stem-recall MCP server
 // keep warm across requests: when they must be dropped (the index file was
@@ -53,7 +53,7 @@ beforeAll(async () => {
       onWorkerOut?.(msg);
     }
   };
-  await import('../../src/main/recall/scan-worker');
+  await import('../../src/server/recall/scan-worker');
   toWorker = (msg) => {
     workerIn.push(msg);
     for (const cb of listeners) cb({ data: msg });
@@ -199,7 +199,7 @@ describe('scanDocsOffThread', () => {
 
 describe('dropFolderIndex', () => {
   it('evicts the worker handle before deleting the index file', async () => {
-    const { dropFolderIndex } = await import('../../src/main/folder-index/index');
+    const { dropFolderIndex } = await import('../../src/server/folder-index/index');
     mkdirSync(folderIndexDir(), { recursive: true });
     const folderId = 'a0000000-0000-4000-8000-000000000001';
     const file = folderIndexDbPath(folderId);
@@ -221,7 +221,7 @@ describe('dropFolderIndex', () => {
   });
 
   it('deletes the index even when the worker never acknowledges the eviction', async () => {
-    const { dropFolderIndex } = await import('../../src/main/folder-index/index');
+    const { dropFolderIndex } = await import('../../src/server/folder-index/index');
     mkdirSync(folderIndexDir(), { recursive: true });
     const folderId = 'a0000000-0000-4000-8000-000000000002';
     const file = folderIndexDbPath(folderId);
@@ -271,7 +271,7 @@ describe('stem-recall MCP server folder handles', () => {
     };
     writeManifest([entry('n', 'Notes', notesDir, notesDb), entry('t', 'Trips', tripsDir, tripsDb)]);
 
-    const { cachedFolderDbFiles, searchFolderDocs } = await import('../../src/main/recall/mcp-server-main');
+    const { cachedFolderDbFiles, searchFolderDocs } = await import('../../src/server/recall/mcp-server-main');
     await searchFolderDocs('cottage deposit', 8, undefined);
     expect(cachedFolderDbFiles().sort()).toEqual([notesDb, tripsDb].sort());
 

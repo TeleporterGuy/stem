@@ -5,8 +5,8 @@ import {
   ensureCompleteModel,
   promptComplete,
   resetCompleteConversation
-} from '../../src/main/pi/complete-worker';
-import type { PiProcess, PiResponse } from '../../src/main/pi/rpc';
+} from '../../src/server/pi/complete-worker';
+import type { PiProcess, PiResponse } from '../../src/server/pi/rpc';
 
 // Hardened complete path: get_state / set_model / prompt ack + LLM wait after accept.
 

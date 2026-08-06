@@ -4,10 +4,10 @@
 // raised (or resolved) afterwards rewrites what an earlier turn is shown to have
 // seen. See BUG-021.
 import { afterAll, describe, expect, it } from 'vitest';
-import { recallStore as store } from '../../src/main/recall/store';
-import { dispatchLocal } from '../../src/main/ipc/guard';
-import { registerMemoryIpc } from '../../src/main/ipc/memory';
-import type { IpcDeps } from '../../src/main/ipc/deps';
+import { recallStore as store } from '../../src/server/recall/store';
+import { dispatchLocal } from '../../src/server/ipc/guard';
+import { registerMemoryIpc } from '../../src/server/ipc/memory';
+import type { IpcDeps } from '../../src/server/ipc/deps';
 import type { ActiveFacts } from '../../src/shared/types';
 
 // Registration only records handlers; `memory:activeFacts` reads none of these.

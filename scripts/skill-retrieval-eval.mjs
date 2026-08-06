@@ -15,7 +15,7 @@
 //   npm run eval:skill-retrieval
 //   node scripts/skill-retrieval-eval.mjs --skip-build --model multilingual-e5-base
 //
-// WHAT THIS DOES NOT MEASURE: the shipped ranker in src/main/skills/inject.ts blends
+// WHAT THIS DOES NOT MEASURE: the shipped ranker in src/server/skills/inject.ts blends
 // a usage term into the score the way recall/inject.ts does for facts
 // (`blended = cosine + SKILL_USAGE_WEIGHT·(usageRate − 0.5)`), and then reranks the
 // survivors. Neither is modelled here. The usage term is a function of the user's own
@@ -49,7 +49,7 @@ if (!skipBuild) {
   const tsc = spawnSync(
     'npx',
     [
-      'tsc', 'src/main/recall/embed-catalog.ts',
+      'tsc', 'src/server/recall/embed-catalog.ts',
       '--outDir', '.skills-build',
       '--module', 'commonjs', '--moduleResolution', 'node', '--target', 'es2022',
       '--skipLibCheck', '--esModuleInterop', '--rootDir', 'src'
@@ -61,7 +61,7 @@ if (!skipBuild) {
 }
 
 const require = createRequire(import.meta.url);
-const catalog = require(join(BUILD_DIR, 'main', 'recall', 'embed-catalog.js'));
+const catalog = require(join(BUILD_DIR, 'server', 'recall', 'embed-catalog.js'));
 
 const { aggregate, checkFloors, formatViolation, scoreRanking } = await import('../tests/eval/score.mjs');
 
@@ -101,7 +101,7 @@ function cosine(a, b) {
 
 // ---- 3. index the library ----
 // The indexed text is `${name}\n${description}` — the same string `skillVectorText`
-// builds in src/main/skills/vectors.ts, which is what the shipped ranker actually
+// builds in src/server/skills/vectors.ts, which is what the shipped ranker actually
 // embeds. The name carries signal of its own precisely because the contract forbids
 // the description from restating it (`restatesName` in skills/contract.ts), so the
 // two are complementary rather than redundant.

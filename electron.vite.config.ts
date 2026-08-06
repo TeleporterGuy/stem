@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url));
 const mainAssets = [
-  ['src/main/pi/stem-mcp-extension.mjs', 'dist/main/pi/stem-mcp-extension.mjs'],
-  ['src/main/pi/pi-node-shim.mjs', 'dist/main/pi/pi-node-shim.mjs']
+  ['src/server/pi/stem-mcp-extension.mjs', 'dist/main/pi/stem-mcp-extension.mjs'],
+  ['src/server/pi/pi-node-shim.mjs', 'dist/main/pi/pi-node-shim.mjs']
 ] as const;
 
 function copyMainRuntimeAssets() {
@@ -33,14 +33,14 @@ export default defineConfig({
         // (utilityProcess.fork(dist/main/embed-worker.js) in embed-worker-host.ts).
         // recall-mcp-server is a third: a standalone stdio MCP server spawned with
         // ELECTRON_RUN_AS_NODE (see pi/mcp-config.ts); bundling it lets it share
-        // src/main/recall/search-core.ts with the main process.
+        // src/server/recall/search-core.ts with the main process.
         // scan-worker is a fourth: the recall cosine-scan + VACUUM utilityProcess
         // (see scan-worker-host.ts), sharing search-core/maintenance-core.
         input: {
-          index: 'src/main/index.ts',
-          'embed-worker': 'src/main/recall/embed-worker.ts',
-          'recall-mcp-server': 'src/main/recall/mcp-server-main.ts',
-          'scan-worker': 'src/main/recall/scan-worker.ts'
+          index: 'src/server/index.ts',
+          'embed-worker': 'src/server/recall/embed-worker.ts',
+          'recall-mcp-server': 'src/server/recall/mcp-server-main.ts',
+          'scan-worker': 'src/server/recall/scan-worker.ts'
         },
         // transformers.js must stay external: it lazily loads onnxruntime-node's
         // native .node binary, which cannot live inside a rollup bundle. Resolved
@@ -76,7 +76,7 @@ export default defineConfig({
         // Two HTML entries. index.html serves all three desktop windows (the URL
         // flag picks main / Quick Chat / HUD); mobile.html is the phone client,
         // which the loopback bridge serves out of this same directory (see
-        // src/main/mobile/server.ts) and which has no preload behind it.
+        // src/server/mobile/server.ts) and which has no preload behind it.
         input: {
           index: 'src/renderer/index.html',
           mobile: 'src/renderer/mobile.html'

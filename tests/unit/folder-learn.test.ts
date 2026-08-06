@@ -3,23 +3,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { ConnectedFolder } from '../../src/shared/types';
-import { FolderIndexStore } from '../../src/main/folder-index/store';
+import { FolderIndexStore } from '../../src/server/folder-index/store';
 import {
   DOC_DISTILL_INSTRUCTIONS,
   DOC_FACT_CONFIDENCE,
   PER_DOC_CHAR_CAP,
   buildLearnBatch,
   learnFolderBatch
-} from '../../src/main/folder-index/learn';
-import { RELATION_PROMPT_HEADER } from '../../src/main/recall/reconcile';
-import type { LlmClient } from '../../src/main/recall/llm';
-import { recallStore } from '../../src/main/recall/store';
+} from '../../src/server/folder-index/learn';
+import { RELATION_PROMPT_HEADER } from '../../src/server/recall/reconcile';
+import type { LlmClient } from '../../src/server/recall/llm';
+import { recallStore } from '../../src/server/recall/store';
 import {
   CURSOR_KEY,
   buildDistillBatch,
   buildDocsBlock,
   distillNewMessages
-} from '../../src/main/recall/distill';
+} from '../../src/server/recall/distill';
 
 // Goal 3 — folder fact learning: the learned_hash marker engine ('new'/'all'
 // modes), the doc distiller, folder-tagged facts with 'folder_doc' evidence,
@@ -53,7 +53,7 @@ const claimsReply = (claims: unknown[]): string => JSON.stringify({ claims });
 describe('connected-folder learn settings', () => {
   it('coerces and patches learnMode/learnModel; effective mode gates on index+memorize', async () => {
     const { addConnectedFolders, effectiveLearnMode, listConnectedFolders, updateConnectedFolder } = await import(
-      '../../src/main/workspace/connected-folders'
+      '../../src/server/workspace/connected-folders'
     );
     const root = join(dir, 'settings-folder');
     mkdirSync(root, { recursive: true });

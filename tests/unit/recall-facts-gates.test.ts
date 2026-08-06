@@ -5,9 +5,9 @@
 // like the sibling suites.
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { MAX_ADJUDICATE_ATTEMPTS } from '../../src/main/recall/adjudicate';
-import { recallStore as store } from '../../src/main/recall/store';
-import * as search from '../../src/main/recall/search';
+import { MAX_ADJUDICATE_ATTEMPTS } from '../../src/server/recall/adjudicate';
+import { recallStore as store } from '../../src/server/recall/store';
+import * as search from '../../src/server/recall/search';
 
 afterAll(() => store.close());
 beforeEach(() => {

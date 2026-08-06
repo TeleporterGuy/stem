@@ -11,7 +11,7 @@ import type { ScheduledTask } from '../../src/shared/types';
 // Launch via the project ROOT (not dist/main/index.js directly) so Electron
 // resolves `main` from package.json AND app.getAppPath() returns the repo root.
 // Pointing at the entry file makes getAppPath() = dist/main, which breaks the
-// runtime's source-relative paths (e.g. the pi extension under src/main/pi).
+// runtime's source-relative paths (e.g. the pi extension under src/server/pi).
 const PROJECT_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 /** The real app opens three windows (main, Quick Chat overlay, HUD); only the
@@ -87,7 +87,7 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
       STEM_TASKS_STORE: tasksStorePath,
       // Default: report a healthy backend without spawning pi, so tests reach
       // the real UI past the sign-in gate (see the STEM_E2E seam in
-      // src/main/index.ts). In real-backend mode the seam is off and pi runs.
+      // src/server/index.ts). In real-backend mode the seam is off and pi runs.
       ...(real ? {} : { STEM_E2E: '1' }),
       // Pin the session type the app *reports*, without touching the env vars
       // Chromium uses to pick its display backend (see isWaylandSession). Wayland

@@ -12,8 +12,8 @@ import stemMcpBridge, {
   MCP_HTTP_REQUEST_TIMEOUT_MS,
   mcpConnectionsSettledForTests,
   resetMcpConnectionCacheForTests
-} from '../../src/main/pi/stem-mcp-extension.mjs';
-import { mcpServerAuthIdentity } from '../../src/main/pi/mcp-config';
+} from '../../src/server/pi/stem-mcp-extension.mjs';
+import { mcpServerAuthIdentity } from '../../src/server/pi/mcp-config';
 
 const cleanup: string[] = [];
 

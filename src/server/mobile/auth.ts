@@ -89,7 +89,7 @@ export function tokenEquals(expected: string, presented: string | null | undefin
  *
  * The query form exists because `EventSource` cannot set request headers — the
  * SSE stream has no other way to authenticate. It never leaves the loopback hop
- * plus the tailnet's TLS tunnel, and it is not logged (main/log.ts records
+ * plus the tailnet's TLS tunnel, and it is not logged (server/log.ts records
  * channels and problems, never URLs).
  */
 export function presentedToken(headers: IncomingHttpHeaders, url: string | undefined): string | null {

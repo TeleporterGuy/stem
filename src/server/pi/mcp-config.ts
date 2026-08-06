@@ -52,7 +52,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 function mainRuntimeAssetPath(rel: string): string {
   const built = join(__dirname, rel);
-  return existsSync(built) ? built : join(app.getAppPath(), 'src', 'main', rel);
+  return existsSync(built) ? built : join(app.getAppPath(), 'src', 'server', rel);
 }
 
 /** Absolute path to the bridge extension asset (mirrors recallMcpServerPath's basis). */

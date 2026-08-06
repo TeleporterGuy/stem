@@ -9,7 +9,7 @@
 // injected, which is exactly how the transport is built to be driven.
 
 import { describe, expect, it } from 'vitest';
-import { MOBILE_INVOKE_CHANNELS, MOBILE_PUSH_CHANNELS } from '../../src/main/mobile/channels';
+import { MOBILE_INVOKE_CHANNELS, MOBILE_PUSH_CHANNELS } from '../../src/server/mobile/channels';
 import {
   EVENT_CHANNELS,
   INVOKE_CHANNELS,

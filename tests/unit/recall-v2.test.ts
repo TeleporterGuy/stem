@@ -1,23 +1,23 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/main/recall/store';
-import * as activity from '../../src/main/activity';
-import * as distill from '../../src/main/recall/distill';
-import * as inject from '../../src/main/recall/inject';
-import * as retrieval from '../../src/main/recall/retrieval';
-import * as search from '../../src/main/recall/search';
+import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/server/recall/store';
+import * as activity from '../../src/server/activity';
+import * as distill from '../../src/server/recall/distill';
+import * as inject from '../../src/server/recall/inject';
+import * as retrieval from '../../src/server/recall/retrieval';
+import * as search from '../../src/server/recall/search';
 import {
   chunkEpisodicText,
   embedNewMessages,
   EPISODIC_EMBED_MAX_CHARS
-} from '../../src/main/recall/embed-episodic';
-import { RELATION_PROMPT_HEADER, reconcileExplicitFact, type FactRelation } from '../../src/main/recall/reconcile';
+} from '../../src/server/recall/embed-episodic';
+import { RELATION_PROMPT_HEADER, reconcileExplicitFact, type FactRelation } from '../../src/server/recall/reconcile';
 import {
   getMemoryRebuildStatus,
   pauseMemoryRebuild,
   resumeMemoryRebuild,
   runMemoryRebuildStep,
   startMemoryRebuild
-} from '../../src/main/recall/rebuild';
+} from '../../src/server/recall/rebuild';
 
 afterAll(() => store.close());
 beforeEach(() => {

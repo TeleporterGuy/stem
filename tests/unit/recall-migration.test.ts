@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/main/recall/store';
-import { getMemoryRebuildStatus } from '../../src/main/recall/rebuild';
+import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/server/recall/store';
+import { getMemoryRebuildStatus } from '../../src/server/recall/rebuild';
 
 beforeAll(() => {
   const path = process.env.STEM_RECALL_DB!;

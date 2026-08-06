@@ -1,6 +1,6 @@
 // Hermetic chat-turn e2e — the full send → stream → settle path through real
 // IPC, event routing, and renderer state, against the scripted FakeBackend
-// (src/main/backend/fake.ts). No pi process, auth, or network. The scripted
+// (src/server/backend/fake.ts). No pi process, auth, or network. The scripted
 // turn markers ([e2e:hang] / [e2e:fail]) come from the fake's prompt protocol.
 import { test, expect } from './electron';
 import type { Page } from '@playwright/test';

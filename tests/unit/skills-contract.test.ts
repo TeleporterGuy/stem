@@ -11,7 +11,7 @@ import {
   restatesName,
   slugifySkillName,
   validateSkill
-} from '../../src/main/skills/contract';
+} from '../../src/server/skills/contract';
 
 const GOOD_BODY = `## When to use
 When a YouTube page has auto-generated captions and you need the text.

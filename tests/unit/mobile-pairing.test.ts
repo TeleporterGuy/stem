@@ -1,4 +1,4 @@
-// Pairing, against the real bridge state machine (src/main/startup/mobile.ts)
+// Pairing, against the real bridge state machine (src/server/startup/mobile.ts)
 // and the real settings store. What is under test here is the lifecycle rather
 // than the transport: that the bridge is genuinely off until the Settings toggle
 // says otherwise, that flipping it starts and stops a listening socket, and that
@@ -12,10 +12,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, rmSync } from 'node:fs';
 import { connect } from 'node:net';
 import { dirname } from 'node:path';
-import { readSettings, updateMobileSettings } from '../../src/main/workspace/settings';
-import { settingsStorePath } from '../../src/main/workspace/paths';
-import { forgetCachedMobileToken } from '../../src/main/mobile/auth';
-import { handleIpc } from '../../src/main/ipc';
+import { readSettings, updateMobileSettings } from '../../src/server/workspace/settings';
+import { settingsStorePath } from '../../src/server/workspace/paths';
+import { forgetCachedMobileToken } from '../../src/server/mobile/auth';
+import { handleIpc } from '../../src/server/ipc';
 import {
   closeMobileBridge,
   clearMobileTurns,
@@ -26,7 +26,7 @@ import {
   noteMobileTurnEvent,
   rerollMobilePairing,
   syncMobileBridge
-} from '../../src/main/startup/mobile';
+} from '../../src/server/startup/mobile';
 
 const settingsPath = settingsStorePath();
 /** A high port unlikely to clash; the settings store refuses anything under 1024. */

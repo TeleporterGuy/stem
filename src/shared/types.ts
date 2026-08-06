@@ -477,7 +477,7 @@ export interface SkillSummary {
 
 /**
  * How many file names the per-turn Files context lists before truncating (see
- * main/files/inject.ts). Shared so the Files tab can warn once the folder grows
+ * server/files/inject.ts). Shared so the Files tab can warn once the folder grows
  * past the point where the assistant is still told about every file.
  */
 export const FILES_CONTEXT_LIMIT = 100;
@@ -1233,7 +1233,7 @@ export interface WebSearchSettings {
    * can search through Exa, a ChatGPT chat through SearXNG. `auto` walks
    * pi-web-access's fallback chain, which ends at keyless Exa MCP so search works
    * with no configuration at all; `all` fans out across every configured backend.
-   * Otherwise one of the ids in SEARCH_BACKENDS (main/pi/web-search.ts).
+   * Otherwise one of the ids in SEARCH_BACKENDS (server/pi/web-search.ts).
    */
   provider: string;
   /**
@@ -1321,7 +1321,7 @@ export interface CustomInstructionsSettings {
  */
 export type EmbeddingsMode = 'off' | 'local' | 'remote';
 
-/** Curated local embedding models (specs live in main/recall/embed-catalog.ts). */
+/** Curated local embedding models (specs live in server/recall/embed-catalog.ts). */
 export type LocalEmbedModelId = 'multilingual-e5-small' | 'multilingual-e5-base' | 'embeddinggemma-300m';
 
 /**
@@ -1360,7 +1360,7 @@ export interface LocalEmbedStatus {
  */
 export type RerankerMode = 'off' | 'local' | 'remote';
 
-/** Curated local reranker models (specs live in main/recall/rerank-catalog.ts). */
+/** Curated local reranker models (specs live in server/recall/rerank-catalog.ts). */
 export type LocalRerankModelId = 'bge-reranker-v2-m3';
 
 /**

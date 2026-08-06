@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ExecService, JUDGE_TIMEOUT_MS } from '../../src/main/exec/service';
-import type { ChatBackend } from '../../src/main/backend/types';
+import { ExecService, JUDGE_TIMEOUT_MS } from '../../src/server/exec/service';
+import type { ChatBackend } from '../../src/server/backend/types';
 import type { AppSettings, ExecApprovalRequest, ModelSummary } from '../../src/shared/types';
-import { emptyCompleteError } from '../../src/main/pi/complete-errors';
-import { insertCompleteWaiter } from '../../src/main/pi/complete-worker';
+import { emptyCompleteError } from '../../src/server/pi/complete-errors';
+import { insertCompleteWaiter } from '../../src/server/pi/complete-worker';
 
 // ExecService judge wiring: model selection from the live chat, priority complete(),
 // and fail-closed escalation when complete() throws.

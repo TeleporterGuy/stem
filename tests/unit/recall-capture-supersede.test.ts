@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { RecallStore } from '../../src/main/recall/store';
+import { RecallStore } from '../../src/server/recall/store';
 
 // One turn can hold several assistant messages (see pi/normalize.ts), and each
 // completed one carries the reply SO FAR — so a single reply reaches capture two or

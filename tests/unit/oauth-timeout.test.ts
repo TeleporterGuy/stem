@@ -30,7 +30,7 @@ vi.mock('node:http', () => ({
   }
 }));
 
-import { authorizeMcp } from '../../src/main/pi/oauth';
+import { authorizeMcp } from '../../src/server/pi/oauth';
 
 function json(data: unknown): Response {
   return new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });

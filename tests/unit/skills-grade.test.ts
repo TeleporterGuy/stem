@@ -6,8 +6,8 @@
 // never promised. The case that matters most is the one it is FOR: a skill
 // injected turn after turn that never coincides with any of its own tools.
 import { describe, expect, it } from 'vitest';
-import { gradeSkillUse, toolsNamedIn } from '../../src/main/skills/grade';
-import type { TraceEntry } from '../../src/main/pi/normalize';
+import { gradeSkillUse, toolsNamedIn } from '../../src/server/skills/grade';
+import type { TraceEntry } from '../../src/server/pi/normalize';
 
 const CAPTIONS = `## When to use
 When the user asks what was said in a video that has captions.

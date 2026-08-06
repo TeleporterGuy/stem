@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMobileServer, type MobileServer } from '../../src/main/mobile/server';
+import { startMobileServer, type MobileServer } from '../../src/server/mobile/server';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const publicDir = join(root, 'src/renderer/public');

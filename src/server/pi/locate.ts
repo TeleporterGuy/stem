@@ -80,7 +80,7 @@ function warnIfUntested(pi: PiInvocation): PiInvocation {
   if (pi.version) {
     console.warn(
       `[stem] pi ${pi.version} at ${pi.displayPath} differs from the tested ${TESTED_PI_VERSION} — ` +
-        'the Stem bridge extension may misbehave (see src/main/pi/protocol.ts).'
+        'the Stem bridge extension may misbehave (see src/server/pi/protocol.ts).'
     );
   } else if (pi.source !== 'bundled') {
     console.warn(
@@ -137,7 +137,7 @@ async function locateBundledCli(): Promise<string | null> {
 async function locateNodeShim(): Promise<string | null> {
   const candidates = [
     new URL('./pi/pi-node-shim.mjs', import.meta.url), // dist/main/index.js → dist/main/pi/
-    new URL('./pi-node-shim.mjs', import.meta.url) // src/main/pi/locate.ts (vitest)
+    new URL('./pi-node-shim.mjs', import.meta.url) // src/server/pi/locate.ts (vitest)
   ];
   for (const candidate of candidates) {
     try {

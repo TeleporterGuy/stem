@@ -3,11 +3,11 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { canonicalPolicyPath, pathInsideAny, PiRuntime } from '../../src/main/pi/runtime';
-import { newTurnContext } from '../../src/main/pi/normalize';
-import { PiProcess, stderrReason } from '../../src/main/pi/rpc';
-import { updateDefaultModel } from '../../src/main/workspace/settings';
-import { settingsStorePath } from '../../src/main/workspace/paths';
+import { canonicalPolicyPath, pathInsideAny, PiRuntime } from '../../src/server/pi/runtime';
+import { newTurnContext } from '../../src/server/pi/normalize';
+import { PiProcess, stderrReason } from '../../src/server/pi/rpc';
+import { updateDefaultModel } from '../../src/server/workspace/settings';
+import { settingsStorePath } from '../../src/server/workspace/paths';
 
 const cleanup: string[] = [];
 

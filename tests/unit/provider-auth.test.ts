@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { shell } from 'electron';
 import type { AuthUiEvent } from '../../src/shared/types';
-import { ProviderAuth } from '../../src/main/pi/provider-auth';
+import { ProviderAuth } from '../../src/server/pi/provider-auth';
 
 type AuthPrompt = {
   type: 'text' | 'secret' | 'select' | 'manual_code';

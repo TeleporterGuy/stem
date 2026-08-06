@@ -17,16 +17,16 @@ import {
   TASK_BRIDGE_TITLE,
   TESTED_PI_VERSION,
   toolArgsOf
-} from '../../src/main/pi/protocol';
+} from '../../src/server/pi/protocol';
 
 // Drift guards for the Stem ⇄ pi side-protocol. The bridge extension
 // (stem-mcp-extension.mjs) runs inside the pi process and cannot import
-// src/main/pi/protocol.ts, so its sentinel titles, tool names, and gate-file names
+// src/server/pi/protocol.ts, so its sentinel titles, tool names, and gate-file names
 // are hand-written twins of the TS constants. These tests parse the extension
 // source and fail when either side changes alone.
 
 const ROOT = join(__dirname, '../..');
-const extensionSource = readFileSync(join(ROOT, 'src/main/pi/stem-mcp-extension.mjs'), 'utf8');
+const extensionSource = readFileSync(join(ROOT, 'src/server/pi/stem-mcp-extension.mjs'), 'utf8');
 
 /** Extract `const NAME = '<value>'` from the extension source. */
 function extensionConst(name: string): string | undefined {

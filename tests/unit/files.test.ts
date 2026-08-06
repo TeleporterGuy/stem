@@ -5,8 +5,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import * as store from '../../src/main/files/store';
-import * as inject from '../../src/main/files/inject';
+import * as store from '../../src/server/files/store';
+import * as inject from '../../src/server/files/inject';
 
 const root = process.env.STEM_FILES_DIR!;
 const stage = join(root, '..', 'stage');

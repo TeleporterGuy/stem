@@ -3,7 +3,7 @@
 // injected so this runs without Electron and with a fixed clock.
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { resolveProfileOverride } from '../../src/main/workspace/paths';
+import { resolveProfileOverride } from '../../src/server/workspace/paths';
 
 const APPDATA = '/appdata';
 const CONTAINER = join(APPDATA, 'Stem Profiles');

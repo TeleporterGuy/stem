@@ -4,16 +4,16 @@
 // quality is scored by scripts/recall-eval.mjs. Stateful and order-dependent
 // (shared per-process DB, mirroring recall.test.ts); tests reset what they need.
 import { afterAll, describe, expect, it } from 'vitest';
-import { recallStore as store } from '../../src/main/recall/store';
-import * as search from '../../src/main/recall/search';
-import * as inject from '../../src/main/recall/inject';
-import * as retrieval from '../../src/main/recall/retrieval';
+import { recallStore as store } from '../../src/server/recall/store';
+import * as search from '../../src/server/recall/search';
+import * as inject from '../../src/server/recall/inject';
+import * as retrieval from '../../src/server/recall/retrieval';
 import {
   EPISODIC_EMBED_MAX_CHARS,
   EPISODIC_EMBED_MIN_CHARS,
   embedNewMessages,
   episodicEmbedText
-} from '../../src/main/recall/embed-episodic';
+} from '../../src/server/recall/embed-episodic';
 
 afterAll(() => store.close());
 
@@ -219,7 +219,7 @@ describe('buildRecallContext — one query embed per turn', () => {
     retrieval.setRetrievalClients({ embeddings: client, rerank: null });
     store.upsertFact('The user enjoys gardening on the balcony', 'distilled'); // below threshold → cheap path
     try {
-      const timings: import('../../src/main/recall/inject').RecallTimings = {};
+      const timings: import('../../src/server/recall/inject').RecallTimings = {};
       // Slovak query, zero lexical overlap with the stored English message.
       const ctx = (await inject.buildRecallContext('ako sa darí mojej rastline?', { timings })) ?? '';
       expect(kinds).toEqual(['query', 'passage']); // one query embed plus fact-vector backfill

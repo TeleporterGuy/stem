@@ -17,7 +17,7 @@ import {
   type SkillApprovalOutcome,
   type SkillBridgeDeps,
   type SkillSaveRequest
-} from '../../src/main/skills/bridge';
+} from '../../src/server/skills/bridge';
 import type { SkillsMode } from '../../src/shared/types';
 
 type Proposal = Parameters<SkillBridgeDeps['requestApproval']>[0];

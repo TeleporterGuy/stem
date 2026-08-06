@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
-import { a, argsProblem, handleIpc, senderProblem } from '../../src/main/ipc';
-import { dispatchLocal, hasLocalHandler } from '../../src/main/ipc/guard';
+import { a, argsProblem, handleIpc, senderProblem } from '../../src/server/ipc';
+import { dispatchLocal, hasLocalHandler } from '../../src/server/ipc/guard';
 
 // The renderer → main IPC guard: trusted-sender check + per-channel structural
-// argument validation (see src/main/ipc.ts).
+// argument validation (see src/server/ipc.ts).
 
 /** A minimal IpcMainInvokeEvent stand-in: one top-level frame at `url`. */
 function eventFrom(url: string) {

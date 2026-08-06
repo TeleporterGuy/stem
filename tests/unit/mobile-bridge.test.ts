@@ -10,11 +10,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
-import { handleIpc } from '../../src/main/ipc';
-import { dispatchLocal } from '../../src/main/ipc/guard';
-import { ensureMobileToken, requestOriginProblem, rerollMobileToken, tokenEquals } from '../../src/main/mobile/auth';
-import { isMobileInvocable, isMobilePushable } from '../../src/main/mobile/channels';
-import { startMobileServer, type MobileServer } from '../../src/main/mobile/server';
+import { handleIpc } from '../../src/server/ipc';
+import { dispatchLocal } from '../../src/server/ipc/guard';
+import { ensureMobileToken, requestOriginProblem, rerollMobileToken, tokenEquals } from '../../src/server/mobile/auth';
+import { isMobileInvocable, isMobilePushable } from '../../src/server/mobile/channels';
+import { startMobileServer, type MobileServer } from '../../src/server/mobile/server';
 import type { AppSettings } from '../../src/shared/types';
 
 const TOKEN = 'a'.repeat(64);

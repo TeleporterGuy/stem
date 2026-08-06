@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { FolderIndexStore } from '../../src/main/folder-index/store';
+import { FolderIndexStore } from '../../src/server/folder-index/store';
 import {
   docEmbedText,
   docTitle,
@@ -11,11 +11,11 @@ import {
   SKIP_PDF_NO_TEXT,
   SKIP_PDF_UNREADABLE,
   SKIP_TOO_LARGE
-} from '../../src/main/folder-index/scan';
-import { embedMissingDocVectors } from '../../src/main/folder-index/embed';
-import { ftsSearchDocs, hybridSearchDocs, semanticSearchDocsCore } from '../../src/main/recall/search-core';
-import type { EmbeddingsClient } from '../../src/main/recall/embeddings';
-import * as activity from '../../src/main/activity';
+} from '../../src/server/folder-index/scan';
+import { embedMissingDocVectors } from '../../src/server/folder-index/embed';
+import { ftsSearchDocs, hybridSearchDocs, semanticSearchDocsCore } from '../../src/server/recall/search-core';
+import type { EmbeddingsClient } from '../../src/server/recall/embeddings';
+import * as activity from '../../src/server/activity';
 
 // The indexed-connected-folders pipeline: store schema, incremental scan with
 // mirror semantics (upsert changed, prune vanished), skip classification, the
@@ -380,10 +380,10 @@ describe('end to end: registry → scan → recall injection', () => {
   it('an indexed folder\'s note reaches the injected recall payload with provenance', async () => {
     // Module imports are inside the test so the setup-unit env (throwaway
     // connected-folders store + folder-index dir) is unmistakably in effect.
-    const { addConnectedFolders, updateConnectedFolder } = await import('../../src/main/workspace/connected-folders');
-    const { scanAllIndexedFolders, searchFolderDocs } = await import('../../src/main/folder-index');
-    const { buildRecallContext } = await import('../../src/main/recall/inject');
-    const { folderIndexDir } = await import('../../src/main/workspace/paths');
+    const { addConnectedFolders, updateConnectedFolder } = await import('../../src/server/workspace/connected-folders');
+    const { scanAllIndexedFolders, searchFolderDocs } = await import('../../src/server/folder-index');
+    const { buildRecallContext } = await import('../../src/server/recall/inject');
+    const { folderIndexDir } = await import('../../src/server/workspace/paths');
     const { readFileSync } = await import('node:fs');
 
     const root = freshFolder();
@@ -407,7 +407,7 @@ describe('end to end: registry → scan → recall injection', () => {
     // and the private-docs flag fires so the caller taints the turn. A private
     // folder's excerpts are never logged for fact learning.
     const flags: { privateDocsInjected?: boolean } = {};
-    const injectedDocs: import('../../src/main/recall/store').InjectedDocRef[] = [];
+    const injectedDocs: import('../../src/server/recall/store').InjectedDocRef[] = [];
     const context = await buildRecallContext('what is the boiler service contract number?', { flags, injectedDocs });
     expect(context).not.toBeNull();
     expect(context!).toContain('folderDocuments');
@@ -421,7 +421,7 @@ describe('end to end: registry → scan → recall injection', () => {
     await updateConnectedFolder(folder.id, { memorize: true });
     const eligibleHits = await searchFolderDocs('boiler service contract');
     expect(eligibleHits[0].learnEligible).toBe(true);
-    const eligibleDocs: import('../../src/main/recall/store').InjectedDocRef[] = [];
+    const eligibleDocs: import('../../src/server/recall/store').InjectedDocRef[] = [];
     await buildRecallContext('what is the boiler service contract number?', { injectedDocs: eligibleDocs });
     expect(eligibleDocs).toHaveLength(1);
     expect(eligibleDocs[0].folderId).toBe(folder.id);
@@ -430,7 +430,7 @@ describe('end to end: registry → scan → recall injection', () => {
 
     // Un-indexing drops the DB file and the doc stops surfacing.
     await updateConnectedFolder(folder.id, { index: false });
-    const { syncFolderIndexes } = await import('../../src/main/folder-index');
+    const { syncFolderIndexes } = await import('../../src/server/folder-index');
     await syncFolderIndexes();
     expect(await searchFolderDocs('boiler service contract')).toHaveLength(0);
   });

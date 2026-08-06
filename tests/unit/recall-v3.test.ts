@@ -1,15 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { recallStore as store, MAX_SUMMARY_CHARS } from '../../src/main/recall/store';
-import * as search from '../../src/main/recall/search';
+import { recallStore as store, MAX_SUMMARY_CHARS } from '../../src/server/recall/store';
+import * as search from '../../src/server/recall/search';
 import {
   backfillSummaries,
   parseDualSummary,
   parseSummary,
   refreshThreadSummary,
   REBUILD_EVERY
-} from '../../src/main/recall/summarize';
-import { buildRecallContext, previewFacts, usageRate } from '../../src/main/recall/inject';
+} from '../../src/server/recall/summarize';
+import { buildRecallContext, previewFacts, usageRate } from '../../src/server/recall/inject';
 import {
   CURSOR_KEY,
   distillNewMessages,
@@ -17,16 +17,16 @@ import {
   MAX_PARSE_STRIKES,
   parseDistillOutput,
   parseFactUsage
-} from '../../src/main/recall/distill';
-import { USAGE_HALF_LIFE_DAYS } from '../../src/main/recall/inject';
-import { buildPrompt as buildConsolidationPrompt } from '../../src/main/recall/consolidate';
-import * as retrieval from '../../src/main/recall/retrieval';
+} from '../../src/server/recall/distill';
+import { USAGE_HALF_LIFE_DAYS } from '../../src/server/recall/inject';
+import { buildPrompt as buildConsolidationPrompt } from '../../src/server/recall/consolidate';
+import * as retrieval from '../../src/server/recall/retrieval';
 import {
   hybridSearchMessages,
   hybridSearchSummaries,
   ftsSearchSummaries,
   semanticSearchFactsCore
-} from '../../src/main/recall/search-core';
+} from '../../src/server/recall/search-core';
 
 // Recall v3: shared retrieval core, thread summaries, usage-informed ranking.
 

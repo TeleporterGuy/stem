@@ -5,7 +5,7 @@ import type { SkillsMode, SkillsResetResult } from '../../shared/types';
 // The one-time migration question, asked once per user and never again.
 //
 // Skills written before the rebuild cannot be carried forward (see
-// main/skills/reset.ts for why), so this dialog is not a choice about whether —
+// server/skills/reset.ts for why), so this dialog is not a choice about whether —
 // it is where the user is told what is happening, gets the chance to keep a
 // readable copy, and answers the one question the rebuild newly needs an answer
 // to: how automatic saving should be from now on.

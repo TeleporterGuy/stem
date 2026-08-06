@@ -18,12 +18,12 @@ import {
   selectSkills,
   skillUsageRate,
   type SkillRecordish
-} from '../../src/main/skills/inject';
+} from '../../src/server/skills/inject';
 import {
   SKILLS_VECTORS_FILE,
   ensureSkillVectors,
   skillVectorText
-} from '../../src/main/skills/vectors';
+} from '../../src/server/skills/vectors';
 
 const vectorsFile = join(skillsDir, SKILLS_VECTORS_FILE);
 const QUERY = 'how do I deploy the staging build';

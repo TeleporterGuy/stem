@@ -53,7 +53,7 @@ function writeSecretSync(path, data) {
   }
 }
 
-// Secrets-at-rest twins of src/main/pi/secrets.ts (drift-guarded by
+// Secrets-at-rest twins of src/server/pi/secrets.ts (drift-guarded by
 // tests/unit/pi-protocol.test.ts). Main encrypts mcp.json's auth fields and the
 // whole mcp-oauth.json map with an AES-256-GCM key it wraps via safeStorage;
 // since safeStorage only exists in the Electron main process, PiRuntime hands

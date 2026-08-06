@@ -3,7 +3,7 @@
 // is pure — the IPC layer supplies the running version and the saved marker.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { compareVersions, parseReleaseNotes, selectUnseen } from '../../src/main/workspace/release-notes';
+import { compareVersions, parseReleaseNotes, selectUnseen } from '../../src/server/workspace/release-notes';
 
 const SAMPLE = `# Stem release notes
 

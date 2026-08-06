@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isValidCron, nextAfter, parseCron } from '../../src/main/scheduler/cron';
+import { isValidCron, nextAfter, parseCron } from '../../src/server/scheduler/cron';
 
 // All times are local — construct Dates with the local constructor so the test is
 // timezone-independent (we only assert relative field values, never UTC offsets).

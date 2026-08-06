@@ -71,7 +71,7 @@ export interface SearchBackend {
  * Search backends pi-web-access can use, in the order the picker lists them. `field`
  * is the exact config key that backend's loader reads (they are NOT uniformly
  * `<name>ApiKey` — SearXNG wants a base URL), mirroring SEARCH_BACKENDS in
- * main/pi/web-search.ts. `field: null` means the backend needs no credential.
+ * server/pi/web-search.ts. `field: null` means the backend needs no credential.
  *
  * The backend is independent of the model being chatted with: an Ollama chat can
  * search through Exa, a ChatGPT chat through SearXNG.

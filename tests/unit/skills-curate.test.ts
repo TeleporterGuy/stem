@@ -9,9 +9,9 @@ import { join } from 'node:path';
 const skillsDir = join(tmpdir(), `stem-skills-${process.pid}`);
 process.env.STEM_SKILLS_DIR = skillsDir;
 
-import { clampCurate, curateSkills, parseCurate } from '../../src/main/skills/curate';
-import { readUsage, recordUses } from '../../src/main/skills/usage';
-import type { LlmClient } from '../../src/main/recall/llm';
+import { clampCurate, curateSkills, parseCurate } from '../../src/server/skills/curate';
+import { readUsage, recordUses } from '../../src/server/skills/usage';
+import type { LlmClient } from '../../src/server/recall/llm';
 
 function fakeLlm(reply: string): LlmClient {
   return { complete: async () => reply };

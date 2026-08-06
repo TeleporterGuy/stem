@@ -6,7 +6,7 @@ import { markReleaseNotesSeen, readSettings } from './settings';
 
 // The "what's new" popup's data layer. RELEASE_NOTES.md ships with the app (it
 // is in electron-builder's `files`), so it is read from the app root — the same
-// place main/index.ts reads build/icon.png from. asar is off, so this is a plain
+// place server/index.ts reads build/icon.png from. asar is off, so this is a plain
 // file read in both dev (repo root) and a packaged build.
 //
 // The parse is deliberately dumb: split on `## ` headings, take the first token

@@ -3,7 +3,7 @@
 // real dependency); the system-scan fallback is environment-dependent and left
 // to manual verification.
 import { afterEach, describe, expect, it } from 'vitest';
-import { resolvePi, resetPiCacheForTests } from '../../src/main/pi/locate';
+import { resolvePi, resetPiCacheForTests } from '../../src/server/pi/locate';
 
 const savedOverride = process.env.STEM_PI_PATH;
 

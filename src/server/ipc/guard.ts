@@ -174,7 +174,7 @@ export function handleIpc(
 
 // ---- local dispatch (surfaces that have no Electron sender) ----
 //
-// The phone bridge (main/mobile) receives calls over loopback HTTP, not over
+// The phone bridge (server/mobile) receives calls over loopback HTTP, not over
 // Electron IPC: there is no BrowserWindow, no frame, and therefore no
 // IpcMainInvokeEvent to hand a handler. Rather than fork 110 handlers, every
 // handleIpc registration is also recorded here, and dispatchLocal replays a call
