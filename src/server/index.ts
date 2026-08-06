@@ -18,6 +18,7 @@ import { electronHost } from '../desktop/host';
 import { setHost } from './host';
 import { createBackend, type ChatBackend } from './backend';
 import {
+  dispatchLocal,
   handleIpc,
   registerAuthIpc,
   registerChatsIpc,
@@ -930,20 +931,38 @@ function registerIpc(): void {
     // foreground gate) and hold scheduled runs off for a while.
     lastInteractiveAt = Date.now();
     scheduler?.preemptForUser();
-    // Main-window turns honor the main web-search toggle (the bridge extension
-    // activates/deactivates the search tools for the turn to match).
+    // The two per-surface settings are resolved HERE rather than by the caller:
+    // the client says which surface it is and the server reads the user's
+    // settings for it. Main gets the Main web-search toggle and the Main custom
+    // instructions (the bridge extension activates/deactivates the search tools
+    // for the turn to match); Quick Chat honors its own toggle and inherits the
+    // Main instructions with its own extra appended.
     const settings = await readSettings();
-    // Main-window turns get the Main custom instructions (which also cover Quick Chat
-    // by inheritance; Quick Chat's own turns add their extra on top — see quickchat:run).
+    const ci = settings.customInstructions;
+    const quickChat = input.surface === 'quickChat';
     return runtime!.startTurn({
       ...input,
-      webSearch: settings.webSearch.main,
-      instructions: settings.customInstructions.main
+      webSearch: quickChat ? settings.webSearch.quickChat : settings.webSearch.main,
+      instructions: quickChat
+        ? [ci.main, ci.quickChat].map((s) => s.trim()).filter(Boolean).join('\n')
+        : ci.main
     });
   });
   handleIpc('backend:interruptTurn', (_e, turnId: string) => {
     lastInteractiveAt = Date.now();
     return runtime!.interruptTurn(turnId);
+  });
+  // Mint an empty thread up front. Quick Chat is the only caller: it pre-creates
+  // the thread before its first prompt so the turn's events route to the overlay
+  // from the very first event. The main window never needs this — startTurn opens
+  // a thread implicitly when it has no threadId.
+  handleIpc('backend:createThread', (_e, model?: string) => {
+    // createThread enters the backend's foreground gate, exactly as startTurn
+    // does, so it has to yield a scheduler-owned turn the same way — otherwise a
+    // Quick Chat prompt typed during a scheduled run would sit behind it.
+    lastInteractiveAt = Date.now();
+    scheduler?.preemptForUser();
+    return runtime!.createThread(model);
   });
   handleIpc('backend:newConversation', () => runtime!.newConversation());
   handleIpc('backend:listModels', () => runtime!.listModels());
@@ -1070,8 +1089,8 @@ function registerIpc(): void {
     execService?.resolveApproval(id, decision);
   });
   handleIpc('settings:updateCustomInstructions', async (_e, patch: Partial<CustomInstructionsSettings>) => {
-    // Just persist — startTurn/quickchat:run read the instructions fresh per turn, so
-    // the change applies to the next turn with no restart.
+    // Just persist — backend:startTurn reads the instructions fresh per turn (for
+    // both surfaces), so the change applies to the next turn with no restart.
     return updateCustomInstructions(patch);
   });
   handleIpc('settings:updateRetrieval', async (_e, patch: PartialRetrievalSettings) => {
@@ -1173,9 +1192,6 @@ function registerIpc(): void {
   // the thread (so its events route correctly from the very first event), then
   // hide the overlay and raise the HUD — the disappear→HUD half of the cycle.
   handleIpc('quickchat:run', async (_e, prompt: QuickChatPrompt): Promise<StartTurnResult> => {
-    // Quick Chat is the latency-sensitive surface — yield any scheduler-owned turn.
-    lastInteractiveAt = Date.now();
-    scheduler?.preemptForUser();
     // Start the disappear→HUD half of the cycle immediately — before the (async)
     // thread creation — so the overlay never flashes the half-laid-out panel.
     overlay.beginTurn(Date.now());
@@ -1191,7 +1207,7 @@ function registerIpc(): void {
       const continuing = overlay.owns(prompt.threadId);
       let threadId = continuing ? overlay.threadId! : null;
       if (!threadId) {
-        threadId = await runtime!.createThread(prompt.model ?? undefined);
+        threadId = (await dispatchLocal('backend:createThread', [prompt.model ?? undefined])) as string;
         overlay.adoptThread(threadId);
         // Optimistic sidebar row so the quickchat thread shows immediately.
         sendToMain('quickchat:sessionStarted', {
@@ -1200,21 +1216,21 @@ function registerIpc(): void {
         });
       }
 
-      const qcSettings = await readSettings();
-      const ci = qcSettings.customInstructions;
-      const result = await runtime!.startTurn({
-        input: prompt.input,
-        threadId,
-        model: prompt.model ?? undefined,
-        effort: prompt.effort ?? undefined,
-        serviceTier: prompt.serviceTier,
-        format: prompt.format,
-        // Quick Chat turns honor the Quick Chat native-web-search toggle.
-        webSearch: qcSettings.webSearch.quickChat,
-        // Quick Chat inherits the Main instructions and appends its own extra.
-        instructions: [ci.main, ci.quickChat].map((s) => s.trim()).filter(Boolean).join('\n'),
-        attachments: prompt.attachments
-      });
+      // `surface` is the whole of what makes this a Quick Chat turn: the handler
+      // resolves the Quick Chat web-search toggle and the main+quickChat
+      // instruction composition from it (see backend:startTurn).
+      const result = (await dispatchLocal('backend:startTurn', [
+        {
+          input: prompt.input,
+          threadId,
+          model: prompt.model ?? undefined,
+          effort: prompt.effort ?? undefined,
+          serviceTier: prompt.serviceTier,
+          format: prompt.format,
+          surface: 'quickChat',
+          attachments: prompt.attachments
+        } satisfies StartTurnInput
+      ])) as StartTurnResult;
       overlay.noteActivity(Date.now());
       if (overlay.handedOff && result.threadId && result.turnId) {
         // The snapshot can be captured while startTurn is still preparing Recall.

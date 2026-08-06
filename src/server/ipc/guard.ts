@@ -56,6 +56,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'providers:disconnect': [a.string],
   'backend:startTurn': [a.object],
   'backend:interruptTurn': [a.string],
+  'backend:createThread': [a.optional(a.nullish(a.string))],
   'skills:setEnabled': [a.string, a.boolean],
   'files:add': [a.stringArray, a.optional(a.nullish(a.string))],
   'files:remove': [a.string],

@@ -284,18 +284,27 @@ export interface StartTurnInput {
   /** Output format for this turn: 'mdx' = rich components (default); 'md' = plain Markdown. */
   format?: 'md' | 'mdx';
   /**
-   * Whether native (server-side) web search is allowed this turn. Decided per
-   * context by the caller (main window vs Quick Chat). The backend only injects
-   * the tool when the selected model's provider actually supports it; otherwise
-   * this is a no-op. Defaults to enabled when omitted.
+   * Which client surface asked for this turn. The two per-surface settings below
+   * are resolved from it by the `backend:startTurn` handler, so a client states
+   * where it is rather than reading the user's settings itself. Omitted means
+   * 'main' — the main window never sends it, and that is what it would say.
+   */
+  surface?: 'main' | 'quickChat';
+  /**
+   * Whether native (server-side) web search is allowed this turn. Resolved from
+   * `surface` (main → `webSearch.main`; Quick Chat → `webSearch.quickChat`), so a
+   * value arriving on the channel is overwritten. The backend only injects the
+   * tool when the selected model's provider actually supports it; otherwise this
+   * is a no-op. Defaults to enabled when omitted, which is how the scheduler's
+   * headless runs — which call the backend directly — ask for it.
    */
   webSearch?: boolean;
   /**
-   * The user's standing custom instructions, already resolved per surface by the
-   * caller (main window → `customInstructions.main`; Quick Chat → main + quickChat).
-   * Injected as an authoritative high-priority block in the turn's context. Empty/
-   * omitted → no block. Internal turns (distill/consolidate via `complete()`) never
-   * set this.
+   * The user's standing custom instructions, resolved from `surface` (main →
+   * `customInstructions.main`; Quick Chat → main + quickChat). Injected as an
+   * authoritative high-priority block in the turn's context. Empty/omitted → no
+   * block. Internal turns (distill/consolidate via `complete()`) and scheduled
+   * runs never set this.
    */
   instructions?: string;
   /** Files/images attached to this turn. */
