@@ -22,6 +22,7 @@ import { readTasks } from '../workspace/tasks';
 //   [e2e:hang] — stream one delta, then stay running until interrupted
 //   [e2e:fail] — fail the turn after one delta
 //   [e2e:exec] — call run_command mid-turn, through the real ExecService
+//   [e2e:burst] — stream BURST_DELTAS deltas back to back, with no pacing
 //   otherwise  — stream "Echo: <text>" in a few deltas, then complete
 //
 // STEM_E2E_ONBOARDING starts the fake UNAUTHENTICATED; login() (wired to the
@@ -42,6 +43,14 @@ const MODEL: ModelSummary = {
 
 /** Interval between scripted stream events — long enough for Playwright to observe streaming. */
 const STEP_MS = 15;
+
+/**
+ * `[e2e:burst]`: how many deltas, and how big. Roughly a long reply's worth of
+ * tokens — enough that a per-delta cost is measurable above the noise of one
+ * turn, and small enough that the whole thing is over in well under a second.
+ */
+const BURST_DELTAS = 400;
+const BURST_CHUNK = ' token';
 
 interface FakeThread {
   title: string;
@@ -313,12 +322,27 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     // the rendered turn rather than on the card alone. Empty for every turn that
     // does not ask for a command.
     let execTail = '';
-    const deltasToEmit = turn.hang || fail ? chunks.slice(0, 1) : chunks;
-    for (const chunk of deltasToEmit) {
+    if (!fail && !turn.hang && text.includes('[e2e:burst]')) {
+      // [e2e:burst]: every delta at once, with no pacing between them. The other
+      // scripts space their deltas out on STEP_MS so streaming is observable,
+      // which means they measure the timer and not the wire. This one exists so
+      // a test can put a number on what the transport costs per delta — the SSE
+      // hop added a JSON serialize/parse in front of the token render loop, and
+      // that is the one performance question the split raised.
       steps.push(() => {
-        streamed += chunk;
-        this.emitEvent('item/agentMessage/delta', { threadId, turnId, itemId: turnId, delta: chunk });
+        for (let i = 0; i < BURST_DELTAS; i++) {
+          streamed += BURST_CHUNK;
+          this.emitEvent('item/agentMessage/delta', { threadId, turnId, itemId: turnId, delta: BURST_CHUNK });
+        }
       });
+    } else {
+      const deltasToEmit = turn.hang || fail ? chunks.slice(0, 1) : chunks;
+      for (const chunk of deltasToEmit) {
+        steps.push(() => {
+          streamed += chunk;
+          this.emitEvent('item/agentMessage/delta', { threadId, turnId, itemId: turnId, delta: chunk });
+        });
+      }
     }
     // [e2e:exec]: a run_command round-trip mid-turn, exactly as pi's tool would
     // make it. Everything past the seam is real — the policy tiers, the approval
