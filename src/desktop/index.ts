@@ -32,6 +32,22 @@ import type { AppSettings } from '../shared/types';
 // the app is packaged.
 app.setName('Stem');
 
+// Background (E2E) mode: keep a test run out of the way of whoever is using the
+// machine. On macOS a launching regular app makes itself frontmost, and when it
+// quits AppKit hands activation back to the previously-active app — so a suite
+// that launches and closes one instance per spec repeatedly drags the user's
+// screen to the Space the run started on. The accessory policy makes the app
+// non-activating (and dock-less), so it never takes or hands back activation.
+// Windows still open, render, and drive over CDP; they just surface with
+// orderFrontRegardless (showInactive) instead of makeKeyAndOrderFront, which
+// AppKit refuses for an inactive app.
+//
+// macOS-only by construction, and set by launchApp() (tests/e2e/electron.ts)
+// rather than derived from STEM_E2E: that flag is off in real-backend mode,
+// which is exactly when runs are long enough for this to matter.
+const BACKGROUND = isMac && !!process.env.STEM_BACKGROUND;
+if (BACKGROUND) app.setActivationPolicy('accessory');
+
 // Install the Electron half of the host shim before anything reads a
 // userData-derived path, forks a worker, or touches a secret. Everything the
 // server needs from its host now goes through this one seam (src/server/host);
@@ -157,7 +173,8 @@ let summoningOverlay = false;
 function createWindow(hidden = false): void {
   mainPushQueue.reset();
   mainWindow = new BrowserWindow({
-    show: !hidden,
+    // In BACKGROUND mode we surface it ourselves, without activating (below).
+    show: !hidden && !BACKGROUND,
     width: 1200,
     height: 820,
     // Surfaces in the macOS Window menu / Mission Control when running an alternate profile.
@@ -175,6 +192,8 @@ function createWindow(hidden = false): void {
       sandbox: true
     }
   });
+
+  if (BACKGROUND && !hidden) mainWindow.showInactive();
 
   installNavigationGuards(mainWindow);
 
@@ -225,6 +244,12 @@ function revealMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   const win = mainWindow!;
   if (win.isMinimized()) win.restore();
+  // Never activate in background mode — revealing is what the specs exercise;
+  // stealing the user's Space is not.
+  if (BACKGROUND) {
+    win.showInactive();
+    return;
+  }
   win.show();
   win.focus();
 }

@@ -85,6 +85,11 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
       STEM_RECALL_DB: join(userDataDir, 'recall.sqlite'),
       STEM_FILES_DIR: join(userDataDir, 'files'),
       STEM_TASKS_STORE: tasksStorePath,
+      // macOS: run the instance as a non-activating accessory app so a suite
+      // that launches one Electron per spec never steals focus or yanks the
+      // user to the Space the run started on (see BACKGROUND in desktop/index.ts).
+      // Deliberately outside the STEM_E2E branch — real-backend runs need it most.
+      STEM_BACKGROUND: '1',
       // Default: report a healthy backend without spawning pi, so tests reach
       // the real UI past the sign-in gate (see the STEM_E2E seam in
       // src/server/index.ts). In real-backend mode the seam is off and pi runs.
