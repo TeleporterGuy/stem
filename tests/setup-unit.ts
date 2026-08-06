@@ -21,6 +21,7 @@ const logFile = join(tmpdir(), `stem-log-${process.pid}.log`);
 const connectedFoldersStore = join(tmpdir(), `stem-cfolders-${process.pid}.json`);
 const folderIndexDir = join(tmpdir(), `stem-folder-index-${process.pid}`);
 const mobileToken = join(tmpdir(), `stem-mobile-token-${process.pid}`);
+const devicesStore = join(tmpdir(), `stem-devices-${process.pid}.json`);
 const stateDir = join(tmpdir(), `stem-state-${process.pid}`);
 
 process.env.STEM_RECALL_DB = recallDb;
@@ -33,6 +34,7 @@ process.env.STEM_LOG_FILE = logFile;
 process.env.STEM_CONNECTED_FOLDERS_STORE = connectedFoldersStore;
 process.env.STEM_FOLDER_INDEX_DIR = folderIndexDir;
 process.env.STEM_MOBILE_TOKEN_FILE = mobileToken;
+process.env.STEM_DEVICES_FILE = devicesStore;
 process.env.STEM_STATE_DIR = stateDir;
 
 for (const p of [recallDb, `${recallDb}-wal`, `${recallDb}-shm`]) {
@@ -41,7 +43,7 @@ for (const p of [recallDb, `${recallDb}-wal`, `${recallDb}-shm`]) {
 for (const p of [chatSearchDb, `${chatSearchDb}-wal`, `${chatSearchDb}-shm`]) {
   rmSync(p, { force: true });
 }
-for (const p of [mcpConfig, mcpOAuth, secretKey, logFile, connectedFoldersStore, mobileToken]) {
+for (const p of [mcpConfig, mcpOAuth, secretKey, logFile, connectedFoldersStore, mobileToken, devicesStore]) {
   rmSync(p, { force: true });
 }
 rmSync(join(tmpdir(), `stem-files-${process.pid}`), { recursive: true, force: true });

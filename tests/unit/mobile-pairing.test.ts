@@ -14,7 +14,7 @@ import { connect } from 'node:net';
 import { dirname } from 'node:path';
 import { readSettings, updateMobileSettings } from '../../src/server/workspace/settings';
 import { settingsStorePath } from '../../src/server/workspace/paths';
-import { forgetCachedMobileToken } from '../../src/server/transport/auth';
+import { forgetCachedDevices } from '../../src/server/transport/auth';
 import { registerServer } from '../../src/server/ipc';
 import {
   closeMobileBridge,
@@ -36,7 +36,8 @@ beforeEach(() => {
   mkdirSync(dirname(settingsPath), { recursive: true });
   rmSync(settingsPath, { force: true });
   rmSync(process.env.STEM_MOBILE_TOKEN_FILE!, { force: true });
-  forgetCachedMobileToken();
+  rmSync(process.env.STEM_DEVICES_FILE!, { force: true });
+  forgetCachedDevices();
   initMobileBridge({ rendererDir: dirname(settingsPath), devUrl: null });
 });
 

@@ -202,10 +202,23 @@ export function settingsStorePath(): string {
 }
 
 /**
- * Bearer token for the phone bridge (see server/transport/*): 32 random bytes as hex,
- * written 0600. Deliberately NOT in settings.json — settings are read and
- * rewritten wholesale by several code paths and are not a place for a secret,
- * and keeping the token in its own file makes "re-roll" a single atomic write.
+ * Every device allowed to talk to the transport, with its bearer token and role
+ * (see server/transport/auth.ts). Written 0600. Deliberately NOT in settings.json
+ * — settings are read and rewritten wholesale by several code paths and are not a
+ * place for secrets, and keeping the registry in its own file makes "re-roll" a
+ * single atomic write.
+ */
+export function devicesStorePath(): string {
+  // STEM_DEVICES_FILE lets unit tests point at a throwaway file (and avoids
+  // touching Electron's `app` when run outside the app), like its neighbours.
+  return process.env.STEM_DEVICES_FILE ?? join(userDataRoot(), 'devices.json');
+}
+
+/**
+ * The phone bridge's pre-registry token file: 32 random bytes as hex, 0600. Only
+ * read now, and only once — the first read of devices.json migrates it into a
+ * `phone` device record so an already-paired phone never has to be re-paired.
+ * Left on disk afterwards rather than deleted; it is inert either way.
  */
 export function mobileTokenPath(): string {
   // STEM_MOBILE_TOKEN_FILE lets unit tests point at a throwaway file (and avoids

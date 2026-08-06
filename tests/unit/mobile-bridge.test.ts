@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
 import { registerServer } from '../../src/server/ipc';
 import { dispatchLocal, serverChannels } from '../../src/server/ipc/guard';
-import { ensureMobileToken, requestOriginProblem, rerollMobileToken, tokenEquals } from '../../src/server/transport/auth';
+import { ensurePhoneToken, requestOriginProblem, rerollPhoneToken, tokenEquals } from '../../src/server/transport/auth';
 import { mayInvoke, mayReceive } from '../../src/server/transport/roles';
 import { startTransportServer, type TransportServer } from '../../src/server/transport/server';
 import type { AppSettings } from '../../src/shared/types';
@@ -567,14 +567,14 @@ describe('body cap', () => {
 
 describe('token file', () => {
   it('mints a stable 32-byte hex token and re-rolls it on demand', async () => {
-    const first = await ensureMobileToken();
+    const first = await ensurePhoneToken();
     expect(first).toMatch(/^[0-9a-f]{64}$/);
-    expect(await ensureMobileToken()).toBe(first);
+    expect(await ensurePhoneToken()).toBe(first);
 
-    const rolled = await rerollMobileToken();
+    const rolled = await rerollPhoneToken();
     expect(rolled).toMatch(/^[0-9a-f]{64}$/);
     expect(rolled).not.toBe(first);
-    expect(await ensureMobileToken()).toBe(rolled);
+    expect(await ensurePhoneToken()).toBe(rolled);
 
     expect(tokenEquals(rolled, rolled)).toBe(true);
     expect(tokenEquals(rolled, first)).toBe(false);
