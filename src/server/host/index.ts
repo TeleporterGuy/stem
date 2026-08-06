@@ -1,5 +1,9 @@
 // The host shim: everything the server needs from the process that is hosting
-// it, expressed as an interface instead of an `import { app } from 'electron'`.
+// it, expressed as an interface instead of importing `app` from Electron.
+//
+// (Phrased that way on purpose. Ripgrepping this directory for an Electron
+// import is the one-line check people actually run for the invariant, and a
+// comment that spells the forbidden import out is a false positive in it.)
 //
 // The server is on its way to being a plain Node process that runs on a machine
 // with no windows, no keychain prompt, and no Dock — while the same code keeps
