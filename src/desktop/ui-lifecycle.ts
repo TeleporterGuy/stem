@@ -322,5 +322,3 @@ export class QuickChatHandoffBarrier {
     return this.pending ? this.cancel(this.pending.id) : [];
   }
 }
-
-export const CHAT_SEARCH_COMPLETION_TIMEOUT_MS = 4_000;

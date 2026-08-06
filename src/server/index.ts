@@ -40,8 +40,8 @@ import {
   quickChatSummonCommand,
   requestAttention,
   workspaceVisibilityOptions
-} from './platform';
-import { initTray } from './startup/tray';
+} from '../desktop/platform';
+import { initTray } from '../desktop/tray';
 import {
   failQuickChatProcess,
   HudPill,
@@ -49,7 +49,7 @@ import {
   QuickChatHandoffBarrier,
   QuickChatResetBarrier,
   RendererPushQueue
-} from './ui-lifecycle';
+} from '../desktop/ui-lifecycle';
 import { ensureWorkspace } from './workspace/bootstrap';
 import { publishProtectedRootsNow } from './workspace/connected-folders';
 import { piHome, resolveProfileOverride } from './workspace/paths';

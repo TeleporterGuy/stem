@@ -1,6 +1,5 @@
 import { handleIpc } from './guard';
 import type { IpcDeps } from './deps';
-import { CHAT_SEARCH_COMPLETION_TIMEOUT_MS } from '../ui-lifecycle';
 import { searchChats, searchChatsLexical } from '../chatsearch/search';
 import { reindexChatThread, dropChatThread } from '../chatsearch/index-sync';
 import {
@@ -23,6 +22,14 @@ import type { ChatListResult } from '../../shared/types';
  * backend-only and the store stays backend-unaware. (`chats:open` stays in
  * index.ts — it is entangled with the Quick Chat handoff.)
  */
+/**
+ * Ceiling on the query-expansion completion behind chats:search. The user is
+ * waiting on a search box, so a slow (or wedged) memory model must degrade to
+ * the same-language results chats:searchFast already painted rather than hold
+ * the cross-language superset back indefinitely.
+ */
+const CHAT_SEARCH_COMPLETION_TIMEOUT_MS = 4_000;
+
 export function registerChatsIpc(deps: IpcDeps): void {
   const chatList = async (): Promise<ChatListResult> => {
     const [chats, folders, assignments] = await Promise.all([
