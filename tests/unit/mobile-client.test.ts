@@ -1,18 +1,18 @@
 // The phone client's transport: the generic StemApi shim over POST /rpc and the
 // /events SSE stream. This is the renderer half of the bridge that
 // mobile-bridge.test.ts covers from the main side, so the two meet at the wire
-// contract — the channel tables here are checked against the server's own
-// allowlist, and every error status the server can answer with is mapped to
+// contract — every error status the server can answer with is mapped to
 // something the UI can act on.
+//
+// Whether the channel TABLES here agree with the server's role tables is a
+// separate question with a separate answer, and it moved to
+// transport-conformance.test.ts when the desktop grew a role of its own.
 //
 // Nothing here opens a socket: fetch, EventSource and the token store are all
 // injected, which is exactly how the transport is built to be driven.
 
 import { describe, expect, it } from 'vitest';
-import { PHONE_INVOKE_CHANNELS, PHONE_PUSH_CHANNELS } from '../../src/server/transport/roles';
 import {
-  EVENT_CHANNELS,
-  INVOKE_CHANNELS,
   RpcError,
   TOKEN_STORAGE_KEY,
   UnreachableError,
@@ -186,24 +186,6 @@ describe('POST /rpc', () => {
     transport.close();
   });
 
-  it('only maps channels the bridge actually allows', () => {
-    // The client's table and the server's allowlist are two halves of one
-    // decision about what a phone may do; drift between them is a 403 at best.
-    for (const [member, channel] of Object.entries(INVOKE_CHANNELS)) {
-      expect(`${member} → ${channel}`).toBe(
-        `${member} → ${PHONE_INVOKE_CHANNELS.has(channel) ? channel : 'NOT ALLOWLISTED'}`
-      );
-    }
-    expect(Object.values(INVOKE_CHANNELS)).toContain('backend:startTurn');
-  });
-
-  it('leaves nothing allowlisted that the client cannot reach', () => {
-    // The other direction, and the one that rots quietly: a channel the server
-    // permits with no client member behind it is blast radius for free. Both
-    // tables are edited together or this fails.
-    const mapped = new Set(Object.values(INVOKE_CHANNELS));
-    expect([...PHONE_INVOKE_CHANNELS].filter((c) => !mapped.has(c))).toEqual([]);
-  });
 });
 
 describe('/events multiplexer', () => {
@@ -260,20 +242,6 @@ describe('/events multiplexer', () => {
     stream().emit('backend:event', { method: 'ok' });
     expect(seen).toEqual([{ method: 'ok' }]);
     transport.close();
-  });
-
-  it('subscribes only to push channels the bridge actually sends', () => {
-    // The mirror of the invoke check: a listener on a channel main never pushes
-    // is a feature that silently never fires.
-    for (const [member, channel] of Object.entries(EVENT_CHANNELS)) {
-      expect(`${member} → ${channel}`).toBe(
-        `${member} → ${PHONE_PUSH_CHANNELS.has(channel) ? channel : 'NOT PUSHABLE'}`
-      );
-    }
-    expect(EVENT_CHANNELS.onBackendEvent).toBe('backend:event');
-    // And nothing pushed that no listener is wired to receive.
-    const subscribed = new Set(Object.values(EVENT_CHANNELS));
-    expect([...PHONE_PUSH_CHANNELS].filter((c) => !subscribed.has(c))).toEqual([]);
   });
 });
 
