@@ -2,7 +2,7 @@
 // the bearer token, the request-origin (DNS-rebinding) check, the channel
 // allowlist, the per-channel args/result policy, the reuse of the IPC arg-spec
 // table, the static handler's traversal guard, and SSE framing/fan-out. The
-// handlers under /rpc are registered through the real handleIpc, so this
+// handlers under /rpc are registered through the real registerServer, so this
 // exercises the same registry the app uses.
 import { request as httpRequest } from 'node:http';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
-import { handleIpc } from '../../src/server/ipc';
+import { registerServer } from '../../src/server/ipc';
 import { dispatchLocal } from '../../src/server/ipc/guard';
 import { ensureMobileToken, requestOriginProblem, rerollMobileToken, tokenEquals } from '../../src/server/mobile/auth';
 import { isMobileInvocable, isMobilePushable } from '../../src/server/mobile/channels';
@@ -41,21 +41,21 @@ beforeAll(async () => {
   await mkdir(join(bundleDir, 'icons'), { recursive: true });
   await writeFile(join(bundleDir, 'icons', 'stem-192.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
 
-  handleIpc('backend:startTurn', (_e, input) => {
+  registerServer('backend:startTurn', (_e, input) => {
     calls.push({ channel: 'backend:startTurn', args: [input] });
     return { threadId: 't-1', turnId: 'turn-1' };
   });
-  handleIpc('memory:forget', (_e, id) => {
+  registerServer('memory:forget', (_e, id) => {
     calls.push({ channel: 'memory:forget', args: [id] });
     return true;
   });
-  handleIpc('chats:list', () => {
+  registerServer('chats:list', () => {
     calls.push({ channel: 'chats:list', args: [] });
     throw new Error('pi is not running');
   });
   // A settings object with every secret field populated, as the real handler
   // would return it: readSettings() does no redaction of its own.
-  handleIpc('settings:get', () => {
+  registerServer('settings:get', () => {
     calls.push({ channel: 'settings:get', args: [] });
     return {
       customInstructions: { main: 'be brief', quickChat: '' },

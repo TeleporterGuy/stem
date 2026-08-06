@@ -1,6 +1,6 @@
 // Attach to the dev Electron renderer over CDP and save a PNG.
 // Usage: node scripts/cdp-shot.mjs [outPath]
-// Port must match the one main opens in dev (src/server/index.ts).
+// Port must match the one the Electron main process opens in dev (src/desktop/index.ts).
 const out = process.argv[2] || '/tmp/stem-shot.png';
 const port = Number(process.env.STEM_DEVTOOLS_PORT) || 9224;
 

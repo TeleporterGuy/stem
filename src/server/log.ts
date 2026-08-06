@@ -1,7 +1,8 @@
 import { appendFile, rename, stat } from 'node:fs/promises';
 import { logFilePath } from './workspace/paths';
 
-// Minimal main-process file logger. Everything here is best-effort and
+// Minimal file logger for everything outside a renderer (the server, and the
+// Electron process hosting it). Everything here is best-effort and
 // serialized through one promise chain: logging must never throw, block a turn,
 // or interleave lines. Scope + message + optional JSON payload, one line each,
 // rotated once at MAX_LOG_BYTES so the file can't grow without bound.

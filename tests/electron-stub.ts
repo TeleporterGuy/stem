@@ -1,13 +1,13 @@
-// Minimal `electron` stand-in for Vitest, now covering only what is still on the
+// Minimal `electron` stand-in for Vitest, now covering only what is left on the
 // CLIENT side of the split. The server's own Electron needs — state paths, app
 // version, the secret-key wrapper, worker forking, opening a browser — went
 // through this stub until they became src/server/host, whose headless default IS
 // the production implementation; tests/setup-unit.ts installs the couple of
 // overrides (a reversible key wrapper, a pinned version) the suite wants.
 //
-// What remains here is the client surface that has not moved to src/desktop yet:
-// platform.ts's `app` bookkeeping, the ipcMain registration guard.ts still does,
-// and shell for the reveal handlers.
+// Nothing under src/server imports electron any more, so what remains here is
+// exactly the two src/desktop modules the unit suite exercises: platform.ts's
+// `app` bookkeeping, and the ipcMain registration in ipc-bridge.ts.
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -28,7 +28,7 @@ export const app = {
   }
 };
 
-// ipc.ts registers invoke handlers through this fake; tests drive them via
+// ipc-bridge.ts registers invoke handlers through this fake; tests drive them via
 // _invoke to exercise the sender/args guard end-to-end.
 type IpcHandler = (event: unknown, ...args: unknown[]) => unknown;
 const ipcHandlers = new Map<string, IpcHandler>();
@@ -47,10 +47,4 @@ export const ipcMain = {
   }
 };
 
-export const shell = {
-  showItemInFolder: () => {},
-  openPath: async () => '',
-  openExternal: async () => {}
-};
-
-export default { app, ipcMain, shell };
+export default { app, ipcMain };

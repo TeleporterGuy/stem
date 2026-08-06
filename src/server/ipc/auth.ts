@@ -1,4 +1,4 @@
-import { handleIpc } from './guard';
+import { registerServer } from './guard';
 import type { IpcDeps } from './deps';
 import { markOnboardingCompleted, readSettings, updateDefaultModel, updateLocalProvider } from '../workspace/settings';
 import { probeLocalProvider, syncModelsConfig } from '../pi/models-config';
@@ -18,7 +18,7 @@ const E2E_DEVICE_CODE_HOLD_MS = 750;
 
 /** Provider sign-in (onboarding wizard) + local providers (Ollama / LM Studio / custom). */
 export function registerAuthIpc(deps: IpcDeps): void {
-  handleIpc('auth:providerLogin', async (_e, provider: AuthProviderId) => {
+  registerServer('auth:providerLogin', async (_e, provider: AuthProviderId) => {
     if (deps.e2e) {
       // Scripted fake: surface the URL step, then complete, so the wizard's
       // whole state machine is exercised without a browser or network. The
@@ -26,7 +26,7 @@ export function registerAuthIpc(deps: IpcDeps): void {
       // the device-code flow — the only one that shows a user code — so that
       // branch is reachable hermetically too.
       if (provider === 'xai') {
-        deps.sendToMain('auth:event', {
+        deps.emit('auth:event', {
           kind: 'device-code',
           userCode: E2E_DEVICE_CODE,
           verificationUri: 'https://oauth.example.test/device'
@@ -37,10 +37,10 @@ export function registerAuthIpc(deps: IpcDeps): void {
         // unobservably — including to the test that guards it renders at all.
         await new Promise((resolve) => setTimeout(resolve, E2E_DEVICE_CODE_HOLD_MS));
       } else {
-        deps.sendToMain('auth:event', { kind: 'auth-url', url: 'https://oauth.example.test/authorize' });
+        deps.emit('auth:event', { kind: 'auth-url', url: 'https://oauth.example.test/authorize' });
       }
       const status = await deps.runtime().login();
-      deps.sendToMain('auth:event', { kind: 'done', ok: true, provider });
+      deps.emit('auth:event', { kind: 'done', ok: true, provider });
       void deps.scheduler()?.start(); // mirror onAuthenticated()
       return { ok: true, status };
     }
@@ -48,7 +48,7 @@ export function registerAuthIpc(deps: IpcDeps): void {
     if (!res.ok) return res;
     return { ok: true, status: await deps.onAuthenticated() };
   });
-  handleIpc('auth:setApiKey', async (_e, provider: ApiKeyProviderId, key: string) => {
+  registerServer('auth:setApiKey', async (_e, provider: ApiKeyProviderId, key: string) => {
     if (deps.e2e) {
       const status = await deps.runtime().login();
       void deps.scheduler()?.start(); // mirror onAuthenticated()
@@ -61,20 +61,20 @@ export function registerAuthIpc(deps: IpcDeps): void {
     }
     return { ok: true, status: await deps.onAuthenticated() };
   });
-  handleIpc('auth:respond', (_e, requestId: string, value: string) => {
+  registerServer('auth:respond', (_e, requestId: string, value: string) => {
     deps.providerAuth()?.respond(requestId, value);
   });
   // Authoritative liveness probe for a stored credential — used reactively to
   // classify a failed turn (expired/revoked OAuth token vs. a transient error).
-  handleIpc('auth:check', async (_e, provider: string) => {
+  registerServer('auth:check', async (_e, provider: string) => {
     if (deps.e2e) return { alive: true };
     return { alive: await deps.providerAuth()!.isAlive(provider) };
   });
-  handleIpc('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string, apiKey?: string, api?: LocalProviderApi) => {
+  registerServer('providers:testLocal', async (_e, _id: LocalProviderId, baseUrl: string, apiKey?: string, api?: LocalProviderApi) => {
     if (deps.e2e) return { ok: true, models: ['stem-e2e-model'] };
     return probeLocalProvider(baseUrl, apiKey, api);
   });
-  handleIpc('providers:updateLocal', async (_e, id: LocalProviderId, patch: Partial<LocalProviderSettings>) => {
+  registerServer('providers:updateLocal', async (_e, id: LocalProviderId, patch: Partial<LocalProviderSettings>) => {
     if (deps.e2e) return { ok: true, status: await deps.runtime().login() };
     try {
       const settings = await updateLocalProvider(id, patch);
@@ -96,7 +96,7 @@ export function registerAuthIpc(deps: IpcDeps): void {
     }
     return { ok: true, status: await deps.onAuthenticated() };
   });
-  handleIpc('providers:disconnect', async (_e, providerId: string) => {
+  registerServer('providers:disconnect', async (_e, providerId: string) => {
     if (deps.e2e) return { ok: true, status: await deps.runtime().status() };
     try {
       await deps.providerAuth()!.removeProvider(providerId);
@@ -118,8 +118,8 @@ export function registerAuthIpc(deps: IpcDeps): void {
     }
     return { ok: true, status: await deps.onAuthenticated() };
   });
-  handleIpc('auth:cancel', () => {
+  registerServer('auth:cancel', () => {
     deps.providerAuth()?.cancel();
   });
-  handleIpc('auth:completeOnboarding', () => markOnboardingCompleted());
+  registerServer('auth:completeOnboarding', () => markOnboardingCompleted());
 }

@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { shell } from 'electron';
 
 const httpState = vi.hoisted(() => ({ servers: [] as Array<{ closed: boolean }> }));
 
@@ -44,7 +43,6 @@ afterEach(() => {
 
 describe('MCP OAuth deadline', () => {
   it('rejects and closes the loopback when no browser callback arrives', async () => {
-    vi.spyOn(shell, 'openExternal').mockResolvedValue(undefined);
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string | URL | Request) => {

@@ -15,7 +15,7 @@ import { dirname } from 'node:path';
 import { readSettings, updateMobileSettings } from '../../src/server/workspace/settings';
 import { settingsStorePath } from '../../src/server/workspace/paths';
 import { forgetCachedMobileToken } from '../../src/server/mobile/auth';
-import { handleIpc } from '../../src/server/ipc';
+import { registerServer } from '../../src/server/ipc';
 import {
   closeMobileBridge,
   clearMobileTurns,
@@ -214,7 +214,7 @@ describe('phone turn bookkeeping', () => {
   /** Set to hold the handler open, so a turn can settle mid-call. */
   let block: { entered: Deferred; go: Deferred } | null = null;
 
-  handleIpc('backend:startTurn', async () => {
+  registerServer('backend:startTurn', async () => {
     if (block) {
       block.entered.resolve();
       await block.go.promise;

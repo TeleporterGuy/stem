@@ -7,7 +7,6 @@
 import { constants } from 'node:fs';
 import { copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { basename, extname, join, relative, sep } from 'node:path';
-import { shell } from 'electron';
 import type { FileEntry, FilesListing } from '../../shared/types';
 import { filesRoot } from '../workspace/paths';
 
@@ -139,8 +138,12 @@ export async function removeSubdir(name: string): Promise<FilesListing> {
   return listFiles();
 }
 
-/** Open the Files folder in Finder/Explorer. */
-export async function revealFiles(): Promise<void> {
+/**
+ * The Files folder, created if this is the first anyone has asked for it. For
+ * the client's "Show in Finder": opening the folder is the client's job (see
+ * desktop/local), but a path that may not exist yet is the store's.
+ */
+export async function ensureFilesRoot(): Promise<string> {
   await mkdir(filesRoot(), { recursive: true });
-  await shell.openPath(filesRoot());
+  return filesRoot();
 }

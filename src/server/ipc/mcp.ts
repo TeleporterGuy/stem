@@ -1,4 +1,4 @@
-import { handleIpc } from './guard';
+import { registerServer } from './guard';
 import type { IpcDeps } from './deps';
 import * as piMcp from '../pi/mcp';
 import { updateCustomInstructions } from '../workspace/settings';
@@ -7,15 +7,15 @@ import type { McpServerInput } from '../../shared/types';
 
 /** MCP server management + the assistant's held approval round-trips. */
 export function registerMcpIpc(deps: IpcDeps): void {
-  handleIpc('mcp:list', () => piMcp.listMcpServers());
-  handleIpc('mcp:status', () => deps.runtime().getMcpStatus());
-  handleIpc('mcp:add', (_e, input: McpServerInput) => piMcp.addMcpServer(input));
-  handleIpc('mcp:remove', (_e, name: string) => piMcp.removeMcpServer(name));
-  handleIpc('mcp:setEnabled', (_e, name: string, enabled: boolean) =>
+  registerServer('mcp:list', () => piMcp.listMcpServers());
+  registerServer('mcp:status', () => deps.runtime().getMcpStatus());
+  registerServer('mcp:add', (_e, input: McpServerInput) => piMcp.addMcpServer(input));
+  registerServer('mcp:remove', (_e, name: string) => piMcp.removeMcpServer(name));
+  registerServer('mcp:setEnabled', (_e, name: string, enabled: boolean) =>
     piMcp.setMcpServerEnabled(name, enabled)
   );
-  handleIpc('mcp:login', (_e, name: string) => deps.runtime().mcpLogin(name));
-  handleIpc('mcp:adminDecision', async (_e, id: ApprovalId, accept: boolean) => {
+  registerServer('mcp:login', (_e, name: string) => deps.runtime().mcpLogin(name));
+  registerServer('mcp:adminDecision', async (_e, id: ApprovalId, accept: boolean) => {
     await deps.runtime().resolveAdminApproval(
       id,
       accept,
@@ -32,7 +32,7 @@ export function registerMcpIpc(deps: IpcDeps): void {
         : undefined
     );
   });
-  handleIpc(
+  registerServer(
     'instructions:resolveApproval',
     async (_e, id: ApprovalId, accept: boolean, surface: 'main' | 'quickChat', text: string) => {
       // Main is the sole writer of settings.json: apply the card's final text BEFORE

@@ -36,8 +36,9 @@ let chain: Promise<void> = Promise.resolve();
 /**
  * Threads whose current turn was started from the phone. `busyWithin` counts
  * these so the task scheduler cannot preempt a live phone conversation — the
- * main window's own `runningMainThreads` set doesn't necessarily know about a
- * thread the phone opened, and the scheduler must not run a turn on top of one.
+ * desktop's own run-state tracking (ClientBridge.hasLiveTurn) doesn't necessarily
+ * know about a thread the phone opened, and the scheduler must not run a turn on
+ * top of one.
  */
 const mobileTurns = new Set<string>();
 
@@ -140,7 +141,7 @@ export function pushToMobile(channel: string, payload: unknown): void {
 
 /**
  * Clear a phone turn's busy mark when it ends. Fed from the backend event tap in
- * index.ts, alongside the main window's own run-state tracking.
+ * index.ts, alongside the client's own run-state tracking.
  */
 export function noteMobileTurnEvent(method: string, threadId: string, turnId?: string): void {
   if (!isSettledMethod(method)) return;

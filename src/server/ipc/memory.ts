@@ -1,4 +1,4 @@
-import { handleIpc } from './guard';
+import { registerServer } from './guard';
 import type { IpcDeps } from './deps';
 import {
   addMemoryNote,
@@ -40,15 +40,15 @@ const { getAutoResolvedConflicts, getEpisodicStats, getActiveFactIds, getFactsBy
 
 /** The Memory tab's surface: facts, episodic store, rebuild, and retrieval status. */
 export function registerMemoryIpc(deps: IpcDeps): void {
-  handleIpc('memory:get', () => getMemorySettings());
-  handleIpc('memory:setEnabled', async (_e, enabled: boolean) => {
+  registerServer('memory:get', () => getMemorySettings());
+  registerServer('memory:setEnabled', async (_e, enabled: boolean) => {
     const settings = await setMemoryEnabled(enabled);
     // Restart applies the recall-MCP change to the live backend (no-op on the fake).
     await deps.runtime().restart();
     return settings;
   });
-  handleIpc('memory:read', () => readMemoryFiles());
-  handleIpc('memory:addNote', async (_e, text: string) => {
+  registerServer('memory:read', () => readMemoryFiles());
+  registerServer('memory:addNote', async (_e, text: string) => {
     const result = await addMemoryNote(String(text ?? ''));
     if (result.saved && result.factId != null) {
       // Canonicalize + reconcile off the acknowledgement path (same hidden
@@ -61,51 +61,51 @@ export function registerMemoryIpc(deps: IpcDeps): void {
     }
     return result;
   });
-  handleIpc('memory:forget', async (_e, id: number) => {
+  registerServer('memory:forget', async (_e, id: number) => {
     await forgetFact(id);
     return readMemoryFiles();
   });
-  handleIpc('memory:setPinned', async (_e, id: number, pinned: boolean) => {
+  registerServer('memory:setPinned', async (_e, id: number, pinned: boolean) => {
     storeSetFactPinned(id, pinned);
     return readMemoryFiles();
   });
-  handleIpc('memory:confirmFact', async (_e, id: number) => {
+  registerServer('memory:confirmFact', async (_e, id: number) => {
     storeConfirmFact(id);
     return readMemoryFiles();
   });
-  handleIpc('memory:factDetails', (_e, id: number) => getFactDetails(id));
-  handleIpc('memory:conflicts', () => getMemoryConflicts());
-  handleIpc('memory:autoResolvedConflicts', () => getAutoResolvedConflicts());
-  handleIpc('memory:resolveConflict', async (_e, id: number, resolution: ConflictResolution) => {
+  registerServer('memory:factDetails', (_e, id: number) => getFactDetails(id));
+  registerServer('memory:conflicts', () => getMemoryConflicts());
+  registerServer('memory:autoResolvedConflicts', () => getAutoResolvedConflicts());
+  registerServer('memory:resolveConflict', async (_e, id: number, resolution: ConflictResolution) => {
     storeResolveMemoryConflict(id, resolution);
     return readMemoryFiles();
   });
-  handleIpc('memory:restoreFact', async (_e, id: number) => {
+  registerServer('memory:restoreFact', async (_e, id: number) => {
     storeRestoreSupersededFact(id);
     return readMemoryFiles();
   });
-  handleIpc('memory:rebuildStatus', () => getMemoryRebuildStatus());
-  handleIpc('memory:startRebuild', () => {
+  registerServer('memory:rebuildStatus', () => getMemoryRebuildStatus());
+  registerServer('memory:startRebuild', () => {
     const status = startMemoryRebuild();
     deps.scheduleMemoryRebuild();
     return status;
   });
-  handleIpc('memory:pauseRebuild', () => pauseMemoryRebuild());
-  handleIpc('memory:resumeRebuild', () => {
+  registerServer('memory:pauseRebuild', () => pauseMemoryRebuild());
+  registerServer('memory:resumeRebuild', () => {
     const status = resumeMemoryRebuild();
     deps.scheduleMemoryRebuild();
     return status;
   });
-  handleIpc('memory:resetFacts', () => clearFactsMemory());
-  handleIpc('memory:resetEpisodic', () => clearEpisodicMemory());
-  handleIpc('memory:episodicStats', () => getEpisodicStats());
-  handleIpc('memory:summaries', () => listThreadSummaries());
-  handleIpc('memory:deleteSummary', (_e, id: number) => removeThreadSummary(id));
+  registerServer('memory:resetFacts', () => clearFactsMemory());
+  registerServer('memory:resetEpisodic', () => clearEpisodicMemory());
+  registerServer('memory:episodicStats', () => getEpisodicStats());
+  registerServer('memory:summaries', () => listThreadSummaries());
+  registerServer('memory:deleteSummary', (_e, id: number) => removeThreadSummary(id));
   // Background-activity feed for the toolbar indicator. Read-only: the snapshot
   // and a "panel opened" acknowledgement that clears the sticky failure marker.
-  handleIpc('activity:snapshot', () => activity.snapshot());
-  handleIpc('activity:markSeen', () => activity.markSeen());
-  handleIpc('embeddings:localStatus', async (): Promise<LocalEmbedStatus> => {
+  registerServer('activity:snapshot', () => activity.snapshot());
+  registerServer('activity:markSeen', () => activity.markSeen());
+  registerServer('embeddings:localStatus', async (): Promise<LocalEmbedStatus> => {
     // Opening the panel doubles as a kick (idempotent while healthy), so someone
     // who goes straight to Memory → advanced right after launch sees the worker
     // start immediately instead of an idle state until the startup timer lands.
@@ -113,13 +113,13 @@ export function registerMemoryIpc(deps: IpcDeps): void {
     if (!deps.e2e && e.mode === 'local') deps.embedManager()?.ensure(EMBED_CATALOG[e.localModel]);
     return deps.embedManager()?.status() ?? { model: 'multilingual-e5-small', state: 'idle' };
   });
-  handleIpc('reranker:localStatus', async (): Promise<LocalRerankStatus> => {
+  registerServer('reranker:localStatus', async (): Promise<LocalRerankStatus> => {
     // Same panel-open kick as embeddings:localStatus, for the reranker model.
     const r = (await readSettings()).retrieval.reranker;
     if (!deps.e2e && r.mode === 'local') deps.embedManager()?.ensureRerank(RERANK_CATALOG[r.localModel]);
     return deps.embedManager()?.rerankStatus() ?? { model: DEFAULT_LOCAL_RERANK_MODEL, state: 'idle' };
   });
-  handleIpc('memory:activeFacts', (_e, threadId: string | null): ActiveFacts | null => {
+  registerServer('memory:activeFacts', (_e, threadId: string | null): ActiveFacts | null => {
     if (!threadId) return null;
     const rec = getActiveFactIds(threadId);
     if (!rec) return null;
@@ -138,7 +138,7 @@ export function registerMemoryIpc(deps: IpcDeps): void {
     }));
     return { facts, tier: rec.tier };
   });
-  handleIpc('memory:previewFacts', async (_e, text: string): Promise<ActiveFacts> => {
+  registerServer('memory:previewFacts', async (_e, text: string): Promise<ActiveFacts> => {
     const { facts, tier } = await previewFacts(text ?? '');
     return { facts: facts.map((f) => ({
       id: f.id,
@@ -149,10 +149,10 @@ export function registerMemoryIpc(deps: IpcDeps): void {
       ...(f.disputed ? { disputed: true } : {})
     })), tier };
   });
-  handleIpc('memory:setEpisodicLimit', (_e, bytes: number) => setEpisodicLimit(bytes));
-  handleIpc('memory:setTidyThreshold', (_e, n: number) => setTidyUpThreshold(n));
-  handleIpc('memory:setMaxRelevantFacts', (_e, n: number) => setMaxRelevantFactCount(n));
-  handleIpc('memory:consolidate', async () => {
+  registerServer('memory:setEpisodicLimit', (_e, bytes: number) => setEpisodicLimit(bytes));
+  registerServer('memory:setTidyThreshold', (_e, n: number) => setTidyUpThreshold(n));
+  registerServer('memory:setMaxRelevantFacts', (_e, n: number) => setMaxRelevantFactCount(n));
+  registerServer('memory:consolidate', async () => {
     // Same hidden one-shot seam distillation uses; `force` bypasses the size floor
     // so a manual run always executes.
     const llm: LlmClient = {

@@ -29,6 +29,8 @@ export default defineConfig({
     build: {
       outDir: 'dist/main',
       rollupOptions: {
+        // index is the Electron main process: src/desktop, which starts the
+        // headless server (src/server) in-process and imports the rest of it.
         // embed-worker is a second entry: it runs in its own utilityProcess
         // (utilityProcess.fork(dist/main/embed-worker.js) in embed-worker-host.ts).
         // recall-mcp-server is a third: a standalone stdio MCP server spawned with
@@ -37,7 +39,7 @@ export default defineConfig({
         // scan-worker is a fourth: the recall cosine-scan + VACUUM utilityProcess
         // (see scan-worker-host.ts), sharing search-core/maintenance-core.
         input: {
-          index: 'src/server/index.ts',
+          index: 'src/desktop/index.ts',
           'embed-worker': 'src/server/recall/embed-worker.ts',
           'recall-mcp-server': 'src/server/recall/mcp-server-main.ts',
           'scan-worker': 'src/server/recall/scan-worker.ts'

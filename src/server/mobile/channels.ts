@@ -26,7 +26,10 @@
 //     never calls it — it is reached only from the `att.path` branch of
 //     renderer/attachments.ts, and a phone's attachments are always base64 —
 //     so it was blast radius with no caller.
-//   - the desktop's own windows (`quickchat:*`, `main:reveal`, `runtime:restart`).
+//   - `runtime:restart`. (The desktop's own windows — `quickchat:*`,
+//     `main:reveal`, `dialog:*`, the reveal handlers — are not on this list
+//     because they are not server channels at all: the client answers them
+//     itself and they never reach a transport. See desktop/ipc-bridge.ts.)
 //   - chat MANAGEMENT (`chats:rename/delete/setFolder/forkThread`, `folders:*`,
 //     `chats:search*`). The plan allowed for these, but the phone client the
 //     stages actually built has no UI for any of them — its chat list opens and

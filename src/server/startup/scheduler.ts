@@ -9,7 +9,8 @@ import type { ChatBackend } from '../backend';
  */
 export function initTaskScheduler(deps: {
   runtime: ChatBackend;
-  sendToMain: (channel: string, payload: unknown) => void;
+  /** Push on a client channel — the task feed and notify_user alerts. */
+  emit: (channel: string, payload: unknown) => void;
   /** Turn in flight on either surface, or interaction in the last couple of minutes. */
   isUserActive: () => boolean;
   /** Raise + focus the main window (notify_user prominence). */
@@ -19,8 +20,8 @@ export function initTaskScheduler(deps: {
 }): TaskScheduler {
   const scheduler = new TaskScheduler({
     runtime: deps.runtime,
-    onChange: (tasks) => deps.sendToMain('tasks:changed', tasks),
-    onRun: (run) => deps.sendToMain('tasks:run', run),
+    onChange: (tasks) => deps.emit('tasks:changed', tasks),
+    onRun: (run) => deps.emit('tasks:run', run),
     // Scheduled runs defer while the user is active, and an in-flight scheduled
     // run yields (preemptForUser) when the user sends a message.
     isUserActive: deps.isUserActive,
@@ -40,7 +41,7 @@ export function initTaskScheduler(deps: {
     notify: async ({ title, message }, threadId) => {
       deps.revealMainWindow();
       deps.requestAttention();
-      deps.sendToMain('tasks:notify', {
+      deps.emit('tasks:notify', {
         threadId,
         title,
         message,

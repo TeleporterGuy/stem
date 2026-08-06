@@ -44,8 +44,8 @@ export function initRecallTasks(deps: {
   runtime: () => ChatBackend;
   /** True while a turn runs on either surface or the user interacted within `idleMs`. */
   busyWithin: (idleMs: number) => boolean;
-  /** Direct push to the main window (rebuild status stream). */
-  sendToMainWindow: (channel: string, payload: unknown) => void;
+  /** Push on a client channel — the memory-rebuild status stream. */
+  emit: (channel: string, payload: unknown) => void;
 }): RecallTasks {
   // Stem Recall: distill durable facts via a hidden backend turn (the swappable
   // LlmClient seam). Debounced so it runs ~after the user goes idle.
@@ -66,7 +66,7 @@ export function initRecallTasks(deps: {
       // the panel shows "340/2100 messages" rather than 200 three-second rows.
       const handle = activity.begin('memory.rebuild', 'Rebuilding memory provenance', { stepped: true });
       const status = await runMemoryRebuildStep(recallLlm);
-      deps.sendToMainWindow('memory:rebuildStatus', status);
+      deps.emit('memory:rebuildStatus', status);
       activity.progress(handle, { done: status.processedMessages, total: status.totalMessages });
       if (status.state === 'running') {
         // Bank this batch's time; the entry stays open until the rebuild ends.

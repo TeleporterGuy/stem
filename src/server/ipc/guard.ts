@@ -1,14 +1,21 @@
-import { ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { log } from '../log';
 
-// Runtime guard-rail for the renderer → main IPC boundary. Every invoke channel
-// registered through handleIpc gets (a) a trusted-sender check — top-level frame
-// of an app window only, no subframes, no foreign origins — and (b) structural
-// validation of its arguments against the per-channel spec below (arity +
-// shallow types). TypeScript types vanish at this boundary: a compromised or
-// confused renderer can invoke any channel with anything, so main re-checks.
+// The server's handler registry, and the structural validation every call into
+// it passes through. registerServer records a channel; dispatchLocal invokes one,
+// checking its arguments against the per-channel spec below (arity + shallow
+// types) first. TypeScript types vanish at this boundary: a compromised or
+// confused client can invoke any channel with anything, so the server re-checks.
 // Handlers keep validating domain rules; this layer only rejects calls that are
 // structurally not the API.
+//
+// The registry IS the surface: a channel registered here is one any authenticated
+// client may call. It does NOT decide who may call what — that is the caller's
+// job (see mobile/channels.ts for the phone's allowlist).
+//
+// The Electron half of this — binding each registered channel to ipcMain and
+// checking that the sender really is one of our own renderer frames — lives in
+// src/desktop/ipc-bridge.ts. It has to: the server has no windows to trust, and
+// on a headless host there is no ipcMain to bind to.
 
 export interface ArgSpec {
   label: string;
@@ -62,12 +69,10 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'files:remove': [a.string],
   'files:mkdir': [a.string],
   'files:rmdir': [a.string],
-  'files:preview': [a.string],
   'cfolders:add': [a.stringArray],
   'cfolders:update': [a.string, a.object],
   'cfolders:remove': [a.string],
   'cfolders:forgetFacts': [a.string],
-  'cfolders:reveal': [a.string],
   'tasks:setEnabled': [a.string, a.boolean],
   'tasks:threadSettings': [a.string],
   'tasks:runNow': [a.string],
@@ -119,25 +124,12 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'settings:updateCustomInstructions': [a.object],
   'settings:updateRetrieval': [a.object],
   'settings:updateReleaseNotes': [a.object],
-  'settings:testRetrieval': [a.oneOf(['embeddings', 'reranker'])],
-  'quickchat:run': [a.object],
-  'quickchat:handoff': [a.object]
+  'settings:testRetrieval': [a.oneOf(['embeddings', 'reranker'])]
 };
 
-/**
- * Why the sender is untrusted, or null when it is fine. Trusted = the top-level
- * frame of a window we created, showing our own renderer (packaged file:// or
- * the electron-vite dev server). Subframes and foreign origins never get IPC.
- */
-export function senderProblem(event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>): string | null {
-  const frame = event.senderFrame;
-  if (!frame) return 'no sender frame';
-  if (frame !== event.sender.mainFrame) return 'IPC from a subframe';
-  const url = frame.url;
-  if (url.startsWith('file://')) return null;
-  const dev = process.env.ELECTRON_RENDERER_URL;
-  if (dev && url.startsWith(dev)) return null;
-  return `untrusted sender url ${url}`;
+/** The declared argument shapes for `channel` (empty = the channel takes none). */
+export function ipcArgSpecs(channel: string): ArgSpec[] {
+  return IPC_ARGS[channel] ?? [];
 }
 
 /** Why `args` don't fit `specs`, or null when they do. */
@@ -152,50 +144,47 @@ export function argsProblem(specs: ArgSpec[], args: unknown[]): string | null {
   return null;
 }
 
-/**
- * ipcMain.handle with the sender check and per-channel argument validation
- * applied before the handler runs. Rejected calls throw back to the renderer's
- * invoke() and are logged; the handler is never entered.
- */
-export function handleIpc(
-  channel: string,
-  handler: (event: IpcMainInvokeEvent, ...args: never[]) => unknown
-): void {
-  const specs = IPC_ARGS[channel] ?? [];
-  localHandlers.set(channel, handler as LocalHandler);
-  ipcMain.handle(channel, (event, ...args) => {
-    const problem = senderProblem(event) ?? argsProblem(specs, args);
-    if (problem) {
-      log('ipc', `rejected ${channel}`, { problem });
-      throw new Error(`Rejected IPC call to ${channel}: ${problem}.`);
-    }
-    return (handler as (event: IpcMainInvokeEvent, ...rest: unknown[]) => unknown)(event, ...args);
-  });
-}
+// ---- the registry ----
+//
+// Every caller reaches a handler the same way: through dispatchLocal, with no
+// event object. The phone bridge (server/mobile) already did — it receives calls
+// over loopback HTTP, so there is no BrowserWindow, no frame, and nothing that
+// could be an Electron event — and the desktop now does too, via
+// src/desktop/ipc-bridge.ts. Rather than fork 110 handlers, one registry serves
+// both, through the SAME per-channel argument validation and the SAME handler.
+//
+// Why passing no event is safe: no handler registered here reads its event
+// object — every call site ignores the first parameter. The parameter survives,
+// typed as the nothing it now is, precisely so that a future handler which
+// reaches for a sender has to acknowledge that a server does not have one.
 
-// ---- local dispatch (surfaces that have no Electron sender) ----
-//
-// The phone bridge (server/mobile) receives calls over loopback HTTP, not over
-// Electron IPC: there is no BrowserWindow, no frame, and therefore no
-// IpcMainInvokeEvent to hand a handler. Rather than fork 110 handlers, every
-// handleIpc registration is also recorded here, and dispatchLocal replays a call
-// through the SAME per-channel argument validation and the SAME handler.
-//
-// Why passing no event is safe: no handler registered through handleIpc reads
-// its event object — all call sites ignore the first parameter (the only two
-// `event.sender` uses in main are ipcMain.on handlers for the Quick Chat
-// handoff, which never come through here). The parameter is typed as possibly
-// absent rather than cast away precisely so that a future handler which does
-// reach for it has to acknowledge that it may not exist.
-//
-// This layer deliberately does NOT decide who may call what — that is the
-// caller's job (see mobile/channels.ts for the phone's allowlist). Registering a
-// channel here grants nothing on its own.
+/**
+ * The vestigial first parameter of every registered handler: what used to be
+ * Electron's IpcMainInvokeEvent, and is now always absent. See above.
+ */
+export type NoCallerEvent = undefined;
 
 /** A registered invoke handler, viewed without the event it never reads. */
-type LocalHandler = (event: IpcMainInvokeEvent | undefined, ...args: unknown[]) => unknown;
+type LocalHandler = (event: NoCallerEvent, ...args: unknown[]) => unknown;
 
 const localHandlers = new Map<string, LocalHandler>();
+
+/**
+ * Record a channel the server answers. Nothing is bound to a transport here —
+ * the desktop binds the registry to ipcMain (src/desktop/ipc-bridge.ts) and the
+ * phone bridge dispatches into it over HTTP.
+ */
+export function registerServer(
+  channel: string,
+  handler: (event: NoCallerEvent, ...args: never[]) => unknown
+): void {
+  localHandlers.set(channel, handler as LocalHandler);
+}
+
+/** Every channel registered so far — the server's whole callable surface. */
+export function serverChannels(): string[] {
+  return [...localHandlers.keys()];
+}
 
 /** Whether `channel` has a handler registered, i.e. dispatchLocal can run it. */
 export function hasLocalHandler(channel: string): boolean {
@@ -203,9 +192,8 @@ export function hasLocalHandler(channel: string): boolean {
 }
 
 /**
- * Invoke a handleIpc-registered channel with no Electron sender: argument
- * validation first, then the handler. Rejects — with the same message shape as
- * the IPC path — when the channel has no handler or the arguments don't fit.
+ * Invoke a registered channel: argument validation first, then the handler.
+ * Rejects when the channel has no handler or the arguments don't fit.
  */
 export async function dispatchLocal(channel: string, args: unknown[]): Promise<unknown> {
   const handler = localHandlers.get(channel);

@@ -19,7 +19,7 @@ import type { LlmClient } from '../recall/llm';
  * one place where "may this be written, and what does the user see" is decided,
  * rather than a rule per surface drifting apart the way the three old writers did.
  *
- * The bridge lives in main because the pi child cannot reach any of that. The
+ * The bridge lives in the server because the pi child cannot reach any of that. The
  * approval hook comes off the runtime because only the runtime knows which turn is
  * live and owns the pending-card bookkeeping a process restart has to tear down.
  */

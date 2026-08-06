@@ -5,10 +5,10 @@ import type { ExecApprovalRequest } from '../../shared/types';
 
 /**
  * Command execution: the assistant's run_command tool, routed from the backend
- * to the main-process ExecService (tiered auto-approve policy + spawn) via the
+ * to the server's ExecService (tiered auto-approve policy + spawn) via the
  * ExecBridge wired here. Approval cards go straight to the windows through the
- * emit callbacks (the ExecService is main-owned; nothing rides the backend
- * event stream).
+ * emit callbacks (the ExecService is server-owned end to end; nothing rides the
+ * backend event stream).
  */
 export function initExecService(deps: {
   runtime: ChatBackend;

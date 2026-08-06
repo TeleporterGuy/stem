@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
-import { a, argsProblem, handleIpc, senderProblem } from '../../src/server/ipc';
-import { dispatchLocal, hasLocalHandler } from '../../src/server/ipc/guard';
+import { a, argsProblem, dispatchLocal, hasLocalHandler, registerServer } from '../../src/server/ipc';
+import { bindServerChannels, handleLocal, senderProblem } from '../../src/desktop/ipc-bridge';
 
-// The renderer → main IPC guard: trusted-sender check + per-channel structural
-// argument validation (see src/server/ipc.ts).
+// The IPC guard, now split across the two sides: src/server/ipc/guard.ts holds the
+// registry and the per-channel argument validation; src/desktop/ipc-bridge.ts holds
+// the trusted-sender check and the ipcMain binding. What the renderer sees has to
+// be identical either way, so these exercise the pair together.
 
 /** A minimal IpcMainInvokeEvent stand-in: one top-level frame at `url`. */
 function eventFrom(url: string) {
@@ -12,9 +14,7 @@ function eventFrom(url: string) {
   return { senderFrame: frame, sender: { mainFrame: frame } };
 }
 
-afterEach(() => {
-  delete process.env.ELECTRON_RENDERER_URL;
-});
+const trusted = eventFrom('file:///app/index.html');
 
 describe('senderProblem', () => {
   it('trusts only our own top-level frames', () => {
@@ -25,7 +25,11 @@ describe('senderProblem', () => {
     const dev = eventFrom('http://localhost:5173/index.html');
     expect(senderProblem(dev as never)).toMatch(/untrusted sender/);
     process.env.ELECTRON_RENDERER_URL = 'http://localhost:5173';
-    expect(senderProblem(dev as never)).toBeNull();
+    try {
+      expect(senderProblem(dev as never)).toBeNull();
+    } finally {
+      delete process.env.ELECTRON_RENDERER_URL;
+    }
 
     // A subframe never gets IPC, whatever it displays.
     const sub = { senderFrame: { url: 'file:///x.html' }, sender: { mainFrame: { url: 'file:///x.html' } } };
@@ -52,40 +56,38 @@ describe('argsProblem', () => {
 });
 
 describe('exec channels', () => {
-  it('exec:resolveApproval takes a string id and a known decision', () => {
+  it('exec:resolveApproval takes a string id and a known decision', async () => {
     let got: unknown[] = [];
-    handleIpc('exec:resolveApproval', (_e, ...args) => {
+    registerServer('exec:resolveApproval', (_e, ...args) => {
       got = args;
       return 'ok';
     });
-    const trusted = eventFrom('file:///app/index.html');
-    expect(ipcMain._invoke('exec:resolveApproval', trusted, 'ap-1', 'alwaysAllow')).toBe('ok');
+    bindServerChannels();
+    await expect(ipcMain._invoke('exec:resolveApproval', trusted, 'ap-1', 'alwaysAllow')).resolves.toBe('ok');
     expect(got).toEqual(['ap-1', 'alwaysAllow']);
     expect(() => ipcMain._invoke('exec:resolveApproval', trusted, 'ap-1', 'yes'))
       .toThrow(/one of allowOnce\|alwaysAllow\|deny/);
     expect(() => ipcMain._invoke('exec:resolveApproval', trusted, 7, 'deny')).toThrow(/must be a string/);
-    ipcMain.removeHandler('exec:resolveApproval');
   });
 
-  it('settings:updateExec takes an object patch', () => {
-    handleIpc('settings:updateExec', () => 'ok');
-    const trusted = eventFrom('file:///app/index.html');
-    expect(ipcMain._invoke('settings:updateExec', trusted, { enabled: false })).toBe('ok');
+  it('settings:updateExec takes an object patch', async () => {
+    registerServer('settings:updateExec', () => 'ok');
+    bindServerChannels();
+    await expect(ipcMain._invoke('settings:updateExec', trusted, { enabled: false })).resolves.toBe('ok');
     expect(() => ipcMain._invoke('settings:updateExec', trusted, 'enabled')).toThrow(/an object/);
-    ipcMain.removeHandler('settings:updateExec');
   });
 });
 
-describe('handleIpc', () => {
-  it('rejects bad senders and bad args before the handler runs; passes good calls through', () => {
+describe('bindServerChannels', () => {
+  it('rejects bad senders and bad args before the handler runs; passes good calls through', async () => {
     let ran = 0;
-    handleIpc('chats:rename', (_e, threadId, name) => {
+    registerServer('chats:rename', (_e, threadId, name) => {
       ran += 1;
       return `${String(threadId)}:${String(name)}`;
     });
-    const trusted = eventFrom('file:///app/index.html');
+    bindServerChannels();
 
-    expect(ipcMain._invoke('chats:rename', trusted, 't-1', 'New name')).toBe('t-1:New name');
+    await expect(ipcMain._invoke('chats:rename', trusted, 't-1', 'New name')).resolves.toBe('t-1:New name');
     expect(ran).toBe(1);
 
     expect(() => ipcMain._invoke('chats:rename', eventFrom('https://evil.example'), 't-1', 'x'))
@@ -94,20 +96,43 @@ describe('handleIpc', () => {
     expect(ran).toBe(1); // neither rejected call reached the handler
 
     // A channel with no spec entry takes no arguments at all.
-    handleIpc('runtime:status', () => 'ok');
-    expect(ipcMain._invoke('runtime:status', trusted)).toBe('ok');
+    registerServer('runtime:status', () => 'ok');
+    bindServerChannels();
+    await expect(ipcMain._invoke('runtime:status', trusted)).resolves.toBe('ok');
     expect(() => ipcMain._invoke('runtime:status', trusted, 'sneaky')).toThrow(/at most 0/);
-    ipcMain.removeHandler('chats:rename');
-    ipcMain.removeHandler('runtime:status');
+  });
+});
+
+// Channels the desktop answers itself (native pickers, reveal, the Quick Chat
+// windows). They never reach the server's registry, and the renderer must not be
+// able to tell: same sender check, same argument validation, same wording.
+describe('handleLocal', () => {
+  it('guards a client-owned channel exactly as a server-owned one', () => {
+    let got: unknown[] = [];
+    handleLocal('cfolders:reveal', (_e, ...args) => {
+      got = args;
+      return 'revealed';
+    });
+
+    expect(ipcMain._invoke('cfolders:reveal', trusted, 'cf-1')).toBe('revealed');
+    expect(got).toEqual(['cf-1']);
+    expect(() => ipcMain._invoke('cfolders:reveal', trusted, 7)).toThrow(
+      'Rejected IPC call to cfolders:reveal: argument 1 must be a string.'
+    );
+    expect(() => ipcMain._invoke('cfolders:reveal', eventFrom('https://evil.example'), 'cf-1'))
+      .toThrow(/untrusted sender/);
+
+    // Nothing on the server knows this channel exists.
+    expect(hasLocalHandler('cfolders:reveal')).toBe(false);
   });
 });
 
 // The registry the phone bridge dispatches through: same handlers, same argument
-// validation, no IpcMainInvokeEvent (see the dispatchLocal comment in guard.ts).
+// validation, no caller event (see the registry comment in guard.ts).
 describe('dispatchLocal', () => {
   it('routes to the registered handler with the same arg validation, and no event', async () => {
     let sawEvent: unknown = 'not called';
-    handleIpc('chats:rename', (event, threadId, name) => {
+    registerServer('chats:rename', (event, threadId, name) => {
       sawEvent = event;
       return `${String(threadId)}:${String(name)}`;
     });
@@ -119,8 +144,6 @@ describe('dispatchLocal', () => {
     // Same per-channel spec table as the IPC path.
     await expect(dispatchLocal('chats:rename', ['t-1', 42])).rejects.toThrow(/argument 2 must be a string/);
     await expect(dispatchLocal('chats:rename', [])).rejects.toThrow(/argument 1 must be a string/);
-
-    ipcMain.removeHandler('chats:rename');
   });
 
   it('refuses a channel nothing registered', async () => {
@@ -129,8 +152,7 @@ describe('dispatchLocal', () => {
   });
 
   it('surfaces a handler rejection rather than swallowing it', async () => {
-    handleIpc('backend:newConversation', () => Promise.reject(new Error('backend is down')));
+    registerServer('backend:newConversation', () => Promise.reject(new Error('backend is down')));
     await expect(dispatchLocal('backend:newConversation', [])).rejects.toThrow('backend is down');
-    ipcMain.removeHandler('backend:newConversation');
   });
 });

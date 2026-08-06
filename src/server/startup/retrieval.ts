@@ -99,8 +99,8 @@ export async function backfillSummaryVectors(emb: EmbeddingsClient, model: strin
  */
 export function initRetrieval(deps: {
   e2e: boolean;
-  /** Direct push to the main window (status streams; queueing not needed). */
-  sendToMainWindow: (channel: string, payload: unknown) => void;
+  /** Push on a client channel — the model download/load status streams. */
+  emit: (channel: string, payload: unknown) => void;
 }): RetrievalRuntime {
   const embedManager = createEmbedWorkerManager({ spawn: spawnEmbedWorker, cacheDir: embedModelsDir });
   // Recall's O(N) cosine scans and episodic VACUUMs run in their own utility
@@ -148,11 +148,11 @@ export function initRetrieval(deps: {
     void embedEndpoint.close();
   });
   embedManager.onRerankStatus((status) => {
-    deps.sendToMainWindow('reranker:localStatus', status);
+    deps.emit('reranker:localStatus', status);
     trackModelStatus('models.rerank', 'Preparing reranker model', status);
   });
   embedManager.onStatus((status) => {
-    deps.sendToMainWindow('embeddings:localStatus', status);
+    deps.emit('embeddings:localStatus', status);
     trackModelStatus('models.embed', 'Preparing embedding model', status);
     // The model just came up: prune vectors from previously-used models (local
     // vectors are cheap to regenerate; keeps recall.sqlite tidy) and backfill any
