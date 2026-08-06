@@ -14,7 +14,9 @@ import { channelPolicy, channelsFor, mayInvoke, mayReceive, type DeviceRole } fr
 // Binding loopback is the outermost layer of the security model — a Tailscale
 // misconfiguration cannot expose this, because nothing but a process on this Mac
 // can open the socket at all. `tailscale serve` is what reaches it from the
-// phone, and it runs here. Never bind 0.0.0.0.
+// phone, and it runs here. Never bind 0.0.0.0: the address is an option now
+// (a standalone stem-server takes it from the environment), and LOOPBACK_HOSTS
+// is what keeps that option from becoming a public listener.
 //
 // Four routes:
 //   POST /rpc      {channel, args}  → {ok:true, result} | {ok:false, error}
@@ -46,9 +48,24 @@ const SSE_KEEPALIVE_MS = 25_000;
 /** How long the client should wait before reconnecting a dropped stream. */
 const SSE_RETRY_MS = 3_000;
 
+/**
+ * The only addresses this server will bind, enforced rather than documented.
+ *
+ * A standalone `stem-server` takes its bind address from the environment, which
+ * is exactly the knob somebody reaches for when they want to run it on a VPS —
+ * so the refusal has to live here, at the socket, where no caller can route
+ * around it. Phase 1 ships no TLS and no device pairing beyond a plaintext
+ * bearer token in a 0600 file; a listener on a public interface would hand that
+ * token's full-admin surface to the internet. Widening this set is Phase 2's
+ * decision to make, alongside the things that make it survivable.
+ */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+
 export interface TransportServerOptions {
   /** Loopback port to bind. 0 picks a free one (callers read it back off `port`). */
   port: number;
+  /** Loopback address to bind. Defaults to 127.0.0.1; see LOOPBACK_HOSTS. */
+  host?: string;
   /** Absolute directory the production bundle is served from (dist/renderer). */
   rendererDir: string;
   /** ELECTRON_RENDERER_URL in dev: static requests proxy to the Vite server. */
@@ -171,6 +188,17 @@ interface StreamClient {
 }
 
 export async function startTransportServer(opts: TransportServerOptions): Promise<TransportServer> {
+  const bindHost = opts.host ?? '127.0.0.1';
+  // Before anything is created, so a misconfigured deployment fails at boot with
+  // a sentence rather than by quietly answering the internet.
+  if (!LOOPBACK_HOSTS.has(bindHost)) {
+    throw new Error(
+      `refusing to bind ${bindHost}: Stem's transport is loopback-only. Reaching it from another ` +
+        'machine goes through a tunnel that terminates TLS (tailscale serve today); a public listener ' +
+        'needs TLS and real device pairing, which are Phase 2.'
+    );
+  }
+
   /** Live SSE responses. A closed client is removed by its own 'close' handler. */
   const clients = new Set<StreamClient>();
   /** Every open socket, so close() can destroy them (see the close() comment). */
@@ -463,8 +491,8 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
     };
     server.once('error', onError);
     server.once('listening', onListening);
-    // 127.0.0.1, never 0.0.0.0 — see the module comment.
-    server.listen(opts.port, '127.0.0.1');
+    // A loopback address, never 0.0.0.0 — see LOOPBACK_HOSTS.
+    server.listen(opts.port, bindHost);
   });
 
   const boundPort = (server.address() as AddressInfo | null)?.port ?? opts.port;

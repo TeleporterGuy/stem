@@ -143,6 +143,11 @@ export function headlessHost(): StemHost {
       };
       process.once('exit', run);
       for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+        // Only when nobody else owns the signal. The standalone `stem-server`
+        // entry installs its own handler first, because draining the backend is
+        // asynchronous and the exit below would cut it off mid-drain; its exit
+        // still fires the 'exit' hook above, so these cleanups run either way.
+        if (process.listenerCount(signal) > 0) continue;
         process.once(signal, () => {
           run();
           process.exit(0);

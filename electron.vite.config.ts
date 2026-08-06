@@ -38,8 +38,14 @@ export default defineConfig({
         // src/server/recall/search-core.ts with the main process.
         // scan-worker is a fourth: the recall cosine-scan + VACUUM utilityProcess
         // (see scan-worker-host.ts), sharing search-core/maintenance-core.
+        // server is a fifth: `stem-server`, the headless entry, which plain
+        // `node dist/main/server.js` runs. Rollup gives the two roots one shared
+        // chunk for everything under src/server and leaves index.js holding the
+        // Electron imports alone — which is precisely the property the boot
+        // tripwire (scripts/server-boot.mjs) checks is still true.
         input: {
           index: 'src/desktop/index.ts',
+          server: 'src/server/main.ts',
           'embed-worker': 'src/server/recall/embed-worker.ts',
           'recall-mcp-server': 'src/server/recall/mcp-server-main.ts',
           'scan-worker': 'src/server/recall/scan-worker.ts'

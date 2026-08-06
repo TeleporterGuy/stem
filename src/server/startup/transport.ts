@@ -88,10 +88,26 @@ async function authenticate(presented: string | null): Promise<DeviceRole | null
   return device.role;
 }
 
-/** Options both listeners share; only the port differs. */
-function listenerOptions(port: number): Parameters<typeof startTransportServer>[0] {
+/**
+ * Where the primary listener binds. Loopback either way — startTransportServer
+ * refuses anything else — but which loopback address matters on a host whose
+ * `localhost` resolves to ::1 before 127.0.0.1, and a deployment that fronts the
+ * server with a tunnel wants to say so rather than infer it.
+ */
+function primaryHost(): string {
+  return process.env.STEM_SERVER_HOST?.trim() || '127.0.0.1';
+}
+
+/** An origin a client can put in a URL — IPv6 literals need their brackets. */
+function originFor(host: string, port: number): string {
+  return `http://${host.includes(':') ? `[${host}]` : host}:${port}`;
+}
+
+/** Options both listeners share; only the address differs. */
+function listenerOptions(port: number, host?: string): Parameters<typeof startTransportServer>[0] {
   return {
     port,
+    host,
     rendererDir: config!.rendererDir,
     devUrl: config!.devUrl,
     authenticate,
@@ -127,9 +143,10 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
   // STEM_SERVER_PORT pins the port for a deployment that fronts it; ephemeral
   // otherwise, so two profiles (or two E2E runs) can never collide.
   const requested = Number(process.env.STEM_SERVER_PORT ?? 0);
-  primary = await startTransportServer(listenerOptions(Number.isFinite(requested) ? requested : 0));
-  const url = `http://127.0.0.1:${primary.port}`;
-  log('transport', 'listening', { port: primary.port });
+  const host = primaryHost();
+  primary = await startTransportServer(listenerOptions(Number.isFinite(requested) ? requested : 0, host));
+  const url = originFor(host, primary.port);
+  log('transport', 'listening', { host, port: primary.port });
   await writeEndpointFile(url);
   // The phone side is settings-driven and allowed to fail; never block boot on it.
   void syncPhoneAccess();
