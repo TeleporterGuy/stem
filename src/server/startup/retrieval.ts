@@ -1,4 +1,4 @@
-import { app } from 'electron';
+import { host } from '../host';
 import { readSettings } from '../workspace/settings';
 import { embedModelsDir, embedSocketPath, recallDbPath } from '../workspace/paths';
 
@@ -144,7 +144,7 @@ export function initRetrieval(deps: {
     socketPath: embedSocketPath(),
     getClient: getEmbeddingsClient
   });
-  app.on('will-quit', () => {
+  host().onShutdown(() => {
     void embedEndpoint.close();
   });
   embedManager.onRerankStatus((status) => {

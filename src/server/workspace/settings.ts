@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
-import { app } from 'electron';
+import { host } from '../host';
 import type {
   AppSettings,
   CustomInstructionsSettings,
@@ -502,7 +502,7 @@ export function markOnboardingCompleted(): Promise<AppSettings> {
       onboarding: { completed: true },
       releaseNotes: {
         ...cur.releaseNotes,
-        lastSeenVersion: cur.releaseNotes.lastSeenVersion ?? app.getVersion()
+        lastSeenVersion: cur.releaseNotes.lastSeenVersion ?? host().appVersion()
       }
     });
     await writeSettings(next);

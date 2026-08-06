@@ -1,19 +1,21 @@
-// Minimal `electron` stand-in for Vitest. The main-process modules under test
-// (workspace/paths, files/store, …) import a couple of Electron symbols at load
-// time, but the code paths the unit tests exercise never actually touch them —
-// paths.ts only calls app.getPath() when the STEM_* env overrides are unset (the
-// setup file always sets them), and shell is only used by revealFiles().
+// Minimal `electron` stand-in for Vitest, now covering only what is still on the
+// CLIENT side of the split. The server's own Electron needs — state paths, app
+// version, the secret-key wrapper, worker forking, opening a browser — went
+// through this stub until they became src/server/host, whose headless default IS
+// the production implementation; tests/setup-unit.ts installs the couple of
+// overrides (a reversible key wrapper, a pinned version) the suite wants.
+//
+// What remains here is the client surface that has not moved to src/desktop yet:
+// platform.ts's `app` bookkeeping, the ipcMain registration guard.ts still does,
+// and shell for the reveal handlers.
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export const app = {
   // Per-process, like the STEM_* paths in setup-unit.ts: test files run in their
-  // own forks, and the stores that live under userData (settings.json above all)
-  // would otherwise be one shared file two suites can delete under each other.
+  // own forks, and a store two suites can delete under each other is a flake.
   getPath: (name: string) => join(tmpdir(), `stem-vitest-userdata-${process.pid}`, name),
   getAppPath: () => process.cwd(),
-  // settings.ts seeds the release-notes marker with this when onboarding
-  // completes; release-notes tests pass a version explicitly instead.
   getVersion: () => '0.0.0',
   isPackaged: false,
   // platform.ts opts into Chromium's Linux global-shortcuts portal at startup.
@@ -48,21 +50,7 @@ export const ipcMain = {
 export const shell = {
   showItemInFolder: () => {},
   openPath: async () => '',
-  // provider-auth opens the OAuth page in the system browser.
   openExternal: async () => {}
 };
 
-// Reversible fake for pi/secrets.ts: real safeStorage wraps via the OS keychain;
-// the stub just tags the plaintext so tests exercise the full encrypted-at-rest
-// code path (key wrap/unwrap, envelope files, field ciphertexts) deterministically.
-export const safeStorage = {
-  isEncryptionAvailable: () => true,
-  encryptString: (plain: string) => Buffer.from(`stub-wrapped:${plain}`, 'utf8'),
-  decryptString: (wrapped: Buffer) => {
-    const text = wrapped.toString('utf8');
-    if (!text.startsWith('stub-wrapped:')) throw new Error('not stub-wrapped ciphertext');
-    return text.slice('stub-wrapped:'.length);
-  }
-};
-
-export default { app, ipcMain, shell, safeStorage };
+export default { app, ipcMain, shell };

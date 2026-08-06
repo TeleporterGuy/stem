@@ -1,36 +1,33 @@
-import { safeStorage } from 'electron';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { host } from '../host';
 import { secretKeyPath } from '../workspace/paths';
 import { SECRET_VALUE_PREFIX } from './protocol';
 
 // Secrets-at-rest for the MCP credential files (mcp.json auth fields and the
 // whole mcp-oauth.json token map). Values are AES-256-GCM ciphertexts under a
-// random data key; the key itself is stored wrapped by Electron's safeStorage
-// (macOS Keychain), so credentials on disk survive neither file exfiltration
-// nor a copied backup. The bridge extension runs inside the pi process and
-// cannot use safeStorage, so PiRuntime hands it the unwrapped key via
+// random data key; the key itself is stored wrapped by the host's key wrapper
+// (Electron's safeStorage → macOS Keychain), so credentials on disk survive
+// neither file exfiltration nor a copied backup. The bridge extension runs
+// inside the pi process and has no wrapper, so PiRuntime hands it the unwrapped key via
 // ENV_SECRET_KEY at spawn — its crypto twin lives in stem-mcp-extension.mjs
 // (drift-guarded by tests/unit/pi-protocol.test.ts).
 //
 // Every read path treats an un-prefixed value as legacy plaintext, and every
-// write path falls back to plaintext when safeStorage is unavailable (some
-// Linux setups without a keyring), so encryption is strictly additive: worst
+// write path falls back to plaintext when no wrapper is available (a Linux box
+// without a keyring; a headless server), so encryption is strictly additive: worst
 // case is today's 0600-plaintext behavior, never a lockout.
 
 let cachedKey: Buffer | null | undefined;
 
 function loadOrCreateKey(): Buffer | null {
   if (cachedKey !== undefined) return cachedKey;
-  try {
-    if (!safeStorage.isEncryptionAvailable()) return (cachedKey = null);
-  } catch {
-    return (cachedKey = null); // called before app ready, or headless
-  }
+  const wrapper = host().keyWrapper();
+  if (!wrapper) return (cachedKey = null); // no keyring, or headless
   const path = secretKeyPath();
   try {
-    const hex = safeStorage.decryptString(readFileSync(path));
+    const hex = wrapper.unwrap(readFileSync(path));
     if (/^[0-9a-f]{64}$/.test(hex)) return (cachedKey = Buffer.from(hex, 'hex'));
   } catch {
     // missing or unwrappable (keychain reset / copied profile) → mint a fresh
@@ -41,7 +38,7 @@ function loadOrCreateKey(): Buffer | null {
   const tmp = `${path}.${process.pid}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(tmp, safeStorage.encryptString(key.toString('hex')), { mode: 0o600 });
+    writeFileSync(tmp, wrapper.wrap(key.toString('hex')), { mode: 0o600 });
     renameSync(tmp, path);
   } catch {
     try {
@@ -54,7 +51,7 @@ function loadOrCreateKey(): Buffer | null {
   return (cachedKey = key);
 }
 
-/** Whether writes will actually be encrypted (safeStorage present, key on disk). */
+/** Whether writes will actually be encrypted (a key wrapper exists, key on disk). */
 export function secretKeyAvailable(): boolean {
   return loadOrCreateKey() !== null;
 }

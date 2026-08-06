@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 import type { ReleaseNoteEntry, ReleaseNotesSnapshot } from '../../shared/types';
 import { markReleaseNotesSeen, readSettings } from './settings';
 
@@ -73,7 +73,7 @@ export function selectUnseen(
 
 async function readNotesFile(): Promise<string> {
   try {
-    return await readFile(join(app.getAppPath(), 'RELEASE_NOTES.md'), 'utf8');
+    return await readFile(join(host().appRoot(), 'RELEASE_NOTES.md'), 'utf8');
   } catch {
     // Missing/unreadable notes are not an error worth surfacing — the popup just
     // never appears and Settings shows an empty history.
@@ -92,7 +92,7 @@ async function readNotesFile(): Promise<string> {
  *   stays quiet until the *next* release.
  */
 export async function releaseNotesSnapshot(): Promise<ReleaseNotesSnapshot> {
-  const appVersion = app.getVersion();
+  const appVersion = host().appVersion();
   const settings = await readSettings();
   const entries = parseReleaseNotes(await readNotesFile()).filter(
     (e) => compareVersions(e.version, appVersion) <= 0
@@ -108,5 +108,5 @@ export async function releaseNotesSnapshot(): Promise<ReleaseNotesSnapshot> {
 
 /** Record the running version as shown (called when the popup is dismissed). */
 export function markReleaseNotesRead(): Promise<unknown> {
-  return markReleaseNotesSeen(app.getVersion());
+  return markReleaseNotesSeen(host().appVersion());
 }

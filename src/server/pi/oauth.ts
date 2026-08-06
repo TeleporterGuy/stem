@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import { URL } from 'node:url';
-import { shell } from 'electron';
+import { host } from '../host';
 
 // MCP OAuth 2.1 browser flow for remote (Streamable HTTP) servers that require
 // OAuth rather than a static bearer header — e.g. Fastmail. Implements the MCP
@@ -356,7 +356,7 @@ export async function authorizeMcp(mcpUrl: string, opts: AuthorizeOptions = {}):
     authUrl.searchParams.set('resource', pr.resource);
 
     opts.onAuthUrl?.(authUrl.toString());
-    await withAbort(shell.openExternal(authUrl.toString()), controller.signal);
+    host().openExternal(authUrl.toString());
 
     const { code, state: returnedState } = await withAbort(loop.codePromise, controller.signal);
     if (!code) throw new Error('No authorization code was returned.');

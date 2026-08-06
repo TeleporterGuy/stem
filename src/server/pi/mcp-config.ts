@@ -1,4 +1,4 @@
-import { app } from 'electron';
+import { host } from '../host';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -52,7 +52,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 function mainRuntimeAssetPath(rel: string): string {
   const built = join(__dirname, rel);
-  return existsSync(built) ? built : join(app.getAppPath(), 'src', 'server', rel);
+  return existsSync(built) ? built : join(host().appRoot(), 'src', 'server', rel);
 }
 
 /** Absolute path to the bridge extension asset (mirrors recallMcpServerPath's basis). */
@@ -432,10 +432,10 @@ export async function saveOAuthTokenIfServerMatches(
 /** The reserved stem-recall entry the bridge always spawns. */
 function recallServerEntry(): PiMcpServer {
   return {
-    command: process.execPath,
+    command: host().nodeSpawn().command,
     args: [recallMcpServerPath()],
     env: {
-      ELECTRON_RUN_AS_NODE: '1',
+      ...host().nodeSpawn().env,
       STEM_RECALL_DB: recallDbPath(),
       // Query-embed channel for hybrid search (embed-endpoint.ts). The token is a
       // lazy singleton, so reading it here at bootstrap is safe even before (or

@@ -14,6 +14,8 @@ import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import dns from 'node:dns';
 import net from 'node:net';
+import { electronHost } from '../desktop/host';
+import { setHost } from './host';
 import { createBackend, type ChatBackend } from './backend';
 import {
   handleIpc,
@@ -143,6 +145,12 @@ net.setDefaultAutoSelectFamilyAttemptTimeout?.(1000);
 // "Electron" — that comes from the Electron.app bundle and only changes when
 // the app is packaged.
 app.setName('Stem');
+
+// Install the Electron half of the host shim before anything reads a
+// userData-derived path, forks a worker, or touches a secret. Everything the
+// server needs from its host now goes through this one seam (src/server/host);
+// headless it falls back to plain-Node defaults.
+setHost(electronHost());
 
 // Alternate profiles: `--fresh` / `--profile=<name>` (or STEM_FRESH=1 / STEM_PROFILE=<name>)
 // relocate ALL app state to an isolated userData dir under a sibling "Stem Profiles/"

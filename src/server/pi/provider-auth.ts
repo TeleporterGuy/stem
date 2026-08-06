@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { shell } from 'electron';
+import { host } from '../host';
 import type { AuthProviderId, ApiKeyProviderId, AuthUiEvent, LocalProviderId } from '../../shared/types';
 
 // In-app provider sign-in. pi's TUI is NOT required for login: since pi 0.80.8
@@ -90,7 +90,7 @@ export class ProviderAuth {
           },
           notify: (event) => {
             if (event.type === 'auth_url') {
-              void shell.openExternal(event.url);
+              host().openExternal(event.url);
               this.emit({ kind: 'auth-url', url: event.url, ...(event.instructions ? { instructions: event.instructions } : {}) });
             } else if (event.type === 'device_code') {
               // Same treatment as auth_url: the user should land on the page, not
@@ -99,7 +99,7 @@ export class ProviderAuth {
               // non-https URI before it reaches us, so opening it is no more
               // trusting than the redirect flow. The code still goes to the UI:
               // the page asks the user to confirm it matches.
-              void shell.openExternal(event.verificationUri);
+              host().openExternal(event.verificationUri);
               this.emit({ kind: 'device-code', userCode: event.userCode, verificationUri: event.verificationUri });
             } else {
               this.emit({ kind: 'progress', message: event.message });

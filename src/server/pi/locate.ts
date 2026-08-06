@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { access, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { host } from '../host';
 import { TESTED_PI_VERSION } from './protocol';
 
 // Resolve how to invoke the `pi` (pi.dev coding agent) backend.
@@ -53,10 +54,10 @@ export async function resolvePi(): Promise<PiInvocation | null> {
     // LaunchServices as a bouncing "Electron" Dock icon (see pi-node-shim.mjs).
     const shim = await locateNodeShim();
     return (cached = warnIfUntested({
-      command: process.execPath,
+      command: host().nodeSpawn().command,
       prefixArgs: [...(shim ? [shim] : []), bundled],
       // Per-child only — never set globally (it would break Electron child windows).
-      env: { ELECTRON_RUN_AS_NODE: '1' },
+      env: host().nodeSpawn().env,
       source: 'bundled',
       displayPath: bundled,
       version: await readBundledVersion(bundled)

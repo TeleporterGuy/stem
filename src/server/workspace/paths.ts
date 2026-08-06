@@ -1,4 +1,4 @@
-import { app } from 'electron';
+import { host } from '../host';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { PROTECTED_ROOTS_FILE } from '../pi/protocol';
@@ -8,7 +8,7 @@ import { PROTECTED_ROOTS_FILE } from '../pi/protocol';
 // backend in are both app-owned so no external skills/config can leak in.
 
 export function userDataRoot(): string {
-  return app.getPath('userData');
+  return host().stateRoot();
 }
 
 /** A resolved alternate profile: an isolated userData dir + a human label for it. */
@@ -30,7 +30,7 @@ export interface ProfileOverride {
 export function resolveProfileOverride(
   argv: string[] = process.argv,
   env: NodeJS.ProcessEnv = process.env,
-  appDataDir: string = app.getPath('appData'),
+  appDataDir: string = host().appDataRoot(),
   now: () => Date = () => new Date()
 ): ProfileOverride | null {
   const container = join(appDataDir, 'Stem Profiles');
