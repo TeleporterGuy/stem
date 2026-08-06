@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
-import { a, argsProblem, dispatchLocal, hasLocalHandler, registerServer } from '../../src/server/ipc';
+import { a, argsProblem, dispatchLocal, hasLocalHandler, registerServer, serverChannels } from '../../src/server/ipc';
 import { bindServerChannels, handleLocal, senderProblem } from '../../src/desktop/ipc-bridge';
 
-// The IPC guard, now split across the two sides: src/server/ipc/guard.ts holds the
+// The IPC guard, split across the two sides: src/server/ipc/guard.ts holds the
 // registry and the per-channel argument validation; src/desktop/ipc-bridge.ts holds
 // the trusted-sender check and the ipcMain binding. What the renderer sees has to
 // be identical either way, so these exercise the pair together.
+//
+// In the app, bindServerChannels(serverChannels(), dispatchLocal) is handed the channel list the proxy fetched
+// over GET /channels and an invoke that goes out over the wire. Here it is handed
+// the registry directly and dispatchLocal, which is the same pair with the socket
+// taken out — the socket itself is transport.test.ts's job.
 
 /** A minimal IpcMainInvokeEvent stand-in: one top-level frame at `url`. */
 function eventFrom(url: string) {
@@ -62,7 +67,7 @@ describe('exec channels', () => {
       got = args;
       return 'ok';
     });
-    bindServerChannels();
+    bindServerChannels(serverChannels(), dispatchLocal);
     await expect(ipcMain._invoke('exec:resolveApproval', trusted, 'ap-1', 'alwaysAllow')).resolves.toBe('ok');
     expect(got).toEqual(['ap-1', 'alwaysAllow']);
     expect(() => ipcMain._invoke('exec:resolveApproval', trusted, 'ap-1', 'yes'))
@@ -72,7 +77,7 @@ describe('exec channels', () => {
 
   it('settings:updateExec takes an object patch', async () => {
     registerServer('settings:updateExec', () => 'ok');
-    bindServerChannels();
+    bindServerChannels(serverChannels(), dispatchLocal);
     await expect(ipcMain._invoke('settings:updateExec', trusted, { enabled: false })).resolves.toBe('ok');
     expect(() => ipcMain._invoke('settings:updateExec', trusted, 'enabled')).toThrow(/an object/);
   });
@@ -85,7 +90,7 @@ describe('bindServerChannels', () => {
       ran += 1;
       return `${String(threadId)}:${String(name)}`;
     });
-    bindServerChannels();
+    bindServerChannels(serverChannels(), dispatchLocal);
 
     await expect(ipcMain._invoke('chats:rename', trusted, 't-1', 'New name')).resolves.toBe('t-1:New name');
     expect(ran).toBe(1);
@@ -97,7 +102,7 @@ describe('bindServerChannels', () => {
 
     // A channel with no spec entry takes no arguments at all.
     registerServer('runtime:status', () => 'ok');
-    bindServerChannels();
+    bindServerChannels(serverChannels(), dispatchLocal);
     await expect(ipcMain._invoke('runtime:status', trusted)).resolves.toBe('ok');
     expect(() => ipcMain._invoke('runtime:status', trusted, 'sneaky')).toThrow(/at most 0/);
   });

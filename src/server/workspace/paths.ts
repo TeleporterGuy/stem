@@ -202,6 +202,19 @@ export function settingsStorePath(): string {
 }
 
 /**
+ * Where this server can be reached: the loopback port it bound, written on every
+ * boot. The port is ephemeral by default, so a client that did not start the
+ * server itself has no other way to find it — this file is the discovery
+ * mechanism, and the device registry beside it is the credential.
+ *
+ * Not a secret (the token is what gates the socket), so it is written with
+ * ordinary permissions.
+ */
+export function serverEndpointPath(): string {
+  return process.env.STEM_SERVER_ENDPOINT_FILE ?? join(userDataRoot(), 'server.json');
+}
+
+/**
  * Every device allowed to talk to the transport, with its bearer token and role
  * (see server/transport/auth.ts). Written 0600. Deliberately NOT in settings.json
  * — settings are read and rewritten wholesale by several code paths and are not a

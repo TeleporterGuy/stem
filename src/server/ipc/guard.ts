@@ -14,8 +14,10 @@ import { log } from '../log';
 //
 // The Electron half of this — binding each registered channel to ipcMain and
 // checking that the sender really is one of our own renderer frames — lives in
-// src/desktop/ipc-bridge.ts. It has to: the server has no windows to trust, and
-// on a headless host there is no ipcMain to bind to.
+// src/desktop/ipc-bridge.ts, which learns the channel list from the server over
+// GET /channels rather than reading this map. It has to: the server has no
+// windows to trust, on a headless host there is no ipcMain to bind to, and the
+// desktop may not be in the same process as this file at all.
 
 export interface ArgSpec {
   label: string;
@@ -113,6 +115,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'folders:rename': [a.string, a.string],
   'folders:delete': [a.string],
   'folders:move': [a.string, a.nullish(a.string)],
+  'client:claimThread': [a.nullish(a.string)],
   'settings:updateQuickChat': [a.object],
   'settings:updateWebSearch': [a.object],
   'settings:updateEscapeAction': [a.oneOf(['off', 'single', 'twoStage'])],
@@ -147,11 +150,11 @@ export function argsProblem(specs: ArgSpec[], args: unknown[]): string | null {
 // ---- the registry ----
 //
 // Every caller reaches a handler the same way: through dispatchLocal, with no
-// event object. The phone bridge (server/transport) already did — it receives calls
-// over loopback HTTP, so there is no BrowserWindow, no frame, and nothing that
-// could be an Electron event — and the desktop now does too, via
-// src/desktop/ipc-bridge.ts. Rather than fork 110 handlers, one registry serves
-// both, through the SAME per-channel argument validation and the SAME handler.
+// event object. Every caller is now literally the same caller — the transport,
+// answering a POST /rpc over loopback — so there is no BrowserWindow, no frame,
+// and nothing that could be an Electron event, whether the request came from a
+// phone on the tailnet or from the Electron app in this very process. One
+// registry, the SAME per-channel argument validation, the SAME handler.
 //
 // Why passing no event is safe: no handler registered here reads its event
 // object — every call site ignores the first parameter. The parameter survives,

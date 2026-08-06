@@ -1,63 +1,62 @@
-// Pairing, against the real bridge state machine (src/server/startup/mobile.ts)
+// Pairing, against the real transport state machine (src/server/startup/transport.ts)
 // and the real settings store. What is under test here is the lifecycle rather
-// than the transport: that the bridge is genuinely off until the Settings toggle
-// says otherwise, that flipping it starts and stops a listening socket, and that
+// than the wire: that phones are genuinely off until the Settings toggle says
+// otherwise, that flipping it starts and stops a listening socket, and that
 // re-rolling the token revokes every paired phone at once.
+//
+// The toggle now means "may phones connect", not "is there a server" — the
+// primary listener the desktop uses is up either way — so several of these also
+// assert that the two are independent.
 //
 // The pairing URL matters as much as the socket. It is what a QR encodes, so it
 // has to be the address the phone can actually reach — which nothing on this Mac
 // can discover, hence the publicUrl setting and the `reachable` flag.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, rmSync } from 'node:fs';
 import { connect } from 'node:net';
 import { dirname } from 'node:path';
 import { readSettings, updateMobileSettings } from '../../src/server/workspace/settings';
 import { settingsStorePath } from '../../src/server/workspace/paths';
 import { forgetCachedDevices } from '../../src/server/transport/auth';
-import { registerServer } from '../../src/server/ipc';
 import {
-  closeMobileBridge,
-  clearMobileTurns,
-  initMobileBridge,
-  isMobileBridgeRunning,
+  closeTransport,
+  isPhoneBridgeRunning,
   mobilePairingInfo,
-  mobileTurnsInFlight,
-  noteMobileTurnEvent,
   rerollMobilePairing,
-  syncMobileBridge
-} from '../../src/server/startup/mobile';
+  startTransport,
+  syncPhoneAccess,
+  type TransportEndpoint
+} from '../../src/server/startup/transport';
 
 const settingsPath = settingsStorePath();
 /** A high port unlikely to clash; the settings store refuses anything under 1024. */
 const PORT = 28823;
 
-beforeEach(() => {
+/** The primary listener, brought up once — it is bound at boot and never rebound. */
+let endpoint: TransportEndpoint;
+
+beforeEach(async () => {
   mkdirSync(dirname(settingsPath), { recursive: true });
   rmSync(settingsPath, { force: true });
-  rmSync(process.env.STEM_MOBILE_TOKEN_FILE!, { force: true });
-  rmSync(process.env.STEM_DEVICES_FILE!, { force: true });
-  forgetCachedDevices();
-  initMobileBridge({ rendererDir: dirname(settingsPath), devUrl: null });
+  await syncPhoneAccess();
 });
 
 afterEach(async () => {
-  await closeMobileBridge();
   rmSync(settingsPath, { force: true });
+  await syncPhoneAccess();
 });
 
-interface Deferred {
-  promise: Promise<void>;
-  resolve: () => void;
-}
+beforeAll(async () => {
+  rmSync(process.env.STEM_MOBILE_TOKEN_FILE!, { force: true });
+  rmSync(process.env.STEM_DEVICES_FILE!, { force: true });
+  forgetCachedDevices();
+  endpoint = await startTransport({ rendererDir: dirname(settingsPath), devUrl: null });
+});
 
-function deferred(): Deferred {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
+afterAll(async () => {
+  await closeTransport();
+});
 
 /** Whether anything is accepting connections on the loopback port. */
 function portOpen(port: number): Promise<boolean> {
@@ -72,11 +71,12 @@ function portOpen(port: number): Promise<boolean> {
   });
 }
 
-describe('the bridge is off until asked', () => {
+describe('phones are off until asked', () => {
   it('defaults to disabled, and syncing does not open a socket', async () => {
     expect((await readSettings()).mobile).toEqual({ enabled: false, port: 8823, publicUrl: '' });
-    await syncMobileBridge();
-    expect(isMobileBridgeRunning()).toBe(false);
+    await syncPhoneAccess();
+    expect(isPhoneBridgeRunning()).toBe(false);
+    expect(await portOpen(8823)).toBe(false);
 
     const info = await mobilePairingInfo();
     expect(info.enabled).toBe(false);
@@ -84,28 +84,64 @@ describe('the bridge is off until asked', () => {
     // A token exists even while off, so the pairing panel can be opened first.
     expect(info.token).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  it('does not mean there is no server — the desktop is served either way', async () => {
+    // The whole reason the toggle stopped meaning "is there a server": the
+    // desktop's own listener is bound once at boot on its own ephemeral port and
+    // is never touched by this setting.
+    const port = Number(new URL(endpoint.url).port);
+    expect(await portOpen(port)).toBe(true);
+
+    await updateMobileSettings({ enabled: true, port: PORT });
+    await syncPhoneAccess();
+    expect(await portOpen(port)).toBe(true);
+    await updateMobileSettings({ enabled: false });
+    await syncPhoneAccess();
+    expect(await portOpen(port)).toBe(true);
+  });
+
+  it('refuses a phone token while the toggle is off, whatever it presents it to', async () => {
+    // Belt and braces to the unbound port: the role check is what actually
+    // decides, so a phone token reaching the desktop's own listener is refused
+    // there too — and refused identically to an unknown one.
+    const { token } = await mobilePairingInfo();
+    const call = (t: string) =>
+      fetch(`${endpoint.url}/rpc`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${t}` },
+        body: JSON.stringify({ channel: 'settings:get', args: [] })
+      });
+    expect((await call(token)).status).toBe(401);
+    expect((await call('b'.repeat(64))).status).toBe(401);
+
+    await updateMobileSettings({ enabled: true, port: PORT });
+    await syncPhoneAccess();
+    // Not 401: the gate passed. settings:get has no handler in this process, so
+    // dispatch is as far as it gets — which is all this needs to prove.
+    expect((await call(token)).status).not.toBe(401);
+  });
 });
 
 describe('the Settings toggle', () => {
   it('starts and stops a listening socket', async () => {
     await updateMobileSettings({ enabled: true, port: PORT });
-    await syncMobileBridge();
-    expect(isMobileBridgeRunning()).toBe(true);
+    await syncPhoneAccess();
+    expect(isPhoneBridgeRunning()).toBe(true);
     expect(await portOpen(PORT)).toBe(true);
     expect((await mobilePairingInfo()).running).toBe(true);
 
     await updateMobileSettings({ enabled: false });
-    await syncMobileBridge();
-    expect(isMobileBridgeRunning()).toBe(false);
+    await syncPhoneAccess();
+    expect(isPhoneBridgeRunning()).toBe(false);
     expect(await portOpen(PORT)).toBe(false);
     expect((await mobilePairingInfo()).running).toBe(false);
   });
 
   it('rebinds when the port changes', async () => {
     await updateMobileSettings({ enabled: true, port: PORT });
-    await syncMobileBridge();
+    await syncPhoneAccess();
     await updateMobileSettings({ port: PORT + 1 });
-    await syncMobileBridge();
+    await syncPhoneAccess();
 
     expect(await portOpen(PORT)).toBe(false);
     expect(await portOpen(PORT + 1)).toBe(true);
@@ -114,10 +150,10 @@ describe('the Settings toggle', () => {
 
   it('is idempotent — syncing twice neither restarts nor breaks the server', async () => {
     await updateMobileSettings({ enabled: true, port: PORT });
-    await syncMobileBridge();
+    await syncPhoneAccess();
     const first = await mobilePairingInfo();
-    await syncMobileBridge();
-    await syncMobileBridge();
+    await syncPhoneAccess();
+    await syncPhoneAccess();
     expect(await mobilePairingInfo()).toEqual(first);
     expect(await portOpen(PORT)).toBe(true);
   });
@@ -126,7 +162,7 @@ describe('the Settings toggle', () => {
 describe('the pairing URL', () => {
   it('falls back to loopback, and says it is not phone-reachable', async () => {
     await updateMobileSettings({ enabled: true, port: PORT });
-    await syncMobileBridge();
+    await syncPhoneAccess();
     const info = await mobilePairingInfo();
 
     expect(info.reachable).toBe(false);
@@ -136,7 +172,7 @@ describe('the pairing URL', () => {
 
   it('uses the tailnet address once the user supplies one', async () => {
     await updateMobileSettings({ enabled: true, port: PORT, publicUrl: 'https://mac.tailnet-name.ts.net' });
-    await syncMobileBridge();
+    await syncPhoneAccess();
     const info = await mobilePairingInfo();
 
     expect(info.reachable).toBe(true);
@@ -161,7 +197,7 @@ describe('the pairing URL', () => {
 
   it('carries the token in the fragment, never in the path or query', async () => {
     await updateMobileSettings({ enabled: true, port: PORT, publicUrl: 'https://mac.tailnet-name.ts.net' });
-    await syncMobileBridge();
+    await syncPhoneAccess();
     const info = await mobilePairingInfo();
     const url = new URL(info.url);
 
@@ -175,7 +211,7 @@ describe('the pairing URL', () => {
 describe('re-rolling the token', () => {
   it('mints a new token and un-pairs the old one immediately', async () => {
     await updateMobileSettings({ enabled: true, port: PORT });
-    await syncMobileBridge();
+    await syncPhoneAccess();
     const before = await mobilePairingInfo();
 
     const after = await rerollMobilePairing();
@@ -203,71 +239,5 @@ describe('re-rolling the token', () => {
     expect(after.token).not.toBe(before.token);
     expect(after.running).toBe(false);
     expect(await portOpen(PORT)).toBe(false);
-  });
-});
-
-// The busy mark the scheduler reads (mobileTurnsInFlight → busyWithin →
-// isUserActive). A phone turn is registered when startTurn's response comes back,
-// but the runtime can settle the turn before that — so the terminal event has to
-// be able to win, or a stranded mark defers every scheduled task for the life of
-// the backend.
-describe('phone turn bookkeeping', () => {
-  /** Set to hold the handler open, so a turn can settle mid-call. */
-  let block: { entered: Deferred; go: Deferred } | null = null;
-
-  registerServer('backend:startTurn', async () => {
-    if (block) {
-      block.entered.resolve();
-      await block.go.promise;
-    }
-    return { threadId: 'thread-1', turnId: 'turn-1' };
-  });
-
-  async function startTurnFromPhone(token: string): Promise<Response> {
-    return fetch(`http://127.0.0.1:${PORT}/rpc`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ channel: 'backend:startTurn', args: [{ input: 'hi' }] })
-    });
-  }
-
-  beforeEach(async () => {
-    clearMobileTurns();
-    block = null;
-    await updateMobileSettings({ enabled: true, port: PORT });
-    await syncMobileBridge();
-  });
-
-  it('marks the thread busy and clears it when the turn ends', async () => {
-    const { token } = await mobilePairingInfo();
-    expect((await startTurnFromPhone(token)).status).toBe(200);
-    expect(mobileTurnsInFlight()).toBe(1);
-
-    noteMobileTurnEvent('turn/completed', 'thread-1', 'turn-1');
-    expect(mobileTurnsInFlight()).toBe(0);
-  });
-
-  it('leaves no mark when the turn settles before the start call returns', async () => {
-    const { token } = await mobilePairingInfo();
-    // Hold the handler open so the terminal event can overtake its response.
-    block = { entered: deferred(), go: deferred() };
-    const pending = startTurnFromPhone(token);
-    await block.entered.promise;
-
-    noteMobileTurnEvent('turn/completed', 'thread-1', 'turn-1');
-    block.go.resolve();
-    expect((await pending).status).toBe(200);
-
-    // Before the fix the delete found nothing to remove and the late response
-    // added a mark no further event could clear.
-    expect(mobileTurnsInFlight()).toBe(0);
-  });
-
-  it('does not let one turn settling suppress the next turn on the same thread', async () => {
-    const { token } = await mobilePairingInfo();
-    noteMobileTurnEvent('turn/completed', 'thread-1', 'turn-0');
-    await startTurnFromPhone(token);
-    // turn-1 never settled, so its mark must stand despite thread-1 having.
-    expect(mobileTurnsInFlight()).toBe(1);
   });
 });

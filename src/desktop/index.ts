@@ -3,23 +3,28 @@ import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { electronHost } from './host';
 import { setHost } from '../server/host';
-import { startServer, type ClientBridge, type ServerHandle } from '../server';
-import { dispatchLocal } from '../server/ipc';
+import { startServer, type ServerHandle } from '../server';
 import { log } from '../server/log';
 import { resolveProfileOverride } from '../server/workspace/paths';
 import { bindServerChannels } from './ipc-bridge';
 import { registerLocalIpc } from './local';
 import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, requestAttention } from './platform';
+import { createServerProxy, EXTERNAL_SERVER_URL, type ServerProxy } from './proxy';
+import { readServerCredentials } from './server-endpoint';
 import { createQuickChat } from './quickchat';
 import { loadRenderer, PRELOAD_SCRIPT, RENDERER_DIR } from './renderer-assets';
 import { initTray } from './tray';
 import { RendererPushQueue } from './ui-lifecycle';
 import type { AppSettings } from '../shared/types';
 
-// The Electron main process: windows, tray, the global shortcut, app lifecycle,
-// and the fan-out of everything the server pushes to the three renderer surfaces.
-// It owns nothing about chats, memory, skills or settings — it starts a server
-// (src/server) and talks to it.
+// The Electron main process: windows, tray, the global shortcut, and app
+// lifecycle. It owns nothing about chats, memory, skills or settings — it starts
+// a server (src/server) and then talks to it over HTTP/SSE like any other client,
+// through src/desktop/proxy.ts.
+//
+// Unless STEM_SERVER_URL says otherwise, in which case it starts nothing and
+// connects to whatever is already running there. That the two cases differ by one
+// `if` is the whole point of the split; everything past this file is identical.
 //
 // The dependency runs one way only. This file imports the server; nothing under
 // src/server imports anything here. That rule is what makes a headless
@@ -259,6 +264,12 @@ const quickChat = createQuickChat({
   sendToMain,
   revealMainWindow,
   installNavigationGuards,
+  // Late-bound: the proxy only exists once the server (embedded or external) has
+  // answered, and Quick Chat is created before any of that.
+  invoke: (channel, args) => proxy!.invoke(channel, args),
+  claimThread: (threadId) => {
+    void proxy?.invoke('client:claimThread', [threadId]).catch(() => undefined);
+  },
   beginSummon: () => {
     // Cleared on the next tick, after the activation has been handled.
     summoningOverlay = true;
@@ -267,54 +278,6 @@ const quickChat = createQuickChat({
     });
   }
 });
-
-// ---- server → client push ----
-//
-// Every push the server makes arrives here, and this table is the fan-out: which
-// of the desktop's three windows a channel is for. In step 4 the same table sits
-// behind an SSE subscription instead of a direct call; nothing else about it
-// changes, which is why it is a table and not scattered `webContents.send` calls.
-function emitToClient(channel: string, payload: unknown): void {
-  switch (channel) {
-    // Approval cards: both surfaces mount them, and the overlay hides itself
-    // while a turn runs — bring it back when the request belongs to its thread,
-    // or mounting the card would not actually make the confirmation visible.
-    case 'exec:approvalRequest':
-    case 'mcp:adminApproval':
-    case 'instructions:approvalRequest':
-    case 'skills:approvalRequest':
-      quickChat.revealIfOwns((payload as { threadId?: string } | undefined)?.threadId);
-      sendToMain(channel, payload);
-      quickChat.sendToOverlay(channel, payload);
-      return;
-    // Resolutions and catalog/status changes: rendered by both surfaces, and
-    // harmlessly ignored by whichever one has no listener mounted.
-    case 'exec:approvalResolved':
-    case 'mcp:adminApprovalResolved':
-    case 'instructions:approvalResolved':
-    case 'skills:approvalResolved':
-    case 'mcp:changed':
-    case 'mcp:status':
-    case 'skills:changed':
-      sendToMain(channel, payload);
-      quickChat.sendToOverlay(channel, payload);
-      return;
-    default:
-      // Everything else is main-window furniture: sign-in progress, the task
-      // feed and its alerts, background-activity and model-download status.
-      sendToMain(channel, payload);
-  }
-}
-
-const clientBridge: ClientBridge = {
-  emit: emitToClient,
-  routeBackendEvent: (event) => quickChat.routeBackendEvent(event),
-  threadOpened: (threadId) => quickChat.threadOpened(threadId),
-  applyQuickChatSettings: (patch, next) => quickChat.applySettings(patch, next),
-  hasLiveTurn: () => quickChat.hasLiveTurn(),
-  revealMainWindow,
-  requestAttention: () => requestAttention(mainWindow)
-};
 
 // Last-resort diagnostics: an uncaught throw or rejection otherwise vanishes with
 // the console. Log-and-continue — Electron's default for unhandledRejection is a
@@ -330,6 +293,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 let server: ServerHandle | null = null;
+let proxy: ServerProxy | null = null;
 
 app.whenReady().then(async () => {
   // Strict CSP for the renderer in production: only self, no remote/inline
@@ -350,18 +314,42 @@ app.whenReady().then(async () => {
     app.dock?.setIcon(appIcon);
   }
 
-  server = await startServer({
-    client: clientBridge,
-    alternateProfile: !!profileOverride,
-    // Serving the phone's bundle out of the same place the desktop renderer is
-    // loaded from keeps the two builds together.
-    rendererDir: RENDERER_DIR,
-    devUrl: process.env.ELECTRON_RENDERER_URL ?? null
-  });
+  // Embedded by default: the server runs in this process, on its own loopback
+  // socket, and we are its first client. STEM_SERVER_URL points at one that is
+  // already running instead, and then we start nothing — same client code from
+  // the next line on, one fewer process to own.
+  let endpoint;
+  if (EXTERNAL_SERVER_URL) {
+    endpoint = await readServerCredentials(EXTERNAL_SERVER_URL);
+  } else {
+    server = await startServer({
+      alternateProfile: !!profileOverride,
+      // Serving the phone's bundle out of the same place the desktop renderer is
+      // loaded from keeps the two builds together.
+      rendererDir: RENDERER_DIR,
+      devUrl: process.env.ELECTRON_RENDERER_URL ?? null
+    });
+    endpoint = server.endpoint;
+  }
 
-  // Everything the renderer can invoke, bound to ipcMain: the server's whole
-  // registry plus this machine's own handlers. Before any window exists, so no
-  // renderer can race a missing channel.
+  proxy = createServerProxy({
+    ...endpoint,
+    sendToMain,
+    sendToOverlay: (channel, payload) => quickChat.sendToOverlay(channel, payload),
+    revealIfOwns: (threadId) => quickChat.revealIfOwns(threadId),
+    routeBackendEvent: (event) => void quickChat.routeBackendEvent(event),
+    revealMainWindow,
+    requestAttention: () => requestAttention(mainWindow),
+    threadOpened: (threadId) => quickChat.threadOpened(threadId),
+    applyQuickChatSettings: (patch, next) => quickChat.applySettings(patch, next)
+  });
+  // Subscribe before any window exists, so nothing the server pushes during
+  // bootstrap falls on the floor — there is no replay to recover it with.
+  const channels = await proxy.start();
+
+  // Everything the renderer can invoke, bound to ipcMain: every channel the
+  // server says it answers, plus this machine's own handlers. Before any window
+  // exists, so no renderer can race a missing channel.
   registerLocalIpc({ mainWindow: () => mainWindow });
   quickChat.registerIpc();
   ipcMain.on('renderer:ready', (event) => {
@@ -369,7 +357,7 @@ app.whenReady().then(async () => {
     if (!win || win.isDestroyed() || event.sender !== win.webContents) return;
     for (const { channel, payload } of mainPushQueue.markReady()) win.webContents.send(channel, payload);
   });
-  bindServerChannels();
+  bindServerChannels(channels, (channel, args) => proxy!.invoke(channel, args));
 
   // A cold `stem --quick-chat` must land on the overlay, not the main window:
   // that command IS the shortcut on Wayland (see the second-instance handler),
@@ -381,11 +369,14 @@ app.whenReady().then(async () => {
   // doesn't pay backend cold-start. did-finish-load keeps the spawn + MCP child
   // processes off the first-paint path. Fire-and-forget; races harmlessly with the
   // renderer's listModels warm.
+  // Only for a server we started: an external one warms itself when it feels
+  // like it, and there is no channel to ask (prewarm is a lever for a host, not
+  // something an authenticated client should be able to trigger).
   mainWindow?.webContents.once('did-finish-load', () => {
     void server?.prewarm();
   });
 
-  const settings = (await dispatchLocal('settings:get', [])) as AppSettings;
+  const settings = (await proxy.invoke('settings:get', [])) as AppSettings;
   quickChat.start(settings.quickChat);
   windowsReady = true;
   if (coldSummon) quickChat.toggle();
@@ -416,7 +407,10 @@ app.whenReady().then(async () => {
 // own SIGKILL backstop).
 let quitting = false;
 app.on('before-quit', (event) => {
-  if (quitting || !server) return;
+  if (quitting) return;
+  proxy?.close();
+  // Nothing to drain when the server is somebody else's process.
+  if (!server) return;
   event.preventDefault();
   quitting = true;
   server.shutdown().finally(() => app.exit(0));

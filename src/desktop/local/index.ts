@@ -11,10 +11,12 @@ import { workspaceRoot } from '../../server/workspace/paths';
 // ipc/workspace.ts and files/store.ts; the split is what separated them.
 //
 // Two of them reveal a path the SERVER knows: cfolders:reveal and
-// cfolders:revealWorkspace. The shape that survives the move is "ask the server
-// where, open it here" — today a direct call, an RPC once there is a transport.
-// That it is meaningless when the server is on another machine is a known gap
-// (Phase 2), not an accident of this refactor.
+// cfolders:revealWorkspace. They resolve it by calling into the server's path
+// helpers directly rather than over the transport, because the answer is only
+// ever useful when both halves share a filesystem — which is exactly the case
+// where the direct call is correct. That the whole handler is meaningless when
+// the server is on another machine is a known gap (Phase 2), not an accident of
+// this refactor; an RPC here would move the gap, not close it.
 
 export interface LocalIpcDeps {
   /** Picker parent. Null only if the main window was closed mid-flight. */

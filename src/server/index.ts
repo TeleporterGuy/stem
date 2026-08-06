@@ -20,16 +20,10 @@ import { initTaskScheduler } from './startup/scheduler';
 import type { ExecService } from './exec/service';
 import { initExecService } from './startup/exec';
 import { initSkills } from './startup/skills';
-import {
-  clearMobileTurns,
-  closeMobileBridge,
-  initMobileBridge,
-  mobileTurnsInFlight,
-  noteMobileTurnEvent,
-  pushToMobile,
-  syncMobileBridge
-} from './startup/mobile';
+import { closeTransport, pushToClients, startTransport, type TransportEndpoint } from './startup/transport';
+import type { DeviceRole } from './transport/roles';
 import { setActivityEmitter } from './activity';
+import { liveTurnCount, noteTurnEvent } from './live-turns';
 import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
 import { ensureUsageTracking } from './skills/usage';
@@ -62,7 +56,6 @@ import {
 import { markReleaseNotesRead, releaseNotesSnapshot } from './workspace/release-notes';
 import { needsBackendRestart, needsWebSearchConfigWrite, writeWebSearchConfig } from './pi/web-search';
 import type {
-  BackendEventEnvelope,
   CustomInstructionsSettings,
   EscapeAction,
   ExecDecision,
@@ -86,9 +79,12 @@ import type {
 // Recall's background passes, folder indexing, the ~110 channel handlers, and the
 // one tap on the backend's event stream that feeds all of them.
 //
-// It imports no client code and must never import Electron. A client — today the
-// Electron app in src/desktop, tomorrow anything that can reach a socket — hands
-// it a ClientBridge and gets a ServerHandle back.
+// It imports no client code and must never import Electron. startServer() brings
+// the transport up with everything else and hands back the URL and bearer token a
+// client needs; from there the relationship is entirely a socket. There is no
+// direct call path left between the two halves, in either direction — which is
+// the property that makes `stem-server` on another machine a deployment question
+// rather than a code question.
 
 // Prefer IPv4 for all of the server's outbound networking. auth.openai.com (and
 // other OAuth token endpoints) are dual-stack, but many networks have no working
@@ -102,49 +98,7 @@ dns.setDefaultResultOrder?.('ipv4first');
 net.setDefaultAutoSelectFamily?.(true);
 net.setDefaultAutoSelectFamilyAttemptTimeout?.(1000);
 
-/**
- * What the server needs from whoever is showing it to a human. Every entry is
- * here because it is a fact about the CLIENT's machine or windows, which a server
- * cannot know — and each one is a place step 4 has to answer over a wire:
- * `emit` becomes the SSE broadcast, and the rest become client-side decisions the
- * server stops making.
- */
-export interface ClientBridge {
-  /** Push on a client channel. The one server → client path; step 4's SSE stream. */
-  emit(channel: string, payload: unknown): void;
-  /**
-   * Hand a backend thread event to the client's own surfaces. Returns true when
-   * one of them claimed it exclusively — on the desktop, the Quick Chat overlay's
-   * live thread or a hand-off still buffering. Those are deliberately not
-   * mirrored to the phone: a conversation happening at the desk would build the
-   * same phantom user-less slice on a phone that it would in the main window.
-   */
-  routeBackendEvent(event: BackendEventEnvelope): boolean;
-  /**
-   * A thread is being opened. The desktop uses this to complete an implicit Quick
-   * Chat hand-off before the read, and its throws reach the caller unchanged.
-   */
-  threadOpened(threadId: string): Promise<void>;
-  /**
-   * Quick Chat settings were persisted: apply the parts that are not settings at
-   * all — the global accelerator grab, the overlay's all-Spaces flag, the pill's
-   * cached preferences.
-   */
-  applyQuickChatSettings(patch: Partial<QuickChatSettings>, next: QuickChatSettings): void;
-  /**
-   * Is a turn streaming on one of the client's own surfaces? Feeds the
-   * defer/preempt signal below; the server sees the events but not which window
-   * (if any) is still showing them.
-   */
-  hasLiveTurn(): boolean;
-  /** Raise + focus the main window (notify_user prominence). */
-  revealMainWindow(): void;
-  /** OS-level attention nudge (dock bounce / taskbar flash). */
-  requestAttention(): void;
-}
-
 export interface ServerOptions {
-  client: ClientBridge;
   /**
    * True when the app was launched into an alternate profile (--fresh /
    * --profile). Such a profile must land in the onboarding wizard unauthenticated,
@@ -158,6 +112,8 @@ export interface ServerOptions {
 }
 
 export interface ServerHandle {
+  /** Where clients reach this server, and the bearer token for the desktop role. */
+  endpoint: TransportEndpoint;
   /**
    * Spawn pi + connect MCP now rather than on the first prompt, and start the
    * scheduler if we are signed in. Fire-and-forget: the client calls it once the
@@ -175,7 +131,6 @@ export interface ServerHandle {
 // probes, browser OAuth, and the embedding worker (model downloads).
 const E2E = !!process.env.STEM_E2E;
 
-let client: ClientBridge;
 let runtime: ChatBackend | null = null;
 let execService: ExecService | null = null;
 /** Scheduled-tasks engine (cron/once → autonomous turns). Created in startServer. */
@@ -199,13 +154,28 @@ let scheduleFolderIndexScan: (delayMs?: number) => void = () => {};
 let scheduleFolderLearn: (delayMs?: number) => void = () => {};
 
 /**
- * Send to every phone connected to the bridge (see startup/mobile.ts). A no-op
- * when the bridge is off or nothing is connected, and silently dropped for any
- * channel not on the mobile push allowlist.
+ * The one server → client path (see startup/transport.ts). Every connected client
+ * gets it, filtered by what its role is allowed to receive — so a channel the
+ * phone has no business seeing is dropped for the phone and delivered to the
+ * desktop from this single call, with no per-audience bookkeeping here.
+ *
+ * A no-op when nothing is connected. Events are not buffered or replayed: a
+ * client that was away resyncs by asking (decision 6 in the Phase 1 plan), and
+ * the monotonic id on every frame is what a Phase 2 replay buffer will key off.
  */
-function sendToMobile(channel: string, payload: unknown): void {
-  pushToMobile(channel, payload);
+function emit(channel: string, payload: unknown, roles?: readonly DeviceRole[]): void {
+  pushToClients(channel, payload, roles);
 }
+
+/**
+ * The thread a client's own surface is presenting exclusively, or null. Today
+ * that is only ever the Quick Chat overlay: while it owns a conversation, that
+ * conversation's events belong to the desk and must NOT be mirrored to a phone,
+ * which would otherwise build the same phantom user-less slice the main window
+ * would. Ownership is client state, so the client publishes it here rather than
+ * the server asking — see `client:claimThread`.
+ */
+let claimedThread: string | null = null;
 
 /** Pick a sensible app default from the models the signed-in providers expose. */
 function chooseDefaultModel(models: ModelSummary[]): string | null {
@@ -292,7 +262,7 @@ function registerIpc(): void {
     scheduler: () => scheduler,
     providerAuth: () => providerAuth,
     embedManager: () => embedManager,
-    emit: (channel, payload) => client.emit(channel, payload),
+    emit,
     onAuthenticated,
     scheduleMemoryRebuild: () => scheduleMemoryRebuild(),
     scheduleFolderIndexScan: (delayMs) => scheduleFolderIndexScan(delayMs),
@@ -351,11 +321,12 @@ function registerIpc(): void {
   });
 
   registerServer('chats:open', async (_e, threadId: string) => {
-    // Opening a thread the client's own overlay is showing is an implicit
-    // hand-off, and it has to complete BEFORE the read — otherwise the two views
-    // diverge. The client owns that transition (and may refuse the open by
-    // throwing from it); the server only knows it must not race it.
-    await client.threadOpened(threadId);
+    // Nothing here about the Quick Chat hand-off. Opening a thread the overlay is
+    // showing is an implicit hand-off, but that transition is entirely client
+    // state, so the client runs it BEFORE forwarding the open — see the wrapped
+    // channels in desktop/proxy.ts. A client that refuses the transition never
+    // sends the call at all, which is how its throw still reaches the renderer.
+    //
     // Read is a local file read and isn't gated, so the open returns immediately.
     // Pre-warm pi (switch_session) in the background — it's redundant for
     // correctness since startTurn calls ensureActive itself, but it makes the
@@ -366,15 +337,25 @@ function registerIpc(): void {
     return { threadId, title, messages };
   });
 
+  // The one channel that exists purely so a client can tell the server something
+  // about ITSELF. A desktop surface (today only the Quick Chat overlay) presents
+  // one thread exclusively; while it does, that thread's events must not be
+  // mirrored to any other device. Ownership is client state and cannot be
+  // inferred here, so the client publishes it — idempotently, and null to release.
+  // Absent from the phone allowlist: a phone has no exclusive surface to claim.
+  registerServer('client:claimThread', (_e, threadId: string | null) => {
+    claimedThread = threadId ?? null;
+  });
+
   // ---- settings ----
   registerServer('settings:get', () => readSettings());
   registerServer('settings:updateQuickChat', async (_e, patch: Partial<QuickChatSettings>) => {
-    const next = await updateQuickChat(patch);
-    // Persisting is only half of it: the global accelerator, the overlay's
-    // all-Spaces flag and the pill's cached preferences all live on the client,
-    // which applies them the moment the write lands.
-    client.applyQuickChatSettings(patch, next.quickChat);
-    return next;
+    // Persisting is all this side does. The global accelerator, the overlay's
+    // all-Spaces flag and the pill's cached preferences are not settings at all
+    // once they leave the file — they are grabs on somebody's machine — so the
+    // client applies them the moment this returns (a wrapped channel, see
+    // desktop/proxy.ts).
+    return updateQuickChat(patch);
   });
   registerServer('settings:updateWebSearch', async (_e, patch: Partial<WebSearchSettings>) => {
     const next = await updateWebSearch(patch);
@@ -532,8 +513,6 @@ function registerIpc(): void {
  * awaited here.
  */
 export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
-  client = opts.client;
-
   await ensureWorkspace();
   // Publish the read-only connected-folder roots so the backend extension enforces
   // them from the first turn (also rewritten on every Folders-tab mutation).
@@ -545,22 +524,25 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
 
   // In-app provider sign-in for the onboarding wizard. Writes the same isolated
   // auth.json the pi subprocess reads; progress is pushed to the client.
-  providerAuth = new ProviderAuth(join(piHome(), 'auth.json'), (event) => client.emit('auth:event', event));
+  providerAuth = new ProviderAuth(join(piHome(), 'auth.json'), (event) => emit('auth:event', event));
 
-  // True while a turn runs on any surface — the client's windows, or a phone on
-  // the bridge — or the user interacted within `idleMs`. Drives the scheduler's
-  // defer/preempt signal and lets the recall background passes yield to
-  // interactive work. The phone counts even though nobody is at the Mac: a live
-  // conversation is a live conversation.
+  // True while a turn runs on any surface — a desktop window, a phone — or the
+  // user interacted within `idleMs`. Drives the scheduler's defer/preempt signal
+  // and lets the recall background passes yield to interactive work. A phone
+  // counts even though nobody is at the Mac: a live conversation is a live
+  // conversation.
   const busyWithin = (idleMs: number): boolean =>
-    client.hasLiveTurn() || mobileTurnsInFlight() > 0 || Date.now() - lastInteractiveAt < idleMs;
+    liveTurnCount() > 0 || Date.now() - lastInteractiveAt < idleMs;
 
   scheduler = initTaskScheduler({
     runtime,
-    emit: (channel, payload) => client.emit(channel, payload),
+    emit,
     isUserActive: () => busyWithin(USER_ACTIVE_WINDOW_MS),
-    revealMainWindow: () => client.revealMainWindow(),
-    requestAttention: () => client.requestAttention()
+    // Raising a window and bouncing a dock are things only a machine with a
+    // screen can do, so they leave as pushes rather than calls. Desktop-only by
+    // construction: neither channel is on the phone's push allowlist.
+    revealMainWindow: () => emit('client:revealMainWindow', null),
+    requestAttention: () => emit('client:requestAttention', null)
   });
 
   // Command execution (the run_command tool): the ExecService owns the tiered
@@ -570,12 +552,10 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   execService = initExecService({
     runtime,
     emitApprovalRequest: (request) => {
-      client.emit('exec:approvalRequest', request);
-      sendToMobile('exec:approvalRequest', request);
+      emit('exec:approvalRequest', request);
     },
     emitApprovalResolved: (id) => {
-      client.emit('exec:approvalResolved', { id });
-      sendToMobile('exec:approvalResolved', { id });
+      emit('exec:approvalResolved', { id });
     }
   });
 
@@ -588,20 +568,20 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     busyWithin,
     onChanged: () => {
       void runtime?.requestSkillReload();
-      client.emit('skills:changed', undefined);
+      emit('skills:changed', undefined);
     }
   });
 
   // Background-activity feed for the toolbar indicator. Wired before the passes
   // below start reporting.
-  setActivityEmitter((snapshot) => client.emit('activity:changed', snapshot));
+  setActivityEmitter((snapshot) => emit('activity:changed', snapshot));
 
   // Stem Recall relevance ranking + background workers: embed/scan utility
   // processes, retrieval clients (settings-mode routed), and the MCP embed
   // endpoint. See startup/retrieval.ts.
   const retrieval = initRetrieval({
     e2e: E2E,
-    emit: (channel, payload) => client.emit(channel, payload)
+    emit
   });
   embedManager = retrieval.embedManager;
   scanManager = retrieval.scanManager;
@@ -617,7 +597,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   const recallTasks = initRecallTasks({
     runtime: () => runtime!,
     busyWithin,
-    emit: (channel, payload) => client.emit(channel, payload)
+    emit
   });
   scheduleMemoryRebuild = recallTasks.scheduleMemoryRebuild;
   const { scheduleDistill, scheduleEpisodicEmbed } = recallTasks;
@@ -636,64 +616,53 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     // Stem-internal MCP self-management signals: deliver on their own channels
     // (never as a backend thread event, and never captured into recall).
     if (event.method === 'mcp/admin/approvalRequest') {
-      client.emit('mcp:adminApproval', event.params);
-      sendToMobile('mcp:adminApproval', event.params);
+      emit('mcp:adminApproval', event.params);
       return;
     }
     if (event.method === 'mcp/admin/approvalResolved') {
-      client.emit('mcp:adminApprovalResolved', event.params);
-      sendToMobile('mcp:adminApprovalResolved', event.params);
+      emit('mcp:adminApprovalResolved', event.params);
       return;
     }
     if (event.method === 'instructions/approvalRequest') {
-      client.emit('instructions:approvalRequest', event.params);
-      sendToMobile('instructions:approvalRequest', event.params);
+      emit('instructions:approvalRequest', event.params);
       return;
     }
     if (event.method === 'skills/approvalRequest') {
-      client.emit('skills:approvalRequest', event.params);
-      sendToMobile('skills:approvalRequest', event.params);
+      emit('skills:approvalRequest', event.params);
       return;
     }
     if (event.method === 'skills/approvalResolved') {
-      client.emit('skills:approvalResolved', event.params);
-      sendToMobile('skills:approvalResolved', event.params);
+      emit('skills:approvalResolved', event.params);
       return;
     }
     if (event.method === 'instructions/approvalResolved') {
-      client.emit('instructions:approvalResolved', event.params);
-      sendToMobile('instructions:approvalResolved', event.params);
+      emit('instructions:approvalResolved', event.params);
       return;
     }
     if (event.method === 'mcp/changed') {
-      client.emit('mcp:changed', undefined);
+      emit('mcp:changed', undefined);
       return;
     }
     if (event.method === 'skills/changed') {
-      client.emit('skills:changed', undefined);
+      emit('skills:changed', undefined);
       return;
     }
     if (event.method === 'mcp/status') {
-      client.emit('mcp:status', event.params);
-      sendToMobile('mcp:status', event.params);
+      emit('mcp:status', event.params);
       return;
     }
     const threadId = (event.params as { threadId?: string } | undefined)?.threadId;
     // Hidden internal threads (distillation) are neither shown nor captured.
     if (threadId && runtime!.isInternalThread(threadId)) return;
-    // The client gets first refusal: a surface only it knows about (the Quick Chat
-    // overlay, a hand-off mid-flight) can claim the event exclusively, and the
-    // phone must not mirror one of those — see ClientBridge.routeBackendEvent.
-    if (!client.routeBackendEvent(event)) {
-      // The phone needs process-level events (no threadId) too, or a backend crash
-      // leaves it streaming forever with no way to learn the turn is never coming.
-      // Any other thread is one the phone may be showing: it filters by threadId
-      // itself, exactly as the main window does — the bridge doesn't track which
-      // thread is open.
-      sendToMobile('backend:event', event);
-      if (!threadId) clearMobileTurns();
-      else noteMobileTurnEvent(event.method, threadId, (event.params as { turn?: { id?: string } } | undefined)?.turn?.id);
-    }
+    noteTurnEvent(event.method, threadId);
+    // Out to every client. A thread the desk has claimed goes to the desktop
+    // only; everything else goes to whoever is connected, each client filtering
+    // by threadId itself exactly as the main window always did — the server does
+    // not track which thread anyone has open. Process-level events (no threadId)
+    // reach everybody unconditionally, or a backend crash would leave a phone
+    // streaming forever with no way to learn the turn is never coming.
+    const claimed = !!threadId && threadId === claimedThread;
+    emit('backend:event', event, claimed ? ['desktop'] : undefined);
     if (isRecallEnabled()) {
       // Skip capture when the turn read inside a memorize:false connected folder, so
       // its (potentially confidential) reply never enters Recall. scheduleDistill still
@@ -724,12 +693,13 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   setTimeout(() => void backfillChatIndex(runtime!), 8_000);
 
   registerIpc();
-  // The phone bridge dispatches into the handlers registerIpc just installed, so
-  // it can only be wired after it.
-  initMobileBridge({ rendererDir: opts.rendererDir, devUrl: opts.devUrl });
-  void syncMobileBridge();
+  // Last: the transport dispatches into the handlers registerIpc just installed
+  // and answers GET /channels out of the same registry, so anything registered
+  // after this point would be invisible to every client.
+  const endpoint = await startTransport({ rendererDir: opts.rendererDir, devUrl: opts.devUrl });
 
   return {
+    endpoint,
     async prewarm() {
       // Skipped when not signed in (status() is cheap and never spawns). Under
       // STEM_E2E the fake backend reports authenticated (unless the onboarding
@@ -761,7 +731,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       closeFolderIndexes();
       // Destroys any open SSE stream before closing the listener — without that,
       // close() waits for a connection that by design never ends.
-      void closeMobileBridge();
+      void closeTransport();
       return runtime!.shutdown();
     }
   };

@@ -1,13 +1,5 @@
 import { ipcMain, type IpcMainInvokeEvent } from 'electron';
-import {
-  a,
-  argsProblem,
-  dispatchLocal,
-  ipcArgSpecs,
-  serverChannels,
-  type ArgSpec,
-  type NoCallerEvent
-} from '../server/ipc';
+import { a, argsProblem, ipcArgSpecs, type ArgSpec, type NoCallerEvent } from '../server/ipc';
 import { log } from '../server/log';
 
 // The Electron half of the IPC guard (the other half is src/server/ipc/guard.ts).
@@ -20,8 +12,8 @@ import { log } from '../server/log';
 // Channels come from two places, and the difference is the whole point:
 //
 //  SERVER-OWNED (~110 channels) — the server's registry IS the desktop's surface.
-//    We bind whatever it registered and route the call straight through
-//    dispatchLocal. No allowlist: a channel the server answers is a channel this
+//    We bind whatever it says it registered (GET /channels) and forward the call
+//    over the wire. No allowlist: a channel the server answers is a channel this
 //    machine's user may call. (The phone is different — see transport/roles.ts.)
 //
 //  CLIENT-OWNED (the table below) — channels the desktop answers itself because
@@ -99,16 +91,22 @@ export function handleLocal(
 }
 
 /**
- * Expose every channel the server has registered to the renderer. Call once,
- * after the server's bootstrap — the registry is the surface, so anything
- * registered later would silently not be reachable from a window.
+ * Expose the channels the server told us it answers, forwarding each one over the
+ * transport. Call once, with the list the proxy fetched at connect time — the
+ * registry is the surface, so anything registered later would silently not be
+ * reachable from a window.
  *
- * dispatchLocal re-validates the arguments it was just handed. That is deliberate
- * and not free-standing waste: it is the check the phone bridge relies on, and it
- * must not be skippable by whoever happens to call in.
+ * The arguments are validated twice, here and again on the far side, and neither
+ * check is waste. This one is what makes a bad call read `Rejected IPC call to X:
+ * …` in the renderer, exactly as it did before there was a wire; the server's is
+ * the check every OTHER client relies on, and must not be skippable by whoever
+ * happens to call in.
  */
-export function bindServerChannels(): void {
-  for (const channel of serverChannels()) {
-    bind(channel, ipcArgSpecs(channel), (args) => dispatchLocal(channel, args));
+export function bindServerChannels(
+  channels: readonly string[],
+  invoke: (channel: string, args: unknown[]) => Promise<unknown>
+): void {
+  for (const channel of channels) {
+    bind(channel, ipcArgSpecs(channel), (args) => invoke(channel, args));
   }
 }

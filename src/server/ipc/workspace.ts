@@ -14,7 +14,7 @@ import { readSettings, updateMobileSettings, updateSkillsSettings } from '../wor
 import { resetSkills, skillsResetStatus } from '../skills/reset';
 import { learnFromLastTurn } from '../startup/skills';
 import { curateSkills } from '../skills/curate';
-import { mobilePairingInfo, rerollMobilePairing, syncMobileBridge } from '../startup/mobile';
+import { mobilePairingInfo, rerollMobilePairing, syncPhoneAccess } from '../startup/transport';
 import type { LlmClient } from '../recall/llm';
 import type { ApprovalId } from '../backend/types';
 import type { ConnectedFolderPatch, MobileSettings, ScheduledTask, SkillsMode, TaskSchedulePatch } from '../../shared/types';
@@ -125,16 +125,18 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     return scheduler ? scheduler.updateSchedule(id, patch.schedule) : [];
   });
 
-  // ---- the phone bridge (see startup/mobile.ts) ----
+  // ---- the phone bridge (see startup/transport.ts) ----
   // Deliberately NOT reachable from the phone itself: settings:updateMobile is
   // absent from the mobile allowlist, so a phone can never turn the bridge off
   // (or move it) from under the user.
   registerServer('settings:updateMobile', async (_e, patch: Partial<MobileSettings>) => {
     const next = await updateMobileSettings(patch);
-    // Apply now rather than at next launch: enabling starts the loopback server,
-    // disabling stops it, a port change rebinds. Never throws — a port that
-    // won't bind is logged and reported as `running: false` by mobile:pairingInfo.
-    await syncMobileBridge();
+    // Apply now rather than at next launch: enabling starts accepting phone
+    // tokens and binds the tailnet-facing port, disabling stops both, a port
+    // change rebinds. Never throws — a port that won't bind is logged and
+    // reported as `running: false` by mobile:pairingInfo. The desktop's own
+    // connection is on a different listener and is never disturbed by this.
+    await syncPhoneAccess();
     return next;
   });
   // The QR's contents: the URL to open plus the bearer token. Never pushed

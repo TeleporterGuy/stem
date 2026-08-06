@@ -1,5 +1,4 @@
 import { globalShortcut, ipcMain, type BrowserWindow } from 'electron';
-import { dispatchLocal } from '../../server/ipc';
 import { log } from '../../server/log';
 import { handleLocal } from '../ipc-bridge';
 import {
@@ -47,6 +46,14 @@ import type {
 // `surface: 'quickChat'`), with the window choreography wrapped around them. The
 // preload still exposes it on the same `quickchat:run` IPC channel, so the
 // renderer cannot tell the difference — which is the point.
+//
+// One piece of this state does leave the machine, and only one: which thread the
+// overlay owns. The server needs it to decide whether a turn's events may be
+// mirrored to a phone — a conversation happening at the desk would build the same
+// phantom user-less slice on a phone that it would in the main window — and it
+// cannot infer it. publishClaim() sends it, idempotently, wherever ownership can
+// change; a lost or late claim costs a phone a few events it should not have
+// seen, never correctness at the desk.
 
 export interface QuickChatDeps {
   /** The live main window, or null while it is closed. */
@@ -57,6 +64,13 @@ export interface QuickChatDeps {
   revealMainWindow(): void;
   /** Deny in-app navigation and route external links to the system browser. */
   installNavigationGuards(win: BrowserWindow): void;
+  /** Call a server channel over the transport (see desktop/proxy.ts). */
+  invoke(channel: string, args: unknown[]): Promise<unknown>;
+  /**
+   * Tell the server which thread this client's overlay is presenting exclusively,
+   * or null. Fire-and-forget: it only gates mirroring to other devices.
+   */
+  claimThread(threadId: string | null): void;
   /**
    * Suppress the app.on('activate') main-window recreation for this summon.
    * Showing the overlay activates the app; without the guard that handler would
@@ -79,8 +93,6 @@ export interface QuickChatSurface {
   applySettings(patch: Partial<QuickChatSettings>, next: QuickChatSettings): void;
   /** What Settings needs to tell the truth about the summon key. */
   shortcutStatus(): QuickChatShortcutStatus;
-  /** True while a turn is streaming on one of this client's own surfaces. */
-  hasLiveTurn(): boolean;
   /** Push on a channel the overlay window renders. No-op when it is gone. */
   sendToOverlay(channel: string, payload: unknown): void;
   /** Bring the overlay back when it owns `threadId` (approval cards). */
@@ -147,6 +159,19 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
   /** Ownership + last phase of the shared pill (chime edge detection) — see HudPill. */
   const hud = new HudPill();
 
+  /**
+   * Publish the overlay's claim to the server when — and only when — it changes.
+   * Called from every path that can flip ownership; it is idempotent, so an extra
+   * call costs nothing and a forgotten one is the only way to get this wrong.
+   */
+  let publishedClaim: string | null = null;
+  function publishClaim(): void {
+    const claim = overlay.owns(overlay.threadId) ? overlay.threadId : null;
+    if (claim === publishedClaim) return;
+    publishedClaim = claim;
+    deps.claimThread(claim);
+  }
+
   function applyOverlayWorkspaceVisibility(): void {
     if (overlayWindow && !overlayWindow.isDestroyed()) {
       setOverlayWorkspaceVisibility(overlayWindow, overlayOnAllDisplays);
@@ -210,6 +235,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
   function finishOverlayReset(): void {
     overlay.releaseThread();
     overlayResetBarrier.settle();
+    publishClaim();
   }
 
   /**
@@ -351,6 +377,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
     // old thread's events stop routing to the (now reset) overlay.
     const reset = overlay.shouldStartFresh(Date.now(), newThreadTimeoutMs);
     if (reset) overlay.clearForFreshSession();
+    publishClaim();
     showQuickChat(reset);
   }
 
@@ -439,11 +466,13 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
       // snapshot. Only restore ownership when no other path completed it.
       if (flippedHere) {
         overlay.revertHandoff();
+        publishClaim();
         showQuickChat(false);
         throw new Error('Quick Chat handoff was interrupted. Try Open in Stem again.');
       }
       return;
     }
+    publishClaim();
     overlay.stopTurn();
     hideHud();
     hideOverlayWindow();
@@ -484,6 +513,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
       runningMainThreads.clear();
       if (event.method === 'process/exit' && (overlay.turnRunning || overlayResetBarrier.pending)) {
         overlay.restore(failQuickChatProcess(Date.now(), overlay.threadId));
+        publishClaim();
         if (hud.owner === 'quickchat') showHud({ phase: 'finished', label: 'Request failed' }, 'quickchat');
         if (overlayResetBarrier.pending) finishOverlayReset();
       }
@@ -516,8 +546,10 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
       const continuing = overlay.owns(prompt.threadId);
       let threadId = continuing ? overlay.threadId! : null;
       if (!threadId) {
-        threadId = (await dispatchLocal('backend:createThread', [prompt.model ?? undefined])) as string;
+        threadId = (await deps.invoke('backend:createThread', [prompt.model ?? undefined])) as string;
         overlay.adoptThread(threadId);
+        // Before the turn, so no event of it can outrun the claim.
+        publishClaim();
         // Optimistic sidebar row so the quickchat thread shows immediately.
         deps.sendToMain('quickchat:sessionStarted', {
           threadId,
@@ -528,7 +560,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
       // `surface` is the whole of what makes this a Quick Chat turn: the server
       // resolves the Quick Chat web-search toggle and the main+quickChat
       // instruction composition from it (see backend:startTurn).
-      const result = (await dispatchLocal('backend:startTurn', [
+      const result = (await deps.invoke('backend:startTurn', [
         {
           input: prompt.input,
           threadId,
@@ -611,6 +643,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
       // Forget the current overlay thread so the next prompt opens a fresh one.
       handleLocal('quickchat:newThread', () => {
         overlay.prepareManualReset();
+        publishClaim();
         hideHud();
         if (overlay.turnRunning) {
           return overlayResetBarrier.wait();
@@ -624,6 +657,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
       handleLocal('quickchat:handoff', (_e, payload: QuickChatHandoff) => {
         const bufferedEvents = overlayHandoffBarrier.cancelCurrent();
         overlay.claimHandoff();
+        publishClaim();
         overlay.stopTurn();
         if (overlayResetBarrier.pending) finishOverlayReset();
         hideHud();
@@ -669,8 +703,6 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
     },
 
     shortcutStatus: quickChatShortcutStatus,
-
-    hasLiveTurn: () => runningMainThreads.size > 0 || overlay.turnRunning,
 
     sendToOverlay,
 

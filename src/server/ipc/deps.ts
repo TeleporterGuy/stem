@@ -17,7 +17,8 @@ export interface IpcDeps {
   scheduler(): TaskScheduler | null;
   providerAuth(): ProviderAuth | null;
   embedManager(): EmbedWorkerManager | null;
-  /** Push on a client channel. One callback, one audience — see ClientBridge. */
+  /** Push on a client channel; it goes out on the SSE stream to every client
+   *  whose role may receive it (see startup/transport.ts). */
   emit(channel: string, payload: unknown): void;
   /** Post-sign-in hook: re-pick the default model, restart pi, start the scheduler. */
   onAuthenticated(): Promise<RuntimeStatus>;
