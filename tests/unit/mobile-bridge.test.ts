@@ -1,9 +1,12 @@
-// The phone bridge's main-side transport, driven over a real loopback socket:
-// the bearer token, the request-origin (DNS-rebinding) check, the channel
-// allowlist, the per-channel args/result policy, the reuse of the IPC arg-spec
-// table, the static handler's traversal guard, and SSE framing/fan-out. The
-// handlers under /rpc are registered through the real registerServer, so this
-// exercises the same registry the app uses.
+// The transport, driven over a real loopback socket from the phone's side: the
+// bearer token, the request-origin (DNS-rebinding) check, the per-role channel
+// gate, the per-channel args/result policy, the reuse of the IPC arg-spec table,
+// the static handler's traversal guard, and SSE framing/fan-out. The handlers
+// under /rpc are registered through the real registerServer, so this exercises
+// the same registry the app uses.
+//
+// Everything here authenticates as the `phone` role, which is the constrained
+// one; the desktop role's own end of the wire is covered by transport.test.ts.
 import { request as httpRequest } from 'node:http';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,10 +14,10 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
 import { registerServer } from '../../src/server/ipc';
-import { dispatchLocal } from '../../src/server/ipc/guard';
-import { ensureMobileToken, requestOriginProblem, rerollMobileToken, tokenEquals } from '../../src/server/mobile/auth';
-import { isMobileInvocable, isMobilePushable } from '../../src/server/mobile/channels';
-import { startMobileServer, type MobileServer } from '../../src/server/mobile/server';
+import { dispatchLocal, serverChannels } from '../../src/server/ipc/guard';
+import { ensureMobileToken, requestOriginProblem, rerollMobileToken, tokenEquals } from '../../src/server/transport/auth';
+import { mayInvoke, mayReceive } from '../../src/server/transport/roles';
+import { startTransportServer, type TransportServer } from '../../src/server/transport/server';
 import type { AppSettings } from '../../src/shared/types';
 
 const TOKEN = 'a'.repeat(64);
@@ -26,7 +29,7 @@ const TOKEN = 'a'.repeat(64);
  */
 const SECRETS = ['brave-key-SECRET', 'embed-key-SECRET', 'rerank-key-SECRET', 'custom-key-SECRET'];
 
-let server: MobileServer;
+let server: TransportServer;
 let bundleDir: string;
 let base: string;
 /** Channels the fake handlers saw, so we can prove a rejected call never lands. */
@@ -68,11 +71,12 @@ beforeAll(async () => {
     };
   });
 
-  server = await startMobileServer({
+  server = await startTransportServer({
     port: 0,
     rendererDir: bundleDir,
-    verifyToken: (presented) => tokenEquals(TOKEN, presented),
-    dispatch: dispatchLocal
+    authenticate: (presented) => (tokenEquals(TOKEN, presented) ? 'phone' : null),
+    dispatch: dispatchLocal,
+    registeredChannels: serverChannels
   });
   base = `http://127.0.0.1:${server.port}`;
 });
@@ -223,13 +227,34 @@ describe('channel allowlist', () => {
     expect(calls.length).toBe(before);
   });
 
+  it('tells a client what it may call, filtered to its role', async () => {
+    const res = await fetch(`${base}/channels?token=${TOKEN}`);
+    expect(res.status).toBe(200);
+    const { result } = (await res.json()) as { result: string[] };
+    // Registered here and allowlisted for the phone.
+    expect(result).toContain('backend:startTurn');
+    // Registered here, deliberately not the phone's to call.
+    expect(result).not.toContain('memory:forget');
+    // Allowlisted but not registered in this process — the list is what exists
+    // AND is permitted, never one without the other.
+    expect(result).not.toContain('memory:activeFacts');
+    expect((await fetch(`${base}/channels`)).status).toBe(401);
+  });
+
   it('agrees with the exported predicates', () => {
-    expect(isMobileInvocable('backend:startTurn')).toBe(true);
-    expect(isMobileInvocable('memory:forget')).toBe(false);
-    expect(isMobileInvocable('settings:updateMobile')).toBe(false);
-    expect(isMobileInvocable('mcp:add')).toBe(false);
-    expect(isMobilePushable('backend:event')).toBe(true);
-    expect(isMobilePushable('quickchat:focus')).toBe(false);
+    expect(mayInvoke('phone', 'backend:startTurn')).toBe(true);
+    expect(mayInvoke('phone', 'memory:forget')).toBe(false);
+    expect(mayInvoke('phone', 'settings:updateMobile')).toBe(false);
+    expect(mayInvoke('phone', 'mcp:add')).toBe(false);
+    expect(mayReceive('phone', 'backend:event')).toBe(true);
+    expect(mayReceive('phone', 'quickchat:focus')).toBe(false);
+
+    // The desktop's surface is the registry itself, not a second table: a
+    // channel the phone may not touch is reachable the moment it is registered,
+    // and one nothing registered is reachable from nowhere.
+    expect(mayInvoke('desktop', 'memory:forget')).toBe(true);
+    expect(mayInvoke('desktop', 'nope:notAThing')).toBe(false);
+    expect(mayReceive('desktop', 'quickchat:focus')).toBe(true);
   });
 });
 
@@ -385,14 +410,18 @@ describe('static handler', () => {
   });
 });
 
+/** A parsed SSE block: the `id:` line the server stamps, plus its `data:` JSON. */
+interface Frame {
+  id: string | null;
+  channel: string;
+  payload: unknown;
+}
+
 /** Read SSE frames off a live stream until `count` data events have arrived. */
-async function collectFrames(
-  res: Response,
-  count: number
-): Promise<{ channel: string; payload: unknown }[]> {
+async function collectFrames(res: Response, count: number): Promise<Frame[]> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
-  const frames: { channel: string; payload: unknown }[] = [];
+  const frames: Frame[] = [];
   let buffer = '';
   while (frames.length < count) {
     const { value, done } = await reader.read();
@@ -402,12 +431,13 @@ async function collectFrames(
     while (split !== -1) {
       const block = buffer.slice(0, split);
       buffer = buffer.slice(split + 2);
-      const data = block
-        .split('\n')
+      const lines = block.split('\n');
+      const data = lines
         .filter((line) => line.startsWith('data: '))
         .map((line) => line.slice(6))
         .join('\n');
-      if (data) frames.push(JSON.parse(data));
+      const id = lines.find((line) => line.startsWith('id: '))?.slice(4) ?? null;
+      if (data) frames.push({ id, ...(JSON.parse(data) as { channel: string; payload: unknown }) });
       split = buffer.indexOf('\n\n');
     }
   }
@@ -435,18 +465,39 @@ describe('GET /events', () => {
 
     const collected = Promise.all([collectFrames(a, 2), collectFrames(b, 2)]);
     // A payload with a newline and a quote: it must survive as one `data:` line.
-    server.push('backend:event', { method: 'item/agentMessage/delta', params: { delta: 'line one\nline "two"' } });
-    server.push('mcp:status', { servers: [] });
+    server.push({
+      id: 1,
+      channel: 'backend:event',
+      payload: { method: 'item/agentMessage/delta', params: { delta: 'line one\nline "two"' } }
+    });
+    server.push({ id: 2, channel: 'mcp:status', payload: { servers: [] } });
     // Not on the push allowlist — must never reach a phone.
-    server.push('quickchat:focus', { reset: true });
+    server.push({ id: 3, channel: 'quickchat:focus', payload: { reset: true } });
 
     const [fromA, fromB] = await collected;
     expect(fromA).toEqual([
-      { channel: 'backend:event', payload: { method: 'item/agentMessage/delta', params: { delta: 'line one\nline "two"' } } },
-      { channel: 'mcp:status', payload: { servers: [] } }
+      {
+        id: '1',
+        channel: 'backend:event',
+        payload: { method: 'item/agentMessage/delta', params: { delta: 'line one\nline "two"' } }
+      },
+      { id: '2', channel: 'mcp:status', payload: { servers: [] } }
     ]);
     expect(fromB).toEqual(fromA);
     expect(fromA.some((f) => f.channel === 'quickchat:focus')).toBe(false);
+  });
+
+  it('stamps every frame with the id the caller gave it', async () => {
+    // Nothing consumes the id yet — replay is Phase 2 — but it has to be on the
+    // wire from the start, or adding replay later is a protocol change across
+    // three clients instead of a server-side addition. A frame the role may not
+    // receive burns no id: ids come from the caller, not from the fan-out.
+    const stream = await fetch(`${base}/events?token=${TOKEN}`);
+    const collected = collectFrames(stream, 2);
+    server.push({ id: 41, channel: 'quickchat:focus', payload: null });
+    server.push({ id: 42, channel: 'mcp:status', payload: { servers: [] } });
+    server.push({ id: 43, channel: 'backend:event', payload: { method: 'turn/completed' } });
+    expect((await collected).map((f) => f.id)).toEqual(['42', '43']);
   });
 
   it('drops a disconnected client instead of writing to a dead response', async () => {
@@ -456,7 +507,7 @@ describe('GET /events', () => {
     controller.abort();
     // Give the server's 'close' handler a tick to run.
     await new Promise((r) => setTimeout(r, 50));
-    expect(() => server.push('backend:event', { method: 'turn/completed' })).not.toThrow();
+    expect(() => server.push({ id: 4, channel: 'backend:event', payload: { method: 'turn/completed' } })).not.toThrow();
     expect(server.clientCount()).toBe(0);
   });
 });
@@ -534,11 +585,12 @@ describe('token file', () => {
 
 describe('close()', () => {
   it('resolves with an SSE stream still open', async () => {
-    const other = await startMobileServer({
+    const other = await startTransportServer({
       port: 0,
       rendererDir: bundleDir,
-      verifyToken: () => true,
-      dispatch: dispatchLocal
+      authenticate: () => 'phone',
+      dispatch: dispatchLocal,
+      registeredChannels: serverChannels
     });
     const res = await fetch(`http://127.0.0.1:${other.port}/events?token=x`);
     expect(other.clientCount()).toBe(1);

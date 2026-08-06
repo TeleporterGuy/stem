@@ -202,7 +202,7 @@ export function settingsStorePath(): string {
 }
 
 /**
- * Bearer token for the phone bridge (see server/mobile/*): 32 random bytes as hex,
+ * Bearer token for the phone bridge (see server/transport/*): 32 random bytes as hex,
  * written 0600. Deliberately NOT in settings.json — settings are read and
  * rewritten wholesale by several code paths and are not a place for a secret,
  * and keeping the token in its own file makes "re-roll" a single atomic write.

@@ -10,7 +10,7 @@ import { log } from '../log';
 //
 // The registry IS the surface: a channel registered here is one any authenticated
 // client may call. It does NOT decide who may call what — that is the caller's
-// job (see mobile/channels.ts for the phone's allowlist).
+// job (see transport/roles.ts for the phone's allowlist).
 //
 // The Electron half of this — binding each registered channel to ipcMain and
 // checking that the sender really is one of our own renderer frames — lives in
@@ -147,7 +147,7 @@ export function argsProblem(specs: ArgSpec[], args: unknown[]): string | null {
 // ---- the registry ----
 //
 // Every caller reaches a handler the same way: through dispatchLocal, with no
-// event object. The phone bridge (server/mobile) already did — it receives calls
+// event object. The phone bridge (server/transport) already did — it receives calls
 // over loopback HTTP, so there is no BrowserWindow, no frame, and nothing that
 // could be an Electron event — and the desktop now does too, via
 // src/desktop/ipc-bridge.ts. Rather than fork 110 handlers, one registry serves

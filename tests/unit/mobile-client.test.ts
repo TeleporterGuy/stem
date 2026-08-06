@@ -9,7 +9,7 @@
 // injected, which is exactly how the transport is built to be driven.
 
 import { describe, expect, it } from 'vitest';
-import { MOBILE_INVOKE_CHANNELS, MOBILE_PUSH_CHANNELS } from '../../src/server/mobile/channels';
+import { PHONE_INVOKE_CHANNELS, PHONE_PUSH_CHANNELS } from '../../src/server/transport/roles';
 import {
   EVENT_CHANNELS,
   INVOKE_CHANNELS,
@@ -191,7 +191,7 @@ describe('POST /rpc', () => {
     // decision about what a phone may do; drift between them is a 403 at best.
     for (const [member, channel] of Object.entries(INVOKE_CHANNELS)) {
       expect(`${member} → ${channel}`).toBe(
-        `${member} → ${MOBILE_INVOKE_CHANNELS.has(channel) ? channel : 'NOT ALLOWLISTED'}`
+        `${member} → ${PHONE_INVOKE_CHANNELS.has(channel) ? channel : 'NOT ALLOWLISTED'}`
       );
     }
     expect(Object.values(INVOKE_CHANNELS)).toContain('backend:startTurn');
@@ -202,7 +202,7 @@ describe('POST /rpc', () => {
     // permits with no client member behind it is blast radius for free. Both
     // tables are edited together or this fails.
     const mapped = new Set(Object.values(INVOKE_CHANNELS));
-    expect([...MOBILE_INVOKE_CHANNELS].filter((c) => !mapped.has(c))).toEqual([]);
+    expect([...PHONE_INVOKE_CHANNELS].filter((c) => !mapped.has(c))).toEqual([]);
   });
 });
 
@@ -267,13 +267,13 @@ describe('/events multiplexer', () => {
     // is a feature that silently never fires.
     for (const [member, channel] of Object.entries(EVENT_CHANNELS)) {
       expect(`${member} → ${channel}`).toBe(
-        `${member} → ${MOBILE_PUSH_CHANNELS.has(channel) ? channel : 'NOT PUSHABLE'}`
+        `${member} → ${PHONE_PUSH_CHANNELS.has(channel) ? channel : 'NOT PUSHABLE'}`
       );
     }
     expect(EVENT_CHANNELS.onBackendEvent).toBe('backend:event');
     // And nothing pushed that no listener is wired to receive.
     const subscribed = new Set(Object.values(EVENT_CHANNELS));
-    expect([...MOBILE_PUSH_CHANNELS].filter((c) => !subscribed.has(c))).toEqual([]);
+    expect([...PHONE_PUSH_CHANNELS].filter((c) => !subscribed.has(c))).toEqual([]);
   });
 });
 

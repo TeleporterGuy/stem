@@ -22,7 +22,7 @@ import { log } from '../server/log';
 //  SERVER-OWNED (~110 channels) — the server's registry IS the desktop's surface.
 //    We bind whatever it registered and route the call straight through
 //    dispatchLocal. No allowlist: a channel the server answers is a channel this
-//    machine's user may call. (The phone is different — see mobile/channels.ts.)
+//    machine's user may call. (The phone is different — see transport/roles.ts.)
 //
 //  CLIENT-OWNED (the table below) — channels the desktop answers itself because
 //    they act on THIS machine: native pickers, revealing a path in the file

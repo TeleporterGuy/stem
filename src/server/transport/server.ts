@@ -5,18 +5,21 @@ import { stat } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { log } from '../log';
 import { presentedToken, requestOriginProblem, type OriginPolicy } from './auth';
-import { isMobileInvocable, isMobilePushable, mobilePolicy } from './channels';
+import { channelPolicy, channelsFor, mayInvoke, mayReceive, type DeviceRole } from './roles';
 
-// The phone bridge's transport: a node:http server bound to 127.0.0.1 ONLY.
+// Stem's transport: a node:http server bound to 127.0.0.1 ONLY. Every client —
+// the phone over `tailscale serve`, and since the headless split the desktop
+// itself — reaches the server through this file and nothing else.
 //
 // Binding loopback is the outermost layer of the security model — a Tailscale
 // misconfiguration cannot expose this, because nothing but a process on this Mac
 // can open the socket at all. `tailscale serve` is what reaches it from the
 // phone, and it runs here. Never bind 0.0.0.0.
 //
-// Three routes:
+// Four routes:
 //   POST /rpc      {channel, args}  → {ok:true, result} | {ok:false, error}
-//   GET  /events                    → Server-Sent Events, main → phone
+//   GET  /events                    → Server-Sent Events, server → client
+//   GET  /channels                  → what this client's role may invoke
 //   GET  /*                         → the mobile bundle (dev: proxied to Vite)
 //
 // SSE rather than a WebSocket on purpose: it is one-directional (which is exactly
@@ -24,9 +27,11 @@ import { isMobileInvocable, isMobilePushable, mobilePolicy } from './channels';
 // dance, browsers reconnect it for free — and node:http can serve it with no new
 // dependency, which a WebSocket could not.
 //
-// Everything security-relevant is injected (verifyToken, dispatch, the origin
+// Everything security-relevant is injected (authentication, dispatch, the origin
 // policy) so this file stays a transport and the tests can drive it end to end
-// over a real socket.
+// over a real socket. What a caller may do is never a property of the socket it
+// arrived on: it is decided from the ROLE its token resolved to (see roles.ts),
+// so the same handler serves the loopback desktop and the tailnet phone.
 
 /** 25 MB: base64-encoded photo attachments ride POST /rpc as startTurn arguments. */
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
@@ -41,26 +46,50 @@ const SSE_KEEPALIVE_MS = 25_000;
 /** How long the client should wait before reconnecting a dropped stream. */
 const SSE_RETRY_MS = 3_000;
 
-export interface MobileServerOptions {
-  /** Loopback port to bind. 0 picks a free one (tests read it back off `port`). */
+export interface TransportServerOptions {
+  /** Loopback port to bind. 0 picks a free one (callers read it back off `port`). */
   port: number;
   /** Absolute directory the production bundle is served from (dist/renderer). */
   rendererDir: string;
   /** ELECTRON_RENDERER_URL in dev: static requests proxy to the Vite server. */
   devUrl?: string | null;
-  /** Constant-time bearer check. */
-  verifyToken(presented: string | null): boolean | Promise<boolean>;
-  /** Runs an allowlisted channel — guard.ts's dispatchLocal in production. */
-  dispatch(channel: string, args: unknown[]): Promise<unknown>;
+  /**
+   * Constant-time bearer check that also answers WHO. Returns the role of the
+   * device the token belongs to, or null when nothing matches — so authentication
+   * and authorization are decided from one lookup and can never disagree.
+   */
+  authenticate(presented: string | null): DeviceRole | null | Promise<DeviceRole | null>;
+  /** Runs a channel the role is allowed to call — guard.ts's dispatchLocal. */
+  dispatch(channel: string, args: unknown[], role: DeviceRole): Promise<unknown>;
+  /** Every channel registered on the server, for GET /channels to filter. */
+  registeredChannels(): readonly string[];
   /** Host values accepted beyond loopback and the tailnet. */
   extraHosts?: readonly string[];
 }
 
-export interface MobileServer {
+/** One server → client push, already stamped with its place in the stream. */
+export interface PushEvent {
+  /**
+   * Monotonic, per-server-run. Nothing consumes it yet — replay is Phase 2 — but
+   * it is on the wire from the first release on purpose: adding it later would be
+   * a protocol change across three clients rather than a server-side addition.
+   */
+  id: number;
+  channel: string;
+  payload: unknown;
+  /**
+   * Restrict this event to some roles. Omitted means "every role the channel is
+   * pushable to at all". Used for the events a desktop surface has claimed
+   * exclusively, which must reach that desktop and no other device.
+   */
+  roles?: readonly DeviceRole[];
+}
+
+export interface TransportServer {
   /** The bound port (resolved, so a `port: 0` caller learns what it got). */
   readonly port: number;
-  /** Fan a pushable channel out to every connected phone. No-op when none are. */
-  push(channel: string, payload: unknown): void;
+  /** Fan an event out to every connected client its role allows. */
+  push(event: PushEvent): void;
   /** Connected SSE clients — diagnostics and tests. */
   clientCount(): number;
   close(): Promise<void>;
@@ -126,36 +155,48 @@ function readBody(req: IncomingMessage, limit: number): Promise<string> {
   });
 }
 
-/** One SSE frame. JSON.stringify escapes newlines, so `data:` is always one line. */
-function sseFrame(channel: string, payload: unknown): string {
-  return `data: ${JSON.stringify({ channel, payload })}\n\n`;
+/**
+ * One SSE frame. JSON.stringify escapes newlines, so `data:` is always one line.
+ * The `id:` line is what a future replay implementation resumes from; browsers
+ * echo it back as Last-Event-ID for free, and this server ignores that header.
+ */
+function sseFrame(event: PushEvent): string {
+  return `id: ${event.id}\ndata: ${JSON.stringify({ channel: event.channel, payload: event.payload })}\n\n`;
 }
 
-export async function startMobileServer(opts: MobileServerOptions): Promise<MobileServer> {
+/** An authenticated SSE subscriber: the response to write to, and who it is. */
+interface StreamClient {
+  res: ServerResponse;
+  role: DeviceRole;
+}
+
+export async function startTransportServer(opts: TransportServerOptions): Promise<TransportServer> {
   /** Live SSE responses. A closed client is removed by its own 'close' handler. */
-  const clients = new Set<ServerResponse>();
+  const clients = new Set<StreamClient>();
   /** Every open socket, so close() can destroy them (see the close() comment). */
   const sockets = new Set<Socket>();
 
   const originPolicy = (): OriginPolicy => ({ port: boundPort, extraHosts: opts.extraHosts });
 
   /** Token + origin, the two gates every authenticated route shares. */
-  async function gateProblem(req: IncomingMessage): Promise<{ status: number; error: string } | null> {
-    if (!(await opts.verifyToken(presentedToken(req.headers, req.url)))) {
-      return { status: 401, error: 'unauthorized' };
-    }
+  async function gate(
+    req: IncomingMessage
+  ): Promise<{ role: DeviceRole } | { status: number; error: string }> {
+    const role = await opts.authenticate(presentedToken(req.headers, req.url));
+    if (!role) return { status: 401, error: 'unauthorized' };
     const origin = requestOriginProblem(req.headers, originPolicy());
     if (origin) return { status: 403, error: origin };
-    return null;
+    return { role };
   }
 
   async function handleRpc(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const gate = await gateProblem(req);
-    if (gate) {
-      log('mobile', 'rejected /rpc', { problem: gate.error });
-      sendJson(res, gate.status, { ok: false, error: gate.error });
+    const gated = await gate(req);
+    if ('error' in gated) {
+      log('transport', 'rejected /rpc', { problem: gated.error });
+      sendJson(res, gated.status, { ok: false, error: gated.error });
       return;
     }
+    const { role } = gated;
 
     let raw: string;
     try {
@@ -182,26 +223,35 @@ export async function startMobileServer(opts: MobileServerOptions): Promise<Mobi
       sendJson(res, 400, { ok: false, error: 'expected {channel: string, args: unknown[]}' });
       return;
     }
-    // Least privilege after auth: a valid token does not widen the surface.
-    if (!isMobileInvocable(channel)) {
-      log('mobile', 'rejected /rpc', { channel, problem: 'not allowlisted' });
-      sendJson(res, 403, { ok: false, error: `channel ${channel} is not available on mobile` });
+    // Least privilege after auth: a valid token does not widen the surface, and
+    // what it opens depends entirely on the role behind it (see roles.ts).
+    if (!mayInvoke(role, channel)) {
+      log('transport', 'rejected /rpc', { channel, role, problem: 'not allowlisted' });
+      // A phone was refused by the allowlist. The desktop's surface IS the
+      // registry, so the only way it lands here is a channel nothing registered
+      // — and that answer has to reach the renderer in the guard's own words,
+      // because it is the same failure dispatchLocal would have reported.
+      const problem =
+        role === 'phone'
+          ? { status: 403, error: `channel ${channel} is not available on mobile` }
+          : { status: 400, error: `Rejected local call to ${channel}: no handler registered.` };
+      sendJson(res, problem.status, { ok: false, error: problem.error });
       return;
     }
 
     // For a few channels, being allowlisted is not the whole answer: the phone
     // may call them, but not with anything, and not for everything they return
-    // (see mobile/channels.ts). A refused argument is the caller's fault, so it
+    // (see transport/roles.ts). A refused argument is the caller's fault, so it
     // gets a plain 400 with the policy's own words — it never went near a
     // handler, so it is not a "Rejected local call" and must not be dressed as
     // one by the catch below.
-    const policy = mobilePolicy(channel);
+    const policy = channelPolicy(role, channel);
     let callArgs: unknown[] = args;
     if (policy?.args) {
       try {
         callArgs = policy.args(args);
       } catch (e) {
-        log('mobile', 'rejected /rpc', { channel, problem: 'args policy' });
+        log('transport', 'rejected /rpc', { channel, problem: 'args policy' });
         sendJson(res, 400, { ok: false, error: String((e as Error)?.message ?? e) });
         return;
       }
@@ -211,7 +261,7 @@ export async function startMobileServer(opts: MobileServerOptions): Promise<Mobi
       // dispatch runs the same per-channel argsProblem validation the renderer's
       // IPC gets, then the real handler — so a malformed startTurn is refused
       // here for exactly the reason it would be refused at the desk.
-      const result = await opts.dispatch(channel, callArgs);
+      const result = await opts.dispatch(channel, callArgs, role);
       const shaped = policy?.result ? policy.result(result) : result;
       sendJson(res, 200, { ok: true, result: shaped ?? null });
     } catch (e) {
@@ -224,11 +274,27 @@ export async function startMobileServer(opts: MobileServerOptions): Promise<Mobi
     }
   }
 
+  /**
+   * What this caller may invoke. A client binds its own IPC surface from this at
+   * connect time, so it never has to carry a copy of the server's registry —
+   * which is what lets the same desktop build talk to an embedded server and a
+   * standalone one.
+   */
+  async function handleChannels(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const gated = await gate(req);
+    if ('error' in gated) {
+      log('transport', 'rejected /channels', { problem: gated.error });
+      sendJson(res, gated.status, { ok: false, error: gated.error });
+      return;
+    }
+    sendJson(res, 200, { ok: true, result: channelsFor(gated.role, opts.registeredChannels()) });
+  }
+
   async function handleEvents(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const gate = await gateProblem(req);
-    if (gate) {
-      log('mobile', 'rejected /events', { problem: gate.error });
-      sendJson(res, gate.status, { ok: false, error: gate.error });
+    const gated = await gate(req);
+    if ('error' in gated) {
+      log('transport', 'rejected /events', { problem: gated.error });
+      sendJson(res, gated.status, { ok: false, error: gated.error });
       return;
     }
     res.writeHead(200, {
@@ -242,10 +308,11 @@ export async function startMobileServer(opts: MobileServerOptions): Promise<Mobi
     // Flush the headers and set the client's reconnect backoff in one dispatch;
     // a block with no `data:` field fires no event.
     res.write(`retry: ${SSE_RETRY_MS}\n\n`);
-    clients.add(res);
+    const client: StreamClient = { res, role: gated.role };
+    clients.add(client);
 
     const drop = (): void => {
-      clients.delete(res);
+      clients.delete(client);
     };
     // 'close' covers both a clean disconnect and a dropped connection; the
     // 'error' handler exists so a mid-write reset can't reach the process.
@@ -286,7 +353,7 @@ export async function startMobileServer(opts: MobileServerOptions): Promise<Mobi
     // the refusal explicit and visible in the logs.
     const segments = pathname.split('/').filter((s) => s !== '');
     if (pathname.includes('\0') || segments.some((s) => s === '..' || s === '.')) {
-      log('mobile', 'rejected static path', { pathname });
+      log('transport', 'rejected static path', { pathname });
       sendJson(res, 403, { ok: false, error: 'forbidden path' });
       return;
     }
@@ -365,11 +432,13 @@ export async function startMobileServer(opts: MobileServerOptions): Promise<Mobi
         ? handleRpc(req, res)
         : path === '/events' && req.method === 'GET'
           ? handleEvents(req, res)
-          : handleStatic(req, res);
+          : path === '/channels' && req.method === 'GET'
+            ? handleChannels(req, res)
+            : handleStatic(req, res);
     // No handler above is expected to reject, but a thrown error here would
     // otherwise become an unhandled rejection and leave the socket hanging.
     void route.catch((e) => {
-      log('mobile', 'request failed', { path, error: String((e as Error)?.message ?? e) });
+      log('transport', 'request failed', { path, error: String((e as Error)?.message ?? e) });
       if (!res.headersSent) sendJson(res, 500, { ok: false, error: 'internal error' });
       else res.destroy();
     });
@@ -401,15 +470,15 @@ export async function startMobileServer(opts: MobileServerOptions): Promise<Mobi
   const boundPort = (server.address() as AddressInfo | null)?.port ?? opts.port;
 
   const keepalive = setInterval(() => {
-    for (const res of clients) {
-      if (res.writableEnded || res.destroyed) {
-        clients.delete(res);
+    for (const client of clients) {
+      if (client.res.writableEnded || client.res.destroyed) {
+        clients.delete(client);
         continue;
       }
       try {
-        res.write(': keepalive\n\n');
+        client.res.write(': keepalive\n\n');
       } catch {
-        clients.delete(res);
+        clients.delete(client);
       }
     }
   }, SSE_KEEPALIVE_MS);
@@ -419,29 +488,33 @@ export async function startMobileServer(opts: MobileServerOptions): Promise<Mobi
   return {
     port: boundPort,
     clientCount: () => clients.size,
-    push(channel, payload) {
-      if (!isMobilePushable(channel)) return;
+    push(event) {
       if (clients.size === 0) return;
-      const text = sseFrame(channel, payload);
-      for (const res of clients) {
+      // Serialized once and only if somebody is entitled to it: a delta frame is
+      // built per token, and the phone is not on most channels.
+      let text: string | null = null;
+      for (const client of clients) {
         // A response can be destroyed between its 'close' event and this loop;
         // writing to it would throw ERR_STREAM_DESTROYED into the event emitter.
-        if (res.writableEnded || res.destroyed) {
-          clients.delete(res);
+        if (client.res.writableEnded || client.res.destroyed) {
+          clients.delete(client);
           continue;
         }
+        if (event.roles && !event.roles.includes(client.role)) continue;
+        if (!mayReceive(client.role, event.channel)) continue;
+        text ??= sseFrame(event);
         try {
-          res.write(text);
+          client.res.write(text);
         } catch {
-          clients.delete(res);
+          clients.delete(client);
         }
       }
     },
     close: async () => {
       clearInterval(keepalive);
-      for (const res of clients) {
+      for (const client of clients) {
         try {
-          res.end();
+          client.res.end();
         } catch {
           // Already gone.
         }

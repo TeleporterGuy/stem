@@ -1,14 +1,14 @@
-import { dispatchLocal } from '../ipc/guard';
+import { dispatchLocal, serverChannels } from '../ipc/guard';
 import { log } from '../log';
-import { ensureMobileToken, rerollMobileToken, tokenEquals } from '../mobile/auth';
-import { startMobileServer, type MobileServer } from '../mobile/server';
+import { ensureMobileToken, rerollMobileToken, tokenEquals } from '../transport/auth';
+import { startTransportServer, type TransportServer } from '../transport/server';
 import { readSettings } from '../workspace/settings';
 import { SettledTurns, isSettledMethod } from '../../shared/settledTurns';
 import type { MobilePairingInfo, StartTurnResult } from '../../shared/types';
 
 /**
  * The phone bridge: a loopback HTTP server that serves Stem's mobile client and
- * proxies an allowlisted slice of the IPC surface to it (see mobile/server.ts).
+ * proxies an allowlisted slice of the IPC surface to it (see transport/server.ts).
  * Everything the server needs is wired here — the token check, the dispatch into
  * the existing handler registry, and the bundle directory.
  *
@@ -27,7 +27,9 @@ interface BridgeConfig {
 }
 
 let config: BridgeConfig | null = null;
-let server: MobileServer | null = null;
+let server: TransportServer | null = null;
+/** Monotonic SSE event id (see PushEvent.id). Never reset while a server lives. */
+let eventSeq = 0;
 /** The port `server` is bound to, so a port change can be detected as a change. */
 let boundPort = 0;
 /** Serializes start/stop so a fast enable→disable toggle can't cross itself. */
@@ -111,15 +113,17 @@ export function syncMobileBridge(): Promise<void> {
     // Mint the token before listening, so the very first request can be checked.
     await ensureMobileToken();
     try {
-      server = await startMobileServer({
+      server = await startTransportServer({
         port: mobile.port,
         rendererDir: config.rendererDir,
         devUrl: config.devUrl,
         // Re-read rather than close over the token: a re-roll must take effect on
         // the very next request. ensureMobileToken keeps an in-process copy, so
         // this costs nothing on the hot path.
-        verifyToken: async (presented) => tokenEquals(await ensureMobileToken(), presented),
-        dispatch
+        authenticate: async (presented) =>
+          tokenEquals(await ensureMobileToken(), presented) ? 'phone' : null,
+        dispatch,
+        registeredChannels: serverChannels
       });
       boundPort = server.port;
       log('mobile', 'listening', { port: boundPort, dev: !!config.devUrl });
@@ -136,7 +140,7 @@ export function syncMobileBridge(): Promise<void> {
 
 /** Push a pushable channel to every connected phone. No-op when the bridge is off. */
 export function pushToMobile(channel: string, payload: unknown): void {
-  server?.push(channel, payload);
+  server?.push({ id: ++eventSeq, channel, payload });
 }
 
 /**

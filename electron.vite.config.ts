@@ -78,7 +78,7 @@ export default defineConfig({
         // Two HTML entries. index.html serves all three desktop windows (the URL
         // flag picks main / Quick Chat / HUD); mobile.html is the phone client,
         // which the loopback bridge serves out of this same directory (see
-        // src/server/mobile/server.ts) and which has no preload behind it.
+        // src/server/transport/server.ts) and which has no preload behind it.
         input: {
           index: 'src/renderer/index.html',
           mobile: 'src/renderer/mobile.html'

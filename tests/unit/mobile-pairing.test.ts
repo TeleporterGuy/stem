@@ -14,7 +14,7 @@ import { connect } from 'node:net';
 import { dirname } from 'node:path';
 import { readSettings, updateMobileSettings } from '../../src/server/workspace/settings';
 import { settingsStorePath } from '../../src/server/workspace/paths';
-import { forgetCachedMobileToken } from '../../src/server/mobile/auth';
+import { forgetCachedMobileToken } from '../../src/server/transport/auth';
 import { registerServer } from '../../src/server/ipc';
 import {
   closeMobileBridge,

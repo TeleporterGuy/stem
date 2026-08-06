@@ -1,3 +1,32 @@
+// Who may do what, per device role. Every client reaching the transport presents
+// a token; that token names a device (see auth.ts) and every device carries a
+// role. The role — never the token, never the socket it arrived on — decides
+// which channels the client may invoke and which pushes it may receive.
+//
+// Two roles, and they are deliberately asymmetric:
+//
+//   desktop  The whole server registry (`hasLocalHandler`). There is no second
+//            table to keep in step with it, because a desktop token is the
+//            user's own machine: the registry IS the surface, exactly as it was
+//            when the desktop reached its handlers through ipcMain. Adding a
+//            server channel therefore exposes it to the desktop by construction
+//            — which is the property that made this split a refactor rather than
+//            a rewrite, and a desktop allowlist would be a second copy of ~110
+//            channel names whose drift would be silent.
+//
+//            The price is written down plainly: a stolen desktop token is full
+//            admin. On loopback that is equivalent to the threat model Stem has
+//            always had — anything that can read the token out of the state dir
+//            already has the state dir — but it is NOT equivalent over the
+//            internet. Phase 2 prices device pairing, revocation, and possibly an
+//            untrusted-network tier; until then `desktop` means "the user, at
+//            their own machine".
+//
+//   phone    A curated allowlist, unchanged from the day the bridge shipped, and
+//            documented in full below because the omissions are the point.
+//
+// ---------------------------------------------------------------------------
+//
 // What a phone may do. This is the least-privilege layer of the bridge's security
 // model: it applies AFTER the bearer token, so even a fully authenticated client
 // only reaches what is written down here. Anything absent is rejected.
@@ -43,11 +72,18 @@
 // Keep the two lists sorted by namespace and keep the comments: this file is the
 // documentation of the phone's blast radius, not just a lookup table.
 
+import { hasLocalHandler } from '../ipc/guard';
 import type { AppSettings } from '../../shared/types';
 import { mobileSettingsView } from '../workspace/settings';
 
+/**
+ * What a device is trusted to be. Persisted on the device record (auth.ts), so a
+ * role is never something the client presenting the token gets to assert.
+ */
+export type DeviceRole = 'desktop' | 'phone';
+
 /** Channels the phone may call through POST /rpc. */
-export const MOBILE_INVOKE_CHANNELS: ReadonlySet<string> = new Set([
+export const PHONE_INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   // Running turns — the point of the whole exercise. startTurn carries
   // attachments as base64 (pi/attachments.ts accepts dataBase64 for any file),
   // so no upload endpoint is needed. interruptTurn and rollbackToTurn come from
@@ -85,7 +121,7 @@ export const MOBILE_INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   // Read-only settings. The phone reads exactly one field out of this:
   // `customInstructions.main`, which the instructions approval sheet shows as
   // the text it is asking about. The answer is projected before it leaves (see
-  // MOBILE_POLICY) — settings.json also holds every API key the user has typed.
+  // PHONE_POLICY) — settings.json also holds every API key the user has typed.
   'settings:get'
 ]);
 
@@ -94,7 +130,7 @@ export const MOBILE_INVOKE_CHANNELS: ReadonlySet<string> = new Set([
  * whole question. The allowlist above decides IF; this decides WITH WHAT, and
  * WITH WHAT BACK. Both halves of the trust boundary stay in this one file.
  */
-export interface MobileChannelPolicy {
+export interface ChannelPolicy {
   /** Rewrite or reject the args a phone sent. Throwing rejects the call (400). */
   args?: (args: unknown[]) => unknown[];
   /** Narrow what goes back down the wire. */
@@ -103,7 +139,7 @@ export interface MobileChannelPolicy {
 
 /**
  * The phone's half of `backend:startTurn` — the one allowlisted channel that
- * hands main a whole object to act on. Two fields of StartTurnInput say
+ * hands the server a whole object to act on. Two fields of StartTurnInput say
  * something a phone is not entitled to say:
  *
  *   - `attachments[].path`. pi/attachments.ts reads that path off the Mac's
@@ -113,9 +149,9 @@ export interface MobileChannelPolicy {
  *     base64s the File it was given (renderer/mobile/attachments.ts), because a
  *     phone shares no filesystem with the Mac. A `path` arriving here is a bug
  *     or an attack, and both deserve a refusal rather than a silent drop.
- *   - `scheduled`. That is the scheduler's headless-run marker, stamped by main
- *     on its own runs: it changes the preamble the backend prepends and makes
- *     the UI render the turn collapsed. A client setting it is forging
+ *   - `scheduled`. That is the scheduler's headless-run marker, stamped by the
+ *     server on its own runs: it changes the preamble the backend prepends and
+ *     makes the UI render the turn collapsed. A client setting it is forging
  *     provenance. Dropping it is what the caller actually wants, though — the
  *     turn is a perfectly good interactive turn without it — so this one is
  *     removed rather than refused.
@@ -136,18 +172,13 @@ function startTurnArgs(args: unknown[]): unknown[] {
   return [sanitized, ...args.slice(1)];
 }
 
-const MOBILE_POLICY: Readonly<Record<string, MobileChannelPolicy>> = {
+const PHONE_POLICY: Readonly<Record<string, ChannelPolicy>> = {
   'backend:startTurn': { args: startTurnArgs },
   'settings:get': { result: (result) => mobileSettingsView(result as AppSettings) }
 };
 
-/** The extra args/result handling `channel` needs, if any. */
-export function mobilePolicy(channel: string): MobileChannelPolicy | undefined {
-  return MOBILE_POLICY[channel];
-}
-
-/** Channels main may push down the SSE stream. */
-export const MOBILE_PUSH_CHANNELS: ReadonlySet<string> = new Set([
+/** Channels the server may push down the SSE stream to a phone. */
+export const PHONE_PUSH_CHANNELS: ReadonlySet<string> = new Set([
   // The streaming turn itself: deltas, activity rows, terminal events.
   'backend:event',
 
@@ -166,12 +197,26 @@ export const MOBILE_PUSH_CHANNELS: ReadonlySet<string> = new Set([
   'mcp:status'
 ]);
 
-/** Whether the phone may invoke `channel` over /rpc. */
-export function isMobileInvocable(channel: string): boolean {
-  return MOBILE_INVOKE_CHANNELS.has(channel);
+/** Whether `role` may invoke `channel` over /rpc. */
+export function mayInvoke(role: DeviceRole, channel: string): boolean {
+  return role === 'desktop' ? hasLocalHandler(channel) : PHONE_INVOKE_CHANNELS.has(channel);
 }
 
-/** Whether `channel` may be pushed to the phone over the SSE stream. */
-export function isMobilePushable(channel: string): boolean {
-  return MOBILE_PUSH_CHANNELS.has(channel);
+/** Whether `channel` may be pushed to `role` over the SSE stream. */
+export function mayReceive(role: DeviceRole, channel: string): boolean {
+  return role === 'desktop' ? true : PHONE_PUSH_CHANNELS.has(channel);
+}
+
+/** The extra args/result handling `channel` needs for `role`, if any. */
+export function channelPolicy(role: DeviceRole, channel: string): ChannelPolicy | undefined {
+  return role === 'phone' ? PHONE_POLICY[channel] : undefined;
+}
+
+/**
+ * Every channel `role` may invoke, out of the ones actually registered. A client
+ * asks for this at connect time so it knows what to expose (see GET /channels);
+ * it is derived from the predicate above rather than being a third list.
+ */
+export function channelsFor(role: DeviceRole, registered: readonly string[]): string[] {
+  return registered.filter((channel) => mayInvoke(role, channel));
 }
