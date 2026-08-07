@@ -154,6 +154,14 @@ export interface ChatBackend extends EventEmitter {
   readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[] }>;
   resumeThread(threadId: string): Promise<void>;
   renameThread(threadId: string, name: string): Promise<void>;
+  /**
+   * Ask a small model for the thread's subject and apply it per Settings → Chats
+   * (see server/chats/subject.ts). Always resolves; a thread with no subject just
+   * keeps the first line of the user's message as its name. `force` = the explicit
+   * "Write a subject" action, which ignores the mode and may replace a hand-typed
+   * name. Emits `chats:changed` when a subject actually lands.
+   */
+  writeThreadSubject(threadId: string, firstMessage: string, force?: boolean): Promise<string | null>;
   deleteThread(threadId: string): Promise<void>;
   rollbackToTurn(threadId: string, turnId: string): Promise<void>;
   forkThread(threadId: string, turnId: string): Promise<{ threadId: string }>;

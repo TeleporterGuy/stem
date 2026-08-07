@@ -6,6 +6,7 @@ import {
   createFolder,
   deleteFolder,
   getAssignments,
+  getSubjects,
   listFolders,
   moveFolder,
   removeChat,
@@ -41,16 +42,19 @@ const CHAT_SEARCH_COMPLETION_TIMEOUT_MS = 4_000;
 
 export function registerChatsIpc(deps: IpcDeps): void {
   const chatList = async (): Promise<ChatListResult> => {
-    const [chats, folders, assignments, inbox] = await Promise.all([
+    const [chats, folders, assignments, subjects, inbox] = await Promise.all([
       deps.runtime().listThreads(),
       listFolders(),
       getAssignments(),
+      getSubjects(),
       readInbox()
     ]);
     const valid = new Set(folders.map((f) => f.id));
     for (const chat of chats) {
       const folderId = assignments[chat.threadId];
       chat.folderId = folderId && valid.has(folderId) ? folderId : null;
+      const subject = subjects[chat.threadId];
+      if (subject) chat.subject = subject;
     }
     return { chats, folders, inbox };
   };
@@ -101,6 +105,21 @@ export function registerChatsIpc(deps: IpcDeps): void {
   });
   registerServer('chats:setFolder', async (_e, threadId: string, folderId: string | null) => {
     await setChatFolder(threadId, folderId);
+    return chatList();
+  });
+  // "Write a subject" on a row. New threads get one on their own during their
+  // first turn; this is the explicit ask, so it runs whatever the mode is and is
+  // allowed to replace a name the user typed. Awaited (unlike the automatic
+  // path) because the user pressed a button and is waiting for the row to change.
+  registerServer('chats:writeSubject', async (_e, threadId: string) => {
+    const { messages } = await deps.runtime().readThread(threadId);
+    const first = messages.find((m) => m.role === 'user')?.content ?? '';
+    if (first.trim()) {
+      await deps.runtime().writeThreadSubject(threadId, first, true);
+      // A rename went through the same path chats:rename uses, so the search
+      // index needs the same nudge.
+      void reindexChatThread(deps.runtime(), threadId);
+    }
     return chatList();
   });
 

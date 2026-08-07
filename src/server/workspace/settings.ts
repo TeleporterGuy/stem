@@ -3,6 +3,8 @@ import { readFile, rename, writeFile } from 'node:fs/promises';
 import { host } from '../host';
 import type {
   AppSettings,
+  ChatsSettings,
+  ChatSubjectMode,
   CustomInstructionsSettings,
   DefaultsSettings,
   EmbeddingsMode,
@@ -62,6 +64,13 @@ const DEFAULTS: AppSettings = {
   // wrote silently, and 23 of its 25 skills were never used once. Showing the user
   // what is about to be saved is the cheapest available check on that.
   skills: { model: null, mode: 'ask' },
+  // Chats: Stem writes each new thread a subject and uses it as the thread's name,
+  // because the alternative default — the first 80 characters of whatever you
+  // typed — is what the Inbox rows are trying to get away from. `everywhere`
+  // keeps one name per thread (list, search, window title all agree); a name the
+  // user typed is never overwritten in any mode. Two preview lines under each
+  // Inbox row, which is what makes the list readable without opening anything.
+  chats: { subjects: 'everywhere', subjectModel: null, previewLines: 2 },
   // Command execution: on by default with the tiered policy as the guard rail.
   // approvalMode 'assisted' = allowlist → LLM judge → approval card ('manual'
   // skips the judge, 'yolo' skips everything but the protected-roots guard);
@@ -119,6 +128,7 @@ const DEFAULTS: AppSettings = {
 };
 
 const ESCAPE_ACTIONS: readonly EscapeAction[] = ['off', 'single', 'twoStage'];
+const SUBJECT_MODES: readonly ChatSubjectMode[] = ['off', 'inbox', 'everywhere'];
 
 const RERANKER_MODES: readonly RerankerMode[] = ['off', 'local', 'remote'];
 const LOCAL_RERANK_MODELS: readonly LocalRerankModelId[] = ['bge-reranker-v2-m3'];
@@ -248,6 +258,20 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     // turning the feature off for those users is the wrong failure direction.
     mode: rawSkills.mode === 'off' || rawSkills.mode === 'auto' ? rawSkills.mode : DEFAULTS.skills.mode
   };
+  const rawChats = (parsed?.chats ?? {}) as Partial<ChatsSettings>;
+  const chats: ChatsSettings = {
+    // Same failure direction as skills.mode: an unrecognized (or absent) value
+    // falls back to the default rather than to `off`.
+    subjects: SUBJECT_MODES.includes(rawChats.subjects as ChatSubjectMode)
+      ? (rawChats.subjects as ChatSubjectMode)
+      : DEFAULTS.chats.subjects,
+    subjectModel:
+      typeof rawChats.subjectModel === 'string' && rawChats.subjectModel.trim() ? rawChats.subjectModel : null,
+    previewLines:
+      rawChats.previewLines === 0 || rawChats.previewLines === 1 || rawChats.previewLines === 2
+        ? rawChats.previewLines
+        : DEFAULTS.chats.previewLines
+  };
   const rawExec = (parsed?.exec ?? {}) as Partial<ExecSettings>;
   const exec: ExecSettings = {
     enabled: typeof rawExec.enabled === 'boolean' ? rawExec.enabled : DEFAULTS.exec.enabled,
@@ -358,6 +382,7 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     webSearch: ws,
     memory: mem,
     skills,
+    chats,
     exec,
     retrieval,
     escapeAction,
@@ -471,6 +496,16 @@ export function updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<Ap
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, skills: { ...cur.skills, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the Chats panel settings (subject mode/model, preview lines) and persist. */
+export function updateChatsSettings(patch: Partial<ChatsSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, chats: { ...cur.chats, ...patch } });
     await writeSettings(next);
     return next;
   });

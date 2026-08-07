@@ -42,6 +42,7 @@ import { backfillChatIndex, reindexChatThread } from './chatsearch/index-sync';
 import {
   markOnboardingCompleted,
   readSettings,
+  updateChatsSettings,
   updateCustomInstructions,
   updateDefaultModel,
   updateEscapeAction,
@@ -56,6 +57,7 @@ import {
 import { markReleaseNotesRead, releaseNotesSnapshot } from './workspace/release-notes';
 import { needsBackendRestart, needsWebSearchConfigWrite, writeWebSearchConfig } from './pi/web-search';
 import type {
+  ChatsSettings,
   CustomInstructionsSettings,
   EscapeAction,
   ExecDecision,
@@ -396,6 +398,11 @@ function registerIpc(): void {
     // each pass, so the change applies to the next curation run.
     return updateSkillsSettings(patch);
   });
+  registerServer('settings:updateChats', async (_e, patch: Partial<ChatsSettings>) => {
+    // Just persist — the subject writer reads mode and model fresh on every new
+    // thread, and the renderer reads previewLines back for itself.
+    return updateChatsSettings(patch);
+  });
   registerServer('settings:updateExec', async (_e, patch: Partial<ExecSettings>) => {
     // Just persist — the ExecService reads the policy fresh from settings on each
     // run_command request, so the change applies to the next command.
@@ -607,6 +614,16 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   const folderIndexTasks = initFolderIndexTasks({ runtime: () => runtime!, busyWithin });
   scheduleFolderIndexScan = folderIndexTasks.scheduleFolderIndexScan;
   scheduleFolderLearn = folderIndexTasks.scheduleFolderLearn;
+
+  // A background subject write finished and renamed a thread. Its own channel
+  // rather than a backend event: nothing about it belongs to a turn, and the
+  // only sensible response is "ask for the list again".
+  runtime.on('chats:changed', (threadId: string) => {
+    // The rename went round the backend, not through chats:rename, so the search
+    // index needs the same nudge that handler gives it.
+    void reindexChatThread(runtime!, threadId);
+    emit('chats:changed', undefined);
+  });
 
   // The one tap on the backend's event stream. Registered once (not per client)
   // so nothing can double-subscribe. Two audiences hang off it: the client that

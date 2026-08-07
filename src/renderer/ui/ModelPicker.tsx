@@ -10,13 +10,15 @@ interface ModelPickerProps {
   /** When set, render a clearable first row meaning "no specific model" (id = null). */
   emptyLabel?: string;
   ariaLabel?: string;
+  /** Greyed out and unopenable — for a picker whose feature is switched off. */
+  disabled?: boolean;
 }
 
 // A filterable model picker: a field-styled trigger that opens a searchable popup
 // list. Replaces native <select>, which becomes unusable with many models. The
 // popup mirrors the context-menu pattern in ChatList.tsx (fixed position,
 // edge-clamped, dismissed on outside mousedown / Escape).
-export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: ModelPickerProps) {
+export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel, disabled }: ModelPickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
@@ -127,6 +129,7 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
+        disabled={disabled}
         onClick={() => (open ? setOpen(false) : openMenu())}
       >
         <span className="mp-trigger-label" title={triggerProvider ? `${triggerLabel} · ${triggerProvider}` : triggerLabel}>

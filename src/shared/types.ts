@@ -1147,6 +1147,20 @@ export interface ChatSummary {
   threadId: string;
   /** Computed main-side as `name ?? preview ?? 'New chat'`. */
   title: string;
+  /**
+   * A short subject written by a model from the thread's first message, when
+   * Settings → Chats has subjects on. The Inbox shows this in place of `title`.
+   * At the `everywhere` setting the thread was also renamed to it, so the two
+   * agree; at `inbox` they deliberately differ. Absent = never written.
+   */
+  subject?: string;
+  /**
+   * First ~200 characters of the latest message in the thread, whoever wrote it —
+   * the two-line preview under an Inbox row. Read off the session file's tail
+   * during the same mtime-cached scan that produces the title, so it costs
+   * nothing extra; absent for optimistic rows that have no file yet.
+   */
+  preview?: string;
   folderId: string | null;
   /** Unix seconds. */
   createdAt: number;
@@ -1284,6 +1298,26 @@ export interface MemoryModelSettings {
  * contradict the mode's own label.
  */
 export type SkillsMode = 'off' | 'ask' | 'auto';
+
+/**
+ * How much of a thread's name Stem writes for you:
+ * - `off`        — never call a model; a thread is named after the first line you typed.
+ * - `inbox`      — write a subject and show it in the Inbox, but leave thread names alone.
+ * - `everywhere` — the written subject IS the thread's name, so the Inbox, the
+ *                  Chats tree, search and the window title all agree. The default.
+ *
+ * A name you typed yourself is never overwritten in any mode.
+ */
+export type ChatSubjectMode = 'off' | 'inbox' | 'everywhere';
+
+/** The Chats panel: how threads get named, and how much of each one the Inbox shows. */
+export interface ChatsSettings {
+  subjects: ChatSubjectMode;
+  /** `provider/model` id for the subject writer; null = the backend default. */
+  subjectModel: string | null;
+  /** Lines of the latest message under each Inbox row: 0 (none), 1 or 2. */
+  previewLines: 0 | 1 | 2;
+}
 
 /** Skills: the automatic-authoring policy plus the model that does the writing. */
 export interface SkillsSettings {
@@ -1539,6 +1573,8 @@ export interface AppSettings {
   webSearch: WebSearchSettings;
   memory: MemoryModelSettings;
   skills: SkillsSettings;
+  /** The Chats panel: subject writing (mode + model) and Inbox preview lines. */
+  chats: ChatsSettings;
   /** Command execution (run_command) policy: enable switch, judge model, learned allowlist. */
   exec: ExecSettings;
   retrieval: RetrievalSettings;
@@ -1861,6 +1897,19 @@ export interface StemApi {
   snoozeChats(threadIds: string[], until: number | null): Promise<ChatListResult>;
   setInboxRead(threadIds: string[], read: boolean): Promise<ChatListResult>;
   markInboxAllRead(): Promise<ChatListResult>;
+  /**
+   * Write (or rewrite) one thread's subject from its first message, right now —
+   * the "Write a subject" row action. New threads get one on their own; this is
+   * how a chat that predates the setting, or one whose subject missed the point,
+   * gets a fresh one. Resolves once the model has answered and the list is settled.
+   */
+  writeChatSubject(threadId: string): Promise<ChatListResult>;
+  /**
+   * The chat list changed underneath the renderer — today, a subject that a
+   * background model call has just finished writing. Payload-free on purpose:
+   * the answer is always "call listChats again".
+   */
+  onChatsChanged(listener: () => void): () => void;
 
   // App settings + Quick Chat overlay.
   getSettings(): Promise<AppSettings>;
@@ -1884,6 +1933,8 @@ export interface StemApi {
   /** Set the model used for memory distillation/tidy-up ({ model: null } = default). */
   updateMemorySettings(patch: Partial<MemoryModelSettings>): Promise<AppSettings>;
   updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<AppSettings>;
+  /** Patch the Chats panel settings (subject mode/model, Inbox preview lines). */
+  updateChatsSettings(patch: Partial<ChatsSettings>): Promise<AppSettings>;
   /** Patch the standing custom instructions (e.g. { main } or { quickChat }). */
   updateCustomInstructions(patch: Partial<CustomInstructionsSettings>): Promise<AppSettings>;
   /** Assistant proposed a custom-instructions change; fired so the UI can show a card. */

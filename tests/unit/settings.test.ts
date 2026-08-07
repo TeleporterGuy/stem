@@ -9,6 +9,7 @@ import {
   markReleaseNotesSeen,
   mobileSettingsView,
   readSettings,
+  updateChatsSettings,
   updateCustomInstructions,
   updateDefaultModel,
   updateEscapeAction,
@@ -347,6 +348,45 @@ describe('exec settings', () => {
     expect((await readSettings()).exec.approvalMode).toBe('assisted');
     writeFileSync(path, JSON.stringify({ exec: { approvalMode: 'manual' } }));
     expect((await readSettings()).exec.approvalMode).toBe('manual');
+  });
+});
+
+describe('chats settings', () => {
+  it('defaults to writing subjects everywhere, on the backend model, with two preview lines', async () => {
+    expect((await readSettings()).chats).toEqual({
+      subjects: 'everywhere',
+      subjectModel: null,
+      previewLines: 2
+    });
+  });
+
+  it('round-trips a patch through updateChatsSettings', async () => {
+    const next = await updateChatsSettings({ subjects: 'inbox', subjectModel: 'anthropic/claude-haiku-4' });
+    expect(next.chats.subjects).toBe('inbox');
+    expect(next.chats.subjectModel).toBe('anthropic/claude-haiku-4');
+    // A later patch must not reset the fields it doesn't mention.
+    const lines = await updateChatsSettings({ previewLines: 0 });
+    expect(lines.chats.previewLines).toBe(0);
+    expect(lines.chats.subjects).toBe('inbox');
+    expect((await readSettings()).chats.previewLines).toBe(0);
+  });
+
+  it('keeps every valid previewLines value, including the one that equals the default', async () => {
+    for (const n of [0, 1, 2] as const) {
+      writeFileSync(path, JSON.stringify({ chats: { previewLines: n } }));
+      expect((await readSettings()).chats.previewLines).toBe(n);
+    }
+  });
+
+  it('coerces junk back to the defaults rather than to off', async () => {
+    // A settings.json written by an older build has no `chats` at all; silently
+    // switching the feature off for those users is the wrong failure direction.
+    writeFileSync(path, JSON.stringify({ chats: { subjects: 'sometimes', subjectModel: '  ', previewLines: 9 } }));
+    expect((await readSettings()).chats).toEqual({
+      subjects: 'everywhere',
+      subjectModel: null,
+      previewLines: 2
+    });
   });
 });
 

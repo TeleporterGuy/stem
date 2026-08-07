@@ -6,6 +6,7 @@ import type {
   AuthProviderId,
   AuthUiEvent,
   BackendEventEnvelope,
+  ChatsSettings,
   ConnectedFolderPatch,
   CustomInstructionsSettings,
   EscapeAction,
@@ -260,6 +261,12 @@ const api: StemApi = {
   setInboxRead: (threadIds: string[], read: boolean) =>
     ipcRenderer.invoke('inbox:setRead', threadIds, read),
   markInboxAllRead: () => ipcRenderer.invoke('inbox:markAllRead'),
+  writeChatSubject: (threadId: string) => ipcRenderer.invoke('chats:writeSubject', threadId),
+  onChatsChanged: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on('chats:changed', handler);
+    return () => ipcRenderer.removeListener('chats:changed', handler);
+  },
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateQuickChat: (patch: Partial<QuickChatSettings>) => ipcRenderer.invoke('settings:updateQuickChat', patch),
@@ -277,6 +284,7 @@ const api: StemApi = {
     ipcRenderer.invoke('settings:updateCustomInstructions', patch),
   updateSkillsSettings: (patch: Partial<SkillsSettings>) =>
     ipcRenderer.invoke('settings:updateSkills', patch),
+  updateChatsSettings: (patch: Partial<ChatsSettings>) => ipcRenderer.invoke('settings:updateChats', patch),
   updateRetrievalSettings: (patch: PartialRetrievalSettings) =>
     ipcRenderer.invoke('settings:updateRetrieval', patch),
   updateMobileSettings: (patch: Partial<MobileSettings>) => ipcRenderer.invoke('settings:updateMobile', patch),

@@ -11,6 +11,7 @@ import type {
   StartTurnResult
 } from '../../shared/types';
 import { readTasks } from '../workspace/tasks';
+import { autoTitle, writeSubject } from '../chats/subject';
 
 // Hermetic ChatBackend for STEM_E2E runs: the full turn lifecycle — send →
 // streamed deltas → completed/failed/aborted, thread CRUD, retry/edit/fork —
@@ -137,7 +138,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     const turnId = `e2e-turn-${++this.seq}`;
     const thread = this.ensureThread(threadId);
     const text = input.input;
-    if (!thread.title) thread.title = text.split('\n')[0]?.slice(0, 80) ?? '';
+    const isNewThread = !thread.title;
+    // The same first-line title the pi runtime gives a new session — and the same
+    // fingerprint writeSubject checks before it renames anything.
+    if (isNewThread) thread.title = autoTitle(text);
     thread.listed = true;
     thread.updatedAt = Math.floor(Date.now() / 1000);
     thread.messages.push({
@@ -148,6 +152,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
       createdAt: new Date().toISOString(),
       ...(input.scheduled ? { scheduled: { at: input.scheduled.at } } : {})
     });
+
+    // Mirrors the pi runtime: a brand-new thread gets its subject written in the
+    // background while the reply streams.
+    if (isNewThread) void this.writeThreadSubject(threadId, text);
 
     const turn: ActiveTurn = { turnId, threadId, text, timer: null, hang: text.includes('[e2e:hang]') };
     this.activeTurn = turn;
@@ -188,13 +196,20 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
   async listThreads(): Promise<ChatSummary[]> {
     const rows: ChatSummary[] = [...this.threads.entries()]
       .filter(([, t]) => t.listed)
-      .map(([threadId, t]) => ({
-        threadId,
-        title: t.title || 'New chat',
-        folderId: null,
-        createdAt: t.createdAt,
-        updatedAt: t.updatedAt
-      }));
+      .map(([threadId, t]) => {
+        // Same rule as the pi runtime: the newest thing said in the thread,
+        // whitespace-collapsed, so Inbox previews render under the E2E seam too.
+        const last = t.messages[t.messages.length - 1]?.content ?? '';
+        const preview = last.replace(/\s+/g, ' ').trim().slice(0, 200);
+        return {
+          threadId,
+          title: t.title || 'New chat',
+          ...(preview ? { preview } : {}),
+          folderId: null,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt
+        };
+      });
     // Seeded scheduled tasks reference threads that were never chatted in this
     // run — report them as existing so the scheduler's thread-deleted guard
     // doesn't remove the tasks at startup (specs seed tasks, never sessions).
@@ -224,6 +239,27 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
 
   async renameThread(threadId: string, name: string): Promise<void> {
     this.ensureThread(threadId).title = name;
+  }
+
+  /**
+   * The real subject policy — the settings gate, the hand-renamed-thread guard,
+   * the sanitizer, the store write, the rename — with only the model stubbed out
+   * for a canned reply, so a spec can watch a row rename itself without a
+   * network call or a nondeterministic answer.
+   */
+  async writeThreadSubject(threadId: string, firstMessage: string, force = false): Promise<string | null> {
+    const subject = await writeSubject(
+      {
+        complete: async () => `About ${firstMessage.trim().split(/\s+/).slice(0, 3).join(' ')}`,
+        currentTitle: async (id) => this.threads.get(id)?.title ?? null,
+        rename: (id, name) => this.renameThread(id, name)
+      },
+      threadId,
+      firstMessage,
+      { force }
+    );
+    if (subject) this.emit('chats:changed', threadId);
+    return subject;
   }
 
   async deleteThread(threadId: string): Promise<void> {

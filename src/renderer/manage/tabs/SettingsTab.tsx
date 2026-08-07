@@ -15,6 +15,7 @@ import {
 import type {
   AuthProviderId,
   ApiKeyProviderId,
+  ChatsSettings,
   CustomInstructionsSettings,
   EscapeAction,
   ExecSettings,
@@ -1120,6 +1121,7 @@ export function SettingsTab({
   const [providers, setProviders] = useState<string[]>([]);
   const [escapeAction, setEscapeAction] = useState<EscapeAction>('off');
   const [ci, setCi] = useState<CustomInstructionsSettings>({ main: '', quickChat: '' });
+  const [chats, setChats] = useState<ChatsSettings | null>(null);
   const [exec, setExec] = useState<ExecSettings | null>(null);
   const [allowInput, setAllowInput] = useState('');
   const [shortcutStatus, setShortcutStatus] = useState<QuickChatShortcutStatus | null>(null);
@@ -1134,6 +1136,7 @@ export function SettingsTab({
       setWs(s.webSearch);
       setEscapeAction(s.escapeAction);
       setCi(s.customInstructions);
+      setChats(s.chats);
       setExec(s.exec);
     });
     window.stem.getQuickChatShortcutStatus().then(setShortcutStatus);
@@ -1147,6 +1150,16 @@ export function SettingsTab({
     window.addEventListener('stem:providers-changed', load);
     return () => window.removeEventListener('stem:providers-changed', load);
   }, []);
+
+  function updateChats(patch: Partial<ChatsSettings>) {
+    setChats((cur) => (cur ? { ...cur, ...patch } : cur)); // optimistic; reconcile below
+    window.stem.updateChatsSettings(patch).then((s) => {
+      setChats(s.chats);
+      // The chat list lives in this same window and re-reads the settings for
+      // itself. Told after the write, not before, or it would read the old value.
+      window.dispatchEvent(new CustomEvent('stem:chat-settings'));
+    });
+  }
 
   function updateExec(patch: Partial<ExecSettings>) {
     setExec((cur) => (cur ? { ...cur, ...patch } : cur)); // optimistic; reconcile below
@@ -1252,6 +1265,91 @@ export function SettingsTab({
             </label>
           </>
         )}
+      </div>
+
+      <div className="grp-head">Chats</div>
+      <div className="formgroup">
+        <div className="set-block">
+          <span className="set-sub">
+            Subjects{' '}
+            <InfoTip label="About chat subjects">
+              Stem writes each new chat a short subject from your first message, the way an email
+              names a thread. <strong>Everywhere</strong> uses it as the chat's name, so the list,
+              search and the window title all agree. <strong>Inbox only</strong> shows it in the
+              Inbox and leaves names alone. <strong>Off</strong> never calls a model — a chat is
+              named after the first line you typed. A name you type yourself is never overwritten.
+            </InfoTip>
+          </span>
+          <div className="seg-ctl">
+            <button
+              className={chats?.subjects === 'off' ? 'active' : ''}
+              onClick={() => updateChats({ subjects: 'off' })}
+              title="Never write subjects"
+            >
+              Off
+            </button>
+            <button
+              className={chats?.subjects === 'inbox' ? 'active' : ''}
+              onClick={() => updateChats({ subjects: 'inbox' })}
+              title="Write subjects, but don't rename chats"
+            >
+              Inbox only
+            </button>
+            <button
+              className={chats?.subjects === 'everywhere' ? 'active' : ''}
+              onClick={() => updateChats({ subjects: 'everywhere' })}
+              title="Use the subject as the chat's name"
+            >
+              Everywhere
+            </button>
+          </div>
+        </div>
+        <div className="set-block">
+          <span className="set-sub">
+            Subject model{' '}
+            <InfoTip label="About the subject model">
+              Writes the subject line, once per new chat. A small, fast model is plenty — this is a
+              few words from your opening message, not a summary of the conversation.
+            </InfoTip>
+          </span>
+          <ModelPicker
+            models={models}
+            value={chats?.subjectModel ?? null}
+            onChange={(id) => updateChats({ subjectModel: id })}
+            emptyLabel="Default (recommended)"
+            ariaLabel="Subject model"
+            disabled={chats?.subjects === 'off'}
+          />
+        </div>
+        <div className="set-block">
+          <span className="set-sub">
+            Preview lines in the Inbox{' '}
+            <InfoTip label="About preview lines">
+              How much of the newest message each Inbox row shows underneath its subject. The Chats
+              tree is unaffected — it stays one line per chat.
+            </InfoTip>
+          </span>
+          <div className="seg-ctl">
+            <button
+              className={chats?.previewLines === 0 ? 'active' : ''}
+              onClick={() => updateChats({ previewLines: 0 })}
+            >
+              None
+            </button>
+            <button
+              className={chats?.previewLines === 1 ? 'active' : ''}
+              onClick={() => updateChats({ previewLines: 1 })}
+            >
+              1 line
+            </button>
+            <button
+              className={chats?.previewLines === 2 ? 'active' : ''}
+              onClick={() => updateChats({ previewLines: 2 })}
+            >
+              2 lines
+            </button>
+          </div>
+        </div>
       </div>
 
       <ProvidersSection deadProvider={deadProvider} />

@@ -1,7 +1,8 @@
-// The Inbox mode of the chat list, driven through real DOM and real IPC against
+// The Inbox tab of the chat list, driven through real DOM and real IPC against
 // the scripted FakeBackend. Threads are created the only honest way — by sending
-// a turn — so each row has a real backend session file whose mtime is what the
-// archive/snooze timestamps are compared against.
+// a turn — so each row has a real backend session whose mtime is what the
+// archive/snooze timestamps are compared against, and whose first message is what
+// the subject writer is handed.
 import { test, expect } from './electron';
 import type { Page } from '@playwright/test';
 
@@ -15,24 +16,59 @@ async function send(win: Page, text: string): Promise<void> {
   );
 }
 
-/** A fresh thread whose first user message is `text` (which becomes its title). */
+/** A fresh thread whose first user message is `text`. */
 async function newThread(win: Page, text: string): Promise<void> {
   await win.getByTitle('New thread').click();
   await send(win, text);
 }
 
+// The fake backend's canned subject is "About <first three words>", so a row
+// still matches on the text it was started with.
 const row = (win: Page, title: string) => win.locator('.chat-row').filter({ hasText: title });
-/** The Inbox/Chats/Archived control. Scoped: the rail's Chats tab shares its name. */
-const mode = (win: Page, name: string) =>
+/** The Inbox/Chats tabs. Scoped: the rail's Chats tab shares its name. */
+const tab = (win: Page, name: string) =>
   win.locator('.chats-modes').getByRole('button', { name, exact: true });
+const group = (win: Page, name: RegExp) => win.getByRole('button', { name });
 
 test('the chat list opens on the Inbox with every thread waiting', async ({ mainWindow }) => {
   await send(mainWindow, 'alpha');
   await newThread(mainWindow, 'beta');
 
-  await expect(mode(mainWindow, 'Inbox')).toHaveClass(/active/);
+  await expect(tab(mainWindow, 'Inbox')).toHaveClass(/active/);
   await expect(mainWindow.locator('.chat-row')).toHaveCount(2);
-  await expect(mode(mainWindow, 'Archived')).toBeVisible();
+});
+
+test('the tab you were last on is the one that comes back', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await tab(mainWindow, 'Chats').click();
+  await expect(tab(mainWindow, 'Chats')).toHaveClass(/active/);
+
+  await mainWindow.reload();
+  await mainWindow.waitForLoadState('domcontentloaded');
+  await expect(tab(mainWindow, 'Chats')).toHaveClass(/active/);
+});
+
+test('a new thread gets a written subject, and the row renames itself', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  // Everywhere is the default: the subject becomes the thread's actual name, so
+  // it shows in the Chats tree too, not only in the Inbox.
+  await expect(row(mainWindow, 'About alpha')).toBeVisible();
+  await tab(mainWindow, 'Chats').click();
+  await expect(row(mainWindow, 'About alpha')).toBeVisible();
+});
+
+test('an Inbox row previews the newest message, until you turn previews off', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  // The preview follows the thread, so it is the assistant's reply that shows.
+  await expect(mainWindow.locator('.chat-preview')).toHaveText(/Echo: alpha/);
+
+  // Set it the way Settings does — persist, then tell the list to re-read.
+  await mainWindow.evaluate(async () => {
+    const w = window as any;
+    await w.stem.updateChatsSettings({ previewLines: 0 });
+    window.dispatchEvent(new CustomEvent('stem:chat-settings'));
+  });
+  await expect(mainWindow.locator('.chat-preview')).toHaveCount(0);
 });
 
 test('archiving moves a thread out of the Inbox but leaves it in the Chats tree', async ({ mainWindow }) => {
@@ -47,13 +83,13 @@ test('archiving moves a thread out of the Inbox but leaves it in the Chats tree'
   await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
   await expect(row(mainWindow, 'beta')).toBeVisible();
 
-  // It's in the Archived segment...
-  await mode(mainWindow, 'Archived').click();
+  // It's in the Archived group at the foot of the Inbox...
+  await group(mainWindow, /Archived \(1\)/).click();
   await expect(row(mainWindow, 'alpha')).toBeVisible();
-  await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(2);
 
   // ...and archiving is Inbox-only: the Chats tree still lists both.
-  await mode(mainWindow, 'Chats').click();
+  await tab(mainWindow, 'Chats').click();
   await expect(mainWindow.locator('.chat-row')).toHaveCount(2);
 });
 
@@ -65,13 +101,12 @@ test('an archived thread can be moved back to the Inbox', async ({ mainWindow })
   await inboxRow.getByRole('button', { name: 'Archive' }).click();
   await expect(mainWindow.locator('.chat-row')).toHaveCount(0);
 
-  await mode(mainWindow, 'Archived').click();
+  await group(mainWindow, /Archived \(1\)/).click();
   const archivedRow = row(mainWindow, 'alpha');
   await archivedRow.hover();
   await archivedRow.getByRole('button', { name: 'Move to Inbox' }).click();
-  await expect(mainWindow.locator('.chat-row')).toHaveCount(0);
 
-  await mode(mainWindow, 'Inbox').click();
+  await expect(mainWindow.getByRole('button', { name: /Archived/ })).toHaveCount(0);
   await expect(row(mainWindow, 'alpha')).toBeVisible();
 });
 
@@ -88,7 +123,7 @@ test('snoozing hides a thread under a Snoozed group it can be woken from', async
 
   // Out of the list proper, into a collapsed disclosure that counts it.
   await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
-  const toggle = mainWindow.getByRole('button', { name: /Snoozed \(1\)/ });
+  const toggle = group(mainWindow, /Snoozed \(1\)/);
   await expect(toggle).toBeVisible();
 
   await toggle.click();
@@ -115,7 +150,7 @@ test('inbox state survives a restart', async ({ mainWindow, electronApp }) => {
   void electronApp;
 
   await expect(mainWindow.locator('.chat-row')).toHaveCount(0);
-  await mode(mainWindow, 'Archived').click();
+  await group(mainWindow, /Archived \(1\)/).click();
   await expect(row(mainWindow, 'alpha')).toBeVisible();
 });
 

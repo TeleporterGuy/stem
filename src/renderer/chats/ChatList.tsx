@@ -45,6 +45,8 @@ export interface ChatListProps {
   onSnooze: (threadIds: string[], until: number | null) => void;
   onSetRead: (threadIds: string[], read: boolean) => void;
   onMarkAllRead: () => void;
+  /** Have a model write this thread's subject from its first message, now. */
+  onWriteSubject: (threadId: string) => void;
 }
 
 // Drag payloads. We tag the kind so a folder drop zone knows whether it caught a
@@ -53,19 +55,31 @@ const CHAT_MIME = 'application/x-stem-chat';
 const FOLDER_MIME = 'application/x-stem-folder';
 
 /**
- * The panel's three modes. Inbox and Archived are flat, date-bucketed views over
- * every thread; Chats is the folder tree, untouched. Chat folders and inbox state
- * are deliberately independent namespaces — filing a thread under Chats › Work
- * does not take it out of the Inbox, and archiving does not hide it from the tree
- * or from search.
+ * The panel's two tabs, in the shape Memory's Facts | Recall established. Inbox is
+ * a flat, date-bucketed view of every thread waiting on you, with what you've dealt
+ * with (snoozed, archived) collapsed at the bottom; Chats is the folder tree,
+ * untouched. Chat folders and inbox state are deliberately independent namespaces —
+ * filing a thread under Chats › Work does not take it out of the Inbox, and
+ * archiving does not hide it from the tree or from search.
  */
-type Mode = 'inbox' | 'chats' | 'archived';
+type Tab = 'inbox' | 'chats';
 
-const MODES: { id: Mode; label: string }[] = [
+const TABS: { id: Tab; label: string }[] = [
   { id: 'inbox', label: 'Inbox' },
-  { id: 'chats', label: 'Chats' },
-  { id: 'archived', label: 'Archived' }
+  { id: 'chats', label: 'Chats' }
 ];
+
+// Which tab you were last on. Renderer-local like the composer's per-turn picks:
+// it's a view preference, not something the server or another device needs.
+const TAB_KEY = 'stem.chats.tab';
+
+function initialTab(): Tab {
+  try {
+    return localStorage.getItem(TAB_KEY) === 'chats' ? 'chats' : 'inbox';
+  } catch {
+    return 'inbox';
+  }
+}
 
 // Normalize Unix-seconds (real chats) vs ms (optimistic pending rows), then bucket
 // by updatedAt the way ChatGPT/Claude group their sidebars.
@@ -127,7 +141,15 @@ type Snoozing = { ids: string[]; x: number; y: number };
 
 export function ChatList(props: ChatListProps) {
   const { data, activeThreadId, onOpen } = props;
-  const [mode, setMode] = useState<Mode>('inbox');
+  const [tab, setTabState] = useState<Tab>(initialTab);
+  const setTab = useCallback((next: Tab) => {
+    setTabState(next);
+    try {
+      localStorage.setItem(TAB_KEY, next);
+    } catch {
+      // A locked-down storage quota is not worth failing a tab switch over.
+    }
+  }, []);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<Editing | null>(null);
   const [creating, setCreating] = useState<Creating | null>(null);
@@ -137,6 +159,11 @@ export function ChatList(props: ChatListProps) {
   const [dropTarget, setDropTarget] = useState<string | 'root' | 'archive' | null>(null);
   const [snoozing, setSnoozing] = useState<Snoozing | null>(null);
   const [snoozedOpen, setSnoozedOpen] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  // A chat row is mid-drag. The Archived group is the drop target for archiving,
+  // so it has to exist while you're dragging even when nothing is archived yet —
+  // otherwise the very first drag has nowhere to land.
+  const [dragging, setDragging] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Anchor for shift-click ranges: the last row touched without shift.
   const anchorRef = useRef<string | null>(null);
@@ -154,6 +181,30 @@ export function ChatList(props: ChatListProps) {
     const timer = setTimeout(() => setNow(Date.now()), Math.max(250, at - Date.now()));
     return () => clearTimeout(timer);
   }, [data, now]);
+
+  // ---- preview lines ----
+  // How much of the newest message each Inbox row shows (Settings → Chats). Read
+  // once on mount and again when Settings says it changed — the same in-renderer
+  // CustomEvent the Escape-to-retract preference uses, since both live in one
+  // window and a round trip through the server would tell us nothing new.
+  const [previewLines, setPreviewLines] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      window.stem
+        .getSettings()
+        .then((s) => {
+          if (alive) setPreviewLines(s.chats.previewLines);
+        })
+        .catch(() => {});
+    };
+    load();
+    window.addEventListener('stem:chat-settings', load);
+    return () => {
+      alive = false;
+      window.removeEventListener('stem:chat-settings', load);
+    };
+  }, []);
 
   // ---- search ----
   // The search box is collapsed to a header icon by default so it costs no vertical
@@ -298,9 +349,24 @@ export function ChatList(props: ChatListProps) {
   );
 
   // ---- selection ----
-  // Only the flat modes select; the tree keeps its single meaning (click = open).
-  const selectable = mode !== 'chats' && results === null && !searching;
-  const flatOrder = mode === 'archived' ? buckets.archived : buckets.inbox;
+  // Only the Inbox selects; the tree keeps its single meaning (click = open).
+  const selectable = tab === 'inbox' && results === null && !searching;
+  // Shift-click extends over what is actually on screen, in the order it is drawn —
+  // so a range never silently swallows rows inside a collapsed group.
+  const flatOrder = useMemo(
+    () => [
+      ...buckets.inbox,
+      ...(snoozedOpen ? buckets.snoozed : []),
+      ...(archivedOpen ? buckets.archived : [])
+    ],
+    [buckets, snoozedOpen, archivedOpen]
+  );
+  // The selection bar offers Archive or Move to Inbox, never both — decided by
+  // where the selected rows actually are rather than by which list is showing.
+  // Only an all-archived selection offers the restore; a mixed one archives,
+  // which is both the commoner intent and the reversible direction.
+  const archivedIds = useMemo(() => new Set(buckets.archived.map((c) => c.threadId)), [buckets.archived]);
+  const selectionArchived = selected.size > 0 && [...selected].every((id) => archivedIds.has(id));
 
   const clearSelection = useCallback(() => {
     setSelected((prev) => (prev.size ? new Set() : prev));
@@ -395,6 +461,7 @@ export function ChatList(props: ChatListProps) {
     e.preventDefault();
     e.stopPropagation();
     setDropTarget(null);
+    setDragging(false);
     const chatId = e.dataTransfer.getData(CHAT_MIME);
     if (chatId) archive(targets(chatId), true);
   };
@@ -505,11 +572,16 @@ export function ChatList(props: ChatListProps) {
     const unread = isUnread(chat, data.inbox);
     const wake = data.inbox.entries[chat.threadId]?.snoozedUntil;
     const isSelected = selected.has(chat.threadId);
+    const subject = chat.subject ?? chat.title;
+    // The tree stays one line per thread; only the Inbox reads like mail.
+    const showPreview = variant !== 'none' && previewLines > 0 && !!chat.preview && !isEditing;
     return (
       <div
         key={chat.threadId}
         className={[
           'group-row chat-row',
+          variant !== 'none' ? 'inbox-row' : '',
+          showPreview ? `has-preview lines-${previewLines}` : '',
           chat.threadId === activeThreadId ? 'selected' : '',
           unread ? 'unread' : '',
           isSelected ? 'multi' : ''
@@ -521,7 +593,9 @@ export function ChatList(props: ChatListProps) {
         onDragStart={(e) => {
           e.dataTransfer.setData(CHAT_MIME, chat.threadId);
           e.dataTransfer.effectAllowed = 'move';
+          setDragging(true);
         }}
+        onDragEnd={() => setDragging(false)}
         onClick={onChatClick(chat)}
         onContextMenu={(e) => {
           e.preventDefault();
@@ -540,7 +614,13 @@ export function ChatList(props: ChatListProps) {
           {isEditing ? (
             editInput(editing.value, (v) => setEditing({ ...editing, value: v }), commitEdit)
           ) : (
-            <strong title={chat.title}>{chat.title}</strong>
+            <>
+              {/* The subject when a model wrote one, else the name the thread has.
+                  At the `everywhere` setting these are the same string; at `inbox`
+                  they differ on purpose, and this is the list that shows the subject. */}
+              <strong title={subject}>{subject}</strong>
+              {showPreview && <span className="chat-preview">{chat.preview}</span>}
+            </>
           )}
         </span>
         {variant === 'snoozed' && wake != null && (
@@ -657,10 +737,20 @@ export function ChatList(props: ChatListProps) {
 
   return (
     <div className="chats-panel">
+      {/* Grouped and labelled: the rail's Chats tab and this control's Chats
+          segment share a name, so the group is what tells them apart. */}
+      <div className="seg-ctl chats-modes" role="group" aria-label="Chat list mode">
+        {TABS.map((t) => (
+          <button key={t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>
+            {t.label}
+            {t.id === 'inbox' && unreadCount > 0 && <span className="seg-count">{unreadCount}</span>}
+          </button>
+        ))}
+      </div>
       <div className="grp-head chats-head">
-        <span>{MODES.find((m) => m.id === mode)?.label}</span>
+        <span>{TABS.find((t) => t.id === tab)?.label}</span>
         <span className="grp-head-actions">
-          {mode === 'inbox' && unreadCount > 0 && (
+          {tab === 'inbox' && unreadCount > 0 && (
             <button className="grp-head-add" title="Mark all as read" onClick={props.onMarkAllRead}>
               <CheckCheck size={14} />
             </button>
@@ -672,16 +762,10 @@ export function ChatList(props: ChatListProps) {
           >
             <Search size={14} />
           </button>
-          {mode !== 'archived' && (
-            <button
-              className="grp-head-add"
-              title="New thread"
-              onClick={() => props.onNewChat(null)}
-            >
-              <SquarePen size={14} />
-            </button>
-          )}
-          {mode === 'chats' && (
+          <button className="grp-head-add" title="New thread" onClick={() => props.onNewChat(null)}>
+            <SquarePen size={14} />
+          </button>
+          {tab === 'chats' && (
             <button
               className="grp-head-add"
               title="New folder"
@@ -691,32 +775,6 @@ export function ChatList(props: ChatListProps) {
             </button>
           )}
         </span>
-      </div>
-      {/* Grouped and labelled: the rail's Chats tab and this control's Chats
-          segment share a name, so the group is what tells them apart. */}
-      <div className="seg-ctl chats-modes" role="group" aria-label="Chat list mode">
-        {MODES.map((m) => (
-          <button
-            key={m.id}
-            className={[
-              mode === m.id ? 'active' : '',
-              m.id === 'archived' && dropTarget === 'archive' ? 'drop-target' : ''
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            onClick={() => setMode(m.id)}
-            {...(m.id === 'archived'
-              ? {
-                  onDragOver: allowDrop('archive'),
-                  onDragLeave: () => setDropTarget((t) => (t === 'archive' ? null : t)),
-                  onDrop: onDropArchive
-                }
-              : {})}
-          >
-            {m.label}
-            {m.id === 'inbox' && unreadCount > 0 && <span className="seg-count">{unreadCount}</span>}
-          </button>
-        ))}
       </div>
       {searchOpen && (
         <div className="chat-search">
@@ -752,9 +810,9 @@ export function ChatList(props: ChatListProps) {
       {selected.size > 0 && (
         <SelectionBar
           count={selected.size}
-          archived={mode === 'archived'}
+          archived={selectionArchived}
           onSnooze={(e) => openSnooze([...selected], e)}
-          onArchive={() => archive([...selected], mode !== 'archived')}
+          onArchive={() => archive([...selected], !selectionArchived)}
           onMarkRead={() => {
             props.onSetRead([...selected], true);
             clearSelection();
@@ -764,13 +822,13 @@ export function ChatList(props: ChatListProps) {
       )}
       <div
         className={`group chats-group${dropTarget === 'root' ? ' drop-target' : ''}`}
-        onDragOver={mode === 'chats' ? allowDrop('root') : undefined}
+        onDragOver={tab === 'chats' ? allowDrop('root') : undefined}
         onDragLeave={() => setDropTarget((t) => (t === 'root' ? null : t))}
-        onDrop={mode === 'chats' ? onDrop(null) : undefined}
+        onDrop={tab === 'chats' ? onDrop(null) : undefined}
       >
         {showingSearch ? (
           renderResults()
-        ) : mode === 'chats' ? (
+        ) : tab === 'chats' ? (
           <>
             {isEmpty && !creating && (
               <div className="group-row">
@@ -799,17 +857,6 @@ export function ChatList(props: ChatListProps) {
             })()}
             {creating && creating.parentId === null && renderCreateRow(0)}
           </>
-        ) : mode === 'archived' ? (
-          <>
-            {buckets.archived.length === 0 && (
-              <div className="group-row">
-                <span className="row-main">
-                  <em>Nothing archived yet.</em>
-                </span>
-              </div>
-            )}
-            {renderBuckets(buckets.archived, 'archived')}
-          </>
         ) : (
           <>
             {buckets.inbox.length === 0 && (
@@ -820,6 +867,8 @@ export function ChatList(props: ChatListProps) {
               </div>
             )}
             {renderBuckets(buckets.inbox, 'inbox')}
+            {/* What you've already dealt with, collapsed at the foot of the list:
+                things that come back on their own, then things that don't. */}
             {buckets.snoozed.length > 0 && (
               <>
                 <button
@@ -830,6 +879,25 @@ export function ChatList(props: ChatListProps) {
                   Snoozed ({buckets.snoozed.length})
                 </button>
                 {snoozedOpen && buckets.snoozed.map((c) => renderChat(c, 0, 'snoozed'))}
+              </>
+            )}
+            {(buckets.archived.length > 0 || dragging) && (
+              <>
+                {/* Also the drop target: dragging a row onto it archives it, the
+                    same gesture the tree uses to file a chat into a folder. */}
+                <button
+                  className={`memory-view-toggle inbox-snoozed-toggle${
+                    dropTarget === 'archive' ? ' drop-target' : ''
+                  }`}
+                  onClick={() => setArchivedOpen((v) => !v)}
+                  onDragOver={allowDrop('archive')}
+                  onDragLeave={() => setDropTarget((t) => (t === 'archive' ? null : t))}
+                  onDrop={onDropArchive}
+                >
+                  <ChevronRight size={13} className={archivedOpen ? 'open' : ''} />
+                  Archived ({buckets.archived.length})
+                </button>
+                {archivedOpen && buckets.archived.map((c) => renderChat(c, 0, 'archived'))}
               </>
             )}
           </>
@@ -914,6 +982,16 @@ export function ChatList(props: ChatListProps) {
                     {unread ? 'Mark as read' : 'Mark as unread'}
                   </button>
                   <div className="ctx-sep" />
+                  {/* Single-row only: this is a model call per thread, so it is
+                      not something to fire off across a selection by accident. */}
+                  <button
+                    onClick={() => {
+                      props.onWriteSubject(menu.id);
+                      closeMenu();
+                    }}
+                  >
+                    Write a subject
+                  </button>
                 </>
               );
             })()}

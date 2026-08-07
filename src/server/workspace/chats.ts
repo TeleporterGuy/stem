@@ -13,10 +13,26 @@ interface ChatStore {
   folders: Folder[];
   /** threadId -> folderId. Absent / dangling entries mean "root". */
   assignments: Record<string, string>;
+  /**
+   * threadId -> the subject a model wrote from the thread's first message.
+   * Kept here, next to the folder assignment, because it is thread metadata
+   * rather than Inbox state: it has to survive Settings → Chats being turned
+   * down from `everywhere` to `inbox`, and it must not be lost when the user
+   * renames the thread by hand.
+   */
+  subjects: Record<string, string>;
 }
 
 function emptyStore(): ChatStore {
-  return { version: 1, folders: [], assignments: {} };
+  return { version: 1, folders: [], assignments: {}, subjects: {} };
+}
+
+/** Keep only string→string pairs; a hand-edited file can hold anything. */
+function coerceMap(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string')
+  );
 }
 
 export async function readStore(): Promise<ChatStore> {
@@ -25,7 +41,8 @@ export async function readStore(): Promise<ChatStore> {
     return {
       version: 1,
       folders: Array.isArray(parsed.folders) ? parsed.folders : [],
-      assignments: parsed.assignments && typeof parsed.assignments === 'object' ? parsed.assignments : {}
+      assignments: parsed.assignments && typeof parsed.assignments === 'object' ? parsed.assignments : {},
+      subjects: coerceMap(parsed.subjects)
     };
   } catch {
     return emptyStore();
@@ -95,6 +112,19 @@ export async function listFolders(): Promise<Folder[]> {
 
 export async function getAssignments(): Promise<Record<string, string>> {
   return (await readStore()).assignments;
+}
+
+export async function getSubjects(): Promise<Record<string, string>> {
+  return (await readStore()).subjects;
+}
+
+/** Record a written subject for a thread (empty string clears it). */
+export function setSubject(threadId: string, subject: string): Promise<void> {
+  return update((store) => {
+    const text = subject.trim();
+    if (text) store.subjects[threadId] = text;
+    else delete store.subjects[threadId];
+  });
 }
 
 export function createFolder(name: string, parentId: string | null): Promise<Folder[]> {
@@ -167,9 +197,10 @@ export function setChatFolder(threadId: string, folderId: string | null): Promis
   });
 }
 
-/** Drop a chat's assignment when the chat itself is deleted. */
+/** Drop a chat's assignment and subject when the chat itself is deleted. */
 export function removeChat(threadId: string): Promise<void> {
   return update((store) => {
     delete store.assignments[threadId];
+    delete store.subjects[threadId];
   });
 }

@@ -111,6 +111,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'chats:rename': [a.string, a.string],
   'chats:delete': [a.string],
   'chats:setFolder': [a.string, a.nullish(a.string)],
+  'chats:writeSubject': [a.string],
   // Inbox mutators take a list of thread ids so bulk selection and a single row
   // are one code path. ('inbox:markAllRead' takes no arguments, so it is absent.)
   'inbox:setArchived': [a.stringArray, a.boolean],
@@ -126,6 +127,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'settings:updateEscapeAction': [a.oneOf(['off', 'single', 'twoStage'])],
   'settings:updateMemory': [a.object],
   'settings:updateSkills': [a.object],
+  'settings:updateChats': [a.object],
   'settings:updateExec': [a.object],
   'exec:resolveApproval': [a.string, a.oneOf(['allowOnce', 'alwaysAllow', 'deny'])],
   'settings:updateMobile': [a.object],

@@ -16,14 +16,22 @@ Maintainer notes:
 
 ### Added
 
-- **An Inbox for your chats.** The chat list now opens on an Inbox that works like mail. Every
-  thread waits there until you archive it or snooze it for later, and a thread that has something
-  new in it — a scheduled task that ran overnight, a reply you never came back to — shows in bold
-  with a count on the Chats tab. Unread survives quitting the app. Snoozed threads sit in a group
-  at the bottom with the time they come back, and anything new in a snoozed or archived thread
-  brings it straight back to the Inbox. Archiving only affects the Inbox: the thread stays exactly
-  where it was in your folders and still turns up in search. Hold ⌘ to pick several threads and
-  archive or snooze them in one go.
+- **An Inbox for your chats.** The chat list now has two tabs — Inbox and Chats — and the Inbox
+  works like mail. Every thread waits there until you archive it or snooze it for later, and a
+  thread that has something new in it — a scheduled task that ran overnight, a reply you never came
+  back to — shows in bold with a count on the Chats tab. Unread survives quitting the app. Snoozed
+  and archived threads sit in groups at the foot of the list, snoozed ones showing the time they
+  come back, and anything new in a snoozed or archived thread brings it straight back to the Inbox.
+  Archiving only affects the Inbox: the thread stays exactly where it was in your folders and still
+  turns up in search. Hold ⌘ to pick several threads and archive or snooze them in one go.
+- **Chats name themselves properly.** Instead of taking the first line of whatever you typed, Stem
+  writes each new chat a short subject from your opening message — and uses it as the chat's name,
+  so the list, search and the window title all agree. A name you type yourself is never overwritten,
+  and "Write a subject" on any chat's right-click menu does one on demand. Settings → Chats picks
+  the model, or turns the whole thing off.
+- **Inbox rows show what's in them.** Under each subject, a line or two of the newest message in the
+  thread, so you can tell what's waiting without opening it. Settings → Chats sets how many lines,
+  or none at all.
 
 ## 0.3.0 — 2026-08-04
 

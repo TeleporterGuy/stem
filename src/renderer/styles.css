@@ -1291,14 +1291,12 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   outline: none;
 }
 
-/* ---- inbox: modes, unread, triage actions ---- */
-/* The Inbox/Chats/Archived control sits directly under the panel header, flush with
-   the list below it — the chat list is a native-feeling sidebar, not a settings
-   surface, so it stays out of a .formgroup card the way the tree already does. */
-.seg-ctl.chats-modes { margin: 2px 12px 6px; }
+/* ---- inbox: tabs, previews, unread, triage actions ---- */
+/* Inbox | Chats leads the panel, in the position and shape Memory's Facts | Recall
+   established. Bare, not inside a .formgroup card: the chat list is a
+   native-feeling sidebar, not a settings surface. */
+.seg-ctl.chats-modes { margin: 0 12px 8px; }
 .seg-ctl.chats-modes button { gap: var(--sp-2); display: inline-flex; align-items: center; justify-content: center; }
-/* Dropping a chat row here archives it. Mirrors .group-row.drop-target. */
-.seg-ctl.chats-modes button.drop-target { background: var(--sel); color: var(--ink); }
 .seg-count {
   font-size: var(--fs-10);
   font-weight: 700;
@@ -1326,7 +1324,25 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .chat-action:hover { color: var(--ink); }
 /* Wake time on a snoozed row — recessive, and it must not shove the title. */
 .chat-wake { flex: none; font-size: var(--fs-10); color: var(--muted); white-space: nowrap; }
+/* Snoozed / Archived: what you've already dealt with, collapsed at the foot of
+   the Inbox. The Archived one doubles as the drag-to-archive drop target. */
 .inbox-snoozed-toggle { margin: 10px 12px 4px; font-size: var(--fs-11); }
+.inbox-snoozed-toggle.drop-target { color: var(--ink); }
+/* An Inbox row reads like mail: subject over an excerpt of the newest message,
+   clamped to the chosen number of lines. The tree keeps one line per thread. */
+.chats-panel .group-row.chat-row.has-preview { align-items: flex-start; }
+.chats-panel .group-row.chat-row.has-preview .row-icon { margin-top: 1px; }
+.chat-preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--fs-11);
+  line-height: 1.35;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.chat-row.lines-1 .chat-preview { -webkit-line-clamp: 1; }
+.chat-row.lines-2 .chat-preview { -webkit-line-clamp: 2; }
 /* Bulk-action bar: present only while a selection exists. */
 .inbox-selbar {
   display: flex;

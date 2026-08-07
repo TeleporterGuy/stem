@@ -317,6 +317,11 @@ export default function App() {
     if (status?.ok) refreshChats();
   }, [status?.ok, refreshChats]);
 
+  // The server changed the list without being asked — a background subject write
+  // that has just renamed a thread. Push, so the row updates the moment it lands
+  // instead of on whatever the next refresh happens to be.
+  useEffect(() => window.stem?.onChatsChanged(() => void refreshChats()), [refreshChats]);
+
   // Fetch the model catalog once the runtime is ready; seed defaults from the backend
   // (the `isDefault` model + its default effort) when nothing is remembered yet.
   const refreshModels = useCallback(() => {
@@ -809,6 +814,11 @@ export default function App() {
   const onMarkAllRead = useCallback(() => {
     window.stem.markInboxAllRead().then(setChatList);
   }, []);
+  const onWriteSubject = useCallback((threadId: string) => {
+    // Round-trips through a model, so this resolves in a second or two rather
+    // than immediately; the row simply renames itself when it lands.
+    window.stem.writeChatSubject(threadId).then(setChatList);
+  }, []);
   const onRenameChat = useCallback(
     async (threadId: string, name: string) => {
       await window.stem.renameChat(threadId, name);
@@ -1175,6 +1185,7 @@ export default function App() {
             onSnooze={onSnooze}
             onSetRead={onSetRead}
             onMarkAllRead={onMarkAllRead}
+            onWriteSubject={onWriteSubject}
             inboxUnreadCount={inboxUnreadCount}
             activeRunning={cur.running}
             previewActive={previewActive}

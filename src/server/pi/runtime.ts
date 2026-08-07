@@ -43,6 +43,7 @@ import { log } from '../log';
 import { isContextOverflowError } from '../backend/overflow';
 import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
+import { autoTitle, writeSubject } from '../chats/subject';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
 import { buildRecallContext, type RecallTimings } from '../recall/inject';
 import { reconcileExplicitFact } from '../recall/reconcile';
@@ -165,15 +166,10 @@ function scheduledPreamble(at: string): string {
   ].join('\n');
 }
 
-// Max length for an auto-derived chat title; longer first messages are
-// truncated (the sidebar ellipsizes anyway).
-const MAX_AUTO_TITLE = 80;
-
-/** Derive a chat title from the first user message: its first non-empty line, trimmed and capped. */
-function titleFromInput(input: string): string {
-  const line = input.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
-  return line.length > MAX_AUTO_TITLE ? `${line.slice(0, MAX_AUTO_TITLE - 1).trimEnd()}…` : line;
-}
+// How much of the newest message rides along in a ChatSummary as the Inbox's
+// preview. Two lines in a sidebar is nowhere near this; the slack is for the
+// leading whitespace/markdown the renderer clamps away.
+const MAX_PREVIEW = 200;
 
 // Argument keys a built-in file tool (read/grep/find/ls/edit/write) carries its
 // target path under. Probed on the raw pi event for the memory-taint check.
@@ -412,6 +408,8 @@ interface SessionFile {
   cwd: string | null;
   createdAt: number;
   updatedAt: number;
+  /** Opening of the newest message in the file — the Inbox row's preview. */
+  preview: string;
 }
 
 /**
@@ -751,8 +749,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // or a folder move) — replacing the renderer's optimistic first-message title.
       this.unnamedThreads.delete(threadId);
       if (isNewThread) {
-        const name = titleFromInput(input.input);
+        const name = autoTitle(input.input);
         if (name) await this.proc!.request({ type: 'set_session_name', name }).catch(() => undefined);
+        // …and then, in the background, ask a small model for a real subject.
+        // Not awaited: the user is watching a reply stream, and the rename this
+        // may end in queues on the foreground gate so it lands after the turn
+        // rather than switching pi's active session mid-stream.
+        void this.writeThreadSubject(threadId, input.input);
       }
 
       if (isRecallEnabled()) {
@@ -1118,6 +1121,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       .map((f) => ({
         threadId: f.id,
         title: (f.name || 'New chat').trim() || 'New chat',
+        ...(f.preview ? { preview: f.preview } : {}),
         folderId: null,
         createdAt: f.createdAt,
         updatedAt: f.updatedAt
@@ -1293,6 +1297,32 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const renamed = await this.proc!.request({ type: 'set_session_name', name });
       if (!renamed.success) throw new Error(renamed.error ?? `pi could not rename chat "${threadId}".`);
     });
+  }
+
+  /**
+   * Ask a small model for this thread's subject and apply it (see
+   * server/chats/subject.ts for the policy). Always resolves — a thread with no
+   * subject keeps the first line of the user's message as its name.
+   *
+   * `force` is the explicit "Write a subject" row action; without it the write
+   * obeys Settings → Chats and leaves a hand-typed name alone.
+   */
+  async writeThreadSubject(threadId: string, firstMessage: string, force = false): Promise<string | null> {
+    const subject = await writeSubject(
+      {
+        // Not priority: unlike the exec judge, nobody is blocked on this.
+        complete: (prompt, opts) => this.complete(prompt, opts),
+        currentTitle: async (id) => (await this.listThreads()).find((c) => c.threadId === id)?.title ?? null,
+        rename: (id, name) => this.renameThread(id, name)
+      },
+      threadId,
+      firstMessage,
+      { force }
+    );
+    // Only a write that landed is worth a refresh; the skip paths (mode off,
+    // hand-renamed thread, model gave nothing usable) changed no list.
+    if (subject) this.emit('chats:changed', threadId);
+    return subject;
   }
 
   async deleteThread(threadId: string): Promise<void> {
@@ -2777,7 +2807,36 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         // ignore
       }
     }
-    return { id, path, name, cwd, createdAt: Math.floor(createdAt), updatedAt: mtimeMs };
+    return { id, path, name, cwd, createdAt: Math.floor(createdAt), updatedAt: mtimeMs, preview: this.previewOf(lines) };
+  }
+
+  /**
+   * The opening of the newest thing said in a session — what an Inbox row shows
+   * under the subject. Walks from the end so a long thread costs a few parses,
+   * and the whole result is cached by mtime with the rest of the metadata, so a
+   * list refresh over an unchanged file re-reads nothing.
+   *
+   * Tool calls and tool results are skipped: they're how the answer was reached,
+   * not the answer. Injected context and citation markers go through the same
+   * stripper the transcript uses, so a preview never leaks a recall block.
+   */
+  private previewOf(lines: string[]): string {
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (!lines[i].includes('"message"')) continue;
+      let entry: { type?: string; message?: { role?: string; content?: unknown } };
+      try {
+        entry = JSON.parse(lines[i]);
+      } catch {
+        continue;
+      }
+      if (entry.type !== 'message') continue;
+      const role = entry.message?.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+      const text = this.contentToParts(entry.message?.content).text.replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      return text.length > MAX_PREVIEW ? `${text.slice(0, MAX_PREVIEW - 1).trimEnd()}…` : text;
+    }
+    return '';
   }
 
   /** Read the live foreground session's messages (for active sessions without a file yet). */
