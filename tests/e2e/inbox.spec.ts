@@ -189,6 +189,113 @@ test('inbox state survives a restart', async ({ mainWindow, electronApp }) => {
   await expect(row(mainWindow, 'alpha')).toBeVisible();
 });
 
+// ---- triage shortcuts ----
+// ControlOrMeta is Playwright's platform-correct mod key, so these assert the
+// same contract the unit tests assert per-platform: ⌘⇧A / ⌘⇧S / ⌘⇧U on mac,
+// Ctrl+Shift+… everywhere else.
+const ARCHIVE = 'ControlOrMeta+Shift+A';
+const SNOOZE = 'ControlOrMeta+Shift+S';
+const READ = 'ControlOrMeta+Shift+D';
+
+test('the archive shortcut triages the open thread and advances', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await newThread(mainWindow, 'beta');
+
+  // beta is the open thread; archiving it should land on alpha.
+  await mainWindow.keyboard.press(ARCHIVE);
+  await expect(row(mainWindow, 'alpha')).toHaveClass(/selected/);
+  await expect(mainWindow.locator('.message-user').last()).toContainText('alpha');
+  await group(mainWindow, /Archived \(1\)/).click();
+  await expect(row(mainWindow, 'beta')).toBeVisible();
+});
+
+test('the archive shortcut still works with the chat list unmounted', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await newThread(mainWindow, 'beta');
+
+  // ⌘\ hides the inspector, which unmounts the list the buttons live in. The
+  // shortcut is registered above it, so triage survives.
+  await mainWindow.keyboard.press('ControlOrMeta+\\');
+  await expect(mainWindow.locator('.inspector')).toHaveCount(0);
+  await mainWindow.keyboard.press(ARCHIVE);
+  await expect(mainWindow.locator('.message-user').last()).toContainText('alpha');
+
+  await mainWindow.keyboard.press('ControlOrMeta+\\');
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
+});
+
+test('the snooze shortcut opens a picker that finishes without a mouse', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await newThread(mainWindow, 'beta');
+
+  await mainWindow.keyboard.press(SNOOZE);
+  const menu = mainWindow.locator('.snooze-menu');
+  await expect(menu).toBeVisible();
+  // It takes focus on the first preset, and arrows walk the list.
+  await expect(menu.getByRole('button').first()).toBeFocused();
+  await mainWindow.keyboard.press('ArrowDown');
+  await expect(menu.getByRole('button').nth(1)).toBeFocused();
+  await mainWindow.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+
+  // Re-open and commit: beta leaves the Inbox and alpha becomes the open thread.
+  await mainWindow.keyboard.press(SNOOZE);
+  await mainWindow.getByRole('button', { name: /Next week/ }).click();
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
+  await expect(mainWindow.locator('.message-user').last()).toContainText('alpha');
+});
+
+test('the snooze shortcut wakes a thread that is already snoozed', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await mainWindow.keyboard.press(SNOOZE);
+  await mainWindow.getByRole('button', { name: /Next week/ }).click();
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(0);
+
+  // Select the snoozed row, then the same shortcut sends it back.
+  await group(mainWindow, /Snoozed \(1\)/).click();
+  await row(mainWindow, 'alpha').click({ modifiers: ['ControlOrMeta'] });
+  await mainWindow.keyboard.press(SNOOZE);
+  await expect(mainWindow.getByRole('button', { name: /Snoozed/ })).toHaveCount(0);
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
+});
+
+test('the read shortcut hands the open thread back as unread', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  // Reading a thread marks it read, so the row is not bold to begin with.
+  await expect(row(mainWindow, 'alpha')).not.toHaveClass(/unread/);
+
+  await mainWindow.keyboard.press(READ);
+  await expect(row(mainWindow, 'alpha')).toHaveClass(/unread/);
+  // And back: nothing in the target is unread now, so it marks read again.
+  await mainWindow.keyboard.press(READ);
+  await expect(row(mainWindow, 'alpha')).not.toHaveClass(/unread/);
+});
+
+test('a selection is what the shortcuts act on while one exists', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await newThread(mainWindow, 'beta');
+  await newThread(mainWindow, 'gamma');
+
+  await row(mainWindow, 'alpha').click({ modifiers: ['ControlOrMeta'] });
+  await row(mainWindow, 'beta').click({ modifiers: ['ControlOrMeta'] });
+  await expect(mainWindow.getByText('2 selected')).toBeVisible();
+
+  // gamma is open but not selected, so the selection wins and gamma stays put.
+  await mainWindow.keyboard.press(ARCHIVE);
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
+  await expect(row(mainWindow, 'gamma')).toBeVisible();
+  await expect(mainWindow.locator('.message-user').last()).toContainText('gamma');
+  await expect(mainWindow.getByText('2 selected')).toHaveCount(0);
+
+  // An all-archived selection reverses: the same key restores it.
+  await group(mainWindow, /Archived \(2\)/).click();
+  await row(mainWindow, 'alpha').click({ modifiers: ['ControlOrMeta'] });
+  await row(mainWindow, 'beta').click({ modifiers: ['ControlOrMeta'] });
+  await mainWindow.keyboard.press(ARCHIVE);
+  await expect(mainWindow.getByRole('button', { name: /Archived/ })).toHaveCount(0);
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(3);
+});
+
 test('⌘-click builds a selection the bar acts on in bulk', async ({ mainWindow }) => {
   await send(mainWindow, 'alpha');
   await newThread(mainWindow, 'beta');

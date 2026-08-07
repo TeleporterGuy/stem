@@ -27,6 +27,8 @@ import { SkillApprovalCard } from './manage/SkillApprovalCard';
 import { SkillsResetDialog } from './manage/SkillsResetDialog';
 import { ExecApprovalCard } from './manage/ExecApprovalCard';
 import { DeleteThreadDialog } from './DeleteThreadDialog';
+import { SnoozeMenu } from './chats/SnoozeMenu';
+import type { InboxSelectionApi } from './chats/ChatList';
 import { ActivityIndicator } from './ui/ActivityIndicator';
 import { TaskAlertModal } from './TaskAlertModal';
 import { ReleaseNotesModal } from './ReleaseNotesModal';
@@ -98,6 +100,9 @@ export default function App() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   // The active thread queued for deletion behind the ⌃X confirm popup (null = closed).
   const [pendingDelete, setPendingDelete] = useState<{ threadId: string; title: string } | null>(null);
+  // The snooze picker opened by ⌘⇧S, and the threads it will apply to. The chat
+  // list has its own for the click path; this one has to work without the list.
+  const [snoozePicker, setSnoozePicker] = useState<{ ids: string[]; x: number; y: number } | null>(null);
   // Scheduled tasks: the full list (drives chat badges) + FIFO notify_user alerts.
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [taskAlerts, setTaskAlerts] = useState<TaskNotifyPayload[]>([]);
@@ -801,13 +806,58 @@ export default function App() {
     window.stem.setChatFolder(threadId, folderId).then(setChatList);
   }, []);
 
+  /**
+   * Auto-advance: triaging the thread you are reading moves you on to the next
+   * one waiting, so an Inbox can be emptied without a trip back to the list
+   * between every row. When nothing is left to advance to, you get a new chat —
+   * an empty Inbox should leave you ready to write, not staring at a thread you
+   * have just dealt with.
+   *
+   * Only fires when the active thread is one of the ones being triaged: archiving
+   * some other row is housekeeping, and must not yank you out of what you are
+   * reading. Only leaving the Inbox counts — un-snoozing or restoring a thread is
+   * how you go *to* it.
+   *
+   * Lives here rather than in the chat list because the triage shortcuts have to
+   * work with the inspector hidden or parked on another tab, where the list is
+   * unmounted; the list's buttons route through the same handlers.
+   */
+  const advanceAfter = useCallback(
+    (threadIds: string[]) => {
+      const active = activeThreadIdRef.current;
+      if (!active || !threadIds.includes(active)) return;
+      const going = new Set(threadIds);
+      const now = Date.now();
+      const order = displayList.chats
+        .filter((c) => placement(c, displayList.inbox, now) === 'inbox')
+        .map((c) => c.threadId);
+      const from = order.indexOf(active);
+      // The row below, as drawn — then the row above, so triaging the last thread
+      // in the list doesn't fall straight through to a new chat.
+      const next =
+        order.slice(from + 1).find((id) => !going.has(id)) ??
+        [...order.slice(0, Math.max(from, 0))].reverse().find((id) => !going.has(id));
+      if (next) void openChat(next);
+      else newConversation();
+    },
+    [displayList, openChat, newConversation]
+  );
+
   // Inbox triage. Like the folder mutators, each returns the fresh list.
-  const onArchive = useCallback((threadIds: string[], archived: boolean) => {
-    window.stem.setInboxArchived(threadIds, archived).then(setChatList);
-  }, []);
-  const onSnooze = useCallback((threadIds: string[], until: number | null) => {
-    window.stem.snoozeChats(threadIds, until).then(setChatList);
-  }, []);
+  const onArchive = useCallback(
+    (threadIds: string[], archived: boolean) => {
+      window.stem.setInboxArchived(threadIds, archived).then(setChatList);
+      if (archived) advanceAfter(threadIds);
+    },
+    [advanceAfter]
+  );
+  const onSnooze = useCallback(
+    (threadIds: string[], until: number | null) => {
+      window.stem.snoozeChats(threadIds, until).then(setChatList);
+      if (until !== null) advanceAfter(threadIds);
+    },
+    [advanceAfter]
+  );
   const onSetRead = useCallback((threadIds: string[], read: boolean) => {
     window.stem.setInboxRead(threadIds, read).then(setChatList);
   }, []);
@@ -871,6 +921,77 @@ export default function App() {
     if (!id) return; // Nothing open (draft/empty) — no-op.
     const title = displayList.chats.find((c) => c.threadId === id)?.title ?? '';
     setPendingDelete({ threadId: id, title });
+  });
+
+  // ---- inbox triage shortcuts ----
+  // ⌘⇧A / ⌘⇧S / ⌘⇧U act on the multi-selection when the list is showing one, and
+  // on the thread you are reading otherwise — the same two targets the row
+  // buttons and the selection bar already act on. Registered here, not in the
+  // list, so they survive a hidden inspector or a parked-on-Settings panel.
+  const inboxSelection = useRef<InboxSelectionApi | null>(null);
+  const onSelectionApi = useCallback((api: InboxSelectionApi | null) => {
+    inboxSelection.current = api;
+  }, []);
+
+  const triageTargets = useCallback((): string[] => {
+    const selected = inboxSelection.current?.ids ?? [];
+    if (selected.length > 0) return selected;
+    const id = activeThreadIdRef.current;
+    return id ? [id] : [];
+  }, []);
+
+  /** Where the triaged threads sit right now — the direction each toggle reverses. */
+  const triageWhere = useCallback(
+    (threadIds: string[], want: 'inbox' | 'snoozed' | 'archived') => {
+      const now = Date.now();
+      return threadIds.every((id) => {
+        const chat = displayList.chats.find((c) => c.threadId === id);
+        return !!chat && placement(chat, displayList.inbox, now) === want;
+      });
+    },
+    [displayList]
+  );
+
+  useShortcut('archive-thread', () => {
+    const ids = triageTargets();
+    if (ids.length === 0) return;
+    // An all-archived target restores; anything else archives — the same rule the
+    // selection bar uses, and the reversible direction when the target is mixed.
+    onArchive(ids, !triageWhere(ids, 'archived'));
+    inboxSelection.current?.clear();
+  });
+
+  useShortcut('snooze-thread', () => {
+    const ids = triageTargets();
+    if (ids.length === 0) return;
+    if (triageWhere(ids, 'snoozed')) {
+      onSnooze(ids, null); // Already snoozed → the shortcut wakes them.
+      inboxSelection.current?.clear();
+      return;
+    }
+    // Anchor the picker under the row it applies to when that row is on screen;
+    // with the list hidden there is nothing to point at, so it opens up high and
+    // centred rather than at a stale coordinate.
+    const row = document.querySelector(`[data-thread-id="${CSS.escape(ids[0])}"]`);
+    const rect = row?.getBoundingClientRect();
+    setSnoozePicker({
+      ids,
+      x: rect ? rect.left + 24 : Math.round(window.innerWidth / 2) - 90,
+      y: rect ? rect.bottom : Math.round(window.innerHeight / 4)
+    });
+  });
+
+  useShortcut('toggle-read', () => {
+    const ids = triageTargets();
+    if (ids.length === 0) return;
+    // Opening a thread marks it read, so on the thread you are reading this is
+    // "mark unread and move on"; a selection with anything unread in it clears.
+    const anyUnread = ids.some((id) => {
+      const chat = displayList.chats.find((c) => c.threadId === id);
+      return !!chat && isUnread(chat, displayList.inbox);
+    });
+    onSetRead(ids, anyUnread);
+    inboxSelection.current?.clear();
   });
 
   // Roll back to (and including) a turn on the backend, drop that turn + everything
@@ -1185,6 +1306,7 @@ export default function App() {
             onSnooze={onSnooze}
             onSetRead={onSetRead}
             onMarkAllRead={onMarkAllRead}
+            onSelectionApi={onSelectionApi}
             onWriteSubject={onWriteSubject}
             inboxUnreadCount={inboxUnreadCount}
             activeRunning={cur.running}
@@ -1210,6 +1332,20 @@ export default function App() {
           title={pendingDelete.title}
           onConfirm={confirmDeleteThread}
           onCancel={() => setPendingDelete(null)}
+        />
+      )}
+      {snoozePicker && (
+        <SnoozeMenu
+          x={snoozePicker.x}
+          y={snoozePicker.y}
+          count={snoozePicker.ids.length}
+          autoFocus
+          onPick={(until) => {
+            onSnooze(snoozePicker.ids, until);
+            setSnoozePicker(null);
+            inboxSelection.current?.clear();
+          }}
+          onClose={() => setSnoozePicker(null)}
         />
       )}
       {taskAlert && (

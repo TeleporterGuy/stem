@@ -12,6 +12,8 @@ export interface SnoozeMenuProps {
   y: number;
   /** How many threads this snooze will apply to — the bulk case says so. */
   count: number;
+  /** Opened by keyboard: take focus, so the picker can be finished without a mouse. */
+  autoFocus?: boolean;
   onPick: (until: number) => void;
   onClose: () => void;
 }
@@ -24,7 +26,7 @@ function toLocalInputValue(d: Date): string {
   )}`;
 }
 
-export function SnoozeMenu({ x, y, count, onPick, onClose }: SnoozeMenuProps) {
+export function SnoozeMenu({ x, y, count, autoFocus, onPick, onClose }: SnoozeMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [custom, setCustom] = useState<string | null>(null);
@@ -53,6 +55,31 @@ export function SnoozeMenu({ x, y, count, onPick, onClose }: SnoozeMenuProps) {
     };
   }, [onClose]);
 
+  // Opened from the keyboard there is no pointer to finish the pick with, so the
+  // first preset takes focus and the menu becomes arrow-navigable. The custom
+  // step focuses its own input, so only claim focus for the preset list.
+  useEffect(() => {
+    if (autoFocus && custom === null) ref.current?.querySelector('button')?.focus();
+  }, [autoFocus, custom]);
+
+  /** ↑/↓ walk the presets; Escape backs out — of the custom step first, then the menu. */
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (custom !== null) setCustom(null);
+      else onClose();
+      return;
+    }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const items = [...(ref.current?.querySelectorAll('button') ?? [])];
+    if (items.length === 0) return;
+    e.preventDefault();
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const step = e.key === 'ArrowDown' ? 1 : -1;
+    items[(at + step + items.length) % items.length].focus();
+  };
+
   const commitCustom = () => {
     if (!custom) return;
     const at = new Date(custom).getTime();
@@ -67,6 +94,7 @@ export function SnoozeMenu({ x, y, count, onPick, onClose }: SnoozeMenuProps) {
       className="ctx-menu snooze-menu"
       style={{ left: pos?.x ?? x, top: pos?.y ?? y }}
       onClick={(e) => e.stopPropagation()}
+      onKeyDown={onKeyDown}
     >
       <div className="ctx-label">{count > 1 ? `Snooze ${count} threads until` : 'Snooze until'}</div>
       {custom === null ? (
@@ -99,14 +127,12 @@ export function SnoozeMenu({ x, y, count, onPick, onClose }: SnoozeMenuProps) {
             autoFocus
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
+            // Escape is left to bubble: the menu owns it, and backs out of this
+            // step before it backs out of the whole popover.
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
                 commitCustom();
-              }
-              if (e.key === 'Escape') {
-                e.preventDefault();
-                onClose();
               }
             }}
           />

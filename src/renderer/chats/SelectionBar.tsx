@@ -1,4 +1,5 @@
 import { AlarmClock, Archive, ArchiveRestore, MailOpen } from 'lucide-react';
+import { glyphsFor } from '../shortcuts';
 
 // Appears under the mode control the moment a multi-selection exists, and only
 // then — a permanently visible toolbar would be dead weight for the single-row
@@ -25,15 +26,22 @@ export function SelectionBar({
   return (
     <div className="inbox-selbar">
       <span className="inbox-selbar-count">{count} selected</span>
+      {/* The hover labels carry the keycap: these three actions are the whole
+          reason the triage shortcuts exist, and this bar is where you meet them. */}
       <span className="inbox-selbar-actions">
         {!archived && (
-          <button className="link-btn icon-only" data-label="Snooze" aria-label="Snooze" onClick={onSnooze}>
+          <button
+            className="link-btn icon-only"
+            data-label={`Snooze  ${glyphsFor('snooze-thread')}`}
+            aria-label="Snooze"
+            onClick={onSnooze}
+          >
             <AlarmClock size={14} />
           </button>
         )}
         <button
           className="link-btn icon-only"
-          data-label={archived ? 'Move to Inbox' : 'Archive'}
+          data-label={`${archived ? 'Move to Inbox' : 'Archive'}  ${glyphsFor('archive-thread')}`}
           aria-label={archived ? 'Move to Inbox' : 'Archive'}
           onClick={onArchive}
         >
@@ -41,7 +49,7 @@ export function SelectionBar({
         </button>
         <button
           className="link-btn icon-only"
-          data-label="Mark read"
+          data-label={`Mark read  ${glyphsFor('toggle-read')}`}
           aria-label="Mark read"
           onClick={onMarkRead}
         >

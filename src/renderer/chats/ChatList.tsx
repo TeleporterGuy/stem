@@ -18,9 +18,15 @@ import {
 import type { ChatListResult, ChatSearchHit, ChatSummary, Folder, ThreadStatus } from '../../shared/types';
 import { formatWake, isUnread, nextWakeAt, placement } from '../../shared/inbox';
 import { stripCiteMarkers } from '../../shared/citations';
-import { useShortcut } from '../shortcuts';
+import { glyphsFor, useShortcut } from '../shortcuts';
 import { SnoozeMenu } from './SnoozeMenu';
 import { SelectionBar } from './SelectionBar';
+
+/** The Inbox's multi-selection, as seen from outside the list. */
+export interface InboxSelectionApi {
+  ids: string[];
+  clear: () => void;
+}
 
 export interface ChatListProps {
   data: ChatListResult;
@@ -45,6 +51,13 @@ export interface ChatListProps {
   onSnooze: (threadIds: string[], until: number | null) => void;
   onSetRead: (threadIds: string[], read: boolean) => void;
   onMarkAllRead: () => void;
+  /**
+   * Publish the current multi-selection (and the way to drop it) so the triage
+   * shortcuts, which are registered in App and outlive this component, can act on
+   * it. Called with null when the list unmounts — a selection nobody can see must
+   * not keep steering a keystroke.
+   */
+  onSelectionApi?: (api: InboxSelectionApi | null) => void;
   /** Have a model write this thread's subject from its first message, now. */
   onWriteSubject: (threadId: string) => void;
 }
@@ -379,6 +392,13 @@ export function ChatList(props: ChatListProps) {
     if (!selectable) clearSelection();
   }, [selectable, clearSelection]);
 
+  const { onSelectionApi } = props;
+  useEffect(() => {
+    if (!onSelectionApi) return;
+    onSelectionApi({ ids: [...selected], clear: clearSelection });
+    return () => onSelectionApi(null);
+  }, [selected, clearSelection, onSelectionApi]);
+
   useEffect(() => {
     if (!selected.size) return;
     const onKey = (e: KeyboardEvent) => {
@@ -424,36 +444,12 @@ export function ChatList(props: ChatListProps) {
   const targets = (threadId: string): string[] =>
     selected.has(threadId) ? [...selected] : [threadId];
 
-  /**
-   * Auto-advance: triaging the thread you are reading moves you on to the next
-   * one waiting, so an Inbox can be emptied without a trip back to the list
-   * between every row. When nothing is left to advance to, you get a new chat —
-   * an empty Inbox should leave you ready to write, not staring at a thread you
-   * have just dealt with.
-   *
-   * Only fires when the active thread is one of the ones being triaged: archiving
-   * some other row is housekeeping, and must not yank you out of what you are
-   * reading. Only leaving the Inbox counts — un-snoozing or restoring a thread is
-   * how you go *to* it.
-   */
-  const advanceAfter = (threadIds: string[]) => {
-    if (!activeThreadId || !threadIds.includes(activeThreadId)) return;
-    const going = new Set(threadIds);
-    const order = buckets.inbox.map((c) => c.threadId);
-    const from = order.indexOf(activeThreadId);
-    // The row below, as drawn — then the row above, so triaging the last thread
-    // in the list doesn't fall straight through to a new chat.
-    const next =
-      order.slice(from + 1).find((id) => !going.has(id)) ??
-      [...order.slice(0, Math.max(from, 0))].reverse().find((id) => !going.has(id));
-    if (next) onOpen(next);
-    else props.onNewChat(null);
-  };
-
+  // Auto-advance after triage (move on to the next waiting thread) lives in App,
+  // with the handlers themselves — the same triage runs from keyboard shortcuts
+  // that stay live while this list is unmounted.
   const archive = (threadIds: string[], archived: boolean) => {
     props.onArchive(threadIds, archived);
     clearSelection();
-    if (archived) advanceAfter(threadIds);
   };
   const openSnooze = (ids: string[], e: React.MouseEvent) => {
     e.preventDefault();
@@ -605,6 +601,7 @@ export function ChatList(props: ChatListProps) {
     return (
       <div
         key={chat.threadId}
+        data-thread-id={chat.threadId}
         className={[
           'group-row chat-row',
           variant !== 'none' ? 'inbox-row' : '',
@@ -663,7 +660,7 @@ export function ChatList(props: ChatListProps) {
             {variant === 'inbox' && (
               <button
                 className="chat-action"
-                title="Snooze"
+                title={`Snooze (${glyphsFor('snooze-thread')})`}
                 aria-label="Snooze"
                 onClick={(e) => openSnooze(targets(chat.threadId), e)}
               >
@@ -673,7 +670,7 @@ export function ChatList(props: ChatListProps) {
             {variant === 'snoozed' && (
               <button
                 className="chat-action"
-                title="Un-snooze"
+                title={`Un-snooze (${glyphsFor('snooze-thread')})`}
                 aria-label="Un-snooze"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -686,7 +683,7 @@ export function ChatList(props: ChatListProps) {
             {variant !== 'snoozed' && (
               <button
                 className="chat-action"
-                title={variant === 'archived' ? 'Move to Inbox' : 'Archive'}
+                title={`${variant === 'archived' ? 'Move to Inbox' : 'Archive'} (${glyphsFor('archive-thread')})`}
                 aria-label={variant === 'archived' ? 'Move to Inbox' : 'Archive'}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -784,7 +781,8 @@ export function ChatList(props: ChatListProps) {
           )}
           <button
             className={`grp-head-add${searchOpen ? ' active' : ''}`}
-            title="Search chats (⌘F)"
+            // From the registry, so Windows/Linux read "Ctrl+F" rather than a ⌘ they have no key for.
+            title={`Search chats (${glyphsFor('focus-chat-search')})`}
             onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
           >
             <Search size={14} />
@@ -939,7 +937,6 @@ export function ChatList(props: ChatListProps) {
             props.onSnooze(snoozing.ids, until);
             setSnoozing(null);
             clearSelection();
-            if (until !== null) advanceAfter(snoozing.ids);
           }}
           onClose={() => setSnoozing(null)}
         />

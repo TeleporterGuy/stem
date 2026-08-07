@@ -34,6 +34,9 @@ export type ShortcutId =
   | 'stop'
   | 'delete-thread'
   | 'focus-chat-search'
+  | 'archive-thread'
+  | 'snooze-thread'
+  | 'toggle-read'
   | 'send';
 
 interface Binding {
@@ -62,6 +65,16 @@ export const BINDINGS: Binding[] = [
   { id: 'toggle-format', glyphs: cap('M', true), match: (e) => mod(e) && e.shiftKey && isKey(e, 'm') },
   { id: 'attach', glyphs: cap('U'), match: (e) => mod(e) && !e.shiftKey && isKey(e, 'u') },
   { id: 'focus-chat-search', glyphs: cap('F'), match: (e) => mod(e) && !e.shiftKey && isKey(e, 'f') },
+  // Inbox triage on the A/S/D home-row triad — three neighbouring keys for the
+  // three triage verbs. All mod+Shift, which keeps them clear of the plain-mod
+  // set and of Electron's default Windows/Linux menu (Ctrl+Shift+I and +R).
+  //
+  // D, not U, for mark-unread despite the worse mnemonic: Ctrl+Shift+U is IBus's
+  // Unicode-entry sequence, so on a default GNOME/Ubuntu desktop the input method
+  // eats the keystroke and the app never sees it.
+  { id: 'archive-thread', glyphs: cap('A', true), match: (e) => mod(e) && e.shiftKey && isKey(e, 'a') },
+  { id: 'snooze-thread', glyphs: cap('S', true), match: (e) => mod(e) && e.shiftKey && isKey(e, 's') },
+  { id: 'toggle-read', glyphs: cap('D', true), match: (e) => mod(e) && e.shiftKey && isKey(e, 'd') },
   { id: 'stop', glyphs: cap('.'), match: (e) => mod(e) && isKey(e, '.') },
   // mac: Control (not ⌘) — the only ctrl-based mac binding; no hold-⌘ hint anchors
   // it. Elsewhere Ctrl+X must keep meaning "cut", so deletion moves to Ctrl+Shift+X.

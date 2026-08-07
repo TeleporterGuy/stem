@@ -68,6 +68,21 @@ export const TIPS: Tip[] = [
     text: 'Jump straight to the search box to find any past conversation.'
   },
   {
+    id: 'archive',
+    shortcut: 'archive-thread',
+    text: 'Archive the thread you are reading and land on the next one waiting.'
+  },
+  {
+    id: 'snooze',
+    shortcut: 'snooze-thread',
+    text: 'Snooze a thread until you actually want it back — press it again to wake one.'
+  },
+  {
+    id: 'unread',
+    shortcut: 'toggle-read',
+    text: 'Mark the open thread unread, so the Inbox hands it back to you later.'
+  },
+  {
     id: 'inspector',
     shortcut: 'toggle-inspector',
     text: 'Hide the side panel when you want the chat to have the whole window.'
