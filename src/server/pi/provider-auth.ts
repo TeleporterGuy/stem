@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { host } from '../host';
+import { expectCallback } from './oauth-courier';
 import type { AuthProviderId, ApiKeyProviderId, AuthUiEvent, LocalProviderId } from '../../shared/types';
 
 // In-app provider sign-in. pi's TUI is NOT required for login: since pi 0.80.8
@@ -90,6 +91,12 @@ export class ProviderAuth {
           },
           notify: (event) => {
             if (event.type === 'auth_url') {
+              // pi has already bound its loopback callback port by the time it
+              // says this, so recording the address here can never race the
+              // listener it names. On a remote server the browser is on a
+              // client, and this record is what lets that client's courier hand
+              // the callback back (pi/oauth-courier.ts).
+              expectCallback(event.url);
               host().openExternal(event.url);
               this.emit({ kind: 'auth-url', url: event.url, ...(event.instructions ? { instructions: event.instructions } : {}) });
             } else if (event.type === 'device_code') {

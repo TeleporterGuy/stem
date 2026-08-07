@@ -2,6 +2,7 @@ import { registerServer } from './guard';
 import type { IpcDeps } from './deps';
 import { markOnboardingCompleted, readSettings, updateDefaultModel, updateLocalProvider } from '../workspace/settings';
 import { probeLocalProvider, syncModelsConfig } from '../pi/models-config';
+import { relayCallback } from '../pi/oauth-courier';
 import { isLocalProviderId } from '../../shared/providers';
 import type {
   ApiKeyProviderId,
@@ -63,6 +64,19 @@ export function registerAuthIpc(deps: IpcDeps): void {
   });
   registerServer('auth:respond', (_e, requestId: string, value: string) => {
     deps.providerAuth()?.respond(requestId, value);
+  });
+  // A client caught an OAuth callback that was addressed to this server's own
+  // loopback listener, because the browser was on the client's machine and
+  // 127.0.0.1 there is not 127.0.0.1 here. Replayed to the waiting flow, which
+  // is the only thing this channel can do with it — see pi/oauth-courier.ts for
+  // why a delivery has to match a sign-in that is actually outstanding.
+  registerServer('auth:deliverCallback', async (_e, redirectUri: string, params: Record<string, unknown>) => {
+    try {
+      await relayCallback(redirectUri, params);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   });
   // Authoritative liveness probe for a stored credential — used reactively to
   // classify a failed turn (expired/revoked OAuth token vs. a transient error).

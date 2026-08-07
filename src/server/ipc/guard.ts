@@ -54,6 +54,9 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'auth:providerLogin': [a.string],
   'auth:setApiKey': [a.string, a.string],
   'auth:respond': [a.string, a.string],
+  // The redirect the callback was addressed to, and the query the browser
+  // brought with it — whatever the provider put there, checked in the handler.
+  'auth:deliverCallback': [a.string, a.object],
   'auth:check': [a.string],
   // baseUrl, apiKey?, api? — api is undefined for auto-detect.
   'providers:testLocal': [

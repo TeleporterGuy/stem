@@ -1,6 +1,7 @@
 import { request as httpRequest } from 'node:http';
 import { log } from '../server/log';
-import type { BackendEventEnvelope, QuickChatSettings } from '../shared/types';
+import type { AuthUiEvent, BackendEventEnvelope, QuickChatSettings } from '../shared/types';
+import type { OAuthCourier } from './oauth-courier';
 import { updateClientQuickChat, withClientSettings } from './settings';
 
 // The desktop's half of the wire. Everything the renderer asks for that this
@@ -75,6 +76,12 @@ import { updateClientQuickChat, withClientSettings } from './settings';
 //                              cached preferences. The machine's half of the
 //                              patch is stored only after the server's half has
 //                              landed, so a failed call changes neither side.
+//   auth:providerLogin,        a sign-in ends in a browser, and the browser is
+//   mcp:login                  HERE. Both do nothing but tell the OAuth courier
+//                              that the authorization URL about to arrive on the
+//                              push stream is one this machine asked for — the
+//                              stream is a broadcast, and every other device
+//                              paired to the same server sees it too.
 //
 // SERVER-OWNED — everything else (~110 channels). The server's registry IS the
 // surface; this client asks for it at connect time (GET /channels) rather than
@@ -147,6 +154,8 @@ export interface ProxyDeps {
   requestAttention(): void;
   /** The implicit Quick Chat hand-off, run before a thread is opened. */
   threadOpened(threadId: string): Promise<void>;
+  /** Catches OAuth callbacks for a server that is not on this machine. */
+  oauthCourier: OAuthCourier;
   /** Quick Chat settings were persisted: apply the parts that are not settings. */
   applyQuickChatSettings(patch: Partial<QuickChatSettings>, next: QuickChatSettings): void;
 }
@@ -164,10 +173,14 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
   const base = deps.url.replace(/\/$/, '');
   const auth = `Bearer ${deps.token}`;
 
+  const signInStarted: WrappedChannel = { before: () => deps.oauthCourier.expectSignIn() };
+
   const wrapped: Readonly<Record<string, WrappedChannel>> = {
     'chats:open': {
       before: ([threadId]) => deps.threadOpened(threadId as string)
     },
+    'auth:providerLogin': signInStarted,
+    'mcp:login': signInStarted,
     ...Object.fromEntries(SETTINGS_CHANNELS.map((c) => [c, mergeSettingsAnswer])),
     'settings:updateQuickChat': {
       after: async ([patch], result) => {
@@ -253,9 +266,27 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       // The backend's own event stream. The overlay may own the thread, a
       // hand-off may be buffering — all of that is client state, so the decision
       // is made here and not by the server (see quickchat/index.ts).
-      case 'backend:event':
-        deps.routeBackendEvent(payload as BackendEventEnvelope);
+      case 'backend:event': {
+        const event = payload as BackendEventEnvelope;
+        // MCP's OAuth sign-in announces its URL down here rather than on
+        // `auth:event` — a different flow, in a different file, with the same
+        // loopback callback problem (see ./oauth-courier.ts).
+        if (event?.method === 'mcp/login/url') {
+          const url = (event.params as { url?: unknown } | undefined)?.url;
+          if (typeof url === 'string') deps.oauthCourier.offer(url);
+        }
+        deps.routeBackendEvent(event);
         return;
+      }
+      // Provider sign-in progress. The courier reads the one event that carries
+      // an address a browser will be sent to; everything about the push is
+      // otherwise unchanged, including that the window still gets it.
+      case 'auth:event': {
+        const event = payload as AuthUiEvent | undefined;
+        if (event?.kind === 'auth-url') deps.oauthCourier.offer(event.url);
+        deps.sendToMain(channel, payload);
+        return;
+      }
       // Things only a machine with a screen can do. They arrive as pushes rather
       // than as calls into this process because a server has no window to raise.
       case 'client:revealMainWindow':

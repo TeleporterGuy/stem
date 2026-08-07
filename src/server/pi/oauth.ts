@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import { URL } from 'node:url';
 import { host } from '../host';
+import { callbackPageHtml, expectCallback } from './oauth-courier';
 
 // MCP OAuth 2.1 browser flow for remote (Streamable HTTP) servers that require
 // OAuth rather than a static bearer header — e.g. Fastmail. Implements the MCP
@@ -232,11 +233,9 @@ function startLoopback(port = 0): Promise<Loopback> {
       }
       const error = reqUrl.searchParams.get('error');
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(
-        '<html><body style="font-family:system-ui,sans-serif;text-align:center;padding-top:3rem">' +
-          `<h2>${error ? 'Sign-in failed' : 'Sign-in complete'}</h2>` +
-          '<p>You can close this tab and return to Stem.</p></body></html>'
-      );
+      // Shared with the client's courier, which serves this same page when it is
+      // the one that caught the browser (see ./oauth-courier.ts).
+      res.end(callbackPageHtml(!!error));
       if (error) fail(new Error(`Authorization was denied (${error}).`));
       else settle({ code: reqUrl.searchParams.get('code'), state: reqUrl.searchParams.get('state') });
     });
@@ -355,6 +354,11 @@ export async function authorizeMcp(mcpUrl: string, opts: AuthorizeOptions = {}):
     authUrl.searchParams.set('code_challenge_method', 'S256');
     authUrl.searchParams.set('resource', pr.resource);
 
+    // Announce the URL and register its redirect in one breath: on a server the
+    // user is not sitting at, `openExternal` is a no-op and the browser that
+    // eventually visits this URL is on a client, whose courier will have to hand
+    // the callback back to the listener opened above.
+    expectCallback(authUrl.toString());
     opts.onAuthUrl?.(authUrl.toString());
     host().openExternal(authUrl.toString());
 

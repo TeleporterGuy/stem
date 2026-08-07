@@ -47,6 +47,14 @@ Maintainer notes:
   window onto that one: same chats, same memory, same skills, from any machine you sit at. Stem
   connects when it starts, so the move takes effect the next time you open it, and the pane says so.
   There's a button to come back to this computer's own server whenever you want.
+- **Signing in still works when Stem is on another computer.** Connecting an account — Claude,
+  ChatGPT, an MCP tool that asks you to log in — finishes in a browser, and browsers hand the
+  result back to the machine they're running on. When Stem's brain is elsewhere, that used to be
+  the wrong machine and the sign-in simply hung. Now the app opens the page for you, catches what
+  the browser brings back and passes it along, so connecting an account from a laptop feels exactly
+  the way it does when Stem is running right there. Signing in with a code you confirm on a phone
+  or another device is unaffected, and if anything goes wrong you can still paste the address your
+  browser ended up on.
 - **Your shortcut and your window settings stay with your machine.** The Quick Chat key, whether the
   overlay floats across every Space, whether the progress pill follows you, and which release notes
   you've already read are now kept per computer rather than shared. So a laptop and a desktop

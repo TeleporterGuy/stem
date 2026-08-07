@@ -76,6 +76,8 @@ beforeAll(async () => {
     routeBackendEvent: (event) => routed.push({ to: 'route', channel: 'backend:event', payload: event }),
     revealMainWindow: () => routed.push({ to: 'revealMainWindow', channel: '', payload: null }),
     requestAttention: () => routed.push({ to: 'requestAttention', channel: '', payload: null }),
+    // Nothing here signs in, so the courier only has to exist (see proxy.ts).
+    oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
     threadOpened: async (threadId) => {
       clientSide.push(`client:threadOpened(${threadId})`);
       if (refuseHandoff) throw refuseHandoff;

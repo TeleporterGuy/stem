@@ -8,6 +8,7 @@ import { log } from '../server/log';
 import { resolveProfileOverride } from '../server/workspace/paths';
 import { bindServerChannels } from './ipc-bridge';
 import { registerLocalIpc } from './local';
+import { createOAuthCourier, type OAuthCourier } from './oauth-courier';
 import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, requestAttention } from './platform';
 import { createServerProxy, type ServerProxy } from './proxy';
 import { clientCredentials, resolveServerUrl } from './server-endpoint';
@@ -292,6 +293,7 @@ process.on('unhandledRejection', (reason) => {
 
 let server: ServerHandle | null = null;
 let proxy: ServerProxy | null = null;
+let oauthCourier: OAuthCourier | null = null;
 
 app.whenReady().then(async () => {
   // Strict CSP for the renderer in production: only self, no remote/inline
@@ -338,8 +340,20 @@ app.whenReady().then(async () => {
   // holds its own (client.json), minting or pairing for one on first run.
   const endpoint = await clientCredentials(serverUrl, { external: !!configured.url });
 
+  // A sign-in that ends in a browser ends in a browser HERE. When the server is
+  // somebody else's process the loopback address it redirects to is this
+  // machine's, not its own, so the callback has to be caught here and carried
+  // back; when Stem started the server itself there is nothing to carry, and the
+  // courier stays out of the way (src/desktop/oauth-courier.ts).
+  oauthCourier = createOAuthCourier({
+    enabled: !!configured.url,
+    deliver: (redirectUri, params) => proxy!.invoke('auth:deliverCallback', [redirectUri, params]),
+    openExternal: openExternalUrl
+  });
+
   proxy = createServerProxy({
     ...endpoint,
+    oauthCourier,
     sendToMain,
     sendToOverlay: (channel, payload) => quickChat.sendToOverlay(channel, payload),
     revealIfOwns: (threadId) => quickChat.revealIfOwns(threadId),
@@ -426,6 +440,7 @@ let quitting = false;
 app.on('before-quit', (event) => {
   if (quitting) return;
   proxy?.close();
+  oauthCourier?.close();
   // Nothing to drain when the server is somebody else's process.
   if (!server) return;
   event.preventDefault();
