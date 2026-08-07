@@ -12,7 +12,12 @@
 // that guard covered are kept below, stated in the new terms.
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { clearLiveTurns, liveTurnCount, noteTurnEvent } from '../../src/server/live-turns';
+import {
+  clearLiveTurns,
+  liveTurnCount,
+  liveTurnSnapshot,
+  noteTurnEvent
+} from '../../src/server/live-turns';
 
 beforeEach(() => {
   clearLiveTurns();
@@ -76,5 +81,36 @@ describe('the backend going away', () => {
     noteTurnEvent('item/completed', 'thread-1');
     noteTurnEvent('turn/started', 'thread-1');
     expect(liveTurnCount()).toBe(0);
+  });
+});
+
+// The same fold, read as an answer rather than a count: what a client is told the
+// instant its event stream connects, so a turn that kept running while it was
+// away shows as active instead of finished.
+describe('the snapshot a connecting client gets', () => {
+  it('names each live thread and the turn running in it', () => {
+    noteTurnEvent('item/started', 'thread-1', 'turn-a');
+    noteTurnEvent('item/agentMessage/delta', 'thread-2', 'turn-b');
+    expect(liveTurnSnapshot()).toEqual([
+      { threadId: 'thread-1', turnId: 'turn-a' },
+      { threadId: 'thread-2', turnId: 'turn-b' }
+    ]);
+  });
+
+  it('carries the newest turn of a thread, not the one that started it', () => {
+    // The turn id is what a client's Stop interrupts. An id from the previous
+    // turn of the same thread would interrupt nothing.
+    noteTurnEvent('item/started', 'thread-1', 'turn-a');
+    noteTurnEvent('turn/completed', 'thread-1', 'turn-a');
+    noteTurnEvent('item/started', 'thread-1', 'turn-b');
+    expect(liveTurnSnapshot()).toEqual([{ threadId: 'thread-1', turnId: 'turn-b' }]);
+  });
+
+  it('is empty once every turn has settled', () => {
+    noteTurnEvent('item/started', 'thread-1', 'turn-a');
+    noteTurnEvent('turn/aborted', 'thread-1', 'turn-a');
+    // Emptiness is an answer, not an absence of one: a client reading this is
+    // told its spinner should stop, which is the whole point of being sent it.
+    expect(liveTurnSnapshot()).toEqual([]);
   });
 });

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
@@ -44,7 +45,11 @@ import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolic
 // SSE rather than a WebSocket on purpose: it is one-directional (which is exactly
 // the shape of the push side), it survives a reverse proxy without an upgrade
 // dance — and node:http can serve it with no new dependency, which a WebSocket
-// could not.
+// could not. It also comes with resumption built into the protocol: every frame
+// carries an `id:`, a client echoes the last one back as `Last-Event-ID`, and
+// GET /events answers it out of a bounded buffer of what it recently sent. A gap
+// that reaches further back than the buffer is answered with a `resync` control
+// frame instead of a partial replay — see the buffer's own comment below.
 //
 // Everything security-relevant is injected (authentication, dispatch, the origin
 // policy) so this file stays a transport and the tests can drive it end to end
@@ -76,6 +81,27 @@ const SSE_KEEPALIVE_MS = 25_000;
 
 /** How long the client should wait before reconnecting a dropped stream. */
 const SSE_RETRY_MS = 3_000;
+
+/**
+ * How much of the recent past a returning client can be handed back.
+ *
+ * Two bounds, because either one alone has a shape that breaks it. Frames alone
+ * would let a thousand tool results (or one pasted screenshot echoed back) sit in
+ * memory; bytes alone would let a torrent of two-character deltas grow the array
+ * without limit. Whichever bites first evicts from the front.
+ *
+ * 1,000 frames is roughly two or three turns of streamed answer — comfortably
+ * more than a reconnect takes, since the client's backoff tops out at ten
+ * seconds. 4 MB is not a size the buffer is expected to reach: a typical turn's
+ * frames come to a couple of hundred kilobytes, and the cap exists for the frame
+ * that is pathologically large rather than for the ordinary case.
+ *
+ * Everything past those bounds is not a data loss, it is a `resync`: the client
+ * refetches, which is strictly more correct than a partial replay and only
+ * costs a round trip.
+ */
+const REPLAY_MAX_FRAMES = 1_000;
+const REPLAY_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * The only addresses this server will bind, enforced rather than documented.
@@ -143,6 +169,18 @@ export interface TransportServerOptions {
    * the `files:*` channels already enforce. Omitted = no /files route.
    */
   openDownload?(rel: string): Promise<DownloadTarget | null>;
+  /**
+   * What is happening right now, handed to every client the moment its stream
+   * opens. Whatever this returns is sent verbatim as the `snapshot` control
+   * frame — the transport does not read it, so what counts as "right now" stays
+   * a question for the layer that knows about turns (see server/live-turns.ts).
+   *
+   * MUST be synchronous. The connect handshake writes the snapshot, the replay
+   * and the client's registration in one uninterrupted turn of the event loop,
+   * which is the whole reason a frame cannot slip between them; an await here
+   * would open exactly that window. Omitted = no snapshot frame.
+   */
+  connectSnapshot?(): unknown;
   /** Host values accepted beyond loopback and the tailnet. */
   extraHosts?: readonly string[];
 }
@@ -166,9 +204,11 @@ export interface DownloadTarget {
 /** One server → client push, already stamped with its place in the stream. */
 export interface PushEvent {
   /**
-   * Monotonic, per-server-run. Nothing consumes it yet — replay is Phase 2 — but
-   * it is on the wire from the first release on purpose: adding it later would be
-   * a protocol change across every client rather than a server-side addition.
+   * Monotonic, per-server-run, and the caller's to keep so — it is what a
+   * reconnecting client resumes from. On the wire it is prefixed with this run's
+   * epoch (see `epoch` below), so an id minted by a server that has since been
+   * restarted is recognisable as one rather than mistaken for a position in the
+   * current stream.
    */
   id: number;
   channel: string;
@@ -178,10 +218,14 @@ export interface PushEvent {
 export interface TransportServer {
   /** The bound port (resolved, so a `port: 0` caller learns what it got). */
   readonly port: number;
-  /** Fan an event out to every connected client. */
+  /** This run's opaque stream identity, prefixed onto every frame id. */
+  readonly epoch: string;
+  /** Fan an event out to every connected client, and remember it for replay. */
   push(event: PushEvent): void;
   /** Connected SSE clients — diagnostics and tests. */
   clientCount(): number;
+  /** How many frames the replay buffer is currently holding — tests, diagnostics. */
+  bufferedFrames(): number;
   /**
    * End every stream belonging to `deviceId`, returning how many were closed.
    * Revoking a device removes its credential, which stops the NEXT request — an
@@ -267,11 +311,32 @@ function cappedBody(req: IncomingMessage, limit: number): Readable {
 
 /**
  * One SSE frame. JSON.stringify escapes newlines, so `data:` is always one line.
- * The `id:` line is what a future replay implementation resumes from; browsers
- * echo it back as Last-Event-ID for free, and this server ignores that header.
+ *
+ * The `id:` line is the client's bookmark: a browser's EventSource echoes the
+ * last one it saw back as Last-Event-ID on reconnect for free, and Stem's own
+ * hand-rolled reader sends the same header deliberately. `epoch.seq` rather than
+ * a bare number so that a bookmark from a server that has since been restarted
+ * cannot be read as a position in the stream this one is producing — the
+ * sequence begins again at 1 after a restart, and without the epoch the two runs'
+ * ids would be indistinguishable.
  */
-function sseFrame(event: PushEvent): string {
-  return `id: ${event.id}\ndata: ${JSON.stringify({ channel: event.channel, payload: event.payload })}\n\n`;
+function sseFrame(epoch: string, event: PushEvent): string {
+  return `id: ${epoch}.${event.id}\ndata: ${JSON.stringify({ channel: event.channel, payload: event.payload })}\n\n`;
+}
+
+/**
+ * A control frame: something about the STREAM rather than something that
+ * happened. Named with SSE's own `event:` field, which is what makes it
+ * structurally impossible for a client to mistake one for a push — a data frame
+ * carries no `event:` line, so `resync` can never arrive somewhere expecting a
+ * `{channel, payload}` envelope.
+ *
+ * Deliberately carries no `id:`. A control frame is not a position in the stream:
+ * a client that acted on one and then lost the connection must resume from the
+ * last real frame it saw, not from a bookmark that would skip whatever came next.
+ */
+function controlFrame(name: string, data: unknown): string {
+  return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
 export async function startTransportServer(opts: TransportServerOptions): Promise<TransportServer> {
@@ -293,6 +358,80 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
   const clients = new Set<{ res: ServerResponse; deviceId: string }>();
   /** Every open socket, so close() can destroy them (see the close() comment). */
   const sockets = new Set<Socket>();
+
+  /**
+   * This run's identity. Random rather than a timestamp so that two servers
+   * started in the same millisecond (two profiles, two E2E workers) cannot mint
+   * the same one, and short because it is on the front of every frame.
+   */
+  const epoch = randomBytes(4).toString('hex');
+
+  /**
+   * The replay buffer: what has been pushed recently, still in the exact bytes it
+   * went out as, oldest first.
+   *
+   * It is a GLOBAL ring holding frames that were sent to EVERY client, which is
+   * the only reason replaying it to a device that was not connected at the time
+   * is safe. There is no device-scoped push in this transport — `push()` has no
+   * parameter that could express one, and the one producer above it broadcasts
+   * (see startup/transport.ts) — so a frame in here is by construction a frame
+   * every authenticated device was already entitled to. If a per-device push is
+   * ever added, this buffer has to learn about it on the same day.
+   *
+   * Cost when nothing ever disconnects — which is every embedded install on a
+   * good day — is the memory alone: the text stored here is the SAME string the
+   * fan-out writes, built once and referenced, so there is no second
+   * serialization and no copy. Steady state is a couple of hundred kilobytes,
+   * and REPLAY_MAX_BYTES is the ceiling.
+   */
+  const ring: { id: number; text: string; bytes: number }[] = [];
+  let ringBytes = 0;
+  /** The highest id ever pushed, which survives the frames themselves ageing out. */
+  let lastPushedId = 0;
+
+  /** Keep one frame, then evict from the front until both bounds hold again. */
+  function remember(id: number, text: string): void {
+    const bytes = Buffer.byteLength(text);
+    ring.push({ id, text, bytes });
+    ringBytes += bytes;
+    // No floor: a single frame bigger than the byte cap empties the buffer and
+    // then evicts itself, which is the honest outcome — the cap is a memory
+    // bound, and the client's answer for an empty buffer is a resync it can act
+    // on rather than a partial replay it cannot detect.
+    while (ring.length > REPLAY_MAX_FRAMES || ringBytes > REPLAY_MAX_BYTES) {
+      ringBytes -= ring.shift()!.bytes;
+    }
+  }
+
+  /**
+   * What to do with a client presenting `raw` as its last-seen frame id.
+   *
+   *   live    — nothing was missed (a fresh stream, or one that dropped between
+   *             frames). Attach and carry on.
+   *   replay  — the gap is entirely in the buffer. Send it, then attach.
+   *   resync  — it is not: too old, or from a previous run of this server. Say so
+   *             and let the client refetch, which is complete where a partial
+   *             replay would be silently wrong.
+   */
+  function resumeFor(
+    raw: string | string[] | undefined
+  ): { kind: 'live' | 'resync' } | { kind: 'replay'; after: number } {
+    const header = Array.isArray(raw) ? raw[0] : raw;
+    if (!header) return { kind: 'live' };
+    // Strict on purpose. Every way of failing to understand a bookmark ends in a
+    // resync, never in "you are up to date" — being told to refetch costs a round
+    // trip, where being wrongly told there is no gap loses whatever is in it.
+    const parsed = /^(\w+)\.(\d+)$/.exec(header);
+    if (!parsed || parsed[1] !== epoch) return { kind: 'resync' };
+    const seq = Number(parsed[2]);
+    if (!Number.isSafeInteger(seq)) return { kind: 'resync' };
+    // Level with us, or ahead of us (which only a corrupted bookmark can be).
+    if (seq >= lastPushedId) return { kind: 'live' };
+    // The first frame we owe them is seq + 1; the buffer serves them only if it
+    // still reaches back that far.
+    if (ring.length > 0 && ring[0].id <= seq + 1) return { kind: 'replay', after: seq };
+    return { kind: 'resync' };
+  }
 
   const originPolicy = (): OriginPolicy => ({ port: boundPort, extraHosts: opts.extraHosts });
 
@@ -384,6 +523,26 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
       sendJson(res, gated.status, { ok: false, error: gated.error });
       return;
     }
+    // ---- The connect handshake, and why it is one synchronous block ----
+    //
+    // Everything from here to clients.add() runs without an await, and that is
+    // the whole of the "no duplicate, no dropped frame" argument. Node runs this
+    // to completion before any other callback — including push() — so there is no
+    // instant at which a frame could be both replayed from the buffer AND written
+    // live, and none at which one could fall between the two. Put an await
+    // anywhere in here and that window opens.
+    //
+    // The order on the wire is: snapshot, then either the replay or a resync.
+    //
+    // Snapshot FIRST, deliberately. It describes the world as of this moment,
+    // which is AFTER everything in the replay; the replayed frames then carry the
+    // client forward through the same history it missed, and a `turn/completed`
+    // among them settles a turn the snapshot never claimed was running anyway.
+    // The other order is the one that breaks: a snapshot applied after the replay
+    // would re-mark as active a turn whose terminal frame the client has just
+    // been given, and the spinner would never resolve — which is the exact
+    // failure this step exists to remove.
+    const resume = resumeFor(req.headers['last-event-id']);
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
@@ -395,6 +554,19 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
     // Flush the headers and set the client's reconnect backoff in one dispatch;
     // a block with no `data:` field fires no event.
     res.write(`retry: ${SSE_RETRY_MS}\n\n`);
+    if (opts.connectSnapshot) res.write(controlFrame('snapshot', opts.connectSnapshot()));
+    if (resume.kind === 'replay') {
+      for (const frame of ring) {
+        if (frame.id > resume.after) res.write(frame.text);
+      }
+    } else if (resume.kind === 'resync') {
+      // Where the client now stands, so its bookmark moves forward with the
+      // refetch. Without it a client that resynced and then dropped again before
+      // any new frame arrived would present the same stale id and be told to
+      // resync a second time, for nothing.
+      log('transport', 'replay gap too old, asking for a resync', { deviceId: gated.device.id });
+      res.write(controlFrame('resync', { head: `${epoch}.${lastPushedId}` }));
+    }
     const client = { res, deviceId: gated.device.id };
     clients.add(client);
 
@@ -629,12 +801,20 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
 
   return {
     port: boundPort,
+    epoch,
     clientCount: () => clients.size,
+    bufferedFrames: () => ring.length,
     push(event) {
-      if (clients.size === 0) return;
       // Serialized once for everybody: every connected client is entitled to
-      // every push now that there is one role.
-      const text = sseFrame(event);
+      // every push now that there is one role. The same string is what the ring
+      // keeps, so replay costs no second pass over the payload.
+      //
+      // Recorded even with nobody connected, which is the case that matters most:
+      // a client whose stream just dropped is not connected, and the frames it
+      // needs back are precisely the ones produced while it was away.
+      const text = sseFrame(epoch, event);
+      if (event.id > lastPushedId) lastPushedId = event.id;
+      remember(event.id, text);
       for (const client of clients) {
         // A response can be destroyed between its 'close' event and this loop;
         // writing to it would throw ERR_STREAM_DESTROYED into the event emitter.
@@ -676,6 +856,8 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
         }
       }
       clients.clear();
+      ring.length = 0;
+      ringBytes = 0;
       // server.close() only stops accepting and then waits for every open
       // connection to end — with an SSE stream open that is forever, so the quit
       // path would hang. Destroy the sockets first, then close.

@@ -156,9 +156,10 @@ let scheduleFolderLearn: (delayMs?: number) => void = () => {};
  * gets it; each one filters by threadId itself, exactly as the main window always
  * did, so there is no per-audience bookkeeping here.
  *
- * A no-op when nothing is connected. Events are not buffered or replayed: a
- * client that was away resyncs by asking (decision 6 in the Phase 1 plan), and
- * the monotonic id on every frame is what a Phase 2 replay buffer will key off.
+ * Recorded even when nothing is connected: the transport keeps a bounded ring of
+ * recent frames behind the monotonic id, so a client whose stream dropped
+ * mid-turn is given the gap back when it returns rather than a truncated answer.
+ * Past the ring it is told to resync and refetches instead.
  */
 function emit(channel: string, payload: unknown): void {
   pushToClients(channel, payload);
@@ -642,7 +643,11 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     const threadId = (event.params as { threadId?: string } | undefined)?.threadId;
     // Hidden internal threads (distillation) are neither shown nor captured.
     if (threadId && runtime!.isInternalThread(threadId)) return;
-    noteTurnEvent(event.method, threadId);
+    noteTurnEvent(
+      event.method,
+      threadId,
+      (event.params as { turnId?: string } | undefined)?.turnId
+    );
     // Out to every client, which filters by threadId itself exactly as the main
     // window always did — the server does not track which thread anyone has open.
     //

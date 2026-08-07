@@ -1186,6 +1186,20 @@ export interface ChatHistory {
   messages: ChatMessage[];
 }
 
+/**
+ * One turn the server still has in flight, as reported to a client the moment
+ * its event stream opens.
+ *
+ * `turnId` is what makes this useful rather than decorative: it is the id Stop
+ * interrupts, and a thread marked as running without one would show a button
+ * that cannot do anything. Null only for a turn whose first event predates the
+ * server learning to record it, which is a restart away from impossible.
+ */
+export interface LiveTurn {
+  threadId: string;
+  turnId: string | null;
+}
+
 /** The complete sidebar payload: chats + the folder tree, fetched together. */
 export interface ChatListResult {
   chats: ChatSummary[];
@@ -1977,6 +1991,19 @@ export interface StemApi {
    * the answer is always "call listChats again".
    */
   onChatsChanged(listener: () => void): () => void;
+  /**
+   * The event stream came back after a gap the server could no longer replay, so
+   * nothing this window is showing can be assumed current. Payload-free for the
+   * same reason as onChatsChanged: the answer is always "ask again".
+   */
+  onResync(listener: () => void): () => void;
+  /**
+   * Which turns the server has running, as of the moment the event stream
+   * connected. The whole truth, not an addition to it — a thread that is not in
+   * the list finished while this window was not listening, and the only way to
+   * learn that is to be told.
+   */
+  onLiveTurns(listener: (turns: LiveTurn[]) => void): () => void;
 
   // App settings + Quick Chat overlay.
   getSettings(): Promise<AppSettings>;

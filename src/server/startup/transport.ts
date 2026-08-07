@@ -1,6 +1,7 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 import { readableFilePath } from '../files/store';
+import { liveTurnSnapshot } from '../live-turns';
 import { stageUpload, startStagingSweeper, stopStagingSweeper } from '../files/staging';
 import { dispatchLocal, serverChannels } from '../ipc/guard';
 import { log } from '../log';
@@ -139,6 +140,11 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
     },
     stageUpload,
     openDownload: resolveDownload,
+    // What a client is told the instant it connects. A turn that kept running
+    // while it was away is otherwise indistinguishable from one that finished
+    // without it — both look like a thread that stopped producing deltas — and
+    // the two need opposite things on screen.
+    connectSnapshot: () => ({ liveTurns: liveTurnSnapshot() }),
     extraHosts
   });
   // Uploads outlive the request that made them, so somebody has to notice the
@@ -155,6 +161,12 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
  * Fan an event out to every connected client. Filtering is the client's job —
  * each one keys on threadId exactly as the main window always did — and with a
  * single role there is nothing here that decides who may see what.
+ *
+ * That last property is load-bearing now that the transport keeps a replay
+ * buffer: every frame in it went to every device, so handing one back to a
+ * device that was offline at the time discloses nothing it would not have been
+ * sent live. A push aimed at a single device would break that, which is why
+ * there is no parameter here to aim one with.
  */
 export function pushToClients(channel: string, payload: unknown): void {
   if (!primary) return;

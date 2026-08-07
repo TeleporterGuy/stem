@@ -51,6 +51,15 @@ export interface StemServerProcess {
    */
   cutConnections(): void;
   /**
+   * Take the network away and leave it away, or give it back. `false` destroys
+   * every live connection AND refuses new ones, which is the difference between
+   * a blip and a closed laptop lid — cutConnections() alone is over before the
+   * client's first reconnect, so nothing can be staged to happen while the client
+   * is genuinely absent. The server runs on regardless, which is the whole point:
+   * a turn keeps streaming into a buffer nobody is reading.
+   */
+  setReachable(reachable: boolean): void;
+  /**
    * SIGKILL the server — no shutdown, no drain, exactly what a crashed or
    * OOM-killed container does. `restart()` brings it back on the same port, so
    * the proxy (and therefore the app's URL) keeps pointing at something real.
@@ -97,6 +106,8 @@ export async function startStemServer(opts: StemServerOptions): Promise<StemServ
   /** Every socket pair currently forwarding, so cutConnections() can find them. */
   const live = new Set<Socket>();
   let latencyMs = 0;
+  /** False while setReachable(false) is holding the network down. */
+  let reachable = true;
   /** Resolved once the server has bound; sockets that arrive earlier wait on it. */
   let serverPort = 0;
 
@@ -104,8 +115,9 @@ export async function startStemServer(opts: StemServerOptions): Promise<StemServ
     live.add(client);
     // Nothing legitimate connects before the server is up, but a client that
     // retries into the gap after kill() will — and dropping it is the honest
-    // answer, since that is what a dead upstream does.
-    if (!serverPort) {
+    // answer, since that is what a dead upstream does. Same for a client
+    // reconnecting while the network is being held down.
+    if (!serverPort || !reachable) {
       client.destroy();
       live.delete(client);
       return;
@@ -249,6 +261,10 @@ export async function startStemServer(opts: StemServerOptions): Promise<StemServ
       latencyMs = Math.max(0, ms);
     },
     cutConnections,
+    setReachable(next) {
+      reachable = next;
+      if (!next) cutConnections();
+    },
     async kill() {
       // Cut the sockets too: an upstream that is gone would otherwise leave the
       // client waiting on a connection nobody is ever going to answer.

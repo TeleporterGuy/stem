@@ -184,6 +184,19 @@ export interface ProxyDeps {
   requestAttention(): void;
   /** The implicit Quick Chat hand-off, run before a thread is opened. */
   threadOpened(threadId: string): Promise<void>;
+  /**
+   * The stream came back with a gap too old to replay: everything this client
+   * believes about the open thread and the chat list may be stale, and only a
+   * refetch can settle it.
+   */
+  resync(): void;
+  /**
+   * Which threads the server says are still running, as of the instant this
+   * stream opened. Authoritative in both directions — a thread absent from the
+   * list is settled — which is what stops a turn that finished while the client
+   * was away from spinning forever.
+   */
+  liveTurns(turns: { threadId: string; turnId: string | null }[]): void;
   /** Catches OAuth callbacks for a server that is not on this machine. */
   oauthCourier: OAuthCourier;
   /** Quick Chat settings were persisted: apply the parts that are not settings. */
@@ -319,6 +332,18 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
   let retryTimer: NodeJS.Timeout | null = null;
   let attempt = 0;
   let closed = false;
+  /**
+   * The last frame id this client has actually seen, sent back as Last-Event-ID
+   * so the server can replay what was missed. A browser's EventSource keeps this
+   * bookmark by itself; this reader is hand-rolled (SSE over node:http, so the
+   * bearer token can ride in a header — EventSource has no way to set one), so
+   * the bookkeeping is ours.
+   *
+   * In memory only, on purpose: a restarted client re-reads everything anyway,
+   * and a bookmark that outlived the process it belongs to would ask for a replay
+   * of a stream nobody is watching any more.
+   */
+  let lastEventId: string | null = null;
 
   function deliver(raw: string): void {
     let frame: { channel?: unknown; payload?: unknown };
@@ -329,6 +354,37 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     }
     if (typeof frame.channel !== 'string') return;
     fanOut(frame.channel, frame.payload);
+  }
+
+  /**
+   * A frame about the stream rather than about anything that happened. They are
+   * told apart by SSE's own `event:` field, which a push never carries — so
+   * neither can ever be mistaken for the other, however odd the payload.
+   */
+  function control(name: string, raw: string): void {
+    let data: { head?: unknown; liveTurns?: unknown } = {};
+    try {
+      data = JSON.parse(raw) as typeof data;
+    } catch {
+      return;
+    }
+    if (name === 'snapshot') {
+      const turns = data.liveTurns;
+      // Absent (a server with nothing to say) leaves the client's own view alone;
+      // present — even empty — is the whole truth about what is running.
+      if (Array.isArray(turns)) {
+        deps.liveTurns(turns as { threadId: string; turnId: string | null }[]);
+      }
+      return;
+    }
+    if (name === 'resync') {
+      // Move the bookmark to where the server says we now stand BEFORE refetching:
+      // the refetch is what closes the gap, and asking to replay across it again
+      // on the next drop would only repeat work already done.
+      if (typeof data.head === 'string') lastEventId = data.head;
+      log('proxy', 'the server asked for a resync');
+      deps.resync();
+    }
   }
 
   /**
@@ -429,7 +485,16 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     streamOpen = false;
     const req = httpRequest(
       `${base}/events`,
-      { method: 'GET', headers: { authorization: auth, accept: 'text/event-stream' } },
+      {
+        method: 'GET',
+        headers: {
+          authorization: auth,
+          accept: 'text/event-stream',
+          // The one header that turns a reconnect into a resumption. Omitted on a
+          // first connect, which is how the server knows there is no gap to fill.
+          ...(lastEventId ? { 'last-event-id': lastEventId } : {})
+        }
+      },
       (res) => {
         if (stream !== req) return;
         if (res.statusCode !== 200) {
@@ -454,14 +519,23 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
           while (split !== -1) {
             const block = buffer.slice(0, split);
             buffer = buffer.slice(split + 2);
-            // `id:` is carried for a Phase 2 replay buffer and ignored here;
-            // comment lines are the keepalive.
-            const data = block
-              .split('\n')
+            // Comment lines (`: keepalive`) and the `retry:` preamble carry no
+            // `data:` and fall out here on their own.
+            const lines = block.split('\n');
+            const data = lines
               .filter((line) => line.startsWith('data: '))
               .map((line) => line.slice(6))
               .join('\n');
-            if (data) deliver(data);
+            const name = lines.find((line) => line.startsWith('event: '))?.slice(7);
+            const id = lines.find((line) => line.startsWith('id: '))?.slice(4);
+            if (data && name) control(name, data);
+            else if (data) {
+              deliver(data);
+              // Bookmark AFTER delivering, never before: a frame that is recorded
+              // as seen and then lost on the way to a window is a frame the server
+              // will never send again.
+              if (id) lastEventId = id;
+            }
             split = buffer.indexOf('\n\n');
           }
         });

@@ -11,6 +11,7 @@ import { SessionStore } from '../../src/renderer/session/store';
 import {
   SETTLED_TURN_CAP,
   SettledTurns,
+  applyLiveTurns,
   attachBackendEvents,
   createSessionCore,
   interruptActiveTurn,
@@ -152,6 +153,73 @@ describe('backend event pipeline', () => {
     expect(sawRunning).toBe(true);
     expect(core.pendingSends.size).toBe(0);
     expect(core.store.getThread('a')).toMatchObject({ running: false, activeTurnId: null, status: 'idle' });
+  });
+});
+
+// What the window does with the live-turn snapshot it is handed the moment its
+// event stream connects. The two failures it exists to prevent are opposites: a
+// spinner on a turn that finished while nobody was listening, and a settled-
+// looking thread that is in fact still being written to.
+describe('applyLiveTurns', () => {
+  it('settles a thread the server is no longer running', () => {
+    const core = createSessionCore();
+    core.store.patch('a', () => ({ running: true, status: 'running', activeTurnId: 'turn1' }));
+    applyLiveTurns(core, []);
+    expect(core.store.getThread('a')).toMatchObject({
+      running: false,
+      activeTurnId: null,
+      streamingId: null,
+      status: 'idle'
+    });
+  });
+
+  it('marks a thread running again, with the turn id Stop needs', () => {
+    const core = createSessionCore();
+    core.store.patch('a', () => ({ running: false, status: 'idle', activeTurnId: null }));
+    applyLiveTurns(core, [{ threadId: 'a', turnId: 'turn7' }]);
+    // Without the turn id the thread would show a Stop button that cannot
+    // interrupt anything, which is worse than showing none.
+    expect(core.store.getThread('a')).toMatchObject({
+      running: true,
+      status: 'running',
+      activeTurnId: 'turn7'
+    });
+  });
+
+  it('leaves an optimistic spinner alone — it is early, not stale', () => {
+    const core = createSessionCore();
+    // A send whose bubble is up but whose first backend event has not arrived:
+    // no activeTurnId yet, so the server could not possibly be reporting it.
+    core.store.patch('__draft__', () => ({ running: true, status: 'running', activeTurnId: null }));
+    applyLiveTurns(core, []);
+    expect(core.store.getThread('__draft__')).toMatchObject({ running: true, activeTurnId: null });
+  });
+
+  it('keeps a slice keyed by something other than a thread id when its turn is live', () => {
+    // The overlay's fixed key and the main window's DRAFT sentinel are not thread
+    // ids and can never match by key, so they are settled by turn id instead.
+    const core = createSessionCore();
+    core.store.patch('__overlay__', () => ({ running: true, status: 'running', activeTurnId: 'turn3' }));
+    applyLiveTurns(core, [{ threadId: 'a', turnId: 'turn3' }]);
+    expect(core.store.getThread('__overlay__')).toMatchObject({ running: true, activeTurnId: 'turn3' });
+  });
+
+  it('never invents a slice for a thread nobody has opened', () => {
+    const core = createSessionCore();
+    applyLiveTurns(core, [{ threadId: 'never-opened', turnId: 'turn2' }]);
+    // An empty running slice would make the next open show a blank conversation:
+    // openChat keeps a live slice rather than reading the thread off disk.
+    expect(core.store.getThread('never-opened')).toBeUndefined();
+  });
+
+  it('does not notify when nothing changed', () => {
+    const core = createSessionCore();
+    core.store.patch('a', () => ({ running: true, status: 'running', activeTurnId: 'turn1' }));
+    const before = core.store.snapshot();
+    applyLiveTurns(core, [{ threadId: 'a', turnId: 'turn1' }]);
+    // Identity, not equality: every reconnect fires one of these, and a new
+    // object each time would re-render every chat for nothing.
+    expect(core.store.snapshot()).toBe(before);
   });
 });
 

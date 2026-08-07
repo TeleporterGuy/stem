@@ -502,32 +502,60 @@ interface Frame {
   payload: unknown;
 }
 
-/** Read SSE frames off a live stream until `count` data events have arrived. */
-async function collectFrames(res: Response, count: number): Promise<Frame[]> {
+/**
+ * One block off the wire, whatever kind it is. `event` names a control frame
+ * (`snapshot`, `resync`); a data frame has none, which is the whole of how the
+ * two are told apart.
+ */
+interface Block {
+  id: string | null;
+  event: string | null;
+  data: { channel?: string; payload?: unknown; liveTurns?: unknown; head?: unknown };
+}
+
+/**
+ * Read SSE blocks off a live stream until `count` of them carry data, or the
+ * stream ends. Kept separate from the frames helper because the resume tests care
+ * about the control frames the ordinary fan-out tests never see.
+ */
+async function collectBlocks(res: Response, count: number): Promise<Block[]> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
-  const frames: Frame[] = [];
+  const blocks: Block[] = [];
   let buffer = '';
-  while (frames.length < count) {
+  while (blocks.length < count) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let split = buffer.indexOf('\n\n');
     while (split !== -1) {
-      const block = buffer.slice(0, split);
+      const raw = buffer.slice(0, split);
       buffer = buffer.slice(split + 2);
-      const lines = block.split('\n');
+      const lines = raw.split('\n');
       const data = lines
         .filter((line) => line.startsWith('data: '))
         .map((line) => line.slice(6))
         .join('\n');
-      const id = lines.find((line) => line.startsWith('id: '))?.slice(4) ?? null;
-      if (data) frames.push({ id, ...(JSON.parse(data) as { channel: string; payload: unknown }) });
+      if (data) {
+        blocks.push({
+          id: lines.find((line) => line.startsWith('id: '))?.slice(4) ?? null,
+          event: lines.find((line) => line.startsWith('event: '))?.slice(7) ?? null,
+          data: JSON.parse(data) as Block['data']
+        });
+      }
       split = buffer.indexOf('\n\n');
     }
   }
   await reader.cancel().catch(() => undefined);
-  return frames;
+  return blocks;
+}
+
+/** Read SSE frames off a live stream until `count` data events have arrived. */
+async function collectFrames(res: Response, count: number): Promise<Frame[]> {
+  const blocks = await collectBlocks(res, count);
+  return blocks
+    .filter((b) => !b.event)
+    .map((b) => ({ id: b.id, channel: b.data.channel!, payload: b.data.payload }));
 }
 
 describe('GET /events', () => {
@@ -560,25 +588,28 @@ describe('GET /events', () => {
     const [fromA, fromB] = await collected;
     expect(fromA).toEqual([
       {
-        id: '1',
+        id: `${server.epoch}.1`,
         channel: 'backend:event',
         payload: { method: 'item/agentMessage/delta', params: { delta: 'line one\nline "two"' } }
       },
-      { id: '2', channel: 'mcp:status', payload: { servers: [] } }
+      { id: `${server.epoch}.2`, channel: 'mcp:status', payload: { servers: [] } }
     ]);
     expect(fromB).toEqual(fromA);
   });
 
-  it('stamps every frame with the id the caller gave it', async () => {
-    // Nothing consumes the id yet — replay is Phase 2 — but it has to be on the
-    // wire from the start, or adding replay later is a protocol change across
-    // every client instead of a server-side addition. Ids come from the caller,
-    // not from the fan-out, so the sequence is the caller's to keep monotonic.
+  it('stamps every frame with the id the caller gave it, under this run\'s epoch', async () => {
+    // Ids come from the caller, not from the fan-out, so the sequence is the
+    // caller's to keep monotonic. The epoch in front of it is the server's, and
+    // is what stops a bookmark from a previous run — whose sequence started over
+    // at 1 — from being read as a position in this one.
     const stream = await fetch(`${base}/events`, { headers: { authorization: `Bearer ${TOKEN}` } });
     const collected = collectFrames(stream, 2);
     server.push({ id: 42, channel: 'mcp:status', payload: { servers: [] } });
     server.push({ id: 43, channel: 'backend:event', payload: { method: 'turn/completed' } });
-    expect((await collected).map((f) => f.id)).toEqual(['42', '43']);
+    expect((await collected).map((f) => f.id)).toEqual([
+      `${server.epoch}.42`,
+      `${server.epoch}.43`
+    ]);
   });
 
   it('cuts a revoked device off its stream, and leaves every other device alone', async () => {
@@ -613,6 +644,184 @@ describe('GET /events', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(() => server.push({ id: 4, channel: 'backend:event', payload: { method: 'turn/completed' } })).not.toThrow();
     expect(server.clientCount()).toBe(0);
+  });
+});
+
+// What a client gets back when its stream dropped and came again. The promise
+// this is here to keep is a plain one: close the lid mid-answer, open it, and the
+// answer is finished on screen — not truncated, and not a spinner that never
+// resolves.
+//
+// Its own server, because the assertions are about a sequence and the shared one
+// above has been pushed to with whatever ids its tests found convenient.
+describe('resuming a dropped stream', () => {
+  let resumed: TransportServer;
+  let origin: string;
+  /** What connectSnapshot answers with — set per test. */
+  let liveTurns: { threadId: string; turnId: string }[] = [];
+  const bearer = { authorization: `Bearer ${TOKEN}` };
+
+  beforeAll(async () => {
+    resumed = await startTransportServer({
+      port: 0,
+      authenticate: () => ({ id: 'dev-1', role: 'device' }),
+      dispatch: dispatchLocal,
+      registeredChannels: serverChannels,
+      connectSnapshot: () => ({ liveTurns })
+    });
+    origin = `http://127.0.0.1:${resumed.port}`;
+  });
+
+  afterAll(async () => {
+    await resumed.close();
+  });
+
+  /** Push `count` frames, continuing a sequence the caller keeps. */
+  function pushRange(from: number, count: number): void {
+    for (let i = 0; i < count; i++) {
+      resumed.push({ id: from + i, channel: 'backend:event', payload: { seq: from + i } });
+    }
+  }
+
+  it('opens every stream with a live-turn snapshot before anything that happened', async () => {
+    liveTurns = [{ threadId: 't-live', turnId: 'turn-9' }];
+    const stream = await fetch(`${origin}/events`, { headers: bearer });
+    const blocks = collectBlocks(stream, 2);
+    pushRange(1, 1);
+
+    const [first, second] = await blocks;
+    // First, so that the frames behind it can carry the client forward through
+    // the same history it missed. The other order would let a snapshot re-mark as
+    // running a turn whose terminal frame the client has just been handed.
+    expect(first.event).toBe('snapshot');
+    expect(first.data.liveTurns).toEqual([{ threadId: 't-live', turnId: 'turn-9' }]);
+    // A control frame is not a position in the stream and must not be bookmarked
+    // as one, or a client would resume past whatever came next.
+    expect(first.id).toBeNull();
+    expect(second.event).toBeNull();
+    expect(second.data.channel).toBe('backend:event');
+    liveTurns = [];
+  });
+
+  it('replays the gap, exactly once each, and then goes live', async () => {
+    // The classic bug this is written against: the window between "finished
+    // replaying" and "attached to the live stream". A frame that falls in it is
+    // delivered twice or not at all, and neither is visible from one end alone —
+    // so both ends are asserted, on one sequence, in one stream.
+    pushRange(2, 5); // 2..6 land with nobody listening, as they would mid-outage
+
+    const stream = await fetch(`${origin}/events`, {
+      headers: { ...bearer, 'last-event-id': `${resumed.epoch}.3` }
+    });
+    // Five blocks: the snapshot, the three replayed, and the live one. A frame
+    // delivered twice would take the live one's place and fail the sequence
+    // below; one delivered not at all would leave a hole in it.
+    const blocks = collectBlocks(stream, 5);
+    // Pushed while the reconnect is being served, which is precisely where a
+    // dropped or doubled frame would come from.
+    pushRange(7, 1);
+
+    const seen = (await blocks).filter((b) => !b.event).map((b) => b.data.payload as { seq: number });
+    expect(seen.map((p) => p.seq)).toEqual([4, 5, 6, 7]);
+  });
+
+  it('sends nothing back to a client that missed nothing', async () => {
+    const stream = await fetch(`${origin}/events`, {
+      headers: { ...bearer, 'last-event-id': `${resumed.epoch}.7` }
+    });
+    const blocks = collectBlocks(stream, 2);
+    pushRange(8, 1);
+    const seen = await blocks;
+    expect(seen[0].event).toBe('snapshot');
+    // Straight to the new frame: no replay of what it already has, no resync.
+    expect(seen[1].event).toBeNull();
+    expect(seen[1].data.payload).toEqual({ seq: 8 });
+  });
+
+  // Serial from here: these share one sequence, and overflowing the buffer is
+  // what the resync cases below need to have happened.
+  it('bounds the buffer by frames, dropping the oldest', async () => {
+    const before = resumed.bufferedFrames();
+    pushRange(100, 1_200); // ids 100..1299
+    // 1,000 frames is the cap; what is left is the newest of them.
+    expect(resumed.bufferedFrames()).toBe(1_000);
+    expect(resumed.bufferedFrames()).toBeGreaterThan(before);
+
+    const stream = await fetch(`${origin}/events`, {
+      headers: { ...bearer, 'last-event-id': `${resumed.epoch}.1297` }
+    });
+    const blocks = await collectBlocks(stream, 3);
+    // Two frames still inside the ring come back; nothing is resynced.
+    expect(blocks.map((b) => b.event)).toEqual(['snapshot', null, null]);
+    expect(blocks.slice(1).map((b) => b.data.payload)).toEqual([{ seq: 1298 }, { seq: 1299 }]);
+  });
+
+  it('asks for a resync rather than replaying half a gap', async () => {
+    // The buffer is bounded, so a client that was away long enough falls off the
+    // back of it — frames 1..8 were evicted by the test above. A partial replay
+    // would be silently wrong (the client cannot tell which of its frames are
+    // missing) where a refetch is merely a round trip.
+    const stream = await fetch(`${origin}/events`, {
+      headers: { ...bearer, 'last-event-id': `${resumed.epoch}.8` }
+    });
+    const blocks = await collectBlocks(stream, 2);
+    expect(blocks.map((b) => b.event)).toEqual(['snapshot', 'resync']);
+    // Carrying where the client now stands, so the refetch moves its bookmark and
+    // the next drop does not ask to cross the same gap again.
+    expect(blocks[1].data.head).toBe(`${resumed.epoch}.1299`);
+    expect(blocks[1].id).toBeNull();
+  });
+
+  it('asks for a resync when the bookmark belongs to a server that has restarted', async () => {
+    // The kill -9 case. The sequence begins again at 1 after a restart, so a bare
+    // number from the previous run would name a frame in this one — a client that
+    // was at 900 would be told it is ahead of a server that has only reached 8,
+    // and would silently miss everything since. The epoch is what makes that
+    // impossible to get wrong.
+    const stream = await fetch(`${origin}/events`, {
+      headers: { ...bearer, 'last-event-id': 'deadbeef.900' }
+    });
+    const blocks = await collectBlocks(stream, 2);
+    expect(blocks.map((b) => b.event)).toEqual(['snapshot', 'resync']);
+  });
+
+  it('treats an unparseable bookmark as a resync, never as "you are up to date"', async () => {
+    for (const header of ['not-an-id', `${resumed.epoch}.`, `${resumed.epoch}.-1`, '.5']) {
+      const stream = await fetch(`${origin}/events`, { headers: { ...bearer, 'last-event-id': header } });
+      const blocks = await collectBlocks(stream, 2);
+      expect(blocks.map((b) => b.event)).toEqual(['snapshot', 'resync']);
+    }
+  });
+
+  it('bounds the buffer by bytes as well, so a few huge frames cannot fill memory', async () => {
+    // Frames alone is not a bound: 1,000 of these would be 500 MB. The byte cap
+    // is what makes the buffer's cost a number rather than a hope.
+    const fat = 'x'.repeat(512 * 1024);
+    resumed.push({ id: 2000, channel: 'backend:event', payload: { seq: 2000, fat } });
+    for (let i = 1; i <= 8; i++) {
+      resumed.push({ id: 2000 + i, channel: 'backend:event', payload: { seq: 2000 + i, fat } });
+    }
+    // 4 MB / 512 KB: well under the 1,000-frame cap, so bytes are what bit.
+    expect(resumed.bufferedFrames()).toBeLessThan(9);
+    expect(resumed.bufferedFrames()).toBeGreaterThan(0);
+  });
+
+  it('replays the same frames to a device that was not connected when they were sent', async () => {
+    // The buffer is global and the delivery is per-device, so this is the check
+    // that the two cannot disagree: every frame in it was broadcast to every
+    // device, which is the only reason handing one back to a device that was
+    // offline at the time discloses nothing. There is no device-scoped push in
+    // this transport to make it otherwise — `push()` has no parameter for one.
+    resumed.push({ id: 3000, channel: 'mcp:status', payload: { servers: ['a'] } });
+    const first = await fetch(`${origin}/events`, {
+      headers: { ...bearer, 'last-event-id': `${resumed.epoch}.2999` }
+    });
+    const other = await fetch(`${origin}/events`, {
+      headers: { authorization: `Bearer ${OTHER_TOKEN}`, 'last-event-id': `${resumed.epoch}.2999` }
+    });
+    const [a, b] = await Promise.all([collectBlocks(first, 2), collectBlocks(other, 2)]);
+    expect(a[1].data).toEqual(b[1].data);
+    expect(a[1].data.payload).toEqual({ servers: ['a'] });
   });
 });
 

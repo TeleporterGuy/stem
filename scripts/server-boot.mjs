@@ -250,6 +250,8 @@ let sse = null;
 try {
   // The event stream, opened BEFORE the turn that has to arrive on it.
   const events = [];
+  /** `event:`-named frames — what the stream says about itself, not about a turn. */
+  const controls = [];
   const streamRes = await fetch(`${url}/events`, { headers: { ...auth, accept: 'text/event-stream' } });
   check('GET /events opens a stream', streamRes.status === 200, `HTTP ${streamRes.status}`);
   sse = streamRes.body.getReader();
@@ -265,7 +267,13 @@ try {
         while (split !== -1) {
           const block = buffer.slice(0, split);
           buffer = buffer.slice(split + 2);
-          const id = /^id: (\d+)$/m.exec(block)?.[1];
+          // `<epoch>.<seq>`: the sequence restarts at 1 on every boot, so the
+          // frames of one run have to be distinguishable from another's.
+          const id = /^id: \w+\.(\d+)$/m.exec(block)?.[1];
+          // Control frames (`snapshot`, `resync`) are about the stream rather
+          // than about anything that happened, and are collected separately —
+          // they carry no {channel, payload} and no place in the sequence.
+          const name = /^event: (\S+)$/m.exec(block)?.[1];
           const data = block
             .split('\n')
             .filter((line) => line.startsWith('data: '))
@@ -273,7 +281,9 @@ try {
             .join('\n');
           if (data) {
             try {
-              events.push({ id: id ? Number(id) : null, ...JSON.parse(data) });
+              const parsed = JSON.parse(data);
+              if (name) controls.push({ name, data: parsed });
+              else events.push({ id: id ? Number(id) : null, ...parsed });
             } catch {
               // A partial frame is the reader's problem, not a failure.
             }
@@ -331,6 +341,14 @@ try {
     'every SSE frame carries a monotonic id',
     ids.length > 0 && ids.every((id, i) => Number.isInteger(id) && (i === 0 || id > ids[i - 1])),
     `ids ${ids[0]}..${ids[ids.length - 1]}`
+  );
+  // The stream announces what is already running before it sends anything that
+  // happened — the whole reason a client can come back mid-turn and know it.
+  const snapshot = controls[0];
+  check(
+    'the stream opens with a live-turn snapshot',
+    snapshot?.name === 'snapshot' && Array.isArray(snapshot.data?.liveTurns),
+    `${controls.length} control frame(s), first ${snapshot?.name ?? 'none'}`
   );
 
   const listed = await rpc('chats:list');

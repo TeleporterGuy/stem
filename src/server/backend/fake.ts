@@ -25,6 +25,8 @@ import { autoTitle, writeSubject } from '../chats/subject';
 //   [e2e:fail] — fail the turn after one delta
 //   [e2e:exec] — call run_command mid-turn, through the real ExecService
 //   [e2e:burst] — stream BURST_DELTAS deltas back to back, with no pacing
+//   [e2e:slow]  — the same script, paced slowly enough that a test can take the
+//                 network away underneath it and put it back
 //   otherwise  — stream "Echo: <text>" in a few deltas, then complete
 //
 // STEM_E2E_ONBOARDING starts the fake UNAUTHENTICATED; login() (wired to the
@@ -45,6 +47,14 @@ const MODEL: ModelSummary = {
 
 /** Interval between scripted stream events — long enough for Playwright to observe streaming. */
 const STEP_MS = 15;
+
+/**
+ * `[e2e:slow]`: the same script at walking pace. A turn that is over in 75ms
+ * cannot have a network failure staged in the middle of it — by the time a test
+ * has cut the connection the answer has already arrived — and the middle of a
+ * turn is exactly where the replay buffer earns its keep.
+ */
+const SLOW_STEP_MS = 700;
 
 /**
  * `[e2e:burst]`: how many deltas, and how big. Roughly a long reply's worth of
@@ -73,6 +83,8 @@ interface ActiveTurn {
   text: string;
   timer: NodeJS.Timeout | null;
   hang: boolean;
+  /** Gap between scripted events; longer for `[e2e:slow]`. */
+  stepMs: number;
 }
 
 export interface FakeBackendOptions {
@@ -158,7 +170,14 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     // background while the reply streams.
     if (isNewThread) void this.writeThreadSubject(threadId, text);
 
-    const turn: ActiveTurn = { turnId, threadId, text, timer: null, hang: text.includes('[e2e:hang]') };
+    const turn: ActiveTurn = {
+      turnId,
+      threadId,
+      text,
+      timer: null,
+      hang: text.includes('[e2e:hang]'),
+      stepMs: text.includes('[e2e:slow]') ? SLOW_STEP_MS : STEP_MS
+    };
     this.activeTurn = turn;
     this.runScript(turn);
     return { threadId, turnId };
@@ -446,10 +465,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
       // the script afterwards.
       if (this.activeTurn?.turnId !== turnId) return;
       if (i + 1 < steps.length) {
-        turn.timer = setTimeout(() => void step(i + 1), STEP_MS);
+        turn.timer = setTimeout(() => void step(i + 1), turn.stepMs);
       }
     };
-    turn.timer = setTimeout(() => void step(0), STEP_MS);
+    turn.timer = setTimeout(() => void step(0), turn.stepMs);
   }
 
   /** Emit the terminal event for an interrupt, persisting nothing extra. */

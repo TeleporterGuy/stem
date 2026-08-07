@@ -14,6 +14,7 @@ import type {
   ExecDecision,
   ExecSettings,
   InstructionsProposal,
+  LiveTurn,
   LocalEmbedStatus,
   LocalProviderApi,
   LocalProviderId,
@@ -266,6 +267,16 @@ const api: StemApi = {
     const handler = () => listener();
     ipcRenderer.on('chats:changed', handler);
     return () => ipcRenderer.removeListener('chats:changed', handler);
+  },
+  onResync: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on('client:resync', handler);
+    return () => ipcRenderer.removeListener('client:resync', handler);
+  },
+  onLiveTurns: (listener: (turns: LiveTurn[]) => void) => {
+    const handler = (_e: unknown, turns: LiveTurn[]) => listener(turns);
+    ipcRenderer.on('client:liveTurns', handler);
+    return () => ipcRenderer.removeListener('client:liveTurns', handler);
   },
 
   listDevices: () => ipcRenderer.invoke('devices:list'),

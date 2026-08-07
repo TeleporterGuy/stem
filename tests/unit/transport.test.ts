@@ -20,6 +20,7 @@ import { createPairingCode } from '../../src/server/transport/pairing';
 import { readClientIdentity, writeClientIdentity } from '../../src/desktop/client-store';
 import {
   closeTransport,
+  dropDeviceStreams,
   pushToClients,
   startTransport,
   type TransportEndpoint
@@ -92,7 +93,9 @@ beforeAll(async () => {
     },
     applyQuickChatSettings: (patch, next) => {
       clientSide.push(`client:applyQuickChat(${JSON.stringify(patch)}→${next.shortcut})`);
-    }
+    },
+    resync: () => routed.push({ to: 'resync', channel: '', payload: null }),
+    liveTurns: (turns) => routed.push({ to: 'liveTurns', channel: '', payload: turns })
   });
   channels = await proxy.start();
 });
@@ -208,7 +211,9 @@ describe('when the server is somewhere else', () => {
       requestAttention: () => undefined,
       oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
       threadOpened: async () => undefined,
-      applyQuickChatSettings: () => undefined
+      applyQuickChatSettings: () => undefined,
+      resync: () => undefined,
+      liveTurns: () => undefined
     });
   });
 
@@ -310,6 +315,113 @@ describe('the event stream', () => {
     pushToClients('client:requestAttention', null);
     await until(() => routed.length >= 2, 'the window gestures');
     expect(routed.map((r) => r.to)).toEqual(['revealMainWindow', 'requestAttention']);
+  });
+});
+
+// The other half of the same wire: what the CLIENT does when the stream it was
+// reading ends underneath it. Driven through the real proxy, against the real
+// transport, with the stream cut the same way a revocation cuts one — the socket
+// dies, the server does not. That is the case a replay buffer exists for; a
+// server that died takes its buffer with it and the client resyncs instead.
+describe('resuming a dropped stream', () => {
+  let resumer: ServerProxy;
+  /** The `seq` of every backend event this client was handed, in order. */
+  const seen: number[] = [];
+  const snapshots: { threadId: string; turnId: string | null }[][] = [];
+  let resyncs = 0;
+  let deviceId: string;
+  let seq = 0;
+
+  /** One frame, numbered so a duplicate or a hole is visible in the sequence. */
+  function pushOne(): void {
+    seq += 1;
+    pushToClients('backend:event', { method: 'item/started', params: { seq } });
+  }
+
+  beforeAll(async () => {
+    const creds = await clientCredentials(endpoint.url, { external: false });
+    deviceId = (await readClientIdentity())!.deviceId;
+    resumer = createServerProxy({
+      ...creds,
+      remote: false,
+      sendToMain: () => undefined,
+      sendToOverlay: () => undefined,
+      revealIfOwns: () => undefined,
+      routeBackendEvent: (event) => {
+        const s = (event.params as { seq?: number } | undefined)?.seq;
+        if (typeof s === 'number') seen.push(s);
+      },
+      revealMainWindow: () => undefined,
+      requestAttention: () => undefined,
+      oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
+      threadOpened: async () => undefined,
+      applyQuickChatSettings: () => undefined,
+      resync: () => {
+        resyncs += 1;
+      },
+      liveTurns: (turns) => snapshots.push(turns)
+    });
+    await resumer.start();
+    await until(() => snapshots.length > 0, 'the connect snapshot');
+  });
+
+  afterAll(() => {
+    resumer.close();
+  });
+
+  it('is told what is running the moment it connects', () => {
+    // Empty here — nothing in this suite starts a real turn — but the frame
+    // itself is the point: a client that is told nothing cannot tell a turn that
+    // is still going from one that finished while it was away.
+    expect(snapshots[0]).toEqual([]);
+  });
+
+  it('sends Last-Event-ID and gets the gap back, exactly once each', async () => {
+    seen.length = 0;
+    pushOne();
+    await until(() => seen.length === 1, 'the first frame');
+
+    // The socket ends; the server keeps running and keeps pushing. This is the
+    // shape of a closed laptop lid, a flaky network, or a reverse proxy that was
+    // restarted underneath a perfectly healthy server.
+    expect(dropDeviceStreams(deviceId)).toBeGreaterThan(0);
+    pushOne();
+    pushOne();
+    pushOne();
+
+    await until(() => seen.length === 4, 'the frames pushed while the stream was down');
+    // Sequential, complete, and no repeats — the three things that go wrong at
+    // the handoff between replaying the gap and attaching to the live stream.
+    expect(seen).toEqual([seq - 3, seq - 2, seq - 1, seq]);
+    expect(resyncs).toBe(0);
+
+    // …and the stream is genuinely live again afterwards, not just drained.
+    pushOne();
+    await until(() => seen.length === 5, 'a frame after the recovery');
+    expect(seen[4]).toBe(seq);
+  });
+
+  it('is told to resync when it was away longer than the buffer reaches back', async () => {
+    seen.length = 0;
+    const before = resyncs;
+    expect(dropDeviceStreams(deviceId)).toBeGreaterThan(0);
+    // Past the 1,000-frame bound, so the frames this client is missing are no
+    // longer there to send. Replaying part of the gap would be worse than
+    // useless: the client cannot tell which part it got.
+    for (let i = 0; i < 1_100; i++) pushOne();
+
+    await until(() => resyncs > before, 'the resync');
+    // Not a data frame. A renderer mid-stream on a thread has to be able to tell
+    // "refetch everything" from anything that could be mistaken for content.
+    expect(resyncs).toBe(before + 1);
+
+    // And the bookmark moved with it: the next drop replays from where the
+    // resync left the client, rather than asking to cross the same gap again.
+    seen.length = 0;
+    expect(dropDeviceStreams(deviceId)).toBeGreaterThan(0);
+    pushOne();
+    await until(() => seen.length === 1, 'a frame after the resync');
+    expect(resyncs).toBe(before + 1);
   });
 });
 

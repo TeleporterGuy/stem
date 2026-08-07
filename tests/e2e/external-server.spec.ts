@@ -279,6 +279,39 @@ test.describe('against an externally started stem-server', () => {
     );
   });
 
+  test('a turn that kept streaming while the connection was down finishes on screen', async () => {
+    // The promise the replay buffer exists to keep: close the lid mid-answer,
+    // open it, and the answer is finished — not truncated, and not a spinner that
+    // never resolves.
+    //
+    // The turn is paced at [e2e:slow] so there is a middle to be absent for, and
+    // the network is held DOWN rather than cut once: a single cut is over inside
+    // the 250ms the client waits before reconnecting, which is less than one
+    // delta. Holding it down for the rest of the turn is what puts the end of the
+    // answer — the last deltas, the completed item, the terminal event — entirely
+    // behind the client's back, with no possibility of it having caught them live.
+    await win.getByTitle('New conversation').click();
+    await send(win, '[e2e:slow] one two three four five six seven eight nine ten eleven twelve');
+
+    const reply = win.locator('.message-assistant:not(.activity-row) .message-body').last();
+    await expect(reply).toContainText('one two', { timeout: 20_000 });
+
+    launched.server!.setReachable(false);
+    // Comfortably past the end of the turn: five scripted steps at 700ms.
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    launched.server!.setReachable(true);
+
+    // Nothing in the app was told the turn ended, and nothing new will be pushed
+    // — it is over. The only way the rest of the answer can arrive is for the
+    // client to reconnect with the id of the last frame it saw and be handed the
+    // gap. (The reconnect runs on a doubling backoff that the outage pushed up to
+    // seconds, hence the generous wait.)
+    await expect(reply).toContainText('eleven twelve', { timeout: 60_000 });
+    await expect(win.getByTitle('Stop')).toHaveCount(0);
+    // …and what is on screen is the whole reply, not a suffix of it.
+    await expect(reply).toContainText('Echo: one two three');
+  });
+
   test('the app survives the server being killed outright and coming back', async () => {
     // SIGKILL: no shutdown, no drain — what an OOM-killed container does. The app
     // stays up, because a client that dies with its server is a client that has
@@ -297,5 +330,45 @@ test.describe('against an externally started stem-server', () => {
     // disk and a token this machine holds — not session state in the server.
     const settings = await win.evaluate(() => (window as any).stem.getSettings());
     expect(settings?.exec?.approvalMode).toBe('manual');
+  });
+
+  test('a turn killed along with the server stops pretending to run', async () => {
+    // The honest limit of a replay buffer: it lives in the process. SIGKILL takes
+    // it, the turn, and the frames that would have finished it, all at once —
+    // there is nothing to replay and no answer to complete, and a test that
+    // claimed otherwise would be testing a fiction.
+    //
+    // What CAN be promised is that the client finds out. It reconnects with a
+    // bookmark from a run that no longer exists, is told to resync rather than
+    // being handed a position in a stream that restarted at 1, and refetches.
+    // The spinner stops, because the new server's live-turn snapshot lists
+    // nothing — which is the difference between "that answer was lost" and an app
+    // that has to be relaunched.
+    await win.getByTitle('New conversation').click();
+    await send(win, '[e2e:slow] this answer will not survive its server');
+    await expect(win.locator('.message-assistant:not(.activity-row) .message-body').last()).toContainText(
+      'this answer',
+      { timeout: 20_000 }
+    );
+    await expect(win.getByTitle('Stop')).toHaveCount(1);
+
+    await launched.server!.kill();
+    await launched.server!.restart();
+
+    await expect(win.getByTitle('Stop')).toHaveCount(0, { timeout: 30_000 });
+    // And the window now agrees with the server about what exists. The hermetic
+    // backend keeps its threads in memory, so SIGKILL took the whole transcript
+    // with it — which makes this the strongest available form of the assertion:
+    // the client refetched and accepted the answer, rather than going on
+    // displaying a conversation nothing on the other end has ever heard of.
+    await expect(win.locator('.chat-row')).toHaveCount(0, { timeout: 30_000 });
+
+    // And the app is not merely alive, it is usable: the next turn goes out over
+    // the reconnected stream and comes back.
+    await send(win, 'after the second crash');
+    await expect(win.locator('.message-assistant:not(.activity-row) .message-body').last()).toContainText(
+      'Echo: after the second crash',
+      { timeout: 30_000 }
+    );
   });
 });

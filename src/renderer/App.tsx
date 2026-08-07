@@ -44,6 +44,7 @@ import {
   type ThreadState
 } from './chatState';
 import {
+  applyLiveTurns,
   attachBackendEvents,
   createSessionCore,
   deleteFromTurn,
@@ -787,6 +788,36 @@ export default function App() {
       setActiveThreadId(history.threadId);
     },
     [core, setThread]
+  );
+
+  // ---- Coming back after the event stream was away ----
+  //
+  // Two pushes, in this order, and the order is what makes them work together.
+  //
+  // The live-turn snapshot lands first and settles what is and is not running.
+  // Only then does the resync handler run, so `openChat` reads a `running` flag
+  // that is already correct — and its own rule, never reload a thread from disk
+  // while a turn is streaming into it, then does the right thing in both cases:
+  // a settled thread is reread in full, and a live one is left to the stream
+  // rather than clobbered by a file that does not have the answer in it yet.
+  // Refetching first is the version of this that quietly drops the end of a
+  // reply that is still being written.
+  useEffect(() => window.stem?.onLiveTurns((turns) => applyLiveTurns(core, turns)), [core]);
+
+  useEffect(
+    () =>
+      window.stem?.onResync(() => {
+        // The gap was too old to replay, so nothing on screen can be assumed
+        // current: the list may have gained threads, and the open one may have
+        // gained a whole turn. Only the open thread is refetched — the rest are
+        // read from disk when they are next opened anyway.
+        void refreshChats();
+        const open = activeThreadIdRef.current;
+        if (!open) return;
+        forceReloadRef.current.add(open);
+        void openChat(open);
+      }),
+    [refreshChats, openChat]
   );
 
   // Folder mutations return the fresh list; apply it directly.

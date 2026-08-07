@@ -68,6 +68,13 @@ Maintainer notes:
   folder and shows it there. And when Stem's server isn't this computer, the buttons that opened a
   folder in Finder — your Files folder, Stem's own folder, and each connected folder — are no
   longer offered, because none of those folders are here to open.
+- **An answer being written while you're offline is still there when you come back.** Close the lid
+  in the middle of a reply, lose the wifi, walk out of range — Stem's server carries on writing, and
+  when the app reconnects it asks for what it missed and fills the answer in to the end. If you were
+  away too long for that, it fetches the conversation fresh instead, which comes to the same thing.
+  Either way a reply that finished while you were gone shows as finished, and one that is still
+  being written shows as still running, rather than a spinner that never stops or an answer that
+  stops mid-sentence.
 
 ### Removed
 

@@ -364,7 +364,13 @@ app.whenReady().then(async () => {
     revealMainWindow,
     requestAttention: () => requestAttention(mainWindow),
     threadOpened: (threadId) => quickChat.threadOpened(threadId),
-    applyQuickChatSettings: (patch, next) => quickChat.applySettings(patch, next)
+    applyQuickChatSettings: (patch, next) => quickChat.applySettings(patch, next),
+    // Both of these are decided in the window, not here: the main process does
+    // not know which thread is open, and has no state of its own to correct.
+    // They go through the push queue like any other server event, so one arriving
+    // during bootstrap waits for React rather than falling on the floor.
+    resync: () => sendToMain('client:resync', undefined),
+    liveTurns: (turns) => sendToMain('client:liveTurns', turns)
   });
   // Subscribe before any window exists, so nothing the server pushes during
   // bootstrap falls on the floor — there is no replay to recover it with.
