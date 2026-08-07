@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import type { ChatListResult, ChatSearchHit, ChatSummary, Folder, ThreadStatus } from '../../shared/types';
 import { formatWake, isUnread, nextWakeAt, placement } from '../../shared/inbox';
+import { useOffline } from '../hooks/useServerReachable';
 import { stripCiteMarkers } from '../../shared/citations';
 import { glyphsFor, useShortcut } from '../shortcuts';
 import { SnoozeMenu } from './SnoozeMenu';
@@ -227,6 +228,11 @@ export function ChatList(props: ChatListProps) {
   // null = not searching (show the tree); array = results for the last run query.
   const [results, setResults] = useState<ChatSearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
+  // Search runs against an index on the server, so offline it has nothing to
+  // match — and "No matching chats." would be an answer to a question that was
+  // never asked. The chats themselves are still listed from the cache; it is the
+  // searching that is gone, and saying which is which is the whole point.
+  const offline = useOffline();
   const searchInputRef = useRef<HTMLInputElement>(null);
   // Guards against a slow expansion+search resolving after a newer one (or a clear).
   const searchSeq = useRef(0);
@@ -737,7 +743,12 @@ export function ChatList(props: ChatListProps) {
     // Show whatever we have (the instant fast results) even while the cross-language
     // pass is still refining; only fall back to a status line when there's nothing yet.
     if (!results || results.length === 0) {
-      return <div className="group-row search-status">{searching ? 'Searching…' : 'No matching chats.'}</div>;
+      const status = offline
+        ? 'Search needs Stem’s server, which can’t be reached right now.'
+        : searching
+          ? 'Searching…'
+          : 'No matching chats.';
+      return <div className="group-row search-status">{status}</div>;
     }
     return results.map((hit) => (
       <div

@@ -34,6 +34,7 @@ import { TaskAlertModal } from './TaskAlertModal';
 import { ReleaseNotesModal } from './ReleaseNotesModal';
 import { DropOverlay } from './files/DropOverlay';
 import { useAutoHideScroll } from './hooks/useAutoHideScroll';
+import { useOffline } from './hooks/useServerReachable';
 import { useShallowStable } from './hooks/useShallowStable';
 import {
   EMPTY_STATE,
@@ -300,6 +301,9 @@ export default function App() {
   const restoreNonceRef = useRef(0);
 
   const [bridgeError, setBridgeError] = useState<string | null>(null);
+
+  /** The server has stopped answering: everything below is this Mac's cache. */
+  const offline = useOffline();
 
   const refreshStatus = useCallback(async () => {
     if (!window.stem) {
@@ -820,6 +824,26 @@ export default function App() {
     [refreshChats, openChat]
   );
 
+  // The same job, for coming back from being offline rather than from a gap in
+  // the stream. Everything on screen while the server was unreachable came out
+  // of this Mac's cache, and a cache is by definition behind — so the moment the
+  // server answers again, ask it. Runs on the transition only (the ref), so a
+  // window that was never offline never refetches for nothing.
+  const wasOffline = useRef(false);
+  useEffect(() => {
+    if (offline) {
+      wasOffline.current = true;
+      return;
+    }
+    if (!wasOffline.current) return;
+    wasOffline.current = false;
+    void refreshChats();
+    const open = activeThreadIdRef.current;
+    if (!open) return;
+    forceReloadRef.current.add(open);
+    void openChat(open);
+  }, [offline, refreshChats, openChat]);
+
   // Folder mutations return the fresh list; apply it directly.
   const onCreateFolder = useCallback((name: string, parentId: string | null) => {
     window.stem.createFolder(name, parentId).then(setChatList);
@@ -1266,6 +1290,19 @@ export default function App() {
 
   return shell(
     <>
+      {offline && (
+        // Said plainly, and said before anything else: what you are looking at
+        // is this Mac's copy, and it is not going to change until Stem can reach
+        // its server again. No Retry button — the client is already reconnecting
+        // on its own, and a button that only restarts a loop that is running is
+        // a button that teaches people to press it twice.
+        <div className="offline-banner" role="status">
+          <span className="offline-banner-msg">
+            Stem can’t reach its server — you can read what’s already here, but not send. Memory, skills and
+            search are unavailable until it’s back.
+          </span>
+        </div>
+      )}
       {authProblem && (
         <div className="auth-banner" role="alert">
           <span className="auth-banner-msg">

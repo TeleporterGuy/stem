@@ -23,6 +23,7 @@ import type {
   MemoryRebuildStatus
 } from '../../../shared/types';
 import { MdxView } from '../../chat/MdxView';
+import { useOffline } from '../../hooks/useServerReachable';
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { holdFullSpin, type ActiveFactsViewProps } from './shared';
@@ -421,6 +422,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
   const { activeThreadId, activeRunning, previewActive, previewDraft, onTogglePreview } = activeFacts;
   const [settings, setSettings] = useState<MemorySettings | null>(null);
   const [contents, setContents] = useState<MemoryContents | null>(null);
+  const offline = useOffline();
   const [showTech, setShowTech] = useState(false);
   const [showSuperseded, setShowSuperseded] = useState(false);
   const [showMemories, setShowMemories] = useState(false);
@@ -618,7 +620,16 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
     }
   }
 
-  if (!settings) return <p className="muted">Loading…</p>;
+  // Everything on this tab is read from the server. When it cannot be reached
+  // the calls above never resolve, and an eternal "Loading…" is a worse lie than
+  // an empty list — it says "any second now" about something that is not coming.
+  if (!settings) {
+    return (
+      <p className="muted">
+        {offline ? 'Your memory lives on Stem’s server, which can’t be reached right now.' : 'Loading…'}
+      </p>
+    );
+  }
 
   const allNotes = contents?.files.filter((f) => f.kind === 'note' && f.content.trim()) ?? [];
   // Superseded facts are history, not memory: they never inject, so they don't
@@ -994,7 +1005,11 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
           </p>
         )}
         {consolidateMsg && <p className="muted">{consolidateMsg}</p>}
-        {!contents && <p className="muted">Loading…</p>}
+        {!contents && (
+          <p className="muted">
+            {offline ? 'Your memory lives on Stem’s server, which can’t be reached right now.' : 'Loading…'}
+          </p>
+        )}
         {showMemories && contents && notes.length === 0 && (
           <p className="muted">No memories stored yet — Stem builds these as you chat.</p>
         )}

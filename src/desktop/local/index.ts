@@ -47,6 +47,8 @@ export interface LocalIpcDeps {
   mainWindow(): BrowserWindow | null;
   /** Where this client is connected, and whether it started that server itself. */
   connection(): { serverUrl: string; remote: boolean; pinnedByEnv: boolean };
+  /** Whether the server is answering right now (see desktop/proxy.ts). */
+  reachable(): boolean;
   /** Address + bearer token, for the routes that are not `POST /rpc`. */
   credentials(): ServerCredentials;
   /** The settings document, for the handlers that need the server's half of it. */
@@ -74,6 +76,16 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
   // what lets Settings → Devices point at your own row instead of offering to
   // revoke the credential you are holding.
   handleLocal('client:info', clientInfo);
+
+  // Is the server answering? A window asks once on mount and is pushed every
+  // change afterwards (`client:connectionChanged`). It has to be askable and not
+  // only pushable, because the first answer can be settled before any window
+  // exists: a launch with no network finds out while fetching the channel list,
+  // which happens before the first BrowserWindow is created.
+  //
+  // Deliberately client-owned, and obviously so: a server cannot be asked
+  // whether it can be reached.
+  handleLocal('client:connection', () => ({ reachable: deps.reachable() }));
 
   // Settings → Server. Pairing is the whole act: the address and the credential
   // are written together, because a token means nothing to a server that never

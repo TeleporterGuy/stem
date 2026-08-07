@@ -326,6 +326,17 @@ function registerIpc(): void {
     return { threadId, title, messages };
   });
 
+  // The same transcript, without the pre-warm — a pure read, which is what a
+  // caller that is not a person opening a chat wants. The pre-warm above enters
+  // the backend's foreground gate, so a client walking a list of threads through
+  // chats:open would queue a session switch per thread behind whatever the user
+  // is actually doing. Nothing about the reader is the server's business; this
+  // is just "read a thread and change nothing".
+  registerServer('chats:history', async (_e, threadId: string) => {
+    const { title, messages } = await runtime!.readThread(threadId);
+    return { threadId, title, messages };
+  });
+
   // ---- settings ----
   registerServer('settings:get', () => readSettings());
   registerServer('settings:updateQuickChat', async (_e, patch: Partial<QuickChatSettings>) => {

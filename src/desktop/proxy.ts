@@ -8,6 +8,7 @@ import type {
   TurnAttachment
 } from '../shared/types';
 import { uploadFile } from './file-transfer';
+import { createOfflineCache } from './offline-cache';
 import type { OAuthCourier } from './oauth-courier';
 import { updateClientQuickChat, withClientSettings } from './settings';
 
@@ -110,6 +111,20 @@ import { updateClientQuickChat, withClientSettings } from './settings';
 // surface; this client asks for it at connect time (GET /channels) rather than
 // keeping a copy, which is what lets one build talk to an embedded server and a
 // standalone one.
+//
+// ---------------------------------------------------------------------------
+//
+// One more thing passes through here, and this is the only file that sees
+// enough to do it: the offline cache (./offline-cache.ts). Every chats:list and
+// chats:open answer is written through on its way to the renderer, and read back
+// — only in the branch below where fetch itself threw — when the server cannot
+// be reached at all. Remote installs only; an embedded server cannot be absent
+// from the process it is running in.
+//
+// The two questions this file must not confuse: `deps.remote` is whether the
+// server is somebody else's machine, decided once at startup and never again;
+// `reachable` below is whether it is answering right now. Remote decides whether
+// there is a cache; reachable decides whether it is read.
 
 /** Origin of an external server to use instead of starting one in-process. */
 export const EXTERNAL_SERVER_URL = process.env.STEM_SERVER_URL?.trim() || null;
@@ -126,6 +141,9 @@ const RPC_TIMEOUT_MS = 10 * 60_000;
 /** Reconnect backoff for the event stream. */
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS = 10_000;
+
+/** Backend events that mean a turn is over, however it ended. */
+const SETTLED_TURN_METHODS = new Set(['turn/completed', 'turn/failed', 'turn/aborted']);
 
 /**
  * A channel with behavior on both sides of the wire. `before` runs on this
@@ -197,6 +215,14 @@ export interface ProxyDeps {
    * was away from spinning forever.
    */
   liveTurns(turns: { threadId: string; turnId: string | null }[]): void;
+  /**
+   * The server started or stopped answering. Fired on transitions only, and
+   * decided by the transport rather than by anything in an answer: a 500 is a
+   * server that is up and unhappy, which is not the same fact and must not raise
+   * the same banner. Drives the offline banner, the disabled composer, and the
+   * "needs the server" states in memory / skills / search.
+   */
+  connection(reachable: boolean): void;
   /** Catches OAuth callbacks for a server that is not on this machine. */
   oauthCourier: OAuthCourier;
   /** Quick Chat settings were persisted: apply the parts that are not settings. */
@@ -215,6 +241,30 @@ export interface ServerProxy {
 export function createServerProxy(deps: ProxyDeps): ServerProxy {
   const base = deps.url.replace(/\/$/, '');
   const auth = `Bearer ${deps.token}`;
+
+  // Only a client whose server is elsewhere can be without one. See the note
+  // above, and the longer argument in offline-cache.ts.
+  const cache = createOfflineCache({ enabled: deps.remote });
+
+  /**
+   * Whether the server is answering. Starts optimistic — nothing has failed yet
+   * — and only ever changes on evidence from the transport: a fetch or a socket
+   * that threw, or one that did not.
+   */
+  let reachable = true;
+
+  function setReachable(next: boolean): void {
+    // Tearing the stream down on quit produces exactly the error a lost server
+    // does. Nobody needs to be told the connection went away as the app closes.
+    if (closed || reachable === next) return;
+    reachable = next;
+    log('proxy', next ? 'the server is answering again' : 'the server has stopped answering');
+    deps.connection(next);
+    // Coming back is the moment to find out what was missed. Bounded to the
+    // twenty-five most recent threads that actually changed, and debounced, so a
+    // link that flaps does not turn into twenty-five fetches per flap.
+    if (next) cache.schedulePrefetch(serverCall);
+  }
 
   const signInStarted: WrappedChannel = { before: () => deps.oauthCourier.expectSignIn() };
 
@@ -278,29 +328,44 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
 
   // ---- POST /rpc ----
 
-  async function post(channel: string, args: unknown[]): Promise<unknown> {
+  async function post(channel: string, args: unknown[], signal?: AbortSignal): Promise<unknown> {
     let res: Response;
     try {
       res = await fetch(`${base}/rpc`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: auth },
         body: JSON.stringify({ channel, args }),
-        signal: AbortSignal.timeout(RPC_TIMEOUT_MS)
+        // A caller's own signal (a cancellable prefetch) on top of the timeout
+        // every call gets. Either one aborting aborts the request.
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(RPC_TIMEOUT_MS)])
+          : AbortSignal.timeout(RPC_TIMEOUT_MS)
       });
     } catch (e) {
-      // The server could not be reached (or took longer than any handler should).
-      // Distinct from a call it answered, and the only error shape here the
-      // renderer could not have seen before the split.
+      // Nothing on the other end answered — as opposed to answering badly. This
+      // is the ONLY place the cache is allowed to speak, and the reason is the
+      // whole design: a server that replies with an error is a server that is
+      // up, and its answer is the truth however unwelcome.
+      if (signal?.aborted) throw e;
+      setReachable(false);
+      const cached = cache.replay(channel, args);
+      if (cached !== undefined) return cached;
+      // Distinct from a call the server answered, and the only error shape here
+      // the renderer could not have seen before the split.
       throw new Error(`Stem's server is unreachable: ${String((e as Error)?.message ?? e)}`);
     }
     const body = (await res.json().catch(() => null)) as
       | { ok?: boolean; result?: unknown; error?: string }
       | null;
+    // Anything with a status line came from the server, including a 401 and a
+    // 500. It is up.
+    setReachable(true);
     if (res.ok && body?.ok) {
       // The server answered, so it is up. That does not make the stream healthy —
       // a dead stream means missed events — so re-open it now rather than waiting
       // out the backoff.
       if (!streamOpen) retryNow();
+      cache.record(channel, args, body.result);
       return body.result;
     }
     // The server's own message, verbatim, so the renderer's error handling cannot
@@ -308,6 +373,10 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     // …` wording arrives here intact and is rethrown unchanged.
     throw new Error(body?.error ?? `${channel} failed (HTTP ${res.status})`);
   }
+
+  /** post() as the cache's catch-up run wants it: cancellable, nothing wrapped. */
+  const serverCall = (channel: string, args: unknown[], signal: AbortSignal): Promise<unknown> =>
+    post(channel, args, signal);
 
   async function invoke(channel: string, args: unknown[]): Promise<unknown> {
     const hooks = wrapped[channel];
@@ -406,6 +475,13 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
           const url = (event.params as { url?: unknown } | undefined)?.url;
           if (typeof url === 'string') deps.oauthCourier.offer(url);
         }
+        // A turn that has just ended is a thread whose transcript has changed,
+        // and the cache's copy of it is now one answer short. Rather than
+        // reassemble the reply from the deltas that went past — which is the
+        // renderer's job, done properly, and would be a second implementation of
+        // it living in the main process — ask again, debounced, so the thread you
+        // were talking in a minute ago is the one that is readable on the train.
+        if (SETTLED_TURN_METHODS.has(event?.method)) cache.schedulePrefetch(serverCall);
         deps.routeBackendEvent(event);
         return;
       }
@@ -498,6 +574,9 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       (res) => {
         if (stream !== req) return;
         if (res.statusCode !== 200) {
+          // Refused, but refused BY something — the server is up and saying no,
+          // which is not the offline case.
+          setReachable(true);
           // 401 means this device's token is not in the registry. There is no
           // pairing UX to fall back to on the desktop (unlike the phone, which
           // stops and asks), so this is logged and retried: a server that
@@ -510,6 +589,7 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
         }
         attempt = 0;
         streamOpen = true;
+        setReachable(true);
         res.setEncoding('utf8');
         let buffer = '';
         res.on('data', (chunk: string) => {
@@ -555,6 +635,11 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       if (stream !== req) return;
       stream = null;
       streamOpen = false;
+      // A connect that could not even be made. Note this fires on the RECONNECT,
+      // not on the drop that caused it: a stream ending is routine (a proxy
+      // recycling a connection, a laptop's wifi handing over) and the honest
+      // test of whether the server is gone is whether we can get back to it.
+      setReachable(false);
       scheduleReconnect();
     });
     req.end();
@@ -566,16 +651,42 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     connect();
   }
 
-  /** What this client may call, asked once at connect time. */
+  /**
+   * What this client may call, asked once at connect time.
+   *
+   * This is also the first thing a launch does, which makes it the first thing
+   * that fails when Stem is opened somewhere with no signal — and until Phase 2
+   * it failed by taking the app down, which is a poor answer for a client whose
+   * whole reason to keep a cache is to be useful in exactly that moment. So a
+   * remote client that has connected before falls back to the list it was given
+   * last time. Every one of those channels still goes over the wire and still
+   * fails; the handful that can be answered from the cache are answered, and the
+   * rest say the server is unreachable, which is the truth.
+   */
   async function channels(): Promise<string[]> {
-    const res = await fetch(`${base}/channels`, {
-      headers: { authorization: auth },
-      signal: AbortSignal.timeout(30_000)
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${base}/channels`, {
+        headers: { authorization: auth },
+        signal: AbortSignal.timeout(30_000)
+      });
+    } catch (e) {
+      // Nothing answered. The same distinction post() makes, for the same
+      // reason: a server that refuses is a server that is there.
+      const remembered = cache.cachedChannels();
+      if (!remembered) throw e;
+      log('proxy', 'starting offline against the last known channel list', {
+        channels: remembered.length
+      });
+      setReachable(false);
+      return remembered;
+    }
     const body = (await res.json().catch(() => null)) as { ok?: boolean; result?: string[] } | null;
+    setReachable(true);
     if (!res.ok || !body?.ok || !Array.isArray(body.result)) {
       throw new Error(`Stem's server would not list its channels (HTTP ${res.status})`);
     }
+    cache.rememberChannels(body.result);
     return body.result;
   }
 
@@ -583,6 +694,9 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     async start() {
       const list = await channels();
       connect();
+      // The catch-up run for an ordinary launch. setReachable only fires on
+      // transitions, and a client that starts connected never has one.
+      if (reachable) cache.schedulePrefetch(serverCall);
       return list;
     },
     invoke,
@@ -592,6 +706,8 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       stream?.destroy();
       stream = null;
       streamOpen = false;
+      // Nothing in flight for a cache may outlive the app that wanted it.
+      cache.close();
     }
   };
 }

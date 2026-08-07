@@ -110,6 +110,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'chats:searchFast': [a.string],
   'chats:search': [a.string],
   'chats:open': [a.string],
+  'chats:history': [a.string],
   'chats:rollbackToTurn': [a.string, a.string],
   'chats:forkThread': [a.string, a.string],
   'chats:rename': [a.string, a.string],

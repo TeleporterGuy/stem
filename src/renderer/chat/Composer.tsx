@@ -15,6 +15,7 @@ import type {
   TurnAttachment
 } from '../../shared/types';
 import { ContextMeter } from './ContextMeter';
+import { useOffline } from '../hooks/useServerReachable';
 import { ShortcutHint, useShortcut } from '../shortcuts';
 import { EFFORT_LABELS } from '../modelLabels';
 import { NOTE_CONFIRM_MS, detectNoteTrigger, noteBodyValid, useNoteMode } from '../noteMode';
@@ -121,6 +122,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [armed, setArmed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Stem's offline mode is read-only by decision, not by accident: there is no
+  // local brain to answer with and no outbox to hold what you typed, so a
+  // composer that still accepted text would be collecting messages it could only
+  // throw away. Blocked at the field rather than at send — the honest moment to
+  // find out is before you write the paragraph. Notes go the same way: they are
+  // written into memory, which is on the server too.
+  const offline = useOffline();
+
   // Auto-grow the composer from one line up to a max, then scroll internally.
   const resizeComposer = useCallback(() => {
     const el = textareaRef.current;
@@ -189,6 +198,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }, []);
 
   function submit() {
+    if (offline) return;
     const text = draft.trim();
     if (noteMode) {
       // A note save never touches the backend, so it's allowed mid-turn.
@@ -428,7 +438,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           </div>
         )}
         <div className="composer-row">
-          <button type="button" className="composer-attach" title="Attach" onClick={pickFiles}>
+          <button
+            type="button"
+            className="composer-attach"
+            title="Attach"
+            onClick={pickFiles}
+            disabled={offline}
+          >
             <Paperclip size={17} />
             <ShortcutHint id="attach" />
           </button>
@@ -489,7 +505,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               }
               // escapeAction === 'off' → leave Escape alone.
             }}
-            placeholder={noteMode ? 'Save a note to memory…' : 'Ask Stem…'}
+            placeholder={
+              offline
+                ? 'Offline — you can read your chats, but not send'
+                : noteMode
+                  ? 'Save a note to memory…'
+                  : 'Ask Stem…'
+            }
+            disabled={offline}
             rows={1}
           />
           {running && !noteMode ? (
@@ -501,7 +524,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               type="button"
               className="icon-btn send"
               onClick={submit}
-              disabled={noteMode ? !draft.trim() : !draft.trim() && attachments.length === 0}
+              disabled={offline || (noteMode ? !draft.trim() : !draft.trim() && attachments.length === 0)}
               title={noteMode ? 'Save note' : 'Send'}
             >
               <ArrowUp size={16} />

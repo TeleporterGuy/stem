@@ -295,6 +295,15 @@ let server: ServerHandle | null = null;
 let proxy: ServerProxy | null = null;
 let oauthCourier: OAuthCourier | null = null;
 
+/**
+ * Whether the server is answering, as last reported by the proxy. Kept here
+ * rather than only pushed because the first transition can happen before there
+ * is a window to push to — a launch on a train discovers it is offline while
+ * fetching the channel list, which is the very first thing a launch does. So the
+ * windows ask (`client:connection`) and are then told (`client:connectionChanged`).
+ */
+let serverReachable = true;
+
 app.whenReady().then(async () => {
   // Strict CSP for the renderer in production: only self, no remote/inline
   // script. Skipped in dev so the Vite dev server / HMR can run. Installed
@@ -370,7 +379,15 @@ app.whenReady().then(async () => {
     // They go through the push queue like any other server event, so one arriving
     // during bootstrap waits for React rather than falling on the floor.
     resync: () => sendToMain('client:resync', undefined),
-    liveTurns: (turns) => sendToMain('client:liveTurns', turns)
+    liveTurns: (turns) => sendToMain('client:liveTurns', turns),
+    // Both windows compose, so both have to stop composing. The overlay is not
+    // on the push queue's path (it is created up front and only ever hidden), so
+    // it is sent to directly.
+    connection: (reachable) => {
+      serverReachable = reachable;
+      sendToMain('client:connectionChanged', reachable);
+      quickChat.sendToOverlay('client:connectionChanged', reachable);
+    }
   });
   // Subscribe before any window exists, so nothing the server pushes during
   // bootstrap falls on the floor — there is no replay to recover it with.
@@ -382,6 +399,7 @@ app.whenReady().then(async () => {
   registerLocalIpc({
     mainWindow: () => mainWindow,
     connection: () => ({ serverUrl, remote: !server, pinnedByEnv: configured.pinnedByEnv }),
+    reachable: () => serverReachable,
     credentials: () => endpoint,
     settings: () => proxy!.invoke('settings:get', []) as Promise<AppSettings>
   });

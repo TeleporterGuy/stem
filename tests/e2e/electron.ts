@@ -67,6 +67,14 @@ export interface LaunchOptions {
    * See tests/e2e/stem-server.ts and external-server.spec.ts.
    */
   externalServer?: boolean;
+  /**
+   * Reuse an existing state dir instead of minting a throwaway one — i.e. launch
+   * the app AGAIN, as the same install, with everything the previous run wrote
+   * still on disk. The offline spec needs it: what a client keeps for the train
+   * is only worth anything across a relaunch, and a cache proved by the process
+   * that filled it is not proved at all.
+   */
+  userDataDir?: string;
 }
 
 export interface LaunchedApp {
@@ -117,7 +125,7 @@ function splitAcrossStores(seed: Record<string, unknown>): {
  *  (the `electronApp` fixture does this automatically; standalone callers use
  *  the returned dir). */
 export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> {
-  const userDataDir = mkdtempSync(join(tmpdir(), 'stem-e2e-'));
+  const userDataDir = opts.userDataDir ?? mkdtempSync(join(tmpdir(), 'stem-e2e-'));
   const tasksStorePath = join(userDataDir, 'tasks.json');
   const settingsStore = join(userDataDir, 'settings.json');
   const clientStore = join(userDataDir, 'client.json');

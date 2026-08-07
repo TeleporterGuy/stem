@@ -1184,6 +1184,12 @@ export interface ChatHistory {
   threadId: string;
   title: string;
   messages: ChatMessage[];
+  /**
+   * This came out of the client's own read-only cache because the server could
+   * not be reached — see src/desktop/offline-cache.ts. Never set by the server,
+   * and never set while it is answering.
+   */
+  offline?: boolean;
 }
 
 /**
@@ -1211,6 +1217,8 @@ export interface ChatListResult {
    * of which knows anything about the Inbox. See src/shared/inbox.ts.
    */
   inbox: InboxState;
+  /** Served from the client's offline cache; see {@link ChatHistory.offline}. */
+  offline?: boolean;
 }
 
 // ---- App settings (Stem-owned, persisted by the main process) ----
@@ -1741,6 +1749,19 @@ export interface ClientInfo {
   pinnedByEnv: boolean;
 }
 
+/**
+ * Whether the server is answering right now. Unlike {@link ClientInfo.remote},
+ * which is settled at launch and never moves, this changes under the app's feet
+ * — so it is asked once on mount and pushed on every change afterwards.
+ *
+ * False means the client is running on its offline cache: chats can be read,
+ * nothing can be sent, and anything that lives only on the server (memory,
+ * skills, search) is unavailable rather than empty.
+ */
+export interface ConnectionState {
+  reachable: boolean;
+}
+
 // ---- Preload API surface exposed on window.stem ----
 
 export interface StemApi {
@@ -2004,6 +2025,18 @@ export interface StemApi {
    * learn that is to be told.
    */
   onLiveTurns(listener: (turns: LiveTurn[]) => void): () => void;
+  /**
+   * Whether the server is answering, right now. Asked on mount because the first
+   * answer can predate this window; see {@link onConnectionChanged}.
+   */
+  connectionState(): Promise<ConnectionState>;
+  /**
+   * The server started or stopped answering. Together with the initial
+   * {@link connectionState} this is what raises the offline banner, disables the
+   * composer, and turns the memory / skills / search empty states into
+   * "unavailable".
+   */
+  onConnectionChanged(listener: (reachable: boolean) => void): () => void;
 
   // App settings + Quick Chat overlay.
   getSettings(): Promise<AppSettings>;

@@ -5,12 +5,17 @@ import type {
   SkillsMode,
   SkillSummary
 } from '../../../shared/types';
+import { useOffline } from '../../hooks/useServerReachable';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { holdFullSpin } from './shared';
 
 export function SkillsTab({ models }: { models: ModelSummary[] }) {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
+  // Skills live on the server. With it unreachable this list is empty because we
+  // could not ask, which is not the same thing as having none — and "No skills
+  // yet" is a sentence that would quietly tell someone their skills are gone.
+  const offline = useOffline();
   const [tidying, setTidying] = useState(false);
   // null => use the backend default model for the curator.
   const [curatorModel, setCuratorModel] = useState<string | null>(null);
@@ -88,7 +93,9 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
           )}
         </span>
       </div>
-      {skills.length === 0 ? (
+      {skills.length === 0 && offline ? (
+        <p className="muted">Your skills live on Stem’s server, which can’t be reached right now.</p>
+      ) : skills.length === 0 ? (
         <p className="muted">No skills yet. Stem saves reusable procedures it works out, or you can drop a SKILL.md folder into the skills directory.</p>
       ) : (
         <div className="group">

@@ -1267,6 +1267,23 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 }
 .auth-banner-btn:hover { background: color-mix(in srgb, var(--danger) 85%, black); }
 
+/* "Stem can't reach its server" strip, in the same slot as the auth banner and
+   stacking above it when both apply. Warn rather than danger: nothing is broken
+   and nothing is lost — the app is simply reading rather than reading and
+   writing, and a red bar would say something worse than what happened. */
+.offline-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-6);
+  background: color-mix(in srgb, var(--warn) 14%, var(--panel));
+  border-bottom: 0.5px solid color-mix(in srgb, var(--warn) 40%, var(--line));
+  color: var(--ink);
+  font-size: var(--fs-12);
+}
+.offline-banner-msg { flex: 1; min-width: 0; }
+
 /* Connection status dot — a quiet green circle says "running fine" without a pill. */
 .mcp-dot { flex: none; width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--success); }
 .mcp-dot.pending { background: var(--warn); animation: stem-dot-pulse 1.2s ease-in-out infinite; }

@@ -278,6 +278,12 @@ const api: StemApi = {
     ipcRenderer.on('client:liveTurns', handler);
     return () => ipcRenderer.removeListener('client:liveTurns', handler);
   },
+  connectionState: () => ipcRenderer.invoke('client:connection'),
+  onConnectionChanged: (listener: (reachable: boolean) => void) => {
+    const handler = (_e: unknown, reachable: boolean) => listener(reachable);
+    ipcRenderer.on('client:connectionChanged', handler);
+    return () => ipcRenderer.removeListener('client:connectionChanged', handler);
+  },
 
   listDevices: () => ipcRenderer.invoke('devices:list'),
   revokeDevice: (id: string) => ipcRenderer.invoke('devices:revoke', id),

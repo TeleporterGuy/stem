@@ -75,6 +75,15 @@ Maintainer notes:
   Either way a reply that finished while you were gone shows as finished, and one that is still
   being written shows as still running, rather than a spinner that never stops or an answer that
   stops mid-sentence.
+- **Your chats are readable with no connection at all.** When Stem's server is on another computer,
+  this one now keeps its own copy of your recent conversations, topped up quietly in the background
+  as you work. So Stem opens on a train, in a tunnel, or with the wifi off, and your chat list and
+  the conversations themselves are there to read. It says plainly at the top of the window that it
+  can't reach the server, and the message box is switched off rather than taking something it has no
+  way to send. Memory, skills and chat search say they need the server rather than showing up empty,
+  which would look like you'd lost them. The moment the connection comes back, everything refreshes
+  on its own. Nothing changes when Stem's server is on the computer you're using: it's already here,
+  so there's nothing to keep a copy of.
 
 ### Removed
 
