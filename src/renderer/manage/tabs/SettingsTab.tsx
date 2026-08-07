@@ -15,9 +15,12 @@ import type {
   AuthProviderId,
   ApiKeyProviderId,
   ChatsSettings,
+  ClientInfo,
   CustomInstructionsSettings,
   EscapeAction,
+  DevicesSnapshot,
   ExecSettings,
+  PairingCodeInfo,
   WebSearchSettings,
   QuickChatSettings,
   QuickChatShortcutStatus,
@@ -1664,8 +1667,159 @@ export function SettingsTab({
         Press the shortcut to open the overlay; Escape or the shortcut again hides it.
       </p>
 
+      <DevicesSection />
+
       <AboutSection />
     </div>
+  );
+}
+
+/** "3 Aug", "never" — a last-seen stamp, short enough to sit on one row. */
+function seenLabel(iso: string | null): string {
+  if (!iso) return 'never connected';
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return 'never connected';
+  const age = Date.now() - ms;
+  if (age < 5 * 60_000) return 'connected just now';
+  if (age < 24 * 3_600_000) return `last seen ${new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+  return `last seen ${new Date(ms).toLocaleDateString()}`;
+}
+
+/**
+ * Settings → Devices: everything that can reach Stem's server, and the only way
+ * to admit something new.
+ *
+ * A device is admitted by a code that is said once and spent once — never by
+ * copying a token around — so nothing here can show you an existing device's
+ * credential. The server does not have one to show: it keeps hashes.
+ */
+function DevicesSection() {
+  const [snapshot, setSnapshot] = useState<DevicesSnapshot | null>(null);
+  const [me, setMe] = useState<ClientInfo | null>(null);
+  const [label, setLabel] = useState('');
+  const [minted, setMinted] = useState<PairingCodeInfo | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void window.stem.listDevices().then(setSnapshot).catch(() => undefined);
+    void window.stem.clientInfo().then(setMe).catch(() => undefined);
+  }, []);
+
+  async function createCode() {
+    setBusy(true);
+    setError(null);
+    try {
+      setMinted(await window.stem.createPairingCode(label.trim() || 'Paired device'));
+      setLabel('');
+      setSnapshot(await window.stem.listDevices());
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke(id: string) {
+    setConfirming(null);
+    setBusy(true);
+    setError(null);
+    try {
+      setSnapshot(await window.stem.revokeDevice(id));
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const devices = snapshot?.devices ?? [];
+
+  return (
+    <>
+      <div className="grp-head">Devices</div>
+      <div className="formgroup">
+        <p className="muted" style={{ marginTop: 0 }}>
+          Everything signed in to this Stem. Each device holds its own key — Stem keeps only a
+          fingerprint of it, so a key can be withdrawn but never read back out.
+        </p>
+
+        {devices.map((d) => {
+          const self = !!me?.deviceId && d.id === me.deviceId;
+          return (
+            <div className="set-row" key={d.id}>
+              <span className="set-label">
+                <strong>
+                  {d.label}
+                  {self && <span className="muted"> · this device</span>}
+                </strong>
+                <em>{seenLabel(d.lastSeenAt)}</em>
+              </span>
+              {confirming === d.id ? (
+                <span>
+                  <button className="link-btn" onClick={() => void revoke(d.id)} disabled={busy}>
+                    Confirm
+                  </button>
+                  <button className="link-btn" onClick={() => setConfirming(null)}>
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button
+                  className="link-btn"
+                  onClick={() => setConfirming(d.id)}
+                  disabled={busy || self}
+                  title={self ? 'This is the device you are using — withdrawing it would sign you out here' : undefined}
+                >
+                  Withdraw
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {snapshot && devices.length === 0 && <p className="muted">Nothing is signed in yet.</p>}
+
+        {snapshot?.pending.map((p) => (
+          <div className="set-row" key={`${p.label}-${p.expiresAt}`}>
+            <span className="set-label">
+              <strong className="muted">{p.label}</strong>
+              <em>waiting for a code to be entered · expires {new Date(p.expiresAt).toLocaleTimeString()}</em>
+            </span>
+          </div>
+        ))}
+
+        <form
+          className="set-block"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void createCode();
+          }}
+        >
+          <span className="set-sub">Add a device</span>
+          <input
+            className="ifield"
+            type="text"
+            aria-label="What to call the new device"
+            value={label}
+            placeholder="What to call it, e.g. Work laptop"
+            onChange={(e) => setLabel(e.target.value)}
+          />
+          <div className="push-row">
+            <button type="submit" className="push default" disabled={busy}>
+              Get a code
+            </button>
+          </div>
+          {minted && (
+            <p className="muted">
+              Enter <strong style={{ letterSpacing: '0.08em' }}>{minted.code}</strong> on the new
+              device. It works once, and only until {new Date(minted.expiresAt).toLocaleTimeString()}.
+            </p>
+          )}
+          {error && <p className="muted">{error}</p>}
+        </form>
+      </div>
+    </>
   );
 }
 

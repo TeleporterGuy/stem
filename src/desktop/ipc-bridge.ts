@@ -13,8 +13,8 @@ import { log } from '../server/log';
 //
 //  SERVER-OWNED (~110 channels) — the server's registry IS the desktop's surface.
 //    We bind whatever it says it registered (GET /channels) and forward the call
-//    over the wire. No allowlist: a channel the server answers is a channel this
-//    machine's user may call. (The phone is different — see transport/roles.ts.)
+//    over the wire. No allowlist: a channel the server answers is a channel any
+//    authenticated client may call, and the token is the whole decision.
 //
 //  CLIENT-OWNED (the table below) — channels the desktop answers itself because
 //    they act on THIS machine: native pickers, revealing a path in the file

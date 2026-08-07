@@ -267,6 +267,11 @@ const api: StemApi = {
     return () => ipcRenderer.removeListener('chats:changed', handler);
   },
 
+  listDevices: () => ipcRenderer.invoke('devices:list'),
+  revokeDevice: (id: string) => ipcRenderer.invoke('devices:revoke', id),
+  createPairingCode: (label: string) => ipcRenderer.invoke('devices:createPairingCode', label),
+  clientInfo: () => ipcRenderer.invoke('client:info'),
+
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateQuickChat: (patch: Partial<QuickChatSettings>) => ipcRenderer.invoke('settings:updateQuickChat', patch),
   getQuickChatShortcutStatus: () => ipcRenderer.invoke('quickchat:shortcutStatus'),

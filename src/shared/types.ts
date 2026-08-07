@@ -1625,6 +1625,54 @@ export interface QuickChatSessionStarted {
   title: string;
 }
 
+// ---- Devices: who may reach this server ----
+
+/**
+ * One registered client, as Settings → Devices shows it. No credential appears
+ * here and none exists to show — the server keeps only a hash of each device's
+ * token (see server/transport/auth.ts).
+ */
+export interface DeviceInfo {
+  id: string;
+  label: string;
+  createdAt: string;
+  /** Last successful authentication, or null if it has never connected. */
+  lastSeenAt: string | null;
+}
+
+/** A pairing code that has been issued but not yet spent. */
+export interface PendingPairing {
+  label: string;
+  expiresAt: string;
+}
+
+/** Everything Settings → Devices renders: what is paired, and what is pending. */
+export interface DevicesSnapshot {
+  devices: DeviceInfo[];
+  pending: PendingPairing[];
+}
+
+/** A freshly minted pairing code, shown once so it can be carried to a device. */
+export interface PairingCodeInfo {
+  /** Grouped for reading aloud, e.g. `ABCD-EFGH`. Case and dashes don't matter. */
+  code: string;
+  label: string;
+  expiresAt: string;
+}
+
+/**
+ * What this client knows about its own connection — answered locally, never by
+ * the server, because every one of these facts is about THIS machine.
+ */
+export interface ClientInfo {
+  /** This client's row in the device registry, so it can mark itself in the list. */
+  deviceId: string | null;
+  /** The server it is talking to. */
+  serverUrl: string;
+  /** False when the server runs in this very process (the default install). */
+  remote: boolean;
+}
+
 // ---- Preload API surface exposed on window.stem ----
 
 export interface StemApi {
@@ -1886,6 +1934,16 @@ export interface StemApi {
   markReleaseNotesSeen(): Promise<void>;
   /** Turn the after-update popup on or off. */
   updateReleaseNotesSettings(patch: Partial<ReleaseNotesSettings>): Promise<AppSettings>;
+  // Devices: which clients may reach the server, and how a new one is admitted.
+  /** Every registered device plus any pairing code still outstanding. */
+  listDevices(): Promise<DevicesSnapshot>;
+  /** Remove a device's credential and cut any event stream it has open. */
+  revokeDevice(id: string): Promise<DevicesSnapshot>;
+  /** Mint a one-shot pairing code for a device that will be called `label`. */
+  createPairingCode(label: string): Promise<PairingCodeInfo>;
+  /** This client's own identity and connection — answered without the wire. */
+  clientInfo(): Promise<ClientInfo>;
+
   /** Set the model used for memory distillation/tidy-up ({ model: null } = default). */
   updateMemorySettings(patch: Partial<MemoryModelSettings>): Promise<AppSettings>;
   updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<AppSettings>;

@@ -12,16 +12,17 @@ import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolic
 // stem-server takes it from the environment), and LOOPBACK_HOSTS is what keeps
 // that option from becoming a public listener.
 //
-// Three routes:
+// Four routes:
 //   POST /rpc      {channel, args}  → {ok:true, result} | {ok:false, error}
 //   GET  /events                    → Server-Sent Events, server → client
 //   GET  /channels                  → what this client may invoke
+//   POST /pair     {code}           → {deviceId, token}, the ONE unauthenticated one
 //
-// There is deliberately no fourth. This server used to serve the phone's web
+// There is deliberately no fifth. This server used to serve the phone's web
 // bundle out of dist/renderer, with a traversal guard and a dev-mode proxy to
 // Vite behind it; that client is gone, every remaining client loads its own UI
 // off its own disk, and a static file server nobody reads from is only ever a
-// way to leak a file. Anything that is not one of the three routes is a 404.
+// way to leak a file. Anything that is not one of the four routes is a 404.
 //
 // SSE rather than a WebSocket on purpose: it is one-directional (which is exactly
 // the shape of the push side), it survives a reverse proxy without an upgrade
@@ -34,6 +35,9 @@ import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolic
 
 /** 25 MB: base64-encoded photo attachments ride POST /rpc as startTurn arguments. */
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
+
+/** A pairing code and its JSON wrapper. Unauthenticated, so it gets its own cap. */
+const MAX_PAIR_BODY_BYTES = 1024;
 
 /**
  * Keepalive cadence for idle SSE streams. Comfortably under the 60s idle timeout
@@ -51,12 +55,28 @@ const SSE_RETRY_MS = 3_000;
  * A standalone `stem-server` takes its bind address from the environment, which
  * is exactly the knob somebody reaches for when they want to run it on a VPS —
  * so the refusal has to live here, at the socket, where no caller can route
- * around it. Phase 1 ships no TLS and no device pairing beyond a plaintext
- * bearer token in a 0600 file; a listener on a public interface would hand that
- * token's full-admin surface to the internet. Widening this set is Phase 2's
- * decision to make, alongside the things that make it survivable.
+ * around it. Stem speaks no TLS; being reachable from elsewhere is a proxy's job
+ * (Caddy in the deployed configuration), and the proxy talks to this loopback
+ * socket. That stays true even on a public domain, which is the point: there is
+ * no configuration in which Stem itself answers a public interface.
+ *
+ * A fronted deployment does need one thing from us — its own hostname arrives in
+ * the Host header instead of our port — and that is what `extraHosts` is for.
  */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+
+/** Who a request turned out to be, resolved once per request from its token. */
+export interface DeviceIdentity {
+  /** The registry id, so a stream can be torn down when that device is revoked. */
+  id: string;
+  role: DeviceRole;
+}
+
+/** What a redeemed pairing code hands back to the device that spent it. */
+export interface PairingGrant {
+  deviceId: string;
+  token: string;
+}
 
 export interface TransportServerOptions {
   /** Loopback port to bind. 0 picks a free one (callers read it back off `port`). */
@@ -64,15 +84,22 @@ export interface TransportServerOptions {
   /** Loopback address to bind. Defaults to 127.0.0.1; see LOOPBACK_HOSTS. */
   host?: string;
   /**
-   * Constant-time bearer check that also answers WHO. Returns the role of the
-   * device the token belongs to, or null when nothing matches — so authentication
-   * and authorization are decided from one lookup and can never disagree.
+   * Constant-time bearer check that also answers WHO. Returns the device the
+   * token belongs to, or null when nothing matches — so authentication and
+   * authorization are decided from one lookup and can never disagree.
    */
-  authenticate(presented: string | null): DeviceRole | null | Promise<DeviceRole | null>;
+  authenticate(presented: string | null): DeviceIdentity | null | Promise<DeviceIdentity | null>;
   /** Runs a registered channel — guard.ts's dispatchLocal. */
   dispatch(channel: string, args: unknown[]): Promise<unknown>;
   /** Every channel registered on the server, for GET /channels to answer with. */
   registeredChannels(): readonly string[];
+  /**
+   * Spend a pairing code. Rejecting with a `status` property picks the response
+   * code (401 for a bad code, 429 once the attempt lockout has tripped); anything
+   * else is a 500. Omitted entirely = no /pair route at all, which is what a
+   * deployment that only ever pairs off shared disk should do.
+   */
+  pair?(code: string): Promise<PairingGrant>;
   /** Host values accepted beyond loopback and the tailnet. */
   extraHosts?: readonly string[];
 }
@@ -96,6 +123,13 @@ export interface TransportServer {
   push(event: PushEvent): void;
   /** Connected SSE clients — diagnostics and tests. */
   clientCount(): number;
+  /**
+   * End every stream belonging to `deviceId`, returning how many were closed.
+   * Revoking a device removes its credential, which stops the NEXT request — an
+   * already-open event stream would otherwise keep delivering everything the
+   * server pushes, for as long as the socket lives.
+   */
+  dropDevice(deviceId: string): number;
   close(): Promise<void>;
 }
 
@@ -157,13 +191,16 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
   if (!LOOPBACK_HOSTS.has(bindHost)) {
     throw new Error(
       `refusing to bind ${bindHost}: Stem's transport is loopback-only. Reaching it from another ` +
-        'machine goes through a tunnel that terminates TLS (tailscale serve today); a public listener ' +
-        'needs TLS and real device pairing, which are Phase 2.'
+        'machine goes through a proxy that terminates TLS and forwards to this socket; set ' +
+        'STEM_TRUSTED_HOSTS to the name that proxy is reached under.'
     );
   }
 
-  /** Live SSE responses. A closed client is removed by its own 'close' handler. */
-  const clients = new Set<ServerResponse>();
+  /**
+   * Live SSE responses, each tagged with the device that opened it so revocation
+   * can find it. A closed client is removed by its own 'close' handler.
+   */
+  const clients = new Set<{ res: ServerResponse; deviceId: string }>();
   /** Every open socket, so close() can destroy them (see the close() comment). */
   const sockets = new Set<Socket>();
 
@@ -172,12 +209,12 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
   /** Token + origin, the two gates every authenticated route shares. */
   async function gate(
     req: IncomingMessage
-  ): Promise<{ role: DeviceRole } | { status: number; error: string }> {
-    const role = await opts.authenticate(presentedToken(req.headers));
-    if (!role) return { status: 401, error: 'unauthorized' };
+  ): Promise<{ device: DeviceIdentity } | { status: number; error: string }> {
+    const device = await opts.authenticate(presentedToken(req.headers));
+    if (!device) return { status: 401, error: 'unauthorized' };
     const origin = requestOriginProblem(req.headers, originPolicy());
     if (origin) return { status: 403, error: origin };
-    return { role };
+    return { device };
   }
 
   async function handleRpc(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -268,10 +305,11 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
     // Flush the headers and set the client's reconnect backoff in one dispatch;
     // a block with no `data:` field fires no event.
     res.write(`retry: ${SSE_RETRY_MS}\n\n`);
-    clients.add(res);
+    const client = { res, deviceId: gated.device.id };
+    clients.add(client);
 
     const drop = (): void => {
-      clients.delete(res);
+      clients.delete(client);
     };
     // 'close' covers both a clean disconnect and a dropped connection; the
     // 'error' handler exists so a mid-write reset can't reach the process.
@@ -281,7 +319,58 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
   }
 
   /**
-   * Anything that is not one of the three routes. A JSON 404 rather than a file:
+   * Spend a pairing code. The one route that answers without a token, because it
+   * is how a device that has no token gets one.
+   *
+   * The origin check still applies — a page in a browser must not be able to
+   * drive it — but the token gate obviously cannot, so the protection is entirely
+   * in pairing.ts: a code that only exists for ten minutes, is spent on first
+   * use, and locks the route after a handful of wrong guesses. The body cap is
+   * its own line of defence: nothing legitimate posts more than a code here.
+   */
+  async function handlePair(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!opts.pair) {
+      sendJson(res, 404, { ok: false, error: 'not found' });
+      return;
+    }
+    const origin = requestOriginProblem(req.headers, originPolicy());
+    if (origin) {
+      log('transport', 'rejected /pair', { problem: origin });
+      sendJson(res, 403, { ok: false, error: origin });
+      return;
+    }
+    let raw: string;
+    try {
+      raw = await readBody(req, MAX_PAIR_BODY_BYTES);
+    } catch {
+      sendJson(res, 400, { ok: false, error: 'expected {code: string}' });
+      return;
+    }
+    let code: unknown;
+    try {
+      code = (JSON.parse(raw) as { code?: unknown })?.code;
+    } catch {
+      sendJson(res, 400, { ok: false, error: 'body is not JSON' });
+      return;
+    }
+    if (typeof code !== 'string' || !code) {
+      sendJson(res, 400, { ok: false, error: 'expected {code: string}' });
+      return;
+    }
+    try {
+      const grant = await opts.pair(code);
+      log('transport', 'paired a device', { deviceId: grant.deviceId });
+      sendJson(res, 200, { ok: true, result: grant });
+    } catch (e) {
+      const status = (e as { status?: unknown })?.status;
+      const error = String((e as Error)?.message ?? e);
+      log('transport', 'pairing refused', { error });
+      sendJson(res, typeof status === 'number' ? status : 500, { ok: false, error });
+    }
+  }
+
+  /**
+   * Anything that is not one of the four routes. A JSON 404 rather than a file:
    * this server has no document root any more, and never gets one back without a
    * client that needs it (see the header comment).
    */
@@ -300,7 +389,9 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
           ? handleEvents(req, res)
           : path === '/channels' && req.method === 'GET'
             ? handleChannels(req, res)
-            : handleUnknown(req, res);
+            : path === '/pair' && req.method === 'POST'
+              ? handlePair(req, res)
+              : handleUnknown(req, res);
     // No handler above is expected to reject, but a thrown error here would
     // otherwise become an unhandled rejection and leave the socket hanging.
     void route.catch((e) => {
@@ -337,12 +428,12 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
 
   const keepalive = setInterval(() => {
     for (const client of clients) {
-      if (client.writableEnded || client.destroyed) {
+      if (client.res.writableEnded || client.res.destroyed) {
         clients.delete(client);
         continue;
       }
       try {
-        client.write(': keepalive\n\n');
+        client.res.write(': keepalive\n\n');
       } catch {
         clients.delete(client);
       }
@@ -362,22 +453,39 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
       for (const client of clients) {
         // A response can be destroyed between its 'close' event and this loop;
         // writing to it would throw ERR_STREAM_DESTROYED into the event emitter.
-        if (client.writableEnded || client.destroyed) {
+        if (client.res.writableEnded || client.res.destroyed) {
           clients.delete(client);
           continue;
         }
         try {
-          client.write(text);
+          client.res.write(text);
         } catch {
           clients.delete(client);
         }
       }
     },
+    dropDevice(deviceId) {
+      let dropped = 0;
+      for (const client of clients) {
+        if (client.deviceId !== deviceId) continue;
+        clients.delete(client);
+        dropped++;
+        // destroy(), not end(): a revoked device must not get a clean EOF it
+        // could mistake for an ordinary reconnect cue — and end() waits on a
+        // writable that a wedged client may never drain.
+        try {
+          client.res.destroy();
+        } catch {
+          // Already gone.
+        }
+      }
+      return dropped;
+    },
     close: async () => {
       clearInterval(keepalive);
       for (const client of clients) {
         try {
-          client.end();
+          client.res.end();
         } catch {
           // Already gone.
         }

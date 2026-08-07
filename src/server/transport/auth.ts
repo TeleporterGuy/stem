@@ -1,18 +1,19 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { devicesStorePath } from '../workspace/paths';
 
 // Who is allowed to talk to the transport. Two independent gates, because the
-// transport is the first Stem surface reachable from off the machine:
+// transport is the surface a public deployment puts on the internet:
 //
-//   1. A bearer token — 32 random bytes as hex, held in the device registry
-//      (devices.json, 0600) and compared in constant time. The desktop's own
-//      record is minted by the server at first boot and read straight off the
-//      state root — same machine, same trust boundary, so there is no pairing
-//      step. Pairing a device that does NOT share this disk is Phase 2's
-//      one-shot-code flow, and it is what turns this into a real list.
+//   1. A bearer token — 32 random bytes as hex, held by the client and stored
+//      here only as a SHA-256 hash. The registry is therefore no longer a file
+//      full of credentials: reading devices.json (a copied backup, an export
+//      tarball, a stray `cat`) tells you which devices exist and nothing that
+//      would let you become one. A device learns its token exactly once, at the
+//      moment it is minted — pairing (transport/pairing.ts) for a client that
+//      does not share this disk, and a direct mint for one that does.
 //   2. A request-origin check — the DNS-rebinding defense. No browser speaks to
 //      this transport any more (the phone's web client was removed with the
 //      phone role), so rebinding has no obvious vehicle today — but the check
@@ -21,9 +22,14 @@ import { devicesStorePath } from '../workspace/paths';
 //      against the hostnames Stem can legitimately be reached under is what
 //      actually stops rebinding: a matching Origin/Host pair proves nothing,
 //      since a rebound attacker controls both.
+//
+// No KDF on the token. A password needs one because it is short, guessable and
+// reused; this is 32 bytes from the CSPRNG, so a single SHA-256 leaves nothing
+// to grind — an attacker who can enumerate 2^256 does not need the hash.
 
 const TOKEN_BYTES = 32;
-const TOKEN_PATTERN = /^[0-9a-f]{64}$/;
+/** Both a token and its SHA-256 digest are 64 lowercase hex characters. */
+const HEX_64 = /^[0-9a-f]{64}$/;
 
 /**
  * What a device is trusted to be. One value, and the field is kept anyway: the
@@ -36,54 +42,49 @@ export type DeviceRole = 'device';
 
 /** A client the transport will answer, and what it is trusted to be. */
 export interface DeviceRecord {
-  /** Stable identity across re-rolls; the token is the credential, this is not. */
+  /** Stable identity across re-pairing; the token is the credential, this is not. */
   id: string;
   /**
-   * The bearer token, in plaintext.
-   *
-   * The reason it was plaintext — re-displaying a pairing QR from the stored
-   * token — died with the phone client, so the only thing keeping it readable
-   * now is that nothing has needed to hash it yet. Phase 2's one-shot pairing
-   * codes are what make hashing free (the token is shown once, at pairing, and
-   * never again), and that step replaces this field with `tokenHash`. Until
-   * then: 0600 inside a state root that already holds settings.json and pi's
-   * auth.json — anything that can read this can read those.
+   * SHA-256 of the bearer token, hex. The token itself is never written here —
+   * it is handed to the device at mint time and lives on that device only, so
+   * this file can be read, copied or exported without handing anyone a session.
    */
-  token: string;
+  tokenHash: string;
   role: DeviceRole;
-  /** Human label, for the device list Phase 2 will grow. */
+  /** Human label, shown in Settings → Devices. */
   label: string;
   createdAt: string;
   /** Last successful authentication, or null if it has never connected. */
   lastSeenAt: string | null;
 }
 
+/** A freshly minted device, and the one moment its token is knowable. */
+export interface MintedDevice {
+  device: DeviceRecord;
+  /** The bearer token, in the clear. Never stored server-side; hand it over once. */
+  token: string;
+}
+
 interface DeviceStore {
-  version: 1;
+  version: 2;
   devices: DeviceRecord[];
 }
 
 /** In-process copy so the hot path (every /rpc call) doesn't hit the disk. */
 let cached: DeviceRecord[] | null = null;
-/** Serializes reads and writes, so two first-boot callers can't both mint. */
+/** Serializes reads and writes, so two callers can't both mint onto one file. */
 let chain: Promise<unknown> = Promise.resolve();
 
 /**
  * lastSeenAt is a diagnostic, and the transport authenticates on every request —
  * writing the file per call would turn a hot path into disk I/O for nothing. One
- * write a minute per device is plenty to answer "is this phone still around".
+ * write a minute per device is plenty to answer "is this laptop still around".
  */
 const LAST_SEEN_WRITE_INTERVAL_MS = 60_000;
 
-function newDevice(role: DeviceRole, label: string): DeviceRecord {
-  return {
-    id: randomBytes(8).toString('hex'),
-    token: randomBytes(TOKEN_BYTES).toString('hex'),
-    role,
-    label,
-    createdAt: new Date().toISOString(),
-    lastSeenAt: null
-  };
+/** The stored form of a token. Exported because pairing mints tokens too. */
+export function hashToken(token: string): string {
+  return createHash('sha256').update(token, 'utf8').digest('hex');
 }
 
 /** Run `task` after every registry operation already queued. */
@@ -99,9 +100,11 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
 async function writeDevices(devices: DeviceRecord[]): Promise<void> {
   const path = devicesStorePath();
   await mkdir(dirname(path), { recursive: true }).catch(() => undefined);
-  const store: DeviceStore = { version: 1, devices };
+  const store: DeviceStore = { version: 2, devices };
   // `mode` only applies when the file is created, so chmod after the write is
-  // what makes a re-roll onto an existing (or umask-widened) file 0600 too.
+  // what makes a rewrite onto an existing (or umask-widened) file 0600 too. The
+  // file holds no secrets now, but it still says which devices can reach this
+  // server, and that is nobody else's business.
   await writeFile(path, `${JSON.stringify(store, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   await chmod(path, 0o600).catch(() => undefined);
   cached = devices;
@@ -117,21 +120,37 @@ function parseDevices(raw: string): DeviceRecord[] | null {
   const devices = (parsed as Partial<DeviceStore> | null)?.devices;
   if (!Array.isArray(devices)) return null;
   // A record that isn't well-formed is dropped rather than trusted: a malformed
-  // token can only ever lock a device out, and a missing role would be a hole.
+  // hash can only ever lock a device out, and a missing role would be a hole.
   //
-  // `phone` records are dropped outright, and that is a security decision rather
-  // than tidying. A phone token used to be constrained by an allowlist; with the
-  // allowlist gone, honouring one would silently promote it to the full registry
-  // — the exact opposite of what pairing a phone once meant. Any phone paired
-  // before this release stops working, which is correct: its client no longer
-  // exists. `desktop` is carried across as the single surviving role.
+  // Two kinds of record from earlier releases are dropped on purpose:
+  //
+  //   `phone` — a security decision rather than tidying. A phone token used to be
+  //   constrained by an allowlist; with the allowlist gone, honouring one would
+  //   silently promote it to the full registry.
+  //
+  //   version 1's plaintext `token` — there is no migration that keeps such a
+  //   record USEFUL. Hashing it would leave a record whose device cannot prove
+  //   anything (the client of that era never kept a copy; it read the token back
+  //   off this very file), so the entry would linger in Settings → Devices
+  //   forever, belonging to nobody. Dropping it costs nothing visible: the
+  //   desktop mints itself a fresh record the next time it starts, off the same
+  //   shared disk, exactly as it did before.
   return devices.flatMap((d): DeviceRecord[] => {
     if (!d || typeof d !== 'object') return [];
     const record = d as Omit<DeviceRecord, 'role'> & { role?: unknown };
     if (typeof record.id !== 'string') return [];
-    if (typeof record.token !== 'string' || !TOKEN_PATTERN.test(record.token)) return [];
+    if (typeof record.tokenHash !== 'string' || !HEX_64.test(record.tokenHash)) return [];
     if (record.role !== 'desktop' && record.role !== 'device') return [];
-    return [{ ...record, role: 'device' }];
+    return [
+      {
+        id: record.id,
+        tokenHash: record.tokenHash,
+        role: 'device',
+        label: typeof record.label === 'string' ? record.label : 'Unnamed device',
+        createdAt: typeof record.createdAt === 'string' ? record.createdAt : '',
+        lastSeenAt: typeof record.lastSeenAt === 'string' ? record.lastSeenAt : null
+      }
+    ];
   });
 }
 
@@ -158,34 +177,43 @@ export function readDevices(): Promise<readonly DeviceRecord[]> {
 }
 
 /**
- * The device holding this role, minting and persisting one on first use. Single
- * record today: the desktop is this machine, minted off shared disk with no
- * pairing step. Phase 2's one-shot codes are what turn this into a list.
+ * Register a new device and hand back its token — the only moment that token
+ * exists anywhere but on the device itself. Callers must persist it client-side
+ * (src/desktop/client-store.ts) or deliver it over the pairing response; there is
+ * no second chance, by design.
  */
-export function ensureDevice(role: DeviceRole, label: string): Promise<DeviceRecord> {
+export function mintDevice(label: string): Promise<MintedDevice> {
   return enqueue(async () => {
     const devices = await loadDevices();
-    const existing = devices.find((d) => d.role === role);
-    if (existing) return existing;
-    const minted = newDevice(role, label);
-    await writeDevices([...devices, minted]);
-    return minted;
+    const token = randomBytes(TOKEN_BYTES).toString('hex');
+    const device: DeviceRecord = {
+      id: randomBytes(8).toString('hex'),
+      tokenHash: hashToken(token),
+      role: 'device',
+      label: label.trim() || 'Unnamed device',
+      createdAt: new Date().toISOString(),
+      lastSeenAt: null
+    };
+    await writeDevices([...devices, device]);
+    return { device, token };
   });
 }
 
 /**
- * Mint a fresh token for `role`, invalidating every device using the old one.
- * Keeps the record's id and createdAt: it is the same device slot, re-credentialed.
+ * Remove a device from the registry. Returns whether anything was removed —
+ * false for an id that is already gone, which is a no-op rather than an error.
+ *
+ * This only invalidates the CREDENTIAL. A device with an open SSE stream keeps
+ * receiving on it until somebody tears that stream down, which is why
+ * startup/transport.ts pairs every revoke with dropDeviceStreams().
  */
-export function rerollDeviceToken(role: DeviceRole, label: string): Promise<DeviceRecord> {
+export function revokeDevice(id: string): Promise<boolean> {
   return enqueue(async () => {
     const devices = await loadDevices();
-    const existing = devices.find((d) => d.role === role);
-    const rolled: DeviceRecord = existing
-      ? { ...existing, token: randomBytes(TOKEN_BYTES).toString('hex'), lastSeenAt: null }
-      : newDevice(role, label);
-    await writeDevices([...devices.filter((d) => d !== existing), rolled]);
-    return rolled;
+    const remaining = devices.filter((d) => d.id !== id);
+    if (remaining.length === devices.length) return false;
+    await writeDevices(remaining);
+    return true;
   });
 }
 
@@ -196,9 +224,11 @@ export function rerollDeviceToken(role: DeviceRole, label: string): Promise<Devi
  */
 export async function resolveDevice(presented: string | null | undefined): Promise<DeviceRecord | null> {
   const devices = await readDevices();
+  if (typeof presented !== 'string' || presented === '') return null;
+  const presentedHash = hashToken(presented);
   let matched: DeviceRecord | null = null;
   for (const device of devices) {
-    if (tokenEquals(device.token, presented)) matched = device;
+    if (hashEquals(device.tokenHash, presentedHash)) matched = device;
   }
   if (matched) noteDeviceSeen(matched);
   return matched;
@@ -227,12 +257,16 @@ export function forgetCachedDevices(): void {
 }
 
 /**
- * Constant-time token compare. timingSafeEqual THROWS on a length mismatch, so
- * the lengths are compared first — that leaks only the expected token's length,
- * which is a fixed public constant (64 hex characters), not a secret.
+ * Constant-time digest compare. timingSafeEqual THROWS on a length mismatch, so
+ * the lengths are compared first — that leaks only the digest length, which is a
+ * fixed public constant (64 hex characters), not a secret.
+ *
+ * Both sides are already hashes here, so a timing leak would be worth much less
+ * than it was against raw tokens. It stays constant-time because the cost is a
+ * single comparison and the reasoning "the hash is not the secret" is exactly
+ * the kind that stops being true when something else starts calling this.
  */
-export function tokenEquals(expected: string, presented: string | null | undefined): boolean {
-  if (typeof presented !== 'string') return false;
+export function hashEquals(expected: string, presented: string): boolean {
   const a = Buffer.from(expected, 'utf8');
   const b = Buffer.from(presented, 'utf8');
   if (a.length !== b.length) return false;
@@ -262,7 +296,12 @@ export function presentedToken(headers: IncomingHttpHeaders): string | null {
 export interface OriginPolicy {
   /** The loopback port the server listens on; loopback Hosts must carry it. */
   port: number;
-  /** Extra Host values accepted verbatim — an escape hatch for odd proxies. */
+  /**
+   * Extra Host values accepted verbatim. This is how a deployment that is fronted
+   * by something — Caddy on a public domain, a test harness proxying the socket —
+   * declares the name clients actually type, since by the time the request
+   * arrives here the Host header carries THAT name and not our own port.
+   */
   extraHosts?: readonly string[];
 }
 

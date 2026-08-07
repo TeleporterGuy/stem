@@ -25,6 +25,7 @@ import { hasLocalHandler, registerServer, serverChannels } from '../../src/serve
  * file is for: if the two ever disagree, that is the finding.
  */
 const CLIENT_OWNED = [
+  'client:info',
   'dialog:openFiles',
   'dialog:openDirectory',
   'files:reveal',

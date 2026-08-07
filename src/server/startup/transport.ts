@@ -2,13 +2,14 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { dispatchLocal, serverChannels } from '../ipc/guard';
 import { log } from '../log';
-import { ensureDevice, resolveDevice, type DeviceRole } from '../transport/auth';
-import { startTransportServer, type TransportServer } from '../transport/server';
+import { resolveDevice } from '../transport/auth';
+import { redeemPairingCode } from '../transport/pairing';
+import { startTransportServer, type DeviceIdentity, type TransportServer } from '../transport/server';
 import { serverEndpointPath } from '../workspace/paths';
 
 /**
  * The server's front door. Every client — the Electron app on this machine, and
- * whatever Phase 2 pairs from elsewhere — reaches the handler registry through
+ * every device paired to it from elsewhere — reaches the handler registry through
  * here and nowhere else. There is deliberately no in-process shortcut for the
  * embedded case: a path only the embedded deployment exercises is a path the
  * remote deployment never gets tested on.
@@ -18,8 +19,12 @@ import { serverEndpointPath } from '../workspace/paths';
  * because the phone's web client needed a stable address to put in a QR code.
  * That client is gone, and with it the toggle, the port setting, the public-URL
  * setting and the phone role. A deployment that wants to be reachable from
- * elsewhere now terminates TLS in front of this single loopback socket, which is
- * what Phase 2's Caddy container does.
+ * elsewhere now terminates TLS in front of this single loopback socket.
+ *
+ * This file does NOT mint a credential for anyone. A server that hands itself a
+ * bearer token at boot would have to write it down somewhere readable, which is
+ * the exact property hashing the registry was for. Clients acquire their own:
+ * off shared disk (src/desktop/client-store.ts) or through a pairing code.
  *
  * Binding is fatal by design: with no transport there is no client.
  */
@@ -29,12 +34,10 @@ interface TransportConfig {
   devUrl: string | null;
 }
 
-/** What a client needs to reach this server. */
+/** Where this server is listening. */
 export interface TransportEndpoint {
   /** Origin of the listener, e.g. `http://127.0.0.1:52413`. */
   url: string;
-  /** This machine's bearer token, minted at first boot. */
-  token: string;
 }
 
 let primary: TransportServer | null = null;
@@ -42,9 +45,9 @@ let primary: TransportServer | null = null;
 let eventSeq = 0;
 
 /** Who is calling: the device registry's answer, and nothing else on top of it. */
-async function authenticate(presented: string | null): Promise<DeviceRole | null> {
+async function authenticate(presented: string | null): Promise<DeviceIdentity | null> {
   const device = await resolveDevice(presented);
-  return device ? device.role : null;
+  return device ? { id: device.id, role: device.role } : null;
 }
 
 /**
@@ -55,6 +58,22 @@ async function authenticate(presented: string | null): Promise<DeviceRole | null
  */
 function primaryHost(): string {
   return process.env.STEM_SERVER_HOST?.trim() || '127.0.0.1';
+}
+
+/**
+ * Host headers to accept beyond loopback-with-our-port and the tailnet.
+ *
+ * A fronted deployment needs this: a request that reached Caddy at
+ * `stem.example.com` arrives here carrying that name, which is neither our
+ * loopback port nor a `.ts.net` address, and the rebinding check would refuse it.
+ * Naming the hostnames explicitly keeps the check meaningful — it is still a
+ * closed set, just one the deployment declares rather than one we guess.
+ */
+function trustedHosts(): string[] {
+  return (process.env.STEM_TRUSTED_HOSTS ?? '')
+    .split(',')
+    .map((h) => h.trim())
+    .filter(Boolean);
 }
 
 /** An origin a client can put in a URL — IPv6 literals need their brackets. */
@@ -77,16 +96,15 @@ async function writeEndpointFile(url: string): Promise<void> {
 }
 
 /**
- * Bind the listener and mint this machine's own device record. Resolves with
- * everything a client needs to connect; throws if the socket cannot be bound,
- * because a server nothing can reach is not a server.
+ * Bind the listener. Resolves with where it is; throws if the socket cannot be
+ * bound, because a server nothing can reach is not a server.
  */
 export async function startTransport(cfg: TransportConfig): Promise<TransportEndpoint> {
-  const device = await ensureDevice('device', 'This machine');
   // STEM_SERVER_PORT pins the port for a deployment that fronts it; ephemeral
   // otherwise, so two profiles (or two E2E runs) can never collide.
   const requested = Number(process.env.STEM_SERVER_PORT ?? 0);
   const host = primaryHost();
+  const extraHosts = trustedHosts();
   primary = await startTransportServer({
     port: Number.isFinite(requested) ? requested : 0,
     host,
@@ -94,12 +112,17 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
     // dispatchLocal applies the same per-channel argument validation the
     // renderer's IPC always got, then the real handler.
     dispatch: (channel, args) => dispatchLocal(channel, args),
-    registeredChannels: serverChannels
+    registeredChannels: serverChannels,
+    pair: async (code) => {
+      const minted = await redeemPairingCode(code);
+      return { deviceId: minted.device.id, token: minted.token };
+    },
+    extraHosts
   });
   const url = originFor(host, primary.port);
-  log('transport', 'listening', { host, port: primary.port, dev: !!cfg.devUrl });
+  log('transport', 'listening', { host, port: primary.port, dev: !!cfg.devUrl, extraHosts });
   await writeEndpointFile(url);
-  return { url, token: device.token };
+  return { url };
 }
 
 /**
@@ -110,6 +133,16 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
 export function pushToClients(channel: string, payload: unknown): void {
   if (!primary) return;
   primary.push({ id: ++eventSeq, channel, payload });
+}
+
+/**
+ * Cut every event stream a device has open. Called with (not instead of) revoking
+ * its record: the registry decides the next request, this decides the one already
+ * in flight, and a revocation that only did the first would leave a removed
+ * device watching the stream indefinitely.
+ */
+export function dropDeviceStreams(deviceId: string): number {
+  return primary?.dropDevice(deviceId) ?? 0;
 }
 
 /** Shut the listener down (app quit). Resolves even with SSE streams open. */

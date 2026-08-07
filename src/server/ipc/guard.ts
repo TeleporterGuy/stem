@@ -9,8 +9,9 @@ import { log } from '../log';
 // structurally not the API.
 //
 // The registry IS the surface: a channel registered here is one any authenticated
-// client may call. It does NOT decide who may call what — that is the caller's
-// job (see transport/roles.ts for the phone's allowlist).
+// client may call. There is no per-caller narrowing on top of it and no table of
+// who-may-call-what: authentication is the whole authorization decision, made
+// once at the transport (see transport/auth.ts).
 //
 // The Electron half of this — binding each registered channel to ipcMain and
 // checking that the sender really is one of our own renderer frames — lives in
@@ -121,6 +122,8 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'folders:rename': [a.string, a.string],
   'folders:delete': [a.string],
   'folders:move': [a.string, a.nullish(a.string)],
+  'devices:revoke': [a.string],
+  'devices:createPairingCode': [a.string],
   'settings:updateQuickChat': [a.object],
   'settings:updateWebSearch': [a.object],
   'settings:updateEscapeAction': [a.oneOf(['off', 'single', 'twoStage'])],
@@ -158,8 +161,8 @@ export function argsProblem(specs: ArgSpec[], args: unknown[]): string | null {
 // event object. Every caller is now literally the same caller — the transport,
 // answering a POST /rpc over loopback — so there is no BrowserWindow, no frame,
 // and nothing that could be an Electron event, whether the request came from a
-// phone on the tailnet or from the Electron app in this very process. One
-// registry, the SAME per-channel argument validation, the SAME handler.
+// paired laptop across the internet or from the Electron app in this very
+// process. One registry, the SAME per-channel argument validation, the SAME handler.
 //
 // Why passing no event is safe: no handler registered here reads its event
 // object — every call site ignores the first parameter. The parameter survives,
@@ -179,8 +182,8 @@ const localHandlers = new Map<string, LocalHandler>();
 
 /**
  * Record a channel the server answers. Nothing is bound to a transport here —
- * the desktop binds the registry to ipcMain (src/desktop/ipc-bridge.ts) and the
- * phone bridge dispatches into it over HTTP.
+ * the desktop binds the registry to ipcMain (src/desktop/ipc-bridge.ts), and the
+ * transport dispatches into it on behalf of whoever posted to /rpc.
  */
 export function registerServer(
   channel: string,

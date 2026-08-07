@@ -5,6 +5,7 @@ import { createBackend, type ChatBackend } from './backend';
 import {
   registerAuthIpc,
   registerChatsIpc,
+  registerDevicesIpc,
   registerMcpIpc,
   registerMemoryIpc,
   registerServer,
@@ -81,8 +82,9 @@ import type {
 // one tap on the backend's event stream that feeds all of them.
 //
 // It imports no client code and must never import Electron. startServer() brings
-// the transport up with everything else and hands back the URL and bearer token a
-// client needs; from there the relationship is entirely a socket. There is no
+// the transport up with everything else and hands back the URL it is listening on;
+// from there the relationship is entirely a socket, and a client's credential is
+// its own business (shared disk, or a pairing code). There is no
 // direct call path left between the two halves, in either direction — which is
 // the property that makes `stem-server` on another machine a deployment question
 // rather than a code question.
@@ -111,7 +113,7 @@ export interface ServerOptions {
 }
 
 export interface ServerHandle {
-  /** Where clients reach this server, and this machine's bearer token. */
+  /** Where clients reach this server. Not a credential — see transport/auth.ts. */
   endpoint: TransportEndpoint;
   /**
    * Spawn pi + connect MCP now rather than on the first prompt, and start the
@@ -261,6 +263,7 @@ function registerIpc(): void {
   registerMcpIpc(deps);
   registerMemoryIpc(deps);
   registerChatsIpc(deps);
+  registerDevicesIpc();
 
   registerServer('backend:startTurn', async (_e, input: StartTurnInput) => {
     // The user is actively chatting: yield any scheduler-owned turn (frees the

@@ -74,6 +74,28 @@ test.describe('against an externally started stem-server', () => {
     await closeApp(launched);
   });
 
+  test('the app got in by pairing, not by reading a credential off the disk', async () => {
+    // The server printed a one-shot code when it found its registry empty, the
+    // harness handed it to the app, and the app spent it on POST /pair. That is
+    // the path a genuinely remote client takes, and this configuration is where
+    // it gets walked end to end.
+    expect(launched.server!.pairingCode).toBeTruthy();
+
+    const registry = JSON.parse(readFileSync(join(launched.userDataDir, 'devices.json'), 'utf8')) as {
+      devices: { id: string; label: string; tokenHash?: string; token?: string }[];
+    };
+    expect(registry.devices).toHaveLength(1);
+    // The property the whole rewrite is for: what is on disk cannot be replayed.
+    expect(registry.devices[0].token).toBeUndefined();
+    expect(registry.devices[0].tokenHash).toMatch(/^[0-9a-f]{64}$/);
+
+    // And the app kept its half — the token the server no longer has.
+    const client = JSON.parse(readFileSync(join(launched.userDataDir, 'client.json'), 'utf8')) as {
+      deviceId: string;
+    };
+    expect(client.deviceId).toBe(registry.devices[0].id);
+  });
+
   test('the server really is a separate process', async () => {
     // The load-bearing assertion of this whole file. Everything else here would
     // pass just as well against an embedded server with a different label.
@@ -83,12 +105,17 @@ test.describe('against an externally started stem-server', () => {
     };
     const mainPid = await launched.app.evaluate(() => process.pid);
     expect(endpoint.pid).not.toBe(mainPid);
-    expect(endpoint.url).toBe(launched.server!.url);
+    // What the server published is its OWN socket, which is not the address the
+    // app was given: everything the app sends goes through the harness's proxy
+    // (see tests/e2e/stem-server.ts), the way a deployed client reaches Caddy
+    // rather than Stem.
+    expect(endpoint.url).toBe(launched.server!.directUrl);
 
     // …and the app knows it: STEM_SERVER_URL is the one `if` in desktop/index.ts
     // that decides whether it starts a server or connects to one.
     const seen = await launched.app.evaluate(() => process.env.STEM_SERVER_URL);
     expect(seen).toBe(launched.server!.url);
+    expect(seen).not.toBe(endpoint.url);
   });
 
   test('the renderer reaches channels the other process registered', async () => {
@@ -160,5 +187,45 @@ test.describe('against an externally started stem-server', () => {
     );
     await expect(win.getByText('Run this command?')).toHaveCount(0);
     await expect(win.getByTitle('Stop')).toHaveCount(0);
+  });
+
+  test('the app recovers when the network under it is cut', async () => {
+    // Everything above runs over a socket that has never once misbehaved, which
+    // is exactly the blind spot in building all of Phase 2 against a server on
+    // this machine and deploying last. So: destroy every connection through the
+    // proxy — the event stream and any request in flight — and then carry on.
+    //
+    // The app is given no help. It has to notice the stream ended, reconnect on
+    // its own backoff, and answer the next thing typed into it.
+    launched.server!.cutConnections();
+
+    await win.getByTitle('New conversation').click();
+    await send(win, 'still there?');
+    await expect(win.locator('.message-assistant:not(.activity-row) .message-body').last()).toContainText(
+      'Echo: still there?',
+      // Generous: the reconnect runs on a backoff, and the send may itself be the
+      // request that discovers the socket is gone.
+      { timeout: 30_000 }
+    );
+  });
+
+  test('the app survives the server being killed outright and coming back', async () => {
+    // SIGKILL: no shutdown, no drain — what an OOM-killed container does. The app
+    // stays up, because a client that dies with its server is a client that has
+    // to be restarted every time a deployment rolls.
+    await launched.server!.kill();
+    await launched.server!.restart();
+
+    await win.getByTitle('New conversation').click();
+    await send(win, 'after the crash');
+    await expect(win.locator('.message-assistant:not(.activity-row) .message-body').last()).toContainText(
+      'Echo: after the crash',
+      { timeout: 30_000 }
+    );
+
+    // Its credential outlived the process, because the credential is a record on
+    // disk and a token this machine holds — not session state in the server.
+    const settings = await win.evaluate(() => (window as any).stem.getSettings());
+    expect(settings?.exec?.approvalMode).toBe('manual');
   });
 });

@@ -228,16 +228,25 @@ export function serverEndpointPath(): string {
 }
 
 /**
- * Every device allowed to talk to the transport, with its bearer token and role
- * (see server/transport/auth.ts). Written 0600. Deliberately NOT in settings.json
- * — settings are read and rewritten wholesale by several code paths and are not a
- * place for secrets, and keeping the registry in its own file makes "re-roll" a
+ * Every device allowed to talk to the transport: its id, label and the SHA-256 of
+ * its bearer token (see server/transport/auth.ts). Written 0600. Deliberately NOT
+ * in settings.json — settings are read and rewritten wholesale by several code
+ * paths, and keeping the registry in its own file makes revoking a device a
  * single atomic write.
  */
 export function devicesStorePath(): string {
   // STEM_DEVICES_FILE lets unit tests point at a throwaway file (and avoids
   // touching Electron's `app` when run outside the app), like its neighbours.
   return process.env.STEM_DEVICES_FILE ?? join(userDataRoot(), 'devices.json');
+}
+
+/**
+ * Outstanding pairing codes, as hashes (see server/transport/pairing.ts). On disk
+ * rather than in memory because `stem-server pair` is a second process with no
+ * credential to ask the running one with — that file IS the channel between them.
+ */
+export function pairingStorePath(): string {
+  return process.env.STEM_PAIRING_FILE ?? join(userDataRoot(), 'pairing.json');
 }
 
 

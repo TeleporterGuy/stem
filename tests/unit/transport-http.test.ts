@@ -14,10 +14,17 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
 import { registerServer } from '../../src/server/ipc';
 import { dispatchLocal, serverChannels } from '../../src/server/ipc/guard';
-import { requestOriginProblem, tokenEquals } from '../../src/server/transport/auth';
+import { hashEquals, hashToken, requestOriginProblem } from '../../src/server/transport/auth';
 import { startTransportServer, type TransportServer } from '../../src/server/transport/server';
 
 const TOKEN = 'a'.repeat(64);
+const TOKEN_HASH = hashToken(TOKEN);
+/** A second device, so revocation has something it must NOT disturb. */
+const OTHER_TOKEN = 'c'.repeat(64);
+const OTHER_HASH = hashToken(OTHER_TOKEN);
+
+/** Codes the fake `pair` will honour, so /pair can be driven without the store. */
+const PAIR_CODES = new Map<string, { deviceId: string; token: string }>();
 
 let server: TransportServer;
 let base: string;
@@ -39,9 +46,21 @@ beforeAll(async () => {
   });
   server = await startTransportServer({
     port: 0,
-    authenticate: (presented) => (tokenEquals(TOKEN, presented) ? 'device' : null),
+    authenticate: (presented) => {
+      if (typeof presented !== 'string' || !presented) return null;
+      const hash = hashToken(presented);
+      if (hashEquals(TOKEN_HASH, hash)) return { id: 'dev-1', role: 'device' };
+      if (hashEquals(OTHER_HASH, hash)) return { id: 'dev-2', role: 'device' };
+      return null;
+    },
     dispatch: dispatchLocal,
-    registeredChannels: serverChannels
+    registeredChannels: serverChannels,
+    pair: async (code) => {
+      const grant = PAIR_CODES.get(code.toUpperCase());
+      if (!grant) throw Object.assign(new Error('that pairing code is not valid'), { status: 401 });
+      PAIR_CODES.delete(code.toUpperCase());
+      return grant;
+    }
   });
   base = `http://127.0.0.1:${server.port}`;
 });
@@ -246,7 +265,7 @@ describe('argument validation', () => {
 });
 
 describe('routes', () => {
-  it('serves no files: anything that is not /rpc, /events or /channels is a 404', async () => {
+  it('serves no files: anything that is not one of the four routes is a 404', async () => {
     // This server used to serve the phone's bundle out of dist/renderer, with a
     // traversal guard behind it. Both are gone; every client loads its own UI off
     // its own disk. The traversal cases are kept as a regression: if a static
@@ -260,6 +279,59 @@ describe('routes', () => {
       expect(res.status).toBe(404);
       expect(res.body).not.toMatch(/"name": "stem"/);
     }
+  });
+});
+
+describe('POST /pair', () => {
+  it('is the one route that answers without a token', async () => {
+    PAIR_CODES.set('ABCD-EFGH', { deviceId: 'dev-9', token: 'd'.repeat(64) });
+    const res = await fetch(`${base}/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: 'abcd-efgh' })
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, result: { deviceId: 'dev-9', token: 'd'.repeat(64) } });
+  });
+
+  it('passes a refusal through with the status the pairing layer chose', async () => {
+    const res = await fetch(`${base}/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: 'ZZZZ-ZZZZ' })
+    });
+    // 401, not 500: a wrong code is a failed authentication, and the caller has
+    // to be able to tell "try again" from "this server is broken".
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toMatch(/not valid/);
+  });
+
+  it('still refuses a rebound host, token or no token', async () => {
+    PAIR_CODES.set('WXYZ-WXYZ', { deviceId: 'dev-8', token: 'e'.repeat(64) });
+    const res = await raw(
+      '/pair',
+      { host: 'rebound.example', 'content-type': 'application/json' },
+      JSON.stringify({ code: 'WXYZ-WXYZ' })
+    );
+    // Being unauthenticated is exactly why the origin check still has to apply:
+    // a page in a browser must not be able to spend a code it overheard.
+    expect(res.status).toBe(403);
+    expect(PAIR_CODES.has('WXYZ-WXYZ')).toBe(true);
+  });
+
+  it('rejects a body that is not a code, and one that is far too big to be one', async () => {
+    for (const body of ['{', JSON.stringify({}), JSON.stringify({ code: 42 })]) {
+      const res = await raw('/pair', { 'content-type': 'application/json' }, body);
+      expect(res.status).toBe(400);
+    }
+    // The unauthenticated route gets its own cap — a kilobyte, not the 25 MB
+    // /rpc allows for attachments.
+    const huge = await raw(
+      '/pair',
+      { 'content-type': 'application/json' },
+      JSON.stringify({ code: 'x'.repeat(4096) })
+    );
+    expect(huge.status).toBe(400);
   });
 });
 
@@ -349,6 +421,26 @@ describe('GET /events', () => {
     expect((await collected).map((f) => f.id)).toEqual(['42', '43']);
   });
 
+  it('cuts a revoked device off its stream, and leaves every other device alone', async () => {
+    const revoked = await fetch(`${base}/events`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    const kept = await fetch(`${base}/events`, { headers: { authorization: `Bearer ${OTHER_TOKEN}` } });
+    expect(server.clientCount()).toBe(2);
+
+    // Removing the record decides the device's NEXT request; this decides the
+    // socket it already has open. Without it, a withdrawn device would keep
+    // receiving every push for as long as the connection survived.
+    expect(server.dropDevice('dev-1')).toBe(1);
+    expect(server.clientCount()).toBe(1);
+
+    const stillThere = collectFrames(kept, 1);
+    server.push({ id: 7, channel: 'mcp:status', payload: { servers: [] } });
+    expect((await stillThere).map((f) => f.channel)).toEqual(['mcp:status']);
+
+    // The revoked stream is gone, not merely skipped over.
+    await revoked.body?.cancel().catch(() => undefined);
+    expect(server.dropDevice('dev-1')).toBe(0);
+  });
+
   it('drops a disconnected client instead of writing to a dead response', async () => {
     const controller = new AbortController();
     const res = await fetch(`${base}/events`, {
@@ -421,7 +513,7 @@ describe('close()', () => {
   it('resolves with an SSE stream still open', async () => {
     const other = await startTransportServer({
       port: 0,
-      authenticate: () => 'device',
+      authenticate: () => ({ id: 'dev-1', role: 'device' }),
       dispatch: dispatchLocal,
       registeredChannels: serverChannels
     });

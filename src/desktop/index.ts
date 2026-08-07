@@ -10,7 +10,7 @@ import { bindServerChannels } from './ipc-bridge';
 import { registerLocalIpc } from './local';
 import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, requestAttention } from './platform';
 import { createServerProxy, EXTERNAL_SERVER_URL, type ServerProxy } from './proxy';
-import { readServerCredentials } from './server-endpoint';
+import { clientCredentials } from './server-endpoint';
 import { createQuickChat } from './quickchat';
 import { loadRenderer, PRELOAD_SCRIPT } from './renderer-assets';
 import { initTray } from './tray';
@@ -315,16 +315,19 @@ app.whenReady().then(async () => {
   // socket, and we are its first client. STEM_SERVER_URL points at one that is
   // already running instead, and then we start nothing — same client code from
   // the next line on, one fewer process to own.
-  let endpoint;
+  let serverUrl: string;
   if (EXTERNAL_SERVER_URL) {
-    endpoint = await readServerCredentials(EXTERNAL_SERVER_URL);
+    serverUrl = EXTERNAL_SERVER_URL;
   } else {
     server = await startServer({
       alternateProfile: !!profileOverride,
       devUrl: process.env.ELECTRON_RENDERER_URL ?? null
     });
-    endpoint = server.endpoint;
+    serverUrl = server.endpoint.url;
   }
+  // The server publishes where it listens, never a credential — this client
+  // holds its own (client.json), minting or pairing for one on first run.
+  const endpoint = await clientCredentials(serverUrl);
 
   proxy = createServerProxy({
     ...endpoint,
@@ -344,7 +347,10 @@ app.whenReady().then(async () => {
   // Everything the renderer can invoke, bound to ipcMain: every channel the
   // server says it answers, plus this machine's own handlers. Before any window
   // exists, so no renderer can race a missing channel.
-  registerLocalIpc({ mainWindow: () => mainWindow });
+  registerLocalIpc({
+    mainWindow: () => mainWindow,
+    connection: () => ({ serverUrl, remote: !server })
+  });
   quickChat.registerIpc();
   ipcMain.on('renderer:ready', (event) => {
     const win = mainWindow;

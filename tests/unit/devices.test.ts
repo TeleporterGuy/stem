@@ -1,22 +1,26 @@
-// The device registry: devices.json, the single role it hands out, and what it
-// refuses to honour.
+// The device registry: devices.json, what it stores, and what it refuses.
 //
-// This is the file that decides who the transport answers, so what is under test
-// is mostly refusals: a token nobody registered resolves to nothing, a re-roll
-// invalidates the previous one, a malformed record is dropped rather than
-// trusted — and a `phone` record left over from an earlier release is dropped
-// too, which is the one case where dropping is a security decision rather than
-// hygiene (see parseDevices).
+// The load-bearing property here is a negative one — the file contains no
+// credential. A token exists on the device that owns it and as a SHA-256 here,
+// so every test below that looks at what was written is really asking "can this
+// file be turned back into access?".
+//
+// The rest is refusals: a token nobody registered resolves to nothing, a revoked
+// one stops working, a malformed record is dropped rather than trusted — and so
+// are the two shapes an earlier release could have left behind, each for its own
+// reason (see parseDevices).
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import {
-  ensureDevice,
   forgetCachedDevices,
+  hashToken,
+  mintDevice,
   readDevices,
-  rerollDeviceToken,
-  resolveDevice
+  resolveDevice,
+  revokeDevice
 } from '../../src/server/transport/auth';
 import { devicesStorePath } from '../../src/server/workspace/paths';
 
@@ -25,7 +29,7 @@ const devicesPath = devicesStorePath();
 /** A registry file written by hand, as an earlier release would have left it. */
 function writeRegistry(devices: unknown[]): void {
   mkdirSync(dirname(devicesPath), { recursive: true });
-  writeFileSync(devicesPath, JSON.stringify({ version: 1, devices }), 'utf8');
+  writeFileSync(devicesPath, JSON.stringify({ version: 2, devices }), 'utf8');
   forgetCachedDevices();
 }
 
@@ -44,98 +48,132 @@ afterEach(() => {
 });
 
 describe('minting devices', () => {
-  it('mints one record per device, each with its own token', async () => {
-    const first = await ensureDevice('device', 'This machine');
-    expect(first.role).toBe('device');
-    expect(first.token).toMatch(/^[0-9a-f]{64}$/);
-    expect(first.lastSeenAt).toBeNull();
+  it('hands the token back once and keeps only its hash', async () => {
+    const { device, token } = await mintDevice('This machine');
 
-    // Idempotent: asking again is a read, never a re-credentialing.
-    expect((await ensureDevice('device', 'This machine')).token).toBe(first.token);
-    expect((await readDevices()).length).toBe(1);
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(device.role).toBe('device');
+    expect(device.lastSeenAt).toBeNull();
+    expect(device.tokenHash).toBe(createHash('sha256').update(token).digest('hex'));
+
+    // The point of the whole rewrite: the file cannot be read back into access.
+    const onDisk = readFileSync(devicesPath, 'utf8');
+    expect(onDisk).not.toContain(token);
+    expect(JSON.parse(onDisk).devices[0].token).toBeUndefined();
   });
 
-  it('writes the registry 0600 — it is a file full of bearer tokens', async () => {
-    await ensureDevice('device', 'This machine');
+  it('mints a distinct record per device rather than one per role', async () => {
+    const first = await mintDevice('Desk');
+    const second = await mintDevice('Laptop');
+
+    expect(second.device.id).not.toBe(first.device.id);
+    expect(second.token).not.toBe(first.token);
+    // Both work: there is no single-slot-per-role notion left to collide over.
+    expect((await resolveDevice(first.token))?.label).toBe('Desk');
+    expect((await resolveDevice(second.token))?.label).toBe('Laptop');
+    expect((await readDevices()).length).toBe(2);
+  });
+
+  it('writes the registry 0600 — it still says who can reach this machine', async () => {
+    await mintDevice('This machine');
     expect(statSync(devicesPath).mode & 0o777).toBe(0o600);
   });
 
   it('survives a truncated or hand-edited registry rather than locking everyone out', async () => {
     mkdirSync(dirname(devicesPath), { recursive: true });
-    writeFileSync(devicesPath, '{"version":1,"devices":[{"id":"x"', 'utf8');
+    writeFileSync(devicesPath, '{"version":2,"devices":[{"id":"x"', 'utf8');
     forgetCachedDevices();
-    const device = await ensureDevice('device', 'This machine');
-    expect(device.token).toMatch(/^[0-9a-f]{64}$/);
+    const { token } = await mintDevice('This machine');
+    expect((await resolveDevice(token))?.label).toBe('This machine');
 
-    // A record with a malformed token is dropped, not trusted: a bad token can
+    // A record with a malformed hash is dropped, not trusted: a bad hash can
     // only ever refuse a device that would otherwise have worked.
-    writeRegistry([{ id: 'a', token: 'not-a-token', role: 'device', label: 'p', createdAt: '', lastSeenAt: null }]);
-    expect(await resolveDevice('not-a-token')).toBeNull();
+    await readDevices(); // drain the lastSeenAt write the resolve above queued
+    writeRegistry([{ id: 'a', tokenHash: 'not-a-hash', role: 'device', label: 'p', createdAt: '', lastSeenAt: null }]);
+    expect(await resolveDevice('not-a-hash')).toBeNull();
+    expect((await readDevices()).length).toBe(0);
   });
 });
 
 describe('records written by an earlier release', () => {
-  it('carries a desktop record across as the one surviving role', async () => {
+  it('drops a version 1 plaintext record rather than hashing it into a ghost', async () => {
     const token = 'a'.repeat(64);
     writeRegistry([{ id: 'd1', token, role: 'desktop', label: 'This machine', createdAt: '', lastSeenAt: null }]);
 
-    // Same credential, same slot: the desktop this registry belongs to keeps
-    // working across the upgrade without re-pairing.
-    const resolved = await resolveDevice(token);
-    expect(resolved?.id).toBe('d1');
-    expect(resolved?.role).toBe('device');
+    // Hashing it would keep a record whose device can prove nothing: the client
+    // of that era never held a copy of the token, it read this file. The record
+    // would linger in Settings → Devices belonging to nobody, so it goes — and
+    // the desktop simply mints itself a fresh one off the same shared disk.
+    expect(await resolveDevice(token)).toBeNull();
+    expect((await readDevices()).length).toBe(0);
   });
 
   it('drops a phone record instead of promoting it', async () => {
-    const phoneToken = 'b'.repeat(64);
-    const deskToken = 'c'.repeat(64);
+    const phoneHash = hashToken('b'.repeat(64));
+    const deskHash = hashToken('c'.repeat(64));
     writeRegistry([
-      { id: 'p1', token: phoneToken, role: 'phone', label: 'Paired phone', createdAt: '', lastSeenAt: null },
-      { id: 'd1', token: deskToken, role: 'desktop', label: 'This machine', createdAt: '', lastSeenAt: null }
+      { id: 'p1', tokenHash: phoneHash, role: 'phone', label: 'Paired phone', createdAt: '', lastSeenAt: null },
+      { id: 'd1', tokenHash: deskHash, role: 'desktop', label: 'This machine', createdAt: '', lastSeenAt: null }
     ]);
 
-    // The whole point: a phone token used to be constrained by an allowlist that
-    // no longer exists. Honouring it now would hand it the entire registry, so
-    // it stops authenticating at all — the phone it belongs to has no client.
-    expect(await resolveDevice(phoneToken)).toBeNull();
-    expect((await resolveDevice(deskToken))?.id).toBe('d1');
+    // A phone token used to be constrained by an allowlist that no longer
+    // exists. Honouring it now would hand it the entire registry, so it stops
+    // authenticating at all — the phone it belongs to has no client.
+    expect(await resolveDevice('b'.repeat(64))).toBeNull();
+    expect((await resolveDevice('c'.repeat(64)))?.id).toBe('d1');
     expect((await readDevices()).map((d) => d.id)).toEqual(['d1']);
+  });
+
+  it('carries a desktop record across as the one surviving role', async () => {
+    const token = 'd'.repeat(64);
+    writeRegistry([
+      { id: 'd1', tokenHash: hashToken(token), role: 'desktop', label: 'This machine', createdAt: '', lastSeenAt: null }
+    ]);
+    expect((await resolveDevice(token))?.role).toBe('device');
   });
 });
 
 describe('resolving a presented token', () => {
   it('answers with the device behind the token, and nothing for anything else', async () => {
-    const device = await ensureDevice('device', 'This machine');
+    const { device, token } = await mintDevice('This machine');
 
-    expect((await resolveDevice(device.token))?.role).toBe('device');
+    expect((await resolveDevice(token))?.id).toBe(device.id);
     expect(await resolveDevice(null)).toBeNull();
     expect(await resolveDevice('')).toBeNull();
     // A token of a different length must be refused, not throw out of
     // timingSafeEqual (which rejects mismatched lengths).
-    expect(await resolveDevice(device.token.slice(0, 10))).toBeNull();
+    expect(await resolveDevice(token.slice(0, 10))).toBeNull();
     expect(await resolveDevice('b'.repeat(64))).toBeNull();
+    // Presenting the STORED form must not authenticate: the hash is what an
+    // attacker who read the file would have, and it has to be worth nothing.
+    expect(await resolveDevice(device.tokenHash)).toBeNull();
   });
 
   it('stamps lastSeenAt on the way past', async () => {
-    const device = await ensureDevice('device', 'This machine');
+    const { device, token } = await mintDevice('This machine');
     expect(device.lastSeenAt).toBeNull();
-    await resolveDevice(device.token);
+    await resolveDevice(token);
     // The stamp is written behind the request; give the queued write a turn.
     await readDevices();
     expect((await readDevices()).find((d) => d.id === device.id)?.lastSeenAt).toMatch(/^\d{4}-/);
   });
 });
 
-describe('re-rolling', () => {
-  it('replaces the token in place and invalidates the old one', async () => {
-    const before = await ensureDevice('device', 'This machine');
-    const rolled = await rerollDeviceToken('device', 'This machine');
+describe('revoking', () => {
+  it('takes the device out of the registry and stops its token working', async () => {
+    const keep = await mintDevice('Desk');
+    const lose = await mintDevice('Old laptop');
 
-    expect(rolled.token).not.toBe(before.token);
-    expect(await resolveDevice(before.token)).toBeNull();
-    expect((await resolveDevice(rolled.token))?.role).toBe('device');
-    // The same device slot, re-credentialed — not a new device.
-    expect(rolled.id).toBe(before.id);
-    expect(rolled.createdAt).toBe(before.createdAt);
+    expect(await revokeDevice(lose.device.id)).toBe(true);
+    expect(await resolveDevice(lose.token)).toBeNull();
+    // …and only that one.
+    expect((await resolveDevice(keep.token))?.id).toBe(keep.device.id);
+    expect((await readDevices()).map((d) => d.id)).toEqual([keep.device.id]);
+  });
+
+  it('is a no-op for an id that is already gone', async () => {
+    await mintDevice('Desk');
+    expect(await revokeDevice('nope')).toBe(false);
+    expect((await readDevices()).length).toBe(1);
   });
 });

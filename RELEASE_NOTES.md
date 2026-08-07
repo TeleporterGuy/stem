@@ -34,6 +34,13 @@ Maintainer notes:
 - **Inbox rows show what's in them.** Under each subject, a line or two of the newest message in the
   thread, so you can tell what's waiting without opening it. Settings → Chats sets how many lines,
   or none at all.
+- **Devices.** Settings → Devices lists everything signed in to your Stem — what it's called, when
+  it last connected — and lets you withdraw any of them, which takes effect immediately rather than
+  the next time that device asks for something. Adding one works like a door code: you get an
+  eight-character code, valid for ten minutes and one device, and type it on the machine you're
+  adding. Stem no longer keeps a copy of any device's key, only enough to recognise it, so a key can
+  be withdrawn but never read back out — not by you, and not by anyone who gets hold of the files.
+  Nothing changes for the Mac you're reading this on: it signs itself in, as it always has.
 
 ### Removed
 

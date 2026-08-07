@@ -95,8 +95,10 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
     STEM_FILES_DIR: join(userDataDir, 'files'),
     STEM_TASKS_STORE: tasksStorePath
   };
-  // Started BEFORE the app: it writes the device registry the desktop reads its
-  // own bearer token out of, and the app's first act is to connect.
+  // Started BEFORE the app, which connects as its first act. It prints a pairing
+  // code on a fresh state root, and the app is handed that instead of being left
+  // to mint itself a record off the shared disk — so this configuration exercises
+  // the credential path a genuinely remote client will take.
   const server = opts.externalServer
     ? await startStemServer({ stateDir: userDataDir, storeEnv, real })
     : null;
@@ -106,6 +108,7 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
       ...process.env,
       ...storeEnv,
       ...(server ? { STEM_SERVER_URL: server.url } : {}),
+      ...(server?.pairingCode ? { STEM_PAIRING_CODE: server.pairingCode } : {}),
       // macOS: run the instance as a non-activating accessory app so a suite
       // that launches one Electron per spec never steals focus or yanks the
       // user to the Space the run started on (see BACKGROUND in desktop/index.ts).

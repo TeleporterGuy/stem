@@ -22,6 +22,9 @@ import type { AppSettings, BackendEventEnvelope, QuickChatSettings } from '../sh
 // CLIENT-OWNED — never registered on the server, never on the wire. They act on
 // THIS machine, so a server that might be elsewhere cannot answer them:
 //
+//   client:info                                  this client's device id and where
+//                                                it is connected — the server has
+//                                                no notion of who is calling
 //   dialog:openFiles, dialog:openDirectory       native pickers
 //   files:reveal, files:preview                  shell.showItemInFolder; preview
 //                                                reads an image path that, by

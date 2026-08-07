@@ -175,19 +175,65 @@ const url = await waitForBoot();
 // -- talking to it ------------------------------------------------------------
 
 /**
- * This machine's bearer token, read out of the registry the server just wrote.
- * The same move src/desktop/server-endpoint.ts makes: on one machine, sharing
- * one state root, the credential is simply on disk.
+ * A credential, obtained the way a device with no access to this server's disk
+ * has to: by spending the one-shot code the server printed when it found its
+ * registry empty. That makes the whole pairing path — code minted at boot, POST
+ * /pair, a device record written, a token that then works — part of the tripwire
+ * rather than something only the desktop's own tests ever walk.
+ *
+ * The registry itself is checked afterwards, and what matters is what is NOT in
+ * it: no token, anywhere, in any record.
  */
-function deviceToken() {
-  const store = JSON.parse(readFileSync(join(stateDir, 'devices.json'), 'utf8'));
-  const device = store.devices.find((d) => d.role === 'device');
-  if (!device) fatal('the server booted without minting a device record');
-  return device.token;
+async function pair() {
+  // The banner is printed just after the listening line waitForBoot() returned on.
+  const deadline = Date.now() + 10_000;
+  let code = null;
+  while (!code && Date.now() < deadline) {
+    code = /\[stem-server\] pairing code: (\S+)/.exec(output)?.[1] ?? null;
+    if (!code) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!code) fatal('the server booted with an empty registry but printed no pairing code');
+  const res = await fetch(`${url}/pair`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code }),
+    signal: AbortSignal.timeout(30_000)
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !body?.ok || !body.result?.token) {
+    fatal(`POST /pair refused the code the server itself printed: HTTP ${res.status} ${JSON.stringify(body)}`);
+  }
+  return body.result;
 }
 
-const token = deviceToken();
-const auth = { authorization: `Bearer ${token}` };
+const grant = await pair();
+check('POST /pair mints a device for a valid code', typeof grant.token === 'string' && !!grant.deviceId);
+
+// A code is spent when it is used. Replaying the same one must not produce a
+// second device — that is the difference between a pairing code and a password.
+const replay = await fetch(`${url}/pair`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ code: /\[stem-server\] pairing code: (\S+)/.exec(output)[1] }),
+  signal: AbortSignal.timeout(30_000)
+});
+check('a spent pairing code is refused the second time', replay.status === 401, `HTTP ${replay.status}`);
+
+// The property the whole registry rewrite is for: what is on disk cannot be used
+// to authenticate. If a token ever appears here again, this check is the alarm.
+const registry = JSON.parse(readFileSync(join(stateDir, 'devices.json'), 'utf8'));
+check('the registry holds a record for the paired device', registry.devices.length === 1, `${registry.devices.length} records`);
+check(
+  'no record contains a token — only its hash',
+  registry.devices.every((d) => !d.token && /^[0-9a-f]{64}$/.test(d.tokenHash ?? '')),
+  JSON.stringify(registry.devices[0] ?? {}).slice(0, 120)
+);
+check(
+  'the token is not recoverable from the registry',
+  !readFileSync(join(stateDir, 'devices.json'), 'utf8').includes(grant.token)
+);
+
+const auth = { authorization: `Bearer ${grant.token}` };
 
 async function rpc(channel, args = [], { headers = auth } = {}) {
   const res = await fetch(`${url}/rpc`, {

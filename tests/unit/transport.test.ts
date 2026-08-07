@@ -6,13 +6,17 @@
 // Nothing here is faked but the windows. The server is the real transport with the
 // real device registry in front of it, and the client is the real
 // createServerProxy, because the point of the step this covers is that the desktop
-// stopped having a private path to its handlers. The phone's end of the same
-// server is mobile-bridge.test.ts.
+// stopped having a private path to its handlers. The server end of the same wire,
+// driven without a client, is transport-http.test.ts.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { registerServer } from '../../src/server/ipc';
-import { forgetCachedDevices } from '../../src/server/transport/auth';
+import { forgetCachedDevices, readDevices, resolveDevice } from '../../src/server/transport/auth';
+import { createPairingCode } from '../../src/server/transport/pairing';
+import { readClientIdentity, writeClientIdentity } from '../../src/desktop/client-store';
 import {
   closeTransport,
   pushToClients,
@@ -20,7 +24,7 @@ import {
   type TransportEndpoint
 } from '../../src/server/startup/transport';
 import { createServerProxy, type ServerProxy } from '../../src/desktop/proxy';
-import { readServerCredentials } from '../../src/desktop/server-endpoint';
+import { clientCredentials } from '../../src/desktop/server-endpoint';
 import type { AppSettings, BackendEventEnvelope, QuickChatSettings } from '../../src/shared/types';
 
 let endpoint: TransportEndpoint;
@@ -45,6 +49,7 @@ async function until(check: () => boolean, what: string): Promise<void> {
 
 beforeAll(async () => {
   rmSync(process.env.STEM_DEVICES_FILE!, { force: true });
+  rmSync(process.env.STEM_CLIENT_FILE!, { force: true });
   forgetCachedDevices();
 
   registerServer('chats:rename', (_e, threadId, name) => `${String(threadId)}:${String(name)}`);
@@ -57,9 +62,11 @@ beforeAll(async () => {
   }));
   registerServer('backend:newConversation', () => Promise.reject(new Error('pi is not running')));
 
-  endpoint = await startTransport({ rendererDir: '/nonexistent', devUrl: null });
+  endpoint = await startTransport({ devUrl: null });
+  // The server publishes no credential any more: this client mints its own off
+  // the state root they share, exactly as the desktop does at startup.
   proxy = createServerProxy({
-    ...endpoint,
+    ...(await clientCredentials(endpoint.url)),
     sendToMain: (channel, payload) => routed.push({ to: 'main', channel, payload }),
     sendToOverlay: (channel, payload) => routed.push({ to: 'overlay', channel, payload }),
     revealIfOwns: (threadId) => routed.push({ to: 'revealIfOwns', channel: '', payload: threadId }),
@@ -197,24 +204,66 @@ describe('the event stream', () => {
   });
 });
 
-// STEM_SERVER_URL: the desktop connects to a server it did not start. Phase 1 only
-// ever puts that process on this machine sharing this state root, so the
-// credential comes out of the registry the server already wrote.
-describe('connecting to a server we did not start', () => {
-  it('reads this device\'s token out of the shared registry', async () => {
-    const credentials = await readServerCredentials(`${endpoint.url}/`);
-    // Same token the embedded path was handed — one desktop record, not two.
-    expect(credentials.token).toBe(endpoint.token);
+// How a client gets a credential at all, now that the server keeps none to hand
+// out: a token this machine already holds, one minted off a shared state root, or
+// a pairing code spent over the wire.
+describe('acquiring a credential', () => {
+  it('reuses the identity it stored the first time, rather than minting again', async () => {
+    // beforeAll already went through this path once. A second call must be a
+    // read: minting per launch would fill Settings → Devices with one row per
+    // start of the app.
+    const again = await clientCredentials(`${endpoint.url}/`);
+    expect(again.token).toBe((await readClientIdentity())!.token);
+    expect((await readDevices()).length).toBe(1);
     // A trailing slash must not survive into `${url}/rpc`.
-    expect(credentials.url).toBe(endpoint.url);
+    expect(again.url).toBe(endpoint.url);
   });
 
-  it('prefers STEM_SERVER_TOKEN when the two stop sharing a disk', async () => {
+  it('prefers STEM_SERVER_TOKEN, and does not persist it', async () => {
+    const stored = (await readClientIdentity())!.token;
     process.env.STEM_SERVER_TOKEN = 'e'.repeat(64);
     try {
-      expect((await readServerCredentials(endpoint.url)).token).toBe('e'.repeat(64));
+      expect((await clientCredentials(endpoint.url)).token).toBe('e'.repeat(64));
     } finally {
       delete process.env.STEM_SERVER_TOKEN;
+    }
+    // An override is for one run; it must not overwrite what this device owns.
+    expect((await readClientIdentity())!.token).toBe(stored);
+  });
+
+  it('spends a pairing code when it has nothing stored, and keeps what comes back', async () => {
+    const identity = await readClientIdentity();
+    rmSync(process.env.STEM_CLIENT_FILE!, { force: true });
+    const { code } = await createPairingCode('A machine far away');
+    process.env.STEM_PAIRING_CODE = code;
+    try {
+      const paired = await clientCredentials(endpoint.url);
+      // The token came back over POST /pair — the one unauthenticated route —
+      // and works against the same server the desktop is already talking to.
+      expect(paired.token).not.toBe(identity!.token);
+      expect((await resolveDevice(paired.token))?.label).toBe('A machine far away');
+      // …and was written down, so the next launch is a read.
+      expect((await readClientIdentity())?.token).toBe(paired.token);
+    } finally {
+      delete process.env.STEM_PAIRING_CODE;
+      // Put the original identity back: later files in this suite share the registry.
+      await writeClientIdentity(identity!);
+    }
+  });
+
+  it('refuses to guess when there is no credential and no way to make one', async () => {
+    const identity = await readClientIdentity();
+    rmSync(process.env.STEM_CLIENT_FILE!, { force: true });
+    const endpointFile = process.env.STEM_SERVER_ENDPOINT_FILE;
+    // No published endpoint in our state root = a server whose disk we cannot
+    // see, which is exactly when minting a record would be writing into the void.
+    process.env.STEM_SERVER_ENDPOINT_FILE = join(tmpdir(), `stem-no-such-endpoint-${process.pid}.json`);
+    try {
+      await expect(clientCredentials('http://192.0.2.10:8443')).rejects.toThrow(/Pair instead/);
+    } finally {
+      if (endpointFile) process.env.STEM_SERVER_ENDPOINT_FILE = endpointFile;
+      else delete process.env.STEM_SERVER_ENDPOINT_FILE;
+      await writeClientIdentity(identity!);
     }
   });
 });
