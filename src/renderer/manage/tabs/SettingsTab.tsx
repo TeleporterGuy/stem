@@ -8,7 +8,6 @@ import {
   X,
   Check,
   Copy,
-  KeyRound,
   RefreshCw,
   TriangleAlert
 } from 'lucide-react';
@@ -19,8 +18,6 @@ import type {
   CustomInstructionsSettings,
   EscapeAction,
   ExecSettings,
-  MobilePairingInfo,
-  MobileSettings,
   WebSearchSettings,
   QuickChatSettings,
   QuickChatShortcutStatus,
@@ -37,7 +34,6 @@ import { localProbeTarget, probeStillDescribes } from '../../localProbe';
 import { RequestGate } from '../../requestGate';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
-import { QrImage } from '../../ui/QrImage';
 import { EFFORT_LABELS } from '../../modelLabels';
 import {
   backendOptionLabel,
@@ -870,235 +866,6 @@ function LocalServerAddForm({
   );
 }
 
-// ---- Mobile (Settings → phone pairing) ----
-
-/**
- * The phone bridge: an enable switch, the one-time `tailscale serve` step, and
- * the pairing link as both a QR and a copyable string.
- *
- * Two things shape this panel. First, the link IS the credential — the bearer
- * token rides its fragment — so it is only shown while the bridge is on, and the
- * warning about it is not optional. Second, nothing on this Mac can discover the
- * MagicDNS name `tailscale serve` publishes under, so the user has to tell Stem
- * what it is; until they do, the pairing link points at loopback and the panel
- * says so rather than offering a QR that resolves to the phone's own localhost.
- */
-function MobileSection() {
-  const [mobile, setMobile] = useState<MobileSettings | null>(null);
-  const [pairing, setPairing] = useState<MobilePairingInfo | null>(null);
-  // Drafts, so typing an address or a port doesn't write settings per keystroke.
-  const [addressDraft, setAddressDraft] = useState('');
-  const [portDraft, setPortDraft] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [confirmReroll, setConfirmReroll] = useState(false);
-
-  /** Adopt saved settings + fresh pairing info, resetting the drafts to match. */
-  const adopt = useCallback((next: MobileSettings, info: MobilePairingInfo) => {
-    setMobile(next);
-    setPairing(info);
-    setAddressDraft(next.publicUrl);
-    setPortDraft(String(next.port));
-  }, []);
-
-  useEffect(() => {
-    void (async () => {
-      const [settings, info] = await Promise.all([window.stem.getSettings(), window.stem.getMobilePairing()]);
-      adopt(settings.mobile, info);
-    })();
-  }, [adopt]);
-
-  async function update(patch: Partial<MobileSettings>) {
-    setBusy(true);
-    setConfirmReroll(false);
-    try {
-      // updateMobileSettings starts/stops/rebinds the server before it resolves,
-      // so the pairing info read after it reflects the new state.
-      const settings = await window.stem.updateMobileSettings(patch);
-      adopt(settings.mobile, await window.stem.getMobilePairing());
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function reroll() {
-    setBusy(true);
-    setConfirmReroll(false);
-    try {
-      const info = await window.stem.rerollMobileToken();
-      setPairing(info);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function commitPort() {
-    const port = Number(portDraft);
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-      setPortDraft(String(mobile?.port ?? ''));
-      return;
-    }
-    if (port !== mobile?.port) void update({ port });
-  }
-
-  function copyLink() {
-    if (!pairing) return;
-    void navigator.clipboard.writeText(pairing.url).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    });
-  }
-
-  return (
-    <>
-      <div className="grp-head">Mobile</div>
-      <div className="formgroup">
-        <div className="set-row">
-          <span className="set-label">
-            <strong>Phone access</strong>
-            <em>
-              Open Stem on your phone, with the same memory{' '}
-              <InfoTip label="How phone access works">
-                Stem serves its own phone client from a server bound to this Mac's loopback address —
-                nothing off the machine can reach it directly. <code>tailscale serve</code> fronts it
-                with HTTPS on your tailnet, so only your own devices can connect, and each one pairs
-                with a bearer token you can revoke here.
-              </InfoTip>
-            </em>
-          </span>
-          <button
-            className={`switch${mobile?.enabled ? ' on' : ''}`}
-            role="switch"
-            aria-checked={mobile?.enabled ?? false}
-            aria-label="Phone access"
-            disabled={busy || !mobile}
-            onClick={() => mobile && void update({ enabled: !mobile.enabled })}
-          />
-        </div>
-
-        {mobile?.enabled && (
-          <>
-            <div className="set-block fg-divider">
-              <span className="set-sub">Port</span>
-              <div className="pair-actions">
-                <input
-                  className="ifield pair-port"
-                  type="text"
-                  inputMode="numeric"
-                  aria-label="Phone bridge port"
-                  value={portDraft}
-                  disabled={busy}
-                  onChange={(e) => setPortDraft(e.target.value)}
-                  onBlur={commitPort}
-                  // Enter commits through the same blur path, so there is one writer.
-                  onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-                />
-                <span className={`retrieval-test-status ${pairing?.running ? 'ok' : 'err'}`}>
-                  {pairing?.running ? <Check size={12} /> : <X size={12} />}
-                  {pairing?.running ? 'Listening' : 'Not listening — the port may be in use'}
-                </span>
-              </div>
-            </div>
-
-            <div className="set-block fg-divider">
-              <span className="set-sub">One-time setup</span>
-              <p className="muted">Run this once in a terminal, then paste the address it prints:</p>
-              <code className="pair-cmd">tailscale serve --bg {mobile.port}</code>
-              <input
-                className="ifield"
-                type="text"
-                placeholder="https://your-mac.your-tailnet.ts.net"
-                aria-label="Tailnet address"
-                value={addressDraft}
-                disabled={busy}
-                onChange={(e) => setAddressDraft(e.target.value)}
-                onBlur={() => addressDraft.trim() !== mobile.publicUrl && void update({ publicUrl: addressDraft })}
-                onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-              />
-              <p className="muted">
-                <code>tailscale serve status</code> shows the address again later.
-              </p>
-            </div>
-
-            <div className="set-block fg-divider">
-              <span className="set-sub">Pair a phone</span>
-              {pairing && (
-                <>
-                  {pairing.reachable ? (
-                    <p className="muted">
-                      Scan this with your phone's camera, then use Share → Add to Home Screen to install it.
-                    </p>
-                  ) : (
-                    <p className="muted">
-                      No tailnet address yet, so this link only works in a browser on this Mac. Add the
-                      address above to get one your phone can open.
-                    </p>
-                  )}
-                  <div className="qr-card">
-                    <QrImage text={pairing.url} label="Pairing code for this Stem" />
-                  </div>
-                  <code className="pair-url">{pairing.url}</code>
-                  <div className="pair-actions">
-                    <button className="retrieval-test-btn" onClick={copyLink} title="Copy the pairing link">
-                      <Copy size={14} />
-                      <span>Copy pairing link</span>
-                    </button>
-                    {copied && (
-                      <span className="retrieval-test-status ok">
-                        <Check size={12} />
-                        Copied
-                      </span>
-                    )}
-                  </div>
-                  <p className="pair-warn">
-                    <TriangleAlert size={13} />
-                    <span>
-                      This link is the key to Stem — anything holding it can read your chats and your
-                      memory. Treat it like a password: send it to yourself, not to anyone else.
-                    </span>
-                  </p>
-                </>
-              )}
-            </div>
-
-            <div className="set-block fg-divider">
-              <span className="set-sub">Paired phones</span>
-              {confirmReroll ? (
-                <>
-                  <p className="muted">
-                    Every phone paired with the current link stops working immediately and has to scan a
-                    new one. Nothing else changes.
-                  </p>
-                  <div className="push-row">
-                    <button type="button" className="push" onClick={() => setConfirmReroll(false)}>
-                      Cancel
-                    </button>
-                    <button type="button" className="push default" disabled={busy} onClick={() => void reroll()}>
-                      {busy ? 'Un-pairing…' : 'Un-pair everything'}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <div className="pair-actions">
-                  <button
-                    className="retrieval-test-btn"
-                    onClick={() => setConfirmReroll(true)}
-                    disabled={busy}
-                    title="Mint a new pairing link and revoke the old one"
-                  >
-                    <KeyRound size={14} />
-                    <span>New pairing link</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </>
-  );
-}
-
 export function SettingsTab({
   models,
   modelId,
@@ -1707,8 +1474,6 @@ export function SettingsTab({
           </>
         )}
       </div>
-
-      <MobileSection />
 
       <div className="grp-head">Quick Chat</div>
       <div className="formgroup">

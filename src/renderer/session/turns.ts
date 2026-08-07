@@ -26,9 +26,9 @@ import { optimisticMessageAttachments, resendAttachments, toMessageAttachments }
 import { deletePendingIfCurrent, interruptibleTurnId, pendingStartBlocksSend } from '../pendingTurn';
 import { SessionStore } from './store';
 
-// The settled-turn guard moved to shared/ when the mobile bridge needed the same
-// rule in the main process (which cannot import from renderer/). Re-exported here
-// so this module stays the one place session code imports turn lifecycle from.
+// The settled-turn guard lives in shared/ because the server needs the same rule
+// in a process that cannot import from renderer/. Re-exported here so this module
+// stays the one place session code imports turn lifecycle from.
 import { SettledTurns, isSettledMethod, type TurnSettledMethod } from '../../shared/settledTurns';
 
 export {

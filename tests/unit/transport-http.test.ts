@@ -1,49 +1,30 @@
-// The transport, driven over a real loopback socket from the phone's side: the
-// bearer token, the request-origin (DNS-rebinding) check, the per-role channel
-// gate, the per-channel args/result policy, the reuse of the IPC arg-spec table,
-// the static handler's traversal guard, and SSE framing/fan-out. The handlers
-// under /rpc are registered through the real registerServer, so this exercises
-// the same registry the app uses.
+// The transport itself, driven over a real loopback socket: the bearer token,
+// the request-origin (DNS-rebinding) check, the reuse of the IPC arg-spec table,
+// the body cap, and SSE framing/fan-out. The handlers under /rpc are registered
+// through the real registerServer, so this exercises the same registry the app
+// uses.
 //
-// Everything here authenticates as the `phone` role, which is the constrained
-// one; the desktop role's own end of the wire is covered by transport.test.ts.
+// This file began as the phone's half of the wire, back when a curated allowlist
+// and a per-channel args/result policy sat between a token and the registry.
+// Those went with the phone role; what they were layered on top of did not, and
+// it is what is checked here. transport.test.ts drives the same server from the
+// desktop proxy's side, i.e. through the real client.
 import { request as httpRequest } from 'node:http';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
 import { registerServer } from '../../src/server/ipc';
 import { dispatchLocal, serverChannels } from '../../src/server/ipc/guard';
-import { ensurePhoneToken, requestOriginProblem, rerollPhoneToken, tokenEquals } from '../../src/server/transport/auth';
-import { mayInvoke, mayReceive } from '../../src/server/transport/roles';
+import { requestOriginProblem, tokenEquals } from '../../src/server/transport/auth';
 import { startTransportServer, type TransportServer } from '../../src/server/transport/server';
-import type { AppSettings } from '../../src/shared/types';
 
 const TOKEN = 'a'.repeat(64);
 
-/**
- * The four secrets settings.json can hold, in a form no other field could
- * produce — so "does the phone's answer contain this string" is a real question
- * about the serialized response, not about the shape we happened to assert on.
- */
-const SECRETS = ['brave-key-SECRET', 'embed-key-SECRET', 'rerank-key-SECRET', 'custom-key-SECRET'];
-
 let server: TransportServer;
-let bundleDir: string;
 let base: string;
 /** Channels the fake handlers saw, so we can prove a rejected call never lands. */
 const calls: { channel: string; args: unknown[] }[] = [];
 
 beforeAll(async () => {
-  bundleDir = await mkdtemp(join(tmpdir(), 'stem-mobile-bundle-'));
-  await writeFile(join(bundleDir, 'mobile.html'), '<!doctype html><title>Stem</title>', 'utf8');
-  await writeFile(join(bundleDir, 'app.js'), 'export const x = 1;\n', 'utf8');
-  // The PWA's installability assets, laid out as the real bundle has them.
-  await writeFile(join(bundleDir, 'manifest.webmanifest'), '{"name":"Stem"}', 'utf8');
-  await mkdir(join(bundleDir, 'icons'), { recursive: true });
-  await writeFile(join(bundleDir, 'icons', 'stem-192.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
-
   registerServer('backend:startTurn', (_e, input) => {
     calls.push({ channel: 'backend:startTurn', args: [input] });
     return { threadId: 't-1', turnId: 'turn-1' };
@@ -56,25 +37,9 @@ beforeAll(async () => {
     calls.push({ channel: 'chats:list', args: [] });
     throw new Error('pi is not running');
   });
-  // A settings object with every secret field populated, as the real handler
-  // would return it: readSettings() does no redaction of its own.
-  registerServer('settings:get', () => {
-    calls.push({ channel: 'settings:get', args: [] });
-    return {
-      customInstructions: { main: 'be brief', quickChat: '' },
-      webSearch: { main: true, quickChat: true, provider: 'brave', credentials: { braveApiKey: SECRETS[0] } },
-      retrieval: {
-        embeddings: { mode: 'remote', baseUrl: 'http://box:11434', model: 'e', apiKey: SECRETS[1] },
-        reranker: { mode: 'remote', baseUrl: 'http://box:8080', model: 'r', apiKey: SECRETS[2] }
-      },
-      localProviders: { custom: { enabled: true, baseUrl: 'https://gw.example/v1', apiKey: SECRETS[3] } }
-    };
-  });
-
   server = await startTransportServer({
     port: 0,
-    rendererDir: bundleDir,
-    authenticate: (presented) => (tokenEquals(TOKEN, presented) ? 'phone' : null),
+    authenticate: (presented) => (tokenEquals(TOKEN, presented) ? 'device' : null),
     dispatch: dispatchLocal,
     registeredChannels: serverChannels
   });
@@ -86,8 +51,6 @@ afterAll(async () => {
   ipcMain.removeHandler('backend:startTurn');
   ipcMain.removeHandler('memory:forget');
   ipcMain.removeHandler('chats:list');
-  ipcMain.removeHandler('settings:get');
-  await rm(bundleDir, { recursive: true, force: true });
 });
 
 /**
@@ -147,16 +110,21 @@ describe('POST /rpc auth', () => {
     expect(calls.at(-1)).toEqual({ channel: 'backend:startTurn', args: [{ input: 'hi' }] });
   });
 
-  it('accepts the token as a query parameter (EventSource cannot set headers)', async () => {
+  it('does not accept the token as a query parameter', async () => {
+    // It used to, because the phone's EventSource could not set headers. Nothing
+    // needs it now, and a credential in a URL is a credential in an access log
+    // the moment a reverse proxy is put in front — so the query form is refused
+    // rather than merely unused.
     const res = await fetch(`${base}/rpc?token=${TOKEN}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ channel: 'memory:activeFacts', args: [] })
+      body: JSON.stringify({ channel: 'chats:list', args: [] })
     });
-    // memory:activeFacts is allowlisted but has no handler registered in this
-    // test — proof the token gate passed and we got all the way to dispatch.
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/no handler registered/);
+    expect(res.status).toBe(401);
+
+    const stream = await fetch(`${base}/events?token=${TOKEN}`);
+    expect(stream.status).toBe(401);
+    await stream.body?.cancel();
   });
 });
 
@@ -216,45 +184,35 @@ describe('request-origin check', () => {
   });
 });
 
-describe('channel allowlist', () => {
-  it('rejects a non-allowlisted channel even with a valid token', async () => {
+describe('the registry as the surface', () => {
+  it('refuses a channel nothing registered, in the guard\'s own words', async () => {
     const before = calls.length;
-    // memory:forget IS a real, registered handler — it is simply not something a
-    // phone may do. That is the whole point of the layer.
-    const res = await rpc({ channel: 'memory:forget', args: [7] });
-    expect(res.status).toBe(403);
-    expect((await res.json()).error).toMatch(/memory:forget is not available on mobile/);
+    const res = await rpc({ channel: 'nope:notAThing', args: [] });
+    // 400, not 403: an unregistered channel is a caller mistake, and the answer
+    // has to reach the renderer in the words dispatchLocal would have used —
+    // which is why there is no pre-check here reproducing them by hand.
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/Rejected local call to nope:notAThing: no handler registered/);
     expect(calls.length).toBe(before);
   });
 
-  it('tells a client what it may call, filtered to its role', async () => {
-    const res = await fetch(`${base}/channels?token=${TOKEN}`);
+  it('reaches a registered handler with no allowlist in the way', async () => {
+    // memory:forget is destructive and used to be refused for the phone. With one
+    // role, being registered is the whole permission story.
+    const res = await rpc({ channel: 'memory:forget', args: [7] });
     expect(res.status).toBe(200);
-    const { result } = (await res.json()) as { result: string[] };
-    // Registered here and allowlisted for the phone.
-    expect(result).toContain('backend:startTurn');
-    // Registered here, deliberately not the phone's to call.
-    expect(result).not.toContain('memory:forget');
-    // Allowlisted but not registered in this process — the list is what exists
-    // AND is permitted, never one without the other.
-    expect(result).not.toContain('memory:activeFacts');
-    expect((await fetch(`${base}/channels`)).status).toBe(401);
+    expect(calls.at(-1)).toEqual({ channel: 'memory:forget', args: [7] });
   });
 
-  it('agrees with the exported predicates', () => {
-    expect(mayInvoke('phone', 'backend:startTurn')).toBe(true);
-    expect(mayInvoke('phone', 'memory:forget')).toBe(false);
-    expect(mayInvoke('phone', 'settings:updateMobile')).toBe(false);
-    expect(mayInvoke('phone', 'mcp:add')).toBe(false);
-    expect(mayReceive('phone', 'backend:event')).toBe(true);
-    expect(mayReceive('phone', 'quickchat:focus')).toBe(false);
-
-    // The desktop's surface is the registry itself, not a second table: a
-    // channel the phone may not touch is reachable the moment it is registered,
-    // and one nothing registered is reachable from nowhere.
-    expect(mayInvoke('desktop', 'memory:forget')).toBe(true);
-    expect(mayInvoke('desktop', 'nope:notAThing')).toBe(false);
-    expect(mayReceive('desktop', 'quickchat:focus')).toBe(true);
+  it('tells a client what it may call: the registry, whole', async () => {
+    const res = await fetch(`${base}/channels`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    expect(res.status).toBe(200);
+    const { result } = (await res.json()) as { result: string[] };
+    expect(result).toContain('backend:startTurn');
+    expect(result).toContain('memory:forget');
+    expect(result).toEqual([...serverChannels()]);
+    // …and it is still behind the token.
+    expect((await fetch(`${base}/channels`)).status).toBe(401);
   });
 });
 
@@ -287,126 +245,21 @@ describe('argument validation', () => {
   });
 });
 
-describe('per-channel policy', () => {
-  it('refuses a path attachment before it can reach the file-reading resolver', async () => {
-    const before = calls.length;
-    const res = await rpc({
-      channel: 'backend:startTurn',
-      args: [{ input: 'summarise this', attachments: [{ name: 'hosts', path: '/etc/hosts' }] }]
-    });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/attachments must be inline/);
-    expect(calls.length).toBe(before);
-  });
-
-  it('passes an inline attachment through untouched', async () => {
-    const attachment = { name: 'x.txt', dataBase64: 'aGk=' };
-    const res = await rpc({ channel: 'backend:startTurn', args: [{ input: 'hi', attachments: [attachment] }] });
-    expect(res.status).toBe(200);
-    expect(calls.at(-1)).toEqual({ channel: 'backend:startTurn', args: [{ input: 'hi', attachments: [attachment] }] });
-  });
-
-  it('drops a forged scheduled-run marker without failing the turn', async () => {
-    const res = await rpc({
-      channel: 'backend:startTurn',
-      args: [{ input: 'hi', scheduled: { at: '2026-07-30T09:00:00.000Z', taskId: 'task-1' } }]
-    });
-    expect(res.status).toBe(200);
-    // The turn runs — it is a perfectly good interactive turn — but the
-    // scheduler's provenance marker is gone, not merely emptied.
-    expect(calls.at(-1)).toEqual({ channel: 'backend:startTurn', args: [{ input: 'hi' }] });
-    expect('scheduled' in (calls.at(-1)!.args[0] as object)).toBe(false);
-  });
-
-  it('does not expose files:preview to a phone at all', async () => {
-    const before = calls.length;
-    const res = await rpc({ channel: 'files:preview', args: ['/Users/someone/Desktop/private.png'] });
-    expect(res.status).toBe(403);
-    expect((await res.json()).error).toMatch(/files:preview is not available on mobile/);
-    expect(calls.length).toBe(before);
-  });
-
-  it('projects settings:get down to what the phone renders, secrets stripped', async () => {
-    const res = await rpc({ channel: 'settings:get', args: [] });
-    expect(res.status).toBe(200);
-    const text = await res.text();
-    // The bytes on the wire, not the shape we chose to assert on.
-    for (const secret of SECRETS) expect(text).not.toContain(secret);
-
-    const { result } = JSON.parse(text) as { result: AppSettings };
-    expect(result.customInstructions).toEqual({ main: 'be brief', quickChat: '' });
-    // Everything else is a default, because the projection rebuilds rather than
-    // deletes — including the fields that carried the four keys.
-    expect(result.webSearch).toEqual({ main: true, quickChat: true, provider: 'auto', credentials: {} });
-    expect(result.retrieval.embeddings.apiKey).toBeNull();
-    expect(result.retrieval.reranker.apiKey).toBeNull();
-    expect(result.localProviders.custom).toEqual({ enabled: false, baseUrl: '' });
-  });
-});
-
-describe('static handler', () => {
-  it('serves the bundle and 404s cleanly for a file that does not exist yet', async () => {
-    const html = await fetch(`${base}/mobile.html`);
-    expect(html.status).toBe(200);
-    expect(html.headers.get('content-type')).toMatch(/text\/html/);
-    expect(await html.text()).toMatch(/<title>Stem<\/title>/);
-
-    // `/` is the phone's entry point.
-    expect((await fetch(`${base}/`)).status).toBe(200);
-
-    const js = await fetch(`${base}/app.js`);
-    expect(js.headers.get('content-type')).toMatch(/text\/javascript/);
-
-    expect((await fetch(`${base}/nope.js`)).status).toBe(404);
-  });
-
-  it('serves the PWA manifest and icons with the types a browser needs', async () => {
-    // The manifest must arrive as application/manifest+json: a browser that gets
-    // it as text/plain or octet-stream ignores it, and the app silently stops
-    // being installable — with nothing visibly broken.
-    const manifest = await fetch(`${base}/manifest.webmanifest`);
-    expect(manifest.status).toBe(200);
-    expect(manifest.headers.get('content-type')).toBe('application/manifest+json; charset=utf-8');
-    expect(await manifest.json()).toEqual({ name: 'Stem' });
-
-    const icon = await fetch(`${base}/icons/stem-192.png`);
-    expect(icon.status).toBe(200);
-    expect(icon.headers.get('content-type')).toBe('image/png');
-  });
-
-  it('serves the manifest and icons with no token at all', async () => {
-    // The browser fetches the manifest and the apple-touch-icon outside the
-    // app's auth context, so these cannot be token-gated (see mobile/auth.ts).
-    // Nothing here is a secret; every capability behind the bundle is.
-    for (const path of ['/mobile.html', '/manifest.webmanifest', '/icons/stem-192.png']) {
-      expect((await fetch(`${base}${path}`)).status).toBe(200);
+describe('routes', () => {
+  it('serves no files: anything that is not /rpc, /events or /channels is a 404', async () => {
+    // This server used to serve the phone's bundle out of dist/renderer, with a
+    // traversal guard behind it. Both are gone; every client loads its own UI off
+    // its own disk. The traversal cases are kept as a regression: if a static
+    // route ever comes back, it must not come back by accident.
+    for (const path of ['/', '/mobile.html', '/app.js', '/manifest.webmanifest', '/icons/stem-192.png']) {
+      const res = await fetch(`${base}${path}`);
+      expect(`${path}: ${res.status}`).toBe(`${path}: 404`);
     }
-    // …but a bad Origin still doesn't get them.
-    const rebound = await raw('/manifest.webmanifest', { host: 'evil.example', 'sec-fetch-site': 'none' });
-    expect(rebound.status).toBe(403);
-  });
-
-  it('rejects path traversal, encoded or not', async () => {
-    // An encoded slash keeps the `..` intact through URL parsing, so it reaches
-    // — and is refused by — the segment guard.
-    for (const path of ['/..%2fpackage.json', '/assets%2f..%2f..%2fpackage.json', '/%2e%2e%2fpackage.json']) {
+    for (const path of ['/..%2fpackage.json', '/%2e%2e%2fpackage.json', '/../package.json']) {
       const res = await raw(path);
-      expect(res.status).toBe(403);
-      expect(JSON.parse(res.body).error).toBe('forbidden path');
-    }
-    // The plain forms are collapsed to a root-relative path by URL parsing before
-    // we ever see them, so they land inside the bundle dir and 404. Either way
-    // nothing outside rendererDir is ever served.
-    for (const path of ['/../package.json', '/assets/../../package.json', '/%2e%2e/package.json', '/./../package.json']) {
-      const res = await raw(path);
-      expect([403, 404]).toContain(res.status);
+      expect(res.status).toBe(404);
       expect(res.body).not.toMatch(/"name": "stem"/);
     }
-  });
-
-  it('does not require a token (the token rides the URL fragment)', async () => {
-    const res = await fetch(`${base}/mobile.html`);
-    expect(res.status).toBe(200);
   });
 });
 
@@ -453,7 +306,7 @@ describe('GET /events', () => {
   });
 
   it('frames pushes as one-line JSON data events and fans out to every client', async () => {
-    const a = await fetch(`${base}/events?token=${TOKEN}`);
+    const a = await fetch(`${base}/events`, { headers: { authorization: `Bearer ${TOKEN}` } });
     const b = await fetch(`${base}/events`, { headers: { authorization: `Bearer ${TOKEN}` } });
     expect(a.status).toBe(200);
     expect(a.headers.get('content-type')).toMatch(/text\/event-stream/);
@@ -471,8 +324,6 @@ describe('GET /events', () => {
       payload: { method: 'item/agentMessage/delta', params: { delta: 'line one\nline "two"' } }
     });
     server.push({ id: 2, channel: 'mcp:status', payload: { servers: [] } });
-    // Not on the push allowlist — must never reach a phone.
-    server.push({ id: 3, channel: 'quickchat:focus', payload: { reset: true } });
 
     const [fromA, fromB] = await collected;
     expect(fromA).toEqual([
@@ -484,17 +335,15 @@ describe('GET /events', () => {
       { id: '2', channel: 'mcp:status', payload: { servers: [] } }
     ]);
     expect(fromB).toEqual(fromA);
-    expect(fromA.some((f) => f.channel === 'quickchat:focus')).toBe(false);
   });
 
   it('stamps every frame with the id the caller gave it', async () => {
     // Nothing consumes the id yet — replay is Phase 2 — but it has to be on the
     // wire from the start, or adding replay later is a protocol change across
-    // three clients instead of a server-side addition. A frame the role may not
-    // receive burns no id: ids come from the caller, not from the fan-out.
-    const stream = await fetch(`${base}/events?token=${TOKEN}`);
+    // every client instead of a server-side addition. Ids come from the caller,
+    // not from the fan-out, so the sequence is the caller's to keep monotonic.
+    const stream = await fetch(`${base}/events`, { headers: { authorization: `Bearer ${TOKEN}` } });
     const collected = collectFrames(stream, 2);
-    server.push({ id: 41, channel: 'quickchat:focus', payload: null });
     server.push({ id: 42, channel: 'mcp:status', payload: { servers: [] } });
     server.push({ id: 43, channel: 'backend:event', payload: { method: 'turn/completed' } });
     expect((await collected).map((f) => f.id)).toEqual(['42', '43']);
@@ -502,7 +351,10 @@ describe('GET /events', () => {
 
   it('drops a disconnected client instead of writing to a dead response', async () => {
     const controller = new AbortController();
-    const res = await fetch(`${base}/events?token=${TOKEN}`, { signal: controller.signal });
+    const res = await fetch(`${base}/events`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+      signal: controller.signal
+    });
     expect(res.status).toBe(200);
     controller.abort();
     // Give the server's 'close' handler a tick to run.
@@ -565,34 +417,17 @@ describe('body cap', () => {
   });
 });
 
-describe('token file', () => {
-  it('mints a stable 32-byte hex token and re-rolls it on demand', async () => {
-    const first = await ensurePhoneToken();
-    expect(first).toMatch(/^[0-9a-f]{64}$/);
-    expect(await ensurePhoneToken()).toBe(first);
-
-    const rolled = await rerollPhoneToken();
-    expect(rolled).toMatch(/^[0-9a-f]{64}$/);
-    expect(rolled).not.toBe(first);
-    expect(await ensurePhoneToken()).toBe(rolled);
-
-    expect(tokenEquals(rolled, rolled)).toBe(true);
-    expect(tokenEquals(rolled, first)).toBe(false);
-    expect(tokenEquals(rolled, null)).toBe(false);
-    expect(tokenEquals(rolled, rolled.slice(0, 10))).toBe(false);
-  });
-});
-
 describe('close()', () => {
   it('resolves with an SSE stream still open', async () => {
     const other = await startTransportServer({
       port: 0,
-      rendererDir: bundleDir,
-      authenticate: () => 'phone',
+      authenticate: () => 'device',
       dispatch: dispatchLocal,
       registeredChannels: serverChannels
     });
-    const res = await fetch(`http://127.0.0.1:${other.port}/events?token=x`);
+    const res = await fetch(`http://127.0.0.1:${other.port}/events`, {
+      headers: { authorization: 'Bearer anything' }
+    });
     expect(other.clientCount()).toBe(1);
     // Would hang forever without destroying the socket first.
     await other.close();

@@ -21,7 +21,6 @@ import type { ExecService } from './exec/service';
 import { initExecService } from './startup/exec';
 import { initSkills } from './startup/skills';
 import { closeTransport, pushToClients, startTransport, type TransportEndpoint } from './startup/transport';
-import type { DeviceRole } from './transport/roles';
 import { setActivityEmitter } from './activity';
 import { liveTurnCount, noteTurnEvent } from './live-turns';
 import { initRetrieval } from './startup/retrieval';
@@ -107,14 +106,12 @@ export interface ServerOptions {
    * so pi's auth is not seeded from the user's global ~/.pi.
    */
   alternateProfile: boolean;
-  /** Where the built web bundle lives — the phone bridge serves it from there. */
-  rendererDir: string;
   /** The electron-vite dev server, when one is running; null in production. */
   devUrl: string | null;
 }
 
 export interface ServerHandle {
-  /** Where clients reach this server, and the bearer token for the desktop role. */
+  /** Where clients reach this server, and this machine's bearer token. */
   endpoint: TransportEndpoint;
   /**
    * Spawn pi + connect MCP now rather than on the first prompt, and start the
@@ -157,27 +154,16 @@ let scheduleFolderLearn: (delayMs?: number) => void = () => {};
 
 /**
  * The one server → client path (see startup/transport.ts). Every connected client
- * gets it, filtered by what its role is allowed to receive — so a channel the
- * phone has no business seeing is dropped for the phone and delivered to the
- * desktop from this single call, with no per-audience bookkeeping here.
+ * gets it; each one filters by threadId itself, exactly as the main window always
+ * did, so there is no per-audience bookkeeping here.
  *
  * A no-op when nothing is connected. Events are not buffered or replayed: a
  * client that was away resyncs by asking (decision 6 in the Phase 1 plan), and
  * the monotonic id on every frame is what a Phase 2 replay buffer will key off.
  */
-function emit(channel: string, payload: unknown, roles?: readonly DeviceRole[]): void {
-  pushToClients(channel, payload, roles);
+function emit(channel: string, payload: unknown): void {
+  pushToClients(channel, payload);
 }
-
-/**
- * The thread a client's own surface is presenting exclusively, or null. Today
- * that is only ever the Quick Chat overlay: while it owns a conversation, that
- * conversation's events belong to the desk and must NOT be mirrored to a phone,
- * which would otherwise build the same phantom user-less slice the main window
- * would. Ownership is client state, so the client publishes it here rather than
- * the server asking — see `client:claimThread`.
- */
-let claimedThread: string | null = null;
 
 /** Pick a sensible app default from the models the signed-in providers expose. */
 function chooseDefaultModel(models: ModelSummary[]): string | null {
@@ -337,16 +323,6 @@ function registerIpc(): void {
     void runtime!.resumeThread(threadId).catch(() => {});
     const { title, messages } = await runtime!.readThread(threadId);
     return { threadId, title, messages };
-  });
-
-  // The one channel that exists purely so a client can tell the server something
-  // about ITSELF. A desktop surface (today only the Quick Chat overlay) presents
-  // one thread exclusively; while it does, that thread's events must not be
-  // mirrored to any other device. Ownership is client state and cannot be
-  // inferred here, so the client publishes it — idempotently, and null to release.
-  // Absent from the phone allowlist: a phone has no exclusive surface to claim.
-  registerServer('client:claimThread', (_e, threadId: string | null) => {
-    claimedThread = threadId ?? null;
   });
 
   // ---- settings ----
@@ -672,14 +648,15 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     // Hidden internal threads (distillation) are neither shown nor captured.
     if (threadId && runtime!.isInternalThread(threadId)) return;
     noteTurnEvent(event.method, threadId);
-    // Out to every client. A thread the desk has claimed goes to the desktop
-    // only; everything else goes to whoever is connected, each client filtering
-    // by threadId itself exactly as the main window always did — the server does
-    // not track which thread anyone has open. Process-level events (no threadId)
-    // reach everybody unconditionally, or a backend crash would leave a phone
-    // streaming forever with no way to learn the turn is never coming.
-    const claimed = !!threadId && threadId === claimedThread;
-    emit('backend:event', event, claimed ? ['desktop'] : undefined);
+    // Out to every client, which filters by threadId itself exactly as the main
+    // window always did — the server does not track which thread anyone has open.
+    //
+    // There used to be an exception here: a thread the Quick Chat overlay had
+    // claimed was narrowed to the `desktop` role, so a phone would not build a
+    // phantom user-less slice of a conversation being held at the desk. With the
+    // phone role gone the narrowing selected every connected client anyway, and
+    // the claim it read (`client:claimThread`) had no other reader — so both went.
+    emit('backend:event', event);
     if (isRecallEnabled()) {
       // Skip capture when the turn read inside a memorize:false connected folder, so
       // its (potentially confidential) reply never enters Recall. scheduleDistill still
@@ -713,7 +690,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   // Last: the transport dispatches into the handlers registerIpc just installed
   // and answers GET /channels out of the same registry, so anything registered
   // after this point would be invisible to every client.
-  const endpoint = await startTransport({ rendererDir: opts.rendererDir, devUrl: opts.devUrl });
+  const endpoint = await startTransport({ devUrl: opts.devUrl });
 
   return {
     endpoint,

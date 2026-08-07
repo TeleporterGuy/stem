@@ -240,17 +240,6 @@ export function devicesStorePath(): string {
   return process.env.STEM_DEVICES_FILE ?? join(userDataRoot(), 'devices.json');
 }
 
-/**
- * The phone bridge's pre-registry token file: 32 random bytes as hex, 0600. Only
- * read now, and only once — the first read of devices.json migrates it into a
- * `phone` device record so an already-paired phone never has to be re-paired.
- * Left on disk afterwards rather than deleted; it is inert either way.
- */
-export function mobileTokenPath(): string {
-  // STEM_MOBILE_TOKEN_FILE lets unit tests point at a throwaway file (and avoids
-  // touching Electron's `app` when run outside the app), like its neighbours.
-  return process.env.STEM_MOBILE_TOKEN_FILE ?? join(userDataRoot(), 'mobile.token');
-}
 
 /**
  * The main-process log file (see server/log.ts): pi lifecycle, crash-loop

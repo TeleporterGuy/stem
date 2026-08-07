@@ -175,18 +175,18 @@ const url = await waitForBoot();
 // -- talking to it ------------------------------------------------------------
 
 /**
- * The desktop's bearer token, read out of the registry the server just wrote.
+ * This machine's bearer token, read out of the registry the server just wrote.
  * The same move src/desktop/server-endpoint.ts makes: on one machine, sharing
  * one state root, the credential is simply on disk.
  */
-function desktopToken() {
+function deviceToken() {
   const store = JSON.parse(readFileSync(join(stateDir, 'devices.json'), 'utf8'));
-  const device = store.devices.find((d) => d.role === 'desktop');
-  if (!device) fatal('the server booted without minting a desktop device record');
+  const device = store.devices.find((d) => d.role === 'device');
+  if (!device) fatal('the server booted without minting a device record');
   return device.token;
 }
 
-const token = desktopToken();
+const token = deviceToken();
 const auth = { authorization: `Bearer ${token}` };
 
 async function rpc(channel, args = [], { headers = auth } = {}) {
@@ -243,7 +243,7 @@ try {
   // -- the registry is the surface --
   const channelsRes = await fetch(`${url}/channels`, { headers: auth });
   const channels = (await channelsRes.json()).result ?? [];
-  check('GET /channels answers the desktop role', Array.isArray(channels) && channels.length > 50, `${channels.length} channels`);
+  check('GET /channels answers with the registry', Array.isArray(channels) && channels.length > 50, `${channels.length} channels`);
   for (const expected of ['settings:get', 'chats:list', 'backend:startTurn', 'memory:activeFacts']) {
     check(`  registry exposes ${expected}`, channels.includes(expected));
   }

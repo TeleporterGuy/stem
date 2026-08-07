@@ -10,14 +10,13 @@ import {
 } from '../workspace/connected-folders';
 import { getFolderIndexStatuses, seedFolderLearnMarks, syncFolderIndexes } from '../folder-index';
 import { recallStore } from '../recall/store';
-import { readSettings, updateMobileSettings, updateSkillsSettings } from '../workspace/settings';
+import { readSettings, updateSkillsSettings } from '../workspace/settings';
 import { resetSkills, skillsResetStatus } from '../skills/reset';
 import { learnFromLastTurn } from '../startup/skills';
 import { curateSkills } from '../skills/curate';
-import { mobilePairingInfo, rerollMobilePairing, syncPhoneAccess } from '../startup/transport';
 import type { LlmClient } from '../recall/llm';
 import type { ApprovalId } from '../backend/types';
-import type { ConnectedFolderPatch, MobileSettings, ScheduledTask, SkillsMode, TaskSchedulePatch } from '../../shared/types';
+import type { ConnectedFolderPatch, ScheduledTask, SkillsMode, TaskSchedulePatch } from '../../shared/types';
 
 /**
  * Skills, the Files place, connected folders, scheduled tasks, and the phone
@@ -125,25 +124,5 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     return scheduler ? scheduler.updateSchedule(id, patch.schedule) : [];
   });
 
-  // ---- the phone bridge (see startup/transport.ts) ----
-  // Deliberately NOT reachable from the phone itself: settings:updateMobile is
-  // absent from the mobile allowlist, so a phone can never turn the bridge off
-  // (or move it) from under the user.
-  registerServer('settings:updateMobile', async (_e, patch: Partial<MobileSettings>) => {
-    const next = await updateMobileSettings(patch);
-    // Apply now rather than at next launch: enabling starts accepting phone
-    // tokens and binds the tailnet-facing port, disabling stops both, a port
-    // change rebinds. Never throws — a port that won't bind is logged and
-    // reported as `running: false` by mobile:pairingInfo. The desktop's own
-    // connection is on a different listener and is never disturbed by this.
-    await syncPhoneAccess();
-    return next;
-  });
-  // The QR's contents: the URL to open plus the bearer token. Never pushed
-  // anywhere — the Settings pane pulls it when the user opens the pairing UI.
-  registerServer('mobile:pairingInfo', () => mobilePairingInfo());
-  // Revocation. Also absent from the mobile allowlist: a phone must not be able
-  // to lock the other phones out, or itself.
-  registerServer('mobile:rerollToken', () => rerollMobilePairing());
 
 }

@@ -8,14 +8,14 @@ import type { TransportEndpoint } from '../server/startup/transport';
 // already listening — and then the URL is given but the credential is not.
 //
 // Phase 1 only ever puts that process on the same machine, sharing the same state
-// root, so the desktop's device record is simply read from the registry the server
-// already wrote (ensureDevice is a read once the record exists). STEM_SERVER_TOKEN
-// is the escape hatch for the day the two stop sharing a disk — which is Phase 2's
-// problem, and will want real pairing rather than a second env var.
+// root, so this machine's device record is simply read from the registry the
+// server already wrote (ensureDevice is a read once the record exists).
+// STEM_SERVER_TOKEN is the escape hatch for the day the two stop sharing a disk —
+// which is Phase 2's one-shot pairing flow, not a second env var.
 
 export async function readServerCredentials(url: string): Promise<TransportEndpoint> {
   const fromEnv = process.env.STEM_SERVER_TOKEN?.trim();
   if (fromEnv) return { url: url.replace(/\/$/, ''), token: fromEnv };
-  const device = await ensureDevice('desktop', 'This machine');
+  const device = await ensureDevice('device', 'This machine');
   return { url: url.replace(/\/$/, ''), token: device.token };
 }

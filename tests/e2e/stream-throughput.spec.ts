@@ -5,7 +5,8 @@
 // call in one process. Now it is JSON-serialized, written to a loopback socket,
 // read back, parsed, and only then fanned out to the window — and that is now
 // sitting in front of a token render loop that has never had anything in front of
-// it. The phone bridge always paid this cost; the desk never did.
+// it. The bridge the phone client used to run on always paid this cost; the desk
+// never did.
 //
 // So measure it, hermetically, on the delivery path rather than on React: the
 // probe below counts `item/agentMessage/delta` events arriving at the RENDERER,

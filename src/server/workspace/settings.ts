@@ -19,7 +19,6 @@ import type {
   LocalProvidersSettings,
   LocalRerankModelId,
   MemoryModelSettings,
-  MobileSettings,
   WebSearchSettings,
   PartialRetrievalSettings,
   QuickChatSettings,
@@ -120,11 +119,7 @@ const DEFAULTS: AppSettings = {
     ollama: { enabled: false, baseUrl: 'http://localhost:11434' },
     lmstudio: { enabled: false, baseUrl: 'http://localhost:1234' },
     custom: { enabled: false, baseUrl: '' }
-  },
-  // The phone bridge: off until the user turns it on in Settings (it is the only
-  // Stem surface reachable from off-box). The port is what `tailscale serve` gets
-  // pointed at; the default is a high, unregistered one.
-  mobile: { enabled: false, port: 8823, publicUrl: '' }
+  }
 };
 
 const ESCAPE_ACTIONS: readonly EscapeAction[] = ['off', 'single', 'twoStage'];
@@ -195,18 +190,6 @@ function coerceEmbeddings(
  * assembled by concatenation. Anything unparseable becomes empty, which the
  * pairing panel reads as "not set up yet" rather than as a broken URL.
  */
-function coercePublicUrl(raw: unknown): string {
-  if (typeof raw !== 'string' || !raw.trim()) return '';
-  const text = raw.trim();
-  try {
-    const url = new URL(/^https?:\/\//i.test(text) ? text : `https://${text}`);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
-    return url.origin;
-  } catch {
-    return '';
-  }
-}
-
 /** True for a plain object usable as a string map (not null, not an array). */
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -352,17 +335,6 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     lmstudio: coerceLocal('lmstudio'),
     custom: coerceLocal('custom')
   };
-  const rawMobile = (parsed?.mobile ?? {}) as Partial<MobileSettings>;
-  const mobile: MobileSettings = {
-    enabled: typeof rawMobile.enabled === 'boolean' ? rawMobile.enabled : DEFAULTS.mobile.enabled,
-    // Reject anything that isn't a usable TCP port, so a hand-edited settings.json
-    // can't make the bridge fail to bind on every launch. Below 1024 needs root.
-    port:
-      typeof rawMobile.port === 'number' && Number.isInteger(rawMobile.port) && rawMobile.port >= 1024 && rawMobile.port <= 65535
-        ? rawMobile.port
-        : DEFAULTS.mobile.port,
-    publicUrl: coercePublicUrl(rawMobile.publicUrl)
-  };
   return {
     quickChat: {
       shortcut: typeof qc.shortcut === 'string' && qc.shortcut.trim() ? qc.shortcut : null,
@@ -390,27 +362,8 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     onboarding,
     releaseNotes,
     defaults,
-    localProviders,
-    mobile
+    localProviders
   };
-}
-
-/**
- * The settings a phone may see. Built by running a hand-picked slice back
- * through `coerce`, which is what makes the projection FAIL-CLOSED: every field
- * not named here comes back as its default, so a secret added to AppSettings
- * later cannot leak because nobody remembered to strip it. What that keeps off
- * the wire today is `webSearch.credentials`, `retrieval.embeddings.apiKey`,
- * `retrieval.reranker.apiKey` and every `localProviders.*.apiKey` — none of
- * which the phone has any use for.
- *
- * `customInstructions` is the whole of what it does have a use for: the
- * instructions approval sheet shows the standing instructions it is asking
- * about. The return type stays a full AppSettings so the shared renderer code
- * the phone reuses keeps type-checking.
- */
-export function mobileSettingsView(s: AppSettings): AppSettings {
-  return coerce({ customInstructions: s.customInstructions });
 }
 
 export async function readSettings(): Promise<AppSettings> {
@@ -578,16 +531,6 @@ export function updateLocalProvider(id: LocalProviderId, patch: Partial<LocalPro
       ...cur,
       localProviders: { ...cur.localProviders, [id]: { ...cur.localProviders[id], ...patch } }
     });
-    await writeSettings(next);
-    return next;
-  });
-}
-
-/** Patch the phone-bridge settings (enable/port) and persist; returns full settings. */
-export function updateMobileSettings(patch: Partial<MobileSettings>): Promise<AppSettings> {
-  return enqueue(async () => {
-    const cur = await readSettings();
-    const next = coerce({ ...cur, mobile: { ...cur.mobile, ...patch } });
     await writeSettings(next);
     return next;
   });

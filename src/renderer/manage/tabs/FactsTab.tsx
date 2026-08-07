@@ -391,8 +391,8 @@ function tierLabel(t: FactTier): string {
 
 /**
  * The chip a non-active fact wears. 'conflicted' is the store's status name;
- * "conflicting" is the one word the user sees for it everywhere — this chip,
- * mobile's memory peek, and the docs.
+ * "conflicting" is the one word the user sees for it everywhere — this chip and
+ * the docs.
  */
 const FACT_STATUS_LABEL: Record<FactStatus, string> = {
   active: 'active',

@@ -1,4 +1,3 @@
-import { fileURLToPath } from 'node:url';
 import { host } from './host';
 import { startServer } from './index';
 
@@ -22,20 +21,6 @@ import { startServer } from './index';
 // sharing one state root. No TLS, no remote host, no service manager — those are
 // Phase 2, and the loopback-only bind in transport/server.ts is what keeps this
 // from being deployed as if they had already happened.
-
-/**
- * Where the built web bundle lives. The transport serves the phone client out of
- * it; the desktop loads its own copy off disk and never asks the server for one.
- *
- * Derived from this file's own location — as `dist/main/server.js` that is
- * `dist/renderer`, which is where electron-vite puts it — rather than from the
- * working directory, so the server can be started from anywhere. STEM_RENDERER_DIR
- * overrides it for a layout that splits the two.
- */
-function rendererDir(): string {
-  const override = process.env.STEM_RENDERER_DIR?.trim();
-  return override || fileURLToPath(new URL('../renderer', import.meta.url));
-}
 
 async function main(): Promise<void> {
   // Registered BEFORE startServer, which is load-bearing twice over: the host
@@ -68,8 +53,8 @@ async function main(): Promise<void> {
     // Alternate profiles are a desktop affordance (`--fresh` / `--profile`);
     // headless, the state root IS the profile and STEM_STATE_DIR picks it.
     alternateProfile: false,
-    rendererDir: rendererDir(),
-    // No Vite dev server behind a standalone run: it serves the built bundle.
+    // No Vite dev server behind a standalone run, and nothing to serve either:
+    // the transport has no static route since the web client was removed.
     devUrl: null
   });
   shutdown = () => handle.shutdown();

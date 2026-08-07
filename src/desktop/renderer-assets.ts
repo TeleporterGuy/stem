@@ -15,8 +15,8 @@ const distMain = fileURLToPath(new URL('.', import.meta.url));
 /** The sandboxed preload every window shares (CommonJS — sandboxed preloads must be). */
 export const PRELOAD_SCRIPT = join(distMain, '../preload/index.cjs');
 
-/** The built renderer. Also where the phone bridge serves the mobile bundle from. */
-export const RENDERER_DIR = join(distMain, '../renderer');
+/** The built renderer, loaded off this client's own disk and never over the wire. */
+const RENDERER_DIR = join(distMain, '../renderer');
 
 /** Load the renderer into `win`; `surface` selects which one it mounts. */
 export function loadRenderer(win: BrowserWindow, surface?: 'quickchat' | 'hud'): void {

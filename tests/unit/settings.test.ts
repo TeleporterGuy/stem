@@ -7,17 +7,14 @@ import { dirname } from 'node:path';
 import {
   markOnboardingCompleted,
   markReleaseNotesSeen,
-  mobileSettingsView,
   readSettings,
   updateChatsSettings,
-  updateCustomInstructions,
   updateDefaultModel,
   updateEscapeAction,
   updateExecSettings,
   updateLocalProvider,
   updateReleaseNotesSettings,
-  updateRetrievalSettings,
-  updateWebSearch
+  updateRetrievalSettings
 } from '../../src/server/workspace/settings';
 import { settingsStorePath } from '../../src/server/workspace/paths';
 
@@ -390,25 +387,3 @@ describe('chats settings', () => {
   });
 });
 
-describe('mobileSettingsView', () => {
-  it('keeps the custom instructions and rebuilds everything else from defaults', async () => {
-    await updateCustomInstructions({ main: 'be brief' });
-    await updateWebSearch({ provider: 'brave', credentials: { braveApiKey: 'sk-brave' } });
-    await updateRetrievalSettings({ embeddings: { apiKey: 'sk-embed' }, reranker: { apiKey: 'sk-rerank' } });
-    await updateLocalProvider('custom', { enabled: true, baseUrl: 'https://gw.example/v1', apiKey: 'sk-custom' });
-
-    const stored = await readSettings();
-    expect(stored.localProviders.custom.apiKey).toBe('sk-custom'); // the store really holds them
-
-    const view = mobileSettingsView(stored);
-    expect(view.customInstructions).toEqual({ main: 'be brief', quickChat: '' });
-    // Fail-closed by construction: the projection names one field and coerces
-    // the rest back to defaults, so a secret added to AppSettings tomorrow is
-    // stripped by a rule nobody has to remember to write.
-    expect(view.webSearch.credentials).toEqual({});
-    expect(view.retrieval.embeddings.apiKey).toBeNull();
-    expect(view.retrieval.reranker.apiKey).toBeNull();
-    expect(view.localProviders.custom).toEqual({ enabled: false, baseUrl: '' });
-    expect(JSON.stringify(view)).not.toMatch(/sk-/);
-  });
-});

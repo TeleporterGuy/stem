@@ -2,35 +2,37 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { devicesStorePath, mobileTokenPath } from '../workspace/paths';
-import type { DeviceRole } from './roles';
+import { devicesStorePath } from '../workspace/paths';
 
 // Who is allowed to talk to the transport. Two independent gates, because the
 // transport is the first Stem surface reachable from off the machine:
 //
 //   1. A bearer token — 32 random bytes as hex, held in the device registry
-//      (devices.json, 0600) and compared in constant time. A phone pairs by QR
-//      from Settings → Mobile and can be re-rolled from there, which is the whole
-//      revocation story: one re-roll invalidates every paired phone at once.
-//      The desktop's own record is minted by the server at first boot and read
-//      straight off the state root — same machine, same trust boundary, so there
-//      is no pairing step and no QR.
-//   2. A request-origin check — the DNS-rebinding defense. Without it, any page
-//      the phone's browser loads could point a hostname at 127.0.0.1 (or at the
-//      tailnet address) and drive /rpc from inside the browser, with the browser
-//      happily attaching nothing but its own cookies... and, once it has read a
-//      token out of anywhere, everything. Checking the *Host* header against the
-//      hostnames Stem can legitimately be reached under is what actually stops
-//      rebinding: a matching Origin/Host pair proves nothing, since a rebound
-//      attacker controls both. It applies to every role, desktop included.
-//
-// The static bundle is deliberately NOT token-gated: the token arrives in the URL
-// fragment, which browsers never send to the server, so mobile.html has to load
-// before the client knows it. The bundle is not a secret; every capability behind
-// it is. The origin check still applies to it.
+//      (devices.json, 0600) and compared in constant time. The desktop's own
+//      record is minted by the server at first boot and read straight off the
+//      state root — same machine, same trust boundary, so there is no pairing
+//      step. Pairing a device that does NOT share this disk is Phase 2's
+//      one-shot-code flow, and it is what turns this into a real list.
+//   2. A request-origin check — the DNS-rebinding defense. No browser speaks to
+//      this transport any more (the phone's web client was removed with the
+//      phone role), so rebinding has no obvious vehicle today — but the check
+//      costs one header comparison and would be the difference if anything
+//      browser-shaped is ever pointed at Stem again. Checking the *Host* header
+//      against the hostnames Stem can legitimately be reached under is what
+//      actually stops rebinding: a matching Origin/Host pair proves nothing,
+//      since a rebound attacker controls both.
 
 const TOKEN_BYTES = 32;
 const TOKEN_PATTERN = /^[0-9a-f]{64}$/;
+
+/**
+ * What a device is trusted to be. One value, and the field is kept anyway: the
+ * registry has always carried it, dropping a persisted field is a migration in
+ * both directions, and Phase 4's React Native client is the next thing that may
+ * want a narrower one. What it must never again be is a curated allowlist with
+ * no client exercising it — that was `phone`, and it is gone.
+ */
+export type DeviceRole = 'device';
 
 /** A client the transport will answer, and what it is trusted to be. */
 export interface DeviceRecord {
@@ -39,13 +41,13 @@ export interface DeviceRecord {
   /**
    * The bearer token, in plaintext.
    *
-   * Deliberate, not an oversight. Settings → Mobile re-displays the pairing QR
-   * from the stored token whenever the user opens it, so a hash would mean the
-   * only way to ever see a pairing code again is to re-roll — i.e. un-pairing
-   * every phone in order to pair one. The file is 0600 inside the state root,
-   * which already holds settings.json (every API key the user has typed) and pi's
-   * auth.json: anything that can read this can read those. Phase 2 revisits it
-   * alongside real pairing UX, where a one-shot code makes hashing free.
+   * The reason it was plaintext — re-displaying a pairing QR from the stored
+   * token — died with the phone client, so the only thing keeping it readable
+   * now is that nothing has needed to hash it yet. Phase 2's one-shot pairing
+   * codes are what make hashing free (the token is shown once, at pairing, and
+   * never again), and that step replaces this field with `tokenHash`. Until
+   * then: 0600 inside a state root that already holds settings.json and pi's
+   * auth.json — anything that can read this can read those.
    */
   token: string;
   role: DeviceRole;
@@ -73,10 +75,10 @@ let chain: Promise<unknown> = Promise.resolve();
  */
 const LAST_SEEN_WRITE_INTERVAL_MS = 60_000;
 
-function newDevice(role: DeviceRole, label: string, token?: string): DeviceRecord {
+function newDevice(role: DeviceRole, label: string): DeviceRecord {
   return {
     id: randomBytes(8).toString('hex'),
-    token: token ?? randomBytes(TOKEN_BYTES).toString('hex'),
+    token: randomBytes(TOKEN_BYTES).toString('hex'),
     role,
     label,
     createdAt: new Date().toISOString(),
@@ -116,30 +118,21 @@ function parseDevices(raw: string): DeviceRecord[] | null {
   if (!Array.isArray(devices)) return null;
   // A record that isn't well-formed is dropped rather than trusted: a malformed
   // token can only ever lock a device out, and a missing role would be a hole.
-  return devices.filter(
-    (d): d is DeviceRecord =>
-      !!d &&
-      typeof d === 'object' &&
-      typeof (d as DeviceRecord).id === 'string' &&
-      typeof (d as DeviceRecord).token === 'string' &&
-      TOKEN_PATTERN.test((d as DeviceRecord).token) &&
-      ((d as DeviceRecord).role === 'desktop' || (d as DeviceRecord).role === 'phone')
-  );
-}
-
-/**
- * The pre-registry phone token, if this install has one. Reading it is the whole
- * migration: an existing mobile.token becomes a `phone` device record on the very
- * first read of devices.json, so a phone paired before the split keeps working
- * with the token already on it and never sees a pairing prompt.
- */
-async function migratedPhoneToken(): Promise<string | null> {
-  try {
-    const existing = (await readFile(mobileTokenPath(), 'utf8')).trim();
-    return TOKEN_PATTERN.test(existing) ? existing : null;
-  } catch {
-    return null;
-  }
+  //
+  // `phone` records are dropped outright, and that is a security decision rather
+  // than tidying. A phone token used to be constrained by an allowlist; with the
+  // allowlist gone, honouring one would silently promote it to the full registry
+  // — the exact opposite of what pairing a phone once meant. Any phone paired
+  // before this release stops working, which is correct: its client no longer
+  // exists. `desktop` is carried across as the single surviving role.
+  return devices.flatMap((d): DeviceRecord[] => {
+    if (!d || typeof d !== 'object') return [];
+    const record = d as Omit<DeviceRecord, 'role'> & { role?: unknown };
+    if (typeof record.id !== 'string') return [];
+    if (typeof record.token !== 'string' || !TOKEN_PATTERN.test(record.token)) return [];
+    if (record.role !== 'desktop' && record.role !== 'device') return [];
+    return [{ ...record, role: 'device' }];
+  });
 }
 
 async function loadDevices(): Promise<DeviceRecord[]> {
@@ -155,10 +148,8 @@ async function loadDevices(): Promise<DeviceRecord[]> {
   } catch {
     // Absent — first boot, or an install from before the registry existed.
   }
-  const legacy = await migratedPhoneToken();
-  const devices = legacy ? [newDevice('phone', 'Paired phone', legacy)] : [];
-  await writeDevices(devices);
-  return devices;
+  await writeDevices([]);
+  return [];
 }
 
 /** Every registered device. */
@@ -167,11 +158,9 @@ export function readDevices(): Promise<readonly DeviceRecord[]> {
 }
 
 /**
- * The device holding this role, minting and persisting one on first use. Both
- * roles are single-record today: the desktop is this machine, and the phone
- * record is shared by every paired phone (re-rolling it un-pairs all of them at
- * once, which is the documented revocation story). Phase 2's pairing UX is what
- * turns either into a list.
+ * The device holding this role, minting and persisting one on first use. Single
+ * record today: the desktop is this machine, minted off shared disk with no
+ * pairing step. Phase 2's one-shot codes are what turn this into a list.
  */
 export function ensureDevice(role: DeviceRole, label: string): Promise<DeviceRecord> {
   return enqueue(async () => {
@@ -237,16 +226,6 @@ export function forgetCachedDevices(): void {
   cached = null;
 }
 
-/** The phone's bearer token, minting the record on first use. */
-export async function ensurePhoneToken(): Promise<string> {
-  return (await ensureDevice('phone', 'Paired phone')).token;
-}
-
-/** Mint a new phone token, invalidating every paired phone. */
-export async function rerollPhoneToken(): Promise<string> {
-  return (await rerollDeviceToken('phone', 'Paired phone')).token;
-}
-
 /**
  * Constant-time token compare. timingSafeEqual THROWS on a length mismatch, so
  * the lengths are compared first — that leaks only the expected token's length,
@@ -261,25 +240,22 @@ export function tokenEquals(expected: string, presented: string | null | undefin
 }
 
 /**
- * The token a request presents, from `Authorization: Bearer …` or `?token=…`.
+ * The token a request presents: `Authorization: Bearer …`, and nothing else.
  *
- * The query form exists because `EventSource` cannot set request headers — the
- * SSE stream has no other way to authenticate. It never leaves the loopback hop
- * plus the tailnet's TLS tunnel, and it is not logged (server/log.ts records
- * channels and problems, never URLs).
+ * There used to be a `?token=…` fallback, because `EventSource` cannot set
+ * request headers and the phone's SSE stream had no other way in. Every
+ * remaining client speaks node:http and sets the header on /events like any
+ * other request, so the query form had no caller — and it is exactly the shape
+ * that would have written a full-admin credential into a reverse proxy's access
+ * log the moment Phase 2 puts one in front. Removed while nothing depends on it.
  */
-export function presentedToken(headers: IncomingHttpHeaders, url: string | undefined): string | null {
+export function presentedToken(headers: IncomingHttpHeaders): string | null {
   const auth = headers.authorization;
   if (typeof auth === 'string' && /^bearer /i.test(auth)) {
     const value = auth.slice('bearer '.length).trim();
     if (value) return value;
   }
-  try {
-    // Base is a placeholder: request URLs are always origin-relative here.
-    return new URL(url ?? '/', 'http://127.0.0.1').searchParams.get('token');
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 /** What counts as a hostname Stem can legitimately be reached under. */

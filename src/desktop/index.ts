@@ -12,7 +12,7 @@ import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, re
 import { createServerProxy, EXTERNAL_SERVER_URL, type ServerProxy } from './proxy';
 import { readServerCredentials } from './server-endpoint';
 import { createQuickChat } from './quickchat';
-import { loadRenderer, PRELOAD_SCRIPT, RENDERER_DIR } from './renderer-assets';
+import { loadRenderer, PRELOAD_SCRIPT } from './renderer-assets';
 import { initTray } from './tray';
 import { RendererPushQueue } from './ui-lifecycle';
 import type { AppSettings } from '../shared/types';
@@ -267,9 +267,6 @@ const quickChat = createQuickChat({
   // Late-bound: the proxy only exists once the server (embedded or external) has
   // answered, and Quick Chat is created before any of that.
   invoke: (channel, args) => proxy!.invoke(channel, args),
-  claimThread: (threadId) => {
-    void proxy?.invoke('client:claimThread', [threadId]).catch(() => undefined);
-  },
   beginSummon: () => {
     // Cleared on the next tick, after the activation has been handled.
     summoningOverlay = true;
@@ -324,9 +321,6 @@ app.whenReady().then(async () => {
   } else {
     server = await startServer({
       alternateProfile: !!profileOverride,
-      // Serving the phone's bundle out of the same place the desktop renderer is
-      // loaded from keeps the two builds together.
-      rendererDir: RENDERER_DIR,
       devUrl: process.env.ELECTRON_RENDERER_URL ?? null
     });
     endpoint = server.endpoint;

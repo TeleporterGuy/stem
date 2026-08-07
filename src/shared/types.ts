@@ -1526,48 +1526,6 @@ export interface DefaultsSettings {
   model: string | null;
 }
 
-/**
- * The phone bridge: a loopback-only HTTP server that serves Stem's mobile client
- * and proxies an allowlisted slice of the IPC surface to it (fronted by
- * `tailscale serve` so the phone reaches it over the tailnet).
- *
- * Off by default — this is the first Stem surface reachable from off-box, so it
- * is opt-in. The bearer token is NOT here: it lives 0600 in its own file (see
- * mobileTokenPath), because settings.json is rewritten wholesale by many paths.
- */
-export interface MobileSettings {
-  enabled: boolean;
-  /** Loopback port to bind; whatever `tailscale serve` is pointed at. */
-  port: number;
-  /**
-   * The origin `tailscale serve` publishes the bridge under — normally
-   * `https://<machine>.<tailnet>.ts.net`. Empty until the user has run serve and
-   * told Stem the name: nothing on this machine can discover it, and without it
-   * the pairing URL would only be reachable from the Mac itself.
-   */
-  publicUrl: string;
-}
-
-/** Everything the Settings pairing UI needs to render a QR the phone can scan. */
-export interface MobilePairingInfo {
-  enabled: boolean;
-  /** Whether the loopback server is actually listening right now. */
-  running: boolean;
-  port: number;
-  token: string;
-  /**
-   * The URL to put in front of the phone, token in the fragment (fragments are
-   * never sent to a server; the client persists it and strips the hash). This is
-   * the `publicUrl` origin when one is configured, and the loopback URL — which
-   * only works on this Mac — when it isn't.
-   */
-  url: string;
-  /** The same URL on 127.0.0.1, for trying the client in a browser at the desk. */
-  loopbackUrl: string;
-  /** Whether `url` is the tailnet one, i.e. whether a phone can actually open it. */
-  reachable: boolean;
-}
-
 export interface AppSettings {
   quickChat: QuickChatSettings;
   webSearch: WebSearchSettings;
@@ -1590,8 +1548,6 @@ export interface AppSettings {
   defaults: DefaultsSettings;
   /** Local model servers (Ollama, LM Studio) registered with the chat backend. */
   localProviders: LocalProvidersSettings;
-  /** The phone bridge (loopback HTTP server + mobile client); off by default. */
-  mobile: MobileSettings;
 }
 
 /**
@@ -1975,15 +1931,6 @@ export interface StemApi {
   respondExecApproval(id: string, decision: ExecDecision): Promise<void>;
   /** Update the embeddings/reranker retrieval endpoints (deep-merged per stage). */
   updateRetrievalSettings(patch: PartialRetrievalSettings): Promise<AppSettings>;
-  /**
-   * Turn the phone bridge on/off or move its port. Applied immediately: the
-   * loopback server starts, stops or rebinds before this resolves.
-   */
-  updateMobileSettings(patch: Partial<MobileSettings>): Promise<AppSettings>;
-  /** Everything the pairing panel shows: the URL to open, the token, and liveness. */
-  getMobilePairing(): Promise<MobilePairingInfo>;
-  /** Mint a new bearer token, un-pairing every phone. Returns the new pairing info. */
-  rerollMobileToken(): Promise<MobilePairingInfo>;
   /** Live-probe a retrieval endpoint with the current settings (Settings "Test" button). */
   testRetrievalEndpoint(stage: RetrievalStage): Promise<RetrievalTestResult>;
   /** Everything the toolbar activity indicator shows: in-flight runs plus recent history. */

@@ -74,7 +74,7 @@ export const EXTERNAL_SERVER_URL = process.env.STEM_SERVER_URL?.trim() || null;
  */
 const RPC_TIMEOUT_MS = 10 * 60_000;
 
-/** Reconnect backoff for the event stream, ported from renderer/mobile/transport.ts. */
+/** Reconnect backoff for the event stream. */
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS = 10_000;
 

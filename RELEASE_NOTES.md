@@ -35,6 +35,14 @@ Maintainer notes:
   thread, so you can tell what's waiting without opening it. Settings → Chats sets how many lines,
   or none at all.
 
+### Removed
+
+- **The phone client is gone, for now.** Settings → Mobile, the pairing QR and the web app you
+  opened on your phone have all been removed, and a phone you had paired stops working — its
+  pairing code no longer opens anything. The reason is what comes next: Stem's brain is moving to
+  a server you can reach from anywhere, and the phone app that talks to it is being built properly
+  rather than kept limping in the meantime. Nothing about Stem at the desk changes.
+
 ## 0.3.0 — 2026-08-04
 
 ### Added

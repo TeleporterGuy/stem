@@ -24,7 +24,6 @@ import type {
   McpServerStatus,
   MemoryModelSettings,
   MemoryRebuildStatus,
-  MobileSettings,
   WebSearchSettings,
   PartialRetrievalSettings,
   ReleaseNotesSettings,
@@ -287,9 +286,6 @@ const api: StemApi = {
   updateChatsSettings: (patch: Partial<ChatsSettings>) => ipcRenderer.invoke('settings:updateChats', patch),
   updateRetrievalSettings: (patch: PartialRetrievalSettings) =>
     ipcRenderer.invoke('settings:updateRetrieval', patch),
-  updateMobileSettings: (patch: Partial<MobileSettings>) => ipcRenderer.invoke('settings:updateMobile', patch),
-  getMobilePairing: () => ipcRenderer.invoke('mobile:pairingInfo'),
-  rerollMobileToken: () => ipcRenderer.invoke('mobile:rerollToken'),
   testRetrievalEndpoint: (stage: RetrievalStage) => ipcRenderer.invoke('settings:testRetrieval', stage),
   getActivity: () => ipcRenderer.invoke('activity:snapshot'),
   onActivity: (listener: (snapshot: ActivitySnapshot) => void) => {
