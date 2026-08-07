@@ -424,9 +424,36 @@ export function ChatList(props: ChatListProps) {
   const targets = (threadId: string): string[] =>
     selected.has(threadId) ? [...selected] : [threadId];
 
+  /**
+   * Auto-advance: triaging the thread you are reading moves you on to the next
+   * one waiting, so an Inbox can be emptied without a trip back to the list
+   * between every row. When nothing is left to advance to, you get a new chat —
+   * an empty Inbox should leave you ready to write, not staring at a thread you
+   * have just dealt with.
+   *
+   * Only fires when the active thread is one of the ones being triaged: archiving
+   * some other row is housekeeping, and must not yank you out of what you are
+   * reading. Only leaving the Inbox counts — un-snoozing or restoring a thread is
+   * how you go *to* it.
+   */
+  const advanceAfter = (threadIds: string[]) => {
+    if (!activeThreadId || !threadIds.includes(activeThreadId)) return;
+    const going = new Set(threadIds);
+    const order = buckets.inbox.map((c) => c.threadId);
+    const from = order.indexOf(activeThreadId);
+    // The row below, as drawn — then the row above, so triaging the last thread
+    // in the list doesn't fall straight through to a new chat.
+    const next =
+      order.slice(from + 1).find((id) => !going.has(id)) ??
+      [...order.slice(0, Math.max(from, 0))].reverse().find((id) => !going.has(id));
+    if (next) onOpen(next);
+    else props.onNewChat(null);
+  };
+
   const archive = (threadIds: string[], archived: boolean) => {
     props.onArchive(threadIds, archived);
     clearSelection();
+    if (archived) advanceAfter(threadIds);
   };
   const openSnooze = (ids: string[], e: React.MouseEvent) => {
     e.preventDefault();
@@ -912,6 +939,7 @@ export function ChatList(props: ChatListProps) {
             props.onSnooze(snoozing.ids, until);
             setSnoozing(null);
             clearSelection();
+            if (until !== null) advanceAfter(snoozing.ids);
           }}
           onClose={() => setSnoozing(null)}
         />

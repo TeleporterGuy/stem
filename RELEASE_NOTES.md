@@ -23,7 +23,9 @@ Maintainer notes:
   and archived threads sit in groups at the foot of the list, snoozed ones showing the time they
   come back, and anything new in a snoozed or archived thread brings it straight back to the Inbox.
   Archiving only affects the Inbox: the thread stays exactly where it was in your folders and still
-  turns up in search. Hold ⌘ to pick several threads and archive or snooze them in one go.
+  turns up in search. Hold ⌘ to pick several threads and archive or snooze them in one go. Dealing
+  with the thread you're reading moves you straight on to the next one waiting — and to a new chat
+  when there's nothing left, so an empty Inbox leaves you ready to write.
 - **Chats name themselves properly.** Instead of taking the first line of whatever you typed, Stem
   writes each new chat a short subject from your opening message — and uses it as the chat's name,
   so the list, search and the window title all agree. A name you type yourself is never overwritten,

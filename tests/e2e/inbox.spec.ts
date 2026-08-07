@@ -93,6 +93,41 @@ test('archiving moves a thread out of the Inbox but leaves it in the Chats tree'
   await expect(mainWindow.locator('.chat-row')).toHaveCount(2);
 });
 
+test('triaging the thread you are reading advances to the next one', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await newThread(mainWindow, 'beta');
+
+  // Rows are newest-first, so beta is both the open thread and the top row.
+  const beta = row(mainWindow, 'beta');
+  await beta.hover();
+  await beta.getByRole('button', { name: 'Archive' }).click();
+
+  await expect(row(mainWindow, 'alpha')).toHaveClass(/selected/);
+  await expect(mainWindow.locator('.message-user').last()).toContainText('alpha');
+
+  // Snoozing the one you land on advances the same way — and there is nothing
+  // left to advance to, so you end up in a new chat, ready to write.
+  const alpha = row(mainWindow, 'alpha');
+  await alpha.hover();
+  await alpha.getByRole('button', { name: 'Snooze' }).click();
+  await mainWindow.getByRole('button', { name: /Next week/ }).click();
+
+  await expect(mainWindow.locator('.message-user')).toHaveCount(0);
+  await expect(mainWindow.locator('.chat-row.selected')).toHaveCount(0);
+});
+
+test('triaging a row you are not reading leaves the open thread alone', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await newThread(mainWindow, 'beta');
+
+  const alpha = row(mainWindow, 'alpha');
+  await alpha.hover();
+  await alpha.getByRole('button', { name: 'Archive' }).click();
+
+  await expect(row(mainWindow, 'beta')).toHaveClass(/selected/);
+  await expect(mainWindow.locator('.message-user').last()).toContainText('beta');
+});
+
 test('an archived thread can be moved back to the Inbox', async ({ mainWindow }) => {
   await send(mainWindow, 'alpha');
 
