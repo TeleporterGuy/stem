@@ -404,6 +404,46 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .empty-starter:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--shadow-focus); }
 .empty-starter:disabled { opacity: 0.5; cursor: default; }
 
+/* One rotating tip under the starters. Quieter than the cards on purpose — it
+   teaches, it doesn't ask to be clicked — and centred as a block so the icon and
+   the cycle button ride with the text instead of pinning to the measure edges. */
+.empty-tip {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: var(--sp-3);
+  margin: 18px auto 0;
+  max-width: 560px;
+  text-align: left;
+  font-size: var(--fs-12);
+  line-height: 1.5;
+  opacity: 0.85;
+}
+.empty-tip p { margin: 0; }
+.empty-tip .kbd { margin-right: var(--sp-3); transform: translateY(1px); }
+.empty-tip-icon { flex: none; transform: translateY(2px); color: var(--muted); }
+.empty-tip-next {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.45;
+  transform: translateY(2px);
+  transition: opacity var(--motion-med) ease, color var(--motion-med) ease;
+}
+.empty-tip:hover .empty-tip-next,
+.empty-tip-next:focus-visible { opacity: 1; }
+.empty-tip-next:hover { color: var(--ink); }
+.empty-tip-next:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+@media (prefers-reduced-motion: reduce) {
+  .empty-tip-next { transition: none; }
+}
+
 /* message rows with an avatar gutter */
 .message { display: flex; gap: var(--sp-6); margin-bottom: 20px; }
 .msg-avatar {

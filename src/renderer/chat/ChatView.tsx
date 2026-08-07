@@ -30,6 +30,7 @@ import { HoverTip } from '../ui/InfoTip';
 import { MdxActionContext } from '../mdx/ActionContext';
 import { useAutoHideScroll } from '../hooks/useAutoHideScroll';
 import { EFFORT_LABELS } from '../modelLabels';
+import { EmptyTips } from './EmptyTips';
 
 const AVATAR: Record<ChatMessage['role'], { cls: string; icon: ReactNode; label: string }> = {
   user: { cls: 'you', icon: <User size={15} />, label: 'You' },
@@ -611,6 +612,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                 </button>
               ))}
             </div>
+            <EmptyTips format={format} model={model} />
             {draftFolderName && (
               <p className="empty-folder">This chat will be saved in “{draftFolderName}”.</p>
             )}

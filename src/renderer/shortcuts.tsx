@@ -75,15 +75,23 @@ export const BINDINGS: Binding[] = [
   { id: 'send', glyphs: IS_MAC ? '⏎' : 'Enter', match: null }
 ];
 
+/** Keycap glyphs for a binding, already platform-formatted ('⌘N' / 'Ctrl+N'). */
+export function glyphsFor(id: ShortcutId): string | null {
+  return BINDINGS.find((b) => b.id === id)?.glyphs ?? null;
+}
+
 type Handler = () => void;
 
 interface ShortcutsCtx {
+  /** False under the default context — i.e. no provider, so no shortcut works here. */
+  bound: boolean;
   hintMode: boolean;
   register: (id: ShortcutId, handler: Handler) => void;
   unregister: (id: ShortcutId) => void;
 }
 
 const NOOP: ShortcutsCtx = {
+  bound: false,
   hintMode: false,
   register: () => {},
   unregister: () => {}
@@ -158,7 +166,7 @@ export function ShortcutsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const api = useMemo<ShortcutsCtx>(
-    () => ({ hintMode, register, unregister }),
+    () => ({ bound: true, hintMode, register, unregister }),
     [hintMode, register, unregister]
   );
 
@@ -174,6 +182,15 @@ export function useShortcut(id: ShortcutId, handler: Handler) {
     register(id, () => ref.current());
     return () => unregister(id);
   }, [id, register, unregister]);
+}
+
+/**
+ * Whether shortcuts are live in this window. False in Quick Chat, which mounts no
+ * provider — so surfaces that *advertise* shortcuts (rather than merely decorating
+ * a control that works either way) can stay quiet there.
+ */
+export function useShortcutsBound(): boolean {
+  return useContext(Ctx).bound;
 }
 
 /** A keycap, e.g. ⌘N. */
