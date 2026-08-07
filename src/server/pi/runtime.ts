@@ -43,6 +43,7 @@ import { log } from '../log';
 import { isContextOverflowError } from '../backend/overflow';
 import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
+import { previewText } from '../chats/preview';
 import { autoTitle, writeSubject } from '../chats/subject';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
 import { buildRecallContext, type RecallTimings } from '../recall/inject';
@@ -165,11 +166,6 @@ function scheduledPreamble(at: string): string {
     SCHED_CLOSE
   ].join('\n');
 }
-
-// How much of the newest message rides along in a ChatSummary as the Inbox's
-// preview. Two lines in a sidebar is nowhere near this; the slack is for the
-// leading whitespace/markdown the renderer clamps away.
-const MAX_PREVIEW = 200;
 
 // Argument keys a built-in file tool (read/grep/find/ls/edit/write) carries its
 // target path under. Probed on the raw pi event for the memory-taint check.
@@ -2818,7 +2814,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    *
    * Tool calls and tool results are skipped: they're how the answer was reached,
    * not the answer. Injected context and citation markers go through the same
-   * stripper the transcript uses, so a preview never leaks a recall block.
+   * stripper the transcript uses, so a preview never leaks a recall block, and
+   * the Markdown comes off on the way out — the row is a plain-text span.
    */
   private previewOf(lines: string[]): string {
     for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -2832,9 +2829,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       if (entry.type !== 'message') continue;
       const role = entry.message?.role;
       if (role !== 'user' && role !== 'assistant') continue;
-      const text = this.contentToParts(entry.message?.content).text.replace(/\s+/g, ' ').trim();
+      const text = previewText(this.contentToParts(entry.message?.content).text);
       if (!text) continue;
-      return text.length > MAX_PREVIEW ? `${text.slice(0, MAX_PREVIEW - 1).trimEnd()}…` : text;
+      return text;
     }
     return '';
   }

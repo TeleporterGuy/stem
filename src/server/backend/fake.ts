@@ -11,6 +11,7 @@ import type {
   StartTurnResult
 } from '../../shared/types';
 import { readTasks } from '../workspace/tasks';
+import { previewText } from '../chats/preview';
 import { autoTitle, writeSubject } from '../chats/subject';
 
 // Hermetic ChatBackend for STEM_E2E runs: the full turn lifecycle — send →
@@ -197,10 +198,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     const rows: ChatSummary[] = [...this.threads.entries()]
       .filter(([, t]) => t.listed)
       .map(([threadId, t]) => {
-        // Same rule as the pi runtime: the newest thing said in the thread,
-        // whitespace-collapsed, so Inbox previews render under the E2E seam too.
-        const last = t.messages[t.messages.length - 1]?.content ?? '';
-        const preview = last.replace(/\s+/g, ' ').trim().slice(0, 200);
+        // Same rule as the pi runtime, through the same stripper: the newest
+        // thing said in the thread, as plain text, so Inbox previews render
+        // under the E2E seam too.
+        const preview = previewText(t.messages[t.messages.length - 1]?.content ?? '');
         return {
           threadId,
           title: t.title || 'New chat',
