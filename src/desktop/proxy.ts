@@ -1,6 +1,7 @@
 import { request as httpRequest } from 'node:http';
 import { log } from '../server/log';
-import type { AppSettings, BackendEventEnvelope, QuickChatSettings } from '../shared/types';
+import type { BackendEventEnvelope, QuickChatSettings } from '../shared/types';
+import { updateClientQuickChat, withClientSettings } from './settings';
 
 // The desktop's half of the wire. Everything the renderer asks for that this
 // machine cannot answer itself leaves through here as `POST /rpc`, and everything
@@ -25,6 +26,13 @@ import type { AppSettings, BackendEventEnvelope, QuickChatSettings } from '../sh
 //   client:info                                  this client's device id and where
 //                                                it is connected — the server has
 //                                                no notion of who is calling
+//   client:pair, client:useBuiltIn               changing which server this client
+//                                                talks to. Answered here for the
+//                                                obvious reason: the server being
+//                                                replaced cannot broker it
+//   releaseNotes:get, releaseNotes:markSeen,     the "what's new" popup, decided
+//   settings:updateReleaseNotes                  from the version installed HERE
+//                                                and the notes shipped beside it
 //   dialog:openFiles, dialog:openDirectory       native pickers
 //   files:reveal, files:preview                  shell.showItemInFolder; preview
 //                                                reads an image path that, by
@@ -43,10 +51,10 @@ import type { AppSettings, BackendEventEnvelope, QuickChatSettings } from '../sh
 //
 //   They live in desktop/local/, desktop/quickchat/ and desktop/ipc-bridge.ts.
 //
-// WRAPPED — client behavior AND a server call, in a fixed order. There are two,
-// and they are declared as data below rather than special-cased at the call site
-// on purpose: an ad-hoc `if (channel === …)` in the invoke path is how a fourth
-// and fifth one appear without anybody deciding to add them.
+// WRAPPED — client behavior AND a server call, in a fixed order. They are
+// declared as data below rather than special-cased at the call site on purpose:
+// an ad-hoc `if (channel === …)` in the invoke path is how the next one appears
+// without anybody deciding to add it.
 //
 //   chats:open                 the sidebar opening the overlay's live thread is an
 //                              implicit hand-off. It runs HERE and FIRST — capture
@@ -55,10 +63,18 @@ import type { AppSettings, BackendEventEnvelope, QuickChatSettings } from '../sh
 //                              only then is the open forwarded. Refusing it throws
 //                              before anything is sent, which is how its two error
 //                              strings still reach the renderer unchanged.
-//   settings:updateQuickChat   forward first so the write lands, then re-register
-//                              the global accelerator and re-cache the overlay's
-//                              preferences from the settings that came back. The
-//                              accelerator is a grab on an OS, not a setting.
+//   every settings:* channel   they all answer with the WHOLE settings document,
+//   + auth:completeOnboarding  and part of that document lives on this machine
+//                              (see ./settings.ts). So every one of them is
+//                              merged on the way back — not just settings:get,
+//                              or the next unrelated toggle would hand the
+//                              renderer a document with the hotkey reset.
+//   settings:updateQuickChat   the same merge, plus the two things that are not
+//                              settings once they leave the file: the global
+//                              accelerator (a grab on an OS) and the overlay's
+//                              cached preferences. The machine's half of the
+//                              patch is stored only after the server's half has
+//                              landed, so a failed call changes neither side.
 //
 // SERVER-OWNED — everything else (~110 channels). The server's registry IS the
 // surface; this client asks for it at connect time (GET /channels) rather than
@@ -84,12 +100,33 @@ const RECONNECT_MAX_MS = 10_000;
 /**
  * A channel with behavior on both sides of the wire. `before` runs on this
  * machine and can refuse the call by throwing; `after` runs once the server has
- * answered, with what it answered.
+ * answered, with what it answered, and anything it returns REPLACES that answer
+ * on the way to the renderer (return nothing to leave it alone).
  */
 export interface WrappedChannel {
   before?: (args: unknown[]) => Promise<void> | void;
-  after?: (args: unknown[], result: unknown) => void;
+  after?: (args: unknown[], result: unknown) => unknown;
 }
+
+const mergeSettingsAnswer: WrappedChannel = { after: (_args, result) => withClientSettings(result) };
+
+/**
+ * Channels whose answer is the entire settings document, and which therefore all
+ * need this machine's half merged back into it. `settings:updateQuickChat` is
+ * absent because it has more to do than merge, and gets its own entry below.
+ */
+const SETTINGS_CHANNELS = [
+  'settings:get',
+  'auth:completeOnboarding',
+  'settings:updateWebSearch',
+  'settings:updateEscapeAction',
+  'settings:updateMemory',
+  'settings:updateSkills',
+  'settings:updateChats',
+  'settings:updateExec',
+  'settings:updateCustomInstructions',
+  'settings:updateRetrieval'
+];
 
 export interface ProxyDeps {
   /** Origin of the server, e.g. `http://127.0.0.1:52413`. */
@@ -131,9 +168,15 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     'chats:open': {
       before: ([threadId]) => deps.threadOpened(threadId as string)
     },
+    ...Object.fromEntries(SETTINGS_CHANNELS.map((c) => [c, mergeSettingsAnswer])),
     'settings:updateQuickChat': {
-      after: ([patch], result) =>
-        deps.applyQuickChatSettings(patch as Partial<QuickChatSettings>, (result as AppSettings).quickChat)
+      after: async ([patch], result) => {
+        const p = patch as Partial<QuickChatSettings>;
+        await updateClientQuickChat(p);
+        const next = await withClientSettings(result);
+        deps.applyQuickChatSettings(p, next.quickChat);
+        return next;
+      }
     }
   };
 
@@ -176,8 +219,9 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     // Quick Chat hand-off cancel the open it was called for.
     if (hooks?.before) await hooks.before(args);
     const result = await post(channel, args);
-    hooks?.after?.(args, result);
-    return result;
+    if (!hooks?.after) return result;
+    const replacement = await hooks.after(args, result);
+    return replacement === undefined ? result : replacement;
   }
 
   // ---- GET /events ----

@@ -99,7 +99,15 @@ test('deltas reach the renderer fast enough — embedded server', async ({ mainW
 });
 
 test('deltas reach the renderer fast enough — external stem-server', async () => {
-  const launched = await launchApp({ externalServer: true });
+  // A separately-started server has already counted onboarding done by the time
+  // the app connects, so this app is a brand-new client of an established Stem —
+  // which is owed one "what's new" for the build it is running, and a modal over
+  // the composer would be measured as latency. Same seed external-server.spec
+  // uses, for the same reason.
+  const launched = await launchApp({
+    externalServer: true,
+    seedSettings: { releaseNotes: { showOnUpdate: false, lastSeenVersion: null } }
+  });
   try {
     const win = await mainWindowOf(launched.app);
     await win.waitForLoadState('domcontentloaded');

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { AppSettings, ExecApprovalRequest, ExecDecision, ExecSettings, ModelSummary } from '../../shared/types';
+import type { ExecApprovalRequest, ExecDecision, ExecSettings, ModelSummary, ServerSettings } from '../../shared/types';
 import type { ChatBackend, ExecBridge, ExecBridgeResult, ExecRequest } from '../backend/types';
 import { log } from '../log';
 import { execWorkspaceDir } from '../workspace/paths';
@@ -44,8 +44,8 @@ const MAX_CONCURRENT = 2;
 
 export interface ExecServiceDeps {
   runtime: () => ChatBackend;
-  readSettings: () => Promise<AppSettings>;
-  updateExecSettings: (patch: Partial<ExecSettings>) => Promise<AppSettings>;
+  readSettings: () => Promise<ServerSettings>;
+  updateExecSettings: (patch: Partial<ExecSettings>) => Promise<ServerSettings>;
   /** Surface a pending approval to the renderer(s). */
   emitApprovalRequest: (request: ExecApprovalRequest) => void;
   /** Tell the renderer(s) a pending approval was answered or expired. */

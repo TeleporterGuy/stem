@@ -2,18 +2,17 @@
 // userData path from the electron stub. Focuses on the escapeAction field:
 // persistence round-trip and the coerce fallback for missing/garbage values.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   markOnboardingCompleted,
-  markReleaseNotesSeen,
   readSettings,
   updateChatsSettings,
   updateDefaultModel,
   updateEscapeAction,
   updateExecSettings,
   updateLocalProvider,
-  updateReleaseNotesSettings,
+  updateQuickChat,
   updateRetrievalSettings
 } from '../../src/server/workspace/settings';
 import { settingsStorePath } from '../../src/server/workspace/paths';
@@ -78,32 +77,59 @@ describe('onboarding + default-model settings', () => {
   });
 });
 
-describe('release-notes settings', () => {
-  it('defaults to on with nothing seen', async () => {
+describe('the fields a machine owns rather than Stem', () => {
+  // The Quick Chat hotkey, the overlay's two visibility flags and the whole
+  // "what's new" block moved to client.json in Phase 2 (see client-settings.test.ts).
+  // What settings.json must still do is read a file that has them without
+  // tripping, and stop carrying them forward — a settings.json written before the
+  // split is what every existing install has.
+  const LEGACY = {
+    quickChat: {
+      shortcut: 'Alt+Space',
+      showOnAllDisplays: false,
+      followAcrossSpaces: false,
+      defaultEffort: 'high'
+    },
+    releaseNotes: { showOnUpdate: false, lastSeenVersion: '0.2.0' }
+  };
+
+  it('parses a pre-split settings.json and keeps the fields that are still Stem\'s', async () => {
+    writeFileSync(path, JSON.stringify(LEGACY));
     const s = await readSettings();
-    expect(s.releaseNotes).toEqual({ showOnUpdate: true, lastSeenVersion: null });
+    expect(s.quickChat.defaultEffort).toBe('high');
+    expect(s).not.toHaveProperty('releaseNotes');
+    expect(Object.keys(s.quickChat).sort()).toEqual([
+      'defaultEffort',
+      'defaultModel',
+      'defaultServiceTier',
+      'finishSound',
+      'newThreadTimeoutMs'
+    ]);
   });
 
-  it('seeds the seen-marker when onboarding completes, so a new user gets no popup', async () => {
-    // '0.0.0' is the electron stub's app.getVersion().
-    expect((await markOnboardingCompleted()).releaseNotes.lastSeenVersion).toBe('0.0.0');
+  it('sheds them on the next write instead of persisting a value nobody reads', async () => {
+    writeFileSync(path, JSON.stringify(LEGACY));
+    await updateEscapeAction('single');
+    const onDisk = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    expect(onDisk.releaseNotes).toBeUndefined();
+    expect(onDisk.quickChat).not.toHaveProperty('shortcut');
   });
 
-  it('does not move a marker that already exists', async () => {
-    await markReleaseNotesSeen('0.2.0');
-    expect((await markOnboardingCompleted()).releaseNotes.lastSeenVersion).toBe('0.2.0');
+  it('accepts a patch carrying them and simply does not store them', async () => {
+    // The client sends the user's whole Quick Chat patch; deciding what belongs
+    // in this file is `coerce`'s job and nobody else's.
+    const next = await updateQuickChat({ shortcut: 'Alt+Space', finishSound: true });
+    expect(next.quickChat.finishSound).toBe(true);
+    expect(next.quickChat).not.toHaveProperty('shortcut');
   });
 
-  it('round-trips the preference and the marker', async () => {
-    expect((await updateReleaseNotesSettings({ showOnUpdate: false })).releaseNotes.showOnUpdate).toBe(false);
-    expect((await markReleaseNotesSeen('1.4.2')).releaseNotes.lastSeenVersion).toBe('1.4.2');
-    const s = await readSettings();
-    expect(s.releaseNotes).toEqual({ showOnUpdate: false, lastSeenVersion: '1.4.2' });
-  });
-
-  it('coerces garbage back to defaults', async () => {
-    writeFileSync(path, JSON.stringify({ releaseNotes: { showOnUpdate: 'yes', lastSeenVersion: 'v-next' } }));
-    expect((await readSettings()).releaseNotes).toEqual({ showOnUpdate: true, lastSeenVersion: null });
+  it('no longer touches the seen-marker when onboarding completes', async () => {
+    // The marker is a client's now — the version it records is the version
+    // installed on that machine — so the seeding rides the same channel from the
+    // other side of the wire.
+    const s = await markOnboardingCompleted();
+    expect(s.onboarding.completed).toBe(true);
+    expect(s).not.toHaveProperty('releaseNotes');
   });
 });
 

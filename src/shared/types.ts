@@ -1248,6 +1248,20 @@ export interface QuickChatShortcutStatus {
 }
 
 /**
+ * The Quick Chat settings that describe a MACHINE rather than Stem.
+ *
+ * A hotkey is a grab on somebody's keyboard and the two visibility flags are
+ * about where a window sits among that machine's Spaces and displays — none of
+ * them mean anything on a server, and a second paired Mac must be free to
+ * disagree about all three. So they are stored on the client and merged into
+ * {@link AppSettings} on the way to the renderer (src/desktop/settings.ts).
+ */
+export type ClientQuickChatSettings = Pick<
+  QuickChatSettings,
+  'shortcut' | 'showOnAllDisplays' | 'followAcrossSpaces'
+>;
+
+/**
  * Web search, toggled independently per context and available on EVERY provider.
  *
  * Search used to be an openai-codex-only trick (Stem injected the provider's own
@@ -1551,6 +1565,34 @@ export interface AppSettings {
 }
 
 /**
+ * The half of {@link AppSettings} a SERVER keeps — which is all of it except the
+ * parts that describe a machine. This is the shape of settings.json now, and the
+ * shape every `settings:*` channel answers with on the wire.
+ *
+ * The renderer never sees it: the client merges its own half back in before the
+ * document reaches a window, so `window.stem.getSettings()` still resolves to a
+ * whole {@link AppSettings} and no call site knows the split happened.
+ */
+export interface ServerSettings extends Omit<AppSettings, 'quickChat' | 'releaseNotes'> {
+  quickChat: Omit<QuickChatSettings, keyof ClientQuickChatSettings>;
+}
+
+/**
+ * The other half: what THIS machine keeps for itself, in client.json beside its
+ * device token.
+ *
+ * Both entries are here for the same reason. The hotkey and the overlay's
+ * visibility flags act on this machine's keyboard and displays; the "what's new"
+ * marker tracks the version of the app *installed here*, which two clients of one
+ * server are free to differ on — a Mac still on 0.3.0 must not be told it has
+ * already seen 0.4.0's notes because another one has.
+ */
+export interface ClientSettings {
+  quickChat: ClientQuickChatSettings;
+  releaseNotes: ReleaseNotesSettings;
+}
+
+/**
  * A prompt the overlay runs itself (via `runQuickChat`). The overlay owns its
  * conversation, so it passes its current `threadId` for follow-up turns; omit it
  * (or after a New-thread / inactivity reset) to start a fresh thread.
@@ -1671,6 +1713,18 @@ export interface ClientInfo {
   serverUrl: string;
   /** False when the server runs in this very process (the default install). */
   remote: boolean;
+  /**
+   * The server this client is CONFIGURED to use; null = the one it starts itself.
+   * Differs from `serverUrl` exactly when the address was changed since launch —
+   * which is what Settings → Server reads to say "restart to apply".
+   */
+  configuredUrl: string | null;
+  /**
+   * True when STEM_SERVER_URL pinned the address for this launch. The override
+   * outranks anything stored, so the Server pane shows what is in force and
+   * declines to write a setting that would not be read.
+   */
+  pinnedByEnv: boolean;
 }
 
 // ---- Preload API surface exposed on window.stem ----
@@ -1943,6 +1997,15 @@ export interface StemApi {
   createPairingCode(label: string): Promise<PairingCodeInfo>;
   /** This client's own identity and connection — answered without the wire. */
   clientInfo(): Promise<ClientInfo>;
+  /**
+   * Point this client at `url`, spending `code` to get a credential for it.
+   * Takes effect on the next launch: the event stream, the bound channel list and
+   * every cached surface hang off the connection made at startup, so there is
+   * nothing honest to do with a new address until Stem restarts.
+   */
+  pairWithServer(url: string, code: string): Promise<ClientInfo>;
+  /** Forget the configured server (and its credential) and go back to the built-in one. */
+  useBuiltInServer(): Promise<ClientInfo>;
 
   /** Set the model used for memory distillation/tidy-up ({ model: null } = default). */
   updateMemorySettings(patch: Partial<MemoryModelSettings>): Promise<AppSettings>;

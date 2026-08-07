@@ -26,6 +26,11 @@ import { hasLocalHandler, registerServer, serverChannels } from '../../src/serve
  */
 const CLIENT_OWNED = [
   'client:info',
+  'client:pair',
+  'client:useBuiltIn',
+  'releaseNotes:get',
+  'releaseNotes:markSeen',
+  'settings:updateReleaseNotes',
   'dialog:openFiles',
   'dialog:openDirectory',
   'files:reveal',

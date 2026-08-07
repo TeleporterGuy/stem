@@ -45,9 +45,14 @@ export interface LaunchOptions {
    *  loads them at start() — the only way to seed the subsystem (creation is
    *  otherwise driven by the assistant's tool through a live backend turn). */
   seedTasks?: ScheduledTask[];
-  /** Partial settings.json written BEFORE launch, so the app starts as an
-   *  existing install would (onboarding already done, a release-notes marker,
-   *  …). Coerced by the settings store on read, so a partial object is fine. */
+  /** Partial settings written BEFORE launch, so the app starts as an existing
+   *  install would (onboarding already done, a release-notes marker, …). Coerced
+   *  by the stores on read, so a partial object is fine.
+   *
+   *  Written as ONE object even though it lands in two files: Phase 2 moved the
+   *  Quick Chat hotkey, the overlay's visibility flags and the "what's new"
+   *  marker into the client's own client.json, and splitAcrossStores below is
+   *  where a spec stops having to care which is which. */
   seedSettings?: Record<string, unknown>;
   /** Force real/hermetic backend regardless of STEM_E2E_REAL (default: follow env). */
   real?: boolean;
@@ -69,8 +74,42 @@ export interface LaunchedApp {
   userDataDir: string;
   tasksStorePath: string;
   settingsStorePath: string;
+  /** client.json: this machine's identity and the settings that belong to it. */
+  clientStorePath: string;
   /** The separately-started server, when `externalServer` asked for one. */
   server: StemServerProcess | null;
+}
+
+/** The Quick Chat fields a machine owns — see ClientSettings in shared/types.ts. */
+const CLIENT_QUICK_CHAT_KEYS = ['shortcut', 'showOnAllDisplays', 'followAcrossSpaces'];
+
+/**
+ * Sort a seed into the file that will actually be read for each key. Mirrors
+ * src/desktop/settings.ts, and deliberately keeps the seed's own shape: a spec
+ * says what an install looks like, not where Stem happens to keep it.
+ */
+function splitAcrossStores(seed: Record<string, unknown>): {
+  server: Record<string, unknown>;
+  client: Record<string, unknown> | null;
+} {
+  const { quickChat, releaseNotes, ...rest } = seed as {
+    quickChat?: Record<string, unknown>;
+    releaseNotes?: unknown;
+  };
+  const server: Record<string, unknown> = { ...rest };
+  const clientQuickChat: Record<string, unknown> = {};
+  if (quickChat) {
+    const serverQuickChat: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(quickChat)) {
+      if (CLIENT_QUICK_CHAT_KEYS.includes(k)) clientQuickChat[k] = v;
+      else serverQuickChat[k] = v;
+    }
+    if (Object.keys(serverQuickChat).length) server.quickChat = serverQuickChat;
+  }
+  const client: Record<string, unknown> = {};
+  if (Object.keys(clientQuickChat).length) client.quickChat = clientQuickChat;
+  if (releaseNotes !== undefined) client.releaseNotes = releaseNotes;
+  return { server, client: Object.keys(client).length ? client : null };
 }
 
 /** Launch the built app with fully isolated state. Seeds the tasks store first
@@ -81,10 +120,17 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
   const userDataDir = mkdtempSync(join(tmpdir(), 'stem-e2e-'));
   const tasksStorePath = join(userDataDir, 'tasks.json');
   const settingsStore = join(userDataDir, 'settings.json');
+  const clientStore = join(userDataDir, 'client.json');
   if (opts.seedTasks) {
     writeFileSync(tasksStorePath, JSON.stringify({ version: 1, tasks: opts.seedTasks }, null, 2));
   }
-  if (opts.seedSettings) writeFileSync(settingsStore, JSON.stringify(opts.seedSettings, null, 2));
+  if (opts.seedSettings) {
+    const { server: serverSeed, client: clientSeed } = splitAcrossStores(opts.seedSettings);
+    writeFileSync(settingsStore, JSON.stringify(serverSeed, null, 2));
+    // A `settings` block present is also what tells the client it has nothing to
+    // migrate out of settings.json, so a seeded value is never second-guessed.
+    if (clientSeed) writeFileSync(clientStore, JSON.stringify({ version: 1, settings: clientSeed }, null, 2));
+  }
   const real = opts.real ?? REAL_BACKEND;
   // Isolate the Stem-owned stores onto throwaway paths (same seam the unit tests
   // and the old probes use). Hoisted out of the env literal because an external
@@ -128,7 +174,14 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
       ...opts.env
     }
   });
-  return { app, userDataDir, tasksStorePath, settingsStorePath: settingsStore, server };
+  return {
+    app,
+    userDataDir,
+    tasksStorePath,
+    settingsStorePath: settingsStore,
+    clientStorePath: clientStore,
+    server
+  };
 }
 
 /**

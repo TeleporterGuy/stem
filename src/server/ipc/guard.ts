@@ -134,7 +134,6 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'exec:resolveApproval': [a.string, a.oneOf(['allowOnce', 'alwaysAllow', 'deny'])],
   'settings:updateCustomInstructions': [a.object],
   'settings:updateRetrieval': [a.object],
-  'settings:updateReleaseNotes': [a.object],
   'settings:testRetrieval': [a.oneOf(['embeddings', 'reranker'])]
 };
 

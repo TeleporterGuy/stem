@@ -9,8 +9,9 @@ import { resolveProfileOverride } from '../server/workspace/paths';
 import { bindServerChannels } from './ipc-bridge';
 import { registerLocalIpc } from './local';
 import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, requestAttention } from './platform';
-import { createServerProxy, EXTERNAL_SERVER_URL, type ServerProxy } from './proxy';
-import { clientCredentials } from './server-endpoint';
+import { createServerProxy, type ServerProxy } from './proxy';
+import { clientCredentials, resolveServerUrl } from './server-endpoint';
+import { readClientSettings, seedReleaseNotesMarker } from './settings';
 import { createQuickChat } from './quickchat';
 import { loadRenderer, PRELOAD_SCRIPT } from './renderer-assets';
 import { initTray } from './tray';
@@ -311,13 +312,21 @@ app.whenReady().then(async () => {
     app.dock?.setIcon(appIcon);
   }
 
+  // Take this machine's own settings out of settings.json before anything can
+  // rewrite that file without them. The migration runs exactly once and this is
+  // the moment it has to happen by: the server sheds those keys on its next
+  // write, and its next write can be triggered by anything from here on.
+  await readClientSettings();
+
   // Embedded by default: the server runs in this process, on its own loopback
-  // socket, and we are its first client. STEM_SERVER_URL points at one that is
-  // already running instead, and then we start nothing — same client code from
-  // the next line on, one fewer process to own.
+  // socket, and we are its first client. An address from STEM_SERVER_URL or from
+  // Settings → Server points at one that is already running instead, and then we
+  // start nothing — same client code from the next line on, one fewer process to
+  // own.
+  const configured = await resolveServerUrl();
   let serverUrl: string;
-  if (EXTERNAL_SERVER_URL) {
-    serverUrl = EXTERNAL_SERVER_URL;
+  if (configured.url) {
+    serverUrl = configured.url;
   } else {
     server = await startServer({
       alternateProfile: !!profileOverride,
@@ -327,7 +336,7 @@ app.whenReady().then(async () => {
   }
   // The server publishes where it listens, never a credential — this client
   // holds its own (client.json), minting or pairing for one on first run.
-  const endpoint = await clientCredentials(serverUrl);
+  const endpoint = await clientCredentials(serverUrl, { external: !!configured.url });
 
   proxy = createServerProxy({
     ...endpoint,
@@ -349,7 +358,8 @@ app.whenReady().then(async () => {
   // exists, so no renderer can race a missing channel.
   registerLocalIpc({
     mainWindow: () => mainWindow,
-    connection: () => ({ serverUrl, remote: !server })
+    connection: () => ({ serverUrl, remote: !server, pinnedByEnv: configured.pinnedByEnv }),
+    settings: () => proxy!.invoke('settings:get', []) as Promise<AppSettings>
   });
   quickChat.registerIpc();
   ipcMain.on('renderer:ready', (event) => {
@@ -358,6 +368,14 @@ app.whenReady().then(async () => {
     for (const { channel, payload } of mainPushQueue.markReady()) win.webContents.send(channel, payload);
   });
   bindServerChannels(channels, (channel, args) => proxy!.invoke(channel, args));
+
+  const settings = (await proxy.invoke('settings:get', [])) as AppSettings;
+  // An install that has not been set up yet is owed no release notes: whatever
+  // it is running is the first version this person has ever had here. Done now,
+  // before any window can ask, and NOT when the wizard finishes — the wizard is
+  // not the only way onboarding completes (auth adopted from an existing ~/.pi
+  // counts it done during prewarm, with nobody clicking anything).
+  if (!settings.onboarding.completed) await seedReleaseNotesMarker();
 
   // A cold `stem --quick-chat` must land on the overlay, not the main window:
   // that command IS the shortcut on Wayland (see the second-instance handler),
@@ -376,7 +394,6 @@ app.whenReady().then(async () => {
     void server?.prewarm();
   });
 
-  const settings = (await proxy.invoke('settings:get', [])) as AppSettings;
   quickChat.start(settings.quickChat);
   windowsReady = true;
   if (coldSummon) quickChat.toggle();

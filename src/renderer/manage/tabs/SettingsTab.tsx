@@ -1667,10 +1667,155 @@ export function SettingsTab({
         Press the shortcut to open the overlay; Escape or the shortcut again hides it.
       </p>
 
+      <ServerSection />
+
       <DevicesSection />
 
       <AboutSection />
     </div>
+  );
+}
+
+/**
+ * Settings → Server: which Stem this app is a window onto.
+ *
+ * Moving is a restart, and the pane says so instead of pretending. Everything
+ * the app has open — the event stream, the list of calls it is allowed to make,
+ * every panel already filled in — was built against the connection made at
+ * startup, so re-pointing a running app would leave half of it talking to a
+ * server that is no longer there.
+ *
+ * Pairing is the whole act of moving: the address and the credential are stored
+ * together, because a key means nothing to a server that never issued it.
+ */
+function ServerSection() {
+  const [me, setMe] = useState<ClientInfo | null>(null);
+  const [url, setUrl] = useState('');
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [justPaired, setJustPaired] = useState(false);
+
+  useEffect(() => {
+    void window.stem
+      .clientInfo()
+      .then((info) => {
+        setMe(info);
+        setUrl(info.configuredUrl ?? '');
+      })
+      .catch(() => undefined);
+  }, []);
+
+  async function run(act: () => Promise<ClientInfo>, paired = false) {
+    setBusy(true);
+    setError(null);
+    setJustPaired(false);
+    try {
+      const info = await act();
+      setMe(info);
+      setUrl(info.configuredUrl ?? '');
+      setCode('');
+      setJustPaired(paired);
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!me) return null;
+  // Something is waiting for a restart when the address just changed under a
+  // running app — either because the pairing happened a moment ago, or because
+  // it happened earlier and Settings has been reopened since.
+  const moved = !!me.configuredUrl && (justPaired || me.configuredUrl !== me.serverUrl);
+
+  return (
+    <>
+      <div className="grp-head">Server</div>
+      <div className="formgroup">
+        <p className="muted" style={{ marginTop: 0 }}>
+          Your chats, memory and skills live on a server. By default it is this computer — Stem
+          starts one for itself and nothing leaves the machine. Point it at a server running
+          somewhere else and this app becomes a window onto that one instead.
+        </p>
+
+        <div className="set-row">
+          <span className="set-label">
+            <strong>{me.remote ? me.serverUrl : 'This computer'}</strong>
+            <em>
+              {me.remote ? 'connected to a server elsewhere' : "Stem's own server, started with the app"}
+            </em>
+          </span>
+        </div>
+
+        {me.pinnedByEnv ? (
+          <p className="muted">
+            The address is fixed for this launch by <code>STEM_SERVER_URL</code>, so it can't be
+            changed here.
+          </p>
+        ) : (
+          <>
+            {moved && (
+              <p className="muted">
+                Set to <strong>{me.configuredUrl}</strong>. Restart Stem to connect to it.
+              </p>
+            )}
+            <form
+              className="set-block"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void run(() => window.stem.pairWithServer(url.trim(), code.trim()), true);
+              }}
+            >
+              <span className="set-sub">Connect to another server</span>
+              <input
+                className="ifield"
+                type="text"
+                aria-label="Server address"
+                value={url}
+                placeholder="https://stem.example.com"
+                onChange={(e) => setUrl(e.target.value)}
+              />
+              <input
+                className="ifield"
+                type="text"
+                aria-label="Pairing code"
+                value={code}
+                placeholder="Code from that server's Settings → Devices"
+                onChange={(e) => setCode(e.target.value)}
+              />
+              <div className="push-row">
+                <button type="submit" className="push default" disabled={busy || !url.trim() || !code.trim()}>
+                  Connect
+                </button>
+              </div>
+              <p className="muted">
+                Get the code on the other server — Settings → Devices there, or{' '}
+                <code>stem-server pair</code>. It works once. Stem connects at startup, so the move
+                takes effect when you restart it.
+              </p>
+            </form>
+
+            {me.configuredUrl && (
+              <div className="set-row">
+                <span className="set-label">
+                  <strong>Go back to this computer</strong>
+                  <em>Forget that server and its key, and run Stem's own again</em>
+                </span>
+                <button
+                  className="link-btn"
+                  disabled={busy}
+                  onClick={() => void run(() => window.stem.useBuiltInServer())}
+                >
+                  Use this computer
+                </button>
+              </div>
+            )}
+          </>
+        )}
+        {error && <p className="muted">{error}</p>}
+      </div>
+    </>
   );
 }
 

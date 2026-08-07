@@ -57,8 +57,11 @@ beforeAll(async () => {
     clientSide.push(`server:chats:open(${String(threadId)})`);
     return { threadId, title: 'A thread', messages: [] };
   });
+  // A stand-in for the real handler, which persists the fields settings.json
+  // still holds and answers with the whole document. Note what it does NOT
+  // answer with: the hotkey, which is the client's (see the split below).
   registerServer('settings:updateQuickChat', (_e, patch) => ({
-    quickChat: { ...(patch as object), shortcut: 'Alt+Space' }
+    quickChat: { ...(patch as object), defaultEffort: 'high' }
   }));
   registerServer('backend:newConversation', () => Promise.reject(new Error('pi is not running')));
 
@@ -66,7 +69,7 @@ beforeAll(async () => {
   // The server publishes no credential any more: this client mints its own off
   // the state root they share, exactly as the desktop does at startup.
   proxy = createServerProxy({
-    ...(await clientCredentials(endpoint.url)),
+    ...(await clientCredentials(endpoint.url, { external: false })),
     sendToMain: (channel, payload) => routed.push({ to: 'main', channel, payload }),
     sendToOverlay: (channel, payload) => routed.push({ to: 'overlay', channel, payload }),
     revealIfOwns: (threadId) => routed.push({ to: 'revealIfOwns', channel: '', payload: threadId }),
@@ -156,12 +159,19 @@ describe('wrapped channels', () => {
 
   it('applies Quick Chat settings only after the write has landed', async () => {
     clientSide.length = 0;
-    const patch: Partial<QuickChatSettings> = { showOnAllDisplays: false };
+    const patch: Partial<QuickChatSettings> = { shortcut: 'Alt+Space', showOnAllDisplays: false };
     const next = (await proxy.invoke('settings:updateQuickChat', [patch])) as AppSettings;
+
+    // One patch, two files, one document back. The hotkey the server never saw
+    // came from this machine's own store; the rest came off the wire.
     expect(next.quickChat.shortcut).toBe('Alt+Space');
+    expect(next.quickChat.showOnAllDisplays).toBe(false);
+    expect(next.quickChat.defaultEffort).toBe('high');
     // The accelerator grab is not a setting — it is a claim on an OS — so it is
-    // re-registered from what came BACK, never from what was asked for.
-    expect(clientSide).toEqual(['client:applyQuickChat({"showOnAllDisplays":false}→Alt+Space)']);
+    // re-registered from the merged answer, never from what was asked for.
+    expect(clientSide).toEqual([
+      'client:applyQuickChat({"shortcut":"Alt+Space","showOnAllDisplays":false}→Alt+Space)'
+    ]);
   });
 });
 
@@ -212,7 +222,7 @@ describe('acquiring a credential', () => {
     // beforeAll already went through this path once. A second call must be a
     // read: minting per launch would fill Settings → Devices with one row per
     // start of the app.
-    const again = await clientCredentials(`${endpoint.url}/`);
+    const again = await clientCredentials(`${endpoint.url}/`, { external: false });
     expect(again.token).toBe((await readClientIdentity())!.token);
     expect((await readDevices()).length).toBe(1);
     // A trailing slash must not survive into `${url}/rpc`.
@@ -223,7 +233,7 @@ describe('acquiring a credential', () => {
     const stored = (await readClientIdentity())!.token;
     process.env.STEM_SERVER_TOKEN = 'e'.repeat(64);
     try {
-      expect((await clientCredentials(endpoint.url)).token).toBe('e'.repeat(64));
+      expect((await clientCredentials(endpoint.url, { external: false })).token).toBe('e'.repeat(64));
     } finally {
       delete process.env.STEM_SERVER_TOKEN;
     }
@@ -237,7 +247,7 @@ describe('acquiring a credential', () => {
     const { code } = await createPairingCode('A machine far away');
     process.env.STEM_PAIRING_CODE = code;
     try {
-      const paired = await clientCredentials(endpoint.url);
+      const paired = await clientCredentials(endpoint.url, { external: false });
       // The token came back over POST /pair — the one unauthenticated route —
       // and works against the same server the desktop is already talking to.
       expect(paired.token).not.toBe(identity!.token);
@@ -259,7 +269,7 @@ describe('acquiring a credential', () => {
     // see, which is exactly when minting a record would be writing into the void.
     process.env.STEM_SERVER_ENDPOINT_FILE = join(tmpdir(), `stem-no-such-endpoint-${process.pid}.json`);
     try {
-      await expect(clientCredentials('http://192.0.2.10:8443')).rejects.toThrow(/Pair instead/);
+      await expect(clientCredentials('http://192.0.2.10:8443', { external: true })).rejects.toThrow(/Pair instead/);
     } finally {
       if (endpointFile) process.env.STEM_SERVER_ENDPOINT_FILE = endpointFile;
       else delete process.env.STEM_SERVER_ENDPOINT_FILE;

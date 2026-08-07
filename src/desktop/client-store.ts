@@ -2,9 +2,11 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { host } from '../server/host';
 import { log } from '../server/log';
+import type { ClientSettings } from '../shared/types';
 
-// What this CLIENT knows about itself: its row in the server's device registry,
-// and the bearer token that proves it.
+// What this CLIENT knows about itself: which server it talks to, its row in that
+// server's device registry, the bearer token that proves it, and the handful of
+// settings that describe this machine rather than Stem.
 //
 // This file is new in Phase 2, and it is the first client-side state Stem has
 // ever had. It exists because the server stopped keeping tokens: devices.json
@@ -18,9 +20,10 @@ import { log } from '../server/log';
 // a Linux box with no keyring must still be able to run Stem, and 0600 in a
 // directory that already holds the chat database is not a new exposure.
 //
-// Phase 2 step 2 grows this file rather than adding another: the server URL, and
-// the settings that are properly about this machine rather than about Stem (the
-// Quick Chat hotkey and its geometry, the release-notes seen-state).
+// `serverUrl` and the identity are one unit and are always written and cleared
+// together. A token means nothing to a server that never issued it, so carrying
+// one across a change of address is not a saving — it is a 401 loop with no way
+// out but deleting this file by hand.
 
 /** This client's identity as far as the server is concerned. */
 export interface ClientIdentity {
@@ -31,11 +34,15 @@ export interface ClientIdentity {
 
 interface StoredClient {
   version: 1;
-  deviceId: string;
+  deviceId?: string;
   /** Present when no key wrapper was available. */
   token?: string;
   /** Base64 of the wrapped token; preferred when present. */
   tokenEnc?: string;
+  /** The server this client was paired with; absent = the one it starts itself. */
+  serverUrl?: string;
+  /** Absent until the one-time migration in ./settings.ts has run. */
+  settings?: ClientSettings;
 }
 
 export function clientStorePath(): string {
@@ -44,15 +51,54 @@ export function clientStorePath(): string {
   return process.env.STEM_CLIENT_FILE ?? join(host().stateRoot(), 'client.json');
 }
 
+/** The raw document, or an empty one when there isn't a readable file yet. */
+export async function readClientDocument(): Promise<StoredClient> {
+  try {
+    const stored = JSON.parse(await readFile(clientStorePath(), 'utf8')) as StoredClient;
+    if (stored && typeof stored === 'object') return stored;
+  } catch {
+    // Absent, or half-written by a kill during the write below. Either way there
+    // is nothing to recover and starting over is the only useful behavior.
+  }
+  return { version: 1 };
+}
+
+// Serialize read-modify-writes through a promise chain (see workspace/settings.ts)
+// so a pairing and a settings toggle landing together cannot lose one of the two.
+let chain: Promise<unknown> = Promise.resolve();
+
+/**
+ * Apply `mutate` to the stored document and persist the result. The whole
+ * read-modify-write is inside the chain, which is the point: every writer here
+ * touches one part of one file, and the parts are written by different subsystems
+ * at unrelated moments.
+ */
+export function updateClientDocument<T>(mutate: (doc: StoredClient) => T | Promise<T>): Promise<T> {
+  const task = async (): Promise<T> => {
+    const doc = await readClientDocument();
+    const result = await mutate(doc);
+    const path = clientStorePath();
+    await mkdir(dirname(path), { recursive: true }).catch(() => undefined);
+    await writeFile(path, `${JSON.stringify({ ...doc, version: 1 }, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600
+    });
+    // An existing file keeps the mode it was created with, so re-assert it.
+    await chmod(path, 0o600).catch(() => undefined);
+    return result;
+  };
+  const run = chain.then(task, task);
+  chain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
 /** This client's stored identity, or null if it has never had one. */
 export async function readClientIdentity(): Promise<ClientIdentity | null> {
-  let stored: StoredClient;
-  try {
-    stored = JSON.parse(await readFile(clientStorePath(), 'utf8')) as StoredClient;
-  } catch {
-    return null; // absent, or unreadable — either way we have no identity
-  }
-  if (typeof stored?.deviceId !== 'string' || !stored.deviceId) return null;
+  const stored = await readClientDocument();
+  if (typeof stored.deviceId !== 'string' || !stored.deviceId) return null;
 
   if (typeof stored.tokenEnc === 'string') {
     const wrapper = host().keyWrapper();
@@ -74,27 +120,54 @@ export async function readClientIdentity(): Promise<ClientIdentity | null> {
   return null;
 }
 
-/** Persist an identity acquired by minting or pairing. Overwrites any previous one. */
-export async function writeClientIdentity(identity: ClientIdentity): Promise<void> {
-  const path = clientStorePath();
-  await mkdir(dirname(path), { recursive: true }).catch(() => undefined);
-  const wrapper = host().keyWrapper();
-  let stored: StoredClient = { version: 1, deviceId: identity.deviceId, token: identity.token };
-  if (wrapper) {
-    try {
-      stored = {
-        version: 1,
-        deviceId: identity.deviceId,
-        tokenEnc: wrapper.wrap(identity.token).toString('base64')
-      };
-    } catch (e) {
-      // Wrapping failed at the last moment (a locked keychain): fall back to the
-      // plaintext form rather than leaving the device with no credential at all.
-      log('client', 'could not wrap the token; storing it 0600 instead', {
-        error: String((e as Error)?.message ?? e)
-      });
+/**
+ * Persist an identity acquired by minting or pairing, replacing any previous one.
+ * `serverUrl` is the address it belongs to, or null for a server this machine
+ * starts itself (whose port is ephemeral, so there is no address worth storing).
+ *
+ * The machine's settings are deliberately untouched: re-pairing a laptop is not
+ * a reason to forget its hotkey.
+ */
+export function writeClientIdentity(identity: ClientIdentity, serverUrl: string | null = null): Promise<void> {
+  return updateClientDocument((doc) => {
+    delete doc.token;
+    delete doc.tokenEnc;
+    doc.deviceId = identity.deviceId;
+    if (serverUrl) doc.serverUrl = serverUrl;
+    else delete doc.serverUrl;
+
+    const wrapper = host().keyWrapper();
+    if (wrapper) {
+      try {
+        doc.tokenEnc = wrapper.wrap(identity.token).toString('base64');
+        return;
+      } catch (e) {
+        // Wrapping failed at the last moment (a locked keychain): fall back to the
+        // plaintext form rather than leaving the device with no credential at all.
+        log('client', 'could not wrap the token; storing it 0600 instead', {
+          error: String((e as Error)?.message ?? e)
+        });
+      }
     }
-  }
-  await writeFile(path, `${JSON.stringify(stored, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await chmod(path, 0o600).catch(() => undefined);
+    doc.token = identity.token;
+  });
+}
+
+/**
+ * Forget the configured server and the credential that went with it, so the next
+ * launch starts Stem's own server and mints itself a fresh record.
+ */
+export function clearClientIdentity(): Promise<void> {
+  return updateClientDocument((doc) => {
+    delete doc.deviceId;
+    delete doc.token;
+    delete doc.tokenEnc;
+    delete doc.serverUrl;
+  });
+}
+
+/** The server this client is configured to use, or null for the built-in one. */
+export async function storedServerUrl(): Promise<string | null> {
+  const { serverUrl } = await readClientDocument();
+  return typeof serverUrl === 'string' && serverUrl.trim() ? serverUrl.trim() : null;
 }

@@ -41,6 +41,17 @@ Maintainer notes:
   adding. Stem no longer keeps a copy of any device's key, only enough to recognise it, so a key can
   be withdrawn but never read back out — not by you, and not by anyone who gets hold of the files.
   Nothing changes for the Mac you're reading this on: it signs itself in, as it always has.
+- **Point Stem at a server somewhere else.** Settings → Server is new. By default Stem runs its own
+  server on the computer you're using and nothing leaves the machine — that hasn't changed. But you
+  can now enter the address of a Stem running elsewhere and a code from it, and this app becomes a
+  window onto that one: same chats, same memory, same skills, from any machine you sit at. Stem
+  connects when it starts, so the move takes effect the next time you open it, and the pane says so.
+  There's a button to come back to this computer's own server whenever you want.
+- **Your shortcut and your window settings stay with your machine.** The Quick Chat key, whether the
+  overlay floats across every Space, whether the progress pill follows you, and which release notes
+  you've already read are now kept per computer rather than shared. So a laptop and a desktop
+  pointed at the same Stem can each have their own summon key, and neither is told about a new
+  version until it actually has it. Everything already set carries over untouched.
 
 ### Removed
 

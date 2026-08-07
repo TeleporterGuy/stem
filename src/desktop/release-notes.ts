@@ -1,13 +1,20 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { host } from '../host';
-import type { ReleaseNoteEntry, ReleaseNotesSnapshot } from '../../shared/types';
-import { markReleaseNotesSeen, readSettings } from './settings';
+import { host } from '../server/host';
+import type { ReleaseNoteEntry, ReleaseNotesSnapshot } from '../shared/types';
+import { readClientSettings, updateClientReleaseNotes } from './settings';
 
 // The "what's new" popup's data layer. RELEASE_NOTES.md ships with the app (it
 // is in electron-builder's `files`), so it is read from the app root — the same
 // place server/index.ts reads build/icon.png from. asar is off, so this is a plain
 // file read in both dev (repo root) and a packaged build.
+//
+// This is a CLIENT concern, and Phase 2 moved it here from src/server/workspace
+// to say so. Every input is a fact about the machine the popup would appear on:
+// the version installed here, the RELEASE_NOTES.md shipped with it, and how much
+// of it this person has already read. A server answering two Macs on two builds
+// has no single correct answer to give, and the one it used to give was whichever
+// client asked last.
 //
 // The parse is deliberately dumb: split on `## ` headings, take the first token
 // as the version. Anything that isn't a dotted-numeric version (a prose heading,
@@ -82,7 +89,10 @@ async function readNotesFile(): Promise<string> {
 }
 
 /**
- * The snapshot the renderer drives the popup from.
+ * The snapshot the renderer drives the popup from. `onboardingCompleted` is the
+ * one input that is not this machine's to know — the wizard is about the Stem
+ * account, not the laptop — so it is passed in by the handler that already has
+ * the server's settings document.
  *
  * Two side effects live here rather than in the renderer, because they must hold
  * whether or not anyone is looking:
@@ -91,22 +101,22 @@ async function readNotesFile(): Promise<string> {
  * - popup switched off → the marker still advances, so re-enabling it later
  *   stays quiet until the *next* release.
  */
-export async function releaseNotesSnapshot(): Promise<ReleaseNotesSnapshot> {
+export async function releaseNotesSnapshot(onboardingCompleted: boolean): Promise<ReleaseNotesSnapshot> {
   const appVersion = host().appVersion();
-  const settings = await readSettings();
+  const { releaseNotes } = await readClientSettings();
   const entries = parseReleaseNotes(await readNotesFile()).filter(
     (e) => compareVersions(e.version, appVersion) <= 0
   );
-  if (!settings.onboarding.completed) return { appVersion, entries, unseen: [] };
-  if (!settings.releaseNotes.showOnUpdate) {
-    if (settings.releaseNotes.lastSeenVersion !== appVersion) await markReleaseNotesSeen(appVersion);
+  if (!onboardingCompleted) return { appVersion, entries, unseen: [] };
+  if (!releaseNotes.showOnUpdate) {
+    if (releaseNotes.lastSeenVersion !== appVersion) await updateClientReleaseNotes({ lastSeenVersion: appVersion });
     return { appVersion, entries, unseen: [] };
   }
-  const unseen = selectUnseen(entries, settings.releaseNotes.lastSeenVersion, appVersion);
+  const unseen = selectUnseen(entries, releaseNotes.lastSeenVersion, appVersion);
   return { appVersion, entries, unseen: unseen.map((e) => e.version) };
 }
 
 /** Record the running version as shown (called when the popup is dismissed). */
 export function markReleaseNotesRead(): Promise<unknown> {
-  return markReleaseNotesSeen(host().appVersion());
+  return updateClientReleaseNotes({ lastSeenVersion: host().appVersion() });
 }

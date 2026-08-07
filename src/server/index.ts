@@ -48,13 +48,11 @@ import {
   updateEscapeAction,
   updateExecSettings,
   updateMemorySettings,
-  updateReleaseNotesSettings,
   updateWebSearch,
   updateQuickChat,
   updateRetrievalSettings,
   updateSkillsSettings
 } from './workspace/settings';
-import { markReleaseNotesRead, releaseNotesSnapshot } from './workspace/release-notes';
 import { needsBackendRestart, needsWebSearchConfigWrite, writeWebSearchConfig } from './pi/web-search';
 import type {
   ChatsSettings,
@@ -66,7 +64,6 @@ import type {
   ModelSummary,
   WebSearchSettings,
   PartialRetrievalSettings,
-  ReleaseNotesSettings,
   RetrievalStage,
   RetrievalTestResult,
   SkillsSettings,
@@ -352,16 +349,11 @@ function registerIpc(): void {
     }
     return next;
   });
-  // "What's new": the snapshot carries the whole decision (which sections are
-  // unseen, and the silent marker advance when the popup is switched off), so the
-  // renderer only has to render what it's handed.
-  registerServer('releaseNotes:get', () => releaseNotesSnapshot());
-  registerServer('releaseNotes:markSeen', async () => {
-    await markReleaseNotesRead();
-  });
-  registerServer('settings:updateReleaseNotes', async (_e, patch: Partial<ReleaseNotesSettings>) => {
-    return updateReleaseNotesSettings(patch);
-  });
+  // No "what's new" channels here: the popup is decided from the version
+  // installed on a CLIENT and the RELEASE_NOTES.md shipped beside it, so
+  // `releaseNotes:get`, `releaseNotes:markSeen` and `settings:updateReleaseNotes`
+  // are answered by the desktop (src/desktop/local/index.ts). A server with two
+  // Macs on two builds has no single correct answer to give.
   registerServer('settings:updateEscapeAction', async (_e, action: EscapeAction) => {
     // Just persist — the renderer reads escapeAction fresh from settings (mount +
     // window focus) and acts on it locally in the composer.

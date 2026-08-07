@@ -295,8 +295,10 @@ try {
   }
   check(
     'client-owned channels are absent from the registry',
-    !channels.includes('dialog:openFiles') && !channels.includes('quickchat:reveal'),
-    'a server has no native picker and no overlay window'
+    !channels.includes('dialog:openFiles') &&
+      !channels.includes('quickchat:reveal') &&
+      !channels.includes('releaseNotes:get'),
+    'a server has no native picker, no overlay window and no build of its own to announce'
   );
 
   // -- a handful of RPCs, over the real transport --

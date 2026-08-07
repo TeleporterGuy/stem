@@ -33,6 +33,8 @@ import { log } from '../server/log';
 const LOCAL_IPC_ARGS: Record<string, ArgSpec[]> = {
   'files:preview': [a.string],
   'cfolders:reveal': [a.string],
+  'client:pair': [a.string, a.string],
+  'settings:updateReleaseNotes': [a.object],
   'quickchat:run': [a.object],
   'quickchat:handoff': [a.object]
 };

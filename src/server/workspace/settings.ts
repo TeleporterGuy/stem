@@ -1,8 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
-import { host } from '../host';
 import type {
-  AppSettings,
   ChatsSettings,
   ChatSubjectMode,
   CustomInstructionsSettings,
@@ -22,32 +20,35 @@ import type {
   WebSearchSettings,
   PartialRetrievalSettings,
   QuickChatSettings,
-  ReleaseNotesSettings,
   RerankerMode,
   RerankerSettings,
   RetrievalSettings,
+  ServerSettings,
   SkillsSettings
 } from '../../shared/types';
 import { settingsStorePath } from './paths';
 
 // Stem-owned app settings. Like the chat store, kept deliberately tiny and
 // resilient — a corrupt/missing file degrades to defaults rather than breaking
-// startup. The defaults match the product spec: medium effort, Fast speed, and
-// the overlay floating across all displays; the shortcut is unset until the
-// user records one in Settings.
+// startup. The defaults match the product spec: medium effort and Fast speed.
+//
+// Stem-owned, and only Stem-owned. Three Quick Chat fields and the whole
+// "what's new" marker used to live here and no longer do: a hotkey, an overlay's
+// Spaces behavior and the version installed on a particular Mac are facts about
+// a MACHINE, and a server may be answering several of them (see ClientSettings
+// in shared/types.ts, stored by src/desktop/client-store.ts). `coerce` simply
+// stops reading those keys, so an existing settings.json still parses and sheds
+// them on its next write — after the client has taken a copy.
 
-const DEFAULTS: AppSettings = {
+type QuickChatServerSettings = ServerSettings['quickChat'];
+
+const DEFAULTS: ServerSettings = {
   quickChat: {
-    shortcut: null,
     defaultModel: null,
     defaultEffort: 'medium',
     defaultServiceTier: 'priority',
-    showOnAllDisplays: true,
     // After 5 minutes idle, re-summoning the overlay starts a fresh thread.
     newThreadTimeoutMs: 5 * 60_000,
-    // Show the progress pill for main-window threads when the main window loses
-    // focus (switch Spaces/apps), so an active thread stays visible.
-    followAcrossSpaces: true,
     // Opt-in chime when a turn finishes while the pill is visible.
     finishSound: false
   },
@@ -105,10 +106,6 @@ const DEFAULTS: AppSettings = {
   // First-run wizard: not completed until the user signs in (or the app first
   // reaches an authenticated status, e.g. seeded from an existing ~/.pi).
   onboarding: { completed: false },
-  // "What's new" popup: on, with nothing recorded as seen yet. A fresh install
-  // seeds lastSeenVersion when onboarding completes, so only an install that
-  // predates this feature ever reaches the popup with a null marker.
-  releaseNotes: { showOnUpdate: true, lastSeenVersion: null },
   // App-level default model ('provider/modelId'); null = built-in constant.
   // Set after onboarding to match the provider the user signed in with.
   defaults: { model: null },
@@ -195,8 +192,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
-function coerce(parsed: Partial<AppSettings> | null): AppSettings {
-  const qc = (parsed?.quickChat ?? {}) as Partial<QuickChatSettings>;
+function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
+  const qc = (parsed?.quickChat ?? {}) as Partial<QuickChatServerSettings>;
   const d = DEFAULTS.quickChat;
   // `nativeWebSearch` is the pre-pi-web-access key name: same two per-context
   // booleans, back when search was an openai-codex-only injection. Read it as a
@@ -289,17 +286,6 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   const onboarding: OnboardingSettings = {
     completed: typeof rawOb.completed === 'boolean' ? rawOb.completed : DEFAULTS.onboarding.completed
   };
-  const rawRn = (parsed?.releaseNotes ?? {}) as Partial<ReleaseNotesSettings>;
-  const releaseNotes: ReleaseNotesSettings = {
-    showOnUpdate:
-      typeof rawRn.showOnUpdate === 'boolean' ? rawRn.showOnUpdate : DEFAULTS.releaseNotes.showOnUpdate,
-    // Only a dotted-numeric version is a usable marker; anything else (a hand
-    // edit, an old tag string) reads as "nothing recorded".
-    lastSeenVersion:
-      typeof rawRn.lastSeenVersion === 'string' && /^\d+(\.\d+)*$/.test(rawRn.lastSeenVersion.trim())
-        ? rawRn.lastSeenVersion.trim()
-        : null
-  };
   const rawDef = (parsed?.defaults ?? {}) as Partial<DefaultsSettings>;
   const defaults: DefaultsSettings = {
     model: typeof rawDef.model === 'string' && rawDef.model.trim() ? rawDef.model : null
@@ -337,18 +323,15 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
   };
   return {
     quickChat: {
-      shortcut: typeof qc.shortcut === 'string' && qc.shortcut.trim() ? qc.shortcut : null,
       defaultModel: typeof qc.defaultModel === 'string' && qc.defaultModel.trim() ? qc.defaultModel : null,
       defaultEffort: typeof qc.defaultEffort === 'string' ? qc.defaultEffort : d.defaultEffort,
       // 'priority' (Fast) or explicit null (Standard); anything else → default.
       defaultServiceTier:
         qc.defaultServiceTier === 'priority' ? 'priority' : qc.defaultServiceTier === null ? null : d.defaultServiceTier,
-      showOnAllDisplays: typeof qc.showOnAllDisplays === 'boolean' ? qc.showOnAllDisplays : d.showOnAllDisplays,
       newThreadTimeoutMs:
         typeof qc.newThreadTimeoutMs === 'number' && qc.newThreadTimeoutMs >= 0
           ? qc.newThreadTimeoutMs
           : d.newThreadTimeoutMs,
-      followAcrossSpaces: typeof qc.followAcrossSpaces === 'boolean' ? qc.followAcrossSpaces : d.followAcrossSpaces,
       finishSound: typeof qc.finishSound === 'boolean' ? qc.finishSound : d.finishSound
     },
     webSearch: ws,
@@ -360,15 +343,14 @@ function coerce(parsed: Partial<AppSettings> | null): AppSettings {
     escapeAction,
     customInstructions,
     onboarding,
-    releaseNotes,
     defaults,
     localProviders
   };
 }
 
-export async function readSettings(): Promise<AppSettings> {
+export async function readSettings(): Promise<ServerSettings> {
   try {
-    return coerce(JSON.parse(await readFile(settingsStorePath(), 'utf8')) as Partial<AppSettings>);
+    return coerce(JSON.parse(await readFile(settingsStorePath(), 'utf8')) as Partial<ServerSettings>);
   } catch {
     return coerce(null);
   }
@@ -387,25 +369,33 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
   return run;
 }
 
-async function writeSettings(settings: AppSettings): Promise<void> {
+async function writeSettings(settings: ServerSettings): Promise<void> {
   const path = settingsStorePath();
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(settings, null, 2), 'utf8');
   await rename(tmp, path);
 }
 
-/** Patch the Quick Chat settings and persist atomically; returns the full settings. */
-export function updateQuickChat(patch: Partial<QuickChatSettings>): Promise<AppSettings> {
+/**
+ * Patch the Quick Chat settings and persist atomically; returns the full settings.
+ *
+ * A patch carrying the machine-owned fields as well is fine and expected — the
+ * client sends the user's whole patch and `coerce` keeps only what belongs here,
+ * which is one less thing for either side to get exactly right.
+ */
+export function updateQuickChat(patch: Partial<QuickChatSettings>): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
-    const next = coerce({ ...cur, quickChat: { ...cur.quickChat, ...patch } });
+    // The cast is what lets the machine-owned keys through to `coerce`, which is
+    // the single place that decides what settings.json is allowed to hold.
+    const next = coerce({ ...cur, quickChat: { ...cur.quickChat, ...patch } } as Partial<ServerSettings>);
     await writeSettings(next);
     return next;
   });
 }
 
 /** Patch the web-search toggles/backend and persist; returns full settings. */
-export function updateWebSearch(patch: Partial<WebSearchSettings>): Promise<AppSettings> {
+export function updateWebSearch(patch: Partial<WebSearchSettings>): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, webSearch: { ...cur.webSearch, ...patch } });
@@ -415,7 +405,7 @@ export function updateWebSearch(patch: Partial<WebSearchSettings>): Promise<AppS
 }
 
 /** Set the main-composer Escape-to-retract behavior and persist; returns full settings. */
-export function updateEscapeAction(action: EscapeAction): Promise<AppSettings> {
+export function updateEscapeAction(action: EscapeAction): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, escapeAction: action });
@@ -425,7 +415,7 @@ export function updateEscapeAction(action: EscapeAction): Promise<AppSettings> {
 }
 
 /** Patch the memory-model setting and persist; returns the full settings. */
-export function updateMemorySettings(patch: Partial<MemoryModelSettings>): Promise<AppSettings> {
+export function updateMemorySettings(patch: Partial<MemoryModelSettings>): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, memory: { ...cur.memory, ...patch } });
@@ -435,7 +425,7 @@ export function updateMemorySettings(patch: Partial<MemoryModelSettings>): Promi
 }
 
 /** Patch the standing custom instructions (per surface) and persist; returns full settings. */
-export function updateCustomInstructions(patch: Partial<CustomInstructionsSettings>): Promise<AppSettings> {
+export function updateCustomInstructions(patch: Partial<CustomInstructionsSettings>): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, customInstructions: { ...cur.customInstructions, ...patch } });
@@ -445,7 +435,7 @@ export function updateCustomInstructions(patch: Partial<CustomInstructionsSettin
 }
 
 /** Patch the skills-curator model setting and persist; returns the full settings. */
-export function updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<AppSettings> {
+export function updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, skills: { ...cur.skills, ...patch } });
@@ -455,7 +445,7 @@ export function updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<Ap
 }
 
 /** Patch the Chats panel settings (subject mode/model, preview lines) and persist. */
-export function updateChatsSettings(patch: Partial<ChatsSettings>): Promise<AppSettings> {
+export function updateChatsSettings(patch: Partial<ChatsSettings>): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, chats: { ...cur.chats, ...patch } });
@@ -465,7 +455,7 @@ export function updateChatsSettings(patch: Partial<ChatsSettings>): Promise<AppS
 }
 
 /** Patch the command-execution policy and persist; returns the full settings. */
-export function updateExecSettings(patch: Partial<ExecSettings>): Promise<AppSettings> {
+export function updateExecSettings(patch: Partial<ExecSettings>): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, exec: { ...cur.exec, ...patch } });
@@ -477,44 +467,23 @@ export function updateExecSettings(patch: Partial<ExecSettings>): Promise<AppSet
 /**
  * Mark the first-run wizard finished and persist; returns the full settings.
  *
- * Also seeds the "what's new" marker to the running version, so a brand-new user
- * isn't greeted by release notes for versions they were never on. An install
- * that predates the popup never runs this again, which is exactly how it gets
- * the null marker that means "show what you're running, once".
+ * It used to also seed the "what's new" marker to the running version, so a
+ * brand-new user wasn't greeted by notes for releases they were never on. That
+ * marker is a client's now — the running version is the *client's* version — so
+ * the seeding rides along on this channel from the other side of the wire
+ * (src/desktop/settings.ts).
  */
-export function markOnboardingCompleted(): Promise<AppSettings> {
+export function markOnboardingCompleted(): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
-    const next = coerce({
-      ...cur,
-      onboarding: { completed: true },
-      releaseNotes: {
-        ...cur.releaseNotes,
-        lastSeenVersion: cur.releaseNotes.lastSeenVersion ?? host().appVersion()
-      }
-    });
+    const next = coerce({ ...cur, onboarding: { completed: true } });
     await writeSettings(next);
     return next;
   });
-}
-
-/** Patch the "what's new" popup preference and persist; returns the full settings. */
-export function updateReleaseNotesSettings(patch: Partial<ReleaseNotesSettings>): Promise<AppSettings> {
-  return enqueue(async () => {
-    const cur = await readSettings();
-    const next = coerce({ ...cur, releaseNotes: { ...cur.releaseNotes, ...patch } });
-    await writeSettings(next);
-    return next;
-  });
-}
-
-/** Record `version` as the newest release notes the user has been shown. */
-export function markReleaseNotesSeen(version: string): Promise<AppSettings> {
-  return updateReleaseNotesSettings({ lastSeenVersion: version });
 }
 
 /** Set the app-level default model ('provider/modelId' or null) and persist. */
-export function updateDefaultModel(model: string | null): Promise<AppSettings> {
+export function updateDefaultModel(model: string | null): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, defaults: { model } });
@@ -524,7 +493,7 @@ export function updateDefaultModel(model: string | null): Promise<AppSettings> {
 }
 
 /** Patch one local provider (Ollama / LM Studio / custom) and persist; returns the full settings. */
-export function updateLocalProvider(id: LocalProviderId, patch: Partial<LocalProviderSettings>): Promise<AppSettings> {
+export function updateLocalProvider(id: LocalProviderId, patch: Partial<LocalProviderSettings>): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({
@@ -537,7 +506,7 @@ export function updateLocalProvider(id: LocalProviderId, patch: Partial<LocalPro
 }
 
 /** Patch the retrieval endpoints (deep-merged per stage) and persist; returns full settings. */
-export function updateRetrievalSettings(patch: PartialRetrievalSettings): Promise<AppSettings> {
+export function updateRetrievalSettings(patch: PartialRetrievalSettings): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({

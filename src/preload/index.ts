@@ -271,6 +271,8 @@ const api: StemApi = {
   revokeDevice: (id: string) => ipcRenderer.invoke('devices:revoke', id),
   createPairingCode: (label: string) => ipcRenderer.invoke('devices:createPairingCode', label),
   clientInfo: () => ipcRenderer.invoke('client:info'),
+  pairWithServer: (url: string, code: string) => ipcRenderer.invoke('client:pair', url, code),
+  useBuiltInServer: () => ipcRenderer.invoke('client:useBuiltIn'),
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateQuickChat: (patch: Partial<QuickChatSettings>) => ipcRenderer.invoke('settings:updateQuickChat', patch),
