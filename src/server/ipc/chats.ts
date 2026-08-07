@@ -12,6 +12,14 @@ import {
   renameFolder,
   setChatFolder
 } from '../workspace/chats';
+import {
+  markAllRead,
+  readInbox,
+  removeInboxEntry,
+  setArchived,
+  setRead,
+  setSnooze
+} from '../workspace/inbox';
 import { readSettings } from '../workspace/settings';
 import type { LlmClient } from '../recall/llm';
 import type { ChatListResult } from '../../shared/types';
@@ -33,17 +41,18 @@ const CHAT_SEARCH_COMPLETION_TIMEOUT_MS = 4_000;
 
 export function registerChatsIpc(deps: IpcDeps): void {
   const chatList = async (): Promise<ChatListResult> => {
-    const [chats, folders, assignments] = await Promise.all([
+    const [chats, folders, assignments, inbox] = await Promise.all([
       deps.runtime().listThreads(),
       listFolders(),
-      getAssignments()
+      getAssignments(),
+      readInbox()
     ]);
     const valid = new Set(folders.map((f) => f.id));
     for (const chat of chats) {
       const folderId = assignments[chat.threadId];
       chat.folderId = folderId && valid.has(folderId) ? folderId : null;
     }
-    return { chats, folders };
+    return { chats, folders, inbox };
   };
 
   registerServer('chats:list', () => chatList());
@@ -85,12 +94,34 @@ export function registerChatsIpc(deps: IpcDeps): void {
     await Promise.all([
       deps.runtime().deleteThread(threadId),
       removeChat(threadId),
+      removeInboxEntry(threadId),
       deps.scheduler()?.removeForThread(threadId) ?? Promise.resolve()
     ]);
     dropChatThread(threadId); // forget it from the search index
   });
   registerServer('chats:setFolder', async (_e, threadId: string, folderId: string | null) => {
     await setChatFolder(threadId, folderId);
+    return chatList();
+  });
+
+  // Inbox state. Each returns the fresh list so the renderer applies one payload
+  // rather than re-fetching — the same contract the folder mutators use.
+  registerServer('inbox:setArchived', async (_e, threadIds: string[], archived: boolean) => {
+    await setArchived(threadIds, archived);
+    return chatList();
+  });
+  registerServer('inbox:snooze', async (_e, threadIds: string[], until: number | null) => {
+    await setSnooze(threadIds, until ?? null);
+    return chatList();
+  });
+  registerServer('inbox:setRead', async (_e, threadIds: string[], read: boolean) => {
+    await setRead(threadIds, read);
+    return chatList();
+  });
+  registerServer('inbox:markAllRead', async () => {
+    // Stamp against the threads the backend actually has, so a chat mid-creation
+    // (not yet listed) isn't silently marked read before the user ever sees it.
+    await markAllRead(await deps.runtime().listThreads());
     return chatList();
   });
 

@@ -1,5 +1,9 @@
 // Shared contracts between main, preload, and renderer. Single source of truth.
 
+import type { InboxState } from './inbox';
+
+export type { InboxEntry, InboxState } from './inbox';
+
 export type Role = 'user' | 'assistant' | 'system';
 
 /** How an assistant reply was generated, for the avatar tooltip. */
@@ -1172,6 +1176,13 @@ export interface ChatHistory {
 export interface ChatListResult {
   chats: ChatSummary[];
   folders: Folder[];
+  /**
+   * Per-thread read/archive/snooze state for the Inbox mode. Carried alongside the
+   * chats rather than stamped onto each ChatSummary because a summary is also
+   * produced by the backend runtime and by the renderer's optimistic rows, neither
+   * of which knows anything about the Inbox. See src/shared/inbox.ts.
+   */
+  inbox: InboxState;
 }
 
 // ---- App settings (Stem-owned, persisted by the main process) ----
@@ -1841,6 +1852,15 @@ export interface StemApi {
   deleteFolder(folderId: string): Promise<ChatListResult>;
   moveFolder(folderId: string, parentId: string | null): Promise<ChatListResult>;
   setChatFolder(threadId: string, folderId: string | null): Promise<ChatListResult>;
+
+  // Inbox: read/archive/snooze state for the Chats panel's Inbox mode. Every
+  // mutator takes a list of thread ids so a bulk selection is the same call as a
+  // single row, and returns the fresh list the way the folder mutators do.
+  setInboxArchived(threadIds: string[], archived: boolean): Promise<ChatListResult>;
+  /** Snooze until an epoch-ms instant, or pass null to wake the threads now. */
+  snoozeChats(threadIds: string[], until: number | null): Promise<ChatListResult>;
+  setInboxRead(threadIds: string[], read: boolean): Promise<ChatListResult>;
+  markInboxAllRead(): Promise<ChatListResult>;
 
   // App settings + Quick Chat overlay.
   getSettings(): Promise<AppSettings>;

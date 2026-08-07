@@ -15,6 +15,7 @@ import type {
   ThreadStatus
 } from '../shared/types';
 import { AUTH_PROVIDER_IDS, providerName } from '../shared/providers';
+import { emptyInboxState, isUnread, placement } from '../shared/inbox';
 import { resendAttachments } from './attachments';
 import { ChatView, type ChatViewHandle } from './chat/ChatView';
 import { OnboardingGate } from './onboarding/OnboardingGate';
@@ -117,7 +118,11 @@ export default function App() {
   // would inject. Reset on send (the draft is consumed) and mirrors the live draft.
   const [previewActive, setPreviewActive] = useState(false);
   const [previewDraft, setPreviewDraft] = useState('');
-  const [chatList, setChatList] = useState<ChatListResult>({ chats: [], folders: [] });
+  const [chatList, setChatList] = useState<ChatListResult>({
+    chats: [],
+    folders: [],
+    inbox: emptyInboxState()
+  });
   // Optimistic rows for chats created this session that the backend's thread/list hasn't
   // returned yet (a brand-new thread isn't listed until its first turn persists).
   // Keyed by threadId; dropped once the real list includes them.
@@ -194,8 +199,19 @@ export default function App() {
   const displayList = useMemo<ChatListResult>(() => {
     const known = new Set(chatList.chats.map((c) => c.threadId));
     const extras = Object.values(pendingChats).filter((c) => !known.has(c.threadId));
-    return extras.length ? { chats: [...extras, ...chatList.chats], folders: chatList.folders } : chatList;
+    return extras.length ? { ...chatList, chats: [...extras, ...chatList.chats] } : chatList;
   }, [chatList, pendingChats]);
+
+  // Unread threads sitting in the Inbox — the count badge on the Chats tab. Only
+  // the Inbox counts: an archived or snoozed thread is one you've decided about,
+  // and a badge you can't clear without un-archiving would be a nag, not a signal.
+  const inboxUnreadCount = useMemo(
+    () =>
+      displayList.chats.filter(
+        (c) => placement(c, displayList.inbox, Date.now()) === 'inbox' && isUnread(c, displayList.inbox)
+      ).length,
+    [displayList]
+  );
 
   // Thread ids that own at least one scheduled task → a clock badge on those chat rows.
   const scheduledThreadIds = useMemo(() => new Set(tasks.map((t) => t.threadId)), [tasks]);
@@ -396,6 +412,19 @@ export default function App() {
       routeEvent: (threadId) =>
         threadId && !deletedThreadsRef.current.has(threadId) ? threadId : null,
       settledStatus: (method, id) => {
+        // A settled turn bumps the thread's mtime, which is what the Inbox reads as
+        // "something happened here". If it happened in the chat you're looking at,
+        // stamp it read so your own reply can't mark the thread unread; otherwise
+        // leave it — the mtime now sits past readAt and the row goes bold on its own.
+        // Either way refresh the list so the Inbox and the tab badge stay honest.
+        if (id) {
+          if (id === activeThreadIdRef.current)
+            void window.stem
+              .setInboxRead([id], true)
+              .then(setChatList)
+              .catch(() => {});
+          else void refreshChats();
+        }
         if (method === 'turn/failed') return 'error';
         if (method === 'turn/completed') {
           // Mark unread (a solid dot) if it finished while another chat was open.
@@ -411,7 +440,7 @@ export default function App() {
       }
     });
     return events.detach;
-  }, [core, handlePossibleAuthFailure]);
+  }, [core, handlePossibleAuthFailure, refreshChats]);
 
   // Scheduled tasks: keep the list in sync (drives chat badges + the Tasks tab),
   // insert a collapsed run row into an open thread when a run starts, and raise the
@@ -714,6 +743,13 @@ export default function App() {
       draftSeqRef.current += 1;
       const request = openGateRef.current.begin();
       if (deletedThreadsRef.current.has(threadId)) return;
+      // Opening is what marks a thread read — the persisted half of clearing the
+      // unread dot below. Fire-and-forget: the row is already on screen and the
+      // returned list only settles the bold/not-bold, never the navigation.
+      void window.stem
+        .setInboxRead([threadId], true)
+        .then(setChatList)
+        .catch(() => {});
       const existing = core.store.getThread(threadId);
       // A scheduled run streamed into this thread while it was never open → its slice
       // is partial. Reload from disk unless a turn is actively streaming (which we'd
@@ -758,6 +794,20 @@ export default function App() {
   }, []);
   const onMoveChat = useCallback((threadId: string, folderId: string | null) => {
     window.stem.setChatFolder(threadId, folderId).then(setChatList);
+  }, []);
+
+  // Inbox triage. Like the folder mutators, each returns the fresh list.
+  const onArchive = useCallback((threadIds: string[], archived: boolean) => {
+    window.stem.setInboxArchived(threadIds, archived).then(setChatList);
+  }, []);
+  const onSnooze = useCallback((threadIds: string[], until: number | null) => {
+    window.stem.snoozeChats(threadIds, until).then(setChatList);
+  }, []);
+  const onSetRead = useCallback((threadIds: string[], read: boolean) => {
+    window.stem.setInboxRead(threadIds, read).then(setChatList);
+  }, []);
+  const onMarkAllRead = useCallback(() => {
+    window.stem.markInboxAllRead().then(setChatList);
   }, []);
   const onRenameChat = useCallback(
     async (threadId: string, name: string) => {
@@ -1121,6 +1171,11 @@ export default function App() {
             onRenameChat={onRenameChat}
             onDeleteChat={onDeleteChat}
             onMoveChat={onMoveChat}
+            onArchive={onArchive}
+            onSnooze={onSnooze}
+            onSetRead={onSetRead}
+            onMarkAllRead={onMarkAllRead}
+            inboxUnreadCount={inboxUnreadCount}
             activeRunning={cur.running}
             previewActive={previewActive}
             previewDraft={previewDraft}

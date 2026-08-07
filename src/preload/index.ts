@@ -253,6 +253,14 @@ const api: StemApi = {
   setChatFolder: (threadId: string, folderId: string | null) =>
     ipcRenderer.invoke('chats:setFolder', threadId, folderId),
 
+  setInboxArchived: (threadIds: string[], archived: boolean) =>
+    ipcRenderer.invoke('inbox:setArchived', threadIds, archived),
+  snoozeChats: (threadIds: string[], until: number | null) =>
+    ipcRenderer.invoke('inbox:snooze', threadIds, until),
+  setInboxRead: (threadIds: string[], read: boolean) =>
+    ipcRenderer.invoke('inbox:setRead', threadIds, read),
+  markInboxAllRead: () => ipcRenderer.invoke('inbox:markAllRead'),
+
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateQuickChat: (patch: Partial<QuickChatSettings>) => ipcRenderer.invoke('settings:updateQuickChat', patch),
   getQuickChatShortcutStatus: () => ipcRenderer.invoke('quickchat:shortcutStatus'),

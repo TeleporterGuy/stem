@@ -1163,6 +1163,24 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   background: var(--danger);
   box-shadow: 0 0 0 1.5px var(--panel);
 }
+/* Unread-inbox count on the Chats tab. Same anchor as .tab-alert-dot, but it
+   carries a number and is accent-colored — this is a "there's something for you",
+   not the red "something is broken" the alert dot means. */
+.tab-count-badge {
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  min-width: 14px;
+  padding: 0 3px;
+  font-size: var(--fs-10);
+  line-height: 14px;
+  text-align: center;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--paper);
+  box-shadow: 0 0 0 1.5px var(--panel);
+  font-variant-numeric: tabular-nums;
+}
 
 /* Recall v2 trust/provenance controls. */
 .memory-rebuild-card, .memory-conflicts { display: grid; gap: var(--sp-2); }
@@ -1272,6 +1290,75 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   color: var(--ink);
   outline: none;
 }
+
+/* ---- inbox: modes, unread, triage actions ---- */
+/* The Inbox/Chats/Archived control sits directly under the panel header, flush with
+   the list below it — the chat list is a native-feeling sidebar, not a settings
+   surface, so it stays out of a .formgroup card the way the tree already does. */
+.seg-ctl.chats-modes { margin: 2px 12px 6px; }
+.seg-ctl.chats-modes button { gap: var(--sp-2); display: inline-flex; align-items: center; justify-content: center; }
+/* Dropping a chat row here archives it. Mirrors .group-row.drop-target. */
+.seg-ctl.chats-modes button.drop-target { background: var(--sel); color: var(--ink); }
+.seg-count {
+  font-size: var(--fs-10);
+  font-weight: 700;
+  color: var(--accent);
+}
+/* Unread reads as weight + a leading accent dot, not color: the row's title is
+   already the only strong thing on it, so tinting the text would fight the
+   selected state. */
+.chats-panel .group-row.chat-row.unread .row-main strong { font-weight: 600; }
+.chats-panel .group-row.chat-row.unread .row-icon.chat { color: var(--accent); }
+/* Multi-selection: a tint plus an accent edge, so it stays distinguishable from
+   the single "currently open" row, which uses the tint alone. */
+.chats-panel .group-row.chat-row.multi { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); }
+.chat-actions { flex: none; display: inline-flex; align-items: center; gap: var(--sp-1); opacity: 0; transition: opacity var(--motion-fast) ease; }
+.chats-panel .group-row:hover .chat-actions, .chats-panel .group-row.multi .chat-actions { opacity: 1; }
+.chat-action {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 2px;
+  display: inline-flex;
+  align-items: center;
+}
+.chat-action:hover { color: var(--ink); }
+/* Wake time on a snoozed row — recessive, and it must not shove the title. */
+.chat-wake { flex: none; font-size: var(--fs-10); color: var(--muted); white-space: nowrap; }
+.inbox-snoozed-toggle { margin: 10px 12px 4px; font-size: var(--fs-11); }
+/* Bulk-action bar: present only while a selection exists. */
+.inbox-selbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin: 0 12px 6px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--sel);
+}
+.inbox-selbar-count { font-size: var(--fs-11); color: var(--ink); }
+.inbox-selbar-actions { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.inbox-selbar-actions .link-btn { font-size: var(--fs-11); }
+/* Snooze popover: a .ctx-menu with a right-aligned resolved time per preset. */
+.snooze-menu button { justify-content: space-between; gap: var(--sp-6); }
+.snooze-when { color: var(--muted); font-variant-numeric: tabular-nums; }
+.snooze-custom { display: flex; align-items: center; gap: var(--sp-3); padding: 4px 9px 6px; }
+.snooze-custom input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--fs-11);
+  padding: 2px 4px;
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--field);
+  color: var(--ink);
+  outline: none;
+}
+.snooze-custom input:focus { border-color: var(--accent); }
+.snooze-custom .link-btn { font-size: var(--fs-11); }
 
 /* ---- chat search ---- */
 .chat-search {

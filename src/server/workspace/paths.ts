@@ -149,6 +149,19 @@ export function chatStorePath(): string {
 }
 
 /**
+ * Stem-owned inbox store: per-thread read/archive/snooze state for the Chats
+ * panel's Inbox mode. Deliberately its own file rather than a section of
+ * folders.json — the Inbox is a separate namespace from the chat folder tree
+ * (it will grow its own folders), and keeping them apart means a corrupt or
+ * hand-edited file only costs one of the two.
+ */
+export function inboxStorePath(): string {
+  // STEM_INBOX_STORE lets unit tests point at a throwaway file, like the other
+  // store path helpers.
+  return process.env.STEM_INBOX_STORE ?? join(userDataRoot(), 'inbox.json');
+}
+
+/**
  * Stem-owned registry of external "connected folders" the assistant may read in
  * place (e.g. an Obsidian vault). Holds only absolute paths + per-folder mode and
  * memorize flags — the folders themselves stay where they live on disk.

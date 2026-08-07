@@ -29,6 +29,12 @@ export type ManagePanelProps = ChatListProps &
   ActiveFactsViewProps & {
     /** A signed-in provider whose credential is dead — flags Settings with a red dot. */
     authDeadProvider?: string | null;
+    /**
+     * Unread threads waiting in the Inbox → a count badge on the Chats tab. This is
+     * the only signal a snoozed thread gives when it wakes: it returns to the Inbox
+     * quietly rather than raising a window, so the rail has to say so.
+     */
+    inboxUnreadCount?: number;
   };
 
 function ManagePanelImpl({
@@ -41,6 +47,7 @@ function ManagePanelImpl({
   previewDraft,
   onTogglePreview,
   authDeadProvider,
+  inboxUnreadCount = 0,
   ...chatProps
 }: ManagePanelProps) {
   const activeFacts: ActiveFactsViewProps = {
@@ -55,23 +62,38 @@ function ManagePanelImpl({
     <div className="manage">
       <div className="insp-tabs">
         <div className="insp-seg">
-          {TABS.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              className={tab === id ? 'active' : ''}
-              aria-label={label}
-              onClick={() => setTab(id)}
-            >
-              <Icon size={16} />
-              {/* Styled hover/focus tooltip replaces the native title (which is
-                  slow to appear and can't be styled). aria-hidden: the button's
-                  aria-label already carries the name. */}
-              <span className="insp-tab-tip" aria-hidden="true">
-                {id === 'settings' && authDeadProvider ? `${label} — a provider needs reconnecting` : label}
-              </span>
-              {id === 'settings' && authDeadProvider && <span className="tab-alert-dot" />}
-            </button>
-          ))}
+          {TABS.map(({ id, label, icon: Icon }) => {
+            const unread = id === 'chats' && inboxUnreadCount > 0 ? inboxUnreadCount : 0;
+            const tip =
+              id === 'settings' && authDeadProvider
+                ? `${label} — a provider needs reconnecting`
+                : unread
+                  ? `${label} — ${unread} unread`
+                  : label;
+            return (
+              <button
+                key={id}
+                className={tab === id ? 'active' : ''}
+                aria-label={unread ? `${label}, ${unread} unread` : label}
+                onClick={() => setTab(id)}
+              >
+                <Icon size={16} />
+                {/* Styled hover/focus tooltip replaces the native title (which is
+                    slow to appear and can't be styled). aria-hidden: the button's
+                    aria-label already carries the name. */}
+                <span className="insp-tab-tip" aria-hidden="true">
+                  {tip}
+                </span>
+                {id === 'settings' && authDeadProvider && <span className="tab-alert-dot" />}
+                {/* Capped at 99+ so a long-ignored Inbox can't widen the rail. */}
+                {unread > 0 && (
+                  <span className="tab-count-badge" aria-hidden="true">
+                    {unread > 99 ? '99+' : unread}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
       <div className={`manage-body${tab === 'chats' ? ' chats' : ''}`}>

@@ -111,6 +111,11 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'chats:rename': [a.string, a.string],
   'chats:delete': [a.string],
   'chats:setFolder': [a.string, a.nullish(a.string)],
+  // Inbox mutators take a list of thread ids so bulk selection and a single row
+  // are one code path. ('inbox:markAllRead' takes no arguments, so it is absent.)
+  'inbox:setArchived': [a.stringArray, a.boolean],
+  'inbox:snooze': [a.stringArray, a.nullish(a.number)],
+  'inbox:setRead': [a.stringArray, a.boolean],
   'folders:create': [a.string, a.nullish(a.string)],
   'folders:rename': [a.string, a.string],
   'folders:delete': [a.string],

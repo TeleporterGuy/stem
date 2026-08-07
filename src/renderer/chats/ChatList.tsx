@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlarmClock,
+  AlarmClockOff,
+  Archive,
+  ArchiveRestore,
+  CheckCheck,
   ChevronRight,
   Clock,
   Folder as FolderIcon,
@@ -11,8 +16,11 @@ import {
   X
 } from 'lucide-react';
 import type { ChatListResult, ChatSearchHit, ChatSummary, Folder, ThreadStatus } from '../../shared/types';
+import { formatWake, isUnread, nextWakeAt, placement } from '../../shared/inbox';
 import { stripCiteMarkers } from '../../shared/citations';
 import { useShortcut } from '../shortcuts';
+import { SnoozeMenu } from './SnoozeMenu';
+import { SelectionBar } from './SelectionBar';
 
 export interface ChatListProps {
   data: ChatListResult;
@@ -31,12 +39,33 @@ export interface ChatListProps {
   onRenameChat: (threadId: string, name: string) => void;
   onDeleteChat: (threadId: string) => void;
   onMoveChat: (threadId: string, folderId: string | null) => void;
+  /** Inbox triage. All take a list so a bulk selection is the same call. */
+  onArchive: (threadIds: string[], archived: boolean) => void;
+  /** `until` is epoch ms; null wakes the threads now. */
+  onSnooze: (threadIds: string[], until: number | null) => void;
+  onSetRead: (threadIds: string[], read: boolean) => void;
+  onMarkAllRead: () => void;
 }
 
 // Drag payloads. We tag the kind so a folder drop zone knows whether it caught a
 // chat (→ assign folder) or another folder (→ reparent, cycle-guarded main-side).
 const CHAT_MIME = 'application/x-stem-chat';
 const FOLDER_MIME = 'application/x-stem-folder';
+
+/**
+ * The panel's three modes. Inbox and Archived are flat, date-bucketed views over
+ * every thread; Chats is the folder tree, untouched. Chat folders and inbox state
+ * are deliberately independent namespaces — filing a thread under Chats › Work
+ * does not take it out of the Inbox, and archiving does not hide it from the tree
+ * or from search.
+ */
+type Mode = 'inbox' | 'chats' | 'archived';
+
+const MODES: { id: Mode; label: string }[] = [
+  { id: 'inbox', label: 'Inbox' },
+  { id: 'chats', label: 'Chats' },
+  { id: 'archived', label: 'Archived' }
+];
 
 // Normalize Unix-seconds (real chats) vs ms (optimistic pending rows), then bucket
 // by updatedAt the way ChatGPT/Claude group their sidebars.
@@ -93,16 +122,38 @@ type Creating = { parentId: string | null; value: string };
 type Menu =
   | { kind: 'chat'; id: string; x: number; y: number }
   | { kind: 'folder'; id: string; x: number; y: number };
+/** An open snooze popover and the threads it will apply to. */
+type Snoozing = { ids: string[]; x: number; y: number };
 
 export function ChatList(props: ChatListProps) {
   const { data, activeThreadId, onOpen } = props;
+  const [mode, setMode] = useState<Mode>('inbox');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<Editing | null>(null);
   const [creating, setCreating] = useState<Creating | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [dropTarget, setDropTarget] = useState<string | 'root' | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | 'root' | 'archive' | null>(null);
+  const [snoozing, setSnoozing] = useState<Snoozing | null>(null);
+  const [snoozedOpen, setSnoozedOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Anchor for shift-click ranges: the last row touched without shift.
+  const anchorRef = useRef<string | null>(null);
+
+  // ---- the clock ----
+  // A snoozed thread returns to the Inbox on its own, so the list has to re-render
+  // at that instant. We schedule ONE timeout for the earliest wake time rather than
+  // polling: an interval here would be the "missing subscription" the UI
+  // conventions warn about, but this is a known future transition with an exact
+  // time, which a timer expresses precisely.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const at = nextWakeAt(data.chats, data.inbox, now);
+    if (at == null) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(250, at - Date.now()));
+    return () => clearTimeout(timer);
+  }, [data, now]);
 
   // ---- search ----
   // The search box is collapsed to a header icon by default so it costs no vertical
@@ -220,6 +271,103 @@ export function ChatList(props: ChatListProps) {
   const folderChats = (folderId: string | null): ChatSummary[] =>
     data.chats.filter((c) => c.folderId === folderId);
 
+  // ---- inbox partition ----
+  // `data.chats` already arrives newest-first; the buckets inherit that. Snoozed
+  // rows re-sort by wake time, which is the order you'd want to review them in.
+  const buckets = useMemo(() => {
+    const inbox: ChatSummary[] = [];
+    const snoozed: ChatSummary[] = [];
+    const archived: ChatSummary[] = [];
+    for (const chat of data.chats) {
+      const where = placement(chat, data.inbox, now);
+      if (where === 'snoozed') snoozed.push(chat);
+      else if (where === 'archived') archived.push(chat);
+      else inbox.push(chat);
+    }
+    snoozed.sort(
+      (a, b) =>
+        (data.inbox.entries[a.threadId]?.snoozedUntil ?? 0) -
+        (data.inbox.entries[b.threadId]?.snoozedUntil ?? 0)
+    );
+    return { inbox, snoozed, archived };
+  }, [data, now]);
+
+  const unreadCount = useMemo(
+    () => buckets.inbox.filter((c) => isUnread(c, data.inbox)).length,
+    [buckets.inbox, data.inbox]
+  );
+
+  // ---- selection ----
+  // Only the flat modes select; the tree keeps its single meaning (click = open).
+  const selectable = mode !== 'chats' && results === null && !searching;
+  const flatOrder = mode === 'archived' ? buckets.archived : buckets.inbox;
+
+  const clearSelection = useCallback(() => {
+    setSelected((prev) => (prev.size ? new Set() : prev));
+    anchorRef.current = null;
+  }, []);
+
+  // Leaving the flat modes (or starting a search) drops a selection that would
+  // otherwise apply to rows nobody can see.
+  useEffect(() => {
+    if (!selectable) clearSelection();
+  }, [selectable, clearSelection]);
+
+  useEffect(() => {
+    if (!selected.size) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') clearSelection();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [selected.size, clearSelection]);
+
+  const onChatClick = (chat: ChatSummary) => (e: React.MouseEvent) => {
+    if (selectable && (e.metaKey || e.ctrlKey)) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(chat.threadId)) next.delete(chat.threadId);
+        else next.add(chat.threadId);
+        return next;
+      });
+      anchorRef.current = chat.threadId;
+      return;
+    }
+    if (selectable && e.shiftKey && anchorRef.current) {
+      const ids = flatOrder.map((c) => c.threadId);
+      const from = ids.indexOf(anchorRef.current);
+      const to = ids.indexOf(chat.threadId);
+      if (from !== -1 && to !== -1) {
+        const [lo, hi] = from <= to ? [from, to] : [to, from];
+        setSelected((prev) => {
+          const next = new Set(prev);
+          for (const id of ids.slice(lo, hi + 1)) next.add(id);
+          return next;
+        });
+        return;
+      }
+    }
+    // A plain click always means "open this thread" — and drops any selection,
+    // so the selection bar can never act on rows you've moved on from.
+    clearSelection();
+    anchorRef.current = chat.threadId;
+    onOpen(chat.threadId);
+  };
+
+  /** Act on the selection when the clicked row is part of it, else on that row alone. */
+  const targets = (threadId: string): string[] =>
+    selected.has(threadId) ? [...selected] : [threadId];
+
+  const archive = (threadIds: string[], archived: boolean) => {
+    props.onArchive(threadIds, archived);
+    clearSelection();
+  };
+  const openSnooze = (ids: string[], e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSnoozing({ ids, x: e.clientX, y: e.clientY });
+  };
+
   // ---- drag + drop ----
   const onDrop = (target: string | null) => (e: React.DragEvent) => {
     e.preventDefault();
@@ -233,13 +381,22 @@ export function ChatList(props: ChatListProps) {
     const folderId = e.dataTransfer.getData(FOLDER_MIME);
     if (folderId && folderId !== target) props.onMoveFolder(folderId, target);
   };
-  const allowDrop = (target: string | 'root') => (e: React.DragEvent) => {
+  const allowDrop = (target: string | 'root' | 'archive') => (e: React.DragEvent) => {
     e.preventDefault();
     // Folder rows nest inside the root group, which is itself a drop zone. Without
     // stopping propagation the dragover bubbles up and the group overrides the
     // target to 'root', lighting up the whole list instead of the hovered folder.
     e.stopPropagation();
     setDropTarget(target);
+  };
+  // Dropping a row on the Archived segment archives it — the same gesture the tree
+  // already uses to file a chat, pointed at the one destination that isn't a folder.
+  const onDropArchive = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDropTarget(null);
+    const chatId = e.dataTransfer.getData(CHAT_MIME);
+    if (chatId) archive(targets(chatId), true);
   };
 
   // ---- inline edit commit ----
@@ -333,20 +490,39 @@ export function ChatList(props: ChatListProps) {
     );
   };
 
-  const renderChat = (chat: ChatSummary, depth: number) => {
+  /**
+   * One chat row. `variant` decides which triage actions it offers: an inbox row
+   * can be snoozed or archived, an archived row moved back, a snoozed row woken.
+   * The tree ('none') keeps its original chrome so the Chats mode is unchanged.
+   */
+  const renderChat = (
+    chat: ChatSummary,
+    depth: number,
+    variant: 'none' | 'inbox' | 'archived' | 'snoozed' = 'none'
+  ) => {
     const isEditing = editing?.kind === 'chat' && editing.id === chat.threadId;
     const status = props.statuses[chat.threadId] ?? 'idle';
+    const unread = isUnread(chat, data.inbox);
+    const wake = data.inbox.entries[chat.threadId]?.snoozedUntil;
+    const isSelected = selected.has(chat.threadId);
     return (
       <div
         key={chat.threadId}
-        className={`group-row chat-row${chat.threadId === activeThreadId ? ' selected' : ''}`}
+        className={[
+          'group-row chat-row',
+          chat.threadId === activeThreadId ? 'selected' : '',
+          unread ? 'unread' : '',
+          isSelected ? 'multi' : ''
+        ]
+          .filter(Boolean)
+          .join(' ')}
         style={{ paddingLeft: 12 + depth * 14 }}
         draggable={!isEditing}
         onDragStart={(e) => {
           e.dataTransfer.setData(CHAT_MIME, chat.threadId);
           e.dataTransfer.effectAllowed = 'move';
         }}
-        onClick={() => onOpen(chat.threadId)}
+        onClick={onChatClick(chat)}
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -367,9 +543,52 @@ export function ChatList(props: ChatListProps) {
             <strong title={chat.title}>{chat.title}</strong>
           )}
         </span>
+        {variant === 'snoozed' && wake != null && (
+          <span className="chat-wake">{formatWake(wake, now)}</span>
+        )}
         {!isEditing && props.scheduledThreadIds?.has(chat.threadId) && (
           <span className="chat-sched-badge" title="Has a scheduled task" aria-label="Has a scheduled task">
             <Clock size={11} />
+          </span>
+        )}
+        {!isEditing && variant !== 'none' && (
+          <span className="chat-actions">
+            {variant === 'inbox' && (
+              <button
+                className="chat-action"
+                title="Snooze"
+                aria-label="Snooze"
+                onClick={(e) => openSnooze(targets(chat.threadId), e)}
+              >
+                <AlarmClock size={13} />
+              </button>
+            )}
+            {variant === 'snoozed' && (
+              <button
+                className="chat-action"
+                title="Un-snooze"
+                aria-label="Un-snooze"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  props.onSnooze([chat.threadId], null);
+                }}
+              >
+                <AlarmClockOff size={13} />
+              </button>
+            )}
+            {variant !== 'snoozed' && (
+              <button
+                className="chat-action"
+                title={variant === 'archived' ? 'Move to Inbox' : 'Archive'}
+                aria-label={variant === 'archived' ? 'Move to Inbox' : 'Archive'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  archive(targets(chat.threadId), variant !== 'archived');
+                }}
+              >
+                {variant === 'archived' ? <ArchiveRestore size={13} /> : <Archive size={13} />}
+              </button>
+            )}
           </span>
         )}
       </div>
@@ -387,6 +606,25 @@ export function ChatList(props: ChatListProps) {
         </span>
       </div>
     );
+
+  /** Date-bucketed rows for the flat (Inbox / Archived) modes. */
+  const renderBuckets = (chats: ChatSummary[], variant: 'inbox' | 'archived'): React.ReactNode[] => {
+    let lastKey: string | null = null;
+    const rows: React.ReactNode[] = [];
+    for (const c of chats) {
+      const b = dateBucket(c.updatedAt, now);
+      if (b.key !== lastKey) {
+        rows.push(
+          <div key={`h-${b.key}`} className="chat-date-head">
+            {b.label}
+          </div>
+        );
+        lastKey = b.key;
+      }
+      rows.push(renderChat(c, 0, variant));
+    }
+    return rows;
+  };
 
   // Flat, ranked search results replace the tree while a search is active. Rows reuse
   // the chat-row look but carry a why-it-matched snippet and skip drag/drop + context
@@ -415,12 +653,18 @@ export function ChatList(props: ChatListProps) {
   };
 
   const isEmpty = data.chats.length === 0 && data.folders.length === 0;
+  const showingSearch = searching || results !== null;
 
   return (
     <div className="chats-panel">
       <div className="grp-head chats-head">
-        <span>Chats</span>
+        <span>{MODES.find((m) => m.id === mode)?.label}</span>
         <span className="grp-head-actions">
+          {mode === 'inbox' && unreadCount > 0 && (
+            <button className="grp-head-add" title="Mark all as read" onClick={props.onMarkAllRead}>
+              <CheckCheck size={14} />
+            </button>
+          )}
           <button
             className={`grp-head-add${searchOpen ? ' active' : ''}`}
             title="Search chats (⌘F)"
@@ -428,21 +672,51 @@ export function ChatList(props: ChatListProps) {
           >
             <Search size={14} />
           </button>
-          <button
-            className="grp-head-add"
-            title="New thread"
-            onClick={() => props.onNewChat(null)}
-          >
-            <SquarePen size={14} />
-          </button>
-          <button
-            className="grp-head-add"
-            title="New folder"
-            onClick={() => setCreating({ parentId: null, value: '' })}
-          >
-            <FolderPlus size={14} />
-          </button>
+          {mode !== 'archived' && (
+            <button
+              className="grp-head-add"
+              title="New thread"
+              onClick={() => props.onNewChat(null)}
+            >
+              <SquarePen size={14} />
+            </button>
+          )}
+          {mode === 'chats' && (
+            <button
+              className="grp-head-add"
+              title="New folder"
+              onClick={() => setCreating({ parentId: null, value: '' })}
+            >
+              <FolderPlus size={14} />
+            </button>
+          )}
         </span>
+      </div>
+      {/* Grouped and labelled: the rail's Chats tab and this control's Chats
+          segment share a name, so the group is what tells them apart. */}
+      <div className="seg-ctl chats-modes" role="group" aria-label="Chat list mode">
+        {MODES.map((m) => (
+          <button
+            key={m.id}
+            className={[
+              mode === m.id ? 'active' : '',
+              m.id === 'archived' && dropTarget === 'archive' ? 'drop-target' : ''
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            onClick={() => setMode(m.id)}
+            {...(m.id === 'archived'
+              ? {
+                  onDragOver: allowDrop('archive'),
+                  onDragLeave: () => setDropTarget((t) => (t === 'archive' ? null : t)),
+                  onDrop: onDropArchive
+                }
+              : {})}
+          >
+            {m.label}
+            {m.id === 'inbox' && unreadCount > 0 && <span className="seg-count">{unreadCount}</span>}
+          </button>
+        ))}
       </div>
       {searchOpen && (
         <div className="chat-search">
@@ -475,15 +749,28 @@ export function ChatList(props: ChatListProps) {
           )}
         </div>
       )}
+      {selected.size > 0 && (
+        <SelectionBar
+          count={selected.size}
+          archived={mode === 'archived'}
+          onSnooze={(e) => openSnooze([...selected], e)}
+          onArchive={() => archive([...selected], mode !== 'archived')}
+          onMarkRead={() => {
+            props.onSetRead([...selected], true);
+            clearSelection();
+          }}
+          onClear={clearSelection}
+        />
+      )}
       <div
         className={`group chats-group${dropTarget === 'root' ? ' drop-target' : ''}`}
-        onDragOver={allowDrop('root')}
+        onDragOver={mode === 'chats' ? allowDrop('root') : undefined}
         onDragLeave={() => setDropTarget((t) => (t === 'root' ? null : t))}
-        onDrop={onDrop(null)}
+        onDrop={mode === 'chats' ? onDrop(null) : undefined}
       >
-        {searching || results !== null ? (
+        {showingSearch ? (
           renderResults()
-        ) : (
+        ) : mode === 'chats' ? (
           <>
             {isEmpty && !creating && (
               <div className="group-row">
@@ -494,7 +781,6 @@ export function ChatList(props: ChatListProps) {
             )}
             {childFolders(null).map((f) => renderFolder(f, 0))}
             {(() => {
-              const now = Date.now();
               let lastKey: string | null = null;
               const rows: React.ReactNode[] = [];
               for (const c of folderChats(null)) {
@@ -513,8 +799,55 @@ export function ChatList(props: ChatListProps) {
             })()}
             {creating && creating.parentId === null && renderCreateRow(0)}
           </>
+        ) : mode === 'archived' ? (
+          <>
+            {buckets.archived.length === 0 && (
+              <div className="group-row">
+                <span className="row-main">
+                  <em>Nothing archived yet.</em>
+                </span>
+              </div>
+            )}
+            {renderBuckets(buckets.archived, 'archived')}
+          </>
+        ) : (
+          <>
+            {buckets.inbox.length === 0 && (
+              <div className="group-row">
+                <span className="row-main">
+                  <em>{isEmpty ? 'No chats yet — start a conversation.' : 'Inbox zero — nothing waiting.'}</em>
+                </span>
+              </div>
+            )}
+            {renderBuckets(buckets.inbox, 'inbox')}
+            {buckets.snoozed.length > 0 && (
+              <>
+                <button
+                  className="memory-view-toggle inbox-snoozed-toggle"
+                  onClick={() => setSnoozedOpen((v) => !v)}
+                >
+                  <ChevronRight size={13} className={snoozedOpen ? 'open' : ''} />
+                  Snoozed ({buckets.snoozed.length})
+                </button>
+                {snoozedOpen && buckets.snoozed.map((c) => renderChat(c, 0, 'snoozed'))}
+              </>
+            )}
+          </>
         )}
       </div>
+      {snoozing && (
+        <SnoozeMenu
+          x={snoozing.x}
+          y={snoozing.y}
+          count={snoozing.ids.length}
+          onPick={(until) => {
+            props.onSnooze(snoozing.ids, until);
+            setSnoozing(null);
+            clearSelection();
+          }}
+          onClose={() => setSnoozing(null)}
+        />
+      )}
       {menu && (
         <div
           ref={menuRef}
@@ -533,6 +866,57 @@ export function ChatList(props: ChatListProps) {
               <FolderPlus size={13} /> New subfolder
             </button>
           )}
+          {menu.kind === 'chat' &&
+            (() => {
+              const ids = targets(menu.id);
+              const chat = data.chats.find((c) => c.threadId === menu.id);
+              const where = chat ? placement(chat, data.inbox, now) : 'inbox';
+              const unread = chat ? isUnread(chat, data.inbox) : false;
+              return (
+                <>
+                  <button
+                    onClick={() => {
+                      archive(ids, where !== 'archived');
+                      closeMenu();
+                    }}
+                  >
+                    {where === 'archived' ? 'Move to Inbox' : 'Archive'}
+                  </button>
+                  {where === 'snoozed' ? (
+                    <button
+                      onClick={() => {
+                        props.onSnooze(ids, null);
+                        closeMenu();
+                      }}
+                    >
+                      Un-snooze
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        // Reopen as the snooze popover at the same spot.
+                        const at = { x: menu.x, y: menu.y };
+                        closeMenu();
+                        e.stopPropagation();
+                        setSnoozing({ ids, ...at });
+                      }}
+                    >
+                      Snooze…
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      props.onSetRead(ids, unread);
+                      clearSelection();
+                      closeMenu();
+                    }}
+                  >
+                    {unread ? 'Mark as read' : 'Mark as unread'}
+                  </button>
+                  <div className="ctx-sep" />
+                </>
+              );
+            })()}
           <button
             onClick={() => {
               const name =

@@ -12,6 +12,19 @@ Maintainer notes:
   date, tag.
 -->
 
+## 0.4.0 — Unreleased
+
+### Added
+
+- **An Inbox for your chats.** The chat list now opens on an Inbox that works like mail. Every
+  thread waits there until you archive it or snooze it for later, and a thread that has something
+  new in it — a scheduled task that ran overnight, a reply you never came back to — shows in bold
+  with a count on the Chats tab. Unread survives quitting the app. Snoozed threads sit in a group
+  at the bottom with the time they come back, and anything new in a snoozed or archived thread
+  brings it straight back to the Inbox. Archiving only affects the Inbox: the thread stays exactly
+  where it was in your folders and still turns up in search. Hold ⌘ to pick several threads and
+  archive or snooze them in one go.
+
 ## 0.3.0 — 2026-08-04
 
 ### Added
