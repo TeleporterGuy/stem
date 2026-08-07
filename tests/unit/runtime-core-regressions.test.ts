@@ -591,6 +591,71 @@ describe('pi RPC failure handling', () => {
   });
 });
 
+describe('prompting a pi that says it is still busy', () => {
+  // The turn gate opens on agent_settled, which is right on every path this code
+  // controls — and still not the whole truth, because pi refuses a prompt while its
+  // own isStreaming is set. When the two disagree the user got a dead-end error in
+  // the composer for a message pi never looked at. The rejection is a "not yet":
+  // poll pi's own state, then send again. Nothing was queued on pi's side (the
+  // refusal happens in its preflight), so the re-send cannot duplicate a message.
+  type FakeProc = { request: (command: { type: string }) => Promise<{ success: boolean; error?: string; data?: unknown }> };
+  const BUSY = "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.";
+
+  it('waits for pi to go idle and sends the prompt once more', async () => {
+    const { runtime } = await tempRuntime();
+    const sent: string[] = [];
+    let streaming = true;
+    const internal = runtime as unknown as { proc: FakeProc; sendPrompt: (message: string, images: unknown[]) => Promise<void> };
+    internal.proc = {
+      request: async (command) => {
+        sent.push(command.type);
+        if (command.type === 'get_state') {
+          // Busy on the first look, idle on the second: the post-run work finishes
+          // while we are asking.
+          const wasStreaming = streaming;
+          streaming = false;
+          return { success: true, data: { isStreaming: wasStreaming } };
+        }
+        // Only the first prompt lands mid-run.
+        return sent.filter((t) => t === 'prompt').length === 1 ? { success: false, error: BUSY } : { success: true };
+      }
+    };
+
+    await expect(internal.sendPrompt('hello', [])).resolves.toBeUndefined();
+    expect(sent.filter((type) => type === 'prompt')).toHaveLength(2);
+  });
+
+  it('surfaces the rejection when pi cannot say whether it is idle', async () => {
+    const { runtime } = await tempRuntime();
+    const sent: string[] = [];
+    const internal = runtime as unknown as { proc: FakeProc; sendPrompt: (message: string, images: unknown[]) => Promise<void> };
+    internal.proc = {
+      request: async (command) => {
+        sent.push(command.type);
+        return command.type === 'get_state' ? { success: false, error: 'no state' } : { success: false, error: BUSY };
+      }
+    };
+
+    await expect(internal.sendPrompt('hello', [])).rejects.toThrow('already processing');
+    expect(sent.filter((type) => type === 'prompt')).toHaveLength(1);
+  });
+
+  it('does not re-send a prompt pi rejected for any other reason', async () => {
+    const { runtime } = await tempRuntime();
+    const sent: string[] = [];
+    const internal = runtime as unknown as { proc: FakeProc; sendPrompt: (message: string, images: unknown[]) => Promise<void> };
+    internal.proc = {
+      request: async (command) => {
+        sent.push(command.type);
+        return { success: false, error: 'No API key found for provider "openai-codex".' };
+      }
+    };
+
+    await expect(internal.sendPrompt('hello', [])).rejects.toThrow('No API key found');
+    expect(sent).toEqual(['prompt']);
+  });
+});
+
 describe('readThread meta hydration', () => {
   // Reopened chats must keep the per-reply model/effort hover label ("Stem ·
   // <model> · <effort>"). It regressed silently in the codex→pi migration: the

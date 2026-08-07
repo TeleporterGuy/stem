@@ -204,6 +204,19 @@ function skillUsageLookup(): (slug: string) => SkillUsageStat | undefined {
 // forgotten card does not pin a pi tool call open for the rest of the session.
 const SKILL_APPROVAL_TIMEOUT_MS = 120_000;
 
+// How long a prompt waits for a pi that says it is still busy, and how often it
+// asks. The wait covers post-run work the turn gate cannot see the end of —
+// auto-retry backoff, a threshold compaction — which is seconds, not minutes;
+// past that, pi is wedged rather than working and the user is better served by
+// the error (the composer keeps the message, with retry/edit on the bubble).
+const PI_IDLE_WAIT_MS = 30_000;
+const PI_IDLE_POLL_MS = 250;
+
+/** pi refusing a prompt because a run is still in flight — a "not yet", not a failure. */
+function isBusyRejection(error: string | undefined): boolean {
+  return /already processing/i.test(error ?? '');
+}
+
 /** Pull the target file/dir path out of a raw pi tool_execution_start event, if any. */
 function readToolPath(ev: PiEvent): string | null {
   const nested = toolArgsOf(ev);
@@ -726,12 +739,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         // phase bucket (it's TTFT, not thinking) — see advancePhase.
         turn.promptSentAt = Date.now();
         turn.lastEventAt = turn.promptSentAt;
-        const res = await this.proc!.request({
-          type: 'prompt',
-          message,
-          images: images.length ? images : undefined
-        });
-        if (!res.success) throw new Error(res.error ?? 'pi rejected the prompt.');
+        await this.sendPrompt(message, images);
       } catch (e) {
         this.finishTurn();
         throw e;
@@ -757,6 +765,60 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       }
       return { threadId, turnId };
     });
+  }
+
+  /**
+   * Hand the prompt to pi — and survive pi disagreeing about whether it is idle.
+   *
+   * The foreground gate (claimTurn → agent_settled) is what normally guarantees pi
+   * is free by the time we get here, and it is right on every path we control. It
+   * is not the whole truth, though: pi refuses a prompt while its OWN
+   * `session.isStreaming` is set, which covers post-run work the gate can only
+   * learn about through an event — and an event that never arrives (or arrives
+   * before pi is really done) leaves the gate open over a busy pi. The result was
+   * a dead-end error in the composer for a message pi had not even looked at, on
+   * a thread the user could send to again seconds later.
+   *
+   * So the rejection is treated as what it is — a "not yet", not a failure. pi's
+   * own `get_state` is polled until it reports itself idle, and the prompt goes
+   * once more. Re-sending is safe precisely because this rejection happens in
+   * pi's preflight: nothing was queued, appended, or sent to a provider, so there
+   * is no half-delivered message to duplicate.
+   *
+   * It is also the only place this ever gets recorded. The stall left no trace in
+   * stem.log at all — the throw went straight to the renderer — so the log line
+   * below is how a recurrence gets a duration attached to it.
+   */
+  private async sendPrompt(message: string, images: PiImageContent[]): Promise<void> {
+    const command = { type: 'prompt', message, images: images.length ? images : undefined };
+    let res = await this.proc!.request(command);
+    if (!res.success && isBusyRejection(res.error)) {
+      const waitedFrom = Date.now();
+      const idle = await this.waitForPiIdle();
+      log('pi', 'pi was still busy after the turn gate opened', {
+        waitedMs: Date.now() - waitedFrom,
+        idle
+      });
+      if (idle) res = await this.proc!.request(command);
+    }
+    if (!res.success) throw new Error(res.error ?? 'pi rejected the prompt.');
+  }
+
+  /**
+   * Poll pi until it reports no run in flight. Deliberately polled rather than
+   * waiting on `agent_settled`: a missing settle event is the very thing this
+   * recovers from, so waiting for one would hang on exactly the case that matters.
+   * Returns false on timeout, leaving the original rejection to surface.
+   */
+  private async waitForPiIdle(timeoutMs = PI_IDLE_WAIT_MS): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const state = await this.proc?.request({ type: 'get_state' }, 10_000).catch(() => null);
+      if (!state?.success) return false;
+      if (!(state.data as { isStreaming?: boolean } | undefined)?.isStreaming) return true;
+      await new Promise((resolve) => setTimeout(resolve, PI_IDLE_POLL_MS));
+    }
+    return false;
   }
 
   async interruptTurn(turnId: string): Promise<void> {

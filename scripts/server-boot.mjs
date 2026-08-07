@@ -130,6 +130,22 @@ child.on('exit', (code, signal) => {
   exited = { code, signal };
 });
 
+// The finally block below stops the server on every path this script takes to its
+// own end — but not on the paths taken FOR it. Ctrl-C, a killed CI step, or a
+// closed terminal all end this process without unwinding, and the server, being a
+// child rather than a process group, simply carries on: a stem-server left
+// listening on a port with a pi backend under it, which is exactly what happened
+// once and went unnoticed for half an hour. These handlers are the backstop.
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    if (!exited) child.kill('SIGKILL');
+    process.exit(1);
+  });
+}
+process.on('exit', () => {
+  if (!exited) child.kill('SIGKILL');
+});
+
 /** The line stem-server prints once it is listening — its whole interface. */
 function boundUrl() {
   return /\[stem-server\] listening on (\S+)/.exec(output)?.[1] ?? null;
