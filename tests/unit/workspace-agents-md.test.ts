@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ensureWorkspace } from '../../src/main/workspace/bootstrap';
-import { agentsMdPath } from '../../src/main/workspace/paths';
+import { ensureWorkspace } from '../../src/server/workspace/bootstrap';
+import { agentsMdPath } from '../../src/server/workspace/paths';
 
 // AGENTS.md is a leftover from the codex backend. pi receives the instructions as
 // --append-system-prompt AND loads any AGENTS.md in its cwd, so the file was a

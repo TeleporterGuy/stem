@@ -4,14 +4,14 @@
 // batch spans several conversations. Fake LLMs; shared per-process store like
 // the sibling suites.
 import { afterAll, describe, expect, it } from 'vitest';
-import { recallStore as store } from '../../src/main/recall/store';
+import { recallStore as store } from '../../src/server/recall/store';
 import {
   COMPLETION_ERRORS_KEY,
   CURSOR_KEY,
   MAX_PARSE_STRIKES,
   PARSE_STRIKES_KEY,
   distillNewMessages
-} from '../../src/main/recall/distill';
+} from '../../src/server/recall/distill';
 
 afterAll(() => store.close());
 

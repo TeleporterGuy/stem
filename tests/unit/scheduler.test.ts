@@ -10,8 +10,8 @@ const STORE = join(tmpdir(), `stem-tasks-${process.pid}.json`);
 process.env.STEM_TASKS_STORE = STORE;
 
 import type { ScheduledTask, StartTurnInput } from '../../src/shared/types';
-import { isContextOverflowError, TaskScheduler } from '../../src/main/scheduler';
-import { readTasks, saveTasks } from '../../src/main/workspace/tasks';
+import { isContextOverflowError, TaskScheduler } from '../../src/server/scheduler';
+import { readTasks, saveTasks } from '../../src/server/workspace/tasks';
 
 // A minimal ChatBackend stand-in: records startTurn calls, emits the turn/completed
 // event the scheduler waits on, and reports one existing thread.

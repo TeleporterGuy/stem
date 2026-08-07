@@ -4,10 +4,10 @@
 //
 // Run (from repo root):
 //   rm -rf .recall-build
-//   npx tsc src/main/recall/store.ts src/main/recall/search.ts src/main/recall/inject.ts \
-//     src/main/recall/embeddings.ts src/main/recall/rerank.ts src/main/recall/retrieval.ts \
-//     src/main/recall/vector.ts \
-//     src/main/recall/capture.ts src/main/recall/distill.ts src/main/recall/consolidate.ts \
+//   npx tsc src/server/recall/store.ts src/server/recall/search.ts src/server/recall/inject.ts \
+//     src/server/recall/embeddings.ts src/server/recall/rerank.ts src/server/recall/retrieval.ts \
+//     src/server/recall/vector.ts \
+//     src/server/recall/capture.ts src/server/recall/distill.ts src/server/recall/consolidate.ts \
 //     --outDir .recall-build \
 //     --module commonjs --moduleResolution node --target es2022 --skipLibCheck \
 //     --esModuleInterop --rootDir src --noCheck
@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 // Compiled output must live inside the repo so Node resolves `electron` from the
 // project's node_modules (a /tmp build can't). See header for the tsc command.
-const BUILD = fileURLToPath(new URL('../.recall-build/main/recall/', import.meta.url));
+const BUILD = fileURLToPath(new URL('../.recall-build/server/recall/', import.meta.url));
 // The store module exports the RecallStore instance as `recallStore`
 // (module-global functions went away in the class refactor).
 const storeModule = require(`${BUILD}/store.js`);

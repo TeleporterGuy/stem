@@ -4,9 +4,9 @@
 // threshold calibration itself lives in scripts/recall-eval.mjs (duplicatePairs).
 // Stateful, order-dependent (shared per-process DB) like the sibling suites.
 import { afterAll, describe, expect, it } from 'vitest';
-import { recallStore as store } from '../../src/main/recall/store';
-import * as distill from '../../src/main/recall/distill';
-import * as retrieval from '../../src/main/recall/retrieval';
+import { recallStore as store } from '../../src/server/recall/store';
+import * as distill from '../../src/server/recall/distill';
+import * as retrieval from '../../src/server/recall/retrieval';
 
 afterAll(() => store.close());
 

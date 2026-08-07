@@ -7,7 +7,7 @@
 // These cases pin what is kept, what is deliberately dropped, and — most
 // importantly — that a turn cannot grow the trace without bound.
 import { describe, expect, it } from 'vitest';
-import type { PiEvent } from '../../src/main/pi/rpc';
+import type { PiEvent } from '../../src/server/pi/rpc';
 import {
   TRACE_ARGS_MAX_CHARS,
   TRACE_RESULT_MAX_CHARS,
@@ -15,8 +15,8 @@ import {
   newTurnContext,
   normalizePiEvent,
   snapshotTurnTrace
-} from '../../src/main/pi/normalize';
-import { SECRET_ENVELOPE_KEY } from '../../src/main/pi/protocol';
+} from '../../src/server/pi/normalize';
+import { SECRET_ENVELOPE_KEY } from '../../src/server/pi/protocol';
 
 const ev = (o: Record<string, unknown>): PiEvent => o as unknown as PiEvent;
 

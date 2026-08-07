@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { addMcpServer, removeMcpServer } from '../../src/main/pi/mcp';
-import { persistBridgeOAuthToken } from '../../src/main/pi/stem-mcp-extension.mjs';
+import { addMcpServer, removeMcpServer } from '../../src/server/pi/mcp';
+import { persistBridgeOAuthToken } from '../../src/server/pi/stem-mcp-extension.mjs';
 import {
   piMcpOAuthPath,
   deleteOAuthTokenIfMatches,
@@ -13,9 +13,9 @@ import {
   saveOAuthToken,
   saveOAuthTokenIfServerMatches,
   writeMcpConfig
-} from '../../src/main/pi/mcp-config';
-import { secretKeyHex } from '../../src/main/pi/secrets';
-import { piMcpConfigPath } from '../../src/main/workspace/paths';
+} from '../../src/server/pi/mcp-config';
+import { secretKeyHex } from '../../src/server/pi/secrets';
+import { piMcpConfigPath } from '../../src/server/workspace/paths';
 
 beforeEach(() => {
   // In production PiRuntime hands the bridge the secrets key via the env at

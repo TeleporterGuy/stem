@@ -1,7 +1,7 @@
 // Onboarding wizard — driven hermetically via the STEM_E2E_ONBOARDING seam:
 // the faked backend starts unauthenticated, and the fake auth:providerLogin /
 // auth:setApiKey handlers emit a scripted auth-url → done sequence and flip the
-// status to authenticated (see src/main/index.ts). Exercises the wizard's full
+// status to authenticated (see src/server/index.ts). Exercises the wizard's full
 // state machine without a browser, network, or real pi.
 import { rmSync } from 'node:fs';
 import { expect, launchApp, mainWindowOf } from './electron';

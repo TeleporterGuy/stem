@@ -5,7 +5,7 @@ import {
   parseCommand,
   parseJudgeVerdict,
   resolveJudgeModel
-} from '../../src/main/exec/policy';
+} from '../../src/server/exec/policy';
 import type { ModelSummary } from '../../src/shared/types';
 
 // The run_command auto-approve policy: quote-aware segment parsing, conservative

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ForegroundSessionGate } from '../../src/main/pi/session-gate';
+import { ForegroundSessionGate } from '../../src/server/pi/session-gate';
 
 function deferred<T = void>(): {
   promise: Promise<T>;

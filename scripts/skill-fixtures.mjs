@@ -26,13 +26,13 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-// Mirrored from src/main/pi/normalize.ts. The fixture has to look like what
+// Mirrored from src/server/pi/normalize.ts. The fixture has to look like what
 // authorSkill() will actually be handed at runtime, so the caps must match; if
 // they change there, change them here.
 const TRACE_ARGS_MAX_CHARS = 600;
 const TRACE_RESULT_MAX_CHARS = 2_000;
 const TRACE_TURN_MAX_CHARS = 24_000;
-const SECRET_ENVELOPE_KEY = '__stemenc__'; // src/main/pi/protocol.ts
+const SECRET_ENVELOPE_KEY = '__stemenc__'; // src/server/pi/protocol.ts
 
 // Selection rules. POSITIVE_MIN_TOOLS matches the backtest in SKILLS-REBUILD.md
 // (>=4 tool calls covers 12.2% of turns and subsumes every error->recovery turn).

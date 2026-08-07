@@ -1,11 +1,11 @@
-// Verification probe for the Files place (src/main/files). Exercises the REAL
+// Verification probe for the Files place (src/server/files). Exercises the REAL
 // compiled store + inject modules against a throwaway folder: listing/grouping by
 // subfolder, add (with collisions + subdir), remove (+ traversal guard), and the
 // per-turn context builder.
 //
 // Run (from repo root):
 //   rm -rf .files-build
-//   npx tsc src/main/files/store.ts src/main/files/inject.ts src/main/workspace/paths.ts \
+//   npx tsc src/server/files/store.ts src/server/files/inject.ts src/server/workspace/paths.ts \
 //     --outDir .files-build --module commonjs --moduleResolution node --target es2022 \
 //     --skipLibCheck --esModuleInterop --rootDir src
 //   printf '{"type":"commonjs"}' > .files-build/package.json
@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const BUILD = fileURLToPath(new URL('../.files-build/main/files/', import.meta.url));
+const BUILD = fileURLToPath(new URL('../.files-build/server/files/', import.meta.url));
 const store = require(`${BUILD}/store.js`);
 const inject = require(`${BUILD}/inject.js`);
 

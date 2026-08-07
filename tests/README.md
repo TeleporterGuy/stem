@@ -47,7 +47,7 @@ throwaway userData dir and drives it through Playwright.
 The main UI sits behind a pi sign-in gate, and a couple of IPC handlers
 (`memory:setEnabled` → `runtime.restart()`) spawn pi. The fixture launches with
 `STEM_E2E=1`, which makes `runtime:status` report a healthy backend and skips the
-restart (see the seam in `src/main/index.ts`). Only the backend handshake is
+restart (see the seam in `src/server/index.ts`). Only the backend handshake is
 faked — every store (recall, files, settings) still runs for real against the
 isolated workspace, so the UI is reachable and assertions are genuine.
 
@@ -69,7 +69,7 @@ turns hit the network, consume Claude Max / ChatGPT quota, and are non-determini
 
 Implementation note: the fixture launches Electron via the project ROOT (so
 `app.getAppPath()` is the repo, and the runtime's source-relative paths — e.g. the
-pi extension under `src/main/pi` — resolve), not `dist/main/index.js` directly.
+pi extension under `src/server/pi` — resolve), not `dist/main/index.js` directly.
 
 ## Latency — two layers, only one of which is a stopwatch
 

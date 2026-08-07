@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMobileServer, type MobileServer } from '../../src/main/mobile/server';
+import { startTransportServer, type TransportServer } from '../../src/server/transport/server';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const publicDir = join(root, 'src/renderer/public');
@@ -109,15 +109,16 @@ describe('the manifest', () => {
 // matters: everything above passing while dist/renderer is empty is exactly the
 // failure this file exists to catch.
 describe.skipIf(!existsSync(join(distDir, 'mobile.html')))('a production build', () => {
-  let server: MobileServer;
+  let server: TransportServer;
   let base: string;
 
   beforeAll(async () => {
-    server = await startMobileServer({
+    server = await startTransportServer({
       port: 0,
       rendererDir: distDir,
-      verifyToken: () => false, // nothing here is token-gated; /rpc is unreachable
-      dispatch: async () => null
+      authenticate: () => null, // nothing here is token-gated; /rpc is unreachable
+      dispatch: async () => null,
+      registeredChannels: () => []
     });
     base = `http://127.0.0.1:${server.port}`;
   });

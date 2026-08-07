@@ -1,11 +1,10 @@
-// The settled-turn race guard, shared by the renderer's session orchestration and
-// the main-process mobile bridge.
+// The settled-turn race guard for the renderer's session orchestration.
 //
-// Both surfaces have the same ordering problem: a turn can finish before the call
-// that started it has returned. The renderer would resurrect `activeTurnId` from
-// the late response; the bridge would add a busy mark no later event can clear,
-// blocking the task scheduler for the life of the process. The rule is identical
-// in both places, so it lives in one file rather than being re-derived.
+// A turn can finish before the call that started it has returned, and the
+// renderer would then resurrect `activeTurnId` from the late response. The main
+// process had the same problem while its busy marks came from start-turn
+// responses; server/live-turns.ts folds them out of the event stream instead, so
+// the ordering cannot arise there any more and only this side needs the guard.
 //
 // Always keyed by TURN id, never thread id: thread ids recur across turns, so a
 // settled thread would suppress the *next* turn's bookkeeping.

@@ -42,6 +42,20 @@ jobs:
       - name: Unit tests (Vitest)
         run: npm test
 
+      # The headless boundary, checked by booting it rather than by reading it.
+      # `src/server` must not import Electron by any route, and the ESLint rule in
+      # the lint step above only sees import specifiers — a transitive `electron`
+      # import through a barrel file satisfies it and still resolves at runtime.
+      # It does not slip past a process that has no `electron` module to resolve,
+      # which is what scripts/server-boot.mjs arranges: it copies the build into a
+      # throwaway directory with no node_modules, starts dist/main/server.js there
+      # with plain `node`, and exercises the transport against it. It builds first
+      # when dist/ is absent, which is why this needs no build step of its own —
+      # the same command works from a fresh clone locally. Runs before the E2E
+      # step so a broken split fails in seconds rather than after the suite.
+      - name: Headless server boots under plain node
+        run: npm run test:server
+
       - name: E2E tests (Playwright + Electron)
         run: ${{ runner.os == 'Linux' && 'xvfb-run --auto-servernum --' || '' }} npm run test:e2e
 

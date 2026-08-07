@@ -87,7 +87,7 @@ test('pausing a task persists enabled=false and clears the next run through real
 // catch-up path) and, now that it has fired, removes it from the list entirely —
 // so it stops showing in the Tasks tab and clears the owning chat's scheduled
 // badge (which is derived from the task list). The hermetic E2E backend settles
-// the catch-up turn instantly (see src/main/scheduler/e2e-backend.ts).
+// the catch-up turn instantly (see src/server/scheduler/e2e-backend.ts).
 function seedDueOnce(id: string, prompt: string): ScheduledTask {
   const past = new Date('2020-01-01T00:00:00').toISOString();
   return {

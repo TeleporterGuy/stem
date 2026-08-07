@@ -1,0 +1,210 @@
+// The host shim: everything the server needs from the process that is hosting
+// it, expressed as an interface instead of importing `app` from Electron.
+//
+// (Phrased that way on purpose. Ripgrepping this directory for an Electron
+// import is the one-line check people actually run for the invariant, and a
+// comment that spells the forbidden import out is a false positive in it.)
+//
+// The server is on its way to being a plain Node process that runs on a machine
+// with no windows, no keychain prompt, and no Dock — while the same code keeps
+// running inside Electron on the desktop, where those things exist and are
+// better. Rather than branching on `process.versions.electron` in a dozen files,
+// every Electron capability the server used becomes a method here, with a
+// headless default and an Electron override the desktop installs at boot.
+//
+// This is `tests/electron-stub.ts` promoted to production code: the unit suite
+// has been running these same modules under plain Node against a hand-written
+// fake for a long time, which is the evidence that the set below is complete and
+// that nothing deeper in pi/recall/skills/exec needs Electron at all.
+//
+// Deliberately NOT here: dialogs, window management, tray, global shortcuts,
+// and `shell.showItemInFolder`. Those act on the machine a *person* is sitting
+// at, which after the split is the client, not the server. They stay on the
+// desktop side as client-owned channels.
+
+import { fork } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+/**
+ * A bidirectional message channel to a forked worker script. Kept identical to
+ * the shape `utilityProcess.fork` was already wrapped in, so the recall managers
+ * and their in-memory test fakes are unaffected by who does the forking.
+ */
+export interface WorkerTransport {
+  send(msg: unknown): void;
+  onMessage(cb: (msg: unknown) => void): void;
+  onExit(cb: (code: number | undefined) => void): void;
+  kill(): void;
+}
+
+/**
+ * Wraps/unwraps the data key that encrypts MCP secrets at rest. Electron backs
+ * this with safeStorage (macOS Keychain, libsecret/kwallet on Linux). A host
+ * that returns null from {@link StemHost.keyWrapper} gets the documented
+ * plaintext-0600 degradation instead — the same path a Linux box with no keyring
+ * has always taken, never a lockout.
+ */
+export interface KeyWrapper {
+  wrap(plain: string): Buffer;
+  unwrap(wrapped: Buffer): string;
+}
+
+/** How to spawn one of Stem's own bundled Node scripts (pi's CLI, the recall MCP server). */
+export interface NodeSpawn {
+  /** The executable: plain `node` headless, Electron's binary on the desktop. */
+  command: string;
+  /** Extra env the child needs — `ELECTRON_RUN_AS_NODE` under Electron, nothing headless. */
+  env: Record<string, string>;
+}
+
+export interface StemHost {
+  /** Root of every Stem-owned store. Electron's `app.getPath('userData')`. */
+  stateRoot(): string;
+  /** Container the alternate-profile dirs live beside. Electron's `app.getPath('appData')`. */
+  appDataRoot(): string;
+  /** Where the app's own files (RELEASE_NOTES.md, build assets, src/) can be found. */
+  appRoot(): string;
+  /** The running version, for release notes. */
+  appVersion(): string;
+  /** Key wrapping for secrets at rest, or null when the platform offers none. */
+  keyWrapper(): KeyWrapper | null;
+  /** Fork a bundled worker script (recall's embed + scan workers). */
+  forkWorker(entry: string, opts: { serviceName: string }): WorkerTransport;
+  /** How to launch a bundled Node script. */
+  nodeSpawn(): NodeSpawn;
+  /**
+   * Open a URL in the user's browser. On the desktop this is `shell.openExternal`;
+   * headless it is a no-op, because there is no browser on the server and the
+   * URL has already been emitted to the clients as an `auth:event` for whoever
+   * IS in front of a browser to open.
+   */
+  openExternal(url: string): void;
+  /** Register a cleanup to run when the host is shutting down. */
+  onShutdown(fn: () => void): void;
+}
+
+// ---- the headless default ----
+
+/**
+ * Electron's userData/appData layout, reimplemented so a headless server lands
+ * on the same directories an Electron install would. That is not cosmetic: it is
+ * what lets `stem-server` be pointed at an existing desktop profile, and what
+ * makes the desktop's own injected `app.getPath('userData')` a no-op change
+ * rather than a migration.
+ */
+function defaultAppDataRoot(): string {
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support');
+  if (process.platform === 'win32') return process.env.APPDATA || join(homedir(), 'AppData', 'Roaming');
+  return process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+}
+
+function defaultStateRoot(): string {
+  // STEM_STATE_DIR is the deployment knob (a container mounts one volume) and
+  // the test seam — the unit suite points it at a per-process throwaway dir.
+  return process.env.STEM_STATE_DIR || join(defaultAppDataRoot(), 'Stem');
+}
+
+function readPackageVersion(root: string): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version?: unknown };
+    if (typeof pkg.version === 'string' && pkg.version) return pkg.version;
+  } catch {
+    // Not running from a tree with a package.json (bundled, or an odd cwd).
+  }
+  return '0.0.0';
+}
+
+export function headlessHost(): StemHost {
+  const shutdownHooks: Array<() => void> = [];
+  let installedSignals = false;
+  const appRoot = process.env.STEM_APP_ROOT || process.cwd();
+
+  return {
+    stateRoot: defaultStateRoot,
+    appDataRoot: defaultAppDataRoot,
+    appRoot: () => appRoot,
+    appVersion: () => process.env.STEM_VERSION || readPackageVersion(appRoot),
+    // No keyring to reach for: fall back to the 0600-plaintext key the Linux
+    // no-keyring path has always used. Disk encryption is the server's answer.
+    keyWrapper: () => null,
+    forkWorker: (entry, opts) => forkNodeWorker(entry, opts.serviceName),
+    nodeSpawn: () => ({ command: process.execPath, env: {} }),
+    openExternal: () => {},
+    onShutdown: (fn) => {
+      shutdownHooks.push(fn);
+      if (installedSignals) return;
+      installedSignals = true;
+      const run = (): void => {
+        for (const hook of shutdownHooks.splice(0)) {
+          try {
+            hook();
+          } catch {
+            // A cleanup that throws must not block the ones after it.
+          }
+        }
+      };
+      process.once('exit', run);
+      for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+        // Only when nobody else owns the signal. The standalone `stem-server`
+        // entry installs its own handler first, because draining the backend is
+        // asynchronous and the exit below would cut it off mid-drain; its exit
+        // still fires the 'exit' hook above, so these cleanups run either way.
+        if (process.listenerCount(signal) > 0) continue;
+        process.once(signal, () => {
+          run();
+          process.exit(0);
+        });
+      }
+    }
+  };
+}
+
+/**
+ * `child_process.fork` in the shape of a WorkerTransport. The Electron host
+ * overrides this with `utilityProcess.fork`, which is the same thing with a
+ * service name Activity Monitor can show — but plain fork is what a server has,
+ * and the message protocol either side speaks is identical.
+ */
+function forkNodeWorker(entry: string, _serviceName: string): WorkerTransport {
+  const child = fork(entry, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+  return {
+    send: (msg) => {
+      child.send(msg as never);
+    },
+    onMessage: (cb) => {
+      child.on('message', (msg) => cb(msg));
+    },
+    onExit: (cb) => {
+      child.on('exit', (code) => cb(code ?? undefined));
+    },
+    kill: () => {
+      child.kill();
+    }
+  };
+}
+
+// ---- installation ----
+
+let current: StemHost | null = null;
+
+/**
+ * Install the host implementation. The desktop calls this before anything else
+ * at boot with an Electron-backed host; a headless server does not have to call
+ * it at all. Callers pass a partial override so the Electron host only has to
+ * name the handful of methods it actually improves on.
+ */
+export function setHost(overrides: Partial<StemHost>): void {
+  current = { ...(current ?? headlessHost()), ...overrides };
+}
+
+/** The installed host, defaulting to the headless one. */
+export function host(): StemHost {
+  return (current ??= headlessHost());
+}
+
+/** Drop the installed host (tests). */
+export function resetHostForTests(): void {
+  current = null;
+}

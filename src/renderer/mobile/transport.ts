@@ -4,14 +4,14 @@ import type { StemApi } from '../../shared/types';
 // surface — the mobile bundle is fetched over HTTP rather than loaded into a
 // BrowserWindow — so `window.stem` has to be built in the renderer itself, out
 // of the two things the bridge exposes: `POST /rpc` and the `GET /events` SSE
-// stream (see src/main/mobile/server.ts).
+// stream (see src/server/transport/server.ts).
 //
 // It is deliberately GENERIC. Every member of StemApi is either
 // `invoke(channel, …args)` or `on(channel, listener)` returning an unsubscribe
 // (all 301 lines of src/preload/index.ts are one or the other), so a single
 // request function plus a single event multiplexer cover the whole surface. The
 // only per-member knowledge is which channel a name maps to, and that lives in
-// the two tables below — which mirror src/main/mobile/channels.ts. A member
+// the two tables below — which mirror src/server/transport/roles.ts. A member
 // absent from them is one the phone genuinely cannot have (`getPathForFile`
 // needs Electron's webUtils; the dialogs open pickers on a Mac nobody is sitting
 // at; `previewImage` reads an image path off the Mac's disk, and the shared

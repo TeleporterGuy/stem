@@ -7,7 +7,7 @@
     "would plausibly accumulate, several of them deliberately adjacent (lunch menu vs",
     "restaurant booking, invoice reminder vs VAT return) so a query has to discriminate",
     "rather than just find the only plausible entry.",
-    "Descriptions follow the contract in src/main/skills/contract.ts: one sentence, at",
+    "Descriptions follow the contract in src/server/skills/contract.ts: one sentence, at",
     "most 160 characters, saying WHEN to reach for the skill and never restating the name.",
     "langPair mirrors recall-golden.json: the user writes Slovak about half the time, and",
     "skill descriptions are English, so sk->en is a real retrieval condition and gets its",
@@ -88,7 +88,7 @@
   "floors": {
     "_comment": [
       "Baseline observed with multilingual-e5-small (the app default) over these 20 queries,",
-      "ranking `name\\ndescription` exactly as skillVectorText does in src/main/skills/vectors.ts:",
+      "ranking `name\\ndescription` exactly as skillVectorText does in src/server/skills/vectors.ts:",
       "overall recall@1 0.750 / @3 0.900 / @5 1.000, mrr 0.839; sk->en recall@1 0.500 / @3 0.750 /",
       "@5 1.000, mrr 0.681. Each floor sits about one query below that — 1/20 overall, 1/8 on",
       "sk->en — so a single query flipping does not fail the gate but a systematic regression does.",

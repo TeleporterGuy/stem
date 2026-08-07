@@ -11,9 +11,9 @@ import { join } from 'node:path';
 const skillsDir = join(tmpdir(), `stem-skills-settle-${process.pid}`);
 process.env.STEM_SKILLS_DIR = skillsDir;
 
-import { SKILL_GATE_MIN_TOOL_CALLS, decideSettle, settleSkills } from '../../src/main/skills/settle';
-import type { SettledTurnTrace, TraceEntry } from '../../src/main/pi/normalize';
-import type { LlmClient } from '../../src/main/recall/llm';
+import { SKILL_GATE_MIN_TOOL_CALLS, decideSettle, settleSkills } from '../../src/server/skills/settle';
+import type { SettledTurnTrace, TraceEntry } from '../../src/server/pi/normalize';
+import type { LlmClient } from '../../src/server/recall/llm';
 
 const BODY = `## When to use
 When the user asks what was said in a video that has captions.

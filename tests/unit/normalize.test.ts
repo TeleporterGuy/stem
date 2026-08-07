@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { PiEvent } from '../../src/main/pi/rpc';
-import { newTurnContext, normalizePiEvent, toolCallActivity } from '../../src/main/pi/normalize';
+import type { PiEvent } from '../../src/server/pi/rpc';
+import { newTurnContext, normalizePiEvent, toolCallActivity } from '../../src/server/pi/normalize';
 
 const ev = (o: Record<string, unknown>): PiEvent => o as unknown as PiEvent;
 

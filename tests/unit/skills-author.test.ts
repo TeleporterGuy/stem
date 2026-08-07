@@ -9,9 +9,9 @@ import {
   buildAuthorPrompt,
   parseAuthorReply,
   renderEvidence
-} from '../../src/main/skills/author';
-import type { LlmClient } from '../../src/main/recall/llm';
-import type { TraceEntry } from '../../src/main/pi/normalize';
+} from '../../src/server/skills/author';
+import type { LlmClient } from '../../src/server/recall/llm';
+import type { TraceEntry } from '../../src/server/pi/normalize';
 
 const GOOD_BODY = `## When to use
 When a YouTube page has auto-generated captions and you need the text.

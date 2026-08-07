@@ -22,6 +22,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:server": "node scripts/server-boot.mjs",
     "test:e2e": "playwright test",
     "test:e2e:real": "STEM_E2E_REAL=1 playwright test",
     "test:perf": "STEM_PERF=1 STEM_E2E_REAL=1 playwright test tests/e2e/perf.spec.ts",

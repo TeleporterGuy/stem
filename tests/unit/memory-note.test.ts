@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { recallStore as store } from '../../src/main/recall/store';
-import { LONG_NOTE_THRESHOLD, extractNoteFacts, normalizeExplicitNote, processExplicitNote } from '../../src/main/recall/note';
-import { addMemoryNote, setMemoryEnabled } from '../../src/main/workspace/memory';
+import { recallStore as store } from '../../src/server/recall/store';
+import { LONG_NOTE_THRESHOLD, extractNoteFacts, normalizeExplicitNote, processExplicitNote } from '../../src/server/recall/note';
+import { addMemoryNote, setMemoryEnabled } from '../../src/server/workspace/memory';
 
 afterAll(() => store.close());
 beforeEach(async () => {

@@ -37,7 +37,7 @@ iteration.
 ## Running the app and taking screenshots
 
 - Dev app: `npm run dev` (run in background; wait for the window). In dev the
-  renderer exposes CDP — see `src/main/index.ts`: port **9224** by default
+  renderer exposes CDP — see `src/desktop/index.ts`: port **9224** by default
   (9222 is Chrome's own), overridable with `STEM_DEVTOOLS_PORT`.
 - Screenshot helper: `node scripts/cdp-shot.mjs <out.png> ["optional JS to run first"]`
   — it defaults to 9224 and honours `STEM_DEVTOOLS_PORT`. `DARK=1` env

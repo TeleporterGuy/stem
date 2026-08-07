@@ -2,11 +2,11 @@
 // worker, driven through an in-memory fake transport (the vitest electron stub
 // has no utilityProcess; the WorkerTransport seam exists exactly for this).
 import { describe, expect, it, vi } from 'vitest';
-import { EMBED_CATALOG } from '../../src/main/recall/embed-catalog';
-import { RERANK_CATALOG } from '../../src/main/recall/rerank-catalog';
-import { createEmbedWorkerManager } from '../../src/main/recall/embed-manager';
-import type { WorkerOutMessage } from '../../src/main/recall/embed-worker';
-import type { WorkerTransport } from '../../src/main/recall/embed-worker-host';
+import { EMBED_CATALOG } from '../../src/server/recall/embed-catalog';
+import { RERANK_CATALOG } from '../../src/server/recall/rerank-catalog';
+import { createEmbedWorkerManager } from '../../src/server/recall/embed-manager';
+import type { WorkerOutMessage } from '../../src/server/recall/embed-worker';
+import type { WorkerTransport } from '../../src/server/recall/embed-worker-host';
 import type { LocalEmbedStatus } from '../../src/shared/types';
 
 const SPEC = EMBED_CATALOG['multilingual-e5-small'];

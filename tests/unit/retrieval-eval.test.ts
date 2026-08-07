@@ -6,11 +6,11 @@
 //  - lexOverlap:false queries are NOT (the gap semantic retrieval must close).
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { recallStore as store } from '../../src/main/recall/store';
-import * as search from '../../src/main/recall/search';
-import * as inject from '../../src/main/recall/inject';
-import * as retrieval from '../../src/main/recall/retrieval';
-import { ftsSearchSummaries } from '../../src/main/recall/search-core';
+import { recallStore as store } from '../../src/server/recall/store';
+import * as search from '../../src/server/recall/search';
+import * as inject from '../../src/server/recall/inject';
+import * as retrieval from '../../src/server/recall/retrieval';
+import { ftsSearchSummaries } from '../../src/server/recall/search-core';
 import { aggregate, checkFloors, formatViolation, loadFixture, mrr, recallAtK, scoreRanking } from '../eval/score.mjs';
 import { seedCorpus } from '../eval/seed.mjs';
 

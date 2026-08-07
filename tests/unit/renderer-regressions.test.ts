@@ -28,7 +28,7 @@ import {
   QuickChatHandoffBarrier,
   QuickChatResetBarrier,
   RendererPushQueue
-} from '../../src/main/ui-lifecycle';
+} from '../../src/desktop/ui-lifecycle';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

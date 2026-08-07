@@ -1,13 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { captureMemoryFromUserInput } from '../../src/main/workspace/memory';
-import { distillNewMessages } from '../../src/main/recall/distill';
-import { consolidateFacts } from '../../src/main/recall/consolidate';
-import { buildRecallContext } from '../../src/main/recall/inject';
-import { reconcileExplicitFact } from '../../src/main/recall/reconcile';
-import { setRetrievalClients } from '../../src/main/recall/retrieval';
-import { runMemoryRebuildStep, startMemoryRebuild } from '../../src/main/recall/rebuild';
-import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/main/recall/store';
+import { captureMemoryFromUserInput } from '../../src/server/workspace/memory';
+import { distillNewMessages } from '../../src/server/recall/distill';
+import { consolidateFacts } from '../../src/server/recall/consolidate';
+import { buildRecallContext } from '../../src/server/recall/inject';
+import { reconcileExplicitFact } from '../../src/server/recall/reconcile';
+import { setRetrievalClients } from '../../src/server/recall/retrieval';
+import { runMemoryRebuildStep, startMemoryRebuild } from '../../src/server/recall/rebuild';
+import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/server/recall/store';
 
 beforeEach(() => {
   store.resetEpisodic();

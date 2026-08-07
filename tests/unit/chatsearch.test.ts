@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { closeForTest, getIndexedWatermark, reindexThread, searchChatDocs } from '../../src/main/chatsearch/store';
-import { reindexChatThread } from '../../src/main/chatsearch/index-sync';
-import { searchChatsLexical } from '../../src/main/chatsearch/search';
+import { closeForTest, getIndexedWatermark, reindexThread, searchChatDocs } from '../../src/server/chatsearch/store';
+import { reindexChatThread } from '../../src/server/chatsearch/index-sync';
+import { searchChatsLexical } from '../../src/server/chatsearch/search';
 
 afterAll(() => closeForTest());
 

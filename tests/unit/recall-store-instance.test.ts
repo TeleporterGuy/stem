@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { RecallStore } from '../../src/main/recall/store';
+import { RecallStore } from '../../src/server/recall/store';
 
 // The point of the class refactor: a store is constructible over any path, so
 // tests can run isolated instances side by side (no shared module-global handle).

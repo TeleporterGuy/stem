@@ -17,12 +17,12 @@ import {
   probeLocalProvider,
   providerIsSpawnable,
   syncModelsConfig
-} from '../../src/main/pi/models-config';
+} from '../../src/server/pi/models-config';
 import type { LocalProvidersSettings } from '../../src/shared/types';
 
 const store = vi.hoisted(() => ({ localProviders: null as LocalProvidersSettings | null }));
 
-vi.mock('../../src/main/workspace/settings', () => ({
+vi.mock('../../src/server/workspace/settings', () => ({
   readSettings: async () => ({ localProviders: store.localProviders ?? emptySettings() })
 }));
 

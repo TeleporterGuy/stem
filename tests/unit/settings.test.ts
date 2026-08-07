@@ -17,8 +17,8 @@ import {
   updateReleaseNotesSettings,
   updateRetrievalSettings,
   updateWebSearch
-} from '../../src/main/workspace/settings';
-import { settingsStorePath } from '../../src/main/workspace/paths';
+} from '../../src/server/workspace/settings';
+import { settingsStorePath } from '../../src/server/workspace/paths';
 
 const path = settingsStorePath();
 

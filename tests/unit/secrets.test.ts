@@ -10,7 +10,7 @@ import {
   encryptSecretValue,
   secretKeyAvailable,
   secretKeyHex
-} from '../../src/main/pi/secrets';
+} from '../../src/server/pi/secrets';
 import {
   mcpServerAuthIdentity,
   migrateLegacyOAuthTokens,
@@ -19,10 +19,10 @@ import {
   readOAuthTokens,
   saveOAuthToken,
   writeMcpConfig
-} from '../../src/main/pi/mcp-config';
-import { persistBridgeOAuthToken } from '../../src/main/pi/stem-mcp-extension.mjs';
-import { SECRET_ENVELOPE_KEY, SECRET_VALUE_PREFIX } from '../../src/main/pi/protocol';
-import { piMcpConfigPath, secretKeyPath } from '../../src/main/workspace/paths';
+} from '../../src/server/pi/mcp-config';
+import { persistBridgeOAuthToken } from '../../src/server/pi/stem-mcp-extension.mjs';
+import { SECRET_ENVELOPE_KEY, SECRET_VALUE_PREFIX } from '../../src/server/pi/protocol';
+import { piMcpConfigPath, secretKeyPath } from '../../src/server/workspace/paths';
 
 const TOKEN = {
   resource: 'https://remote.example/mcp',

@@ -12,8 +12,8 @@ import { join } from 'node:path';
 const skillsDir = join(tmpdir(), `stem-skills-ignore-${process.pid}`);
 process.env.STEM_SKILLS_DIR = skillsDir;
 
-import { SKILLS_IGNORE_FILE, disabledSlugs, syncSkillsIgnore } from '../../src/main/skills/ignore';
-import { listSkills, setSkillEnabled } from '../../src/main/workspace/skills';
+import { SKILLS_IGNORE_FILE, disabledSlugs, syncSkillsIgnore } from '../../src/server/skills/ignore';
+import { listSkills, setSkillEnabled } from '../../src/server/workspace/skills';
 
 const ignoreFile = join(skillsDir, SKILLS_IGNORE_FILE);
 

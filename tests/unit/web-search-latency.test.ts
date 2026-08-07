@@ -323,9 +323,9 @@ describe('the search model is pinned, not discovered', () => {
   // doing your searches is not the model in the picker.
   it('writes the pinned model into the file the extension reads', async () => {
     const home = mkdtempSync(join(tmpdir(), 'stem-websearch-perf-'));
-    vi.doMock('../../src/main/workspace/paths', () => ({ piHome: () => home }));
+    vi.doMock('../../src/server/workspace/paths', () => ({ piHome: () => home }));
     const { writeWebSearchConfig, webSearchConfigPath, OPENAI_SEARCH_MODEL } = await import(
-      '../../src/main/pi/web-search'
+      '../../src/server/pi/web-search'
     );
     try {
       await writeWebSearchConfig({ main: true, quickChat: true, provider: 'auto', credentials: {} });
@@ -333,7 +333,7 @@ describe('the search model is pinned, not discovered', () => {
       expect(file.openaiSearchModel).toBe(OPENAI_SEARCH_MODEL);
     } finally {
       rmSync(home, { recursive: true, force: true });
-      vi.doUnmock('../../src/main/workspace/paths');
+      vi.doUnmock('../../src/server/workspace/paths');
     }
   });
 });

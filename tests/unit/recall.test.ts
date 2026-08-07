@@ -3,12 +3,12 @@
 // throwaway DB from tests/setup-unit.ts. Tests are stateful and ORDER-DEPENDENT
 // (they share one DB, mirroring the original probe), so keep them sequential.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { recallStore as store, DEFAULT_CONSOLIDATE_CHUNK, DEFAULT_MAX_RELEVANT_FACTS } from '../../src/main/recall/store';
-import * as search from '../../src/main/recall/search';
-import * as inject from '../../src/main/recall/inject';
-import * as retrieval from '../../src/main/recall/retrieval';
-import * as distill from '../../src/main/recall/distill';
-import * as consolidate from '../../src/main/recall/consolidate';
+import { recallStore as store, DEFAULT_CONSOLIDATE_CHUNK, DEFAULT_MAX_RELEVANT_FACTS } from '../../src/server/recall/store';
+import * as search from '../../src/server/recall/search';
+import * as inject from '../../src/server/recall/inject';
+import * as retrieval from '../../src/server/recall/retrieval';
+import * as distill from '../../src/server/recall/distill';
+import * as consolidate from '../../src/server/recall/consolidate';
 
 afterAll(() => store.close());
 

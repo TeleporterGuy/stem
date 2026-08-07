@@ -43,7 +43,7 @@ const FACT_INJECT_PRESETS: { label: string; value: number }[] = [
   { label: '16', value: 16 }
 ];
 
-// The curated local models, mirrored from main/recall/embed-catalog.ts (labels +
+// The curated local models, mirrored from server/recall/embed-catalog.ts (labels +
 // sizes only — the specs live in main; the id is the contract).
 const LOCAL_EMBED_MODELS: { id: LocalEmbedModelId; label: string; detail: string }[] = [
   { id: 'multilingual-e5-small', label: 'Multilingual E5 Small', detail: '~120 MB · recommended' },
@@ -57,7 +57,7 @@ const EMBED_MODES: { id: EmbeddingsMode; label: string; hint: string }[] = [
   { id: 'off', label: 'Off', hint: 'Rank facts by keywords/recency only' }
 ];
 
-// The curated local reranker, mirrored from main/recall/rerank-catalog.ts.
+// The curated local reranker, mirrored from server/recall/rerank-catalog.ts.
 const LOCAL_RERANK_MODELS: { id: LocalRerankModelId; label: string; detail: string }[] = [
   { id: 'bge-reranker-v2-m3', label: 'BGE Reranker v2 M3', detail: '~570 MB · multilingual' }
 ];

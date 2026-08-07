@@ -15,10 +15,10 @@ import { rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 
 const require = createRequire(import.meta.url);
-const store = require(fileURLToPath(new URL('../.recall-build/main/recall/store.js', import.meta.url)));
+const store = require(fileURLToPath(new URL('../.recall-build/server/recall/store.js', import.meta.url)));
 // The server is TS since v3 (shares search-core.ts with main) — spawn the
 // compiled artifact from the same .recall-build the store came from.
-const serverPath = fileURLToPath(new URL('../.recall-build/main/recall/mcp-server-main.js', import.meta.url));
+const serverPath = fileURLToPath(new URL('../.recall-build/server/recall/mcp-server-main.js', import.meta.url));
 
 const dbPath = process.env.STEM_RECALL_DB;
 if (!dbPath) {

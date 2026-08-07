@@ -1,0 +1,575 @@
+import { randomUUID } from 'node:crypto';
+import { readFile, rename, writeFile } from 'node:fs/promises';
+import { host } from '../host';
+import type {
+  AppSettings,
+  CustomInstructionsSettings,
+  DefaultsSettings,
+  EmbeddingsMode,
+  EmbeddingsSettings,
+  EscapeAction,
+  ExecSettings,
+  OnboardingSettings,
+  LocalEmbedModelId,
+  LocalProviderApi,
+  LocalProviderId,
+  LocalProviderSettings,
+  LocalProvidersSettings,
+  LocalRerankModelId,
+  MemoryModelSettings,
+  MobileSettings,
+  WebSearchSettings,
+  PartialRetrievalSettings,
+  QuickChatSettings,
+  ReleaseNotesSettings,
+  RerankerMode,
+  RerankerSettings,
+  RetrievalSettings,
+  SkillsSettings
+} from '../../shared/types';
+import { settingsStorePath } from './paths';
+
+// Stem-owned app settings. Like the chat store, kept deliberately tiny and
+// resilient — a corrupt/missing file degrades to defaults rather than breaking
+// startup. The defaults match the product spec: medium effort, Fast speed, and
+// the overlay floating across all displays; the shortcut is unset until the
+// user records one in Settings.
+
+const DEFAULTS: AppSettings = {
+  quickChat: {
+    shortcut: null,
+    defaultModel: null,
+    defaultEffort: 'medium',
+    defaultServiceTier: 'priority',
+    showOnAllDisplays: true,
+    // After 5 minutes idle, re-summoning the overlay starts a fresh thread.
+    newThreadTimeoutMs: 5 * 60_000,
+    // Show the progress pill for main-window threads when the main window loses
+    // focus (switch Spaces/apps), so an active thread stays visible.
+    followAcrossSpaces: true,
+    // Opt-in chime when a turn finishes while the pill is visible.
+    finishSound: false
+  },
+  // Web search defaults on for both contexts, on every provider. `auto` walks
+  // pi-web-access's backend chain, which ends at keyless Exa MCP — so search
+  // works on a fresh install with no account, no key and no configuration.
+  webSearch: { main: true, quickChat: true, provider: 'auto', credentials: {} },
+  // Memory distillation/tidy-up model; null = the backend default.
+  memory: { model: null },
+  // Background skills model; null = the backend default. Separate from the memory
+  // model so authoring and curation (harder tasks) can use a stronger model.
+  // `ask` is the default mode: the library this replaces was built by a pass that
+  // wrote silently, and 23 of its 25 skills were never used once. Showing the user
+  // what is about to be saved is the cheapest available check on that.
+  skills: { model: null, mode: 'ask' },
+  // Command execution: on by default with the tiered policy as the guard rail.
+  // approvalMode 'assisted' = allowlist → LLM judge → approval card ('manual'
+  // skips the judge, 'yolo' skips everything but the protected-roots guard);
+  // judgeModel null = auto-pick the cheapest known model for the current provider;
+  // the allowlist grows via the approval card's "Always allow" button.
+  exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] },
+  // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
+  // default to the bundled local model (multilingual, in-process, nothing leaves
+  // the machine); weights download once on first need, and until they're ready
+  // fact selection stays lexical/recency-based. Remote URL/model defaults match
+  // a local Ollama setup for users who switch to their own endpoint.
+  retrieval: {
+    embeddings: {
+      mode: 'local',
+      localModel: 'multilingual-e5-small',
+      baseUrl: 'http://localhost:11434',
+      // 4b, not 8b: measured best cross-language fact recall on Ollama (2026-07-04).
+      model: 'qwen3-embedding:4b',
+      apiKey: null
+    },
+    reranker: {
+      mode: 'off',
+      localModel: 'bge-reranker-v2-m3',
+      baseUrl: 'http://localhost:8080',
+      model: '',
+      apiKey: null
+    }
+  },
+  // Escape-to-retract is opt-in: off until the user picks single/two-stage.
+  escapeAction: 'off',
+  // Standing custom instructions; empty until the user (or Stem) sets them.
+  customInstructions: { main: '', quickChat: '' },
+  // First-run wizard: not completed until the user signs in (or the app first
+  // reaches an authenticated status, e.g. seeded from an existing ~/.pi).
+  onboarding: { completed: false },
+  // "What's new" popup: on, with nothing recorded as seen yet. A fresh install
+  // seeds lastSeenVersion when onboarding completes, so only an install that
+  // predates this feature ever reaches the popup with a null marker.
+  releaseNotes: { showOnUpdate: true, lastSeenVersion: null },
+  // App-level default model ('provider/modelId'); null = built-in constant.
+  // Set after onboarding to match the provider the user signed in with.
+  defaults: { model: null },
+  // OpenAI-compatible servers (registered with the backend via the pi-home
+  // models.json). Base URLs are the servers' standard defaults; disabled until
+  // the user opts in. `custom` has no default URL — the user supplies it.
+  localProviders: {
+    ollama: { enabled: false, baseUrl: 'http://localhost:11434' },
+    lmstudio: { enabled: false, baseUrl: 'http://localhost:1234' },
+    custom: { enabled: false, baseUrl: '' }
+  },
+  // The phone bridge: off until the user turns it on in Settings (it is the only
+  // Stem surface reachable from off-box). The port is what `tailscale serve` gets
+  // pointed at; the default is a high, unregistered one.
+  mobile: { enabled: false, port: 8823, publicUrl: '' }
+};
+
+const ESCAPE_ACTIONS: readonly EscapeAction[] = ['off', 'single', 'twoStage'];
+
+const RERANKER_MODES: readonly RerankerMode[] = ['off', 'local', 'remote'];
+const LOCAL_RERANK_MODELS: readonly LocalRerankModelId[] = ['bge-reranker-v2-m3'];
+
+function coerceReranker(
+  raw: (Partial<RerankerSettings> & { enabled?: unknown }) | undefined,
+  def: RerankerSettings
+): RerankerSettings {
+  const r = raw ?? {};
+  // Migration from the pre-mode shape ({ enabled: boolean } + endpoint fields):
+  // enabled:true meant "user pointed us at their own /rerank server" → remote;
+  // anything else takes the default (off — the rerank stage is opt-in).
+  const mode: RerankerMode = RERANKER_MODES.includes(r.mode as RerankerMode)
+    ? (r.mode as RerankerMode)
+    : r.enabled === true
+      ? 'remote'
+      : def.mode;
+  return {
+    mode,
+    localModel: LOCAL_RERANK_MODELS.includes(r.localModel as LocalRerankModelId)
+      ? (r.localModel as LocalRerankModelId)
+      : def.localModel,
+    baseUrl: typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : def.baseUrl,
+    model: typeof r.model === 'string' ? r.model.trim() : def.model,
+    apiKey: typeof r.apiKey === 'string' && r.apiKey.trim() ? r.apiKey : null
+  };
+}
+
+const EMBEDDINGS_MODES: readonly EmbeddingsMode[] = ['off', 'local', 'remote'];
+const LOCAL_EMBED_MODELS: readonly LocalEmbedModelId[] = [
+  'multilingual-e5-small',
+  'multilingual-e5-base',
+  'embeddinggemma-300m'
+];
+
+function coerceEmbeddings(
+  raw: (Partial<EmbeddingsSettings> & { enabled?: unknown }) | undefined,
+  def: EmbeddingsSettings
+): EmbeddingsSettings {
+  const r = raw ?? {};
+  // Migration from the pre-mode shape ({ enabled: boolean } + endpoint fields):
+  // enabled:true meant "user pointed us at their own server" → remote. enabled:false
+  // is indistinguishable from "never touched" (defaults persist to settings.json),
+  // so it takes the new local default; an explicit Off mode remains available.
+  const mode: EmbeddingsMode = EMBEDDINGS_MODES.includes(r.mode as EmbeddingsMode)
+    ? (r.mode as EmbeddingsMode)
+    : r.enabled === true
+      ? 'remote'
+      : def.mode;
+  return {
+    mode,
+    localModel: LOCAL_EMBED_MODELS.includes(r.localModel as LocalEmbedModelId)
+      ? (r.localModel as LocalEmbedModelId)
+      : def.localModel,
+    baseUrl: typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : def.baseUrl,
+    model: typeof r.model === 'string' ? r.model.trim() : def.model,
+    apiKey: typeof r.apiKey === 'string' && r.apiKey.trim() ? r.apiKey : null
+  };
+}
+
+/**
+ * The address `tailscale serve` publishes the bridge under, normalized to a bare
+ * origin ("https://host" — no path, no trailing slash) so the pairing URL can be
+ * assembled by concatenation. Anything unparseable becomes empty, which the
+ * pairing panel reads as "not set up yet" rather than as a broken URL.
+ */
+function coercePublicUrl(raw: unknown): string {
+  if (typeof raw !== 'string' || !raw.trim()) return '';
+  const text = raw.trim();
+  try {
+    const url = new URL(/^https?:\/\//i.test(text) ? text : `https://${text}`);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+    return url.origin;
+  } catch {
+    return '';
+  }
+}
+
+/** True for a plain object usable as a string map (not null, not an array). */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+function coerce(parsed: Partial<AppSettings> | null): AppSettings {
+  const qc = (parsed?.quickChat ?? {}) as Partial<QuickChatSettings>;
+  const d = DEFAULTS.quickChat;
+  // `nativeWebSearch` is the pre-pi-web-access key name: same two per-context
+  // booleans, back when search was an openai-codex-only injection. Read it as a
+  // fallback so an existing install keeps whatever the user had toggled; the
+  // rewritten file uses the new key and the old one simply stops being read.
+  // `nativeWebSearch` is the pre-pi-web-access key name: same two per-context
+  // booleans, back when search was an openai-codex-only injection. Read it as a
+  // fallback so an existing install keeps whatever the user had toggled; the
+  // rewritten file uses the new key and the old one simply stops being read.
+  const legacy = parsed as {
+    nativeWebSearch?: Partial<WebSearchSettings>;
+    webSearch?: { apiKeys?: unknown; searxngUrl?: unknown };
+  } | null;
+  const rawWs = (parsed?.webSearch ?? legacy?.nativeWebSearch ?? {}) as Partial<WebSearchSettings>;
+  // Credentials were briefly split across `apiKeys` + a `searxngUrl` that used the
+  // wrong field name (pi-web-access reads `searxngBaseUrl`). Fold both into the
+  // single passthrough map, so nothing the user already typed is lost.
+  const rawCreds: Record<string, unknown> = {
+    ...(isRecord(legacy?.webSearch?.apiKeys) ? legacy.webSearch.apiKeys : {}),
+    ...(typeof legacy?.webSearch?.searxngUrl === 'string' && legacy.webSearch.searxngUrl
+      ? { searxngBaseUrl: legacy.webSearch.searxngUrl }
+      : {}),
+    ...(isRecord(rawWs.credentials) ? rawWs.credentials : {})
+  };
+  const ws: WebSearchSettings = {
+    main: typeof rawWs.main === 'boolean' ? rawWs.main : DEFAULTS.webSearch.main,
+    quickChat: typeof rawWs.quickChat === 'boolean' ? rawWs.quickChat : DEFAULTS.webSearch.quickChat,
+    provider: typeof rawWs.provider === 'string' && rawWs.provider.trim() ? rawWs.provider : DEFAULTS.webSearch.provider,
+    credentials: Object.fromEntries(
+      Object.entries(rawCreds).filter(([, v]) => typeof v === 'string' && v.trim())
+    ) as Record<string, string>
+  };
+  const rawMem = (parsed?.memory ?? {}) as Partial<MemoryModelSettings>;
+  const mem: MemoryModelSettings = {
+    model: typeof rawMem.model === 'string' && rawMem.model.trim() ? rawMem.model : null
+  };
+  const rawSkills = (parsed?.skills ?? {}) as Partial<SkillsSettings>;
+  const skills: SkillsSettings = {
+    model: typeof rawSkills.model === 'string' && rawSkills.model.trim() ? rawSkills.model : null,
+    // Anything unrecognized falls back to the default rather than to `off`: a
+    // settings file written by an older build has no `mode` at all, and silently
+    // turning the feature off for those users is the wrong failure direction.
+    mode: rawSkills.mode === 'off' || rawSkills.mode === 'auto' ? rawSkills.mode : DEFAULTS.skills.mode
+  };
+  const rawExec = (parsed?.exec ?? {}) as Partial<ExecSettings>;
+  const exec: ExecSettings = {
+    enabled: typeof rawExec.enabled === 'boolean' ? rawExec.enabled : DEFAULTS.exec.enabled,
+    approvalMode:
+      rawExec.approvalMode === 'manual' || rawExec.approvalMode === 'yolo' ? rawExec.approvalMode : 'assisted',
+    judgeModel: typeof rawExec.judgeModel === 'string' && rawExec.judgeModel.trim() ? rawExec.judgeModel : null,
+    // Dedupe + trim, drop empties, and cap size so a runaway writer can't bloat
+    // settings.json (the allowlist is matched per command, so order is cosmetic).
+    allowlist: [
+      ...new Set(
+        (Array.isArray(rawExec.allowlist) ? rawExec.allowlist : [])
+          .filter((p): p is string => typeof p === 'string')
+          .map((p) => p.trim())
+          .filter((p) => p && p.length <= 200)
+      )
+    ].slice(0, 200)
+  };
+  const rawRet = (parsed?.retrieval ?? {}) as Partial<RetrievalSettings>;
+  const retrieval: RetrievalSettings = {
+    embeddings: coerceEmbeddings(rawRet.embeddings, DEFAULTS.retrieval.embeddings),
+    reranker: coerceReranker(rawRet.reranker, DEFAULTS.retrieval.reranker)
+  };
+  const escapeAction: EscapeAction = ESCAPE_ACTIONS.includes(parsed?.escapeAction as EscapeAction)
+    ? (parsed!.escapeAction as EscapeAction)
+    : DEFAULTS.escapeAction;
+  const rawCi = (parsed?.customInstructions ?? {}) as Partial<CustomInstructionsSettings>;
+  const customInstructions: CustomInstructionsSettings = {
+    main: typeof rawCi.main === 'string' ? rawCi.main : DEFAULTS.customInstructions.main,
+    quickChat: typeof rawCi.quickChat === 'string' ? rawCi.quickChat : DEFAULTS.customInstructions.quickChat
+  };
+  const rawOb = (parsed?.onboarding ?? {}) as Partial<OnboardingSettings>;
+  const onboarding: OnboardingSettings = {
+    completed: typeof rawOb.completed === 'boolean' ? rawOb.completed : DEFAULTS.onboarding.completed
+  };
+  const rawRn = (parsed?.releaseNotes ?? {}) as Partial<ReleaseNotesSettings>;
+  const releaseNotes: ReleaseNotesSettings = {
+    showOnUpdate:
+      typeof rawRn.showOnUpdate === 'boolean' ? rawRn.showOnUpdate : DEFAULTS.releaseNotes.showOnUpdate,
+    // Only a dotted-numeric version is a usable marker; anything else (a hand
+    // edit, an old tag string) reads as "nothing recorded".
+    lastSeenVersion:
+      typeof rawRn.lastSeenVersion === 'string' && /^\d+(\.\d+)*$/.test(rawRn.lastSeenVersion.trim())
+        ? rawRn.lastSeenVersion.trim()
+        : null
+  };
+  const rawDef = (parsed?.defaults ?? {}) as Partial<DefaultsSettings>;
+  const defaults: DefaultsSettings = {
+    model: typeof rawDef.model === 'string' && rawDef.model.trim() ? rawDef.model : null
+  };
+  const rawLp = (parsed?.localProviders ?? {}) as Partial<Record<LocalProviderId, Partial<LocalProviderSettings>>>;
+  const coerceLocal = (id: LocalProviderId): LocalProviderSettings => {
+    const r = rawLp[id] ?? {};
+    const def = DEFAULTS.localProviders[id];
+    // apiKey/models stay absent rather than empty when unset, so a keyless server
+    // with a server-provided catalog round-trips to exactly the old shape.
+    const apiKey = typeof r.apiKey === 'string' ? r.apiKey.trim() : '';
+    const models = Array.isArray(r.models)
+      ? r.models.filter((m): m is string => typeof m === 'string' && !!m.trim()).map((m) => m.trim())
+      : [];
+    // API flavor: only `custom` may opt into anthropic-messages. Ollama/LM Studio
+    // are always openai-completions — a hand-edited settings.json cannot switch
+    // them; the field would be ignored downstream anyway. Persist the flavor
+    // verbatim (both `openai-completions` and `anthropic-messages`) so a saved
+    // settings.json is self-describing and future debugging can tell an explicit
+    // openai-completions pick from an absent field (= not yet configured).
+    const api: LocalProviderApi | undefined =
+      id === 'custom' && (r.api === 'anthropic-messages' || r.api === 'openai-completions') ? r.api : undefined;
+    return {
+      enabled: typeof r.enabled === 'boolean' ? r.enabled : def.enabled,
+      baseUrl: typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : def.baseUrl,
+      ...(api ? { api } : {}),
+      ...(apiKey ? { apiKey } : {}),
+      ...(models.length ? { models } : {})
+    };
+  };
+  const localProviders: LocalProvidersSettings = {
+    ollama: coerceLocal('ollama'),
+    lmstudio: coerceLocal('lmstudio'),
+    custom: coerceLocal('custom')
+  };
+  const rawMobile = (parsed?.mobile ?? {}) as Partial<MobileSettings>;
+  const mobile: MobileSettings = {
+    enabled: typeof rawMobile.enabled === 'boolean' ? rawMobile.enabled : DEFAULTS.mobile.enabled,
+    // Reject anything that isn't a usable TCP port, so a hand-edited settings.json
+    // can't make the bridge fail to bind on every launch. Below 1024 needs root.
+    port:
+      typeof rawMobile.port === 'number' && Number.isInteger(rawMobile.port) && rawMobile.port >= 1024 && rawMobile.port <= 65535
+        ? rawMobile.port
+        : DEFAULTS.mobile.port,
+    publicUrl: coercePublicUrl(rawMobile.publicUrl)
+  };
+  return {
+    quickChat: {
+      shortcut: typeof qc.shortcut === 'string' && qc.shortcut.trim() ? qc.shortcut : null,
+      defaultModel: typeof qc.defaultModel === 'string' && qc.defaultModel.trim() ? qc.defaultModel : null,
+      defaultEffort: typeof qc.defaultEffort === 'string' ? qc.defaultEffort : d.defaultEffort,
+      // 'priority' (Fast) or explicit null (Standard); anything else → default.
+      defaultServiceTier:
+        qc.defaultServiceTier === 'priority' ? 'priority' : qc.defaultServiceTier === null ? null : d.defaultServiceTier,
+      showOnAllDisplays: typeof qc.showOnAllDisplays === 'boolean' ? qc.showOnAllDisplays : d.showOnAllDisplays,
+      newThreadTimeoutMs:
+        typeof qc.newThreadTimeoutMs === 'number' && qc.newThreadTimeoutMs >= 0
+          ? qc.newThreadTimeoutMs
+          : d.newThreadTimeoutMs,
+      followAcrossSpaces: typeof qc.followAcrossSpaces === 'boolean' ? qc.followAcrossSpaces : d.followAcrossSpaces,
+      finishSound: typeof qc.finishSound === 'boolean' ? qc.finishSound : d.finishSound
+    },
+    webSearch: ws,
+    memory: mem,
+    skills,
+    exec,
+    retrieval,
+    escapeAction,
+    customInstructions,
+    onboarding,
+    releaseNotes,
+    defaults,
+    localProviders,
+    mobile
+  };
+}
+
+/**
+ * The settings a phone may see. Built by running a hand-picked slice back
+ * through `coerce`, which is what makes the projection FAIL-CLOSED: every field
+ * not named here comes back as its default, so a secret added to AppSettings
+ * later cannot leak because nobody remembered to strip it. What that keeps off
+ * the wire today is `webSearch.credentials`, `retrieval.embeddings.apiKey`,
+ * `retrieval.reranker.apiKey` and every `localProviders.*.apiKey` — none of
+ * which the phone has any use for.
+ *
+ * `customInstructions` is the whole of what it does have a use for: the
+ * instructions approval sheet shows the standing instructions it is asking
+ * about. The return type stays a full AppSettings so the shared renderer code
+ * the phone reuses keeps type-checking.
+ */
+export function mobileSettingsView(s: AppSettings): AppSettings {
+  return coerce({ customInstructions: s.customInstructions });
+}
+
+export async function readSettings(): Promise<AppSettings> {
+  try {
+    return coerce(JSON.parse(await readFile(settingsStorePath(), 'utf8')) as Partial<AppSettings>);
+  } catch {
+    return coerce(null);
+  }
+}
+
+// Serialize writes through a promise chain (see chats.ts) so concurrent IPC
+// can't interleave a read-modify-write and lose updates.
+let chain: Promise<unknown> = Promise.resolve();
+
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+  const run = chain.then(task, task);
+  chain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+async function writeSettings(settings: AppSettings): Promise<void> {
+  const path = settingsStorePath();
+  const tmp = `${path}.${randomUUID()}.tmp`;
+  await writeFile(tmp, JSON.stringify(settings, null, 2), 'utf8');
+  await rename(tmp, path);
+}
+
+/** Patch the Quick Chat settings and persist atomically; returns the full settings. */
+export function updateQuickChat(patch: Partial<QuickChatSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, quickChat: { ...cur.quickChat, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the web-search toggles/backend and persist; returns full settings. */
+export function updateWebSearch(patch: Partial<WebSearchSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, webSearch: { ...cur.webSearch, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Set the main-composer Escape-to-retract behavior and persist; returns full settings. */
+export function updateEscapeAction(action: EscapeAction): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, escapeAction: action });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the memory-model setting and persist; returns the full settings. */
+export function updateMemorySettings(patch: Partial<MemoryModelSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, memory: { ...cur.memory, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the standing custom instructions (per surface) and persist; returns full settings. */
+export function updateCustomInstructions(patch: Partial<CustomInstructionsSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, customInstructions: { ...cur.customInstructions, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the skills-curator model setting and persist; returns the full settings. */
+export function updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, skills: { ...cur.skills, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the command-execution policy and persist; returns the full settings. */
+export function updateExecSettings(patch: Partial<ExecSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, exec: { ...cur.exec, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/**
+ * Mark the first-run wizard finished and persist; returns the full settings.
+ *
+ * Also seeds the "what's new" marker to the running version, so a brand-new user
+ * isn't greeted by release notes for versions they were never on. An install
+ * that predates the popup never runs this again, which is exactly how it gets
+ * the null marker that means "show what you're running, once".
+ */
+export function markOnboardingCompleted(): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({
+      ...cur,
+      onboarding: { completed: true },
+      releaseNotes: {
+        ...cur.releaseNotes,
+        lastSeenVersion: cur.releaseNotes.lastSeenVersion ?? host().appVersion()
+      }
+    });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the "what's new" popup preference and persist; returns the full settings. */
+export function updateReleaseNotesSettings(patch: Partial<ReleaseNotesSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, releaseNotes: { ...cur.releaseNotes, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Record `version` as the newest release notes the user has been shown. */
+export function markReleaseNotesSeen(version: string): Promise<AppSettings> {
+  return updateReleaseNotesSettings({ lastSeenVersion: version });
+}
+
+/** Set the app-level default model ('provider/modelId' or null) and persist. */
+export function updateDefaultModel(model: string | null): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, defaults: { model } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch one local provider (Ollama / LM Studio / custom) and persist; returns the full settings. */
+export function updateLocalProvider(id: LocalProviderId, patch: Partial<LocalProviderSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({
+      ...cur,
+      localProviders: { ...cur.localProviders, [id]: { ...cur.localProviders[id], ...patch } }
+    });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the phone-bridge settings (enable/port) and persist; returns full settings. */
+export function updateMobileSettings(patch: Partial<MobileSettings>): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, mobile: { ...cur.mobile, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the retrieval endpoints (deep-merged per stage) and persist; returns full settings. */
+export function updateRetrievalSettings(patch: PartialRetrievalSettings): Promise<AppSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({
+      ...cur,
+      retrieval: {
+        embeddings: { ...cur.retrieval.embeddings, ...patch.embeddings },
+        reranker: { ...cur.retrieval.reranker, ...patch.reranker }
+      }
+    });
+    await writeSettings(next);
+    return next;
+  });
+}
