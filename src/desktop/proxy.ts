@@ -1,6 +1,13 @@
 import { request as httpRequest } from 'node:http';
 import { log } from '../server/log';
-import type { AuthUiEvent, BackendEventEnvelope, QuickChatSettings } from '../shared/types';
+import type {
+  AuthUiEvent,
+  BackendEventEnvelope,
+  QuickChatSettings,
+  StartTurnInput,
+  TurnAttachment
+} from '../shared/types';
+import { uploadFile } from './file-transfer';
 import type { OAuthCourier } from './oauth-courier';
 import { updateClientQuickChat, withClientSettings } from './settings';
 
@@ -40,10 +47,16 @@ import { updateClientQuickChat, withClientSettings } from './settings';
 //                                                construction, is on the client's
 //                                                own disk (the `att.path` branch
 //                                                of renderer/attachments.ts)
+//   files:download                               GET /files/<rel>, saved into this
+//                                                machine's Downloads folder and
+//                                                shown there. Not an RPC: the file
+//                                                streams, and where it lands is a
+//                                                fact about this desk
 //   cfolders:reveal, cfolders:revealWorkspace    shell.showItemInFolder. The PATH
-//                                                comes from the server; correct on
-//                                                one machine, meaningless remote
-//                                                (a known Phase 2 gap)
+//                                                comes from the server, so these
+//                                                only mean anything when both
+//                                                halves share a disk — and refuse
+//                                                when they don't (desktop/local)
 //   quickchat:*, main:reveal                     the overlay/HUD windows
 //   quickchat:handoffSnapshot, renderer:ready    ipcMain.on, not invoke
 //   getPathForFile                               webUtils, not a channel at all
@@ -82,6 +95,16 @@ import { updateClientQuickChat, withClientSettings } from './settings';
 //                              push stream is one this machine asked for — the
 //                              stream is a broadcast, and every other device
 //                              paired to the same server sees it too.
+//   backend:startTurn,         both carry paths to files on THIS disk, which is
+//   files:add                  only a thing the server can read when it is on
+//                              this disk too. When it isn't, the bytes are
+//                              streamed up first and the paths are replaced with
+//                              handles to them — see attachmentsForServer(). The
+//                              REMOTE case only: a local install keeps handing
+//                              over paths, because copying every pasted
+//                              screenshot through loopback to prove a point
+//                              would be a cost with nothing on the other side
+//                              of it.
 //
 // SERVER-OWNED — everything else (~110 channels). The server's registry IS the
 // surface; this client asks for it at connect time (GET /channels) rather than
@@ -106,12 +129,13 @@ const RECONNECT_MAX_MS = 10_000;
 
 /**
  * A channel with behavior on both sides of the wire. `before` runs on this
- * machine and can refuse the call by throwing; `after` runs once the server has
- * answered, with what it answered, and anything it returns REPLACES that answer
- * on the way to the renderer (return nothing to leave it alone).
+ * machine and can refuse the call by throwing; anything it RETURNS replaces the
+ * arguments that go on the wire. `after` runs once the server has answered, with
+ * what it answered, and anything it returns replaces that answer on the way to
+ * the renderer. Either may return nothing to leave its side alone.
  */
 export interface WrappedChannel {
-  before?: (args: unknown[]) => Promise<void> | void;
+  before?: (args: unknown[]) => Promise<unknown[] | void> | unknown[] | void;
   after?: (args: unknown[], result: unknown) => unknown;
 }
 
@@ -140,6 +164,12 @@ export interface ProxyDeps {
   url: string;
   /** This device's bearer token (the `desktop` role). */
   token: string;
+  /**
+   * False when the server runs in this very process, and therefore reads this
+   * machine's disk. The one place that distinction changes what goes on the wire
+   * (see the WRAPPED table above); everything else here is identical either way.
+   */
+  remote: boolean;
   /** Push to the main window through its ready-queue (see RendererPushQueue). */
   sendToMain(channel: string, payload: unknown): void;
   /** Push to the Quick Chat overlay window. */
@@ -175,12 +205,52 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
 
   const signInStarted: WrappedChannel = { before: () => deps.oauthCourier.expectSignIn() };
 
+  /**
+   * Replace every on-disk path in a set of attachments with a handle to bytes the
+   * server now has. Pasted images (`dataBase64`) already travel in the envelope
+   * and are left exactly as they are — they are small, they are already on the
+   * wire, and uploading them separately would be strictly more work.
+   *
+   * A failure here is deliberately fatal to the call. The alternative is sending
+   * the message with the attachment quietly missing, which reads to the user as
+   * the assistant ignoring the thing they attached; throwing instead leaves the
+   * message in the composer, with the reason on screen, ready to send again.
+   */
+  async function attachmentsForServer(atts: TurnAttachment[]): Promise<TurnAttachment[]> {
+    return Promise.all(
+      atts.map(async (att) => {
+        if (!att.path) return att;
+        return { ...att, path: await uploadFile({ url: base, token: deps.token }, att.path) };
+      })
+    );
+  }
+
+  /** The remote half of `backend:startTurn` and `files:add`; absent when local. */
+  const uploadPaths: Record<string, WrappedChannel> = {
+    'backend:startTurn': {
+      before: async ([input]) => {
+        const turn = input as StartTurnInput;
+        if (!turn?.attachments?.length) return;
+        return [{ ...turn, attachments: await attachmentsForServer(turn.attachments) }];
+      }
+    },
+    'files:add': {
+      before: async ([paths, subdir]) => {
+        const list = paths as string[];
+        if (!Array.isArray(list) || list.length === 0) return;
+        const creds = { url: base, token: deps.token };
+        return [await Promise.all(list.map((path) => uploadFile(creds, path))), subdir];
+      }
+    }
+  };
+
   const wrapped: Readonly<Record<string, WrappedChannel>> = {
     'chats:open': {
       before: ([threadId]) => deps.threadOpened(threadId as string)
     },
     'auth:providerLogin': signInStarted,
     'mcp:login': signInStarted,
+    ...(deps.remote ? uploadPaths : {}),
     ...Object.fromEntries(SETTINGS_CHANNELS.map((c) => [c, mergeSettingsAnswer])),
     'settings:updateQuickChat': {
       after: async ([patch], result) => {
@@ -229,9 +299,14 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
   async function invoke(channel: string, args: unknown[]): Promise<unknown> {
     const hooks = wrapped[channel];
     // A throw from `before` never reaches the wire — that is what lets a refused
-    // Quick Chat hand-off cancel the open it was called for.
-    if (hooks?.before) await hooks.before(args);
-    const result = await post(channel, args);
+    // Quick Chat hand-off cancel the open it was called for, and what makes a
+    // failed upload a failed send rather than a send without its attachment.
+    let outgoing = args;
+    if (hooks?.before) {
+      const replaced = await hooks.before(args);
+      if (Array.isArray(replaced)) outgoing = replaced;
+    }
+    const result = await post(channel, outgoing);
     if (!hooks?.after) return result;
     const replacement = await hooks.after(args, result);
     return replacement === undefined ? result : replacement;

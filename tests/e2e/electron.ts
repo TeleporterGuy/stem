@@ -160,6 +160,9 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
       // user to the Space the run started on (see BACKGROUND in desktop/index.ts).
       // Deliberately outside the STEM_E2E branch — real-backend runs need it most.
       STEM_BACKGROUND: '1',
+      // Downloads land here rather than in the real ~/Downloads. A suite that
+      // litters the machine it runs on is a suite people stop running.
+      STEM_DOWNLOADS_DIR: join(userDataDir, 'downloads'),
       // Default: report a healthy backend without spawning pi, so tests reach
       // the real UI past the sign-in gate (see the STEM_E2E seam in
       // src/server/index.ts). In real-backend mode the seam is off and pi runs.

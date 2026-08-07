@@ -1,12 +1,13 @@
-import { dialog, shell, type BrowserWindow } from 'electron';
+import { app, dialog, shell, type BrowserWindow } from 'electron';
 import { handleLocal } from '../ipc-bridge';
 import { ensureFilesRoot } from '../../server/files/store';
 import { imagePreviewDataUrl } from '../../server/pi/attachments';
 import { connectedFolderPath } from '../../server/workspace/connected-folders';
 import { workspaceRoot } from '../../server/workspace/paths';
 import { readClientIdentity, storedServerUrl } from '../client-store';
+import { downloadFile } from '../file-transfer';
 import { markReleaseNotesRead, releaseNotesSnapshot } from '../release-notes';
-import { pairWithServer, useBuiltInServer } from '../server-endpoint';
+import { pairWithServer, useBuiltInServer, type ServerCredentials } from '../server-endpoint';
 import { updateClientReleaseNotes, withClientSettings } from '../settings';
 import type { AppSettings, ClientInfo, ReleaseNotesSettings } from '../../shared/types';
 
@@ -21,21 +22,43 @@ import type { AppSettings, ClientInfo, ReleaseNotesSettings } from '../../shared
 // version installed HERE and the RELEASE_NOTES.md shipped beside it, so a server
 // with two Macs on two builds has no single correct answer to give.
 //
-// Two of them reveal a path the SERVER knows: cfolders:reveal and
+// Three of them reveal a path the SERVER knows: files:reveal, cfolders:reveal and
 // cfolders:revealWorkspace. They resolve it by calling into the server's path
 // helpers directly rather than over the transport, because the answer is only
 // ever useful when both halves share a filesystem — which is exactly the case
-// where the direct call is correct. That the whole handler is meaningless when
-// the server is on another machine is a known gap (Phase 2), not an accident of
-// this refactor; an RPC here would move the gap, not close it.
+// where the direct call is correct.
+//
+// When they do not share one, those three have no honest answer, and they say so
+// rather than opening a folder. The path they would resolve exists on THIS
+// machine too — an empty workspace this client never uses — so quietly revealing
+// it would show the user a folder that looks like theirs and contains none of
+// their files. The renderer hides the buttons entirely (see
+// hooks/useRemoteServer.ts); this refusal is what stands behind that, so a stale
+// window or a future call site cannot get the wrong folder either.
+//
+// files:download is the affordance that replaces them: the server streams the
+// file down GET /files/<rel> and it lands in this machine's Downloads folder,
+// which is a place that does exist here. It goes over the socket in both
+// deployments rather than shortcutting a local copy — one path, tested by
+// everybody who presses the button.
 
 export interface LocalIpcDeps {
   /** Picker parent. Null only if the main window was closed mid-flight. */
   mainWindow(): BrowserWindow | null;
   /** Where this client is connected, and whether it started that server itself. */
   connection(): { serverUrl: string; remote: boolean; pinnedByEnv: boolean };
+  /** Address + bearer token, for the routes that are not `POST /rpc`. */
+  credentials(): ServerCredentials;
   /** The settings document, for the handlers that need the server's half of it. */
   settings(): Promise<AppSettings>;
+}
+
+/**
+ * Where a downloaded file lands. STEM_DOWNLOADS_DIR keeps a test run out of the
+ * real Downloads folder; everywhere else this is the OS's own answer.
+ */
+function downloadsDir(): string {
+  return process.env.STEM_DOWNLOADS_DIR?.trim() || app.getPath('downloads');
 }
 
 export function registerLocalIpc(deps: LocalIpcDeps): void {
@@ -100,8 +123,20 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
       .then((r) => (r.canceled ? [] : r.filePaths))
   );
 
+  /**
+   * Refuse a reveal that would open the wrong machine's folder. The message is
+   * written for a user because it can reach one: the renderer hides these
+   * buttons when the server is elsewhere, so anybody who sees this got here
+   * through a window that was open when the pairing changed.
+   */
+  function revealable(what: string): void {
+    if (!deps.connection().remote) return;
+    throw new Error(`${what} is on Stem's server, which is not this computer — there is nothing to open here.`);
+  }
+
   /** Open the Files folder in Finder/Explorer. */
   handleLocal('files:reveal', async () => {
+    revealable('Your Files folder');
     await shell.openPath(await ensureFilesRoot());
   });
   // Read-only, and reached only from the `att.path` branch of
@@ -109,9 +144,28 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
   // by construction is on the client's own disk.
   handleLocal('files:preview', (_e, path: string) => imagePreviewDataUrl(path));
 
+  /**
+   * Fetch one file out of the server's Files folder and put it where downloads
+   * go, then show it there — the two halves of what "Download" means on a desktop.
+   * Answers with the path it landed at, so the renderer can name it if it wants.
+   */
+  handleLocal('files:download', async (_e, rel: string): Promise<string> => {
+    const saved = await downloadFile(deps.credentials(), rel, downloadsDir());
+    // Opening a Finder window is the one part of this a test run must not do:
+    // STEM_BACKGROUND is set for exactly the runs that are forbidden to take
+    // activation (see BACKGROUND in desktop/index.ts, and the tray, which is
+    // skipped under the same kind of flag for the same kind of reason).
+    if (!process.env.STEM_BACKGROUND) shell.showItemInFolder(saved);
+    return saved;
+  });
+
   handleLocal('cfolders:reveal', async (_e, id: string) => {
+    revealable('That folder');
     const path = await connectedFolderPath(id);
     if (path) await shell.openPath(path);
   });
-  handleLocal('cfolders:revealWorkspace', () => shell.openPath(workspaceRoot()));
+  handleLocal('cfolders:revealWorkspace', () => {
+    revealable("Stem's own folder");
+    return shell.openPath(workspaceRoot());
+  });
 }

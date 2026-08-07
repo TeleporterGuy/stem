@@ -5,6 +5,7 @@ import type {
   FolderIndexStatus,
   ModelSummary
 } from '../../../shared/types';
+import { useRemoteServer } from '../../hooks/useRemoteServer';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { FilesTab } from './FilesTab';
@@ -144,6 +145,10 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
   const [confirmAll, setConfirmAll] = useState<Record<string, boolean>>({});
   // Expanded cards (settings visible). Collapsed cards show a summary line instead.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // A connected folder is a path on the SERVER's disk. When that isn't this
+  // machine, revealing it here would open whatever happens to sit at the same
+  // path locally — so the buttons that do it are not offered at all.
+  const remote = useRemoteServer();
 
   const toggleOpen = (id: string) =>
     setExpanded((s) => {
@@ -247,9 +252,11 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
       <div className="grp-head cfolders-head">
         Connected folders
         <span className="grp-head-actions">
-          <button className="grp-head-add" onClick={() => window.stem.openWorkspaceFolder()} title="Open Stem's own folder in Finder" aria-label="Open Stem's folder">
-            <FolderOpen size={14} />
-          </button>
+          {!remote && (
+            <button className="grp-head-add" onClick={() => window.stem.openWorkspaceFolder()} title="Open Stem's own folder in Finder" aria-label="Open Stem's folder">
+              <FolderOpen size={14} />
+            </button>
+          )}
           <button className="grp-head-add" onClick={add} disabled={busy} title="Connect an external folder Stem can read" aria-label="Add folder">
             <Plus size={14} />
           </button>
@@ -293,17 +300,19 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
                         visually relocating the path's leading slash to the end. */}
                     <em title={f.path}>{`‎${f.path}‎`}</em>
                   </span>
-                  <button
-                    className="icon-action sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      window.stem.revealConnectedFolder(f.id);
-                    }}
-                    title="Reveal in Finder"
-                    aria-label="Reveal in Finder"
-                  >
-                    <FolderOpen size={14} />
-                  </button>
+                  {!remote && (
+                    <button
+                      className="icon-action sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.stem.revealConnectedFolder(f.id);
+                      }}
+                      title="Reveal in Finder"
+                      aria-label="Reveal in Finder"
+                    >
+                      <FolderOpen size={14} />
+                    </button>
+                  )}
                   <button
                     className="icon-action sm"
                     onClick={(e) => {

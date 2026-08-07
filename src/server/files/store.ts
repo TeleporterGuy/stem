@@ -5,10 +5,11 @@
 // read tools reach these files because the folder is inside its cwd.
 
 import { constants } from 'node:fs';
-import { copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
-import { basename, extname, join, relative, sep } from 'node:path';
+import { copyFile, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { basename, extname, join, relative, resolve, sep } from 'node:path';
 import type { FileEntry, FilesListing } from '../../shared/types';
 import { filesRoot } from '../workspace/paths';
+import { isUploadHandle, resolveUploadHandle } from './staging';
 
 /** Skip dotfiles like .DS_Store everywhere. */
 function isHidden(name: string): boolean {
@@ -92,7 +93,10 @@ function isSafeSubdir(subdir: string): boolean {
 /**
  * Copy each source file into files/<subdir> (subdir '' = root), avoiding name
  * collisions. Sources are absolute paths (the renderer resolves dropped/picked
- * Files to paths). Unreadable sources are skipped. Returns the fresh listing.
+ * Files to paths) or, from a client whose server is elsewhere, staging handles
+ * for bytes it has already streamed over (see files/staging.ts). A staged file
+ * keeps its original basename, so both forms land under the same name here.
+ * Unreadable sources are skipped. Returns the fresh listing.
  */
 export async function addFiles(paths: string[], subdir = ''): Promise<FilesListing> {
   if (subdir && !isSafeSubdir(subdir)) throw new Error(`Unsafe files subfolder: ${subdir}`);
@@ -100,8 +104,12 @@ export async function addFiles(paths: string[], subdir = ''): Promise<FilesListi
   await mkdir(destDir, { recursive: true });
   for (const src of paths) {
     if (!src) continue;
+    const from = isUploadHandle(src) ? await resolveUploadHandle(src) : src;
+    // A handle that resolves to nothing has expired or was never real; treat it
+    // like any other unreadable source rather than failing the whole drop.
+    if (!from) continue;
     try {
-      await copyToUniquePath(src, destDir, basename(src) || `file-${Date.now()}-${seq++}`);
+      await copyToUniquePath(from, destDir, basename(from) || `file-${Date.now()}-${seq++}`);
     } catch {
       // Skip a single unreadable source rather than failing the whole drop.
     }
@@ -109,12 +117,52 @@ export async function addFiles(paths: string[], subdir = ''): Promise<FilesListi
   return listFiles();
 }
 
+/**
+ * The absolute path `rel` names inside the Files folder, or null when it points
+ * anywhere else. THE containment check for this folder: everything that turns a
+ * client-supplied relative path into an absolute one goes through here, so there
+ * is one rule to read and one place a mistake in it could live.
+ *
+ * `resolve` normalises the `..` segments away before the comparison, which is
+ * what makes `../../etc/passwd` fail rather than escape. Purely textual — a
+ * caller that is going to READ the file wants readableFilePath below, which also
+ * resolves symlinks.
+ */
+export function filePathWithin(rel: string): string | null {
+  if (typeof rel !== 'string' || !rel || rel.includes('\0')) return null;
+  const root = filesRoot();
+  const abs = resolve(root, rel);
+  return abs === root || abs.startsWith(root + sep) ? abs : null;
+}
+
+/**
+ * The same, for a caller about to serve the bytes: the path must survive symlink
+ * resolution still inside the folder, and must be a regular file.
+ *
+ * Textual containment alone is not enough here. The Files folder is a real
+ * directory the user can also edit in Finder, so a symlink in it is something
+ * they can create by accident — and a link named `notes.txt` pointing at
+ * `~/.ssh/id_rsa` would otherwise be served on request as though it were a file
+ * they had dropped in. A directory is refused for the same reason a caller could
+ * not have used it: there are no bytes to send.
+ */
+export async function readableFilePath(rel: string): Promise<string | null> {
+  const abs = filePathWithin(rel);
+  if (!abs) return null;
+  try {
+    const root = await realpath(filesRoot());
+    const real = await realpath(abs);
+    if (real !== root && !real.startsWith(root + sep)) return null;
+    return (await stat(real)).isFile() ? real : null;
+  } catch {
+    return null; // missing, or a broken link
+  }
+}
+
 /** Delete a file by its rel path (guards against escaping files/). */
 export async function removeFile(rel: string): Promise<FilesListing> {
-  const root = filesRoot();
-  const abs = join(root, rel);
-  const within = abs === root || abs.startsWith(root + sep);
-  if (within) await rm(abs, { force: true });
+  const abs = filePathWithin(rel);
+  if (abs) await rm(abs, { force: true });
   return listFiles();
 }
 

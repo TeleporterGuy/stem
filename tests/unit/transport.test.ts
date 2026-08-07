@@ -10,10 +10,11 @@
 // driven without a client, is transport-http.test.ts.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { registerServer } from '../../src/server/ipc';
+import { isUploadHandle, resolveUploadHandle } from '../../src/server/files/staging';
 import { forgetCachedDevices, readDevices, resolveDevice } from '../../src/server/transport/auth';
 import { createPairingCode } from '../../src/server/transport/pairing';
 import { readClientIdentity, writeClientIdentity } from '../../src/desktop/client-store';
@@ -64,12 +65,19 @@ beforeAll(async () => {
     quickChat: { ...(patch as object), defaultEffort: 'high' }
   }));
   registerServer('backend:newConversation', () => Promise.reject(new Error('pi is not running')));
+  // The two channels that carry client paths, echoing back exactly what landed —
+  // which is the only thing the remote-upload rewrite is about.
+  registerServer('backend:startTurn', (_e, input) => input);
+  registerServer('files:add', (_e, paths, subdir) => [paths, subdir]);
 
   endpoint = await startTransport({ devUrl: null });
   // The server publishes no credential any more: this client mints its own off
   // the state root they share, exactly as the desktop does at startup.
   proxy = createServerProxy({
     ...(await clientCredentials(endpoint.url, { external: false })),
+    // The embedded shape: this process started the server, so paths still mean
+    // the same thing on both sides and nothing is uploaded before a turn.
+    remote: false,
     sendToMain: (channel, payload) => routed.push({ to: 'main', channel, payload }),
     sendToOverlay: (channel, payload) => routed.push({ to: 'overlay', channel, payload }),
     revealIfOwns: (threadId) => routed.push({ to: 'revealIfOwns', channel: '', payload: threadId }),
@@ -174,6 +182,95 @@ describe('wrapped channels', () => {
     expect(clientSide).toEqual([
       'client:applyQuickChat({"shortcut":"Alt+Space","showOnAllDisplays":false}→Alt+Space)'
     ]);
+  });
+});
+
+// The one place a client changes what it puts on the wire depending on WHERE the
+// server is. Everything above is identical either way, and has to stay that way —
+// so this is driven through a second proxy rather than by making the first one
+// behave differently.
+describe('when the server is somewhere else', () => {
+  let far: ServerProxy;
+  const localFile = join(tmpdir(), `stem-attach-${process.pid}.txt`);
+
+  beforeAll(async () => {
+    writeFileSync(localFile, 'the contents of a file on the client');
+    far = createServerProxy({
+      ...(await clientCredentials(endpoint.url, { external: false })),
+      // The whole difference: a server this process did not start may not share
+      // this disk, so a path in an argument means nothing to it.
+      remote: true,
+      sendToMain: () => undefined,
+      sendToOverlay: () => undefined,
+      revealIfOwns: () => undefined,
+      routeBackendEvent: () => undefined,
+      revealMainWindow: () => undefined,
+      requestAttention: () => undefined,
+      oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
+      threadOpened: async () => undefined,
+      applyQuickChatSettings: () => undefined
+    });
+  });
+
+  afterAll(() => {
+    far.close();
+    rmSync(localFile, { force: true });
+  });
+
+  it('uploads a turn\'s attachments and sends handles in place of paths', async () => {
+    const result = (await far.invoke('backend:startTurn', [
+      { input: 'what does this say?', attachments: [{ name: 'note.txt', path: localFile }] }
+    ])) as { attachments: { name: string; path: string }[] };
+
+    // The path the renderer supplied never reached the server; a handle did.
+    const [att] = result.attachments;
+    expect(att.name).toBe('note.txt');
+    expect(att.path).not.toBe(localFile);
+    expect(isUploadHandle(att.path)).toBe(true);
+
+    // …and it stands for the bytes that were on the client's disk, which is the
+    // whole claim. The server resolves it exactly as pi/attachments.ts does.
+    const staged = await resolveUploadHandle(att.path);
+    expect(readFileSync(staged!, 'utf8')).toBe('the contents of a file on the client');
+    // The name is preserved through the round trip, so the file lands as itself.
+    expect(basename(staged!)).toBe(basename(localFile));
+  });
+
+  it('leaves a pasted image in the envelope, where it already is', async () => {
+    // Only a PATH is meaningless remotely. Base64 is already on the wire, and
+    // uploading it separately would be strictly more work for the same bytes.
+    const result = (await far.invoke('backend:startTurn', [
+      { input: 'look', attachments: [{ name: 'shot.png', mime: 'image/png', dataBase64: 'aGk=' }] }
+    ])) as { attachments: { dataBase64: string; path?: string }[] };
+    expect(result.attachments[0]).toEqual({ name: 'shot.png', mime: 'image/png', dataBase64: 'aGk=' });
+  });
+
+  it('uploads a drop onto the Files panel the same way', async () => {
+    const paths = (await far.invoke('files:add', [[localFile], 'Recipes'])) as [string[], string];
+    expect(paths[0]).toHaveLength(1);
+    expect(isUploadHandle(paths[0][0])).toBe(true);
+    expect(paths[1]).toBe('Recipes');
+  });
+
+  it('fails the send rather than dropping the attachment out of it', async () => {
+    // A message that quietly went without the file the user attached reads as the
+    // assistant ignoring them. The refusal keeps the draft in the composer with
+    // the reason on screen instead.
+    await expect(
+      far.invoke('backend:startTurn', [
+        { input: 'hi', attachments: [{ name: 'gone.txt', path: join(tmpdir(), 'stem-no-such-file') }] }
+      ])
+    ).rejects.toThrow(/could not be read from this computer/);
+  });
+
+  it('changes nothing for the client that started its own server', async () => {
+    // The embedded default must keep handing over paths: an extra copy through
+    // loopback for every pasted screenshot would be a real cost with nothing on
+    // the other side of it.
+    const result = (await proxy.invoke('backend:startTurn', [
+      { input: 'local', attachments: [{ name: 'note.txt', path: localFile }] }
+    ])) as { attachments: { path: string }[] };
+    expect(result.attachments[0].path).toBe(localFile);
   });
 });
 

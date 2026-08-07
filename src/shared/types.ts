@@ -1818,8 +1818,17 @@ export interface StemApi {
   createFilesSubdir(name: string): Promise<FilesListing>;
   /** Delete a top-level subfolder and its contents. Returns fresh listing. */
   removeFilesSubdir(name: string): Promise<FilesListing>;
-  /** Open the Files folder in the OS file manager. */
+  /**
+   * Open the Files folder in the OS file manager. Only meaningful when the
+   * server shares this machine's disk — it rejects when it doesn't, and the
+   * button is hidden in that case (see hooks/useRemoteServer.ts).
+   */
   revealFiles(): Promise<void>;
+  /**
+   * Fetch one file out of the Files folder into this machine's Downloads folder
+   * and show it there. Answers with where it landed.
+   */
+  downloadFile(rel: string): Promise<string>;
   /** Read an on-disk image → `data:` URL for a bubble thumbnail (null if not an image). */
   previewImage(path: string): Promise<string | null>;
 

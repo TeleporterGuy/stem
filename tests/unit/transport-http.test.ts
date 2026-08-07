@@ -10,12 +10,20 @@
 // it is what is checked here. transport.test.ts drives the same server from the
 // desktop proxy's side, i.e. through the real client.
 import { request as httpRequest } from 'node:http';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
 import { registerServer } from '../../src/server/ipc';
 import { dispatchLocal, serverChannels } from '../../src/server/ipc/guard';
+import { stageUpload } from '../../src/server/files/staging';
+import { resolveDownload } from '../../src/server/startup/transport';
 import { hashEquals, hashToken, requestOriginProblem } from '../../src/server/transport/auth';
-import { startTransportServer, type TransportServer } from '../../src/server/transport/server';
+import {
+  MAX_UPLOAD_BYTES,
+  startTransportServer,
+  type TransportServer
+} from '../../src/server/transport/server';
 
 const TOKEN = 'a'.repeat(64);
 const TOKEN_HASH = hashToken(TOKEN);
@@ -28,6 +36,8 @@ const PAIR_CODES = new Map<string, { deviceId: string; token: string }>();
 
 let server: TransportServer;
 let base: string;
+/** The throwaway Files folder from setup-unit.ts — what GET /files may serve. */
+const filesDir = process.env.STEM_FILES_DIR!;
 /** Channels the fake handlers saw, so we can prove a rejected call never lands. */
 const calls: { channel: string; args: unknown[] }[] = [];
 
@@ -60,9 +70,17 @@ beforeAll(async () => {
       if (!grant) throw Object.assign(new Error('that pairing code is not valid'), { status: 401 });
       PAIR_CODES.delete(code.toUpperCase());
       return grant;
-    }
+    },
+    // The real staging store and the real download resolver, wired exactly as
+    // startTransport wires them — the point of the two file routes is what they
+    // are connected to, and a fake on either end would test the plumbing only.
+    stageUpload,
+    openDownload: resolveDownload
   });
   base = `http://127.0.0.1:${server.port}`;
+
+  mkdirSync(join(filesDir, 'Recipes'), { recursive: true });
+  writeFileSync(join(filesDir, 'Recipes', 'cake.pdf'), 'chocolate');
 });
 
 afterAll(async () => {
@@ -264,8 +282,150 @@ describe('argument validation', () => {
   });
 });
 
+describe('POST /upload', () => {
+  /** Send raw bytes the way the desktop's file-transfer does. */
+  function upload(
+    body: string | Buffer,
+    init: { name?: string; token?: string | null; headers?: Record<string, string> } = {}
+  ) {
+    const headers: Record<string, string> = { 'content-type': 'application/octet-stream', ...init.headers };
+    if (init.token !== null) headers.authorization = `Bearer ${init.token ?? TOKEN}`;
+    return fetch(`${base}/upload?name=${encodeURIComponent(init.name ?? 'notes.txt')}`, {
+      method: 'POST',
+      headers,
+      body
+    });
+  }
+
+  it('takes a file and answers with a handle that stands for it', async () => {
+    const res = await upload('chocolate', { name: 'cake.pdf' });
+    expect(res.status).toBe(200);
+    const { result } = (await res.json()) as { result: { handle: string; name: string; size: number } };
+    expect(result.name).toBe('cake.pdf');
+    expect(result.size).toBe('chocolate'.length);
+    // The handle is what the client passes where a path would have gone; the
+    // server side of that substitution is covered in uploads.test.ts.
+    expect(result.handle).toMatch(/^stem-upload:[0-9a-f-]{36}$/);
+  });
+
+  it('is behind the token and the origin check, like every route but /pair', async () => {
+    expect((await upload('x', { token: null })).status).toBe(401);
+    expect((await upload('x', { token: 'b'.repeat(64) })).status).toBe(401);
+    expect((await upload('x', { headers: { origin: 'https://evil.example' } })).status).toBe(403);
+
+    // The rebinding shape, which fetch cannot produce (it will not set Host).
+    const rebound = await raw(
+      '/upload?name=notes.txt',
+      { host: 'rebound.example', authorization: `Bearer ${TOKEN}` },
+      'x'
+    );
+    expect(rebound.status).toBe(403);
+  });
+
+  it('refuses an over-sized file on the declared length, before any of it arrives', async () => {
+    const res = await raw(
+      '/upload?name=huge.bin',
+      {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/octet-stream',
+        'content-length': String(MAX_UPLOAD_BYTES + 1)
+      },
+      'x'
+    );
+    expect(res.status).toBe(413);
+    expect(JSON.parse(res.body).error).toMatch(/too large/);
+  });
+
+  it('cuts off a body that lies about its size', async () => {
+    // No Content-Length to pre-check, so the cap has to bite on the wire — the
+    // whole reason the route streams rather than buffering.
+    const chunk = Buffer.alloc(1024 * 1024, 0x61);
+    const status = await new Promise<number>((resolveStatus, rejectStatus) => {
+      const req = httpRequest(
+        {
+          host: '127.0.0.1',
+          port: server.port,
+          path: '/upload?name=liar.bin',
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            'content-type': 'application/octet-stream',
+            'transfer-encoding': 'chunked'
+          }
+        },
+        (r) => {
+          r.resume();
+          resolveStatus(r.statusCode ?? 0);
+        }
+      );
+      req.on('error', rejectStatus);
+      const pump = (sent: number): void => {
+        if (sent > MAX_UPLOAD_BYTES + chunk.length) {
+          req.end();
+          return;
+        }
+        if (req.write(chunk)) setImmediate(() => pump(sent + chunk.length));
+        else req.once('drain', () => pump(sent + chunk.length));
+      };
+      pump(0);
+    }).catch(() => 413); // a destroyed request is the same refusal, seen from the client
+    expect(status).toBe(413);
+  }, 30_000);
+});
+
+describe('GET /files', () => {
+  function download(path: string, init: { token?: string | null } = {}) {
+    const headers: Record<string, string> = {};
+    if (init.token !== null) headers.authorization = `Bearer ${init.token ?? TOKEN}`;
+    return fetch(`${base}${path}`, { headers });
+  }
+
+  it('streams one file out of the Files folder', async () => {
+    const res = await download('/files/Recipes/cake.pdf');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('chocolate');
+    // Never sniffed from the extension, and never rendered: a stored file that
+    // the browser decides is script is how a file store becomes an XSS.
+    expect(res.headers.get('content-type')).toBe('application/octet-stream');
+    expect(res.headers.get('content-disposition')).toMatch(/attachment; filename\*=UTF-8''cake\.pdf/);
+  });
+
+  it('is behind the token', async () => {
+    expect((await download('/files/Recipes/cake.pdf', { token: null })).status).toBe(401);
+    expect((await download('/files/Recipes/cake.pdf', { token: 'b'.repeat(64) })).status).toBe(401);
+  });
+
+  it('does not become a way to read the rest of the machine', async () => {
+    // A device token is not a licence to read the server's disk. Every one of
+    // these is textually under /files/ and resolves somewhere it must not.
+    for (const path of [
+      '/files/../package.json',
+      '/files/..%2Fpackage.json',
+      '/files/%2e%2e%2fpackage.json',
+      '/files/Recipes/../../package.json',
+      '/files//etc/passwd',
+      '/files/'
+    ]) {
+      const res = await raw(path, { authorization: `Bearer ${TOKEN}` });
+      expect(`${path}: ${res.status}`).toBe(`${path}: 404`);
+      expect(res.body).not.toMatch(/"name": "stem"/);
+      expect(res.body).not.toMatch(/root:/);
+    }
+  });
+
+  it('answers a missing file exactly as it answers a forbidden one', async () => {
+    // Same 404 for both: a different status would confirm that something is
+    // there, which is the one thing a caller probing for paths wants to learn.
+    const missing = await download('/files/Recipes/nothing.pdf');
+    const forbidden = await raw('/files/../package.json', { authorization: `Bearer ${TOKEN}` });
+    expect(missing.status).toBe(404);
+    expect(forbidden.status).toBe(404);
+    expect((await missing.json()).error).toBe(JSON.parse(forbidden.body).error);
+  });
+});
+
 describe('routes', () => {
-  it('serves no files: anything that is not one of the four routes is a 404', async () => {
+  it('serves no files: anything that is not one of the six routes is a 404', async () => {
     // This server used to serve the phone's bundle out of dist/renderer, with a
     // traversal guard behind it. Both are gone; every client loads its own UI off
     // its own disk. The traversal cases are kept as a regression: if a static

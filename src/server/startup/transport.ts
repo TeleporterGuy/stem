@@ -1,10 +1,17 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname } from 'node:path';
+import { readableFilePath } from '../files/store';
+import { stageUpload, startStagingSweeper, stopStagingSweeper } from '../files/staging';
 import { dispatchLocal, serverChannels } from '../ipc/guard';
 import { log } from '../log';
 import { resolveDevice } from '../transport/auth';
 import { redeemPairingCode } from '../transport/pairing';
-import { startTransportServer, type DeviceIdentity, type TransportServer } from '../transport/server';
+import {
+  startTransportServer,
+  type DeviceIdentity,
+  type DownloadTarget,
+  type TransportServer
+} from '../transport/server';
 import { serverEndpointPath } from '../workspace/paths';
 
 /**
@@ -76,6 +83,19 @@ function trustedHosts(): string[] {
     .filter(Boolean);
 }
 
+/**
+ * What GET /files/<rel> is allowed to send back, and the route's whole
+ * authorization decision. Deliberately one call: it is the SAME resolver the
+ * `files:*` channels bound their paths with, so a file this serves is by
+ * construction one the Files panel already lists. A second containment check
+ * written here would be a second check that could disagree with that one.
+ */
+export async function resolveDownload(rel: string): Promise<DownloadTarget | null> {
+  const path = await readableFilePath(rel);
+  if (!path) return null;
+  return { path, name: basename(path), size: (await stat(path)).size };
+}
+
 /** An origin a client can put in a URL — IPv6 literals need their brackets. */
 function originFor(host: string, port: number): string {
   return `http://${host.includes(':') ? `[${host}]` : host}:${port}`;
@@ -117,8 +137,14 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
       const minted = await redeemPairingCode(code);
       return { deviceId: minted.device.id, token: minted.token };
     },
+    stageUpload,
+    openDownload: resolveDownload,
     extraHosts
   });
+  // Uploads outlive the request that made them, so somebody has to notice the
+  // ones nothing ever came back for. Started with the listener because that is
+  // what makes them possible in the first place.
+  startStagingSweeper();
   const url = originFor(host, primary.port);
   log('transport', 'listening', { host, port: primary.port, dev: !!cfg.devUrl, extraHosts });
   await writeEndpointFile(url);
@@ -149,6 +175,7 @@ export function dropDeviceStreams(deviceId: string): number {
 export async function closeTransport(): Promise<void> {
   const current = primary;
   primary = null;
+  stopStagingSweeper();
   if (!current) return;
   await current
     .close()

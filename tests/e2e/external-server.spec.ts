@@ -26,6 +26,9 @@
 //     channels, where client behavior runs before the call is forwarded
 //   - an approval: a decision made in the server process that has to reach a
 //     window, be answered by a click, and come back
+//   - a file in both directions, which is the one thing that CANNOT work by
+//     sharing a disk: a path in an argument means nothing to another machine, so
+//     the bytes go up POST /upload and come back down GET /files
 //
 // What it does NOT cover, on purpose: the other ~46 specs. Quick Chat's handoff
 // choreography, onboarding, the Manage panel, memory, tasks, release notes and
@@ -34,7 +37,8 @@
 // duplicating them here would roughly double a serial Electron suite to re-test
 // one `if` in desktop/index.ts.
 import { expect, closeApp, launchApp, mainWindowOf, test, type LaunchedApp } from './electron';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 
@@ -187,6 +191,72 @@ test.describe('against an externally started stem-server', () => {
     );
     await expect(win.getByText('Run this command?')).toHaveCount(0);
     await expect(win.getByTitle('Stop')).toHaveCount(0);
+  });
+
+  test('a file goes up and comes back down over the socket', async () => {
+    // The only thing in this file that a shared disk could not have faked. The
+    // app was launched with STEM_SERVER_URL, so it treats the server as somebody
+    // else's machine and will not hand it a path: the bytes have to be streamed
+    // to POST /upload, staged there, and referred to by a handle.
+    //
+    // Deliberately from a directory NEITHER process would look in — the state
+    // root they share is not where this file is — so nothing can pass by
+    // accident on a path both halves happen to be able to read.
+    const elsewhere = mkdtempSync(join(tmpdir(), 'stem-client-disk-'));
+    const source = join(elsewhere, 'brief.txt');
+    const body = `contents that only the client can see ${Date.now()}`;
+    writeFileSync(source, body);
+
+    const listing = await win.evaluate(
+      (path) => (window as any).stem.addFiles([path]) as Promise<{ files: { rel: string }[] }>,
+      source
+    );
+    expect(listing.files.map((f) => f.rel)).toContain('brief.txt');
+
+    // The server wrote it into its own Files folder, from bytes it was sent.
+    expect(readFileSync(join(launched.userDataDir, 'files', 'brief.txt'), 'utf8')).toBe(body);
+
+    // …and back the other way: GET /files streams it into this machine's
+    // downloads folder, which the harness has pointed somewhere disposable.
+    const saved = await win.evaluate(
+      (rel) => (window as any).stem.downloadFile(rel) as Promise<string>,
+      'brief.txt'
+    );
+    expect(saved).toBe(join(launched.userDataDir, 'downloads', 'brief.txt'));
+    expect(readFileSync(saved, 'utf8')).toBe(body);
+  });
+
+  test('the Files panel offers Download and not "open in Finder"', async () => {
+    // The affordance side of the same fact. A Finder on this laptop cannot open a
+    // folder on the server, so the buttons that would try are not rendered — a
+    // button that can only ever fail reads as broken software, not as something
+    // that doesn't apply here. Download is what stands in their place.
+    await win.getByRole('button', { name: 'Sources — files & connected folders' }).click();
+    await expect(win.getByRole('button', { name: 'Download brief.txt' })).toBeAttached();
+    await expect(win.getByRole('button', { name: 'Open Files folder' })).toHaveCount(0);
+
+    await win.getByRole('button', { name: 'Connected folders', exact: true }).click();
+    await expect(win.getByRole('button', { name: 'Add folder' })).toBeVisible();
+    await expect(win.getByRole('button', { name: "Open Stem's folder" })).toHaveCount(0);
+  });
+
+  test('a download refuses to leave the Files folder', async () => {
+    // The device token is not a licence to read the server's disk. Two things
+    // refuse this, and both have to: the URL normalizes `..` away before the
+    // request is even sent, and the server's resolver would refuse what was left
+    // anyway. The raw-socket forms that skip the first are in
+    // tests/unit/transport-http.test.ts; what this proves is that the whole path
+    // — renderer, client, socket, other process — ends in a refusal and no file.
+    const refused = await win.evaluate(
+      (rel) =>
+        (window as any).stem
+          .downloadFile(rel)
+          .then((p: string) => `downloaded to ${p}`)
+          .catch((e: Error) => e.message),
+      '../../package.json'
+    );
+    expect(refused).toContain('could not be fetched');
+    expect(refused).not.toContain('downloaded');
   });
 
   test('the app recovers when the network under it is cut', async () => {

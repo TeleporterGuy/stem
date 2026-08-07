@@ -2251,6 +2251,7 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 .files-newdir { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin: 0 4px 10px; }
 .files-newdir .ifield { flex: 1; min-width: 120px; width: auto; }
 .files-newdir-error { flex-basis: 100%; font-size: var(--fs-11); color: var(--danger); }
+.files-error { margin: 0 4px 10px; font-size: var(--fs-11); color: var(--danger); }
 .files-row { padding: 6px 12px; gap: var(--sp-3); }
 .files-row .row-icon { width: 16px; background: transparent; color: var(--muted); box-shadow: none; }
 .files-row .row-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

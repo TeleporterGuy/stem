@@ -140,6 +140,22 @@ export function filesRoot(): string {
 }
 
 /**
+ * Where bytes uploaded by a client wait until something uses them (see
+ * files/staging.ts). A client whose server is on another machine cannot hand it a
+ * path — the path means nothing there — so it streams the file to POST /upload
+ * and passes a handle to this directory instead.
+ *
+ * Deliberately NOT inside workspaceRoot(): the agent's read tools reach anything
+ * in its cwd, and an upload the user has not decided to keep is not something the
+ * assistant should be able to find by listing a folder. Swept on a TTL.
+ */
+export function uploadStagingRoot(): string {
+  // STEM_UPLOADS_DIR lets unit tests point at a throwaway directory (and avoids
+  // touching Electron's `app` when run outside the app), like its neighbours.
+  return process.env.STEM_UPLOADS_DIR ?? join(userDataRoot(), 'uploads');
+}
+
+/**
  * Stem-owned chat-organization store: the user's folder tree and the
  * chat->folder assignments. Chats themselves are backend threads on disk; this
  * file only holds the organization layer the backend has no concept of.

@@ -60,6 +60,14 @@ Maintainer notes:
   you've already read are now kept per computer rather than shared. So a laptop and a desktop
   pointed at the same Stem can each have their own summon key, and neither is told about a new
   version until it actually has it. Everything already set carries over untouched.
+- **Attaching files works when Stem is on another computer.** Attaching something to a message, or
+  dropping it into your Files folder, used to tell Stem's server where the file was on your disk —
+  which is only useful when that is the same disk. Now the file itself is sent across, so
+  attachments and drops behave the same wherever Stem is running. Files come back the same way:
+  every file in your Files folder has a Download button that saves a copy into your Downloads
+  folder and shows it there. And when Stem's server isn't this computer, the buttons that opened a
+  folder in Finder — your Files folder, Stem's own folder, and each connected folder — are no
+  longer offered, because none of those folders are here to open.
 
 ### Removed
 

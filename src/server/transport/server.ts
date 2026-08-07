@@ -1,5 +1,7 @@
+import { createReadStream } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
+import { Transform, type Readable } from 'node:stream';
 import { log } from '../log';
 import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolicy } from './auth';
 
@@ -12,17 +14,32 @@ import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolic
 // stem-server takes it from the environment), and LOOPBACK_HOSTS is what keeps
 // that option from becoming a public listener.
 //
-// Four routes:
+// Six routes:
 //   POST /rpc      {channel, args}  → {ok:true, result} | {ok:false, error}
 //   GET  /events                    → Server-Sent Events, server → client
 //   GET  /channels                  → what this client may invoke
+//   POST /upload?name=…  raw bytes  → {handle}, to pass where a path would go
+//   GET  /files/<rel>               → the bytes of one file in the Files folder
 //   POST /pair     {code}           → {deviceId, token}, the ONE unauthenticated one
 //
-// There is deliberately no fifth. This server used to serve the phone's web
-// bundle out of dist/renderer, with a traversal guard and a dev-mode proxy to
-// Vite behind it; that client is gone, every remaining client loads its own UI
-// off its own disk, and a static file server nobody reads from is only ever a
-// way to leak a file. Anything that is not one of the four routes is a 404.
+// The two file routes exist because a path is not portable. Everything else a
+// client sends fits in an RPC envelope; a file does not — an attachment must not
+// have to be base64 inside a JSON body to reach the server, and a file the user
+// wants back must not have to come the other way in one. So they stream, and they
+// are the only routes here with a body that is not JSON.
+//
+// They are not a file server. /files serves one folder — the Files place, which
+// is the folder the user themselves put things in — and the containment rule for
+// it lives in files/store.ts with the handlers that already enforce it, not in a
+// second copy here. Everything else on this machine is unreachable through this
+// server except through a registered channel, which is how it was when the only
+// route was /rpc, and how it stays.
+//
+// This server used to serve the phone's web bundle out of dist/renderer, with a
+// traversal guard and a dev-mode proxy to Vite behind it; that client is gone,
+// every remaining client loads its own UI off its own disk, and a static file
+// server nobody reads from is only ever a way to leak a file. Anything that is
+// not one of the six routes is a 404.
 //
 // SSE rather than a WebSocket on purpose: it is one-directional (which is exactly
 // the shape of the push side), it survives a reverse proxy without an upgrade
@@ -38,6 +55,17 @@ const MAX_BODY_BYTES = 25 * 1024 * 1024;
 
 /** A pairing code and its JSON wrapper. Unauthenticated, so it gets its own cap. */
 const MAX_PAIR_BODY_BYTES = 1024;
+
+/**
+ * 100 MB for one uploaded file. Four times what an RPC body may be, because an
+ * upload is the route that exists precisely so a big file does NOT have to ride
+ * in an RPC — but still a cap, and enforced twice: the declared Content-Length is
+ * refused before a byte is read, and a sender that lies about it (or sends
+ * chunked) is cut off at the line. Uploads are authenticated, so this is not a
+ * defence against a stranger; it is what stops one wrong drag from filling the
+ * disk of a server that may be a small VPS.
+ */
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 /**
  * Keepalive cadence for idle SSE streams. Comfortably under the 60s idle timeout
@@ -100,8 +128,39 @@ export interface TransportServerOptions {
    * deployment that only ever pairs off shared disk should do.
    */
   pair?(code: string): Promise<PairingGrant>;
+  /**
+   * Take one uploaded file and answer with the handle that stands for it. `body`
+   * is already capped at MAX_UPLOAD_BYTES and errors past it, so an
+   * implementation only has to write what it is given and clean up if that
+   * throws. Omitted = no /upload route.
+   */
+  stageUpload?(name: string, body: Readable): Promise<UploadHandle>;
+  /**
+   * Resolve a path from GET /files/<rel> to something safe to send, or null when
+   * it names anything the client is not entitled to. THE authorization decision
+   * for that route: this file does no containment checking of its own, because a
+   * second check written here is a second check that can disagree with the one
+   * the `files:*` channels already enforce. Omitted = no /files route.
+   */
+  openDownload?(rel: string): Promise<DownloadTarget | null>;
   /** Host values accepted beyond loopback and the tailnet. */
   extraHosts?: readonly string[];
+}
+
+/** What an upload is called afterwards, and what it cost. */
+export interface UploadHandle {
+  handle: string;
+  name: string;
+  size: number;
+}
+
+/** A file the server has decided this client may have, resolved to its bytes. */
+export interface DownloadTarget {
+  /** Absolute, already checked, already symlink-resolved. */
+  path: string;
+  /** Basename to suggest, for the client's own save dialog or filename. */
+  name: string;
+  size: number;
 }
 
 /** One server → client push, already stamped with its place in the stream. */
@@ -173,6 +232,37 @@ function readBody(req: IncomingMessage, limit: number): Promise<string> {
     req.on('end', () => resolveBody(Buffer.concat(chunks).toString('utf8')));
     req.on('error', rejectBody);
   });
+}
+
+/**
+ * The request body as a stream that dies at `limit` rather than a string. Same
+ * contract as readBody — a declared over-cap length is refused before a byte
+ * arrives, and a lying sender is cut off mid-flight — for the one route whose
+ * body must never be held in memory at all.
+ */
+function cappedBody(req: IncomingMessage, limit: number): Readable {
+  let size = 0;
+  const meter = new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      size += chunk.length;
+      if (size > limit) {
+        // Stop the sender as well as the pipeline: without this the peer keeps
+        // writing a body nobody is reading until it fills a socket buffer.
+        req.destroy();
+        done(new BodyTooLarge());
+        return;
+      }
+      done(null, chunk);
+    }
+  });
+  req.pipe(meter);
+  // pipe() forwards data and nothing else, so a request that dies would leave
+  // the meter open forever — and whoever is consuming it waiting forever with a
+  // half-written file. Both of these are no-ops once the cap has already
+  // destroyed it, which is why the cap can destroy `req` above without racing.
+  req.on('error', (e) => meter.destroy(e));
+  req.on('aborted', () => meter.destroy(new Error('the connection closed before the body arrived')));
+  return meter;
 }
 
 /**
@@ -319,6 +409,97 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
   }
 
   /**
+   * Take one file. The client sends the bytes raw, with the name in the query
+   * string — there is no multipart parser here and there does not need to be:
+   * one request carries one file, which is exactly what the two callers (an
+   * attachment on a turn, a drop onto the Files panel) each have.
+   *
+   * The handle that comes back is what the client passes where it would have
+   * passed a path, so nothing downstream has to learn a second shape for "the
+   * bytes are over there".
+   */
+  async function handleUpload(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!opts.stageUpload) {
+      sendJson(res, 404, { ok: false, error: 'not found' });
+      return;
+    }
+    const gated = await gate(req);
+    if ('error' in gated) {
+      log('transport', 'rejected /upload', { problem: gated.error });
+      sendJson(res, gated.status, { ok: false, error: gated.error });
+      return;
+    }
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) {
+      sendJson(res, 413, { ok: false, error: 'that file is too large to upload' });
+      return;
+    }
+    const name = new URL(req.url ?? '/', 'http://stem.invalid').searchParams.get('name') ?? 'upload';
+    try {
+      const staged = await opts.stageUpload(name, cappedBody(req, MAX_UPLOAD_BYTES));
+      sendJson(res, 200, { ok: true, result: staged });
+    } catch (e) {
+      if (e instanceof BodyTooLarge) {
+        sendJson(res, 413, { ok: false, error: 'that file is too large to upload' });
+        return;
+      }
+      const error = String((e as Error)?.message ?? e);
+      log('transport', 'upload failed', { error });
+      sendJson(res, 500, { ok: false, error });
+    }
+  }
+
+  /**
+   * Send one file back. The path after `/files/` is a path relative to the Files
+   * folder, and whether it names something inside it is decided entirely by
+   * openDownload — see the note on that option.
+   *
+   * Streamed rather than read: the file may be large, and this server has no
+   * business holding one in memory to hand it over.
+   */
+  async function handleDownload(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!opts.openDownload) {
+      sendJson(res, 404, { ok: false, error: 'not found' });
+      return;
+    }
+    const gated = await gate(req);
+    if ('error' in gated) {
+      log('transport', 'rejected /files', { problem: gated.error });
+      sendJson(res, gated.status, { ok: false, error: gated.error });
+      return;
+    }
+    const raw = (req.url ?? '/').split('?')[0].slice('/files/'.length);
+    let rel: string;
+    try {
+      rel = decodeURIComponent(raw);
+    } catch {
+      sendJson(res, 400, { ok: false, error: 'that is not a valid file path' });
+      return;
+    }
+    const target = await opts.openDownload(rel);
+    if (!target) {
+      // Deliberately the same answer for "no such file" and "not yours": a 403
+      // would confirm that something is there, which is the one thing a caller
+      // probing for paths is trying to learn.
+      log('transport', 'refused /files', { rel });
+      sendJson(res, 404, { ok: false, error: 'no such file' });
+      return;
+    }
+    res.writeHead(200, {
+      // Never guessed from the extension: a sniffed type is how a stored file
+      // becomes script, and no client here renders the response anyway.
+      'content-type': 'application/octet-stream',
+      'content-length': target.size,
+      'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(target.name)}`,
+      'cache-control': 'no-store'
+    });
+    const file = createReadStream(target.path);
+    file.on('error', () => res.destroy());
+    res.on('close', () => file.destroy());
+    file.pipe(res);
+  }
+
+  /**
    * Spend a pairing code. The one route that answers without a token, because it
    * is how a device that has no token gets one.
    *
@@ -370,7 +551,7 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
   }
 
   /**
-   * Anything that is not one of the four routes. A JSON 404 rather than a file:
+   * Anything that is not one of the six routes. A JSON 404 rather than a file:
    * this server has no document root any more, and never gets one back without a
    * client that needs it (see the header comment).
    */
@@ -389,9 +570,13 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
           ? handleEvents(req, res)
           : path === '/channels' && req.method === 'GET'
             ? handleChannels(req, res)
-            : path === '/pair' && req.method === 'POST'
-              ? handlePair(req, res)
-              : handleUnknown(req, res);
+            : path === '/upload' && req.method === 'POST'
+              ? handleUpload(req, res)
+              : path.startsWith('/files/') && req.method === 'GET'
+                ? handleDownload(req, res)
+                : path === '/pair' && req.method === 'POST'
+                  ? handlePair(req, res)
+                  : handleUnknown(req, res);
     // No handler above is expected to reject, but a thrown error here would
     // otherwise become an unhandled rejection and leave the socket hanging.
     void route.catch((e) => {

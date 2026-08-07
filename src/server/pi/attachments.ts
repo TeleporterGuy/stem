@@ -4,9 +4,15 @@
 // It has no slot for arbitrary files, so text-like files are inlined into the message as
 // fenced blocks and binary files are rejected. This module is the single place that reads
 // attachment bytes (from `dataBase64` or an on-disk `path`) and classifies them.
+//
+// `path` is the CLIENT's path, which is only a path we can read when the client is on
+// this machine. A client whose server is elsewhere streams the bytes to POST /upload
+// first and sends a staging handle in that field instead; resolving one is the only
+// difference here, and it happens in bytesOf() so nothing else has to know.
 
 import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
+import { isUploadHandle, resolveUploadHandle } from '../files/staging';
 import type { TurnAttachment } from '../../shared/types';
 
 /** pi `ImageContent` — the shape of each entry in the prompt's `images` array. */
@@ -81,8 +87,13 @@ function looksTextual(att: TurnAttachment, ext: string, bytes: Buffer): boolean 
 async function bytesOf(att: TurnAttachment): Promise<Buffer | null> {
   if (att.dataBase64) return Buffer.from(att.dataBase64, 'base64');
   if (att.path) {
+    // A staging handle that resolves to nothing (expired, or never real) reads
+    // exactly like an unreadable path, and the caller already knows what to do
+    // with one: name the attachment in `rejected` so the user is told.
+    const path = isUploadHandle(att.path) ? await resolveUploadHandle(att.path) : att.path;
+    if (!path) return null;
     try {
-      return await readFile(att.path);
+      return await readFile(path);
     } catch {
       return null;
     }

@@ -353,6 +353,9 @@ app.whenReady().then(async () => {
 
   proxy = createServerProxy({
     ...endpoint,
+    // The one `if` above decides this too: a server we did not start is a server
+    // that may not share this disk, and paths stop meaning anything to it.
+    remote: !server,
     oauthCourier,
     sendToMain,
     sendToOverlay: (channel, payload) => quickChat.sendToOverlay(channel, payload),
@@ -373,6 +376,7 @@ app.whenReady().then(async () => {
   registerLocalIpc({
     mainWindow: () => mainWindow,
     connection: () => ({ serverUrl, remote: !server, pinnedByEnv: configured.pinnedByEnv }),
+    credentials: () => endpoint,
     settings: () => proxy!.invoke('settings:get', []) as Promise<AppSettings>
   });
   quickChat.registerIpc();

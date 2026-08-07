@@ -100,6 +100,7 @@ const api: StemApi = {
   createFilesSubdir: (name: string) => ipcRenderer.invoke('files:mkdir', name),
   removeFilesSubdir: (name: string) => ipcRenderer.invoke('files:rmdir', name),
   revealFiles: () => ipcRenderer.invoke('files:reveal'),
+  downloadFile: (rel: string) => ipcRenderer.invoke('files:download', rel),
   previewImage: (path: string) => ipcRenderer.invoke('files:preview', path),
 
   listConnectedFolders: () => ipcRenderer.invoke('cfolders:list'),
