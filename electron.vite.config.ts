@@ -61,7 +61,20 @@ export default defineConfig({
         external: ['@huggingface/transformers', '@earendil-works/pi-coding-agent', /^pdfjs-dist/],
         // Multi-input builds default to hashed names; package.json main expects
         // dist/main/index.js, so pin entry names.
-        output: { entryFileNames: '[name].js' }
+        //
+        // Shared chunks are pinned FLAT into dist/main rather than rollup's
+        // default chunks/ subdirectory, and that is load-bearing. Several modules
+        // in the main bundle locate a sibling build artifact relative to
+        // `import.meta.url` — the embed and scan workers, recall-mcp-server.js,
+        // pi-node-shim.mjs, stem-mcp-extension.mjs. With one entry those modules
+        // were always inside dist/main/index.js and the sibling join was exact.
+        // The moment a second entry (src/server/main.ts) shares them, rollup
+        // hoists them into a chunk, and from dist/main/chunks/ every one of those
+        // joins resolves one directory too deep — at runtime, on a path no test
+        // reaches, with an ERR_MODULE_NOT_FOUND that names a file nobody wrote.
+        // Keeping chunks flat keeps "a main-bundle module's siblings live in
+        // dist/main" true regardless of how rollup splits the graph.
+        output: { entryFileNames: '[name].js', chunkFileNames: '[name]-[hash].js' }
       }
     }
   },

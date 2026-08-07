@@ -90,6 +90,24 @@ const env = {
   STEM_E2E: '1'
 };
 
+// Before booting anything: the built layout the main bundle's own sibling joins
+// depend on. Several modules locate an artifact relative to `import.meta.url`
+// (the embed/scan workers, recall-mcp-server, pi-node-shim, the bridge
+// extension), which is only correct while every module of the main bundle sits
+// directly in dist/main. Rollup emits shared chunks into a chunks/ subdirectory
+// by default and hoists a module there the moment two entries share it — which
+// is what the standalone server entry made possible. That failure surfaces at
+// runtime as ERR_MODULE_NOT_FOUND for a file nobody wrote, on a path the e2e
+// suite never walks, so it is asserted here where the build output is in hand.
+const distMain = join(appDir, 'dist', 'main');
+for (const rel of ['embed-worker.js', 'scan-worker.js', 'recall-mcp-server.js', 'pi/pi-node-shim.mjs', 'pi/stem-mcp-extension.mjs']) {
+  check(`${rel} sits where its sibling join expects it`, existsSync(join(distMain, rel)));
+}
+check(
+  'no chunks/ subdirectory — sibling joins would resolve one level too deep from inside one',
+  !existsSync(join(distMain, 'chunks'))
+);
+
 console.log(`[server-boot] booting ${join(appDir, 'dist/main/server.js')}`);
 console.log(`[server-boot] state ${stateDir}`);
 
