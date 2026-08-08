@@ -5,8 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  backgroundModelFor,
+  backgroundRunFor,
   markOnboardingCompleted,
+  memoryRunFor,
   readSettings,
   updateChatsSettings,
   updateDefaultModel,
@@ -14,6 +15,7 @@ import {
   updateEscapeAction,
   updateExecSettings,
   updateLocalProvider,
+  updateMemorySettings,
   updateQuickChat,
   updateRetrievalSettings
 } from '../../src/server/workspace/settings';
@@ -75,23 +77,59 @@ describe('onboarding + default-model settings', () => {
     // The two are patched from different places — the model picker writes one on
     // every change — so a whole-object write here would silently discard the
     // background model the user chose in Settings → Models.
-    await updateDefaults({ backgroundModel: 'anthropic/claude-haiku-4' });
+    await updateDefaults({ backgroundModel: 'anthropic/claude-haiku-4', backgroundEffort: 'low' });
     expect((await updateDefaultModel('anthropic/claude-sonnet-4')).defaults).toEqual({
       model: 'anthropic/claude-sonnet-4',
-      backgroundModel: 'anthropic/claude-haiku-4'
+      backgroundModel: 'anthropic/claude-haiku-4',
+      backgroundEffort: 'low'
     });
   });
 
-  it('backgroundModelFor prefers a pin, then the background model, then nothing', async () => {
-    await updateDefaults({ model: 'anthropic/claude-opus-4', backgroundModel: 'anthropic/claude-haiku-4' });
+  it('backgroundRunFor prefers a pin, then the background model, then nothing', async () => {
+    await updateDefaults({
+      model: 'anthropic/claude-opus-4',
+      backgroundModel: 'anthropic/claude-haiku-4',
+      backgroundEffort: 'low'
+    });
     const withBackground = await readSettings();
-    expect(backgroundModelFor(withBackground, 'x/pinned')).toBe('x/pinned');
-    expect(backgroundModelFor(withBackground, null)).toBe('anthropic/claude-haiku-4');
+    expect(backgroundRunFor(withBackground, 'x/pinned')).toEqual({ model: 'x/pinned', effort: 'low' });
+    expect(backgroundRunFor(withBackground, null)).toEqual({
+      model: 'anthropic/claude-haiku-4',
+      effort: 'low'
+    });
     // Null, not defaults.model: complete() applies that last rung itself, and
     // resolving it here would freeze the chat model into every background call
     // instead of letting it follow.
     await updateDefaults({ backgroundModel: null });
-    expect(backgroundModelFor(await readSettings(), null)).toBeNull();
+    expect(backgroundRunFor(await readSettings(), null).model).toBeNull();
+  });
+
+  it('memoryRunFor skips the background model entirely', async () => {
+    // The whole point of memory being outside the deal: turning Background work
+    // down to a small cheap model must not drag the one role that reads whole
+    // transcripts down with it. Unpinned memory answers null, which complete()
+    // resolves to defaults.model — the model you chat with.
+    await updateDefaults({
+      model: 'anthropic/claude-opus-4',
+      backgroundModel: 'anthropic/claude-haiku-4',
+      backgroundEffort: 'low'
+    });
+    await updateMemorySettings({ effort: 'high' });
+    const s = await readSettings();
+    expect(memoryRunFor(s, null)).toEqual({ model: null, effort: 'high' });
+    expect(memoryRunFor(s, 'x/folder-override')).toEqual({ model: 'x/folder-override', effort: 'high' });
+  });
+
+  it('rejects an effort level that is not one of the known ones', async () => {
+    // A level pi would refuse is worse than none: the job runs at the model's
+    // own depth either way, but a stored one reads as a choice that took effect.
+    writeFileSync(
+      path,
+      JSON.stringify({ defaults: { backgroundEffort: 'ludicrous' }, memory: { effort: 'high' } })
+    );
+    const s = await readSettings();
+    expect(s.defaults.backgroundEffort).toBeNull();
+    expect(s.memory.effort).toBe('high');
   });
 
   it('coerces garbage values back to defaults', async () => {

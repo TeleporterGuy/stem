@@ -204,6 +204,9 @@ export class ExecService implements ExecBridge {
       const model = resolveJudgeModel(settings, defaults, models, currentModel ?? null);
       const reply = await runtime.complete(buildJudgePrompt(command, cwd, userText), {
         model,
+        // The judge sits between you and every command you run, so it feels the
+        // background effort setting more than any other role does.
+        effort: defaults.backgroundEffort,
         timeoutMs: JUDGE_TIMEOUT_MS,
         priority: true
       });

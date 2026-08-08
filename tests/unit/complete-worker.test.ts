@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   COMPLETE_READY_TIMEOUT_MS,
   ensureCompleteModel,
+  ensureCompleteThinking,
   promptComplete,
   resetCompleteConversation
 } from '../../src/server/pi/complete-worker';
@@ -39,6 +40,49 @@ describe('resetCompleteConversation', () => {
       })
     });
     await expect(resetCompleteConversation(child)).rejects.toThrow(/sessions are disabled/);
+  });
+});
+
+describe('ensureCompleteThinking', () => {
+  it('says nothing when no level was asked for', async () => {
+    // The setting starts unset, which has to mean "leave it exactly where it was"
+    // — a background job that suddenly reasoned differently after an upgrade
+    // nobody configured would be the wrong kind of surprise.
+    const request = vi.fn();
+    const child = mockChild({ request });
+    await expect(ensureCompleteThinking(child, null, null)).resolves.toBeNull();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('skips the RPC when the level is already in force', async () => {
+    const request = vi.fn();
+    const child = mockChild({ request });
+    await expect(ensureCompleteThinking(child, 'low', 'low')).resolves.toBe('low');
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('applies the level and reports it as current', async () => {
+    const request = vi.fn(async () => ({ type: 'response' as const, command: 'set_thinking_level', success: true }));
+    const child = mockChild({ request });
+    await expect(ensureCompleteThinking(child, 'low', 'high')).resolves.toBe('low');
+    expect(request).toHaveBeenCalledWith(
+      { type: 'set_thinking_level', level: 'low' },
+      COMPLETE_READY_TIMEOUT_MS
+    );
+  });
+
+  it('keeps the old level when pi refuses, instead of failing the job', async () => {
+    // A model with no reasoning to configure still has to answer. The level was
+    // an economy measure; losing it costs money, and throwing costs the memory.
+    const child = mockChild({
+      request: async () => ({ type: 'response', command: 'set_thinking_level', success: false, error: 'no reasoning' })
+    });
+    await expect(ensureCompleteThinking(child, 'low', 'medium')).resolves.toBe('medium');
+  });
+
+  it('survives a transport error the same way', async () => {
+    const child = mockChild({ request: async () => { throw new Error('socket closed'); } });
+    await expect(ensureCompleteThinking(child, 'low', null)).resolves.toBeNull();
   });
 });
 

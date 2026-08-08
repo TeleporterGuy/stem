@@ -11,7 +11,8 @@ import type {
   LocalProviderTestResult
 } from '../../../../shared/types';
 import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerName } from '../../../../shared/providers';
-import { resolveBackgroundModel } from '../../../../shared/modelRoles';
+import { resolveBackgroundModel, resolveMemoryModel } from '../../../../shared/modelRoles';
+import { clampEffort, EffortSelect, effortsOf } from '../../../ui/EffortSelect';
 import { localProbeTarget, probeStillDescribes } from '../../../localProbe';
 import { RequestGate } from '../../../requestGate';
 import { InfoTip } from '../../../ui/InfoTip';
@@ -68,17 +69,24 @@ type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
 /**
  * Every job Stem runs a model for, in one list.
  *
- * Two of them are decisions: the model you chat with, and the one everything in
- * the background falls back to. The four roles under those inherit the second
- * unless you pin them, so the common want — "stop spending my good model on
- * chat subjects" — is one picker, not four.
+ * Two of them are decisions: the model you chat with, and the one the background
+ * falls back to. The rest are grouped by which of those they follow — Quick Chat
+ * and memory follow the model you chat with, because you read one and the other
+ * cannot afford to be small; chat subjects, the safety check and skills curation
+ * follow Background work, so the common want ("stop spending my good model on
+ * chat subjects") is one picker rather than three.
  *
- * There is exactly one fallback chain, and every picker says which rung it
- * landed on: a role's own pin, else Background work, else the model you chat
- * with. Stem does not guess a cheaper model, because it cannot — pi's catalog
- * carries names, a reasoning flag and a context window, and nothing about price
- * or size. Guessing from names is what used to put the safety check on a mini
- * variant while a newer, cheaper, better small model sat next to it in the list.
+ * Every picker says which rung it landed on: a role's own pin, else the group's
+ * fallback. Stem does not guess a cheaper model, because it cannot — pi's
+ * catalog carries names, a reasoning flag and a context window, and nothing
+ * about price or size. Guessing from names is what used to put the safety check
+ * on a mini variant while a newer, cheaper, better small model sat next to it in
+ * the list.
+ *
+ * Effort appears only where a model was chosen explicitly — an unpinned role
+ * does not know which model it will run on, so it cannot know which levels are
+ * legal. Left on "Model default" it stays where it always was: whatever pi picks
+ * for that model.
  *
  * A role that is switched off elsewhere still shows its model, with a line
  * saying it is idle. An overview that hid them would answer "what is running on
@@ -86,24 +94,28 @@ type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
  */
 function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
   const [background, setBackground] = useState<string | null>(null);
+  const [backgroundEffort, setBackgroundEffort] = useState<string | null>(null);
   const [quickChatModel, setQuickChatModel] = useState<string | null>(null);
   const [subjectModel, setSubjectModel] = useState<string | null>(null);
   const [subjectsOff, setSubjectsOff] = useState(false);
   const [judgeModel, setJudgeModel] = useState<string | null>(null);
   const [judgeIdle, setJudgeIdle] = useState<string | null>(null);
   const [memoryModel, setMemoryModel] = useState<string | null>(null);
+  const [memoryEffort, setMemoryEffort] = useState<string | null>(null);
   const [curatorModel, setCuratorModel] = useState<string | null>(null);
   const [folderOverrides, setFolderOverrides] = useState(0);
 
   useEffect(() => {
     void window.stem.getSettings().then((s) => {
       setBackground(s.defaults.backgroundModel);
+      setBackgroundEffort(s.defaults.backgroundEffort);
       setQuickChatModel(s.quickChat.defaultModel);
       setSubjectModel(s.chats.subjectModel);
       setSubjectsOff(s.chats.subjects === 'off');
       setJudgeModel(s.exec.judgeModel);
       setJudgeIdle(judgeIdleReason(s.exec));
       setMemoryModel(s.memory.model);
+      setMemoryEffort(s.memory.effort);
       setCuratorModel(s.skills.model);
     });
     void window.stem
@@ -112,10 +124,11 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
       .catch(() => undefined);
   }, []);
 
-  // What an unpinned background role runs on today. `modelId` is the live pick
-  // from this very panel, so the notes move the instant you change it — before
-  // the model list has been refetched with a new isDefault.
+  // What an unpinned role runs on today. `modelId` is the live pick from this
+  // very panel, so the notes move the instant you change it — before the model
+  // list has been refetched with a new isDefault.
   const backgroundResolved = resolveBackgroundModel(null, background, modelId);
+  const memoryResolved = resolveMemoryModel(memoryModel, modelId);
 
   return (
     <>
@@ -123,10 +136,11 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
         Model roles
         <InfoTip label="About model roles">
           Stem runs more than one model. The one you chat with writes the replies; the rest work in
-          the background, on jobs you never watch. Anything left unset falls back the same way —
-          the role's own model, else <strong>Background work</strong>, else the model you chat with
-          — and every picker says underneath where it landed. Stem never picks a cheaper model for
-          you: the catalog it gets carries no prices, so it would be guessing from names.
+          the background, on jobs you never watch. A role left unset falls back to its group —
+          Quick Chat and memory to the model you chat with, the last three to{' '}
+          <strong>Background work</strong> — and every picker says underneath where it landed. Stem
+          never picks a cheaper model for you: the catalog it gets carries no prices, so it would
+          be guessing from names.
         </InfoTip>
       </div>
       <div className="formgroup">
@@ -151,24 +165,48 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
           <span className="set-sub">
             Background work{' '}
             <InfoTip label="About the background model">
-              The fallback for every job you never read the output of: chat subjects, memory,
-              skills curation, the command safety check. They run constantly and unattended, so{' '}
-              <strong>a small fast model here is the single biggest saving available</strong> — and
-              the only role that suffers from one is memory, which reads long transcripts and wants
-              at least a mid-tier model. Set it once and every unpinned role below follows; pin one
-              individually to take it out of the deal.
+              The fallback for the jobs you never read the output of: chat subjects, skills
+              curation, the command safety check. They run constantly and unattended, so{' '}
+              <strong>a small fast model here is the single biggest saving available</strong>. Set
+              it once and every unpinned role in its group follows; pin one individually to take it
+              out of the deal. Memory is not in this group — it reads whole transcripts, so it
+              follows the model you chat with instead and has its own picker.
+              <br />
+              <strong>Effort</strong> is the same bargain by a different route: how much these jobs
+              are allowed to think before answering. Nearly all of them are extraction rather than
+              reasoning, and <strong>Low is a good place to start</strong> — the safety check in
+              particular sits between you and every command you run, where waiting costs more than
+              depth buys. Left on <em>Model default</em>, nothing has changed: that is where every
+              background job ran before this setting existed.
             </InfoTip>
           </span>
           <ModelPicker
             models={models}
             value={background}
             onChange={(id) => {
-              setBackground(id); // optimistic; reconcile from the saved settings
-              window.stem.updateDefaults({ backgroundModel: id }).then((s) => setBackground(s.defaults.backgroundModel));
+              // Optimistic, then reconciled from what was actually saved.
+              setBackground(id);
+              const effort = clampEffort(models, resolveBackgroundModel(null, id, modelId), backgroundEffort);
+              setBackgroundEffort(effort);
+              window.stem.updateDefaults({ backgroundModel: id, backgroundEffort: effort }).then((s) => {
+                setBackground(s.defaults.backgroundModel);
+                setBackgroundEffort(s.defaults.backgroundEffort);
+              });
             }}
             emptyLabel="Same as main"
             ariaLabel="Background work model"
             resolvedDefault={modelId}
+          />
+          <EffortSelect
+            label="Background work effort"
+            value={backgroundEffort}
+            efforts={effortsOf(models, backgroundResolved)}
+            onChange={(effort) => {
+              setBackgroundEffort(effort);
+              window.stem
+                .updateDefaults({ backgroundEffort: effort })
+                .then((s) => setBackgroundEffort(s.defaults.backgroundEffort));
+            }}
           />
         </div>
 
@@ -197,6 +235,53 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
         </div>
 
         <div className="set-block">
+          <span className="set-sub">
+            Memory{' '}
+            <InfoTip label="About the memory model">
+              Reads finished conversations in the background, decides what is worth keeping, and
+              merges or drops what it already has. <strong>This role is not part of Background
+              work</strong>, on purpose: it works against a long transcript plus everything already
+              remembered, and a model too small to hold that does not fail — it replies with
+              truncated nonsense, and memory quietly stops learning without saying so. Making the
+              background cheap must not be able to do that, so an unset memory model follows the
+              model you chat with. Pin a solid mid-tier model here if you would rather not spend
+              your best one on it.
+            </InfoTip>
+          </span>
+          <ModelPicker
+            models={models}
+            value={memoryModel}
+            onChange={(id) => {
+              setMemoryModel(id);
+              const effort = clampEffort(models, resolveMemoryModel(id, modelId), memoryEffort);
+              setMemoryEffort(effort);
+              window.stem.updateMemorySettings({ model: id, effort }).then((s) => {
+                setMemoryModel(s.memory.model);
+                setMemoryEffort(s.memory.effort);
+              });
+            }}
+            emptyLabel="Same as main"
+            ariaLabel="Memory model"
+            resolvedDefault={modelId}
+          />
+          <EffortSelect
+            label="Memory effort"
+            value={memoryEffort}
+            efforts={effortsOf(models, memoryResolved)}
+            onChange={(effort) => {
+              setMemoryEffort(effort);
+              window.stem.updateMemorySettings({ effort }).then((s) => setMemoryEffort(s.memory.effort));
+            }}
+          />
+          {folderOverrides > 0 && (
+            <em className="mp-resolved">
+              {folderOverrides} connected folder{folderOverrides === 1 ? '' : 's'} override
+              {folderOverrides === 1 ? 's' : ''} this — Sources › Connected folders
+            </em>
+          )}
+        </div>
+
+        <div className="set-block fg-divider">
           <span className="set-sub">
             Chat subjects{' '}
             <InfoTip label="About the subject model">
@@ -248,37 +333,6 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             resolvedDefault={judgeIdle ? null : backgroundResolved}
           />
           {judgeIdle && <em className="mp-resolved">{judgeIdle}</em>}
-        </div>
-
-        <div className="set-block">
-          <span className="set-sub">
-            Memory{' '}
-            <InfoTip label="About the memory model">
-              Reads finished conversations in the background, decides what is worth keeping, and
-              merges or drops what it already has. <strong>Do not put your smallest model here.</strong>{' '}
-              It works against a long transcript plus everything already remembered, and a model that
-              cannot hold that replies with truncated nonsense — which shows up not as an error but
-              as a memory that quietly stops learning. A solid mid-tier model is the sweet spot, and
-              this is the one role worth pinning above Background work.
-            </InfoTip>
-          </span>
-          <ModelPicker
-            models={models}
-            value={memoryModel}
-            onChange={(id) => {
-              setMemoryModel(id);
-              window.stem.updateMemorySettings({ model: id }).then((s) => setMemoryModel(s.memory.model));
-            }}
-            emptyLabel="Background work"
-            ariaLabel="Memory model"
-            resolvedDefault={backgroundResolved}
-          />
-          {folderOverrides > 0 && (
-            <em className="mp-resolved">
-              {folderOverrides} connected folder{folderOverrides === 1 ? '' : 's'} override
-              {folderOverrides === 1 ? 's' : ''} this — Sources › Connected folders
-            </em>
-          )}
         </div>
 
         <div className="set-block">

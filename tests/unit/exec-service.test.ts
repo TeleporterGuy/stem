@@ -33,7 +33,7 @@ function baseSettings(): AppSettings {
     exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] },
     // The judge reads these too: unpinned, it runs on the shared background model
     // if there is one, else the model of the chat that asked.
-    defaults: { model: null, backgroundModel: null }
+    defaults: { model: null, backgroundModel: null, backgroundEffort: 'low' }
   } as unknown as AppSettings;
 }
 
@@ -62,7 +62,7 @@ describe('emptyCompleteError', () => {
 describe('ExecService judge', () => {
   let cwd: string;
   let approvals: ExecApprovalRequest[];
-  let completeOpts: Array<{ model?: string | null; timeoutMs?: number; priority?: boolean }>;
+  let completeOpts: Array<{ model?: string | null; effort?: string | null; timeoutMs?: number; priority?: boolean }>;
   let completeImpl: (prompt: string) => Promise<string>;
   let service: ExecService;
 
@@ -120,6 +120,10 @@ describe('ExecService judge', () => {
     expect(JUDGE_TIMEOUT_MS).toBe(60_000);
     // Not a cheaper-looking sibling: Stem no longer guesses one from names.
     expect(completeOpts[0]?.model).toBe('anthropic/claude-opus-4');
+    // The judge sits between the user and every command they run, so the
+    // background effort setting has to reach it — this is the role where the
+    // difference between thinking and answering is felt as latency.
+    expect(completeOpts[0]?.effort).toBe('low');
     expect(approvals[0]?.judgeVerdict).toBe('unsure');
   });
 

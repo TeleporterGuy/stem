@@ -26,7 +26,7 @@ import { consolidateFacts } from '../recall/consolidate';
 import { processExplicitNote } from '../recall/note';
 import { EMBED_CATALOG } from '../recall/embed-catalog';
 import { DEFAULT_LOCAL_RERANK_MODEL, RERANK_CATALOG } from '../recall/rerank-catalog';
-import { backgroundModelOf, readSettings } from '../workspace/settings';
+import { memoryRunOf, readSettings } from '../workspace/settings';
 import type { LlmClient } from '../recall/llm';
 import type {
   ActiveFacts,
@@ -55,7 +55,7 @@ export function registerMemoryIpc(deps: IpcDeps): void {
       // one-shot seam as distillation); the raw note is already durable.
       const llm: LlmClient = {
         complete: async (prompt) =>
-          deps.runtime().complete(prompt, { model: await backgroundModelOf((s) => s.memory.model) })
+          deps.runtime().complete(prompt, await memoryRunOf((s) => s.memory.model))
       };
       const factId = result.factId;
       setTimeout(() => void processExplicitNote(factId, llm), 0);
@@ -158,7 +158,7 @@ export function registerMemoryIpc(deps: IpcDeps): void {
     // so a manual run always executes.
     const llm: LlmClient = {
       complete: async (prompt) =>
-        deps.runtime().complete(prompt, { model: await backgroundModelOf((s) => s.memory.model) })
+        deps.runtime().complete(prompt, await memoryRunOf((s) => s.memory.model))
     };
     const result = await consolidateFacts(llm, { force: true });
     return { ...result, contents: await readMemoryFiles() };

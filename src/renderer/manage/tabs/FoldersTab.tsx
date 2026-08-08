@@ -5,7 +5,7 @@ import type {
   FolderIndexStatus,
   ModelSummary
 } from '../../../shared/types';
-import { resolveBackgroundModel } from '../../../shared/modelRoles';
+import { resolveMemoryModel } from '../../../shared/modelRoles';
 import { useRemoteServer } from '../../hooks/useRemoteServer';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
@@ -161,7 +161,7 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
   useEffect(() => {
     void window.stem
       .getSettings()
-      .then((s) => setMemoryModel(resolveBackgroundModel(s.memory.model, s.defaults.backgroundModel, s.defaults.model)));
+      .then((s) => setMemoryModel(resolveMemoryModel(s.memory.model, s.defaults.model)));
   }, []);
 
   const toggleOpen = (id: string) =>

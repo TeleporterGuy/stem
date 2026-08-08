@@ -111,6 +111,31 @@ export async function ensureCompleteModel(
 }
 
 /**
+ * Apply a reasoning level to the complete child when one is asked for.
+ *
+ * Returns the level now in force, for the caller to carry as its "last applied"
+ * marker; `null` in means "leave it alone", and the marker is unchanged. Note
+ * that `new_session` drops this along with the model selection, so the caller
+ * has to clear its marker there too.
+ *
+ * Best-effort by design. A background job is a completion, not a thinking-level
+ * negotiation: a model with no reasoning to configure, or a pi that doesn't take
+ * the level, must produce an answer at whatever depth it does support rather
+ * than fail the job. The level was an economy measure either way.
+ */
+export async function ensureCompleteThinking(
+  child: PiProcess,
+  level: string | null,
+  currentLevel: string | null
+): Promise<string | null> {
+  if (!level || level === currentLevel) return currentLevel;
+  const res = await child
+    .request({ type: 'set_thinking_level', level }, COMPLETE_READY_TIMEOUT_MS)
+    .catch(() => null);
+  return res?.success ? level : currentLevel;
+}
+
+/**
  * Attach listeners, accept a prompt via RPC request (fail if rejected), then wait
  * for assistant text. The LLM timer starts only after the prompt is accepted.
  */

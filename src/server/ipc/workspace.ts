@@ -10,7 +10,7 @@ import {
 } from '../workspace/connected-folders';
 import { getFolderIndexStatuses, seedFolderLearnMarks, syncFolderIndexes } from '../folder-index';
 import { recallStore } from '../recall/store';
-import { backgroundModelOf, updateSkillsSettings } from '../workspace/settings';
+import { backgroundRunOf, updateSkillsSettings } from '../workspace/settings';
 import { resetSkills, skillsResetStatus } from '../skills/reset';
 import { learnFromLastTurn } from '../startup/skills';
 import { curateSkills } from '../skills/curate';
@@ -58,7 +58,7 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     // so a manual "Tidy up" always runs. Reload so pi rescans the updated skills.
     const llm: LlmClient = {
       complete: async (prompt) =>
-        deps.runtime().complete(prompt, { model: await backgroundModelOf((s) => s.skills.model) })
+        deps.runtime().complete(prompt, await backgroundRunOf((s) => s.skills.model))
     };
     await curateSkills(llm, { force: true });
     await deps.runtime().requestSkillReload();

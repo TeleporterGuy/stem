@@ -87,6 +87,7 @@ import { PiProcess, stderrReason, type PiEvent } from './rpc';
 import {
   completeInternalCwd,
   ensureCompleteModel,
+  ensureCompleteThinking,
   insertCompleteWaiter,
   promptComplete,
   resetCompleteConversation,
@@ -557,6 +558,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private completeWorker: PiProcess | null = null;
   /** `provider/modelId` last applied on the warm worker. */
   private completeWorkerModelKey: string | null = null;
+  /** Reasoning level last applied on the warm worker; null = never set on this session. */
+  private completeWorkerThinking: string | null = null;
   /** True while a complete() owns the warm worker. */
   private completeWorkerBusy = false;
   /** The worker has run a prompt, so its conversation must be cleared before the next. */
@@ -922,7 +925,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    */
   async complete(
     prompt: string,
-    opts?: { model?: string | null; timeoutMs?: number; priority?: boolean }
+    opts?: { model?: string | null; effort?: string | null; timeoutMs?: number; priority?: boolean }
   ): Promise<string> {
     // Cap concurrent completes; priority (exec judge) skips ahead of distill.
     await this.acquireCompleteSlot(opts?.priority === true);
@@ -951,7 +954,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
   private async completeNow(
     prompt: string,
-    opts?: { model?: string | null; timeoutMs?: number }
+    opts?: { model?: string | null; effort?: string | null; timeoutMs?: number }
   ): Promise<string> {
     const timeoutMs = opts?.timeoutMs ?? 120_000;
     const pi = await resolvePi();
@@ -960,6 +963,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     const { provider, modelId } = opts?.model
       ? this.parseModel(opts.model)
       : await this.resolveDefaultModel();
+    const effort = opts?.effort ?? null;
 
     // Prefer the warm worker when idle; if busy, hardened cold spawn so distill
     // + judge can still run concurrently under MAX_COMPLETE_PROCS.
@@ -979,11 +983,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             log('pi.complete', 'complete worker will not reset — falling back to cold spawns', {
               error: e instanceof Error ? e.message : String(e)
             });
-            return await this.completeCold(pi, prompt, provider, modelId, timeoutMs);
+            return await this.completeCold(pi, prompt, provider, modelId, timeoutMs, effort);
           }
           this.completeWorkerDirty = false;
-          // new_session drops the model selection along with the conversation.
+          // new_session drops the model selection along with the conversation,
+          // and the thinking level rides on the same session.
           this.completeWorkerModelKey = null;
+          this.completeWorkerThinking = null;
         }
         this.completeWorkerModelKey = await ensureCompleteModel(
           worker,
@@ -991,6 +997,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           modelId,
           this.completeWorkerModelKey
         );
+        this.completeWorkerThinking = await ensureCompleteThinking(worker, effort, this.completeWorkerThinking);
         this.completeWorkerDirty = true;
         return await promptComplete(worker, prompt, timeoutMs, ({ timeoutMs: ms }) => {
           log('pi.complete', 'one-shot completion timed out', { timeoutMs: ms, provider, model: modelId });
@@ -1009,14 +1016,14 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         });
         // Only pay a second cold start when the worker never came up; a call
         // that already burned its whole timeout should surface now, not twice.
-        if (died) return await this.completeCold(pi, prompt, provider, modelId, timeoutMs);
+        if (died) return await this.completeCold(pi, prompt, provider, modelId, timeoutMs, effort);
         throw e;
       } finally {
         this.completeWorkerBusy = false;
       }
     }
 
-    return await this.completeCold(pi, prompt, provider, modelId, timeoutMs);
+    return await this.completeCold(pi, prompt, provider, modelId, timeoutMs, effort);
   }
 
   private async completeCold(
@@ -1024,7 +1031,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     prompt: string,
     provider: string,
     modelId: string,
-    timeoutMs: number
+    timeoutMs: number,
+    effort: string | null
   ): Promise<string> {
     const child = await spawnReadyCompleteChild({
       pi,
@@ -1034,6 +1042,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       modelId
     });
     try {
+      await ensureCompleteThinking(child, effort, null);
       return await promptComplete(child, prompt, timeoutMs, ({ timeoutMs: ms }) => {
         log('pi.complete', 'one-shot completion timed out', { timeoutMs: ms, provider, model: modelId });
       });
@@ -1076,11 +1085,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       }
       this.completeWorker = child;
       this.completeWorkerModelKey = `${resolved.provider}/${resolved.modelId}`;
+      this.completeWorkerThinking = null;
       this.completeWorkerDirty = false;
       child.on('exit', () => {
         if (this.completeWorker === child) {
           this.completeWorker = null;
           this.completeWorkerModelKey = null;
+          this.completeWorkerThinking = null;
           this.completeWorkerDirty = false;
         }
       });
@@ -1100,6 +1111,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     this.completeWorkerGeneration += 1;
     this.completeWorker = null;
     this.completeWorkerModelKey = null;
+    this.completeWorkerThinking = null;
     this.completeWorkerStarting = null;
     this.completeWorkerDirty = false;
     if (worker) await worker.dispose().catch(() => undefined);

@@ -121,11 +121,14 @@ export interface ChatBackend extends EventEmitter {
 
   // recall seam (one-shot completion used by Stem Recall distillation).
   // `opts.model` is a `provider/model` id (null/undefined => the backend default).
+  // `opts.effort` is a reasoning level (null/undefined => whatever the model
+  // defaults to, which is what every background job did before the setting
+  // existed — nobody chose it).
   // `opts.priority` jumps ahead of non-priority waiters when the complete() slot
   // queue is busy (used by the exec safety judge so distill does not starve it).
   complete(
     prompt: string,
-    opts?: { model?: string | null; timeoutMs?: number; priority?: boolean }
+    opts?: { model?: string | null; effort?: string | null; timeoutMs?: number; priority?: boolean }
   ): Promise<string>;
   isInternalThread(threadId: string): boolean;
   /** True when the active turn read a memorize:false connected folder → skip Recall capture. */

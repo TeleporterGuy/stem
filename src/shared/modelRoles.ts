@@ -3,8 +3,9 @@ import type { DefaultsSettings, ExecSettings, ModelSummary } from './types';
 /**
  * Which model actually runs each job, when its own setting is left unset.
  *
- * One chain, used everywhere: a role's own pin, else the shared background
- * model, else the model you chat with. Shared rather than server-only because
+ * One chain for the background roles: a role's own pin, else the shared
+ * background model, else the model you chat with. Memory takes the short version
+ * of it — see {@link resolveMemoryModel}. Shared rather than server-only because
  * the answer is shown as well as used — a picker left unset says underneath what
  * it resolves to today, and the renderer has to reach the same conclusion the
  * server does or the note is a lie the moment the two drift.
@@ -17,6 +18,21 @@ import type { DefaultsSettings, ExecSettings, ModelSummary } from './types';
  */
 export function appDefaultModel(models: ModelSummary[]): string | null {
   return models.find((m) => m.isDefault)?.id ?? null;
+}
+
+/**
+ * What memory runs on: its own pin, else the model you chat with — skipping the
+ * shared background model entirely.
+ *
+ * Every other background role is one you can safely make cheap. This one reads a
+ * whole transcript plus everything already remembered, and a model that cannot
+ * hold that doesn't fail loudly; it replies with truncated nonsense and memory
+ * stops learning without saying so. Routing it through Background work would
+ * mean the one setting whose whole purpose is "make the background cheap" also
+ * quietly degrades the one role that can't take it.
+ */
+export function resolveMemoryModel(pinned: string | null, mainModel: string | null): string | null {
+  return pinned ?? mainModel;
 }
 
 /**

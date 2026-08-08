@@ -23,7 +23,11 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
   const [curatorModel, setCuratorModel] = useState<string | null>(null);
   const [mode, setMode] = useState<SkillsMode>('ask');
   // What "Background work" resolves to — see Settings → Models.
-  const [defaults, setDefaults] = useState<DefaultsSettings>({ model: null, backgroundModel: null });
+  const [defaults, setDefaults] = useState<DefaultsSettings>({
+    model: null,
+    backgroundModel: null,
+    backgroundEffort: null
+  });
   useEffect(() => {
     window.stem.listSkills().then(setSkills);
     window.stem.getSettings().then((s) => {

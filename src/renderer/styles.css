@@ -1566,6 +1566,25 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   font-style: normal;
   color: var(--muted);
 }
+/* "Effort  [ Model default ]" under a role's model picker. A labelled row rather
+   than another full-width field: it is a rider on the model above it, not a
+   second decision, and the label is what stops it reading as one. */
+.mp-effort {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: calc(2px - var(--sp-3));
+}
+.mp-effort > span {
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
+.mp-effort > .ifield {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-12);
+  padding: 3px 6px;
+}
 .mp-pop {
   position: fixed;
   z-index: var(--z-popover);

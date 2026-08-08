@@ -56,8 +56,9 @@ const DEFAULTS: ServerSettings = {
   // pi-web-access's backend chain, which ends at keyless Exa MCP — so search
   // works on a fresh install with no account, no key and no configuration.
   webSearch: { main: true, quickChat: true, provider: 'auto', credentials: {} },
-  // Memory distillation/tidy-up model; null = the backend default.
-  memory: { model: null },
+  // Memory distillation/tidy-up; null = the model you chat with, and its default
+  // effort. Deliberately not the shared background model — see MemoryModelSettings.
+  memory: { model: null, effort: null },
   // Background skills model; null = the backend default. Separate from the memory
   // model so authoring and curation (harder tasks) can use a stronger model.
   // `ask` is the default mode: the library this replaces was built by a pass that
@@ -111,7 +112,7 @@ const DEFAULTS: ServerSettings = {
   // rewritten every time the model picker changes — background jobs read it as
   // "the model you chat with", which is only true if it keeps up.
   // backgroundModel null = those jobs run on `model` too.
-  defaults: { model: null, backgroundModel: null },
+  defaults: { model: null, backgroundModel: null, backgroundEffort: null },
   // OpenAI-compatible servers (registered with the backend via the pi-home
   // models.json). Base URLs are the servers' standard defaults; disabled until
   // the user opts in. `custom` has no default URL — the user supplies it.
@@ -124,6 +125,18 @@ const DEFAULTS: ServerSettings = {
 
 const ESCAPE_ACTIONS: readonly EscapeAction[] = ['off', 'single', 'twoStage'];
 const SUBJECT_MODES: readonly ChatSubjectMode[] = ['off', 'inbox', 'everywhere'];
+
+/**
+ * Reasoning-effort levels a background role may be pinned to, matching the ones
+ * the composer offers. Anything else — including a level saved against a model
+ * that has since been replaced — coerces to null, which leaves the model on its
+ * own default rather than sending pi a level it will reject.
+ */
+const EFFORT_LEVELS: readonly string[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+
+function coerceEffort(raw: unknown): string | null {
+  return typeof raw === 'string' && EFFORT_LEVELS.includes(raw) ? raw : null;
+}
 
 const RERANKER_MODES: readonly RerankerMode[] = ['off', 'local', 'remote'];
 const LOCAL_RERANK_MODELS: readonly LocalRerankModelId[] = ['bge-reranker-v2-m3'];
@@ -231,7 +244,8 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
   };
   const rawMem = (parsed?.memory ?? {}) as Partial<MemoryModelSettings>;
   const mem: MemoryModelSettings = {
-    model: typeof rawMem.model === 'string' && rawMem.model.trim() ? rawMem.model : null
+    model: typeof rawMem.model === 'string' && rawMem.model.trim() ? rawMem.model : null,
+    effort: coerceEffort(rawMem.effort)
   };
   const rawSkills = (parsed?.skills ?? {}) as Partial<SkillsSettings>;
   const skills: SkillsSettings = {
@@ -295,7 +309,8 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
     backgroundModel:
       typeof rawDef.backgroundModel === 'string' && rawDef.backgroundModel.trim()
         ? rawDef.backgroundModel
-        : null
+        : null,
+    backgroundEffort: coerceEffort(rawDef.backgroundEffort)
   };
   const rawLp = (parsed?.localProviders ?? {}) as Partial<Record<LocalProviderId, Partial<LocalProviderSettings>>>;
   const coerceLocal = (id: LocalProviderId): LocalProviderSettings => {
@@ -506,20 +521,52 @@ export function updateDefaultModel(model: string | null): Promise<ServerSettings
 }
 
 /**
- * What a background role actually runs on: its own pin, else the shared
- * background model, else null — which sends it through complete()'s own fallback
- * to `defaults.model`, the model you chat with.
+ * How a background job is to be run: which model, and how hard it may think.
+ *
+ * The two travel together because they are one decision — "spend less on this" —
+ * and splitting them is how you end up with a role whose model comes from one
+ * setting and whose effort comes from another. Both nullable, and null means the
+ * same thing in both halves: don't specify, let the layer below decide.
  */
-export function backgroundModelFor(settings: ServerSettings, pinned: string | null): string | null {
-  return pinned ?? settings.defaults.backgroundModel;
+export interface RoleRun {
+  /** `provider/modelId`, or null to fall through to `defaults.model`. */
+  model: string | null;
+  /** Reasoning effort, or null to leave the model on its own default. */
+  effort: string | null;
 }
 
-/** {@link backgroundModelFor} for the many call sites that have to read settings anyway. */
-export async function backgroundModelOf(
-  pinned: (settings: ServerSettings) => string | null
-): Promise<string | null> {
+/**
+ * What a background role actually runs on: its own pin, else the shared
+ * background model, else null — which sends it through complete()'s own fallback
+ * to `defaults.model`, the model you chat with. Effort is shared outright: a
+ * pinned model doesn't imply a different appetite for thinking.
+ */
+export function backgroundRunFor(settings: ServerSettings, pinned: string | null): RoleRun {
+  return { model: pinned ?? settings.defaults.backgroundModel, effort: settings.defaults.backgroundEffort };
+}
+
+/** {@link backgroundRunFor} for the many call sites that have to read settings anyway. */
+export async function backgroundRunOf(pinned: (settings: ServerSettings) => string | null): Promise<RoleRun> {
   const settings = await readSettings();
-  return backgroundModelFor(settings, pinned(settings));
+  return backgroundRunFor(settings, pinned(settings));
+}
+
+/**
+ * What memory runs on. Its own settings only — the shared background model is
+ * skipped, so making the background cheap cannot quietly make memory stop
+ * learning. See MemoryModelSettings for why this role is the exception.
+ *
+ * `pinned` exists for connected folders, which may override the model for their
+ * own fact-learning sweep while still counting as memory work.
+ */
+export function memoryRunFor(settings: ServerSettings, pinned: string | null): RoleRun {
+  return { model: pinned, effort: settings.memory.effort };
+}
+
+/** {@link memoryRunFor} for call sites that have to read settings anyway. */
+export async function memoryRunOf(pinned: (settings: ServerSettings) => string | null): Promise<RoleRun> {
+  const settings = await readSettings();
+  return memoryRunFor(settings, pinned(settings));
 }
 
 /** Patch one local provider (Ollama / LM Studio / custom) and persist; returns the full settings. */

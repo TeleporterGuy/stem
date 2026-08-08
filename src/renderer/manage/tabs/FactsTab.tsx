@@ -23,7 +23,8 @@ import type {
   AutoResolvedConflict,
   MemoryRebuildStatus
 } from '../../../shared/types';
-import { resolveBackgroundModel } from '../../../shared/modelRoles';
+import { resolveMemoryModel } from '../../../shared/modelRoles';
+import { clampEffort, EffortSelect, effortsOf } from '../../ui/EffortSelect';
 import { MdxView } from '../../chat/MdxView';
 import { useOffline } from '../../hooks/useServerReachable';
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
@@ -470,10 +471,15 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
   // null => use the backend default model for distillation/tidy-up.
   const [memoryModel, setMemoryModel] = useState<string | null>(null);
   const [retrieval, setRetrieval] = useState<RetrievalSettings | null>(null);
-  // What "Background work" means today — the shared background model if one is
-  // set, else the model you chat with. Read here so the note under the picker is
+  // How hard memory is allowed to think; null = the model's own default.
+  const [memoryEffort, setMemoryEffort] = useState<string | null>(null);
+  // What "Same as main" means today. Read here so the note under the picker is
   // the same answer the server will reach.
-  const [defaults, setDefaults] = useState<DefaultsSettings>({ model: null, backgroundModel: null });
+  const [defaults, setDefaults] = useState<DefaultsSettings>({
+    model: null,
+    backgroundModel: null,
+    backgroundEffort: null
+  });
   const [showRetrieval, setShowRetrieval] = useState(false);
   const [rebuild, setRebuild] = useState<MemoryRebuildStatus | null>(null);
   const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
@@ -506,6 +512,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
     window.stem.getMemorySettings().then(setSettings);
     window.stem.getSettings().then((s) => {
       setMemoryModel(s.memory.model);
+      setMemoryEffort(s.memory.effort);
       setRetrieval(s.retrieval);
       setDefaults(s.defaults);
     });
@@ -527,7 +534,13 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
 
   function selectMemoryModel(id: string | null) {
     setMemoryModel(id);
-    window.stem.updateMemorySettings({ model: id }).then((s) => setMemoryModel(s.memory.model));
+    // A level the new model can't do is a setting that reads as chosen and isn't.
+    const effort = clampEffort(models, resolveMemoryModel(id, defaults.model), memoryEffort);
+    setMemoryEffort(effort);
+    window.stem.updateMemorySettings({ model: id, effort }).then((s) => {
+      setMemoryModel(s.memory.model);
+      setMemoryEffort(s.memory.effort);
+    });
   }
 
   function patchEmbeddings(patch: Partial<EmbeddingsSettings>) {
@@ -778,10 +791,11 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
       <div className="grp-head grp-head-row">
         Model
         <InfoTip label="About the memory model">
-          Used to distill and tidy up memories in the background. Left on <strong>Background
-          work</strong> it follows the shared background model in Settings → Models; this is the
-          one background job worth pinning something bigger, because it reads a whole transcript
-          plus everything already remembered.
+          Used to distill and tidy up memories in the background. Left unset it follows the model
+          you chat with — deliberately <em>not</em> the shared Background work model in Settings →
+          Models, because this job reads a whole transcript plus everything already remembered, and
+          a model too small to hold that stops learning without ever reporting an error. Pin a
+          solid mid-tier model here if you would rather not spend your best one on it.
         </InfoTip>
       </div>
       <div className="formgroup">
@@ -789,9 +803,18 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
           models={models}
           value={memoryModel}
           onChange={selectMemoryModel}
-          emptyLabel="Background work"
+          emptyLabel="Same as main"
           ariaLabel="Memory model"
-          resolvedDefault={resolveBackgroundModel(null, defaults.backgroundModel, defaults.model)}
+          resolvedDefault={defaults.model}
+        />
+        <EffortSelect
+          label="Memory effort"
+          value={memoryEffort}
+          efforts={effortsOf(models, resolveMemoryModel(memoryModel, defaults.model))}
+          onChange={(effort) => {
+            setMemoryEffort(effort);
+            window.stem.updateMemorySettings({ effort }).then((s) => setMemoryEffort(s.memory.effort));
+          }}
         />
         <div className="set-block fg-divider">
           <span className="set-sub">Tidy up automatically</span>

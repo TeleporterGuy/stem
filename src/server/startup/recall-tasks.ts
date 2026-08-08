@@ -1,4 +1,4 @@
-import { backgroundModelOf } from '../workspace/settings';
+import { backgroundRunOf, memoryRunOf } from '../workspace/settings';
 import { isRecallEnabled } from '../workspace/memory';
 import * as activity from '../activity';
 import { embedNewMessages } from '../recall/embed-episodic';
@@ -51,7 +51,7 @@ export function initRecallTasks(deps: {
   // LlmClient seam). Debounced so it runs ~after the user goes idle.
   const recallLlm: LlmClient = {
     complete: async (prompt) =>
-      deps.runtime().complete(prompt, { model: await backgroundModelOf((s) => s.memory.model) })
+      deps.runtime().complete(prompt, await memoryRunOf((s) => s.memory.model))
   };
   let rebuildTimer: NodeJS.Timeout | null = null;
   const scheduleMemoryRebuild = (): void => {
@@ -92,7 +92,7 @@ export function initRecallTasks(deps: {
   // model. Read fresh each pass so a Settings change applies to the next run.
   const skillsLlm: LlmClient = {
     complete: async (prompt) =>
-      deps.runtime().complete(prompt, { model: await backgroundModelOf((s) => s.skills.model) })
+      deps.runtime().complete(prompt, await backgroundRunOf((s) => s.skills.model))
   };
 
   let distilling = false;
