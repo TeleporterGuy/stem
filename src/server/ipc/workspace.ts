@@ -10,7 +10,7 @@ import {
 } from '../workspace/connected-folders';
 import { getFolderIndexStatuses, seedFolderLearnMarks, syncFolderIndexes } from '../folder-index';
 import { recallStore } from '../recall/store';
-import { readSettings, updateSkillsSettings } from '../workspace/settings';
+import { backgroundModelOf, updateSkillsSettings } from '../workspace/settings';
 import { resetSkills, skillsResetStatus } from '../skills/reset';
 import { learnFromLastTurn } from '../startup/skills';
 import { curateSkills } from '../skills/curate';
@@ -57,7 +57,8 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     // Same hidden one-shot seam the curator uses; `force` bypasses the size floor
     // so a manual "Tidy up" always runs. Reload so pi rescans the updated skills.
     const llm: LlmClient = {
-      complete: async (prompt) => deps.runtime().complete(prompt, { model: (await readSettings()).skills.model })
+      complete: async (prompt) =>
+        deps.runtime().complete(prompt, { model: await backgroundModelOf((s) => s.skills.model) })
     };
     await curateSkills(llm, { force: true });
     await deps.runtime().requestSkillReload();

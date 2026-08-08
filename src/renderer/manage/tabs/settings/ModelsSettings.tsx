@@ -11,7 +11,7 @@ import type {
   LocalProviderTestResult
 } from '../../../../shared/types';
 import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerName } from '../../../../shared/providers';
-import { appDefaultModel, resolveJudgeModel } from '../../../../shared/modelRoles';
+import { resolveBackgroundModel } from '../../../../shared/modelRoles';
 import { localProbeTarget, probeStillDescribes } from '../../../localProbe';
 import { RequestGate } from '../../../requestGate';
 import { InfoTip } from '../../../ui/InfoTip';
@@ -68,22 +68,24 @@ type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
 /**
  * Every job Stem runs a model for, in one list.
  *
- * The point of the list is the comparison: six roles, and what separates them is
- * not what they do but how much model each one is worth. That judgement is the
- * hard part — a cheap model is free money on chat subjects and quiet damage on
- * memory — so every row carries it in the ⓘ rather than leaving you to infer it
- * from the role's name.
+ * Two of them are decisions: the model you chat with, and the one everything in
+ * the background falls back to. The four roles under those inherit the second
+ * unless you pin them, so the common want — "stop spending my good model on
+ * chat subjects" — is one picker, not four.
  *
- * The two roles that used to sit inside Chat live here only. The ones that
- * belong to a panel of their own — memory, skills curation, a folder's
- * fact-learning — stay editable there too; both views write the same setting,
- * and only one manage tab is mounted at a time, so they cannot disagree.
+ * There is exactly one fallback chain, and every picker says which rung it
+ * landed on: a role's own pin, else Background work, else the model you chat
+ * with. Stem does not guess a cheaper model, because it cannot — pi's catalog
+ * carries names, a reasoning flag and a context window, and nothing about price
+ * or size. Guessing from names is what used to put the safety check on a mini
+ * variant while a newer, cheaper, better small model sat next to it in the list.
  *
  * A role that is switched off elsewhere still shows its model, with a line
  * saying it is idle. An overview that hid them would answer "what is running on
  * what" with a different list every time you changed a mode.
  */
 function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
+  const [background, setBackground] = useState<string | null>(null);
   const [quickChatModel, setQuickChatModel] = useState<string | null>(null);
   const [subjectModel, setSubjectModel] = useState<string | null>(null);
   const [subjectsOff, setSubjectsOff] = useState(false);
@@ -95,6 +97,7 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
 
   useEffect(() => {
     void window.stem.getSettings().then((s) => {
+      setBackground(s.defaults.backgroundModel);
       setQuickChatModel(s.quickChat.defaultModel);
       setSubjectModel(s.chats.subjectModel);
       setSubjectsOff(s.chats.subjects === 'off');
@@ -109,7 +112,10 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
       .catch(() => undefined);
   }, []);
 
-  const appDefault = appDefaultModel(models);
+  // What an unpinned background role runs on today. `modelId` is the live pick
+  // from this very panel, so the notes move the instant you change it — before
+  // the model list has been refetched with a new isDefault.
+  const backgroundResolved = resolveBackgroundModel(null, background, modelId);
 
   return (
     <>
@@ -117,11 +123,10 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
         Model roles
         <InfoTip label="About model roles">
           Stem runs more than one model. The one you chat with writes the replies; the rest work in
-          the background, on jobs you never watch — which is why they can run on something cheaper,
-          and why it is worth knowing which is which. Each role says in its own ⓘ what it does and
-          how much model it is actually worth. <strong>Default</strong> and <strong>Auto</strong>{' '}
-          name a rule rather than a model, so a picker sitting on one says underneath what the rule
-          resolves to today.
+          the background, on jobs you never watch. Anything left unset falls back the same way —
+          the role's own model, else <strong>Background work</strong>, else the model you chat with
+          — and every picker says underneath where it landed. Stem never picks a cheaper model for
+          you: the catalog it gets carries no prices, so it would be guessing from names.
         </InfoTip>
       </div>
       <div className="formgroup">
@@ -130,8 +135,8 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             Chatting with you{' '}
             <InfoTip label="About the model you chat with">
               Writes every reply in the main window, and it is the only role whose output you read
-              word for word. <strong>Give it your best model</strong> — everything else on this list
-              exists so that this one does not have to be cheap.
+              word for word. <strong>Give it your best model</strong> — everything below exists so
+              that this one does not have to be cheap.
             </InfoTip>
           </span>
           <ModelPicker
@@ -142,26 +147,52 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
           />
         </div>
 
-        <div className="set-block">
+        <div className="set-block fg-divider">
+          <span className="set-sub">
+            Background work{' '}
+            <InfoTip label="About the background model">
+              The fallback for every job you never read the output of: chat subjects, memory,
+              skills curation, the command safety check. They run constantly and unattended, so{' '}
+              <strong>a small fast model here is the single biggest saving available</strong> — and
+              the only role that suffers from one is memory, which reads long transcripts and wants
+              at least a mid-tier model. Set it once and every unpinned role below follows; pin one
+              individually to take it out of the deal.
+            </InfoTip>
+          </span>
+          <ModelPicker
+            models={models}
+            value={background}
+            onChange={(id) => {
+              setBackground(id); // optimistic; reconcile from the saved settings
+              window.stem.updateDefaults({ backgroundModel: id }).then((s) => setBackground(s.defaults.backgroundModel));
+            }}
+            emptyLabel="Same as main"
+            ariaLabel="Background work model"
+            resolvedDefault={modelId}
+          />
+        </div>
+
+        <div className="set-block fg-divider">
           <span className="set-sub">
             Quick Chat{' '}
             <InfoTip label="About the Quick Chat model">
               The overlay you summon from anywhere, for short questions you want answered before you
-              have finished thinking about them. <strong>Speed matters more than depth here</strong>
-              , so a fast mid-tier model often beats the one you chat with — leave it on{' '}
-              <em>Same as main</em> if you would rather not think about it.
+              have finished thinking about them. You do read this one, so it follows the model you
+              chat with rather than Background work — though{' '}
+              <strong>speed matters more than depth here</strong>, and a fast mid-tier model often
+              serves it better.
             </InfoTip>
           </span>
           <ModelPicker
             models={models}
             value={quickChatModel}
             onChange={(id) => {
-              setQuickChatModel(id); // optimistic; reconcile from the saved settings
+              setQuickChatModel(id);
               window.stem.updateQuickChat({ defaultModel: id }).then((s) => setQuickChatModel(s.quickChat.defaultModel));
             }}
             emptyLabel="Same as main"
             ariaLabel="Quick Chat default model"
-            resolvedDefault={appDefault}
+            resolvedDefault={modelId}
           />
         </div>
 
@@ -185,9 +216,9 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
                 window.dispatchEvent(new CustomEvent('stem:chat-settings'));
               });
             }}
-            emptyLabel="Default (recommended)"
+            emptyLabel="Background work"
             ariaLabel="Subject model"
-            resolvedDefault={subjectsOff ? null : appDefault}
+            resolvedDefault={subjectsOff ? null : backgroundResolved}
           />
           {subjectsOff && <em className="mp-resolved">not running — subjects are off under Chat</em>}
         </div>
@@ -198,9 +229,8 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             <InfoTip label="About the safety-check model">
               Reads a shell command before it runs and decides whether it serves what you asked for;
               anything it flags stops for your approval. It runs on <em>every</em> command that is
-              not allowlisted, so <strong>cheap and fast is the whole point</strong> — <em>Auto</em>{' '}
-              already picks the cheapest tier your chat's provider publishes. It is a heuristic, not
-              a security boundary, and a bigger model does not change that.
+              not allowlisted, so <strong>this is the role that most wants a cheap fast model</strong>
+              . It is a heuristic, not a security boundary, and a bigger model does not change that.
             </InfoTip>
           </span>
           <ModelPicker
@@ -213,9 +243,9 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
                 setJudgeIdle(judgeIdleReason(s.exec));
               });
             }}
-            emptyLabel="Auto"
+            emptyLabel="Background work"
             ariaLabel="Safety-check model"
-            resolvedDefault={judgeIdle ? null : resolveJudgeModel({ judgeModel: null }, models, modelId)}
+            resolvedDefault={judgeIdle ? null : backgroundResolved}
           />
           {judgeIdle && <em className="mp-resolved">{judgeIdle}</em>}
         </div>
@@ -228,7 +258,8 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
               merges or drops what it already has. <strong>Do not put your smallest model here.</strong>{' '}
               It works against a long transcript plus everything already remembered, and a model that
               cannot hold that replies with truncated nonsense — which shows up not as an error but
-              as a memory that quietly stops learning. A solid mid-tier model is the sweet spot.
+              as a memory that quietly stops learning. A solid mid-tier model is the sweet spot, and
+              this is the one role worth pinning above Background work.
             </InfoTip>
           </span>
           <ModelPicker
@@ -238,9 +269,9 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
               setMemoryModel(id);
               window.stem.updateMemorySettings({ model: id }).then((s) => setMemoryModel(s.memory.model));
             }}
-            emptyLabel="Default (recommended)"
+            emptyLabel="Background work"
             ariaLabel="Memory model"
-            resolvedDefault={appDefault}
+            resolvedDefault={backgroundResolved}
           />
           {folderOverrides > 0 && (
             <em className="mp-resolved">
@@ -268,9 +299,9 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
               setCuratorModel(id);
               window.stem.updateSkillsSettings({ model: id }).then((s) => setCuratorModel(s.skills.model));
             }}
-            emptyLabel="Default (recommended)"
+            emptyLabel="Background work"
             ariaLabel="Skills curator model"
-            resolvedDefault={appDefault}
+            resolvedDefault={backgroundResolved}
           />
         </div>
       </div>

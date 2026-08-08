@@ -1,6 +1,6 @@
 import type { ConnectedFolder } from '../../shared/types';
 import { isRecallEnabled } from '../workspace/memory';
-import { readSettings } from '../workspace/settings';
+import { backgroundModelOf } from '../workspace/settings';
 import { learnAllIndexedFolders, scanAllIndexedFolders } from '../folder-index';
 import { adjudicateOpenConflicts } from '../recall/adjudicate';
 import type { LlmClient } from '../recall/llm';
@@ -41,7 +41,9 @@ export function initFolderIndexTasks(deps: {
   // batch — the same pattern as the recall/skills LlmClients.
   const makeLlm = (folder: ConnectedFolder): LlmClient => ({
     complete: async (prompt) =>
-      deps.runtime().complete(prompt, { model: folder.learnModel ?? (await readSettings()).memory.model })
+      deps.runtime().complete(prompt, {
+        model: await backgroundModelOf((s) => folder.learnModel ?? s.memory.model)
+      })
   });
 
   const scheduleFolderLearn = (delayMs = 5_000): void => {
@@ -64,7 +66,8 @@ export function initFolderIndexTasks(deps: {
         // raised. Runs on the recall memory model — this is a recall-level pass,
         // not a per-folder one. adjudicateOpenConflicts never rejects.
         void adjudicateOpenConflicts({
-          complete: async (prompt) => deps.runtime().complete(prompt, { model: (await readSettings()).memory.model })
+          complete: async (prompt) =>
+            deps.runtime().complete(prompt, { model: await backgroundModelOf((s) => s.memory.model) })
         });
       });
     }, delayMs);

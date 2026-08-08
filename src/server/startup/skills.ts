@@ -2,7 +2,7 @@ import { SkillBridge } from '../skills/bridge';
 import { authorSkill } from '../skills/author';
 import { readSkillRecord } from '../skills/store';
 import { settleSkills } from '../skills/settle';
-import { readSettings } from '../workspace/settings';
+import { backgroundModelFor, readSettings } from '../workspace/settings';
 import { log } from '../log';
 import type { PiRuntime } from '../pi/runtime';
 import type { SettledTurnTrace } from '../pi/normalize';
@@ -124,7 +124,7 @@ export async function learnFromLastTurn(threadId: string, focus?: string): Promi
 
   const settings = await readSettings();
   const llm: LlmClient = {
-    complete: async (prompt) => runtime.complete!(prompt, { model: settings.skills.model })
+    complete: async (prompt) => runtime.complete!(prompt, { model: backgroundModelFor(settings, settings.skills.model) })
   };
   const existing = firstExistingSkill(turn.skillsUsed);
   const author = await authorSkill(llm, {
@@ -191,7 +191,7 @@ async function runEndOfTurnPass(turn: SettledTurnTrace, bridge: SkillBridge, run
     const settings = await readSettings();
     if (settings.skills.mode === 'off') return;
     const llm: LlmClient = {
-      complete: async (prompt) => runtime.complete!(prompt, { model: settings.skills.model })
+      complete: async (prompt) => runtime.complete!(prompt, { model: backgroundModelFor(settings, settings.skills.model) })
     };
     const outcome = await settleSkills(turn, settings.skills.mode, llm);
     if (!outcome.decision.fire) {

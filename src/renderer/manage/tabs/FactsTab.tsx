@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send } from 'lucide-react';
 import type {
+  DefaultsSettings,
   MemoryContents,
   MemorySettings,
   ModelSummary,
@@ -22,7 +23,7 @@ import type {
   AutoResolvedConflict,
   MemoryRebuildStatus
 } from '../../../shared/types';
-import { appDefaultModel } from '../../../shared/modelRoles';
+import { resolveBackgroundModel } from '../../../shared/modelRoles';
 import { MdxView } from '../../chat/MdxView';
 import { useOffline } from '../../hooks/useServerReachable';
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
@@ -469,6 +470,10 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
   // null => use the backend default model for distillation/tidy-up.
   const [memoryModel, setMemoryModel] = useState<string | null>(null);
   const [retrieval, setRetrieval] = useState<RetrievalSettings | null>(null);
+  // What "Background work" means today — the shared background model if one is
+  // set, else the model you chat with. Read here so the note under the picker is
+  // the same answer the server will reach.
+  const [defaults, setDefaults] = useState<DefaultsSettings>({ model: null, backgroundModel: null });
   const [showRetrieval, setShowRetrieval] = useState(false);
   const [rebuild, setRebuild] = useState<MemoryRebuildStatus | null>(null);
   const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
@@ -502,6 +507,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
     window.stem.getSettings().then((s) => {
       setMemoryModel(s.memory.model);
       setRetrieval(s.retrieval);
+      setDefaults(s.defaults);
     });
     loadContents();
     loadTrustState();
@@ -772,8 +778,10 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
       <div className="grp-head grp-head-row">
         Model
         <InfoTip label="About the memory model">
-          Used to distill and tidy up memories in the background. The skills curator has its own
-          model (under MCP &amp; Skills → Skills).
+          Used to distill and tidy up memories in the background. Left on <strong>Background
+          work</strong> it follows the shared background model in Settings → Models; this is the
+          one background job worth pinning something bigger, because it reads a whole transcript
+          plus everything already remembered.
         </InfoTip>
       </div>
       <div className="formgroup">
@@ -781,9 +789,9 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
           models={models}
           value={memoryModel}
           onChange={selectMemoryModel}
-          emptyLabel="Default (recommended)"
+          emptyLabel="Background work"
           ariaLabel="Memory model"
-          resolvedDefault={appDefaultModel(models)}
+          resolvedDefault={resolveBackgroundModel(null, defaults.backgroundModel, defaults.model)}
         />
         <div className="set-block fg-divider">
           <span className="set-sub">Tidy up automatically</span>

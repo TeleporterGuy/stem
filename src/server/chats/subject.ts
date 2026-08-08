@@ -1,6 +1,6 @@
 import type { ChatsSettings } from '../../shared/types';
 import { setSubject } from '../workspace/chats';
-import { readSettings } from '../workspace/settings';
+import { backgroundModelOf, readSettings } from '../workspace/settings';
 import { log } from '../log';
 
 // Naming a thread. pi never names a session, so Stem always has to; the cheap
@@ -115,7 +115,7 @@ export async function writeSubject(
     if (!force && !stillAutoNamed(await deps.currentTitle(threadId), firstMessage)) return null;
 
     const reply = await deps.complete(subjectPrompt(firstMessage), {
-      model: chats.subjectModel,
+      model: await backgroundModelOf(() => chats.subjectModel),
       timeoutMs: SUBJECT_TIMEOUT_MS
     });
     const subject = sanitizeSubject(reply);

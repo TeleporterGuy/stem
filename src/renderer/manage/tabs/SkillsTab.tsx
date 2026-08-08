@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Wand2 } from 'lucide-react';
 import type {
+  DefaultsSettings,
   ModelSummary,
   SkillsMode,
   SkillSummary
 } from '../../../shared/types';
 import { useOffline } from '../../hooks/useServerReachable';
 import { InfoTip } from '../../ui/InfoTip';
-import { appDefaultModel } from '../../../shared/modelRoles';
+import { resolveBackgroundModel } from '../../../shared/modelRoles';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { holdFullSpin } from './shared';
 
@@ -21,11 +22,14 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
   // null => use the backend default model for the curator.
   const [curatorModel, setCuratorModel] = useState<string | null>(null);
   const [mode, setMode] = useState<SkillsMode>('ask');
+  // What "Background work" resolves to — see Settings → Models.
+  const [defaults, setDefaults] = useState<DefaultsSettings>({ model: null, backgroundModel: null });
   useEffect(() => {
     window.stem.listSkills().then(setSkills);
     window.stem.getSettings().then((s) => {
       setCuratorModel(s.skills.model);
       setMode(s.skills.mode);
+      setDefaults(s.defaults);
     });
     // Refresh when the assistant auto-creates/patches a skill or the curator runs.
     return window.stem.onSkillsChanged(() => {
@@ -170,9 +174,9 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
           models={models}
           value={curatorModel}
           onChange={selectCuratorModel}
-          emptyLabel="Default (recommended)"
+          emptyLabel="Background work"
           ariaLabel="Skills curator model"
-          resolvedDefault={appDefaultModel(models)}
+          resolvedDefault={resolveBackgroundModel(null, defaults.backgroundModel, defaults.model)}
         />
       </div>
     </div>

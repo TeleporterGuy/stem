@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { ExecApprovalRequest, ExecDecision, ExecSettings, ModelSummary, ServerSettings } from '../../shared/types';
+import type {
+  DefaultsSettings,
+  ExecApprovalRequest,
+  ExecDecision,
+  ExecSettings,
+  ModelSummary,
+  ServerSettings
+} from '../../shared/types';
 import type { ChatBackend, ExecBridge, ExecBridgeResult, ExecRequest } from '../backend/types';
 import { log } from '../log';
 import { execWorkspaceDir } from '../workspace/paths';
@@ -79,7 +86,8 @@ export class ExecService implements ExecBridge {
     const command = (req.command ?? '').trim();
     if (!command) return { ok: false, error: 'Provide a command to run.' };
 
-    const settings = (await this.deps.readSettings()).exec;
+    const all = await this.deps.readSettings();
+    const settings = all.exec;
     if (!settings.enabled) {
       return { ok: false, error: 'Command execution is disabled in Settings → Chat → Command execution.' };
     }
@@ -113,7 +121,7 @@ export class ExecService implements ExecBridge {
       let judgeVerdict: 'unsafe' | 'unsure' | 'failed' | null = null;
       let judgeReason: string | undefined;
       if (settings.approvalMode === 'assisted') {
-        const verdict = await this.judge(command, cwd, settings, req.userText, req.currentModel);
+        const verdict = await this.judge(command, cwd, settings, all.defaults, req.userText, req.currentModel);
         if (verdict.verdict === 'safe') return this.run(command, cwd, req);
         judgeVerdict = verdict.verdict;
         judgeReason = verdict.reason;
@@ -182,16 +190,18 @@ export class ExecService implements ExecBridge {
     command: string,
     cwd: string,
     settings: ExecSettings,
+    defaults: DefaultsSettings,
     userText?: string,
     currentModel?: string | null
   ): Promise<{ verdict: 'safe' | 'unsafe' | 'unsure' | 'failed'; reason?: string }> {
     try {
       const runtime = this.deps.runtime();
       const models = await this.listModelsCached();
-      // Prefer a cheap model of the live chat's provider. resolveJudgeModel only
-      // answers null when it was handed no models at all — complete() then uses
-      // its own default, which is the best available answer anyway.
-      const model = resolveJudgeModel(settings, models, currentModel ?? null);
+      // The shared background model if one is set, else the live chat's own —
+      // resolveJudgeModel only answers null when it was handed no models at all,
+      // and complete() then uses its own default, which is the best available
+      // answer anyway.
+      const model = resolveJudgeModel(settings, defaults, models, currentModel ?? null);
       const reply = await runtime.complete(buildJudgePrompt(command, cwd, userText), {
         model,
         timeoutMs: JUDGE_TIMEOUT_MS,

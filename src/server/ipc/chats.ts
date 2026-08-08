@@ -21,7 +21,7 @@ import {
   setRead,
   setSnooze
 } from '../workspace/inbox';
-import { readSettings } from '../workspace/settings';
+import { backgroundModelOf } from '../workspace/settings';
 import type { LlmClient } from '../recall/llm';
 import type { ChatListResult } from '../../shared/types';
 
@@ -74,7 +74,7 @@ export function registerChatsIpc(deps: IpcDeps): void {
     const llm: LlmClient = {
       complete: async (prompt) =>
         deps.runtime().complete(prompt, {
-          model: (await readSettings()).memory.model,
+          model: await backgroundModelOf((s) => s.memory.model),
           timeoutMs: CHAT_SEARCH_COMPLETION_TIMEOUT_MS
         })
     };

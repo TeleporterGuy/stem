@@ -42,8 +42,9 @@ export interface ExecRequest {
    */
   userText?: string;
   /**
-   * The live chat's `provider/model` id when known. Lets the safety judge pick a
-   * cheap model of the same provider (auth already works for that chat).
+   * The live chat's `provider/model` id when known. It is what the safety judge
+   * runs on when neither it nor the shared background model is pinned — a
+   * provider this chat is demonstrably signed in to.
    */
   currentModel?: string | null;
 }

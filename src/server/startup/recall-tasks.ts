@@ -1,4 +1,4 @@
-import { readSettings } from '../workspace/settings';
+import { backgroundModelOf } from '../workspace/settings';
 import { isRecallEnabled } from '../workspace/memory';
 import * as activity from '../activity';
 import { embedNewMessages } from '../recall/embed-episodic';
@@ -50,7 +50,8 @@ export function initRecallTasks(deps: {
   // Stem Recall: distill durable facts via a hidden backend turn (the swappable
   // LlmClient seam). Debounced so it runs ~after the user goes idle.
   const recallLlm: LlmClient = {
-    complete: async (prompt) => deps.runtime().complete(prompt, { model: (await readSettings()).memory.model })
+    complete: async (prompt) =>
+      deps.runtime().complete(prompt, { model: await backgroundModelOf((s) => s.memory.model) })
   };
   let rebuildTimer: NodeJS.Timeout | null = null;
   const scheduleMemoryRebuild = (): void => {
@@ -90,7 +91,8 @@ export function initRecallTasks(deps: {
   // can be a harder task than fact distillation, so it can be pointed at a stronger
   // model. Read fresh each pass so a Settings change applies to the next run.
   const skillsLlm: LlmClient = {
-    complete: async (prompt) => deps.runtime().complete(prompt, { model: (await readSettings()).skills.model })
+    complete: async (prompt) =>
+      deps.runtime().complete(prompt, { model: await backgroundModelOf((s) => s.skills.model) })
   };
 
   let distilling = false;

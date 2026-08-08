@@ -7,6 +7,7 @@ import type {
   AuthUiEvent,
   BackendEventEnvelope,
   ChatsSettings,
+  DefaultsSettings,
   ConnectedFolderPatch,
   CustomInstructionsSettings,
   EscapeAction,
@@ -310,6 +311,7 @@ const api: StemApi = {
   updateSkillsSettings: (patch: Partial<SkillsSettings>) =>
     ipcRenderer.invoke('settings:updateSkills', patch),
   updateChatsSettings: (patch: Partial<ChatsSettings>) => ipcRenderer.invoke('settings:updateChats', patch),
+  updateDefaults: (patch: Partial<DefaultsSettings>) => ipcRenderer.invoke('settings:updateDefaults', patch),
   updateRetrievalSettings: (patch: PartialRetrievalSettings) =>
     ipcRenderer.invoke('settings:updateRetrieval', patch),
   testRetrievalEndpoint: (stage: RetrievalStage) => ipcRenderer.invoke('settings:testRetrieval', stage),

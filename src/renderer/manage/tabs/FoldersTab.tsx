@@ -5,7 +5,7 @@ import type {
   FolderIndexStatus,
   ModelSummary
 } from '../../../shared/types';
-import { appDefaultModel } from '../../../shared/modelRoles';
+import { resolveBackgroundModel } from '../../../shared/modelRoles';
 import { useRemoteServer } from '../../hooks/useRemoteServer';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
@@ -159,7 +159,9 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
   const [memoryModel, setMemoryModel] = useState<string | null>(null);
 
   useEffect(() => {
-    void window.stem.getSettings().then((s) => setMemoryModel(s.memory.model));
+    void window.stem
+      .getSettings()
+      .then((s) => setMemoryModel(resolveBackgroundModel(s.memory.model, s.defaults.backgroundModel, s.defaults.model)));
   }, []);
 
   const toggleOpen = (id: string) =>
@@ -438,7 +440,7 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
                             onChange={(id) => void setLearnModel(f.id, id)}
                             emptyLabel="Memory default"
                             ariaLabel="Fact-learning model"
-                            resolvedDefault={memoryModel ?? appDefaultModel(models)}
+                            resolvedDefault={memoryModel}
                           />
                         </span>
                       </div>
@@ -462,7 +464,7 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
                           onChange={(id) => void setLearnModel(f.id, id)}
                           emptyLabel="Memory default"
                           ariaLabel="Fact-learning model"
-                          resolvedDefault={memoryModel ?? appDefaultModel(models)}
+                          resolvedDefault={memoryModel}
                         />
                       </span>
                     </div>

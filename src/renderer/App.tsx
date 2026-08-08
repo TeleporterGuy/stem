@@ -363,9 +363,16 @@ export default function App() {
     return () => window.removeEventListener('stem:providers-changed', onChanged);
   }, [refreshStatus, refreshModels]);
 
-  // Persist the remembered selections.
+  // Persist the remembered selections. The model goes to the SERVER as well as
+  // localStorage: every background job (chat subjects, memory, skills curation,
+  // the safety check) falls back to "the model you chat with", and for years
+  // that meant `defaults.model`, which was written once at sign-in and never
+  // again. Anyone who changed their model left the whole background running on
+  // whatever the wizard picked — and Quick Chat's "Same as main" named it.
   useEffect(() => {
-    if (modelId) localStorage.setItem('stem.modelId', modelId);
+    if (!modelId) return;
+    localStorage.setItem('stem.modelId', modelId);
+    void window.stem.updateDefaults({ model: modelId }).catch(() => undefined);
   }, [modelId]);
   useEffect(() => {
     if (effort) localStorage.setItem('stem.effort', effort);

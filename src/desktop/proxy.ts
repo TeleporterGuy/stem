@@ -172,6 +172,7 @@ const SETTINGS_CHANNELS = [
   'settings:updateMemory',
   'settings:updateSkills',
   'settings:updateChats',
+  'settings:updateDefaults',
   'settings:updateExec',
   'settings:updateCustomInstructions',
   'settings:updateRetrieval'

@@ -45,6 +45,7 @@ import {
   updateChatsSettings,
   updateCustomInstructions,
   updateDefaultModel,
+  updateDefaults,
   updateEscapeAction,
   updateExecSettings,
   updateMemorySettings,
@@ -56,6 +57,7 @@ import {
 import { needsBackendRestart, needsWebSearchConfigWrite, writeWebSearchConfig } from './pi/web-search';
 import type {
   ChatsSettings,
+  DefaultsSettings,
   CustomInstructionsSettings,
   EscapeAction,
   ExecDecision,
@@ -380,6 +382,11 @@ function registerIpc(): void {
     // Just persist — the curator's LlmClient reads the model fresh from settings on
     // each pass, so the change applies to the next curation run.
     return updateSkillsSettings(patch);
+  });
+  registerServer('settings:updateDefaults', async (_e, patch: Partial<DefaultsSettings>) => {
+    // Just persist. Every background role reads defaults fresh on each call, and
+    // the model you chat with is re-read by the next spawn — nothing to restart.
+    return updateDefaults(patch);
   });
   registerServer('settings:updateChats', async (_e, patch: Partial<ChatsSettings>) => {
     // Just persist — the subject writer reads mode and model fresh on every new

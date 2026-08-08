@@ -30,7 +30,10 @@ function model(id: string, provider: string, isDefault = false): ModelSummary {
 
 function baseSettings(): AppSettings {
   return {
-    exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] }
+    exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] },
+    // The judge reads these too: unpinned, it runs on the shared background model
+    // if there is one, else the model of the chat that asked.
+    defaults: { model: null, backgroundModel: null }
   } as unknown as AppSettings;
 }
 
@@ -100,7 +103,7 @@ describe('ExecService judge', () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it('passes priority, 60s timeout, and a cheap model of the live chat provider', async () => {
+  it('passes priority, 60s timeout, and the model of the chat that asked', async () => {
     completeImpl = async () => 'unsure maybe';
     const result = await service.handleExecRequest({
       command: PS,
@@ -115,7 +118,8 @@ describe('ExecService judge', () => {
     expect(completeOpts[0]?.priority).toBe(true);
     expect(completeOpts[0]?.timeoutMs).toBe(JUDGE_TIMEOUT_MS);
     expect(JUDGE_TIMEOUT_MS).toBe(60_000);
-    expect(completeOpts[0]?.model).toBe('anthropic/claude-haiku-4');
+    // Not a cheaper-looking sibling: Stem no longer guesses one from names.
+    expect(completeOpts[0]?.model).toBe('anthropic/claude-opus-4');
     expect(approvals[0]?.judgeVerdict).toBe('unsure');
   });
 

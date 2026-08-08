@@ -1381,7 +1381,7 @@ export interface ExecSettings {
   enabled: boolean;
   /** Approval policy: manual / LLM-assisted (default) / yolo. */
   approvalMode: ExecApprovalMode;
-  /** `provider/model` id for the safety judge; null = auto (cheapest known for the provider). */
+  /** `provider/model` id for the safety judge; null = {@link DefaultsSettings.backgroundModel}. */
   judgeModel: string | null;
   /** User-approved command prefixes (e.g. "git push", "npm") that auto-run as tier 1. */
   allowlist: string[];
@@ -1559,7 +1559,20 @@ export interface ReleaseNotesSnapshot {
  * default matches the provider the user actually signed in with.
  */
 export interface DefaultsSettings {
+  /**
+   * The model you chat with — written whenever you change it, so the background
+   * jobs can see what you actually use. Null only before the first sign-in has
+   * picked one.
+   */
   model: string | null;
+  /**
+   * What the background roles (chat subjects, memory, skills curation, the
+   * command safety check) run on when they aren't pinned to a model of their
+   * own. Null = the same model you chat with, which is the honest default: Stem
+   * has no price or size data to guess a cheaper one from, so it says what it is
+   * doing rather than picking for you.
+   */
+  backgroundModel: string | null;
 }
 
 export interface AppSettings {
@@ -2116,6 +2129,8 @@ export interface StemApi {
   updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<AppSettings>;
   /** Patch the Chats panel settings (subject mode/model, Inbox preview lines). */
   updateChatsSettings(patch: Partial<ChatsSettings>): Promise<AppSettings>;
+  /** The model you chat with, and the fallback every background role inherits. */
+  updateDefaults(patch: Partial<DefaultsSettings>): Promise<AppSettings>;
   /** Patch the standing custom instructions (e.g. { main } or { quickChat }). */
   updateCustomInstructions(patch: Partial<CustomInstructionsSettings>): Promise<AppSettings>;
   /** Assistant proposed a custom-instructions change; fired so the UI can show a card. */

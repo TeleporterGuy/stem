@@ -134,6 +134,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'settings:updateMemory': [a.object],
   'settings:updateSkills': [a.object],
   'settings:updateChats': [a.object],
+  'settings:updateDefaults': [a.object],
   'settings:updateExec': [a.object],
   'exec:resolveApproval': [a.string, a.oneOf(['allowOnce', 'alwaysAllow', 'deny'])],
   'settings:updateCustomInstructions': [a.object],

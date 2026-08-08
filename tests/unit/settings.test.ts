@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
+  backgroundModelFor,
   markOnboardingCompleted,
   readSettings,
   updateChatsSettings,
   updateDefaultModel,
+  updateDefaults,
   updateEscapeAction,
   updateExecSettings,
   updateLocalProvider,
@@ -67,6 +69,29 @@ describe('onboarding + default-model settings', () => {
     expect((await updateDefaultModel('anthropic/claude-sonnet-4')).defaults.model).toBe('anthropic/claude-sonnet-4');
     expect((await readSettings()).defaults.model).toBe('anthropic/claude-sonnet-4');
     expect((await updateDefaultModel(null)).defaults.model).toBeNull();
+  });
+
+  it('updateDefaultModel leaves the background model alone', async () => {
+    // The two are patched from different places — the model picker writes one on
+    // every change — so a whole-object write here would silently discard the
+    // background model the user chose in Settings → Models.
+    await updateDefaults({ backgroundModel: 'anthropic/claude-haiku-4' });
+    expect((await updateDefaultModel('anthropic/claude-sonnet-4')).defaults).toEqual({
+      model: 'anthropic/claude-sonnet-4',
+      backgroundModel: 'anthropic/claude-haiku-4'
+    });
+  });
+
+  it('backgroundModelFor prefers a pin, then the background model, then nothing', async () => {
+    await updateDefaults({ model: 'anthropic/claude-opus-4', backgroundModel: 'anthropic/claude-haiku-4' });
+    const withBackground = await readSettings();
+    expect(backgroundModelFor(withBackground, 'x/pinned')).toBe('x/pinned');
+    expect(backgroundModelFor(withBackground, null)).toBe('anthropic/claude-haiku-4');
+    // Null, not defaults.model: complete() applies that last rung itself, and
+    // resolving it here would freeze the chat model into every background call
+    // instead of letting it follow.
+    await updateDefaults({ backgroundModel: null });
+    expect(backgroundModelFor(await readSettings(), null)).toBeNull();
   });
 
   it('coerces garbage values back to defaults', async () => {

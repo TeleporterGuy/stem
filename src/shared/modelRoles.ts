@@ -1,51 +1,63 @@
-import type { ExecSettings, ModelSummary } from './types';
+import type { DefaultsSettings, ExecSettings, ModelSummary } from './types';
 
 /**
- * Which model actually runs each job, when the setting for it says "default".
+ * Which model actually runs each job, when its own setting is left unset.
  *
- * Shared rather than server-only because the answer is now shown, not just used:
- * a picker sitting on "Default (recommended)" tells you underneath which model
- * that is today. The renderer must reach the same conclusion the server does, or
- * the note is a lie the moment the two drift.
+ * One chain, used everywhere: a role's own pin, else the shared background
+ * model, else the model you chat with. Shared rather than server-only because
+ * the answer is shown as well as used — a picker left unset says underneath what
+ * it resolves to today, and the renderer has to reach the same conclusion the
+ * server does or the note is a lie the moment the two drift.
  */
 
-// Cheap-model markers, in preference order, for the auto judge pick. Names only —
-// ModelSummary carries no price or tier, so this is the whole signal there is.
-const CHEAP_MARKERS = ['haiku', 'mini', 'nano', 'flash', 'lite', 'spark', 'fast', 'small', 'turbo'];
-
 /**
- * The app-level default model — what a `null` model setting resolves to for the
- * background jobs (memory, skills curation, chat subjects). The backend marks it
- * on the model list it publishes, so this is a read, not a second guess at the
- * rule.
+ * The app-level default model — what "the model you chat with" resolves to. The
+ * backend marks it on the model list it publishes, so this is a read, not a
+ * second guess at the rule.
  */
 export function appDefaultModel(models: ModelSummary[]): string | null {
   return models.find((m) => m.isDefault)?.id ?? null;
 }
 
 /**
- * Resolve the judge model: the explicit setting wins; otherwise the
- * cheapest-looking model of the current provider (Anthropic → Haiku-class, etc.).
+ * What a background role runs on: its own pin, else the shared background model,
+ * else the model you chat with.
  *
- * When that provider publishes no cheap-tier name, fall back to a model we know
- * is signed in rather than null: null makes complete() use its built-in
- * openai-codex default, which fails with "No API key" for anyone signed in only
- * to another provider. The judge then runs on the chat's own model — correct but
- * not cheap, which is why Settings says so rather than promising "cheapest".
+ * This used to guess — it scored model NAMES for "haiku", "mini", "flash" and
+ * picked the cheapest-looking one of the current provider. pi's catalog carries
+ * no price, tier or size, so that was the only signal available, and it was a
+ * bad one: it happily picked a mini variant over a newer small model that was
+ * both cheaper and better, and every catalog change was a fresh chance to be
+ * wrong. Stem now says what it is doing instead of guessing, and Settings →
+ * Models offers one place to point every background job at a cheaper model on
+ * purpose.
+ */
+export function resolveBackgroundModel(
+  pinned: string | null,
+  backgroundModel: string | null,
+  mainModel: string | null
+): string | null {
+  return pinned ?? backgroundModel ?? mainModel;
+}
+
+/**
+ * Resolve the judge model for the command safety check.
+ *
+ * Falls back through the same chain as every other background role, and only
+ * then to a model we know is signed in: passing null on to complete() would use
+ * its built-in constant, which fails with "No API key" for anyone signed in to a
+ * single other provider.
  */
 export function resolveJudgeModel(
   settings: Pick<ExecSettings, 'judgeModel'>,
+  defaults: Pick<DefaultsSettings, 'backgroundModel'>,
   models: ModelSummary[],
   currentModel: string | null
 ): string | null {
-  if (settings.judgeModel) return settings.judgeModel;
-  const provider = currentModel?.split('/')[0] ?? models.find((m) => m.isDefault)?.provider ?? null;
-  const pool = provider ? models.filter((m) => m.provider === provider) : models;
-  for (const marker of CHEAP_MARKERS) {
-    const hit = pool.find((m) => m.id.toLowerCase().includes(marker));
-    if (hit) return hit.id;
-  }
-  // `provider` is derived from currentModel whenever there is one, so this is
-  // already a same-provider pick; pool/models only matter when there is not.
-  return currentModel ?? pool.find((m) => m.isDefault)?.id ?? pool[0]?.id ?? null;
+  return (
+    resolveBackgroundModel(settings.judgeModel, defaults.backgroundModel, currentModel) ??
+    appDefaultModel(models) ??
+    models[0]?.id ??
+    null
+  );
 }

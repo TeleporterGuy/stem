@@ -74,7 +74,7 @@ const DEFAULTS: ServerSettings = {
   // Command execution: on by default with the tiered policy as the guard rail.
   // approvalMode 'assisted' = allowlist → LLM judge → approval card ('manual'
   // skips the judge, 'yolo' skips everything but the protected-roots guard);
-  // judgeModel null = auto-pick the cheapest known model for the current provider;
+  // judgeModel null = the shared background model, else the chat's own model;
   // the allowlist grows via the approval card's "Always allow" button.
   exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] },
   // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
@@ -107,8 +107,11 @@ const DEFAULTS: ServerSettings = {
   // reaches an authenticated status, e.g. seeded from an existing ~/.pi).
   onboarding: { completed: false },
   // App-level default model ('provider/modelId'); null = built-in constant.
-  // Set after onboarding to match the provider the user signed in with.
-  defaults: { model: null },
+  // Set after onboarding to match the provider the user signed in with, and
+  // rewritten every time the model picker changes — background jobs read it as
+  // "the model you chat with", which is only true if it keeps up.
+  // backgroundModel null = those jobs run on `model` too.
+  defaults: { model: null, backgroundModel: null },
   // OpenAI-compatible servers (registered with the backend via the pi-home
   // models.json). Base URLs are the servers' standard defaults; disabled until
   // the user opts in. `custom` has no default URL — the user supplies it.
@@ -288,7 +291,11 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
   };
   const rawDef = (parsed?.defaults ?? {}) as Partial<DefaultsSettings>;
   const defaults: DefaultsSettings = {
-    model: typeof rawDef.model === 'string' && rawDef.model.trim() ? rawDef.model : null
+    model: typeof rawDef.model === 'string' && rawDef.model.trim() ? rawDef.model : null,
+    backgroundModel:
+      typeof rawDef.backgroundModel === 'string' && rawDef.backgroundModel.trim()
+        ? rawDef.backgroundModel
+        : null
   };
   const rawLp = (parsed?.localProviders ?? {}) as Partial<Record<LocalProviderId, Partial<LocalProviderSettings>>>;
   const coerceLocal = (id: LocalProviderId): LocalProviderSettings => {
@@ -482,14 +489,37 @@ export function markOnboardingCompleted(): Promise<ServerSettings> {
   });
 }
 
-/** Set the app-level default model ('provider/modelId' or null) and persist. */
-export function updateDefaultModel(model: string | null): Promise<ServerSettings> {
+/** Patch the app-level model defaults ('provider/modelId' or null) and persist. */
+export function updateDefaults(patch: Partial<DefaultsSettings>): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
-    const next = coerce({ ...cur, defaults: { model } });
+    const next = coerce({ ...cur, defaults: { ...cur.defaults, ...patch } });
     await writeSettings(next);
     return next;
   });
+}
+
+/** Set the model you chat with. Kept as its own name because half the callers
+ *  only ever touch this one, and a patch object reads worse at those sites. */
+export function updateDefaultModel(model: string | null): Promise<ServerSettings> {
+  return updateDefaults({ model });
+}
+
+/**
+ * What a background role actually runs on: its own pin, else the shared
+ * background model, else null — which sends it through complete()'s own fallback
+ * to `defaults.model`, the model you chat with.
+ */
+export function backgroundModelFor(settings: ServerSettings, pinned: string | null): string | null {
+  return pinned ?? settings.defaults.backgroundModel;
+}
+
+/** {@link backgroundModelFor} for the many call sites that have to read settings anyway. */
+export async function backgroundModelOf(
+  pinned: (settings: ServerSettings) => string | null
+): Promise<string | null> {
+  const settings = await readSettings();
+  return backgroundModelFor(settings, pinned(settings));
 }
 
 /** Patch one local provider (Ollama / LM Studio / custom) and persist; returns the full settings. */
