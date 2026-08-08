@@ -3,6 +3,7 @@ import { Plug, Globe, HardDrive, Plus, Minus, X, Check, RefreshCw } from 'lucide
 import type {
   AuthProviderId,
   ApiKeyProviderId,
+  ExecSettings,
   WebSearchSettings,
   LocalProviderApi,
   LocalProviderId,
@@ -67,21 +68,27 @@ type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
 /**
  * Every job Stem runs a model for, in one list.
  *
- * Each of these is also editable where it belongs — the memory model under
- * Memory, the curator under Tools, subjects and the safety check under Chat —
- * and stays there. This is the other view: the one you open when the question is
- * "what is running on what", which no single feature panel can answer. Both
- * views write the same setting, and only one manage tab is mounted at a time, so
- * they cannot disagree.
+ * The point of the list is the comparison: six roles, and what separates them is
+ * not what they do but how much model each one is worth. That judgement is the
+ * hard part — a cheap model is free money on chat subjects and quiet damage on
+ * memory — so every row carries it in the ⓘ rather than leaving you to infer it
+ * from the role's name.
  *
- * Connected folders can each override the memory model, but there can be any
- * number of them and they belong to the folder, not to the app — so they are
- * counted here and edited there.
+ * The two roles that used to sit inside Chat live here only. The ones that
+ * belong to a panel of their own — memory, skills curation, a folder's
+ * fact-learning — stay editable there too; both views write the same setting,
+ * and only one manage tab is mounted at a time, so they cannot disagree.
+ *
+ * A role that is switched off elsewhere still shows its model, with a line
+ * saying it is idle. An overview that hid them would answer "what is running on
+ * what" with a different list every time you changed a mode.
  */
 function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
   const [quickChatModel, setQuickChatModel] = useState<string | null>(null);
   const [subjectModel, setSubjectModel] = useState<string | null>(null);
+  const [subjectsOff, setSubjectsOff] = useState(false);
   const [judgeModel, setJudgeModel] = useState<string | null>(null);
+  const [judgeIdle, setJudgeIdle] = useState<string | null>(null);
   const [memoryModel, setMemoryModel] = useState<string | null>(null);
   const [curatorModel, setCuratorModel] = useState<string | null>(null);
   const [folderOverrides, setFolderOverrides] = useState(0);
@@ -90,7 +97,9 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
     void window.stem.getSettings().then((s) => {
       setQuickChatModel(s.quickChat.defaultModel);
       setSubjectModel(s.chats.subjectModel);
+      setSubjectsOff(s.chats.subjects === 'off');
       setJudgeModel(s.exec.judgeModel);
+      setJudgeIdle(judgeIdleReason(s.exec));
       setMemoryModel(s.memory.model);
       setCuratorModel(s.skills.model);
     });
@@ -108,17 +117,22 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
         Model roles
         <InfoTip label="About model roles">
           Stem runs more than one model. The one you chat with writes the replies; the rest work in
-          the background, which is why they default to something cheaper and why they are worth
-          knowing about. Every role here is also editable where it belongs — this is the same
-          setting seen from one place instead of four. <strong>Default</strong> and{' '}
-          <strong>Auto</strong> name a rule rather than a model, so each picker says underneath what
-          the rule resolves to today.
+          the background, on jobs you never watch — which is why they can run on something cheaper,
+          and why it is worth knowing which is which. Each role says in its own ⓘ what it does and
+          how much model it is actually worth. <strong>Default</strong> and <strong>Auto</strong>{' '}
+          name a rule rather than a model, so a picker sitting on one says underneath what the rule
+          resolves to today.
         </InfoTip>
       </div>
       <div className="formgroup">
         <div className="set-block">
           <span className="set-sub">
-            Chatting with you <em className="set-opt">also in Chat</em>
+            Chatting with you{' '}
+            <InfoTip label="About the model you chat with">
+              Writes every reply in the main window, and it is the only role whose output you read
+              word for word. <strong>Give it your best model</strong> — everything else on this list
+              exists so that this one does not have to be cheap.
+            </InfoTip>
           </span>
           <ModelPicker
             models={models}
@@ -130,7 +144,13 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
 
         <div className="set-block">
           <span className="set-sub">
-            Quick Chat <em className="set-opt">also in App</em>
+            Quick Chat{' '}
+            <InfoTip label="About the Quick Chat model">
+              The overlay you summon from anywhere, for short questions you want answered before you
+              have finished thinking about them. <strong>Speed matters more than depth here</strong>
+              , so a fast mid-tier model often beats the one you chat with — leave it on{' '}
+              <em>Same as main</em> if you would rather not think about it.
+            </InfoTip>
           </span>
           <ModelPicker
             models={models}
@@ -147,7 +167,13 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
 
         <div className="set-block">
           <span className="set-sub">
-            Chat subjects <em className="set-opt">also in Chat</em>
+            Chat subjects{' '}
+            <InfoTip label="About the subject model">
+              Writes each new chat a short subject from your first message, once, the way an email
+              names a thread. <strong>The smallest, cheapest model you have is plenty</strong> —
+              this is a few words off your opening line, not a summary of the conversation. Turn
+              subjects on or off under Chat.
+            </InfoTip>
           </span>
           <ModelPicker
             models={models}
@@ -161,30 +187,49 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             }}
             emptyLabel="Default (recommended)"
             ariaLabel="Subject model"
-            resolvedDefault={appDefault}
+            resolvedDefault={subjectsOff ? null : appDefault}
           />
+          {subjectsOff && <em className="mp-resolved">not running — subjects are off under Chat</em>}
         </div>
 
         <div className="set-block">
           <span className="set-sub">
-            Command safety check <em className="set-opt">also in Chat</em>
+            Command safety check{' '}
+            <InfoTip label="About the safety-check model">
+              Reads a shell command before it runs and decides whether it serves what you asked for;
+              anything it flags stops for your approval. It runs on <em>every</em> command that is
+              not allowlisted, so <strong>cheap and fast is the whole point</strong> — <em>Auto</em>{' '}
+              already picks the cheapest tier your chat's provider publishes. It is a heuristic, not
+              a security boundary, and a bigger model does not change that.
+            </InfoTip>
           </span>
           <ModelPicker
             models={models}
             value={judgeModel}
             onChange={(id) => {
               setJudgeModel(id);
-              window.stem.updateExecSettings({ judgeModel: id }).then((s) => setJudgeModel(s.exec.judgeModel));
+              window.stem.updateExecSettings({ judgeModel: id }).then((s) => {
+                setJudgeModel(s.exec.judgeModel);
+                setJudgeIdle(judgeIdleReason(s.exec));
+              });
             }}
             emptyLabel="Auto"
             ariaLabel="Safety-check model"
-            resolvedDefault={resolveJudgeModel({ judgeModel: null }, models, modelId)}
+            resolvedDefault={judgeIdle ? null : resolveJudgeModel({ judgeModel: null }, models, modelId)}
           />
+          {judgeIdle && <em className="mp-resolved">{judgeIdle}</em>}
         </div>
 
         <div className="set-block">
           <span className="set-sub">
-            Memory <em className="set-opt">also in Memory</em>
+            Memory{' '}
+            <InfoTip label="About the memory model">
+              Reads finished conversations in the background, decides what is worth keeping, and
+              merges or drops what it already has. <strong>Do not put your smallest model here.</strong>{' '}
+              It works against a long transcript plus everything already remembered, and a model that
+              cannot hold that replies with truncated nonsense — which shows up not as an error but
+              as a memory that quietly stops learning. A solid mid-tier model is the sweet spot.
+            </InfoTip>
           </span>
           <ModelPicker
             models={models}
@@ -207,7 +252,14 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
 
         <div className="set-block">
           <span className="set-sub">
-            Skills curator <em className="set-opt">also in Tools</em>
+            Skills curator{' '}
+            <InfoTip label="About the curator model">
+              Tidies your skills library in the background — merging duplicates, sharpening sloppy
+              ones, archiving what has gone stale. It runs rarely and the work is editorial
+              judgement rather than volume, so <strong>this is the one background role worth a
+              strong model</strong>. New skills are still written by the model you chat with; this
+              only affects upkeep.
+            </InfoTip>
           </span>
           <ModelPicker
             models={models}
@@ -224,6 +276,14 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
       </div>
     </>
   );
+}
+
+/** Why the safety check isn't running, or null when it is. */
+function judgeIdleReason(exec: ExecSettings): string | null {
+  if (!exec.enabled) return 'not running — command execution is off under Chat';
+  if (exec.approvalMode === 'manual') return 'not running — approval mode is Manual';
+  if (exec.approvalMode === 'yolo') return 'not running — approval mode is Yolo';
+  return null;
 }
 
 /**

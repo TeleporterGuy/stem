@@ -6,7 +6,6 @@ import type {
   ExecSettings,
   WebSearchSettings
 } from '../../../../shared/types';
-import { appDefaultModel, resolveJudgeModel } from '../../../../shared/modelRoles';
 import { InfoTip } from '../../../ui/InfoTip';
 import { ModelPicker } from '../../../ui/ModelPicker';
 import type { ModelTabProps } from '../shared';
@@ -98,6 +97,7 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
               search and the window title all agree. <strong>Inbox only</strong> shows it in the
               Inbox and leaves names alone. <strong>Off</strong> never calls a model — a chat is
               named after the first line you typed. A name you type yourself is never overwritten.
+              The model that writes them lives under Models.
             </InfoTip>
           </span>
           <div className="seg-ctl">
@@ -123,24 +123,6 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
               Everywhere
             </button>
           </div>
-        </div>
-        <div className="set-block">
-          <span className="set-sub">
-            Subject model{' '}
-            <InfoTip label="About the subject model">
-              Writes the subject line, once per new chat. A small, fast model is plenty — this is a
-              few words from your opening message, not a summary of the conversation.
-            </InfoTip>
-          </span>
-          <ModelPicker
-            models={models}
-            value={chats?.subjectModel ?? null}
-            onChange={(id) => updateChats({ subjectModel: id })}
-            emptyLabel="Default (recommended)"
-            ariaLabel="Subject model"
-            disabled={chats?.subjects === 'off'}
-            resolvedDefault={appDefaultModel(models)}
-          />
         </div>
         <div className="set-block">
           <span className="set-sub">
@@ -227,7 +209,7 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
                   clears commands that serve your request; only flagged ones pause.{' '}
                   <strong>Yolo</strong> — every command runs immediately, no questions asked (folders
                   you marked read-only stay protected). The safety check is a heuristic, not a
-                  security boundary.
+                  security boundary; the model it runs on lives under Models.
                 </InfoTip>
               </span>
               <div className="seg-ctl">
@@ -253,29 +235,6 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
               </div>
             </div>
 
-            {exec.approvalMode === 'assisted' && (
-              <div className="set-block">
-                <span className="set-sub">
-                  Safety-check model{' '}
-                  <InfoTip label="About the safety-check model">
-                    On <b>Auto</b>, Stem uses the cheapest model your chat's provider offers — a
-                    Haiku, mini, or flash tier. A provider that publishes no cheap tier gets checked
-                    by the chat's own model instead, so the check stays on a provider you're signed
-                    in to. Pick a model here to pin it.
-                  </InfoTip>
-                </span>
-                <ModelPicker
-                  models={models}
-                  value={exec.judgeModel}
-                  onChange={(id) => updateExec({ judgeModel: id })}
-                  emptyLabel="Auto"
-                  ariaLabel="Safety-check model"
-                  // Auto picks per turn from the chat's own provider; the model
-                  // set here is the one it would pick for a chat on the default.
-                  resolvedDefault={resolveJudgeModel({ judgeModel: null }, models, modelId)}
-                />
-              </div>
-            )}
 
             {exec.approvalMode !== 'yolo' && (
               <div className="set-block">
