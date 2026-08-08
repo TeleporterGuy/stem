@@ -25,6 +25,17 @@ async function newThread(win: Page, text: string): Promise<void> {
 // The fake backend's canned subject is "About <first three words>", so a row
 // still matches on the text it was started with.
 const row = (win: Page, title: string) => win.locator('.chat-row').filter({ hasText: title });
+/**
+ * The first snooze preset ("Later today"), whatever day it is.
+ *
+ * Never by name: which presets the menu OFFERS depends on the weekday, because
+ * it drops ones that resolve to the same instant. On a Friday "Tomorrow" and
+ * "This weekend" are the same 9am; on a Sunday "Tomorrow" and "Next week" are.
+ * A test that clicked "Next week" passed six days a week and hung on the
+ * seventh. The first entry is the only one that can never collide — it is the
+ * only relative one — so it is the one to drive.
+ */
+const snoozePreset = (win: Page) => win.locator('.snooze-menu .snooze-preset').first();
 /** The Inbox/Chats tabs. Scoped: the rail's Chats tab shares its name. */
 const tab = (win: Page, name: string) =>
   win.locator('.chats-modes').getByRole('button', { name, exact: true });
@@ -110,7 +121,7 @@ test('triaging the thread you are reading advances to the next one', async ({ ma
   const alpha = row(mainWindow, 'alpha');
   await alpha.hover();
   await alpha.getByRole('button', { name: 'Snooze' }).click();
-  await mainWindow.getByRole('button', { name: /Next week/ }).click();
+  await snoozePreset(mainWindow).click();
 
   await expect(mainWindow.locator('.message-user')).toHaveCount(0);
   await expect(mainWindow.locator('.chat-row.selected')).toHaveCount(0);
@@ -152,9 +163,9 @@ test('snoozing hides a thread under a Snoozed group it can be woken from', async
   const alpha = row(mainWindow, 'alpha');
   await alpha.hover();
   await alpha.getByRole('button', { name: 'Snooze' }).click();
-  // Presets resolve to real instants; "Next week" is far enough that the row
+  // Presets resolve to real instants; the first is far enough out that the row
   // cannot wake mid-test.
-  await mainWindow.getByRole('button', { name: /Next week/ }).click();
+  await snoozePreset(mainWindow).click();
 
   // Out of the list proper, into a collapsed disclosure that counts it.
   await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
@@ -240,15 +251,36 @@ test('the snooze shortcut opens a picker that finishes without a mouse', async (
 
   // Re-open and commit: beta leaves the Inbox and alpha becomes the open thread.
   await mainWindow.keyboard.press(SNOOZE);
-  await mainWindow.getByRole('button', { name: /Next week/ }).click();
+  await snoozePreset(mainWindow).click();
   await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
   await expect(mainWindow.locator('.message-user').last()).toContainText('alpha');
+});
+
+test('picking a custom date commits on the day, with no second button', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await mainWindow.keyboard.press(SNOOZE);
+  await mainWindow.getByRole('button', { name: 'Pick a date…' }).click();
+
+  // Six full weeks, always — the popover must not change height as you page.
+  const days = mainWindow.locator('.snooze-day');
+  await expect(days).toHaveCount(42);
+  // Paging is reachable, and does not close the menu out from under you.
+  await mainWindow.getByRole('button', { name: 'Next month' }).click();
+  await expect(mainWindow.locator('.snooze-cal')).toBeVisible();
+
+  // The day IS the commit: this used to need a click on the date field, a click
+  // in the OS calendar it opened, and then a third on a "Snooze" button back in
+  // the menu that was easy to miss entirely.
+  await days.filter({ hasNotText: /^$/ }).last().click();
+  await expect(mainWindow.locator('.snooze-menu')).toHaveCount(0);
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(0);
+  await expect(group(mainWindow, /Snoozed \(1\)/)).toBeVisible();
 });
 
 test('the snooze shortcut wakes a thread that is already snoozed', async ({ mainWindow }) => {
   await send(mainWindow, 'alpha');
   await mainWindow.keyboard.press(SNOOZE);
-  await mainWindow.getByRole('button', { name: /Next week/ }).click();
+  await snoozePreset(mainWindow).click();
   await expect(mainWindow.locator('.chat-row')).toHaveCount(0);
 
   // Select the snoozed row, then the same shortcut sends it back.

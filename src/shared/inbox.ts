@@ -105,7 +105,7 @@ export interface SnoozePreset {
 }
 
 /** 9am is the conventional "start of a workday" wake hour; Gmail uses the same. */
-const MORNING_HOUR = 9;
+export const MORNING_HOUR = 9;
 
 function atHour(base: Date, addDays: number, hour: number): Date {
   const d = new Date(base);
