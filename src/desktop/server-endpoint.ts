@@ -62,7 +62,7 @@ export async function resolveServerUrl(): Promise<{ url: string | null; pinnedBy
   return { url: stored ? normalizeUrl(stored) : null, pinnedByEnv: false };
 }
 
-/** How this machine will appear in Settings → Devices. */
+/** How this machine will appear in Settings → Server → Devices. */
 function deviceLabel(): string {
   try {
     return hostname() || 'This machine';

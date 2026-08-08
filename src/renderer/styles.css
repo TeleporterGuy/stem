@@ -1688,6 +1688,19 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .seg-ctl { display: flex; background: color-mix(in srgb, var(--ink) 7%, var(--surface)); border-radius: var(--radius); padding: 2px; }
 .seg-ctl button { flex: 1; border: none; background: none; border-radius: var(--radius); padding: 4px; font: inherit; font-size: var(--fs-12); color: var(--muted); cursor: pointer; white-space: nowrap; }
 .seg-ctl button.active { background: var(--field); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14); }
+/* "Something in here is broken" on a segment — the sub-tab echo of .tab-alert-dot
+   on the rail, so a dead provider is still visible once you're inside Settings.
+   Inline rather than absolutely positioned: a segment is sized by its label, and
+   a corner dot would sit outside the one that's active. */
+.seg-ctl .seg-alert-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 4px;
+  vertical-align: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+}
 .ifield { width: 100%; border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 9px; font: inherit; font-size: var(--fs-13); background: var(--field); color: var(--ink); }
 .ifield::placeholder { color: var(--muted); }
 .ifield:focus { outline: none; border-color: var(--accent); box-shadow: var(--shadow-focus); }
@@ -2513,7 +2526,7 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   overflow-y: auto;
 }
 
-/* Settings → Command execution: the learned-prefix allowlist editor. */
+/* Settings → Chat → Command execution: the learned-prefix allowlist editor. */
 .exec-allowlist {
   display: flex;
   flex-wrap: wrap;

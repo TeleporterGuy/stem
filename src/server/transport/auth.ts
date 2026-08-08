@@ -51,7 +51,7 @@ export interface DeviceRecord {
    */
   tokenHash: string;
   role: DeviceRole;
-  /** Human label, shown in Settings → Devices. */
+  /** Human label, shown in Settings → Server → Devices. */
   label: string;
   createdAt: string;
   /** Last successful authentication, or null if it has never connected. */
@@ -131,7 +131,7 @@ function parseDevices(raw: string): DeviceRecord[] | null {
   //   version 1's plaintext `token` — there is no migration that keeps such a
   //   record USEFUL. Hashing it would leave a record whose device cannot prove
   //   anything (the client of that era never kept a copy; it read the token back
-  //   off this very file), so the entry would linger in Settings → Devices
+  //   off this very file), so the entry would linger in Settings → Server → Devices
   //   forever, belonging to nobody. Dropping it costs nothing visible: the
   //   desktop mints itself a fresh record the next time it starts, off the same
   //   shared disk, exactly as it did before.

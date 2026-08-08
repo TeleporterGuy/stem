@@ -50,7 +50,7 @@ import { exportState, importState } from './workspace/state-transfer';
 // Phase 2, and the loopback-only bind in transport/server.ts is what keeps this
 // from being deployed as if they had already happened.
 
-/** `--label "…"` or `--label=…`; the device's name in Settings → Devices. */
+/** `--label "…"` or `--label=…`; the device's name in Settings → Server → Devices. */
 function labelArg(argv: string[]): string {
   const inline = argv.find((a) => a.startsWith('--label='));
   if (inline) return inline.slice('--label='.length);

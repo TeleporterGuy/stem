@@ -18,6 +18,7 @@ import {
 import type { ChatListResult, ChatSearchHit, ChatSummary, Folder, ThreadStatus } from '../../shared/types';
 import { formatWake, isUnread, nextWakeAt, placement } from '../../shared/inbox';
 import { useOffline } from '../hooks/useServerReachable';
+import { useRememberedTab } from '../hooks/useRememberedTab';
 import { stripCiteMarkers } from '../../shared/citations';
 import { glyphsFor, useShortcut } from '../shortcuts';
 import { SnoozeMenu } from './SnoozeMenu';
@@ -83,17 +84,10 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'chats', label: 'Chats' }
 ];
 
-// Which tab you were last on. Renderer-local like the composer's per-turn picks:
-// it's a view preference, not something the server or another device needs.
+// Which tab you were last on — the same remembered-tab treatment every panel in
+// the manage rail gets.
 const TAB_KEY = 'stem.chats.tab';
-
-function initialTab(): Tab {
-  try {
-    return localStorage.getItem(TAB_KEY) === 'chats' ? 'chats' : 'inbox';
-  } catch {
-    return 'inbox';
-  }
-}
+const TAB_IDS = TABS.map((t) => t.id);
 
 // Normalize Unix-seconds (real chats) vs ms (optimistic pending rows), then bucket
 // by updatedAt the way ChatGPT/Claude group their sidebars.
@@ -155,15 +149,7 @@ type Snoozing = { ids: string[]; x: number; y: number };
 
 export function ChatList(props: ChatListProps) {
   const { data, activeThreadId, onOpen } = props;
-  const [tab, setTabState] = useState<Tab>(initialTab);
-  const setTab = useCallback((next: Tab) => {
-    setTabState(next);
-    try {
-      localStorage.setItem(TAB_KEY, next);
-    } catch {
-      // A locked-down storage quota is not worth failing a tab switch over.
-    }
-  }, []);
+  const [tab, setTab] = useRememberedTab<Tab>(TAB_KEY, TAB_IDS, 'inbox');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<Editing | null>(null);
   const [creating, setCreating] = useState<Creating | null>(null);
@@ -197,7 +183,7 @@ export function ChatList(props: ChatListProps) {
   }, [data, now]);
 
   // ---- preview lines ----
-  // How much of the newest message each Inbox row shows (Settings → Chats). Read
+  // How much of the newest message each Inbox row shows (Settings → Chat → Chats). Read
   // once on mount and again when Settings says it changed — the same in-renderer
   // CustomEvent the Escape-to-retract preference uses, since both live in one
   // window and a round trip through the server would tell us nothing new.

@@ -9,10 +9,13 @@ import type {
   ModelSummary
 } from '../../../shared/types';
 import { SkillsTab } from './SkillsTab';
+import { useRememberedTab } from '../../hooks/useRememberedTab';
+
+const SUBS = ['mcp', 'skills'] as const;
 
 // Combined panel: MCP servers and Skills live under the same icon as two sub-tabs.
 export function McpSkillsTab({ models }: { models: ModelSummary[] }) {
-  const [sub, setSub] = useState<'mcp' | 'skills'>('mcp');
+  const [sub, setSub] = useRememberedTab('stem.tools.sub', SUBS, 'mcp');
   return (
     <div>
       <div className="seg-ctl">

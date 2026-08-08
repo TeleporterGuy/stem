@@ -8,7 +8,7 @@ import { pairingStorePath } from '../workspace/paths';
 //
 // The shape is deliberately the smallest thing that works: a short code, said
 // once, spent once. Somebody with access to the server asks for a code
-// (`stem-server pair --label "…"`, or Settings → Devices on a device that is
+// (`stem-server pair --label "…"`, or Settings → Server → Devices on a device that is
 // already paired), carries it to the new device by whatever means they like, and
 // the new device spends it on POST /pair — the transport's only unauthenticated
 // route — receiving a device id and a bearer token it keeps from then on.

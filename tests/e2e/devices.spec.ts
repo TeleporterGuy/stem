@@ -7,10 +7,10 @@
 // a pairing code you cannot ask for any more. And a pairing code must actually
 // appear on screen: it is said once, so a code that is minted but not displayed
 // is a code that is lost.
-import { test, expect } from './electron';
+import { test, expect, openSettings } from './electron';
 
 test('lists this device and refuses to let you withdraw the one you are using', async ({ mainWindow }) => {
-  await mainWindow.getByRole('button', { name: 'Settings', exact: true }).click();
+  await openSettings(mainWindow, 'Server');
 
   // The embedded server minted this machine a record at startup, so there is
   // exactly one row and it is us.
@@ -23,7 +23,7 @@ test('lists this device and refuses to let you withdraw the one you are using', 
 });
 
 test('a pairing code is shown, once, with what it is for', async ({ mainWindow }) => {
-  await mainWindow.getByRole('button', { name: 'Settings', exact: true }).click();
+  await openSettings(mainWindow, 'Server');
 
   await mainWindow.getByLabel('What to call the new device').fill('Work laptop');
   await mainWindow.getByRole('button', { name: 'Get a code' }).click();

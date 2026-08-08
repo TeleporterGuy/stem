@@ -4,7 +4,7 @@ import type { ReleaseNoteEntry } from '../shared/types';
 import { renderMdx } from './mdx/render';
 
 // "What's new" dialog. Raised once per release from App (the sections the user
-// hasn't seen), and on demand from Settings → About (the whole history). Mirrors
+// hasn't seen), and on demand from Settings → App → About (the whole history). Mirrors
 // the TaskAlertModal / McpApprovalCard markup; the notes themselves are plain
 // Markdown rendered through the same pipeline as an assistant reply, so a list
 // or a bold run in RELEASE_NOTES.md looks like it does everywhere else.

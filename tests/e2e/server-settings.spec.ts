@@ -13,7 +13,7 @@
 // real write, with no second process to arrange.
 import { readFileSync } from 'node:fs';
 import { test, expect, type LaunchedApp } from './electron';
-import { closeApp, launchApp, mainWindowOf } from './electron';
+import { closeApp, launchApp, mainWindowOf, openSettings } from './electron';
 import type { ClientInfo } from '../../src/shared/types';
 
 function storedClient(app: LaunchedApp): { deviceId?: string; serverUrl?: string } {
@@ -31,7 +31,7 @@ test('pairs with another server and says the move needs a restart', async () => 
   try {
     const win = await mainWindowOf(launched.app);
     await win.waitForLoadState('domcontentloaded');
-    await win.getByRole('button', { name: 'Settings', exact: true }).click();
+    await openSettings(win, 'Server');
 
     // A fresh install is its own server, and the pane leads with that.
     await expect(win.locator('.set-row', { hasText: 'This computer' }).first()).toBeVisible();
@@ -80,7 +80,7 @@ test('an address pinned by the environment is shown, not offered for editing', a
   try {
     const win = await mainWindowOf(launched.app);
     await win.waitForLoadState('domcontentloaded');
-    await win.getByRole('button', { name: 'Settings', exact: true }).click();
+    await openSettings(win, 'Server');
 
     await expect(win.locator('.set-row', { hasText: launched.server!.url })).toBeVisible();
     await expect(win.getByText(/fixed for this launch by/i)).toBeVisible();

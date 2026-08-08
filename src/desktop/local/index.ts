@@ -75,7 +75,7 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
   // Who this client is. Deliberately answered here and not by the server: the
   // server has no notion of "the device asking" (dispatchLocal carries no caller
   // — see ipc/guard.ts), and every fact here is about this machine anyway. It is
-  // what lets Settings → Devices point at your own row instead of offering to
+  // what lets Settings → Server → Devices point at your own row instead of offering to
   // revoke the credential you are holding.
   handleLocal('client:info', clientInfo);
 

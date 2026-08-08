@@ -6,7 +6,7 @@ import { log } from '../log';
 import type { DeviceInfo, DevicesSnapshot, PairingCodeInfo } from '../../shared/types';
 
 /**
- * The device registry, as Settings → Devices sees it: which clients can reach
+ * The device registry, as Settings → Server → Devices sees it: which clients can reach
  * this server, which pairings are still outstanding, and how to end either.
  *
  * Note what is NOT here: nothing returns a token. The registry holds hashes, so

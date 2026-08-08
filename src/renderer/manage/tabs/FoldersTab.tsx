@@ -9,6 +9,9 @@ import { useRemoteServer } from '../../hooks/useRemoteServer';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { FilesTab } from './FilesTab';
+import { useRememberedTab } from '../../hooks/useRememberedTab';
+
+const SUBS = ['files', 'folders'] as const;
 
 // ---- Sources tab: everywhere the assistant can read from ----
 // Two kinds, split into sub-tabs because they are different things wearing the
@@ -19,7 +22,7 @@ import { FilesTab } from './FilesTab';
 // so the assistant searches them instead — and each one carries settings that
 // govern how far it may go.
 export function SourcesTab({ models }: { models: ModelSummary[] }) {
-  const [sub, setSub] = useState<'files' | 'folders'>('files');
+  const [sub, setSub] = useRememberedTab('stem.sources.sub', SUBS, 'files');
   return (
     <div>
       <div className="seg-ctl">

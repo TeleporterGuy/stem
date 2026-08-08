@@ -1,11 +1,12 @@
-import { memo, useState } from 'react';
+import { memo } from 'react';
 import { Brain, Plug, FolderTree, CalendarClock, Settings, MessageSquare } from 'lucide-react';
 import { ChatList, type ChatListProps } from '../chats/ChatList';
 import { MemoryTab } from './tabs/MemoryTab';
 import { McpSkillsTab } from './tabs/McpTab';
 import { SourcesTab } from './tabs/FoldersTab';
 import { TasksTab } from './tabs/TasksTab';
-import { SettingsTab } from './tabs/SettingsTab';
+import { SettingsTab } from './tabs/settings/SettingsTab';
+import { useRememberedTab } from '../hooks/useRememberedTab';
 import type { ModelTabProps, ActiveFactsViewProps } from './tabs/shared';
 
 type Tab = 'chats' | 'memory' | 'mcp' | 'folders' | 'tasks' | 'settings';
@@ -23,6 +24,8 @@ const TABS: { id: Tab; label: string; icon: typeof Brain }[] = [
   { id: 'tasks', label: 'Scheduled tasks', icon: CalendarClock },
   { id: 'settings', label: 'Settings', icon: Settings }
 ];
+
+const TAB_IDS = TABS.map((t) => t.id);
 
 export type ManagePanelProps = ChatListProps &
   ModelTabProps &
@@ -57,7 +60,7 @@ function ManagePanelImpl({
     previewDraft,
     onTogglePreview
   };
-  const [tab, setTab] = useState<Tab>('chats');
+  const [tab, setTab] = useRememberedTab<Tab>('stem.manage.tab', TAB_IDS, 'chats');
   return (
     <div className="manage">
       <div className="insp-tabs">

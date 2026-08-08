@@ -4,7 +4,7 @@
 // feature is a startup decision, so there is nothing to assert mid-session.
 import { readFileSync, rmSync } from 'node:fs';
 import { test } from '@playwright/test';
-import { expect, launchApp, mainWindowOf, type LaunchedApp } from './electron';
+import { expect, launchApp, mainWindowOf, openSettings, type LaunchedApp } from './electron';
 
 const APP_VERSION = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }).version;
 
@@ -92,7 +92,7 @@ test('Settings → About shows the version and opens the full history', async ()
     async (launched) => {
       const win = await mainWindowOf(launched.app);
       await win.waitForLoadState('domcontentloaded');
-      await win.getByRole('button', { name: 'Settings', exact: true }).click();
+      await openSettings(win, 'App');
 
       await expect(win.getByText(`Stem ${APP_VERSION}`)).toBeVisible();
       await win.getByRole('button', { name: 'View release notes' }).click();

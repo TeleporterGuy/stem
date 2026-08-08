@@ -1149,7 +1149,7 @@ export interface ChatSummary {
   title: string;
   /**
    * A short subject written by a model from the thread's first message, when
-   * Settings → Chats has subjects on. The Inbox shows this in place of `title`.
+   * Settings → Chat → Chats has subjects on. The Inbox shows this in place of `title`.
    * At the `everywhere` setting the thread was also renamed to it, so the two
    * agree; at `inbox` they deliberately differ. Absent = never written.
    */
@@ -1692,7 +1692,7 @@ export interface QuickChatSessionStarted {
 // ---- Devices: who may reach this server ----
 
 /**
- * One registered client, as Settings → Devices shows it. No credential appears
+ * One registered client, as Settings → Server → Devices shows it. No credential appears
  * here and none exists to show — the server keeps only a hash of each device's
  * token (see server/transport/auth.ts).
  */
@@ -1710,7 +1710,7 @@ export interface PendingPairing {
   expiresAt: string;
 }
 
-/** Everything Settings → Devices renders: what is paired, and what is pending. */
+/** Everything Settings → Server → Devices renders: what is paired, and what is pending. */
 export interface DevicesSnapshot {
   devices: DeviceInfo[];
   pending: PendingPairing[];

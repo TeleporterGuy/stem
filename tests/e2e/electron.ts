@@ -28,6 +28,20 @@ export async function mainWindowOf(app: ElectronApplication): Promise<Page> {
   throw new Error('main window never appeared');
 }
 
+/**
+ * Open Settings and land on one of its sub-tabs. Settings remembers the last
+ * sub-tab in localStorage, so a test that just clicked the rail icon could get
+ * whichever pane the previous test left behind — naming the one you want is the
+ * only way to be sure of what you are asserting against.
+ */
+export async function openSettings(
+  win: Page,
+  sub: 'Chat' | 'App' | 'Server' | 'Providers'
+): Promise<void> {
+  await win.getByRole('button', { name: 'Settings', exact: true }).click();
+  await win.getByRole('button', { name: sub, exact: true }).click();
+}
+
 type Fixtures = {
   electronApp: ElectronApplication;
   mainWindow: Page;

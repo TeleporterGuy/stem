@@ -81,7 +81,7 @@ export class ExecService implements ExecBridge {
 
     const settings = (await this.deps.readSettings()).exec;
     if (!settings.enabled) {
-      return { ok: false, error: 'Command execution is disabled in Settings → Command execution.' };
+      return { ok: false, error: 'Command execution is disabled in Settings → Chat → Command execution.' };
     }
 
     // Resolve + validate the working directory (default: the isolated workspace).

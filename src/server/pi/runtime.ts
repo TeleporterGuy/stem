@@ -1301,7 +1301,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * subject keeps the first line of the user's message as its name.
    *
    * `force` is the explicit "Write a subject" row action; without it the write
-   * obeys Settings → Chats and leaves a hand-typed name alone.
+   * obeys Settings → Chat → Chats and leaves a hand-typed name alone.
    */
   async writeThreadSubject(threadId: string, firstMessage: string, force = false): Promise<string | null> {
     const subject = await writeSubject(

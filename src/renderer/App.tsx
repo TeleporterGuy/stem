@@ -254,7 +254,7 @@ export default function App() {
   const authProviderRef = useRef(authProvider);
   authProviderRef.current = authProvider;
 
-  // Escape-to-retract behavior (Settings → Input). Read from persisted settings;
+  // Escape-to-retract behavior (Settings → App → Input). Read from persisted settings;
   // re-read on window focus so a change in the Settings tab applies without a restart.
   const [escapeAction, setEscapeAction] = useState<EscapeAction>('off');
   useEffect(() => {

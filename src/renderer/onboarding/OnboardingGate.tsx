@@ -390,7 +390,7 @@ export function OnboardingGate({
                 Start using Stem
               </button>
             </div>
-            <p className="gate-hint">You can find this again under Settings → Quick Chat.</p>
+            <p className="gate-hint">You can find this again under Settings → App → Quick Chat.</p>
           </>
         )}
 
