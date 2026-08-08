@@ -1688,6 +1688,10 @@ export function SettingsTab({
  *
  * Pairing is the whole act of moving: the address and the credential are stored
  * together, because a key means nothing to a server that never issued it.
+ *
+ * The how-it-works prose lives in the ⓘ beside each label. What stays inline is
+ * what changes: where this app is pointed now, that the address is pinned by the
+ * environment, that a restart is owed.
  */
 function ServerSection() {
   const [me, setMe] = useState<ClientInfo | null>(null);
@@ -1732,14 +1736,15 @@ function ServerSection() {
 
   return (
     <>
-      <div className="grp-head">Server</div>
-      <div className="formgroup">
-        <p className="muted" style={{ marginTop: 0 }}>
+      <div className="grp-head grp-head-row">
+        Server
+        <InfoTip label="About the Stem server">
           Your chats, memory and skills live on a server. By default it is this computer — Stem
           starts one for itself and nothing leaves the machine. Point it at a server running
           somewhere else and this app becomes a window onto that one instead.
-        </p>
-
+        </InfoTip>
+      </div>
+      <div className="formgroup">
         <div className="set-row">
           <span className="set-label">
             <strong>{me.remote ? me.serverUrl : 'This computer'}</strong>
@@ -1768,7 +1773,14 @@ function ServerSection() {
                 void run(() => window.stem.pairWithServer(url.trim(), code.trim()), true);
               }}
             >
-              <span className="set-sub">Connect to another server</span>
+              <span className="set-sub">
+                Connect to another server{' '}
+                <InfoTip label="About connecting to another server">
+                  Get the code on the other server — Settings → Devices there, or{' '}
+                  <code>stem-server pair</code>. It works once. Stem connects at startup, so the
+                  move takes effect when you restart it.
+                </InfoTip>
+              </span>
               <input
                 className="ifield"
                 type="text"
@@ -1790,11 +1802,6 @@ function ServerSection() {
                   Connect
                 </button>
               </div>
-              <p className="muted">
-                Get the code on the other server — Settings → Devices there, or{' '}
-                <code>stem-server pair</code>. It works once. Stem connects at startup, so the move
-                takes effect when you restart it.
-              </p>
             </form>
 
             {me.configuredUrl && (
@@ -1887,17 +1894,17 @@ function ExportBlock({ remote }: { remote: boolean }) {
 
   return (
     <div className="set-block">
-      <span className="set-sub">Move or back up this Stem</span>
-      <p className="muted">
-        Writes everything Stem knows — chats, memory, skills, your Files, settings and connected
-        tools — into a single file. Take it to another computer or a server and import it there, or
-        keep it as a backup. Your paired devices and this computer's own settings stay here.
-      </p>
-      <p className="muted">
-        Choose a passphrase. It's what unlocks the saved tool credentials wherever the copy ends up,
-        so keep it with the copy — without it, every connected tool has to be signed in again. The
-        file itself is not encrypted, so treat it the way you'd treat a password manager's export.
-      </p>
+      <span className="set-sub">
+        Move or back up this Stem{' '}
+        <InfoTip label="About moving or backing up this Stem">
+          Writes everything Stem knows — chats, memory, skills, your Files, settings and connected
+          tools — into a single file. Take it to another computer or a server and import it there,
+          or keep it as a backup. Your paired devices and this computer's own settings stay here.
+          The passphrase is what unlocks the saved tool credentials wherever the copy ends up, so
+          keep it with the copy — without it, every connected tool has to be signed in again. The
+          file itself is not encrypted, so treat it the way you'd treat a password manager's export.
+        </InfoTip>
+      </span>
       <input
         className="ifield"
         type="password"
@@ -1966,7 +1973,8 @@ function seenLabel(iso: string | null): string {
  *
  * A device is admitted by a code that is said once and spent once — never by
  * copying a token around — so nothing here can show you an existing device's
- * credential. The server does not have one to show: it keeps hashes.
+ * credential. The server does not have one to show: it keeps hashes. That much
+ * is background, so it sits in the header ⓘ; the list itself is the page.
  */
 function DevicesSection() {
   const [snapshot, setSnapshot] = useState<DevicesSnapshot | null>(null);
@@ -2013,13 +2021,14 @@ function DevicesSection() {
 
   return (
     <>
-      <div className="grp-head">Devices</div>
-      <div className="formgroup">
-        <p className="muted" style={{ marginTop: 0 }}>
+      <div className="grp-head grp-head-row">
+        Devices
+        <InfoTip label="About devices">
           Everything signed in to this Stem. Each device holds its own key — Stem keeps only a
           fingerprint of it, so a key can be withdrawn but never read back out.
-        </p>
-
+        </InfoTip>
+      </div>
+      <div className="formgroup">
         {devices.map((d) => {
           const self = !!me?.deviceId && d.id === me.deviceId;
           return (
