@@ -234,8 +234,10 @@ async function main(): Promise<void> {
 
   // The one line a supervisor, a test, or a person needs. Printed on stdout
   // rather than logged, because it is this process's interface: scripts/server-boot.mjs
-  // and the external-server E2E harness both wait for it.
-  console.log(`[stem-server] listening on ${handle.endpoint.url}`);
+  // and the external-server E2E harness both wait for it. In the container it
+  // names a socket rather than a URL — `unix:` in front, so nothing that reads
+  // this line can mistake a path for something it could dial.
+  console.log(`[stem-server] listening on ${handle.endpoint.url ?? `unix:${handle.endpoint.socket}`}`);
 
   // Nothing can talk to a server with an empty registry, and there is no window
   // here to ask in — so a first boot says how to get in without being asked.

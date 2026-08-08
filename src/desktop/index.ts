@@ -343,6 +343,16 @@ app.whenReady().then(async () => {
       alternateProfile: !!profileOverride,
       devUrl: process.env.ELECTRON_RENDERER_URL ?? null
     });
+    // A server we started ourselves always takes a loopback port; the socket
+    // bind exists for the container, where the only client is a reverse proxy.
+    // Saying so beats a null dereference three frames later.
+    if (!server.endpoint.url) {
+      throw new Error(
+        'STEM_SERVER_SOCKET makes the server listen on a Unix socket, which only a proxy can reach — ' +
+          'the app cannot use its own embedded server that way. Unset it, or point Stem at a server ' +
+          'in Settings → Server.'
+      );
+    }
     serverUrl = server.endpoint.url;
   }
   // The server publishes where it listens, never a credential — this client

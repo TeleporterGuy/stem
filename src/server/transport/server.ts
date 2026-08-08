@@ -1,19 +1,29 @@
 import { randomBytes } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
+import { chmod, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo, Socket } from 'node:net';
+import { connect, type AddressInfo, type Socket } from 'node:net';
 import { Transform, type Readable } from 'node:stream';
 import { log } from '../log';
 import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolicy } from './auth';
 
-// Stem's transport: a node:http server bound to 127.0.0.1 ONLY. Every client
-// reaches the server through this file and nothing else.
+// Stem's transport: a node:http server bound to 127.0.0.1 — or to a Unix socket,
+// which is narrower still. Every client reaches the server through this file and
+// nothing else.
 //
 // Binding loopback is the outermost layer of the security model — nothing but a
 // process on this machine can open the socket at all, so a misconfigured tunnel
 // cannot expose it. Never bind 0.0.0.0: the address is an option (a standalone
 // stem-server takes it from the environment), and LOOPBACK_HOSTS is what keeps
 // that option from becoming a public listener.
+//
+// The deployed configuration takes that one step further and binds no TCP port
+// at all: `socketPath` puts the listener on a Unix domain socket in a volume the
+// container shares with Caddy, so inside the container there is nothing for a
+// port scan to find and no interface to misconfigure. It is a widening of the
+// bind guard, not a hole in it — a filesystem path cannot name a network
+// interface, so the set of things this server will answer on is still "this
+// machine only", by a mechanism the kernel enforces rather than a header we read.
 //
 // Six routes:
 //   POST /rpc      {channel, args}  → {ok:true, result} | {ok:false, error}
@@ -119,6 +129,71 @@ const REPLAY_MAX_BYTES = 4 * 1024 * 1024;
  */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
+/**
+ * The longest a Unix socket path may be, near enough. The kernel's `sun_path` is
+ * 108 bytes on Linux and 104 on macOS, and a path past it fails deep in bind()
+ * with an errno nobody reads as "your path is too long" — so it is checked here,
+ * where the message can say which path and how long it was.
+ */
+const MAX_SOCKET_PATH = 100;
+
+/**
+ * Why this cannot be a socket path, or null when it can.
+ *
+ * Absolute only, and that is load-bearing rather than tidy: `server.listen()`
+ * takes a string as a pipe path ONLY when it does not parse as a number, so
+ * `listen('8080')` opens a TCP port on every interface. Requiring a leading
+ * slash (or a Windows named pipe, which Node treats the same way) is what makes
+ * "this is a filesystem path" a fact instead of a hope, and keeps the one bind
+ * that skips the loopback check from being reachable with a port in its hand.
+ */
+function socketPathProblem(path: string): string | null {
+  if (!path.startsWith('/') && !path.startsWith('\\\\.\\pipe\\')) {
+    return `refusing to bind ${path}: a socket path must be absolute. A relative or numeric value ` +
+      'would be taken for a TCP port, which is exactly the bind this server does not do.';
+  }
+  if (Buffer.byteLength(path) > MAX_SOCKET_PATH) {
+    return `refusing to bind ${path}: that is ${Buffer.byteLength(path)} bytes, and the kernel's limit ` +
+      `for a socket path is about ${MAX_SOCKET_PATH}. Put it somewhere shorter — /run/stem/stem.sock.`;
+  }
+  return null;
+}
+
+/**
+ * Clear a socket file that nothing is listening on.
+ *
+ * A Unix socket is a file, and Node removes it on a clean close — but a container
+ * that is killed rather than stopped (an OOM, `docker kill`, a host reboot) leaves
+ * one behind in the shared volume, and the next boot's bind fails with EADDRINUSE
+ * for a socket with no server on the other end. So: connect to it. A refused
+ * connection means the file has outlived its process and can go; a connection that
+ * is accepted (or hangs) means something IS serving there, and taking the file
+ * away from it would be the worse outcome by far.
+ */
+async function clearStaleSocket(path: string): Promise<void> {
+  if (!existsSync(path)) return;
+  const live = await new Promise<boolean>((resolveLive) => {
+    const probe = connect(path);
+    const settle = (answer: boolean): void => {
+      probe.destroy();
+      resolveLive(answer);
+    };
+    probe.once('connect', () => settle(true));
+    probe.once('error', () => settle(false));
+    // Accepted-but-silent counts as alive: the only safe way to be wrong here is
+    // to refuse to start rather than to unlink somebody else's listener.
+    probe.setTimeout(2_000, () => settle(true));
+  });
+  if (live) {
+    throw new Error(
+      `refusing to bind ${path}: something is already listening on it. Another Stem is running — ` +
+        'stop it before starting this one.'
+    );
+  }
+  log('transport', 'removed a socket left behind by a previous run', { path });
+  await rm(path, { force: true });
+}
+
 /** Who a request turned out to be, resolved once per request from its token. */
 export interface DeviceIdentity {
   /** The registry id, so a stream can be torn down when that device is revoked. */
@@ -137,6 +212,14 @@ export interface TransportServerOptions {
   port: number;
   /** Loopback address to bind. Defaults to 127.0.0.1; see LOOPBACK_HOSTS. */
   host?: string;
+  /**
+   * Bind this Unix socket instead of a TCP port — the deployed configuration,
+   * where the only thing on the other end is Caddy in the next container.
+   * `port` and `host` are then unused and `port` reads back 0, because there
+   * genuinely is no port: a client that cannot open the file cannot reach this
+   * server at all.
+   */
+  socketPath?: string;
   /**
    * Constant-time bearer check that also answers WHO. Returns the device the
    * token belongs to, or null when nothing matches — so authentication and
@@ -216,8 +299,10 @@ export interface PushEvent {
 }
 
 export interface TransportServer {
-  /** The bound port (resolved, so a `port: 0` caller learns what it got). */
+  /** The bound port (resolved, so a `port: 0` caller learns what it got), or 0 on a socket. */
   readonly port: number;
+  /** The bound Unix socket, or null when this is a TCP listener. */
+  readonly socketPath: string | null;
   /** This run's opaque stream identity, prefixed onto every frame id. */
   readonly epoch: string;
   /** Fan an event out to every connected client, and remember it for replay. */
@@ -340,10 +425,16 @@ function controlFrame(name: string, data: unknown): string {
 }
 
 export async function startTransportServer(opts: TransportServerOptions): Promise<TransportServer> {
+  const socketPath = opts.socketPath ?? null;
   const bindHost = opts.host ?? '127.0.0.1';
   // Before anything is created, so a misconfigured deployment fails at boot with
-  // a sentence rather than by quietly answering the internet.
-  if (!LOOPBACK_HOSTS.has(bindHost)) {
+  // a sentence rather than by quietly answering the internet. A socket path is
+  // the one alternative, and it is checked with the same severity — see
+  // socketPathProblem, which is what stops "a socket path" being a way to say 8080.
+  if (socketPath) {
+    const problem = socketPathProblem(socketPath);
+    if (problem) throw new Error(problem);
+  } else if (!LOOPBACK_HOSTS.has(bindHost)) {
     throw new Error(
       `refusing to bind ${bindHost}: Stem's transport is loopback-only. Reaching it from another ` +
         'machine goes through a proxy that terminates TLS and forwards to this socket; set ' +
@@ -766,6 +857,8 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
     socket.destroy();
   });
 
+  if (socketPath) await clearStaleSocket(socketPath);
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error): void => {
       server.off('listening', onListening);
@@ -777,11 +870,28 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
     };
     server.once('error', onError);
     server.once('listening', onListening);
-    // A loopback address, never 0.0.0.0 — see LOOPBACK_HOSTS.
-    server.listen(opts.port, bindHost);
+    // A loopback address, never 0.0.0.0 — see LOOPBACK_HOSTS. Or a socket path,
+    // which is checked above precisely so this call cannot be talked into a port.
+    if (socketPath) server.listen(socketPath);
+    else server.listen(opts.port, bindHost);
   });
 
-  const boundPort = (server.address() as AddressInfo | null)?.port ?? opts.port;
+  if (socketPath) {
+    // The socket is created with whatever umask the process has, which on a
+    // default image is 0022 — world-readable, and a socket you can open is a
+    // socket you can send an unauthenticated /pair to. 0660 keeps it to the
+    // container's own user and group; the proxy shares the volume and, in the
+    // stock Caddy image, runs as root, so it is unaffected either way.
+    await chmod(socketPath, 0o660).catch((e) =>
+      log('transport', 'could not tighten the socket permissions', { error: String((e as Error)?.message ?? e) })
+    );
+  }
+
+  // 0 on a socket: `address()` answers with the path there, and there is no port
+  // to report. The origin policy reads this, and a Host of `127.0.0.1:0` is not
+  // something any client sends — so on a socket the only Host that can pass is
+  // one the deployment declared in STEM_TRUSTED_HOSTS, which is right.
+  const boundPort = socketPath ? 0 : ((server.address() as AddressInfo | null)?.port ?? opts.port);
 
   const keepalive = setInterval(() => {
     for (const client of clients) {
@@ -801,6 +911,7 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
 
   return {
     port: boundPort,
+    socketPath,
     epoch,
     clientCount: () => clients.size,
     bufferedFrames: () => ring.length,

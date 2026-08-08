@@ -42,10 +42,12 @@ interface TransportConfig {
   devUrl: string | null;
 }
 
-/** Where this server is listening. */
+/** Where this server is listening. Exactly one of these is ever set. */
 export interface TransportEndpoint {
-  /** Origin of the listener, e.g. `http://127.0.0.1:52413`. */
-  url: string;
+  /** Origin of the listener, e.g. `http://127.0.0.1:52413`; null on a socket. */
+  url: string | null;
+  /** The Unix socket it is listening on, or null when it took a TCP port. */
+  socket: string | null;
 }
 
 let primary: TransportServer | null = null;
@@ -66,6 +68,19 @@ async function authenticate(presented: string | null): Promise<DeviceIdentity | 
  */
 function primaryHost(): string {
   return process.env.STEM_SERVER_HOST?.trim() || '127.0.0.1';
+}
+
+/**
+ * The Unix socket to listen on instead of a port, or null for the ordinary
+ * loopback bind.
+ *
+ * This is the container's shape: docker-compose.yml puts a volume at /run/stem,
+ * mounts it into Caddy as well, and sets this. The result is a server with no
+ * TCP listener anywhere in its namespace — the reverse proxy is not merely the
+ * recommended way in, it is the only one there is.
+ */
+function socketPath(): string | null {
+  return process.env.STEM_SERVER_SOCKET?.trim() || null;
 }
 
 /**
@@ -106,11 +121,19 @@ function originFor(host: string, port: number): string {
  * Publish where we are listening, so a client that did NOT start this process can
  * find it. The desktop in embedded mode is handed the endpoint directly and never
  * reads this file; a standalone `stem-server` is the reason it exists.
+ *
+ * On a socket there is no address a client could dial, and the file says so —
+ * `url: null` and the socket path — rather than inventing one. It is still
+ * written, because its OTHER job does not depend on the address at all: its mere
+ * presence in the state root is how src/desktop/server-endpoint.ts knows the
+ * server shares this disk and a device record can be minted rather than paired.
+ * In the container nothing is reading it; on a machine where somebody runs
+ * `stem-server` behind a local proxy, both facts still hold.
  */
-async function writeEndpointFile(url: string): Promise<void> {
+async function writeEndpointFile(endpoint: TransportEndpoint): Promise<void> {
   const path = serverEndpointPath();
   await mkdir(dirname(path), { recursive: true }).catch(() => undefined);
-  const body = { url, pid: process.pid, startedAt: new Date().toISOString() };
+  const body = { ...endpoint, pid: process.pid, startedAt: new Date().toISOString() };
   await writeFile(path, `${JSON.stringify(body, null, 2)}\n`, 'utf8').catch((e) =>
     log('transport', 'could not publish the endpoint', { error: String((e as Error)?.message ?? e) })
   );
@@ -126,9 +149,20 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
   const requested = Number(process.env.STEM_SERVER_PORT ?? 0);
   const host = primaryHost();
   const extraHosts = trustedHosts();
+  const socket = socketPath();
+  // Loud, and before the bind, because the symptom otherwise is every request
+  // through the proxy answering 403 with the reason only in the log: on a socket
+  // the Host header carries the proxy's public name, and nothing else can pass
+  // the rebinding check (there is no port of ours for a loopback Host to name).
+  if (socket && extraHosts.length === 0) {
+    log('transport', 'listening on a socket with no STEM_TRUSTED_HOSTS — every proxied request will be refused', {
+      socket
+    });
+  }
   primary = await startTransportServer({
     port: Number.isFinite(requested) ? requested : 0,
     host,
+    socketPath: socket ?? undefined,
     authenticate,
     // dispatchLocal applies the same per-channel argument validation the
     // renderer's IPC always got, then the real handler.
@@ -151,10 +185,16 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
   // ones nothing ever came back for. Started with the listener because that is
   // what makes them possible in the first place.
   startStagingSweeper();
-  const url = originFor(host, primary.port);
-  log('transport', 'listening', { host, port: primary.port, dev: !!cfg.devUrl, extraHosts });
-  await writeEndpointFile(url);
-  return { url };
+  const endpoint: TransportEndpoint = socket
+    ? { url: null, socket }
+    : { url: originFor(host, primary.port), socket: null };
+  log('transport', 'listening', {
+    ...(socket ? { socket } : { host, port: primary.port }),
+    dev: !!cfg.devUrl,
+    extraHosts
+  });
+  await writeEndpointFile(endpoint);
+  return endpoint;
 }
 
 /**

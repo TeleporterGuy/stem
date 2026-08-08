@@ -46,7 +46,9 @@ Maintainer notes:
   can now enter the address of a Stem running elsewhere and a code from it, and this app becomes a
   window onto that one: same chats, same memory, same skills, from any machine you sit at. Stem
   connects when it starts, so the move takes effect the next time you open it, and the pane says so.
-  There's a button to come back to this computer's own server whenever you want.
+  There's a button to come back to this computer's own server whenever you want. If you want to *be*
+  that server, [Running on a server](docs/running-on-a-server.md) walks the whole move — your own
+  domain, HTTPS, and your Mac paired to it — and tells you how to go back.
 - **Signing in still works when Stem is on another computer.** Connecting an account — Claude,
   ChatGPT, an MCP tool that asks you to log in — finishes in a browser, and browsers hand the
   result back to the machine they're running on. When Stem's brain is elsewhere, that used to be

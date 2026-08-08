@@ -1,0 +1,99 @@
+# Stem on a server: two containers, one socket between them, one bind mount.
+#
+#   docker compose build
+#   docker compose up -d
+#
+# Everything variable is in `.env` beside this file — see deploy/env.example, and
+# docs/running-on-a-server.md for the whole move. Nothing in here is a secret:
+# the data key's passphrase appears only as the PATH of a file (see `secrets` at
+# the foot), which is the whole point of a Compose secret.
+
+name: stem
+
+services:
+  # The server. No ports: the only thing it binds is /run/stem/stem.sock, in a
+  # volume shared with caddy. There is nothing here for a port scan to find, and
+  # `docker compose ps` shows no published port because there is none.
+  stem:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stem-server:local
+    # A VPS is x86_64 unless it says otherwise. On an arm server (Hetzner CAX,
+    # Ampere, a Pi) put STEM_PLATFORM=linux/arm64 in .env — and note that
+    # building on the machine that will run it is always the faster path, because
+    # anything else goes through QEMU.
+    platform: ${STEM_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    environment:
+      # The name Caddy is reached under, which is the name that arrives in the
+      # Host header. Without it every proxied request is refused by the
+      # DNS-rebinding check — on a socket there is no port of ours a loopback
+      # Host could name, so this list is the whole allowlist.
+      STEM_TRUSTED_HOSTS: ${STEM_HOSTNAME:?set STEM_HOSTNAME in .env to the name you reach Stem under, e.g. stem.example.com}
+      # Node's own heap ceiling. Recall's embedding worker is a separate process;
+      # this is the main one, which holds the chat store and the SSE ring.
+      NODE_OPTIONS: ${STEM_NODE_OPTIONS:---max-old-space-size=1024}
+    volumes:
+      # THE state root: chats, memory, skills, Files, settings, credentials.
+      # A bind mount rather than a named volume so it is a directory on the host
+      # that you can back up, rsync, and look at without docker.
+      - ${STEM_STATE_ROOT:-./state}:/var/lib/stem/state
+      # ~1.4 GB of embedding weights, in a named volume rather than a layer.
+      #
+      # A layer would put them in every `docker save`, every registry push and
+      # every rebuild — for files that are byte-identical for every Stem user and
+      # that HuggingFace will hand back on demand. They are also not versioned
+      # with the app: changing the model in Settings downloads a different one at
+      # runtime whatever is baked in, so a warmed layer would be a gigabyte that
+      # goes stale. A volume survives `docker compose down`, image upgrades and
+      # container recreation, which is every case that matters.
+      #
+      # Not in the state root either (it would default there), so a backup of the
+      # bind mount above stays small — the same call export/import already made.
+      - stem-models:/var/lib/stem/models
+      # The socket lives here, and caddy mounts the same volume.
+      - stem-socket:/run/stem
+    secrets:
+      - stem_key
+
+  # The front door. TLS, rate limits, access log — see deploy/Caddyfile.
+  caddy:
+    build:
+      context: ./deploy
+      dockerfile: Dockerfile.caddy
+    image: stem-caddy:local
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      # HTTP/3. Harmless if your provider's firewall drops it.
+      - '443:443/udp'
+    environment:
+      # A bare hostname makes Caddy get and renew a certificate by itself. Port
+      # 80 must be reachable from the internet for that, which is why it is
+      # published above even though nothing is served on it.
+      STEM_SITE_ADDRESS: ${STEM_HOSTNAME:?set STEM_HOSTNAME in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - stem-socket:/run/stem
+      # Certificates and ACME account keys. Losing this volume means re-issuing
+      # every certificate, which Let's Encrypt rate-limits — keep it.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - stem
+
+secrets:
+  # The passphrase that opens this Stem's MCP credentials — the same one the
+  # archive was exported under. Compose mounts the FILE at /run/secrets/stem_key
+  # inside the container; what is written here is a path on the host and never a
+  # value, which is why this file is safe to commit and `.env` is not.
+  stem_key:
+    file: ${STEM_KEY_FILE:-./stem_key}
+
+volumes:
+  stem-models:
+  stem-socket:
+  caddy-data:
+  caddy-config:

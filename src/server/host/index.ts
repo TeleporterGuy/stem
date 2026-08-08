@@ -23,9 +23,10 @@
 // desktop side as client-owned channels.
 
 import { fork } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { DEFAULT_KEY_FILE, MIN_PASSPHRASE_LENGTH, passphraseKeyWrapper, readPassphraseFile } from './passphrase-key';
 
 /**
  * A bidirectional message channel to a forked worker script. Kept identical to
@@ -106,6 +107,59 @@ function defaultStateRoot(): string {
   return process.env.STEM_STATE_DIR || join(defaultAppDataRoot(), 'Stem');
 }
 
+/** Resolved once and kept; `undefined` means "not looked for yet". */
+let headlessWrapper: KeyWrapper | null | undefined;
+
+function keyFilePath(): string {
+  return process.env.STEM_KEY_FILE?.trim() || DEFAULT_KEY_FILE;
+}
+
+/**
+ * The key file this host wraps secrets with, or null when there isn't one.
+ *
+ * A container is handed its passphrase as a Compose secret — a file at
+ * /run/secrets/stem_key, mounted from the host, never in the image and never in
+ * an environment variable somebody can `docker inspect` back out. Read once at
+ * first use and held for the life of the process, exactly as the Keychain-backed
+ * wrapper on the desktop is: the alternative is re-deriving scrypt on a path that
+ * pi/secrets.ts calls at module init.
+ *
+ * No key file means the documented plaintext-0600 degradation, unchanged — the
+ * same thing a Linux desktop with no keyring has always done. That is a
+ * deliberate non-escalation: `stem-server` on somebody's own machine must not
+ * start refusing to run because a path that only a container has is missing.
+ */
+function headlessKeyWrapper(): KeyWrapper | null {
+  if (headlessWrapper !== undefined) return headlessWrapper;
+  const path = keyFilePath();
+  if (!existsSync(path)) return (headlessWrapper = null);
+  let passphrase: string;
+  try {
+    // readPassphraseFile, not readFileSync, and that is the whole of the
+    // compatibility: `stem-server import` unwrapped the archive's data key by
+    // this same rule (the bytes, minus one trailing newline), so a key file
+    // written with `echo` opens on both sides or neither. Reading it any other
+    // way here would leave an imported state root whose MCP sign-ins silently
+    // refuse to open.
+    passphrase = readPassphraseFile(path);
+  } catch {
+    // Present but unreadable (a directory, a permission we don't have). Say
+    // nothing more than the fallback does: plaintext, as if it were absent.
+    return (headlessWrapper = null);
+  }
+  if (!passphrase) return (headlessWrapper = null);
+  if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
+    // Not refused: this passphrase already opens an imported state root, and a
+    // rule tightened after the fact must never lock somebody out of their own
+    // data. Warned about, once, where an operator will see it.
+    console.warn(
+      `[stem] the passphrase in ${path} is shorter than ${MIN_PASSPHRASE_LENGTH} characters. It is what ` +
+        'stands between a copy of this disk and every tool you are signed in to.'
+    );
+  }
+  return (headlessWrapper = passphraseKeyWrapper(passphrase));
+}
+
 function readPackageVersion(root: string): string {
   try {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version?: unknown };
@@ -126,9 +180,10 @@ export function headlessHost(): StemHost {
     appDataRoot: defaultAppDataRoot,
     appRoot: () => appRoot,
     appVersion: () => process.env.STEM_VERSION || readPackageVersion(appRoot),
-    // No keyring to reach for: fall back to the 0600-plaintext key the Linux
-    // no-keyring path has always used. Disk encryption is the server's answer.
-    keyWrapper: () => null,
+    // No keyring to reach for — but in a container there is a key file, and it
+    // is a better answer than either: see headlessKeyWrapper. Without one, the
+    // 0600-plaintext fallback the Linux no-keyring path has always used.
+    keyWrapper: headlessKeyWrapper,
     forkWorker: (entry, opts) => forkNodeWorker(entry, opts.serviceName),
     nodeSpawn: () => ({ command: process.execPath, env: {} }),
     openExternal: () => {},
@@ -204,7 +259,8 @@ export function host(): StemHost {
   return (current ??= headlessHost());
 }
 
-/** Drop the installed host (tests). */
+/** Drop the installed host, and the key file it had read (tests). */
 export function resetHostForTests(): void {
   current = null;
+  headlessWrapper = undefined;
 }

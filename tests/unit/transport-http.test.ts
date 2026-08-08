@@ -10,7 +10,8 @@
 // it is what is checked here. transport.test.ts drives the same server from the
 // desktop proxy's side, i.e. through the real client.
 import { request as httpRequest } from 'node:http';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
@@ -875,6 +876,127 @@ describe('body cap', () => {
     }).catch(() => 413); // a destroyed request is the same refusal, seen from the client
     expect(res).toBe(413);
     expect(calls.length).toBe(before);
+  });
+});
+
+describe('what it will bind', () => {
+  /** The three options every bind here shares; only the address changes. */
+  const bare = {
+    authenticate: (presented: string | null) =>
+      presented && hashEquals(TOKEN_HASH, hashToken(presented)) ? { id: 'dev-1', role: 'device' as const } : null,
+    dispatch: dispatchLocal,
+    registeredChannels: serverChannels
+  };
+
+  /**
+   * One request over a Unix socket. node:http speaks to a socket path with the
+   * same client it speaks to a port with — which is the point: the container's
+   * transport is the same transport, reached through the filesystem instead of
+   * the loopback interface.
+   */
+  function overSocket(
+    socketPath: string,
+    path: string,
+    headers: Record<string, string>
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolveReq, rejectReq) => {
+      const req = httpRequest({ socketPath, path, method: 'GET', headers }, (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          text += chunk;
+        });
+        res.on('end', () => resolveReq({ status: res.statusCode ?? 0, body: text }));
+      });
+      req.on('error', rejectReq);
+      req.end();
+    });
+  }
+
+  it('refuses a real network interface', async () => {
+    // The invariant the whole deployment rests on, checked at the socket rather
+    // than in a comment: no configuration makes Stem itself answer the internet.
+    for (const host of ['0.0.0.0', '::', '192.168.1.10']) {
+      await expect(startTransportServer({ ...bare, port: 0, host })).rejects.toThrow(/loopback-only/);
+    }
+  });
+
+  it('serves over a Unix socket, where there is no interface to answer at all', async () => {
+    // Short, and deliberately not under a mkdtemp: macOS puts TMPDIR somewhere
+    // long enough that a nested throwaway directory can blow the kernel's ~104
+    // byte limit for a socket path — the exact failure socketPathProblem names.
+    const socketPath = join(tmpdir(), `stem-t-${process.pid}.sock`);
+    rmSync(socketPath, { force: true });
+    const listening = await startTransportServer({
+      ...bare,
+      port: 0,
+      socketPath,
+      // What Caddy will be reached under. On a socket this is the ONLY host that
+      // can pass the rebinding check: there is no port of ours for a loopback
+      // Host to name, so the deployment's declared name is the whole allowlist.
+      extraHosts: ['stem.example.com']
+    });
+    try {
+      expect(listening.socketPath).toBe(socketPath);
+      expect(listening.port).toBe(0);
+      expect(existsSync(socketPath)).toBe(true);
+      // Not world-anything: a socket a stranger on the box can open is a socket
+      // they can POST /pair to.
+      expect(statSync(socketPath).mode & 0o007).toBe(0);
+
+      const proxied = await overSocket(socketPath, '/channels', {
+        host: 'stem.example.com',
+        authorization: `Bearer ${TOKEN}`
+      });
+      expect(proxied.status).toBe(200);
+      expect(JSON.parse(proxied.body).result).toContain('chats:list');
+
+      // …and the gates are still the gates. Reaching the socket is not
+      // authentication, and a Host nobody declared is still a Host nobody declared.
+      const anonymous = await overSocket(socketPath, '/channels', { host: 'stem.example.com' });
+      expect(anonymous.status).toBe(401);
+      const elsewhere = await overSocket(socketPath, '/channels', {
+        host: 'stem.attacker.example',
+        authorization: `Bearer ${TOKEN}`
+      });
+      expect(elsewhere.status).toBe(403);
+    } finally {
+      await listening.close();
+    }
+    // Closing takes the file with it, so the next boot binds rather than finding
+    // its own corpse in the shared volume.
+    expect(existsSync(socketPath)).toBe(false);
+  });
+
+  it('clears a socket left behind by a run that was killed', async () => {
+    const socketPath = join(tmpdir(), `stem-stale-${process.pid}.sock`);
+    // What `docker kill` leaves in the volume: a socket file with nothing behind
+    // it. Binding must succeed anyway, or the container never comes back up.
+    writeFileSync(socketPath, '');
+    const listening = await startTransportServer({ ...bare, port: 0, socketPath, extraHosts: ['stem.example.com'] });
+    try {
+      const res = await overSocket(socketPath, '/channels', {
+        host: 'stem.example.com',
+        authorization: `Bearer ${TOKEN}`
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      await listening.close();
+    }
+  });
+
+  it('refuses a socket path that is really a port, or a name', async () => {
+    // `server.listen('8080')` opens a TCP port on every interface, because Node
+    // reads a numeric string as one. The absolute-path rule is what stops the
+    // socket option from being a way to say that.
+    for (const socketPath of ['8080', 'stem.sock', './stem.sock', '0.0.0.0']) {
+      await expect(startTransportServer({ ...bare, port: 0, socketPath })).rejects.toThrow(/must be absolute/);
+    }
+  });
+
+  it('refuses a socket path longer than the kernel will take', async () => {
+    const socketPath = `/tmp/${'d'.repeat(120)}.sock`;
+    await expect(startTransportServer({ ...bare, port: 0, socketPath })).rejects.toThrow(/kernel's limit/);
   });
 });
 

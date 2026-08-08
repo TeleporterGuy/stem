@@ -26,6 +26,13 @@ playwright-report/
 # External folders connected for in-place reading (separate repos)
 .external/
 
+# The deployment's own, on the machine that runs it (see docs/running-on-a-server.md).
+# stem_key holds the passphrase that opens every saved tool credential, .env holds the
+# hostname and paths, and state/ is somebody's whole Stem.
+.env
+stem_key
+/state/
+
 # Local Obsidian vault state for docs/ (per-machine editor layout)
 docs/.obsidian/
 
