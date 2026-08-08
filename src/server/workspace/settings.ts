@@ -64,20 +64,20 @@ const DEFAULTS: ServerSettings = {
   // `ask` is the default mode: the library this replaces was built by a pass that
   // wrote silently, and 23 of its 25 skills were never used once. Showing the user
   // what is about to be saved is the cheapest available check on that.
-  skills: { model: null, mode: 'ask' },
+  skills: { model: null, effort: null, mode: 'ask' },
   // Chats: Stem writes each new thread a subject and uses it as the thread's name,
   // because the alternative default — the first 80 characters of whatever you
   // typed — is what the Inbox rows are trying to get away from. `everywhere`
   // keeps one name per thread (list, search, window title all agree); a name the
   // user typed is never overwritten in any mode. Two preview lines under each
   // Inbox row, which is what makes the list readable without opening anything.
-  chats: { subjects: 'everywhere', subjectModel: null, previewLines: 2 },
+  chats: { subjects: 'everywhere', subjectModel: null, subjectEffort: null, previewLines: 2 },
   // Command execution: on by default with the tiered policy as the guard rail.
   // approvalMode 'assisted' = allowlist → LLM judge → approval card ('manual'
   // skips the judge, 'yolo' skips everything but the protected-roots guard);
   // judgeModel null = the shared background model, else the chat's own model;
   // the allowlist grows via the approval card's "Always allow" button.
-  exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] },
+  exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, judgeEffort: null, allowlist: [] },
   // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
   // default to the bundled local model (multilingual, in-process, nothing leaves
   // the machine); weights download once on first need, and until they're ready
@@ -250,6 +250,7 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
   const rawSkills = (parsed?.skills ?? {}) as Partial<SkillsSettings>;
   const skills: SkillsSettings = {
     model: typeof rawSkills.model === 'string' && rawSkills.model.trim() ? rawSkills.model : null,
+    effort: coerceEffort(rawSkills.effort),
     // Anything unrecognized falls back to the default rather than to `off`: a
     // settings file written by an older build has no `mode` at all, and silently
     // turning the feature off for those users is the wrong failure direction.
@@ -264,6 +265,7 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
       : DEFAULTS.chats.subjects,
     subjectModel:
       typeof rawChats.subjectModel === 'string' && rawChats.subjectModel.trim() ? rawChats.subjectModel : null,
+    subjectEffort: coerceEffort(rawChats.subjectEffort),
     previewLines:
       rawChats.previewLines === 0 || rawChats.previewLines === 1 || rawChats.previewLines === 2
         ? rawChats.previewLines
@@ -275,6 +277,7 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
     approvalMode:
       rawExec.approvalMode === 'manual' || rawExec.approvalMode === 'yolo' ? rawExec.approvalMode : 'assisted',
     judgeModel: typeof rawExec.judgeModel === 'string' && rawExec.judgeModel.trim() ? rawExec.judgeModel : null,
+    judgeEffort: coerceEffort(rawExec.judgeEffort),
     // Dedupe + trim, drop empties, and cap size so a runaway writer can't bloat
     // settings.json (the allowlist is matched per command, so order is cosmetic).
     allowlist: [
@@ -536,19 +539,37 @@ export interface RoleRun {
 }
 
 /**
- * What a background role actually runs on: its own pin, else the shared
- * background model, else null — which sends it through complete()'s own fallback
- * to `defaults.model`, the model you chat with. Effort is shared outright: a
- * pinned model doesn't imply a different appetite for thinking.
+ * What one background role pins for itself. Both halves nullable and read the
+ * same way as {@link RoleRun}: null = don't specify here, fall through to the
+ * shared Background work setting.
  */
-export function backgroundRunFor(settings: ServerSettings, pinned: string | null): RoleRun {
-  return { model: pinned ?? settings.defaults.backgroundModel, effort: settings.defaults.backgroundEffort };
+export interface RolePin {
+  model: string | null;
+  effort: string | null;
+}
+
+/**
+ * What a background role actually runs on: its own pin, else the shared
+ * background setting, else null — which sends the model through complete()'s own
+ * fallback to `defaults.model`, the model you chat with, and leaves the effort on
+ * whatever that model does by default.
+ *
+ * Effort falls through separately from the model, so pinning one does not pin the
+ * other: the safety check can be moved to a bigger model and still be told to
+ * answer fast, and a role left alone keeps following Background work when that
+ * changes.
+ */
+export function backgroundRunFor(settings: ServerSettings, pin: RolePin): RoleRun {
+  return {
+    model: pin.model ?? settings.defaults.backgroundModel,
+    effort: pin.effort ?? settings.defaults.backgroundEffort
+  };
 }
 
 /** {@link backgroundRunFor} for the many call sites that have to read settings anyway. */
-export async function backgroundRunOf(pinned: (settings: ServerSettings) => string | null): Promise<RoleRun> {
+export async function backgroundRunOf(pin: (settings: ServerSettings) => RolePin): Promise<RoleRun> {
   const settings = await readSettings();
-  return backgroundRunFor(settings, pinned(settings));
+  return backgroundRunFor(settings, pin(settings));
 }
 
 /**

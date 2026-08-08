@@ -1364,6 +1364,8 @@ export interface ChatsSettings {
   subjects: ChatSubjectMode;
   /** `provider/model` id for the subject writer; null = the backend default. */
   subjectModel: string | null;
+  /** Reasoning effort for the subject writer; null = {@link DefaultsSettings.backgroundEffort}. */
+  subjectEffort: string | null;
   /** Lines of the latest message under each Inbox row: 0 (none), 1 or 2. */
   previewLines: 0 | 1 | 2;
 }
@@ -1372,6 +1374,8 @@ export interface ChatsSettings {
 export interface SkillsSettings {
   /** `provider/model` id; null = the backend default. */
   model: string | null;
+  /** Reasoning effort for curation; null = {@link DefaultsSettings.backgroundEffort}. */
+  effort: string | null;
   mode: SkillsMode;
 }
 
@@ -1396,6 +1400,8 @@ export interface ExecSettings {
   approvalMode: ExecApprovalMode;
   /** `provider/model` id for the safety judge; null = {@link DefaultsSettings.backgroundModel}. */
   judgeModel: string | null;
+  /** Reasoning effort for the safety judge; null = {@link DefaultsSettings.backgroundEffort}. */
+  judgeEffort: string | null;
   /** User-approved command prefixes (e.g. "git push", "npm") that auto-run as tier 1. */
   allowlist: string[];
 }

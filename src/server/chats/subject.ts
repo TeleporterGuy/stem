@@ -72,7 +72,10 @@ export function sanitizeSubject(raw: string): string {
 
 /** What the writer needs from the backend, injected so it stays testable. */
 export interface SubjectDeps {
-  complete(prompt: string, opts: { model?: string | null; timeoutMs?: number }): Promise<string>;
+  complete(
+    prompt: string,
+    opts: { model?: string | null; effort?: string | null; timeoutMs?: number }
+  ): Promise<string>;
   /** The thread's current name, or null if it can't be read. */
   currentTitle(threadId: string): Promise<string | null>;
   rename(threadId: string, name: string): Promise<void>;
@@ -115,7 +118,7 @@ export async function writeSubject(
     if (!force && !stillAutoNamed(await deps.currentTitle(threadId), firstMessage)) return null;
 
     const reply = await deps.complete(subjectPrompt(firstMessage), {
-      ...(await backgroundRunOf(() => chats.subjectModel)),
+      ...(await backgroundRunOf(() => ({ model: chats.subjectModel, effort: chats.subjectEffort }))),
       timeoutMs: SUBJECT_TIMEOUT_MS
     });
     const subject = sanitizeSubject(reply);

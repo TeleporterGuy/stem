@@ -30,7 +30,7 @@ function model(id: string, provider: string, isDefault = false): ModelSummary {
 
 function baseSettings(): AppSettings {
   return {
-    exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] },
+    exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, judgeEffort: null, allowlist: [] },
     // The judge reads these too: unpinned, it runs on the shared background model
     // if there is one, else the model of the chat that asked.
     defaults: { model: null, backgroundModel: null, backgroundEffort: 'low' }
@@ -64,9 +64,11 @@ describe('ExecService judge', () => {
   let approvals: ExecApprovalRequest[];
   let completeOpts: Array<{ model?: string | null; effort?: string | null; timeoutMs?: number; priority?: boolean }>;
   let completeImpl: (prompt: string) => Promise<string>;
+  let settings: AppSettings;
   let service: ExecService;
 
   beforeEach(() => {
+    settings = baseSettings();
     cwd = realpathSync(mkdtempSync(join(tmpdir(), 'stem-exec-svc-')));
     approvals = [];
     completeOpts = [];
@@ -88,8 +90,8 @@ describe('ExecService judge', () => {
 
     service = new ExecService({
       runtime: () => runtime,
-      readSettings: async () => baseSettings(),
-      updateExecSettings: async () => baseSettings(),
+      readSettings: async () => settings,
+      updateExecSettings: async () => settings,
       emitApprovalRequest: (request) => {
         approvals.push(request);
         // Answer asynchronously so handleExecRequest can await the card.
@@ -125,6 +127,22 @@ describe('ExecService judge', () => {
     // difference between thinking and answering is felt as latency.
     expect(completeOpts[0]?.effort).toBe('low');
     expect(approvals[0]?.judgeVerdict).toBe('unsure');
+  });
+
+  it('prefers the safety check’s own effort over the shared background one', async () => {
+    // The reason this role has a level of its own: it is the one background job
+    // whose cost is paid in latency, in front of the user, on every command —
+    // so it must be able to answer faster than the rest of the group.
+    settings.exec.judgeEffort = 'off';
+    completeImpl = async () => 'unsure maybe';
+    await service.handleExecRequest({
+      command: PS,
+      cwd,
+      threadId: 't1',
+      isScheduled: false,
+      currentModel: 'anthropic/claude-opus-4'
+    });
+    expect(completeOpts[0]?.effort).toBe('off');
   });
 
   it('escalates with judgeVerdict failed, saying why in the card\'s voice', async () => {

@@ -94,3 +94,53 @@ test('effort is a setting on the two roles that chose a model, and it persists',
     .toBe('high');
   expect((await readDefaults(mainWindow)).backgroundEffort).toBe('low');
 });
+
+test('each background job can be told how hard to think, without leaving the group', async ({
+  mainWindow
+}) => {
+  // The three jobs under Background work share a model picker and now share an
+  // effort the same way: unset means "follow Background work", so turning the
+  // group down still turns all three down. What this guards is the half-wired
+  // version — a select that saves into settings.json and is then read by nobody,
+  // or one that quietly writes over the group's own level on its way past.
+  await openSettings(mainWindow, 'Models');
+
+  const roleEfforts = async (): Promise<Record<string, string | null>> =>
+    mainWindow.evaluate(() =>
+      (
+        window as unknown as {
+          stem: {
+            getSettings(): Promise<{
+              chats: { subjectEffort: string | null };
+              exec: { judgeEffort: string | null };
+              skills: { effort: string | null };
+            }>;
+          };
+        }
+      ).stem.getSettings().then((s) => ({
+        subject: s.chats.subjectEffort,
+        judge: s.exec.judgeEffort,
+        curator: s.skills.effort
+      }))
+    );
+
+  for (const label of ['Subject effort', 'Safety-check effort', 'Skills curator effort']) {
+    const select = mainWindow.getByLabel(label, { exact: true });
+    await expect(select).toHaveValue('');
+    // The empty option has to name the rung above it. "Model default" would be a
+    // lie here: these three follow Background work, not pi.
+    await expect(select.locator('option', { hasText: 'Background work' })).toHaveCount(1);
+  }
+  expect(await roleEfforts()).toEqual({ subject: null, judge: null, curator: null });
+
+  await mainWindow.getByLabel('Safety-check effort', { exact: true }).selectOption('low');
+  await expect.poll(async () => (await roleEfforts()).judge).toBe('low');
+  // One role's level is one role's: the other two stay on the group, and the
+  // group's own level is untouched.
+  expect(await roleEfforts()).toMatchObject({ subject: null, curator: null });
+  expect((await readDefaults(mainWindow)).backgroundEffort).toBeNull();
+
+  await mainWindow.getByLabel('Skills curator effort', { exact: true }).selectOption('high');
+  await expect.poll(async () => (await roleEfforts()).curator).toBe('high');
+  expect(await roleEfforts()).toMatchObject({ judge: 'low' });
+});

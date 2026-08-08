@@ -83,10 +83,18 @@ type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
  * on a mini variant while a newer, cheaper, better small model sat next to it in
  * the list.
  *
- * Effort appears only where a model was chosen explicitly — an unpinned role
- * does not know which model it will run on, so it cannot know which levels are
- * legal. Left on "Model default" it stays where it always was: whatever pi picks
- * for that model.
+ * Effort sits under the model it will be spent on, and follows the same two
+ * rungs: a role's own level, else the group's. The levels offered are the ones
+ * the model it resolves to actually has, so the list changes when the picker
+ * above it does — and a level the new model can't do is cleared rather than left
+ * showing as a choice that isn't. Left empty a role stays exactly where it was:
+ * following Background work, which itself defaults to whatever pi picks.
+ *
+ * The three jobs in the Background group each get their own, because "cheap" is
+ * not one decision for all of them: the safety check is a latency budget (it
+ * stands between you and every command), chat subjects are three words off a
+ * sentence, and curation is editorial judgement that can want more thinking than
+ * either — on the same model.
  *
  * A role that is switched off elsewhere still shows its model, with a line
  * saying it is idle. An overview that hid them would answer "what is running on
@@ -97,12 +105,15 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
   const [backgroundEffort, setBackgroundEffort] = useState<string | null>(null);
   const [quickChatModel, setQuickChatModel] = useState<string | null>(null);
   const [subjectModel, setSubjectModel] = useState<string | null>(null);
+  const [subjectEffort, setSubjectEffort] = useState<string | null>(null);
   const [subjectsOff, setSubjectsOff] = useState(false);
   const [judgeModel, setJudgeModel] = useState<string | null>(null);
+  const [judgeEffort, setJudgeEffort] = useState<string | null>(null);
   const [judgeIdle, setJudgeIdle] = useState<string | null>(null);
   const [memoryModel, setMemoryModel] = useState<string | null>(null);
   const [memoryEffort, setMemoryEffort] = useState<string | null>(null);
   const [curatorModel, setCuratorModel] = useState<string | null>(null);
+  const [curatorEffort, setCuratorEffort] = useState<string | null>(null);
   const [folderOverrides, setFolderOverrides] = useState(0);
 
   useEffect(() => {
@@ -111,12 +122,15 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
       setBackgroundEffort(s.defaults.backgroundEffort);
       setQuickChatModel(s.quickChat.defaultModel);
       setSubjectModel(s.chats.subjectModel);
+      setSubjectEffort(s.chats.subjectEffort);
       setSubjectsOff(s.chats.subjects === 'off');
       setJudgeModel(s.exec.judgeModel);
+      setJudgeEffort(s.exec.judgeEffort);
       setJudgeIdle(judgeIdleReason(s.exec));
       setMemoryModel(s.memory.model);
       setMemoryEffort(s.memory.effort);
       setCuratorModel(s.skills.model);
+      setCuratorEffort(s.skills.effort);
     });
     void window.stem
       .listConnectedFolders()
@@ -176,8 +190,9 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
               are allowed to think before answering. Nearly all of them are extraction rather than
               reasoning, and <strong>Low is a good place to start</strong> — the safety check in
               particular sits between you and every command you run, where waiting costs more than
-              depth buys. Left on <em>Model default</em>, nothing has changed: that is where every
-              background job ran before this setting existed.
+              depth buys. Each job below can override it with a level of its own; left alone they
+              all follow this one. Left on <em>Model default</em>, nothing has changed: that is
+              where every background job ran before this setting existed.
             </InfoTip>
           </span>
           <ModelPicker
@@ -296,14 +311,29 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             value={subjectModel}
             onChange={(id) => {
               setSubjectModel(id);
-              window.stem.updateChatsSettings({ subjectModel: id }).then((s) => {
+              const effort = clampEffort(models, id ?? backgroundResolved, subjectEffort);
+              setSubjectEffort(effort);
+              window.stem.updateChatsSettings({ subjectModel: id, subjectEffort: effort }).then((s) => {
                 setSubjectModel(s.chats.subjectModel);
+                setSubjectEffort(s.chats.subjectEffort);
                 window.dispatchEvent(new CustomEvent('stem:chat-settings'));
               });
             }}
             emptyLabel="Background work"
             ariaLabel="Subject model"
             resolvedDefault={subjectsOff ? null : backgroundResolved}
+          />
+          <EffortSelect
+            label="Subject effort"
+            value={subjectEffort}
+            efforts={effortsOf(models, subjectModel ?? backgroundResolved)}
+            emptyLabel="Background work"
+            onChange={(effort) => {
+              setSubjectEffort(effort);
+              window.stem
+                .updateChatsSettings({ subjectEffort: effort })
+                .then((s) => setSubjectEffort(s.chats.subjectEffort));
+            }}
           />
           {subjectsOff && <em className="mp-resolved">not running — subjects are off under Chat</em>}
         </div>
@@ -323,14 +353,27 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             value={judgeModel}
             onChange={(id) => {
               setJudgeModel(id);
-              window.stem.updateExecSettings({ judgeModel: id }).then((s) => {
+              const effort = clampEffort(models, id ?? backgroundResolved, judgeEffort);
+              setJudgeEffort(effort);
+              window.stem.updateExecSettings({ judgeModel: id, judgeEffort: effort }).then((s) => {
                 setJudgeModel(s.exec.judgeModel);
+                setJudgeEffort(s.exec.judgeEffort);
                 setJudgeIdle(judgeIdleReason(s.exec));
               });
             }}
             emptyLabel="Background work"
             ariaLabel="Safety-check model"
             resolvedDefault={judgeIdle ? null : backgroundResolved}
+          />
+          <EffortSelect
+            label="Safety-check effort"
+            value={judgeEffort}
+            efforts={effortsOf(models, judgeModel ?? backgroundResolved)}
+            emptyLabel="Background work"
+            onChange={(effort) => {
+              setJudgeEffort(effort);
+              window.stem.updateExecSettings({ judgeEffort: effort }).then((s) => setJudgeEffort(s.exec.judgeEffort));
+            }}
           />
           {judgeIdle && <em className="mp-resolved">{judgeIdle}</em>}
         </div>
@@ -351,11 +394,26 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             value={curatorModel}
             onChange={(id) => {
               setCuratorModel(id);
-              window.stem.updateSkillsSettings({ model: id }).then((s) => setCuratorModel(s.skills.model));
+              const effort = clampEffort(models, id ?? backgroundResolved, curatorEffort);
+              setCuratorEffort(effort);
+              window.stem.updateSkillsSettings({ model: id, effort }).then((s) => {
+                setCuratorModel(s.skills.model);
+                setCuratorEffort(s.skills.effort);
+              });
             }}
             emptyLabel="Background work"
             ariaLabel="Skills curator model"
             resolvedDefault={backgroundResolved}
+          />
+          <EffortSelect
+            label="Skills curator effort"
+            value={curatorEffort}
+            efforts={effortsOf(models, curatorModel ?? backgroundResolved)}
+            emptyLabel="Background work"
+            onChange={(effort) => {
+              setCuratorEffort(effort);
+              window.stem.updateSkillsSettings({ effort }).then((s) => setCuratorEffort(s.skills.effort));
+            }}
           />
         </div>
       </div>

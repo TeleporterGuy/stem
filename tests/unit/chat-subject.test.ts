@@ -8,7 +8,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { autoTitle, MAX_SUBJECT, sanitizeSubject, subjectPrompt, writeSubject } from '../../src/server/chats/subject';
 import { getSubjects, removeChat, setSubject } from '../../src/server/workspace/chats';
-import { updateChatsSettings } from '../../src/server/workspace/settings';
+import { updateChatsSettings, updateDefaults } from '../../src/server/workspace/settings';
 import { chatStorePath, settingsStorePath } from '../../src/server/workspace/paths';
 
 const chatPath = chatStorePath();
@@ -30,7 +30,12 @@ afterEach(() => {
  */
 function stub(opts: { reply?: string; title?: string | null } = {}) {
   const state = { title: opts.title === undefined ? '' : opts.title };
-  const complete = vi.fn(async () => opts.reply ?? 'Quarterly revenue breakdown');
+  // Typed the way SubjectDeps declares it, so a test can assert on the run
+  // options (model, effort) the writer resolved for this call.
+  const complete = vi.fn(
+    async (_prompt: string, _opts: { model?: string | null; effort?: string | null; timeoutMs?: number }) =>
+      opts.reply ?? 'Quarterly revenue breakdown'
+  );
   const rename = vi.fn(async (_id: string, name: string) => {
     state.title = name;
   });
@@ -116,6 +121,21 @@ describe('writeSubject', () => {
     expect(subject).toBe('Quarterly revenue breakdown');
     expect(s.rename).toHaveBeenCalledWith('a', 'Quarterly revenue breakdown');
     expect((await getSubjects()).a).toBe('Quarterly revenue breakdown');
+  });
+
+  it('runs on the subject role’s own model and effort, else the Background work ones', async () => {
+    // The seam that swallowed this before: SubjectDeps.complete took `{ model,
+    // timeoutMs }` and the effort rode in on a spread, so it type-checked either
+    // way and a destructure at the other end would have dropped it silently.
+    await updateDefaults({ backgroundModel: 'x/bg', backgroundEffort: 'low' });
+    const shared = stub({ title: '' });
+    await writeSubject(shared.deps, 'a', 'pull the Q3 numbers');
+    expect(shared.complete.mock.calls[0][1]).toMatchObject({ model: 'x/bg', effort: 'low' });
+
+    await updateChatsSettings({ subjectModel: 'x/tiny', subjectEffort: 'off' });
+    const pinned = stub({ title: '' });
+    await writeSubject(pinned.deps, 'b', 'pull the Q3 numbers');
+    expect(pinned.complete.mock.calls[0][1]).toMatchObject({ model: 'x/tiny', effort: 'off' });
   });
 
   it('at `inbox` it stores the subject but leaves the thread’s name alone', async () => {

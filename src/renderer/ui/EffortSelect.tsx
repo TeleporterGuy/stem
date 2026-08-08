@@ -25,8 +25,14 @@ export function clampEffort(
  * How hard a background role may think, next to the model it will think with.
  *
  * A select rather than the segmented control the composer uses: this one carries
- * an extra option the composer has no need for — "Model default", meaning don't
+ * an extra option the composer has no need for — the empty one, meaning don't
  * specify at all — and six segments would not survive the 320px rail.
+ *
+ * `emptyLabel` names what that empty option actually falls through to, which
+ * differs by role and is the whole point of the row: Background work has nothing
+ * above it, so unset means "Model default", while the roles that follow it are
+ * saying "Background work" instead. Naming both "Model default" would claim the
+ * jobs under it ignore the level set one block up, which is the opposite of true.
  *
  * Hidden entirely for a model that doesn't reason, since there is nothing to
  * choose. A level saved against some earlier model still shows even when the
@@ -36,11 +42,13 @@ export function EffortSelect({
   label,
   value,
   efforts,
+  emptyLabel = 'Model default',
   onChange
 }: {
   label: string;
   value: string | null;
   efforts: string[];
+  emptyLabel?: string;
   onChange: (effort: string | null) => void;
 }) {
   if (efforts.length === 0 && !value) return null;
@@ -54,7 +62,7 @@ export function EffortSelect({
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value || null)}
       >
-        <option value="">Model default</option>
+        <option value="">{emptyLabel}</option>
         {efforts.map((e) => (
           <option key={e} value={e}>
             {EFFORT_LABELS[e] ?? e}

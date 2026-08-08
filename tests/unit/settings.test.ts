@@ -17,7 +17,8 @@ import {
   updateLocalProvider,
   updateMemorySettings,
   updateQuickChat,
-  updateRetrievalSettings
+  updateRetrievalSettings,
+  updateSkillsSettings
 } from '../../src/server/workspace/settings';
 import { settingsStorePath } from '../../src/server/workspace/paths';
 
@@ -92,8 +93,11 @@ describe('onboarding + default-model settings', () => {
       backgroundEffort: 'low'
     });
     const withBackground = await readSettings();
-    expect(backgroundRunFor(withBackground, 'x/pinned')).toEqual({ model: 'x/pinned', effort: 'low' });
-    expect(backgroundRunFor(withBackground, null)).toEqual({
+    expect(backgroundRunFor(withBackground, { model: 'x/pinned', effort: null })).toEqual({
+      model: 'x/pinned',
+      effort: 'low'
+    });
+    expect(backgroundRunFor(withBackground, { model: null, effort: null })).toEqual({
       model: 'anthropic/claude-haiku-4',
       effort: 'low'
     });
@@ -101,7 +105,7 @@ describe('onboarding + default-model settings', () => {
     // resolving it here would freeze the chat model into every background call
     // instead of letting it follow.
     await updateDefaults({ backgroundModel: null });
-    expect(backgroundRunFor(await readSettings(), null).model).toBeNull();
+    expect(backgroundRunFor(await readSettings(), { model: null, effort: null }).model).toBeNull();
   });
 
   it('memoryRunFor skips the background model entirely', async () => {
@@ -118,6 +122,61 @@ describe('onboarding + default-model settings', () => {
     const s = await readSettings();
     expect(memoryRunFor(s, null)).toEqual({ model: null, effort: 'high' });
     expect(memoryRunFor(s, 'x/folder-override')).toEqual({ model: 'x/folder-override', effort: 'high' });
+  });
+
+  it('lets a background role pin its own effort, and follows Background work when it has not', async () => {
+    // The three jobs in the Background group each carry their own level, and the
+    // two halves fall through INDEPENDENTLY: pinning a model must not silently
+    // pin the effort with it (the safety check moved to a bigger model still
+    // wants to answer fast), and pinning an effort must not freeze the model.
+    // The regression this guards is the cheap version of the feature, where a
+    // role's effort was read from `defaults.backgroundEffort` outright and the
+    // per-role select saved a value nothing ever looked at.
+    await updateDefaults({ backgroundModel: 'anthropic/claude-haiku-4', backgroundEffort: 'low' });
+    const s = await readSettings();
+    expect(backgroundRunFor(s, { model: null, effort: null })).toEqual({
+      model: 'anthropic/claude-haiku-4',
+      effort: 'low'
+    });
+    expect(backgroundRunFor(s, { model: null, effort: 'high' })).toEqual({
+      model: 'anthropic/claude-haiku-4',
+      effort: 'high'
+    });
+    expect(backgroundRunFor(s, { model: 'x/curator', effort: null })).toEqual({
+      model: 'x/curator',
+      effort: 'low'
+    });
+    expect(backgroundRunFor(s, { model: 'x/curator', effort: 'off' })).toEqual({
+      model: 'x/curator',
+      effort: 'off'
+    });
+  });
+
+  it('persists and coerces the per-role effort pins', async () => {
+    // Each role's level lives beside its model in that role's own settings block,
+    // and goes through the same gate as every other effort: a level pi would
+    // refuse is stored as null, so the job runs at the model's own depth rather
+    // than reading as a choice that took effect.
+    await updateChatsSettings({ subjectEffort: 'off' });
+    await updateExecSettings({ judgeEffort: 'low' });
+    await updateSkillsSettings({ effort: 'high' });
+    const saved = await readSettings();
+    expect(saved.chats.subjectEffort).toBe('off');
+    expect(saved.exec.judgeEffort).toBe('low');
+    expect(saved.skills.effort).toBe('high');
+
+    writeFileSync(
+      path,
+      JSON.stringify({
+        chats: { subjectEffort: 'ludicrous' },
+        exec: { judgeEffort: 42 },
+        skills: { effort: '' }
+      })
+    );
+    const junk = await readSettings();
+    expect(junk.chats.subjectEffort).toBeNull();
+    expect(junk.exec.judgeEffort).toBeNull();
+    expect(junk.skills.effort).toBeNull();
   });
 
   it('rejects an effort level that is not one of the known ones', async () => {
@@ -405,7 +464,13 @@ describe('reranker settings migration + coercion', () => {
 describe('exec settings', () => {
   it('defaults to enabled + assisted with an auto judge and an empty allowlist', async () => {
     const exec = (await readSettings()).exec;
-    expect(exec).toEqual({ enabled: true, approvalMode: 'assisted', judgeModel: null, allowlist: [] });
+    expect(exec).toEqual({
+      enabled: true,
+      approvalMode: 'assisted',
+      judgeModel: null,
+      judgeEffort: null,
+      allowlist: []
+    });
   });
 
   it('round-trips a patch through updateExecSettings', async () => {
@@ -442,6 +507,7 @@ describe('chats settings', () => {
     expect((await readSettings()).chats).toEqual({
       subjects: 'everywhere',
       subjectModel: null,
+      subjectEffort: null,
       previewLines: 2
     });
   });
@@ -467,10 +533,14 @@ describe('chats settings', () => {
   it('coerces junk back to the defaults rather than to off', async () => {
     // A settings.json written by an older build has no `chats` at all; silently
     // switching the feature off for those users is the wrong failure direction.
-    writeFileSync(path, JSON.stringify({ chats: { subjects: 'sometimes', subjectModel: '  ', previewLines: 9 } }));
+    writeFileSync(
+      path,
+      JSON.stringify({ chats: { subjects: 'sometimes', subjectModel: '  ', subjectEffort: 'ludicrous', previewLines: 9 } })
+    );
     expect((await readSettings()).chats).toEqual({
       subjects: 'everywhere',
       subjectModel: null,
+      subjectEffort: null,
       previewLines: 2
     });
   });

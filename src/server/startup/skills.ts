@@ -124,7 +124,7 @@ export async function learnFromLastTurn(threadId: string, focus?: string): Promi
 
   const settings = await readSettings();
   const llm: LlmClient = {
-    complete: async (prompt) => runtime.complete!(prompt, backgroundRunFor(settings, settings.skills.model))
+    complete: async (prompt) => runtime.complete!(prompt, backgroundRunFor(settings, { model: settings.skills.model, effort: settings.skills.effort }))
   };
   const existing = firstExistingSkill(turn.skillsUsed);
   const author = await authorSkill(llm, {
@@ -191,7 +191,7 @@ async function runEndOfTurnPass(turn: SettledTurnTrace, bridge: SkillBridge, run
     const settings = await readSettings();
     if (settings.skills.mode === 'off') return;
     const llm: LlmClient = {
-      complete: async (prompt) => runtime.complete!(prompt, backgroundRunFor(settings, settings.skills.model))
+      complete: async (prompt) => runtime.complete!(prompt, backgroundRunFor(settings, { model: settings.skills.model, effort: settings.skills.effort }))
     };
     const outcome = await settleSkills(turn, settings.skills.mode, llm);
     if (!outcome.decision.fire) {
