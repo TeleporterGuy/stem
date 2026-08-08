@@ -1555,6 +1555,17 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .mp-trigger-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mp-trigger-provider { color: var(--muted); }
 .mp-trigger-chevron { flex: none; color: var(--muted); }
+/* What "Default"/"Auto" resolves to right now. A footnote to the field above it,
+   so it reads as an answer rather than another setting — the negative top margin
+   cancels the .set-block row gap, which would otherwise leave the note floating
+   between two settings and looking like a label for the next one. */
+.mp-resolved {
+  display: block;
+  margin: calc(2px - var(--sp-3)) 0 0 2px;
+  font-size: var(--fs-10);
+  font-style: normal;
+  color: var(--muted);
+}
 .mp-pop {
   position: fixed;
   z-index: var(--z-popover);

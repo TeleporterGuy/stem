@@ -9,6 +9,7 @@ import type {
   QuickChatSettings,
   QuickChatShortcutStatus
 } from '../../../../shared/types';
+import { appDefaultModel } from '../../../../shared/modelRoles';
 import { ReleaseNotesModal } from '../../../ReleaseNotesModal';
 import { InfoTip } from '../../../ui/InfoTip';
 import { ModelPicker } from '../../../ui/ModelPicker';
@@ -251,6 +252,7 @@ function QuickChatSection({ models }: { models: ModelSummary[] }) {
             onChange={selectQcModel}
             emptyLabel="Same as main"
             ariaLabel="Quick Chat default model"
+            resolvedDefault={appDefaultModel(models)}
           />
           <label className="set-check" title="Search the live web for current info, with citations">
             <input

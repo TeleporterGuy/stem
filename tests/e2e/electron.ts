@@ -36,7 +36,7 @@ export async function mainWindowOf(app: ElectronApplication): Promise<Page> {
  */
 export async function openSettings(
   win: Page,
-  sub: 'Chat' | 'App' | 'Server' | 'Providers'
+  sub: 'Chat' | 'App' | 'Server' | 'Models'
 ): Promise<void> {
   await win.getByRole('button', { name: 'Settings', exact: true }).click();
   await win.getByRole('button', { name: sub, exact: true }).click();

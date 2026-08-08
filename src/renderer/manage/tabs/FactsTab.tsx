@@ -22,6 +22,7 @@ import type {
   AutoResolvedConflict,
   MemoryRebuildStatus
 } from '../../../shared/types';
+import { appDefaultModel } from '../../../shared/modelRoles';
 import { MdxView } from '../../chat/MdxView';
 import { useOffline } from '../../hooks/useServerReachable';
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
@@ -782,6 +783,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
           onChange={selectMemoryModel}
           emptyLabel="Default (recommended)"
           ariaLabel="Memory model"
+          resolvedDefault={appDefaultModel(models)}
         />
         <div className="set-block fg-divider">
           <span className="set-sub">Tidy up automatically</span>

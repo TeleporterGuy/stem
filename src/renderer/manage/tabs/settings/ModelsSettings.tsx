@@ -10,9 +10,12 @@ import type {
   LocalProviderTestResult
 } from '../../../../shared/types';
 import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerName } from '../../../../shared/providers';
+import { appDefaultModel, resolveJudgeModel } from '../../../../shared/modelRoles';
 import { localProbeTarget, probeStillDescribes } from '../../../localProbe';
 import { RequestGate } from '../../../requestGate';
 import { InfoTip } from '../../../ui/InfoTip';
+import { ModelPicker } from '../../../ui/ModelPicker';
+import type { ModelTabProps } from '../shared';
 import {
   backendOptionLabel,
   backendSections,
@@ -25,14 +28,17 @@ import {
 } from '../../searchBackends';
 
 /**
- * Settings → Providers: everywhere Stem gets an answer from.
+ * Settings → Models: which model does which job, who Stem is signed in to, and
+ * who answers a search.
  *
- * Two lists that look unrelated and aren't. The AI providers are who Stem talks
- * to; the search backend is who it asks when the answer isn't in the model. They
- * share this tab because they share credentials — a ChatGPT sign-in made above
- * is also a search backend below, and the picker says so.
+ * Three lists that look unrelated and aren't. Model roles is the top of the
+ * chain — what each job runs on. The AI providers are who Stem is allowed to ask
+ * at all, which is what makes a role assignable. And the search backend is who
+ * it asks when the answer isn't in a model; that one shares credentials with the
+ * providers above, so a ChatGPT sign-in made here is also a search backend
+ * below, and the picker says so.
  */
-export function ProvidersSettings({ deadProvider }: { deadProvider?: string | null }) {
+export function ModelsSettings({ models, modelId, onSelectModel, deadProvider }: ModelsSettingsProps) {
   // Connected AI providers, so the search picker can tell you which backends
   // already work on a sign-in you have. Kept in step with the Providers section,
   // which broadcasts on every connect/disconnect.
@@ -49,9 +55,174 @@ export function ProvidersSettings({ deadProvider }: { deadProvider?: string | nu
 
   return (
     <div>
+      <ModelRolesSection models={models} modelId={modelId} onSelectModel={onSelectModel} />
       <ProvidersSection deadProvider={deadProvider} />
       <WebSearchSection providers={providers} />
     </div>
+  );
+}
+
+type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
+
+/**
+ * Every job Stem runs a model for, in one list.
+ *
+ * Each of these is also editable where it belongs — the memory model under
+ * Memory, the curator under Tools, subjects and the safety check under Chat —
+ * and stays there. This is the other view: the one you open when the question is
+ * "what is running on what", which no single feature panel can answer. Both
+ * views write the same setting, and only one manage tab is mounted at a time, so
+ * they cannot disagree.
+ *
+ * Connected folders can each override the memory model, but there can be any
+ * number of them and they belong to the folder, not to the app — so they are
+ * counted here and edited there.
+ */
+function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
+  const [quickChatModel, setQuickChatModel] = useState<string | null>(null);
+  const [subjectModel, setSubjectModel] = useState<string | null>(null);
+  const [judgeModel, setJudgeModel] = useState<string | null>(null);
+  const [memoryModel, setMemoryModel] = useState<string | null>(null);
+  const [curatorModel, setCuratorModel] = useState<string | null>(null);
+  const [folderOverrides, setFolderOverrides] = useState(0);
+
+  useEffect(() => {
+    void window.stem.getSettings().then((s) => {
+      setQuickChatModel(s.quickChat.defaultModel);
+      setSubjectModel(s.chats.subjectModel);
+      setJudgeModel(s.exec.judgeModel);
+      setMemoryModel(s.memory.model);
+      setCuratorModel(s.skills.model);
+    });
+    void window.stem
+      .listConnectedFolders()
+      .then((folders) => setFolderOverrides(folders.filter((f) => f.learnModel).length))
+      .catch(() => undefined);
+  }, []);
+
+  const appDefault = appDefaultModel(models);
+
+  return (
+    <>
+      <div className="grp-head grp-head-row">
+        Model roles
+        <InfoTip label="About model roles">
+          Stem runs more than one model. The one you chat with writes the replies; the rest work in
+          the background, which is why they default to something cheaper and why they are worth
+          knowing about. Every role here is also editable where it belongs — this is the same
+          setting seen from one place instead of four. <strong>Default</strong> and{' '}
+          <strong>Auto</strong> name a rule rather than a model, so each picker says underneath what
+          the rule resolves to today.
+        </InfoTip>
+      </div>
+      <div className="formgroup">
+        <div className="set-block">
+          <span className="set-sub">
+            Chatting with you <em className="set-opt">also in Chat</em>
+          </span>
+          <ModelPicker
+            models={models}
+            value={modelId}
+            onChange={(id) => onSelectModel(id ?? '')}
+            ariaLabel="Model"
+          />
+        </div>
+
+        <div className="set-block">
+          <span className="set-sub">
+            Quick Chat <em className="set-opt">also in App</em>
+          </span>
+          <ModelPicker
+            models={models}
+            value={quickChatModel}
+            onChange={(id) => {
+              setQuickChatModel(id); // optimistic; reconcile from the saved settings
+              window.stem.updateQuickChat({ defaultModel: id }).then((s) => setQuickChatModel(s.quickChat.defaultModel));
+            }}
+            emptyLabel="Same as main"
+            ariaLabel="Quick Chat default model"
+            resolvedDefault={appDefault}
+          />
+        </div>
+
+        <div className="set-block">
+          <span className="set-sub">
+            Chat subjects <em className="set-opt">also in Chat</em>
+          </span>
+          <ModelPicker
+            models={models}
+            value={subjectModel}
+            onChange={(id) => {
+              setSubjectModel(id);
+              window.stem.updateChatsSettings({ subjectModel: id }).then((s) => {
+                setSubjectModel(s.chats.subjectModel);
+                window.dispatchEvent(new CustomEvent('stem:chat-settings'));
+              });
+            }}
+            emptyLabel="Default (recommended)"
+            ariaLabel="Subject model"
+            resolvedDefault={appDefault}
+          />
+        </div>
+
+        <div className="set-block">
+          <span className="set-sub">
+            Command safety check <em className="set-opt">also in Chat</em>
+          </span>
+          <ModelPicker
+            models={models}
+            value={judgeModel}
+            onChange={(id) => {
+              setJudgeModel(id);
+              window.stem.updateExecSettings({ judgeModel: id }).then((s) => setJudgeModel(s.exec.judgeModel));
+            }}
+            emptyLabel="Auto"
+            ariaLabel="Safety-check model"
+            resolvedDefault={resolveJudgeModel({ judgeModel: null }, models, modelId)}
+          />
+        </div>
+
+        <div className="set-block">
+          <span className="set-sub">
+            Memory <em className="set-opt">also in Memory</em>
+          </span>
+          <ModelPicker
+            models={models}
+            value={memoryModel}
+            onChange={(id) => {
+              setMemoryModel(id);
+              window.stem.updateMemorySettings({ model: id }).then((s) => setMemoryModel(s.memory.model));
+            }}
+            emptyLabel="Default (recommended)"
+            ariaLabel="Memory model"
+            resolvedDefault={appDefault}
+          />
+          {folderOverrides > 0 && (
+            <em className="mp-resolved">
+              {folderOverrides} connected folder{folderOverrides === 1 ? '' : 's'} override
+              {folderOverrides === 1 ? 's' : ''} this — Sources › Connected folders
+            </em>
+          )}
+        </div>
+
+        <div className="set-block">
+          <span className="set-sub">
+            Skills curator <em className="set-opt">also in Tools</em>
+          </span>
+          <ModelPicker
+            models={models}
+            value={curatorModel}
+            onChange={(id) => {
+              setCuratorModel(id);
+              window.stem.updateSkillsSettings({ model: id }).then((s) => setCuratorModel(s.skills.model));
+            }}
+            emptyLabel="Default (recommended)"
+            ariaLabel="Skills curator model"
+            resolvedDefault={appDefault}
+          />
+        </div>
+      </div>
+    </>
   );
 }
 

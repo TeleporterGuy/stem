@@ -7,6 +7,7 @@ import type {
 } from '../../../shared/types';
 import { useOffline } from '../../hooks/useServerReachable';
 import { InfoTip } from '../../ui/InfoTip';
+import { appDefaultModel } from '../../../shared/modelRoles';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { holdFullSpin } from './shared';
 
@@ -171,6 +172,7 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
           onChange={selectCuratorModel}
           emptyLabel="Default (recommended)"
           ariaLabel="Skills curator model"
+          resolvedDefault={appDefaultModel(models)}
         />
       </div>
     </div>

@@ -5,6 +5,7 @@ import type {
   FolderIndexStatus,
   ModelSummary
 } from '../../../shared/types';
+import { appDefaultModel } from '../../../shared/modelRoles';
 import { useRemoteServer } from '../../hooks/useRemoteServer';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
@@ -152,6 +153,14 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
   // machine, revealing it here would open whatever happens to sit at the same
   // path locally — so the buttons that do it are not offered at all.
   const remote = useRemoteServer();
+  // What "Memory default" on a folder's model picker actually means today: the
+  // memory model if one is set, else whatever the backend defaults to. Read here
+  // rather than passed in, because Sources knows nothing about Memory's settings.
+  const [memoryModel, setMemoryModel] = useState<string | null>(null);
+
+  useEffect(() => {
+    void window.stem.getSettings().then((s) => setMemoryModel(s.memory.model));
+  }, []);
 
   const toggleOpen = (id: string) =>
     setExpanded((s) => {
@@ -429,6 +438,7 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
                             onChange={(id) => void setLearnModel(f.id, id)}
                             emptyLabel="Memory default"
                             ariaLabel="Fact-learning model"
+                            resolvedDefault={memoryModel ?? appDefaultModel(models)}
                           />
                         </span>
                       </div>
@@ -452,6 +462,7 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
                           onChange={(id) => void setLearnModel(f.id, id)}
                           emptyLabel="Memory default"
                           ariaLabel="Fact-learning model"
+                          resolvedDefault={memoryModel ?? appDefaultModel(models)}
                         />
                       </span>
                     </div>

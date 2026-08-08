@@ -9,7 +9,7 @@ import { test, expect, openSettings } from './electron';
 import { SEARCH_BACKENDS } from '../../src/renderer/manage/searchBackends';
 
 test('the Settings tab exposes the web-search backend picker', async ({ mainWindow }) => {
-  await openSettings(mainWindow, 'Providers');
+  await openSettings(mainWindow, 'Models');
 
   const backend = mainWindow.getByLabel('Search backend', { exact: true });
   await expect(backend).toBeVisible();
@@ -18,7 +18,7 @@ test('the Settings tab exposes the web-search backend picker', async ({ mainWind
 });
 
 test('picking a keyed backend reveals its key field and persists', async ({ mainWindow }) => {
-  await openSettings(mainWindow, 'Providers');
+  await openSettings(mainWindow, 'Models');
 
   const backend = mainWindow.getByLabel('Search backend', { exact: true });
   await backend.selectOption('tavily');
@@ -38,14 +38,14 @@ test('picking a keyed backend reveals its key field and persists', async ({ main
 });
 
 test('SearXNG offers an endpoint field, not an API key', async ({ mainWindow }) => {
-  await openSettings(mainWindow, 'Providers');
+  await openSettings(mainWindow, 'Models');
 
   await mainWindow.getByLabel('Search backend', { exact: true }).selectOption('searxng');
   await expect(mainWindow.getByLabel('SearXNG endpoint', { exact: true }).first()).toBeVisible();
 });
 
 test('every backend is selectable, independent of the chat model', async ({ mainWindow }) => {
-  await openSettings(mainWindow, 'Providers');
+  await openSettings(mainWindow, 'Models');
 
   const values = await mainWindow.getByLabel('Search backend', { exact: true }).evaluate((el) =>
     [...(el as HTMLSelectElement).options].map((o) => o.value)
@@ -62,7 +62,7 @@ test('every backend is selectable, independent of the chat model', async ({ main
 // Which backends cost you nothing to try is the first thing you need from this
 // picker, and it is not derivable from the names — so the list is sectioned by it.
 test('the picker groups backends by what they still need', async ({ mainWindow }) => {
-  await openSettings(mainWindow, 'Providers');
+  await openSettings(mainWindow, 'Models');
 
   const sections = await mainWindow.getByLabel('Search backend', { exact: true }).evaluate((el) =>
     [...(el as HTMLSelectElement).querySelectorAll('optgroup')].map((g) => ({
@@ -77,7 +77,7 @@ test('the picker groups backends by what they still need', async ({ mainWindow }
 });
 
 test('all backend keys are editable at once and survive a backend switch', async ({ mainWindow }) => {
-  await openSettings(mainWindow, 'Providers');
+  await openSettings(mainWindow, 'Models');
   await mainWindow.getByRole('button', { name: /all backend keys/ }).click();
 
   // Two different backends' keys, entered while a third is selected.
@@ -119,7 +119,7 @@ test('a key edit on its own reaches the config the search tools read', async ({ 
     }
   };
 
-  await openSettings(mainWindow, 'Providers');
+  await openSettings(mainWindow, 'Models');
   await mainWindow.getByRole('button', { name: /all backend keys/ }).click();
   await mainWindow.getByLabel('Brave key', { exact: true }).fill('brave-key-only');
 
@@ -128,7 +128,7 @@ test('a key edit on its own reaches the config the search tools read', async ({ 
 
 test('the web-search toggle shows regardless of the selected model', async ({ mainWindow }) => {
   // The toggle rides with the model it applies to (Chat), not with the backend
-  // that answers the search (Providers).
+  // that answers the search (Models).
   await openSettings(mainWindow, 'Chat');
 
   // Previously gated on selectedModel.supportsNativeWebSearch, which was false for

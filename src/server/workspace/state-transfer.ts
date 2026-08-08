@@ -602,7 +602,7 @@ async function assess(root: string, secrets: StateImportReport['secrets']): Prom
     if (providers.length > 0) {
       reauthorize.push(
         `Your model sign-in${providers.length === 1 ? '' : 's'} (${providers.join(', ')}) came over and should keep working — ` +
-          'those keys are not tied to a machine. Settings → Providers will say if one needs signing in again.'
+          'those keys are not tied to a machine. Settings → Models will say if one needs signing in again.'
       );
     }
   }

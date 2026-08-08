@@ -1,4 +1,4 @@
-import type { ExecSettings, ModelSummary } from '../../shared/types';
+import type { ExecSettings } from '../../shared/types';
 
 // The run_command auto-approve policy, kept pure so it is unit-testable:
 //
@@ -296,33 +296,7 @@ export function parseJudgeVerdict(text: string): JudgeVerdict {
   return reason ? { verdict, reason } : { verdict };
 }
 
-// Cheap-model markers, in preference order, for the auto judge pick. Names only —
-// ModelSummary carries no price or tier, so this is the whole signal there is.
-const CHEAP_MARKERS = ['haiku', 'mini', 'nano', 'flash', 'lite', 'spark', 'fast', 'small', 'turbo'];
-
-/**
- * Resolve the judge model: the explicit setting wins; otherwise the
- * cheapest-looking model of the current provider (Anthropic → Haiku-class, etc.).
- *
- * When that provider publishes no cheap-tier name, fall back to a model we know
- * is signed in rather than null: null makes complete() use its built-in
- * openai-codex default, which fails with "No API key" for anyone signed in only
- * to another provider. The judge then runs on the chat's own model — correct but
- * not cheap, which is why Settings says so rather than promising "cheapest".
- */
-export function resolveJudgeModel(
-  settings: Pick<ExecSettings, 'judgeModel'>,
-  models: ModelSummary[],
-  currentModel: string | null
-): string | null {
-  if (settings.judgeModel) return settings.judgeModel;
-  const provider = currentModel?.split('/')[0] ?? models.find((m) => m.isDefault)?.provider ?? null;
-  const pool = provider ? models.filter((m) => m.provider === provider) : models;
-  for (const marker of CHEAP_MARKERS) {
-    const hit = pool.find((m) => m.id.toLowerCase().includes(marker));
-    if (hit) return hit.id;
-  }
-  // `provider` is derived from currentModel whenever there is one, so this is
-  // already a same-provider pick; pool/models only matter when there is not.
-  return currentModel ?? pool.find((m) => m.isDefault)?.id ?? pool[0]?.id ?? null;
-}
+// Re-exported so exec's own callers (and its tests) keep one import for the
+// policy surface. The rule itself lives in shared/ because Settings now shows
+// what "Auto" resolves to, and the renderer has to agree with the server.
+export { resolveJudgeModel } from '../../shared/modelRoles';

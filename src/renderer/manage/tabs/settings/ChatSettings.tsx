@@ -6,6 +6,7 @@ import type {
   ExecSettings,
   WebSearchSettings
 } from '../../../../shared/types';
+import { appDefaultModel, resolveJudgeModel } from '../../../../shared/modelRoles';
 import { InfoTip } from '../../../ui/InfoTip';
 import { ModelPicker } from '../../../ui/ModelPicker';
 import type { ModelTabProps } from '../shared';
@@ -138,6 +139,7 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
             emptyLabel="Default (recommended)"
             ariaLabel="Subject model"
             disabled={chats?.subjects === 'off'}
+            resolvedDefault={appDefaultModel(models)}
           />
         </div>
         <div className="set-block">
@@ -268,6 +270,9 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
                   onChange={(id) => updateExec({ judgeModel: id })}
                   emptyLabel="Auto"
                   ariaLabel="Safety-check model"
+                  // Auto picks per turn from the chat's own provider; the model
+                  // set here is the one it would pick for a chat on the default.
+                  resolvedDefault={resolveJudgeModel({ judgeModel: null }, models, modelId)}
                 />
               </div>
             )}
