@@ -25,6 +25,7 @@ import type {
   QuickChatSettings,
   QuickChatShortcutStatus,
   ReleaseNotesSnapshot,
+  StateExportReport,
   LocalProviderApi,
   LocalProviderId,
   LocalProvidersSettings,
@@ -1814,8 +1815,137 @@ function ServerSection() {
           </>
         )}
         {error && <p className="muted">{error}</p>}
+
+        <ExportBlock remote={me.remote} />
       </div>
     </>
+  );
+}
+
+/** Bytes as a person reads them. Whole numbers below a gigabyte; nothing smaller than a KB. */
+function sizeLabel(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+/**
+ * Settings → Server → "Move or back up this Stem": everything Stem knows, in one
+ * file you can carry to another machine or keep as a backup. The same file does
+ * both, which is why the wording never picks one.
+ *
+ * The passphrase is asked for here rather than at the other end because that is
+ * where the credentials are: the archive's tool credentials are re-wrapped under
+ * it on the way out, and the server that receives it is handed the same
+ * passphrase as its key file. It never leaves this machine except as the thing it
+ * wraps.
+ *
+ * Everything that did NOT travel is listed afterwards, with a reason. Somebody
+ * moving house wants to know what was left behind before they arrive, not when
+ * they go looking for it.
+ */
+function ExportBlock({ remote }: { remote: boolean }) {
+  const [passphrase, setPassphrase] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [report, setReport] = useState<StateExportReport | null>(null);
+
+  const mismatch = confirm.length > 0 && confirm !== passphrase;
+  const ready = passphrase.length >= 12 && confirm === passphrase;
+
+  async function run() {
+    setBusy(true);
+    setError(null);
+    setReport(null);
+    try {
+      const result = await window.stem.exportState(passphrase);
+      if (result) {
+        setReport(result);
+        setPassphrase('');
+        setConfirm('');
+      }
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (remote) {
+    return (
+      <div className="set-block">
+        <span className="set-sub">Move or back up this Stem</span>
+        <p className="muted">
+          Your chats and memory are on the server you're connected to, not on this computer, so
+          there is nothing here to write out. Back it up where it runs — <code>stem-server</code>{' '}
+          keeps everything in one folder.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="set-block">
+      <span className="set-sub">Move or back up this Stem</span>
+      <p className="muted">
+        Writes everything Stem knows — chats, memory, skills, your Files, settings and connected
+        tools — into a single file. Take it to another computer or a server and import it there, or
+        keep it as a backup. Your paired devices and this computer's own settings stay here.
+      </p>
+      <p className="muted">
+        Choose a passphrase. It's what unlocks the saved tool credentials wherever the copy ends up,
+        so keep it with the copy — without it, every connected tool has to be signed in again. The
+        file itself is not encrypted, so treat it the way you'd treat a password manager's export.
+      </p>
+      <input
+        className="ifield"
+        type="password"
+        aria-label="Passphrase"
+        autoComplete="new-password"
+        value={passphrase}
+        placeholder="Passphrase (at least 12 characters)"
+        onChange={(e) => setPassphrase(e.target.value)}
+      />
+      <input
+        className="ifield"
+        type="password"
+        aria-label="Passphrase again"
+        autoComplete="new-password"
+        value={confirm}
+        placeholder="The same passphrase again"
+        onChange={(e) => setConfirm(e.target.value)}
+      />
+      {mismatch && <p className="muted">The two don't match.</p>}
+      <div className="push-row">
+        <button type="button" className="push" disabled={busy || !ready} onClick={() => void run()}>
+          {busy ? 'Writing…' : 'Export…'}
+        </button>
+      </div>
+      {error && <p className="muted">{error}</p>}
+      {report && (
+        <>
+          <p className="muted">
+            Wrote <strong>{sizeLabel(report.bytes)}</strong> to <code>{report.path}</code> —{' '}
+            {report.included.map((g) => `${g.name} (${sizeLabel(g.bytes)})`).join(', ')}.
+            {report.secrets === 'rewrapped' &&
+              ' Your connected tools stay signed in on the other side.'}
+            {report.secrets === 'none' &&
+              " This computer has no keychain, so tool credentials were already unencrypted and travel as they are."}
+            {report.secrets === 'unreadable' &&
+              ' This computer can no longer open its own credential key, so connected tools will ask to be signed in again.'}
+          </p>
+          <p className="muted">Left behind on purpose:</p>
+          <ul className="muted" style={{ marginTop: 0 }}>
+            {report.omitted.map((o) => (
+              <li key={o.name}>
+                <strong>{o.name}.</strong> {o.reason}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
   );
 }
 

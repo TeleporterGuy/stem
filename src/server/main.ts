@@ -1,7 +1,12 @@
+import { existsSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { resolve } from 'node:path';
 import { host } from './host';
+import { DEFAULT_KEY_FILE, readPassphraseFile } from './host/passphrase-key';
 import { startServer } from './index';
 import { readDevices } from './transport/auth';
 import { createPairingCode } from './transport/pairing';
+import { exportState, importState } from './workspace/state-transfer';
 
 // `stem-server`: Stem with no windows, run by plain `node`.
 //
@@ -10,7 +15,7 @@ import { createPairingCode } from './transport/pairing';
 // server, prints where it is listening, and translates SIGINT/SIGTERM into a
 // graceful shutdown.
 //
-// It also carries the one subcommand a headless deployment cannot do without:
+// It also carries the two subcommands a headless deployment cannot do without:
 //
 //   stem-server pair [--label "Vlado's MacBook"]
 //
@@ -18,6 +23,18 @@ import { createPairingCode } from './transport/pairing';
 // starting a server — it only writes to the pairing store — so it is safe to run
 // as `docker compose exec stem node dist/main/server.js pair` beside a container
 // that is already serving.
+//
+//   stem-server import <archive.tar> [--key-file <path>]
+//   stem-server export <archive.tar> [--key-file <path>]
+//
+// which unpack and write the archive Settings → Server → "Move or back up this
+// Stem" produces — the other half of the migration, and both halves of the
+// backup. `export` is here as well as in the app because a server that is not
+// somebody's laptop still has to be backed up, and once it is here the round trip
+// is one process to the next with nothing in between (which is how
+// scripts/server-boot.mjs tests it). Unlike `pair`, both must run with NOTHING
+// serving: import refuses a state root that has been used, and either way a
+// running server is writing to the very files being read or replaced.
 //
 // Its real job is to be the tripwire. `src/server` must not import Electron,
 // and an ESLint rule is not proof of that: a transitive import through a barrel
@@ -53,6 +70,129 @@ async function printPairingCode(label: string, why: string): Promise<void> {
 async function pairCommand(): Promise<void> {
   console.log(`[stem-server] state ${host().stateRoot()}`);
   await printPairingCode(labelArg(process.argv.slice(3)), 'enter this on the device you are pairing:');
+}
+
+/** `--key-file <path>` / `--key-file=<path>`, or null when it wasn't given. */
+function flagValue(argv: string[], name: string): string | null {
+  const inline = argv.find((a) => a.startsWith(`--${name}=`));
+  if (inline) return inline.slice(name.length + 3);
+  const at = argv.indexOf(`--${name}`);
+  return at !== -1 ? (argv[at + 1] ?? null) : null;
+}
+
+/**
+ * Ask for the passphrase on the terminal, with the echo off.
+ *
+ * There is deliberately no `--passphrase <value>`. A secret passed as an argument
+ * is in the shell history of whoever ran it, in `ps` for everybody on the box
+ * while it runs, and in the CI log of any pipeline that ever calls this — three
+ * places it can never be taken back out of. A file (`--key-file`, which is also
+ * the Docker secret) or a prompt are the only two ways in.
+ */
+function promptPassphrase(): Promise<string> {
+  if (!process.stdin.isTTY) {
+    return Promise.reject(
+      new Error(
+        'No terminal to ask on. Pass --key-file <path> with the passphrase in it — the same file the ' +
+          'container will hold as its secret.'
+      )
+    );
+  }
+  return new Promise<string>((accept, reject) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    // readline echoes what it reads; muting the output stream for the duration is
+    // the standard way to stop it, and the prompt itself is written before the mute.
+    process.stdout.write('[stem-server] passphrase for this archive: ');
+    const out = rl as unknown as { output: NodeJS.WriteStream; _writeToOutput: (s: string) => void };
+    out._writeToOutput = () => {};
+    rl.question('', (answer) => {
+      rl.close();
+      process.stdout.write('\n');
+      accept(answer);
+    });
+    rl.on('error', reject);
+  });
+}
+
+/**
+ * Where the passphrase comes from, in the order a person would expect: the file
+ * they named, the file the deployment mounts, and only then the terminal.
+ */
+async function resolvePassphrase(argv: string[]): Promise<string> {
+  const named = flagValue(argv, 'key-file') ?? process.env.STEM_KEY_FILE ?? null;
+  if (named) {
+    if (!existsSync(named)) throw new Error(`No key file at ${named}.`);
+    return readPassphraseFile(named);
+  }
+  if (existsSync(DEFAULT_KEY_FILE)) {
+    console.log(`[stem-server] using the passphrase in ${DEFAULT_KEY_FILE}`);
+    return readPassphraseFile(DEFAULT_KEY_FILE);
+  }
+  return promptPassphrase();
+}
+
+/** One `- ` bullet per line, wrapped so a terminal can read it. */
+function bullets(lines: string[]): void {
+  for (const line of lines) console.log(`  - ${line}`);
+}
+
+function megabytes(bytes: number): string {
+  return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function exportCommand(): Promise<void> {
+  const argv = process.argv.slice(3);
+  const out = argv.find((a) => !a.startsWith('--'));
+  if (!out) throw new Error('Usage: stem-server export <archive.tar> [--key-file <path>]');
+  const path = resolve(out);
+  // Never over an existing file. This writes a backup; overwriting the previous
+  // one because a path was retyped is the failure mode that only shows up on the
+  // day the backup is needed.
+  if (existsSync(path)) throw new Error(`${path} already exists. Pick a name that doesn't.`);
+  console.log(`[stem-server] state ${host().stateRoot()}`);
+
+  const passphrase = await resolvePassphrase(argv);
+  const report = await exportState({ out: path, passphrase });
+
+  console.log(`\n[stem-server] wrote ${report.files} files (${megabytes(report.bytes)}) to ${report.path}`);
+  for (const group of report.included) {
+    console.log(`  ${group.name.padEnd(24)} ${String(group.files).padStart(6)} files  ${megabytes(group.bytes)}`);
+  }
+  console.log('\n[stem-server] left behind on purpose:');
+  bullets(report.omitted.map((o) => `${o.name}. ${o.reason}`));
+  console.log(
+    '\n[stem-server] the archive is not encrypted — it holds your chats, your memory and your ' +
+      'credentials. Move it over ssh and keep it somewhere you would keep a password.\n'
+  );
+}
+
+async function importCommand(): Promise<void> {
+  const argv = process.argv.slice(3);
+  const archive = argv.find((a) => !a.startsWith('--'));
+  if (!archive) {
+    throw new Error('Usage: stem-server import <archive.tar> [--key-file <path>]');
+  }
+  const path = resolve(archive);
+  if (!existsSync(path)) throw new Error(`No archive at ${path}.`);
+  console.log(`[stem-server] state ${host().stateRoot()}`);
+
+  const passphrase = await resolvePassphrase(argv);
+  const report = await importState({ archive: path, passphrase });
+
+  console.log(`\n[stem-server] imported ${report.files} files (${megabytes(report.bytes)}) into ${report.stateRoot}`);
+  console.log(`[stem-server] from Stem ${report.from.app} on ${report.from.platform}, exported ${report.from.exportedAt}`);
+  for (const group of report.landed) {
+    console.log(`  ${group.name.padEnd(24)} ${String(group.files).padStart(6)} files  ${megabytes(group.bytes)}`);
+  }
+  if (report.reauthorize.length) {
+    console.log('\n[stem-server] accounts and connections:');
+    bullets(report.reauthorize);
+  }
+  if (report.attention.length) {
+    console.log('\n[stem-server] needs your attention:');
+    bullets(report.attention);
+  }
+  console.log('\n[stem-server] start the server when you are ready.\n');
 }
 
 async function main(): Promise<void> {
@@ -111,9 +251,19 @@ async function main(): Promise<void> {
 }
 
 const command = process.argv[2];
-const run = command === 'pair' ? pairCommand() : main();
+const SUBCOMMANDS: Record<string, { run: () => Promise<void>; whenItFails: string }> = {
+  pair: { run: pairCommand, whenItFails: 'could not create a pairing code' },
+  export: { run: exportCommand, whenItFails: 'could not export' },
+  import: { run: importCommand, whenItFails: 'could not import' }
+};
+const subcommand = SUBCOMMANDS[command ?? ''];
 
-run.catch((err: unknown) => {
-  console.error(`[stem-server] ${command === 'pair' ? 'could not create a pairing code' : 'failed to start'}:`, err);
+(subcommand ? subcommand.run() : main()).catch((err: unknown) => {
+  // A subcommand's failures are things a person did (a wrong passphrase, a state
+  // root with chats in it), so they get the message and not the stack — the stack
+  // would bury the one line that says what to do instead.
+  const message = String((err as Error)?.message ?? err);
+  if (subcommand) console.error(`\n[stem-server] ${subcommand.whenItFails}: ${message}\n`);
+  else console.error('[stem-server] failed to start:', err);
   process.exit(1);
 });

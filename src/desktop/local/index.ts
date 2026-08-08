@@ -1,15 +1,17 @@
 import { app, dialog, shell, type BrowserWindow } from 'electron';
+import { join } from 'node:path';
 import { handleLocal } from '../ipc-bridge';
 import { ensureFilesRoot } from '../../server/files/store';
 import { imagePreviewDataUrl } from '../../server/pi/attachments';
 import { connectedFolderPath } from '../../server/workspace/connected-folders';
 import { workspaceRoot } from '../../server/workspace/paths';
+import { exportState } from '../../server/workspace/state-transfer';
 import { readClientIdentity, storedServerUrl } from '../client-store';
 import { downloadFile } from '../file-transfer';
 import { markReleaseNotesRead, releaseNotesSnapshot } from '../release-notes';
 import { pairWithServer, useBuiltInServer, type ServerCredentials } from '../server-endpoint';
 import { updateClientReleaseNotes, withClientSettings } from '../settings';
-import type { AppSettings, ClientInfo, ReleaseNotesSettings } from '../../shared/types';
+import type { AppSettings, ClientInfo, ReleaseNotesSettings, StateExportReport } from '../../shared/types';
 
 // Handlers that act on THIS machine — a native picker, a file manager, a local
 // image read — and so can never be answered by a server that might be somewhere
@@ -170,6 +172,51 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
     if (!process.env.STEM_BACKGROUND) shell.showItemInFolder(saved);
     return saved;
   });
+
+  /**
+   * Write everything this Stem knows to one file: the move to another machine,
+   * and the backup, which are the same act.
+   *
+   * Client-owned for the reason `files:reveal` is, and one more. The re-wrap at
+   * the heart of it unwraps the data key through the platform's keychain, and a
+   * keychain is a thing you have on the machine you are sitting at — a server in
+   * a container has none, which is the whole reason the archive has to be
+   * re-wrapped under a passphrase before it goes there.
+   *
+   * And, like the reveals, it reads the state root through the server's own path
+   * helpers rather than over the transport. Which makes it correct only while
+   * both halves share a disk: with the server elsewhere, those helpers resolve to
+   * an empty state root on THIS machine, and the archive would be an export of
+   * nothing at all wearing the name of your Stem. So it refuses, and says where
+   * to run it instead.
+   *
+   * The passphrase arrives from the renderer and goes no further than the wrap.
+   * It is not written into the archive, not logged, and not passed as an argument
+   * to anything.
+   */
+  handleLocal(
+    'stem:exportState',
+    async (_e, options: { passphrase?: unknown }): Promise<StateExportReport | null> => {
+      if (deps.connection().remote) {
+        throw new Error(
+          "This Stem's chats and memory are on its server, which is not this computer — there is nothing here to export. " +
+            'Run `stem-server export` there, or back up the folder its state is mounted from.'
+        );
+      }
+      const passphrase = typeof options?.passphrase === 'string' ? options.passphrase : '';
+      // The dialog comes AFTER the passphrase check so a bad one is not found out
+      // at the end of picking a place to save.
+      const stamp = new Date().toISOString().slice(0, 10);
+      const chosen = await dialog.showSaveDialog(deps.mainWindow()!, {
+        title: 'Move or back up this Stem',
+        defaultPath: join(downloadsDir(), `stem-${stamp}.tar`),
+        buttonLabel: 'Export',
+        filters: [{ name: 'Tar archive', extensions: ['tar'] }]
+      });
+      if (chosen.canceled || !chosen.filePath) return null;
+      return exportState({ out: chosen.filePath, passphrase });
+    }
+  );
 
   handleLocal('cfolders:reveal', async (_e, id: string) => {
     revealable('That folder');

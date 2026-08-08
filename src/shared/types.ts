@@ -1724,6 +1724,34 @@ export interface PairingCodeInfo {
   expiresAt: string;
 }
 
+/** What became of the data key that opens saved tool credentials, on export. */
+export type SecretsState =
+  /** Unwrapped through this machine's keychain, re-wrapped under the passphrase. */
+  | 'rewrapped'
+  /** There was no key: this install was already keeping tool secrets unencrypted. */
+  | 'none'
+  /** A key file exists but this machine can no longer open it (a keychain reset). */
+  | 'unreadable';
+
+/** One top-level member of an export, rolled up. */
+export interface TransferGroup {
+  name: string;
+  files: number;
+  bytes: number;
+}
+
+/** What an export produced — shown once, in Settings → Server, after it is written. */
+export interface StateExportReport {
+  path: string;
+  bytes: number;
+  files: number;
+  /** What made it in, largest first. */
+  included: TransferGroup[];
+  /** What was deliberately left behind, and why. */
+  omitted: Array<{ name: string; reason: string }>;
+  secrets: SecretsState;
+}
+
 /**
  * What this client knows about its own connection — answered locally, never by
  * the server, because every one of these facts is about THIS machine.
@@ -2075,6 +2103,13 @@ export interface StemApi {
   pairWithServer(url: string, code: string): Promise<ClientInfo>;
   /** Forget the configured server (and its credential) and go back to the built-in one. */
   useBuiltInServer(): Promise<ClientInfo>;
+  /**
+   * Write this Stem — chats, memory, skills, settings, connected tools — to one
+   * archive, with saved tool credentials re-wrapped so `passphrase` opens them
+   * wherever it lands. Opens a save dialog; resolves null if that is cancelled.
+   * Refuses when the server is somewhere else, because then its state is too.
+   */
+  exportState(passphrase: string): Promise<StateExportReport | null>;
 
   /** Set the model used for memory distillation/tidy-up ({ model: null } = default). */
   updateMemorySettings(patch: Partial<MemoryModelSettings>): Promise<AppSettings>;

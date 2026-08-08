@@ -291,6 +291,7 @@ const api: StemApi = {
   clientInfo: () => ipcRenderer.invoke('client:info'),
   pairWithServer: (url: string, code: string) => ipcRenderer.invoke('client:pair', url, code),
   useBuiltInServer: () => ipcRenderer.invoke('client:useBuiltIn'),
+  exportState: (passphrase: string) => ipcRenderer.invoke('stem:exportState', { passphrase }),
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateQuickChat: (patch: Partial<QuickChatSettings>) => ipcRenderer.invoke('settings:updateQuickChat', patch),

@@ -29,11 +29,19 @@
 // seam, so there is no pi spawn, no auth and no network. What is under test is
 // the server's boot path and its transport, not the model.
 //
+// It then does the migration for real, because the migration is a thing that
+// happens between PROCESSES and cannot be told apart from a working one inside a
+// single test runner: export the running server's state to an archive, refuse to
+// unpack it over itself, unpack it into a state root that has never been used,
+// and serve THAT — pairing a fresh device with it and asking it for the folder
+// the first server made.
+//
 //   npm run test:server          # locally, same thing CI runs
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -70,6 +78,11 @@ if (!existsSync(ENTRY)) {
 const sandbox = mkdtempSync(join(tmpdir(), 'stem-server-boot-'));
 const appDir = join(sandbox, 'app');
 const stateDir = join(sandbox, 'state');
+/** Where the exported Stem is unpacked — a state root that has never been used. */
+const secondState = join(sandbox, 'moved');
+const archive = join(sandbox, 'stem-export.tar');
+/** The passphrase file, standing in for the Docker secret at /run/secrets/stem_key. */
+const keyFile = join(sandbox, 'stem_key');
 
 // dist + package.json and nothing else. package.json comes along for its `type:
 // "module"` (without it Node reads the bundle as CommonJS) and its version.
@@ -77,18 +90,47 @@ cpSync(join(root, 'dist'), join(appDir, 'dist'), { recursive: true });
 cpSync(join(root, 'package.json'), join(appDir, 'package.json'));
 
 // A clean environment: the developer running this locally may well have STEM_*
-// pointing at their real profile, and the server must not touch it.
-const env = {
-  PATH: process.env.PATH,
-  HOME: sandbox,
-  TMPDIR: process.env.TMPDIR,
-  SystemRoot: process.env.SystemRoot,
-  STEM_STATE_DIR: stateDir,
-  STEM_RECALL_DB: join(stateDir, 'recall.sqlite'),
-  STEM_FILES_DIR: join(stateDir, 'files'),
-  STEM_TASKS_STORE: join(stateDir, 'tasks.json'),
-  STEM_E2E: '1'
-};
+// pointing at their real profile, and the server must not touch it. Written as a
+// function of the state root because there are two of them now — the one this
+// boots, and the one the export is unpacked into further down.
+function envFor(dir) {
+  return {
+    PATH: process.env.PATH,
+    HOME: sandbox,
+    TMPDIR: process.env.TMPDIR,
+    SystemRoot: process.env.SystemRoot,
+    STEM_STATE_DIR: dir,
+    STEM_RECALL_DB: join(dir, 'recall.sqlite'),
+    STEM_FILES_DIR: join(dir, 'files'),
+    STEM_TASKS_STORE: join(dir, 'tasks.json'),
+    STEM_E2E: '1'
+  };
+}
+const env = envFor(stateDir);
+
+/**
+ * Run one of stem-server's subcommands to completion and hand back what it said.
+ * They are the deployment's whole interface — a person on an ssh session types
+ * these — so they are exercised as processes, with their exit codes, and not by
+ * calling into the module they happen to live in.
+ */
+function runServerCommand(args, commandEnv) {
+  return new Promise((resolve) => {
+    const proc = spawn(process.execPath, ['dist/main/server.js', ...args], {
+      cwd: appDir,
+      env: commandEnv,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let text = '';
+    for (const pipe of [proc.stdout, proc.stderr]) {
+      pipe.setEncoding('utf8');
+      pipe.on('data', (chunk) => {
+        text += chunk;
+      });
+    }
+    proc.on('exit', (code) => resolve({ code, output: text }));
+  });
+}
 
 // Before booting anything: the built layout the main bundle's own sibling joins
 // depend on. Several modules locate an artifact relative to `import.meta.url`
@@ -359,6 +401,31 @@ try {
   check('an unauthenticated call is refused', anonymous.status === 401, `HTTP ${anonymous.status}`);
   const unknown = await rpc('definitely:not:a:channel');
   check('an unregistered channel is refused', unknown.status >= 400 && unknown.body?.ok !== true, `HTTP ${unknown.status}`);
+
+  // -- something worth carrying, made through the transport --
+  const folder = await rpc('folders:create', ['Moved with me', null]);
+  check(
+    'folders:create makes a folder',
+    folder.status === 200 && (folder.body?.result?.folders ?? []).some((f) => f.name === 'Moved with me'),
+    JSON.stringify(folder.body?.error ?? folder.body?.result ?? '').slice(0, 120)
+  );
+  // And one file put where the user's Files live, because a folder is a row in a
+  // JSON file and a file is bytes with a mode on them.
+  mkdirSync(join(stateDir, 'workspace', 'files'), { recursive: true });
+  writeFileSync(join(stateDir, 'workspace', 'files', 'carried.txt'), 'this should survive the move\n');
+
+  // -- the export, taken WHILE the server is running --
+  //
+  // Which is the normal case and the awkward one: recall.sqlite has an open
+  // write-ahead log at this moment, so this is the check that the snapshot the
+  // exporter takes is a database and not a torn copy of one. Running it as its
+  // own process is the other half — `stem-server export` has to work on a machine
+  // with no Electron, which is the machine it will actually be run on.
+  writeFileSync(keyFile, 'a passphrase for the container\n', { mode: 0o600 });
+  const exported = await runServerCommand(['export', archive, '--key-file', keyFile], envFor(stateDir));
+  check('stem-server export writes an archive', exported.code === 0, exported.output.slice(-200));
+  check('the archive exists', existsSync(archive), archive);
+  check('the export says what it left behind', /left behind on purpose/.test(exported.output));
 } finally {
   // -- and it stops when asked --
   await sse?.cancel().catch(() => {});
@@ -371,8 +438,131 @@ try {
   if (!stoppedCleanly) child.kill('SIGKILL');
   check('SIGTERM shuts the server down', stoppedCleanly);
   check('shutdown was graceful', /\[stem-server\] SIGTERM — shutting down/.test(output));
-  rmSync(sandbox, { recursive: true, force: true });
 }
+
+// -- the move, in three more processes ----------------------------------------
+//
+// The archive written above, unpacked into a state root that has never been used,
+// and then SERVED. Nothing in this section touches the first server: it is over,
+// and what is left is a file. That is the whole claim the export makes — you can
+// pick Stem up, put it somewhere else, and it is still your Stem — and the only
+// way to check it is to finish the journey.
+
+if (existsSync(archive)) {
+  // Refusing first. Unpacking over a state root somebody has used would merge two
+  // Stems file by file, so the refusal is not a nicety, and the message has to
+  // name what it found or nobody can act on it.
+  const onTop = await runServerCommand(['import', archive, '--key-file', keyFile], envFor(stateDir));
+  check('import refuses a state root that has been used', onTop.code !== 0, `exit ${onTop.code}`);
+  check('  and says what it found there', /it already has .+ in it/.test(onTop.output), onTop.output.slice(-200));
+
+  const imported = await runServerCommand(['import', archive, '--key-file', keyFile], envFor(secondState));
+  check('import unpacks into an empty state root', imported.code === 0, imported.output.slice(-300));
+  check(
+    '  and says pairing is the next thing to do',
+    /stem-server pair/.test(imported.output),
+    imported.output.slice(-200)
+  );
+
+  // What must NOT have travelled. The registry and this client's credential are
+  // the two that would be actively wrong on another machine.
+  for (const absent of ['devices.json', 'client.json', 'server.json', 'stem.log']) {
+    check(`  ${absent} did not travel`, !existsSync(join(secondState, absent)));
+  }
+  check(
+    '  the Files folder did',
+    readFileSync(join(secondState, 'workspace', 'files', 'carried.txt'), 'utf8').trim() === 'this should survive the move'
+  );
+
+  // The database the first server was writing to while the snapshot was taken.
+  // A torn copy opens and answers nothing; this asks it for the same number of
+  // rows the original had.
+  const rowsIn = (dir) => {
+    const db = new DatabaseSync(join(dir, 'recall.sqlite'), { readOnly: true });
+    try {
+      return db.prepare('SELECT count(*) AS n FROM messages').get().n;
+    } finally {
+      db.close();
+    }
+  };
+  const before = rowsIn(stateDir);
+  check('the memory database survived being copied out from under a live server', rowsIn(secondState) === before, `${before} messages`);
+
+  // -- and now serve it --
+  const second = spawn(process.execPath, ['dist/main/server.js'], {
+    cwd: appDir,
+    env: envFor(secondState),
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let secondOutput = '';
+  for (const pipe of [second.stdout, second.stderr]) {
+    pipe.setEncoding('utf8');
+    pipe.on('data', (chunk) => {
+      secondOutput += chunk;
+      process.stdout.write(`  [moved] ${chunk}`);
+    });
+  }
+  let secondExited = null;
+  second.on('exit', (code, signal) => {
+    secondExited = { code, signal };
+  });
+  process.on('exit', () => {
+    if (!secondExited) second.kill('SIGKILL');
+  });
+
+  const deadline = Date.now() + BOOT_TIMEOUT_MS;
+  let secondUrl = null;
+  while (!secondUrl && Date.now() < deadline && !secondExited) {
+    secondUrl = /\[stem-server\] listening on (\S+)/.exec(secondOutput)?.[1] ?? null;
+    if (!secondUrl) await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  check('the imported Stem boots', !!secondUrl, secondUrl ? '' : `exited ${secondExited?.code ?? 'never listened'}`);
+
+  if (secondUrl) {
+    // An empty registry is what makes this print a code at all — which is the
+    // strongest available evidence that no device came along with the archive.
+    let movedCode = null;
+    const codeDeadline = Date.now() + 10_000;
+    while (!movedCode && Date.now() < codeDeadline) {
+      movedCode = /\[stem-server\] pairing code: (\S+)/.exec(secondOutput)?.[1] ?? null;
+      if (!movedCode) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    check('the imported Stem has nothing paired with it yet', !!movedCode);
+
+    if (movedCode) {
+      const paired = await fetch(`${secondUrl}/pair`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: movedCode }),
+        signal: AbortSignal.timeout(30_000)
+      });
+      const grantThere = (await paired.json().catch(() => null))?.result;
+      check('a device can be paired with it', !!grantThere?.token);
+
+      if (grantThere?.token) {
+        const res = await fetch(`${secondUrl}/rpc`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${grantThere.token}` },
+          body: JSON.stringify({ channel: 'chats:list', args: [] }),
+          signal: AbortSignal.timeout(30_000)
+        });
+        const folders = (await res.json().catch(() => null))?.result?.folders ?? [];
+        check(
+          'the moved Stem serves the state that travelled with it',
+          folders.some((f) => f.name === 'Moved with me'),
+          JSON.stringify(folders).slice(0, 160)
+        );
+      }
+    }
+  }
+
+  const secondStopped = new Promise((resolve) => second.once('exit', resolve));
+  second.kill('SIGTERM');
+  await Promise.race([secondStopped, new Promise((resolve) => setTimeout(resolve, 15_000))]);
+  if (!secondExited) second.kill('SIGKILL');
+}
+
+rmSync(sandbox, { recursive: true, force: true });
 
 console.log(`\n[server-boot] ${checks.length - failed}/${checks.length} checks passed`);
 process.exit(failed === 0 ? 0 : 1);

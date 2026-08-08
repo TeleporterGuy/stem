@@ -84,6 +84,19 @@ Maintainer notes:
   which would look like you'd lost them. The moment the connection comes back, everything refreshes
   on its own. Nothing changes when Stem's server is on the computer you're using: it's already here,
   so there's nothing to keep a copy of.
+- **Take your whole Stem with you, or keep a copy of it.** Settings → Server has a new "Move or back
+  up this Stem", which writes everything Stem knows — your chats, your memory, your skills, your
+  Files, your settings and the tools you've connected — into one file. Carry it to another computer
+  or a server, run `stem-server import` there, and it's the same Stem: same conversations, same
+  memory, same connected tools still signed in. Keep the file instead and it's a backup, restored by
+  exactly the same command. You choose a passphrase when you export, and that passphrase is what
+  unlocks your connected tools on the other side, so keep it with the copy. Some things deliberately
+  stay behind and Stem lists them for you: the devices paired with the old one (you pair afresh),
+  this computer's own shortcut and window settings, and about a gigabyte of downloaded models that
+  simply download again. What was made out of your own files — including the search indexes over
+  your connected folders — always comes along. Importing tells you what landed and what needs you,
+  and refuses point-blank to unpack over a Stem that has already been used rather than mixing the
+  two together.
 
 ### Removed
 
