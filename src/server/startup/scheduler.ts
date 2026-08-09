@@ -1,4 +1,5 @@
 import { TaskScheduler } from '../scheduler';
+import { noteSilentRun } from '../workspace/inbox';
 import type { ChatBackend } from '../backend';
 
 /**
@@ -25,7 +26,16 @@ export function initTaskScheduler(deps: {
     // Scheduled runs defer while the user is active, and an in-flight scheduled
     // run yields (preemptForUser) when the user sends a message.
     isUserActive: deps.isUserActive,
-    interrupt: (turnId) => deps.runtime.interruptTurn(turnId)
+    interrupt: (turnId) => deps.runtime.interruptTurn(turnId),
+    // A run that found nothing still wrote a turn, and a written turn is all the
+    // Inbox needs to lift the thread back out of the archive and bold the row.
+    // Absorb the bump so a watch task only reappears on the run that had something
+    // to say, then ask the client for a fresh list (the placement changed under it).
+    onSilentRun: (threadId, before, at) => {
+      void noteSilentRun(threadId, before, at)
+        .then(() => deps.emit('chats:changed', undefined))
+        .catch(() => undefined);
+    }
   });
   deps.runtime.setTaskBridge({
     schedule: (req, threadId) => scheduler.create(req, threadId),
@@ -39,6 +49,9 @@ export function initTaskScheduler(deps: {
     // nudge at the OS level (dock bounce / taskbar flash), and show the alert modal.
     // Native OS notifications were judged not prominent enough for watch-style tasks.
     notify: async ({ title, message }, threadId) => {
+      // Also the run's declaration that it found something: without it the run
+      // counts as silent and its turn is kept out of the Inbox (see onSilentRun).
+      scheduler.noteNotify(threadId);
       deps.revealMainWindow();
       deps.requestAttention();
       deps.emit('tasks:notify', {

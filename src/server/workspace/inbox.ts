@@ -209,6 +209,44 @@ export function markAllRead(chats: { threadId: string; updatedAt: number }[]): P
   });
 }
 
+/**
+ * A scheduled run finished without calling `notify_user` — it looked, and there
+ * was nothing to say. The turn still appended to the thread and bumped the
+ * session file's mtime, which is the only "something happened here" signal the
+ * Inbox has, so left alone every silent run would resurrect the thread from the
+ * archive and paint the row bold. Roll the thread's own timestamps past the run
+ * instead: whatever was settled before it stays settled.
+ *
+ * Only the dimensions the run found settled move. A thread you had deliberately
+ * left unread stays bold, a thread already sitting in the Inbox stays there, and
+ * an expired snooze is not re-armed — a silent run can hide a thread that was
+ * already hidden, never hide one that wasn't.
+ *
+ * `before` is the thread's mtime as the run started; `at` must be at or past its
+ * mtime now (the caller reads both from the thread list, so a write that lands
+ * after the turn settles is still covered).
+ */
+export function noteSilentRun(threadId: string, before: number, at: number): Promise<InboxState> {
+  const prev = toMs(before);
+  return update((store) => {
+    const entry = store.entries[threadId];
+    // Same three predicates the renderer places rows with — see shared/inbox.ts —
+    // evaluated against where the thread stood *before* the run.
+    const wasArchived = entry?.archivedAt != null && prev <= entry.archivedAt;
+    const wasSnoozed =
+      entry?.snoozedAt != null &&
+      entry.snoozedUntil != null &&
+      at < entry.snoozedUntil &&
+      prev <= entry.snoozedAt;
+    const wasRead = !entry?.forcedUnread && prev <= Math.max(entry?.readAt ?? 0, store.baseline);
+    if (!wasArchived && !wasSnoozed && !wasRead) return;
+    const target = entryOf(store, threadId);
+    if (wasArchived) target.archivedAt = at;
+    if (wasSnoozed) target.snoozedAt = at;
+    if (wasRead) target.readAt = at;
+  });
+}
+
 /** Drop a thread's inbox state when the chat itself is deleted. */
 export function removeInboxEntry(threadId: string): Promise<InboxState> {
   return update((store) => {

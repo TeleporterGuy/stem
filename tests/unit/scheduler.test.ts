@@ -63,12 +63,14 @@ const OVERFLOW_ERROR = 'Codex error: Your input exceeds the context window of th
 function makeScheduler(runtime: EventEmitter) {
   const changes: ScheduledTask[][] = [];
   const runs: unknown[] = [];
+  const silent: { threadId: string; before: number; at: number }[] = [];
   const scheduler = new TaskScheduler({
     runtime: runtime as never,
     onChange: (tasks) => changes.push(tasks),
-    onRun: (run) => runs.push(run)
+    onRun: (run) => runs.push(run),
+    onSilentRun: (threadId, before, at) => silent.push({ threadId, before, at })
   });
-  return { scheduler, changes, runs };
+  return { scheduler, changes, runs, silent };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 5));
@@ -293,6 +295,61 @@ describe('TaskScheduler.runNow + management', () => {
     list = await scheduler.remove(id);
     expect(list).toHaveLength(0);
     expect(await readTasks()).toHaveLength(0);
+    scheduler.stop();
+  });
+});
+
+// A runtime whose run raises a notify_user alert mid-turn — the task bridge routes
+// the tool call to noteNotify, which is what marks the run as having found something.
+class NotifyingRuntime extends FakeRuntime {
+  scheduler: TaskScheduler | null = null;
+  override async startTurn(input: StartTurnInput) {
+    const started = await super.startTurn(input);
+    if (input.threadId) this.scheduler?.noteNotify(input.threadId);
+    return started;
+  }
+}
+
+describe('silent runs', () => {
+  // A scheduled run appends a turn whether or not it found anything, and that turn
+  // bumps the thread's mtime — the Inbox's only notion of "something happened".
+  // notify_user is the line between the two, so the scheduler reports every run
+  // that didn't call it and the host absorbs the bump (see workspace/inbox).
+  it('reports a run that never called notify_user', async () => {
+    const runtime = new FakeRuntime();
+    const { scheduler, silent } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await until(async () => (await storedStatus()) === 'ok', 'the run to be recorded');
+    expect(silent).toHaveLength(1);
+    expect(silent[0].threadId).toBe('t1');
+    // The stamp has to cover the turn's own writes, so it sits at/past the run's end.
+    expect(silent[0].at).toBeGreaterThanOrEqual(silent[0].before);
+    scheduler.stop();
+  });
+
+  it('stays quiet about a run that raised an alert', async () => {
+    const runtime = new NotifyingRuntime();
+    const { scheduler, silent } = makeScheduler(runtime);
+    runtime.scheduler = scheduler;
+    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await until(async () => (await storedStatus()) === 'ok', 'the run to be recorded');
+    expect(silent).toEqual([]);
+    scheduler.stop();
+  });
+
+  it('ignores a notify_user that came from some other thread', async () => {
+    const runtime = new FakeRuntime();
+    const { scheduler, silent } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.noteNotify('someone-else');
+    scheduler.runNow(res.task.id);
+    await until(async () => (await storedStatus()) === 'ok', 'the run to be recorded');
+    expect(silent).toHaveLength(1);
     scheduler.stop();
   });
 });

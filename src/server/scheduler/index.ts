@@ -8,6 +8,7 @@ import type {
   TaskSchedule
 } from '../../shared/types';
 import { isContextOverflowError } from '../backend/overflow';
+import { toMs } from '../../shared/inbox';
 import { isValidCron, nextAfter } from './cron';
 import { readTasks, saveTasks, titleFromPrompt } from '../workspace/tasks';
 import * as activity from '../activity';
@@ -32,6 +33,12 @@ export interface SchedulerOptions {
   isUserActive?: () => boolean;
   /** Abort an in-flight turn (wired to runtime.interruptTurn) for preemption. */
   interrupt?: (turnId: string) => Promise<void>;
+  /**
+   * A run settled without calling `notify_user`: it found nothing worth raising.
+   * `before` and `at` bracket the run in the thread's own mtime terms, so the host
+   * can keep the turn's mtime bump from reading as activity in the Inbox.
+   */
+  onSilentRun?: (threadId: string, before: number, at: number) => void;
 }
 
 // Timer cap: setTimeout is unreliable over very long delays and across system
@@ -49,8 +56,23 @@ const IDLE_POLL_MS = 15 * 1000;
 const DEFER_CAP_MS = 30 * 60 * 1000; // 30m
 // A run preempted by the user retries after idle at most this many times per firing.
 const MAX_REQUEUES = 3;
+// Slop on the "this run was silent" stamp. Thread mtimes are second-granular and
+// the backend's last session write can land after turn/completed, so a stamp taken
+// at the exact instant the run settled can still end up behind the file it is
+// meant to cover — which would resurrect the thread anyway. Nothing but the run's
+// own trailing write realistically happens in this window.
+const SILENT_RUN_GRACE_MS = 2000;
 
 export { isContextOverflowError };
+
+interface ActiveRun {
+  taskId: string;
+  threadId: string;
+  turnId: string | null;
+  preempted: boolean;
+  /** The run called `notify_user` — i.e. it found something worth surfacing. */
+  notified: boolean;
+}
 
 export class TaskScheduler {
   private tasks: ScheduledTask[] = [];
@@ -59,7 +81,7 @@ export class TaskScheduler {
   private queue: Promise<unknown> = Promise.resolve();
   private started = false;
   /** The scheduler-owned turn currently in flight (preemption target). */
-  private activeRun: { taskId: string; turnId: string | null; preempted: boolean } | null = null;
+  private activeRun: ActiveRun | null = null;
   /** Preempt-retry counts per firing, cleared on a completed (non-preempted) run. */
   private requeueCounts = new Map<string, number>();
 
@@ -78,6 +100,17 @@ export class TaskScheduler {
     // turnId may still be null while startTurn is building the prompt; runTask
     // checks the flag right after it resolves and interrupts then.
     if (run.turnId && this.opts.interrupt) void this.opts.interrupt(run.turnId).catch(() => undefined);
+  }
+
+  /**
+   * The in-flight run just raised a `notify_user` alert (routed here by the task
+   * bridge). That's the run's own declaration that it found something, and the
+   * only reason a run gets to disturb the Inbox — see the silent-run handling in
+   * runTask. Scoped to the running task's thread so an interactive turn that
+   * calls the tool can't speak for it.
+   */
+  noteNotify(threadId: string): void {
+    if (this.activeRun?.threadId === threadId) this.activeRun.notified = true;
   }
 
   /** Load persisted tasks, run any overdue ones once (catch-up), then arm the timer. */
@@ -315,8 +348,10 @@ export class TaskScheduler {
 
     // Guard: the originating chat may have been deleted. Running would spawn a new
     // empty session (ensureActive falls back to newSession), so disable instead.
-    const exists = await this.threadExists(task.threadId);
-    if (!exists) {
+    // The same read yields the thread's pre-run mtime, which the silent-run stamp
+    // below needs as its "before" — reading it after the turn would be too late.
+    const before = await this.findThread(task.threadId);
+    if (!before.found) {
       task.enabled = false;
       task.lastStatus = 'failed';
       task.nextRunAt = null;
@@ -336,10 +371,12 @@ export class TaskScheduler {
     task.lastStatus = 'running';
     this.opts.onChange(this.snapshot());
 
-    const run: { taskId: string; turnId: string | null; preempted: boolean } = {
+    const run: ActiveRun = {
       taskId: id,
+      threadId: task.threadId,
       turnId: null,
-      preempted: false
+      preempted: false,
+      notified: false
     };
     this.activeRun = run;
     // Instrumented here rather than at the onRun callback: onRun only fires when
@@ -426,6 +463,20 @@ export class TaskScheduler {
       this.requeueCounts.delete(id);
     }
 
+    // The run is over and it never called notify_user, so as far as the user is
+    // concerned nothing happened — but the turn appended to the thread and moved
+    // its mtime, which is exactly what the Inbox treats as new activity. Tell the
+    // host so it can absorb the bump; otherwise every silent poll drags the thread
+    // back out of the archive and marks it unread. (A preempted-out-of-retries run
+    // reaches here too, and it produced nothing either.)
+    if (!run.notified && before.updatedAt != null && this.opts.onSilentRun) {
+      // Re-read the mtime rather than trusting the clock alone — the turn's own
+      // writes are what we're covering, and they are the freshest thing on disk.
+      const after = await this.findThread(task.threadId);
+      const at = Math.max(Date.now(), after.updatedAt ?? 0) + SILENT_RUN_GRACE_MS;
+      this.opts.onSilentRun(task.threadId, before.updatedAt, at);
+    }
+
     task.lastRunAt = atIso;
     // nextRunAt was already claimed (advanced) at dispatch time for scheduled and
     // catch-up runs; a manual runNow deliberately leaves the schedule untouched.
@@ -482,13 +533,22 @@ export class TaskScheduler {
     });
   }
 
-  private async threadExists(threadId: string): Promise<boolean> {
+  /**
+   * Look the task's chat up in the thread list: whether it still exists, and its
+   * last-activity mtime normalized to ms. `updatedAt` is null when the list read
+   * failed — the caller keeps running the task (see `found`) but skips anything
+   * that needs a trustworthy mtime.
+   */
+  private async findThread(threadId: string): Promise<{ found: boolean; updatedAt: number | null }> {
     try {
       const threads = await this.opts.runtime.listThreads();
-      return threads.some((t) => t.threadId === threadId);
+      const thread = threads.find((t) => t.threadId === threadId);
+      return thread
+        ? { found: true, updatedAt: toMs(thread.updatedAt) }
+        : { found: false, updatedAt: null };
     } catch {
       // If we can't tell, assume it exists rather than silently disabling the task.
-      return true;
+      return { found: true, updatedAt: null };
     }
   }
 }
