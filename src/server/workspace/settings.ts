@@ -26,6 +26,7 @@ import type {
   ServerSettings,
   SkillsSettings
 } from '../../shared/types';
+import { type BackgroundRole, resolveRoleEffort } from '../../shared/modelRoles';
 import { settingsStorePath } from './paths';
 
 // Stem-owned app settings. Like the chat store, kept deliberately tiny and
@@ -550,26 +551,29 @@ export interface RolePin {
 
 /**
  * What a background role actually runs on: its own pin, else the shared
- * background setting, else null — which sends the model through complete()'s own
- * fallback to `defaults.model`, the model you chat with, and leaves the effort on
- * whatever that model does by default.
+ * background setting, else the fallback for that half — null for the model, which
+ * sends it through complete()'s own fallback to `defaults.model`, the model you
+ * chat with; and the role's {@link ROLE_EFFORT_FLOOR} for the effort.
  *
  * Effort falls through separately from the model, so pinning one does not pin the
  * other: the safety check can be moved to a bigger model and still be told to
  * answer fast, and a role left alone keeps following Background work when that
  * changes.
  */
-export function backgroundRunFor(settings: ServerSettings, pin: RolePin): RoleRun {
+export function backgroundRunFor(settings: ServerSettings, role: BackgroundRole, pin: RolePin): RoleRun {
   return {
     model: pin.model ?? settings.defaults.backgroundModel,
-    effort: pin.effort ?? settings.defaults.backgroundEffort
+    effort: resolveRoleEffort(role, pin.effort, settings.defaults.backgroundEffort)
   };
 }
 
 /** {@link backgroundRunFor} for the many call sites that have to read settings anyway. */
-export async function backgroundRunOf(pin: (settings: ServerSettings) => RolePin): Promise<RoleRun> {
+export async function backgroundRunOf(
+  role: BackgroundRole,
+  pin: (settings: ServerSettings) => RolePin
+): Promise<RoleRun> {
   const settings = await readSettings();
-  return backgroundRunFor(settings, pin(settings));
+  return backgroundRunFor(settings, role, pin(settings));
 }
 
 /**

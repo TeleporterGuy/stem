@@ -133,6 +133,25 @@ test('each background job can be told how hard to think, without leaving the gro
   }
   expect(await roleEfforts()).toEqual({ subject: null, judge: null, curator: null });
 
+  // Unset is not the same as undecided: with nothing set anywhere the two cheap
+  // jobs land on a level chosen for them, and the row says which. This is what
+  // stops "sane defaults" from being a comment in a file nobody reads.
+  //
+  // The subject writer's floor is Off, but the model here offers Low as its
+  // lowest — so the row says Low, which is what pi will clamp it to. A note that
+  // reported the asked-for level would be wrong in exactly this case.
+  const rows = mainWindow.locator('.mp-effort');
+  await expect(rows.filter({ has: mainWindow.getByLabel('Subject effort', { exact: true }) })).toContainText(
+    'uses Low'
+  );
+  await expect(rows.filter({ has: mainWindow.getByLabel('Safety-check effort', { exact: true }) })).toContainText(
+    'uses Low'
+  );
+  // Curation has no floor: it keeps whatever the model does on its own.
+  await expect(rows.filter({ has: mainWindow.getByLabel('Skills curator effort', { exact: true }) })).toContainText(
+    'uses the model’s own default'
+  );
+
   await mainWindow.getByLabel('Safety-check effort', { exact: true }).selectOption('low');
   await expect.poll(async () => (await roleEfforts()).judge).toBe('low');
   // One role's level is one role's: the other two stay on the group, and the

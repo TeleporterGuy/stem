@@ -118,7 +118,7 @@ export async function writeSubject(
     if (!force && !stillAutoNamed(await deps.currentTitle(threadId), firstMessage)) return null;
 
     const reply = await deps.complete(subjectPrompt(firstMessage), {
-      ...(await backgroundRunOf(() => ({ model: chats.subjectModel, effort: chats.subjectEffort }))),
+      ...(await backgroundRunOf('subject', () => ({ model: chats.subjectModel, effort: chats.subjectEffort }))),
       timeoutMs: SUBJECT_TIMEOUT_MS
     });
     const subject = sanitizeSubject(reply);

@@ -92,7 +92,7 @@ export function initRecallTasks(deps: {
   // model. Read fresh each pass so a Settings change applies to the next run.
   const skillsLlm: LlmClient = {
     complete: async (prompt) =>
-      deps.runtime().complete(prompt, await backgroundRunOf((s) => ({ model: s.skills.model, effort: s.skills.effort })))
+      deps.runtime().complete(prompt, await backgroundRunOf('curator', (s) => ({ model: s.skills.model, effort: s.skills.effort })))
   };
 
   let distilling = false;

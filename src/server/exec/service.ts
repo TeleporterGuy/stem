@@ -10,6 +10,7 @@ import type {
   ServerSettings
 } from '../../shared/types';
 import type { ChatBackend, ExecBridge, ExecBridgeResult, ExecRequest } from '../backend/types';
+import { resolveRoleEffort } from '../../shared/modelRoles';
 import { log } from '../log';
 import { execWorkspaceDir } from '../workspace/paths';
 import { clampTimeout, execEnv, resolveLoginPath, runCommand } from './executor';
@@ -206,8 +207,8 @@ export class ExecService implements ExecBridge {
         model,
         // The judge sits between you and every command you run, so it feels the
         // effort setting more than any other role does — its own if it has been
-        // given one, else the shared Background work level.
-        effort: settings.judgeEffort ?? defaults.backgroundEffort,
+        // given one, else the shared Background work level, else Low.
+        effort: resolveRoleEffort('judge', settings.judgeEffort, defaults.backgroundEffort),
         timeoutMs: JUDGE_TIMEOUT_MS,
         priority: true
       });

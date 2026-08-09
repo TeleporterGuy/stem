@@ -11,7 +11,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { ModelSummary } from '../../src/shared/types';
-import { clampEffort, EffortSelect, effortsOf } from '../../src/renderer/ui/EffortSelect';
+import { clampEffort, effectiveEffort, EffortSelect, effortsOf } from '../../src/renderer/ui/EffortSelect';
 
 function model(id: string, supportedEfforts: string[]): ModelSummary {
   return {
@@ -53,6 +53,21 @@ describe('effortsOf / clampEffort', () => {
     expect(clampEffort(MODELS, 'x/thinker', 'xhigh')).toBeNull();
     expect(clampEffort(MODELS, 'x/plain', 'high')).toBeNull();
     expect(clampEffort(MODELS, 'x/thinker', null)).toBeNull();
+  });
+});
+
+describe('effectiveEffort', () => {
+  it('answers with the level pi will actually land on', () => {
+    // A floor is chosen for a JOB, not for a model, so the model it lands on may
+    // not have it — and pi clamps to the nearest level at or above the one asked
+    // for rather than refusing. Reporting the asked-for level would make the note
+    // wrong in precisely the case it exists for.
+    expect(effectiveEffort(['off', 'low', 'high'], 'low')).toBe('low');
+    expect(effectiveEffort(['low', 'medium', 'high'], 'off')).toBe('low');
+    expect(effectiveEffort(['off', 'low'], 'high')).toBe('low');
+    // Nothing to clamp against, and nothing asked for.
+    expect(effectiveEffort([], 'off')).toBe('off');
+    expect(effectiveEffort(['low'], null)).toBeNull();
   });
 });
 
@@ -103,6 +118,30 @@ describe('EffortSelect', () => {
     );
     expect(options(html)).toContainEqual(['xhigh', 'X-High — not on this model']);
     expect(html).toContain('selected');
+  });
+
+  it('says what the empty option comes out as, and only while it is the choice', () => {
+    // The cheap defaults are invisible otherwise: "Background work" is itself
+    // unset out of the box, so the row would name a rung and stop, leaving the
+    // reader to walk the chain to find that subjects run with reasoning off.
+    const render = (value: string | null, resolved: string | null): string =>
+      renderToStaticMarkup(
+        createElement(EffortSelect, {
+          label: 'Subject effort',
+          value,
+          efforts: ['off', 'low', 'medium'],
+          emptyLabel: 'Background work',
+          resolved,
+          onChange: () => undefined
+        })
+      );
+    expect(render(null, 'off')).toContain('uses Off');
+    // A role with no floor of its own lands on the model's own depth, and says so
+    // rather than going quiet, which would read as "nothing happens here".
+    expect(render(null, null)).toContain('uses the model’s own default');
+    // Chosen level: the select itself is the answer, so the line would only
+    // repeat it — or, worse, contradict it while the save is in flight.
+    expect(render('medium', 'off')).not.toContain('uses');
   });
 
   it('renders nothing at all for a model that does not reason', () => {

@@ -11,7 +11,7 @@ import type {
   LocalProviderTestResult
 } from '../../../../shared/types';
 import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerName } from '../../../../shared/providers';
-import { resolveBackgroundModel, resolveMemoryModel } from '../../../../shared/modelRoles';
+import { resolveBackgroundModel, resolveMemoryModel, resolveRoleEffort } from '../../../../shared/modelRoles';
 import { clampEffort, EffortSelect, effortsOf } from '../../../ui/EffortSelect';
 import { localProbeTarget, probeStillDescribes } from '../../../localProbe';
 import { RequestGate } from '../../../requestGate';
@@ -87,14 +87,16 @@ type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
  * rungs: a role's own level, else the group's. The levels offered are the ones
  * the model it resolves to actually has, so the list changes when the picker
  * above it does — and a level the new model can't do is cleared rather than left
- * showing as a choice that isn't. Left empty a role stays exactly where it was:
- * following Background work, which itself defaults to whatever pi picks.
+ * showing as a choice that isn't.
  *
  * The three jobs in the Background group each get their own, because "cheap" is
  * not one decision for all of them: the safety check is a latency budget (it
  * stands between you and every command), chat subjects are three words off a
  * sentence, and curation is editorial judgement that can want more thinking than
- * either — on the same model.
+ * either — on the same model. Left alone they end at a level chosen per job
+ * rather than at "whatever pi picks" (see ROLE_EFFORT_FLOOR), and each says
+ * underneath what that comes out as, so the default is legible without reading
+ * the chain.
  *
  * A role that is switched off elsewhere still shows its model, with a line
  * saying it is idle. An overview that hid them would answer "what is running on
@@ -191,8 +193,9 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
               reasoning, and <strong>Low is a good place to start</strong> — the safety check in
               particular sits between you and every command you run, where waiting costs more than
               depth buys. Each job below can override it with a level of its own; left alone they
-              all follow this one. Left on <em>Model default</em>, nothing has changed: that is
-              where every background job ran before this setting existed.
+              all follow this one — and where this is left on <em>Model default</em>, they end at a
+              level chosen for that job rather than at whatever pi picks, which each of them says
+              underneath.
             </InfoTip>
           </span>
           <ModelPicker
@@ -302,8 +305,10 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             <InfoTip label="About the subject model">
               Writes each new chat a short subject from your first message, once, the way an email
               names a thread. <strong>The smallest, cheapest model you have is plenty</strong> —
-              this is a few words off your opening line, not a summary of the conversation. Turn
-              subjects on or off under Chat.
+              this is a few words off your opening line, not a summary of the conversation. It also
+              runs with <strong>reasoning off</strong> unless you say otherwise: naming a thread is
+              extraction, and thinking about it is time spent before the chat you actually opened
+              can be found again. Turn subjects on or off under Chat.
             </InfoTip>
           </span>
           <ModelPicker
@@ -328,6 +333,7 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             value={subjectEffort}
             efforts={effortsOf(models, subjectModel ?? backgroundResolved)}
             emptyLabel="Background work"
+            resolved={resolveRoleEffort('subject', null, backgroundEffort)}
             onChange={(effort) => {
               setSubjectEffort(effort);
               window.stem
@@ -346,6 +352,8 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
               anything it flags stops for your approval. It runs on <em>every</em> command that is
               not allowlisted, so <strong>this is the role that most wants a cheap fast model</strong>
               . It is a heuristic, not a security boundary, and a bigger model does not change that.
+              It thinks at <strong>Low</strong> unless you say otherwise — enough to judge whether a
+              command matches what you asked for, without making you wait for it.
             </InfoTip>
           </span>
           <ModelPicker
@@ -370,6 +378,7 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             value={judgeEffort}
             efforts={effortsOf(models, judgeModel ?? backgroundResolved)}
             emptyLabel="Background work"
+            resolved={resolveRoleEffort('judge', null, backgroundEffort)}
             onChange={(effort) => {
               setJudgeEffort(effort);
               window.stem.updateExecSettings({ judgeEffort: effort }).then((s) => setJudgeEffort(s.exec.judgeEffort));
@@ -410,6 +419,7 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             value={curatorEffort}
             efforts={effortsOf(models, curatorModel ?? backgroundResolved)}
             emptyLabel="Background work"
+            resolved={resolveRoleEffort('curator', null, backgroundEffort)}
             onChange={(effort) => {
               setCuratorEffort(effort);
               window.stem.updateSkillsSettings({ effort }).then((s) => setCuratorEffort(s.skills.effort));

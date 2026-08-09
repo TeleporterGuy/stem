@@ -127,6 +127,12 @@ describe('writeSubject', () => {
     // The seam that swallowed this before: SubjectDeps.complete took `{ model,
     // timeoutMs }` and the effort rode in on a spread, so it type-checked either
     // way and a destructure at the other end would have dropped it silently.
+    // Nothing set anywhere: a subject is extraction, so it runs with reasoning
+    // off rather than at whatever pi picks for the model.
+    const bare = stub({ title: '' });
+    await writeSubject(bare.deps, 'a', 'pull the Q3 numbers');
+    expect(bare.complete.mock.calls[0][1]).toMatchObject({ model: null, effort: 'off' });
+
     await updateDefaults({ backgroundModel: 'x/bg', backgroundEffort: 'low' });
     const shared = stub({ title: '' });
     await writeSubject(shared.deps, 'a', 'pull the Q3 numbers');

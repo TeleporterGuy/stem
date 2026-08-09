@@ -145,6 +145,22 @@ describe('ExecService judge', () => {
     expect(completeOpts[0]?.effort).toBe('off');
   });
 
+  it('thinks at Low when nobody has set a level at all', async () => {
+    // The floor under this role, and the reason it is not `off` like the subject
+    // writer's: deciding whether a command serves what the user asked for is a
+    // judgement, so it gets a little thinking — just not enough to be felt.
+    settings.defaults.backgroundEffort = null;
+    completeImpl = async () => 'unsure maybe';
+    await service.handleExecRequest({
+      command: PS,
+      cwd,
+      threadId: 't1',
+      isScheduled: false,
+      currentModel: 'anthropic/claude-opus-4'
+    });
+    expect(completeOpts[0]?.effort).toBe('low');
+  });
+
   it('escalates with judgeVerdict failed, saying why in the card\'s voice', async () => {
     completeImpl = async () => {
       throw new Error('pi completion timed out.');

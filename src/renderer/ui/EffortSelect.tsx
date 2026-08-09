@@ -22,6 +22,23 @@ export function clampEffort(
 }
 
 /**
+ * What the model will actually do when asked for `effort`.
+ *
+ * A fallback level is chosen for a job, not for a model, so the model it lands on
+ * may not have it — and pi does not refuse in that case, it clamps to the nearest
+ * level at or above the one asked for. Saying "uses Off" under a model whose
+ * lowest is Low would be a note that is wrong in exactly the situation the note
+ * exists for.
+ */
+export function effectiveEffort(efforts: string[], effort: string | null): string | null {
+  if (effort === null || efforts.length === 0 || efforts.includes(effort)) return effort;
+  const order = Object.keys(EFFORT_LABELS);
+  const asked = order.indexOf(effort);
+  if (asked === -1) return effort;
+  return efforts.find((e) => order.indexOf(e) >= asked) ?? efforts[efforts.length - 1];
+}
+
+/**
  * How hard a background role may think, next to the model it will think with.
  *
  * A select rather than the segmented control the composer uses: this one carries
@@ -34,6 +51,12 @@ export function clampEffort(
  * saying "Background work" instead. Naming both "Model default" would claim the
  * jobs under it ignore the level set one block up, which is the opposite of true.
  *
+ * `resolved` is what that fallthrough currently comes out as, said underneath the
+ * way the model picker says which model an unset role lands on. Without it the
+ * cheap defaults would be invisible: a subject writer left alone runs with
+ * reasoning off, and a row that only said "Background work" — itself unset —
+ * would leave you reading the whole chain to find that out.
+ *
  * Hidden entirely for a model that doesn't reason, since there is nothing to
  * choose. A level saved against some earlier model still shows even when the
  * current one can't do it, because a setting you can see is one you can clear.
@@ -43,12 +66,14 @@ export function EffortSelect({
   value,
   efforts,
   emptyLabel = 'Model default',
+  resolved,
   onChange
 }: {
   label: string;
   value: string | null;
   efforts: string[];
   emptyLabel?: string;
+  resolved?: string | null;
   onChange: (effort: string | null) => void;
 }) {
   if (efforts.length === 0 && !value) return null;
@@ -72,6 +97,18 @@ export function EffortSelect({
           <option value={orphaned}>{EFFORT_LABELS[orphaned] ?? orphaned} — not on this model</option>
         )}
       </select>
+      {/* Only while unset: once a level is chosen the select itself says it. */}
+      {value === null && resolved !== undefined && <ResolvedNote efforts={efforts} resolved={resolved} />}
     </label>
+  );
+}
+
+/** The "uses …" line under an unset select, naming where the fallthrough lands. */
+function ResolvedNote({ efforts, resolved }: { efforts: string[]; resolved: string | null }) {
+  const effective = effectiveEffort(efforts, resolved);
+  return (
+    <em className="mp-resolved">
+      {effective === null ? 'uses the model’s own default' : `uses ${EFFORT_LABELS[effective] ?? effective}`}
+    </em>
   );
 }

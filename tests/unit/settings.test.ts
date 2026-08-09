@@ -93,11 +93,11 @@ describe('onboarding + default-model settings', () => {
       backgroundEffort: 'low'
     });
     const withBackground = await readSettings();
-    expect(backgroundRunFor(withBackground, { model: 'x/pinned', effort: null })).toEqual({
+    expect(backgroundRunFor(withBackground, 'curator', { model: 'x/pinned', effort: null })).toEqual({
       model: 'x/pinned',
       effort: 'low'
     });
-    expect(backgroundRunFor(withBackground, { model: null, effort: null })).toEqual({
+    expect(backgroundRunFor(withBackground, 'curator', { model: null, effort: null })).toEqual({
       model: 'anthropic/claude-haiku-4',
       effort: 'low'
     });
@@ -105,7 +105,7 @@ describe('onboarding + default-model settings', () => {
     // resolving it here would freeze the chat model into every background call
     // instead of letting it follow.
     await updateDefaults({ backgroundModel: null });
-    expect(backgroundRunFor(await readSettings(), { model: null, effort: null }).model).toBeNull();
+    expect(backgroundRunFor(await readSettings(), 'curator', { model: null, effort: null }).model).toBeNull();
   });
 
   it('memoryRunFor skips the background model entirely', async () => {
@@ -134,22 +134,43 @@ describe('onboarding + default-model settings', () => {
     // per-role select saved a value nothing ever looked at.
     await updateDefaults({ backgroundModel: 'anthropic/claude-haiku-4', backgroundEffort: 'low' });
     const s = await readSettings();
-    expect(backgroundRunFor(s, { model: null, effort: null })).toEqual({
+    expect(backgroundRunFor(s, 'curator', { model: null, effort: null })).toEqual({
       model: 'anthropic/claude-haiku-4',
       effort: 'low'
     });
-    expect(backgroundRunFor(s, { model: null, effort: 'high' })).toEqual({
+    expect(backgroundRunFor(s, 'curator', { model: null, effort: 'high' })).toEqual({
       model: 'anthropic/claude-haiku-4',
       effort: 'high'
     });
-    expect(backgroundRunFor(s, { model: 'x/curator', effort: null })).toEqual({
+    expect(backgroundRunFor(s, 'curator', { model: 'x/curator', effort: null })).toEqual({
       model: 'x/curator',
       effort: 'low'
     });
-    expect(backgroundRunFor(s, { model: 'x/curator', effort: 'off' })).toEqual({
+    expect(backgroundRunFor(s, 'curator', { model: 'x/curator', effort: 'off' })).toEqual({
       model: 'x/curator',
       effort: 'off'
     });
+  });
+
+  it('ends a job that nobody has set at its own floor, not at the model’s default', async () => {
+    // The sane-defaults rung. Out of the box a subject is three words off your
+    // first line — reasoning on that is time spent before the chat can be found
+    // again — and the safety check answers in front of you on every command.
+    // Curation is the exception: editorial judgement over the whole library, so
+    // it keeps the model's full attention.
+    //
+    // Crucially these are the LAST rung, not a pin. Setting Background work
+    // still moves all three, which is what the group knob is for.
+    const bare = await readSettings();
+    expect(backgroundRunFor(bare, 'subject', { model: null, effort: null }).effort).toBe('off');
+    expect(backgroundRunFor(bare, 'judge', { model: null, effort: null }).effort).toBe('low');
+    expect(backgroundRunFor(bare, 'curator', { model: null, effort: null }).effort).toBeNull();
+
+    await updateDefaults({ backgroundEffort: 'high' });
+    const group = await readSettings();
+    for (const role of ['subject', 'judge', 'curator'] as const) {
+      expect(backgroundRunFor(group, role, { model: null, effort: null }).effort).toBe('high');
+    }
   });
 
   it('persists and coerces the per-role effort pins', async () => {

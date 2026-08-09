@@ -58,7 +58,7 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     // so a manual "Tidy up" always runs. Reload so pi rescans the updated skills.
     const llm: LlmClient = {
       complete: async (prompt) =>
-        deps.runtime().complete(prompt, await backgroundRunOf((s) => ({ model: s.skills.model, effort: s.skills.effort })))
+        deps.runtime().complete(prompt, await backgroundRunOf('curator', (s) => ({ model: s.skills.model, effort: s.skills.effort })))
     };
     await curateSkills(llm, { force: true });
     await deps.runtime().requestSkillReload();

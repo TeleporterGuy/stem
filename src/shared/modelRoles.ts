@@ -56,6 +56,49 @@ export function resolveBackgroundModel(
   return pinned ?? backgroundModel ?? mainModel;
 }
 
+/** The background jobs that carry an effort setting of their own. */
+export type BackgroundRole = 'subject' | 'judge' | 'curator';
+
+/**
+ * How hard each background job thinks when nobody has said anything at all —
+ * neither the job nor Background work above it.
+ *
+ * Not a pin: it is the last rung of the same chain, so setting Background work
+ * still moves every job that hasn't been given a level of its own. What it
+ * replaces is the old last rung, "whatever pi picks for the model", which for
+ * most models is Medium — real reasoning spent on writing three words off your
+ * first line, on every new chat, forever.
+ *
+ * A subject is extraction, not thought: `off` is the honest level for it, and on
+ * a model that has no `off` pi clamps up to its lowest instead of failing. The
+ * safety check is the same bargain with a floor under it — it is a judgement
+ * about whether a command matches what you asked for, so it thinks a little, and
+ * it thinks fast because it stands between you and every command you run.
+ * Curation is left alone: it is editorial judgement over a whole library, and
+ * the one background role worth the model's full attention.
+ */
+export const ROLE_EFFORT_FLOOR: Record<BackgroundRole, string | null> = {
+  subject: 'off',
+  judge: 'low',
+  curator: null
+};
+
+/**
+ * How hard a background job may think: its own level, else the shared Background
+ * work one, else the job's floor above.
+ *
+ * Shared for the same reason the model chain is: the answer is shown as well as
+ * used. An effort select left unset says underneath what it comes out as today,
+ * and it has to reach the same conclusion the server does.
+ */
+export function resolveRoleEffort(
+  role: BackgroundRole,
+  pinned: string | null,
+  backgroundEffort: string | null
+): string | null {
+  return pinned ?? backgroundEffort ?? ROLE_EFFORT_FLOOR[role];
+}
+
 /**
  * Resolve the judge model for the command safety check.
  *
