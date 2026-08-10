@@ -1,5 +1,6 @@
 import { TaskScheduler } from '../scheduler';
 import { noteSilentRun } from '../workspace/inbox';
+import { readSettings } from '../workspace/settings';
 import type { ChatBackend } from '../backend';
 
 /**
@@ -45,15 +46,26 @@ export function initTaskScheduler(deps: {
       await scheduler.remove(taskId);
       return scheduler.snapshot().length < before ? { ok: true } : { ok: false, error: 'No such task.' };
     },
-    // notify_user: surface a prominent in-app alert — raise + focus the main window,
-    // nudge at the OS level (dock bounce / taskbar flash), and show the alert modal.
-    // Native OS notifications were judged not prominent enough for watch-style tasks.
+    // notify_user: how loudly this lands is the user's call (settings.tasks.notify).
+    // `alert`, the default, is the full treatment — raise + focus the main window,
+    // nudge at the OS level (dock bounce / taskbar flash), and show the alert modal;
+    // native OS notifications were judged not prominent enough for watch-style tasks.
+    // `nudge` keeps only the OS nudge, `inbox` interrupts not at all.
+    //
+    // What every mode keeps is the Inbox: the noteNotify below is the run's
+    // declaration that it found something, so its turn stays out of onSilentRun and
+    // the chat surfaces as an unread row on its own. That is the whole of `inbox`
+    // mode — there is nothing extra to emit, because a written turn is already the
+    // signal the Inbox reads.
     notify: async ({ title, message }, threadId) => {
-      // Also the run's declaration that it found something: without it the run
-      // counts as silent and its turn is kept out of the Inbox (see onSilentRun).
       scheduler.noteNotify(threadId);
-      deps.revealMainWindow();
+      // Read per notification rather than once at wiring time: a task fires long
+      // after startup, and the toggle must apply to the very next run.
+      const mode = (await readSettings().catch(() => null))?.tasks.notify ?? 'alert';
+      if (mode === 'inbox') return;
+      if (mode === 'alert') deps.revealMainWindow();
       deps.requestAttention();
+      if (mode === 'nudge') return;
       deps.emit('tasks:notify', {
         threadId,
         title,

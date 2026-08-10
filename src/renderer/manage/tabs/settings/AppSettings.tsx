@@ -5,6 +5,7 @@ import type {
   EscapeAction,
   ModelSummary,
   ReleaseNotesSnapshot,
+  TaskNotifyMode,
   WebSearchSettings,
   QuickChatSettings,
   QuickChatShortcutStatus
@@ -34,9 +35,67 @@ export function AppSettings({ models }: { models: ModelSummary[] }) {
   return (
     <div>
       <InputSection />
+      <NotificationsSection />
       <QuickChatSection models={models} />
       <AboutSection />
     </div>
+  );
+}
+
+/** How loudly a scheduled run is allowed to reach you when it finds something. */
+function NotificationsSection() {
+  const [notify, setNotify] = useState<TaskNotifyMode>('alert');
+
+  useEffect(() => {
+    void window.stem.getSettings().then((s) => setNotify(s.tasks.notify));
+  }, []);
+
+  function select(mode: TaskNotifyMode) {
+    setNotify(mode); // optimistic; persist + reconcile from the saved settings
+    window.stem.updateTasksSettings({ notify: mode }).then((s) => setNotify(s.tasks.notify));
+  }
+
+  return (
+    <>
+      <div className="grp-head">Notifications</div>
+      <div className="formgroup">
+        <div className="set-block">
+          <span className="set-sub">
+            When a scheduled task has something to say{' '}
+            <InfoTip label="How scheduled tasks reach you">
+              A scheduled run only speaks up when it found what it was watching for.{' '}
+              <strong>Pop-up</strong> brings Stem to the front and shows the message in a dialog.{' '}
+              <strong>Nudge</strong> bounces the dock and leaves it at that. <strong>Inbox only</strong>{' '}
+              does nothing at all while you work. In every case the chat shows up unread in your
+              Inbox, so nothing is ever lost — the choice is only how much it interrupts.
+            </InfoTip>
+          </span>
+          <div className="seg-ctl">
+            <button
+              className={notify === 'alert' ? 'active' : ''}
+              onClick={() => select('alert')}
+              title="Bring Stem to the front and show the message in a dialog"
+            >
+              Pop-up
+            </button>
+            <button
+              className={notify === 'nudge' ? 'active' : ''}
+              onClick={() => select('nudge')}
+              title="Bounce the dock (flash the taskbar), but don't take focus"
+            >
+              Nudge
+            </button>
+            <button
+              className={notify === 'inbox' ? 'active' : ''}
+              onClick={() => select('inbox')}
+              title="Don't interrupt — the chat just goes unread in the Inbox"
+            >
+              Inbox only
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 

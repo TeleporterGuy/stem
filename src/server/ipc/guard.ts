@@ -135,6 +135,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'settings:updateSkills': [a.object],
   'settings:updateChats': [a.object],
   'settings:updateDefaults': [a.object],
+  'settings:updateTasks': [a.object],
   'settings:updateExec': [a.object],
   'exec:resolveApproval': [a.string, a.oneOf(['allowOnce', 'alwaysAllow', 'deny'])],
   // A thread id or the literal 'unfiled'. The handler validates the id shape

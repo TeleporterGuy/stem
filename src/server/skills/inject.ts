@@ -3,6 +3,7 @@ import type { EmbeddingsClient } from '../recall/embeddings';
 import type { RerankClient } from '../recall/rerank';
 import { dot, magnitude } from '../recall/vector';
 import { ensureSkillVectors, skillVectorText, type SkillEmbedder } from './vectors';
+import { DEFAULT_SHORTLIST_SIZE, selectCut, type CutReason, type CutResult } from './gate';
 
 // Per-turn skill selection: which saved procedures the model gets, and in what
 // depth. This is the half of the skills rebuild that takes retrieval away from
@@ -62,11 +63,22 @@ export interface IndexedSkill {
   description: string;
 }
 
+/** Why this turn inlined what it did — for the log, never for the prompt. */
+export interface SkillDecision {
+  reason: CutReason | 'no-embeddings';
+  /** Candidates that could be ranked (had a usable vector). */
+  candidates: number;
+  topCosine?: number;
+  inlined: string[];
+}
+
 export interface SkillSelection {
-  /** Full bodies — above the cosine gate, capped at `maxInlined`. */
+  /** Full bodies — whatever survived the cut, capped at `maxInlined`. */
   inlined: InlinedSkill[];
   /** Everything else the model may draw on, name + description only. */
   indexed: IndexedSkill[];
+  /** What the cut did and why. Absent only from the trivial empty-library case. */
+  decision?: SkillDecision;
 }
 
 /**
@@ -94,14 +106,25 @@ export const MAX_INLINED_SKILLS = 2;
 export const MAX_INDEXED_SKILLS = 30;
 
 /**
- * Cosine floor for inlining. Same value as `STANDARD_FACT_MIN_COSINE` in
- * `recall/inject.ts` and for the same reason: the embedded text (a name plus a
- * one-sentence description) is a short passage of the same shape as a fact, run
- * through the same model, so it inherits the same calibration — e5-family
- * similarities squash into roughly [0.7, 1.0] and 0.72 sits above the unrelated
- * -content floor. Not raised above it despite skills being instructions: the K
- * cap already bounds the blast radius, and the block's follow-but-report framing
- * is what makes a wrong inline recoverable.
+ * RETIRED as the cut. Nothing reads this any more; it is exported so the eval
+ * and the regression tests can still express the behaviour it used to produce.
+ *
+ * It was lifted from `STANDARD_FACT_MIN_COSINE` in `recall/inject.ts` on the
+ * reasoning that a name plus a one-sentence description is a short passage of
+ * the same shape as a fact, run through the same model, so it inherits the same
+ * calibration — "e5-family similarities squash into roughly [0.7, 1.0] and 0.72
+ * sits above the unrelated-content floor". Measured on the live fact set, which
+ * carries the same facts embedded under both models, that was wrong twice over:
+ *
+ *   cosine between ~4000 random (unrelated) fact pairs
+ *     multilingual-e5-base   p50 0.754   82.97% of pairs >= 0.72
+ *     qwen3-embedding:4b     p50 0.376    0.63% of pairs >= 0.72
+ *
+ * Under e5 it sat BELOW the noise median and gated nothing — top-M and the
+ * reranker did all the work. Under qwen3 the identical constant lands at the
+ * 99.4th percentile and shut the stage off: one inline in seven days over a
+ * library of nine. The cut now lives in `skills/gate.ts`, which is forbidden
+ * absolute cosines for exactly this reason.
  */
 export const SKILL_MIN_COSINE = 0.72;
 
@@ -150,8 +173,18 @@ export interface SelectSkillsOptions {
   maxInlined?: number;
   /** Max name-only entries (default {@link MAX_INDEXED_SKILLS}). */
   maxIndexed?: number;
-  /** Raw-cosine floor for inlining (default {@link SKILL_MIN_COSINE}). */
+  /**
+   * Raw-cosine floor for inlining. Legacy: the shipped cut used this and nothing
+   * reads it now. Retained so the historical behaviour stays expressible in the
+   * eval, which has to be able to show what it cost.
+   */
   minCosine?: number;
+  /**
+   * Override the reranker's own calibrated floor. Tests and previews only — in
+   * production this comes from RERANK_CATALOG via `RerankClient.minRelevantScore`,
+   * so the number lives next to the weights it was measured against.
+   */
+  minRerankScore?: number;
   /** Usage blend weight; 0 disables (default {@link SKILL_USAGE_WEIGHT}). */
   usageWeight?: number;
   /** Per-slug usage counters; a slug with no entry ranks neutral. */
@@ -185,9 +218,17 @@ function toInlined(record: SkillRecordish): InlinedSkill {
   };
 }
 
-/** Everything indexed, nothing inlined — the shape every degraded path returns. */
+/**
+ * Everything indexed, nothing inlined — the shape every degraded path returns.
+ * `reason` is carried so the log can distinguish "no embedder" from "embedder
+ * ran and found nothing", which look identical in the rendered block.
+ */
 function indexAll(records: SkillRecordish[]): SkillSelection {
-  return { inlined: [], indexed: records.map(toIndexed) };
+  return {
+    inlined: [],
+    indexed: records.map(toIndexed),
+    decision: { reason: 'no-embeddings', candidates: 0, inlined: [] }
+  };
 }
 
 /**
@@ -204,7 +245,6 @@ export async function selectSkills(
   if (candidates.length === 0) return { inlined: [], indexed: [] };
 
   const maxInlined = opts.maxInlined ?? MAX_INLINED_SKILLS;
-  const minCosine = opts.minCosine ?? SKILL_MIN_COSINE;
   const usageWeight = opts.usageWeight ?? SKILL_USAGE_WEIGHT;
   const now = opts.now ?? Date.now() / 1000;
 
@@ -244,34 +284,65 @@ export async function selectSkills(
   }
   scored.sort((a, b) => b.blended - a.blended);
 
-  // The gate reads the RAW cosine, never the blended score, so the usage term
-  // can only reorder what already qualifies.
-  let above = scored.filter((s) => s.cosine >= minCosine).map((s) => s.record);
-
-  // The reranker is the optional precision stage — a cross-encoder is far better
-  // than cosine at telling two plausible descriptions apart, which is exactly
-  // the call being made when more skills qualify than we can inline. Skip it
-  // when the shortlist already fits: there is nothing to choose between.
+  // The cross-encoder is the precision stage, and — measured — the only stage
+  // that can make this call at all. It reads the query and the description
+  // together, so it can separate "explain what a CNAME record does" from "renew
+  // my domain"; a bi-encoder cannot, because the difference is intent and intent
+  // is not in a sentence vector. It scores only the cosine shortlist: that
+  // bounds the cost (~22 ms/pair) and measurably improves precision, since the
+  // bi-encoder's ordering keeps an unrelated skill out of its reach.
+  //
+  // The usage blend orders the shortlist but never reaches the cut — the cut is
+  // made on cross-encoder scores alone. That preserves the invariant the cosine
+  // gate had: usage reorders candidates, it never admits or ejects one.
+  const shortlist = scored.slice(0, DEFAULT_SHORTLIST_SIZE);
+  let cut: CutResult = { inlined: [], reason: 'no-rerank-score' };
   const rr = opts.rerank !== undefined ? opts.rerank : getRerankClient();
-  if (rr && above.length > maxInlined) {
+  if (rr && shortlist.length > 0) {
     try {
-      if (await rr.available()) {
-        const ranked = await rr.rerank(query, above.map(skillVectorText), maxInlined);
-        const picked = ranked.map((r) => above[r.index]).filter((r): r is SkillRecordish => !!r);
-        // Reranking reorders the gated set; it must not shrink it, or a skill the
-        // reranker merely deprioritized would vanish from `indexed` too.
-        if (picked.length > 0) {
-          const seen = new Set(picked.map((r) => r.slug));
-          above = [...picked, ...above.filter((r) => !seen.has(r.slug))];
-        }
+      // A floor of null means a backend whose score scale we cannot know (any
+      // remote /rerank server). Not an error — just not a cut we may make.
+      const floor = opts.minRerankScore ?? (await rr.minRelevantScore?.()) ?? null;
+      if (floor !== null && (await rr.available())) {
+        // One pair per call, NOT one batched call. A cross-encoder logit moves
+        // with the batch it was scored in — the same pair reads −7.890 alone
+        // and −8.289 in a batch of six, because padding to the batch's longest
+        // sequence leaks into the result. Ranking is indifferent to that;
+        // comparing against an absolute floor is not, and the drift is wider
+        // than the margin at the floor. Costs `shortlistSize` forward passes
+        // (~22 ms each) to make the score a property of the pair alone.
+        const scores = await Promise.all(
+          shortlist.map(async (s) => {
+            const [top] = await rr.rerank(query, [skillVectorText(s.record)], 1);
+            return { slug: s.record.slug, cosine: s.cosine, rerankScore: top?.score };
+          })
+        );
+        cut = selectCut(scores, {
+          strategy: 'rerank',
+          maxInlined,
+          minRerankScore: floor,
+          shortlistSize: shortlist.length
+        });
       }
     } catch {
-      // Reranker down or misconfigured: keep the (working) cosine ordering
-      // rather than discarding a good embedding result.
+      // Reranker down mid-turn: fall through to the cosine-only cut rather than
+      // discarding a good embedding result.
     }
   }
 
-  const inlined = above.slice(0, maxInlined);
+  // Fallback when there is no calibrated cross-encoder. Strictly worse — it
+  // fires on more than half the negatives in the golden fixture, and a library
+  // holding near-duplicate skills defeats it outright, since nothing can stand
+  // clear of a pack it is a member of. Kept because name-only is worse still.
+  if (cut.reason === 'no-rerank-score') {
+    cut = selectCut(scored.map((s) => ({ slug: s.record.slug, cosine: s.cosine })), {
+      strategy: 'relative',
+      maxInlined
+    });
+  }
+
+  const bySlug = new Map(candidates.map((r) => [r.slug, r]));
+  const inlined = cut.inlined.map((slug) => bySlug.get(slug)).filter((r): r is SkillRecordish => !!r);
   const inlinedSlugs = new Set(inlined.map((r) => r.slug));
   // Ranked first, then unscored (a missing vector is not evidence of anything, so
   // those sit behind everything that could actually be compared), then capped.
@@ -279,7 +350,19 @@ export async function selectSkills(
     0,
     opts.maxIndexed ?? MAX_INDEXED_SKILLS
   );
-  return { inlined: inlined.map(toInlined), indexed: indexed.map(toIndexed) };
+  return {
+    inlined: inlined.map(toInlined),
+    indexed: indexed.map(toIndexed),
+    // Surfaced so the caller can log it. The failure this replaced was silent:
+    // a stage that returned nothing looked exactly like a stage with nothing to
+    // say, for five days, and no log line anywhere could tell them apart.
+    decision: {
+      reason: cut.reason,
+      candidates: scored.length,
+      topCosine: scored[0]?.cosine,
+      inlined: cut.inlined
+    }
+  };
 }
 
 /**

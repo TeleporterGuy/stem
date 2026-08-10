@@ -53,7 +53,8 @@ import {
   updateWebSearch,
   updateQuickChat,
   updateRetrievalSettings,
-  updateSkillsSettings
+  updateSkillsSettings,
+  updateTasksSettings
 } from './workspace/settings';
 import { needsBackendRestart, needsWebSearchConfigWrite, writeWebSearchConfig } from './pi/web-search';
 import type {
@@ -70,6 +71,7 @@ import type {
   RetrievalStage,
   RetrievalTestResult,
   SkillsSettings,
+  TasksSettings,
   QuickChatSettings,
   RuntimeStatus,
   StartTurnInput
@@ -393,6 +395,11 @@ function registerIpc(): void {
     // Just persist — the subject writer reads mode and model fresh on every new
     // thread, and the renderer reads previewLines back for itself.
     return updateChatsSettings(patch);
+  });
+  registerServer('settings:updateTasks', async (_e, patch: Partial<TasksSettings>) => {
+    // Just persist — the scheduler's notify bridge reads the mode fresh on every
+    // notify_user, so the change applies to the very next run.
+    return updateTasksSettings(patch);
   });
   registerServer('settings:updateExec', async (_e, patch: Partial<ExecSettings>) => {
     // Just persist — the ExecService reads the policy fresh from settings on each

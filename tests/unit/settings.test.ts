@@ -18,7 +18,8 @@ import {
   updateMemorySettings,
   updateQuickChat,
   updateRetrievalSettings,
-  updateSkillsSettings
+  updateSkillsSettings,
+  updateTasksSettings
 } from '../../src/server/workspace/settings';
 import { settingsStorePath } from '../../src/server/workspace/paths';
 
@@ -273,6 +274,29 @@ describe('the fields a machine owns rather than Stem', () => {
     const s = await markOnboardingCompleted();
     expect(s.onboarding.completed).toBe(true);
     expect(s).not.toHaveProperty('releaseNotes');
+  });
+});
+
+describe('scheduled-task notification setting', () => {
+  it('defaults to the pop-up alert when no file exists', async () => {
+    expect((await readSettings()).tasks.notify).toBe('alert');
+  });
+
+  it('round-trips nudge and inbox through updateTasksSettings', async () => {
+    expect((await updateTasksSettings({ notify: 'inbox' })).tasks.notify).toBe('inbox');
+    expect((await readSettings()).tasks.notify).toBe('inbox');
+    expect((await updateTasksSettings({ notify: 'nudge' })).tasks.notify).toBe('nudge');
+    expect((await readSettings()).tasks.notify).toBe('nudge');
+  });
+
+  it('falls back to alert for a garbage or missing value', async () => {
+    // The quiet direction is the dangerous one to guess: a settings.json from an
+    // older build has no `tasks` at all, and silently muting a watch task is not
+    // something the user asked for.
+    writeFileSync(path, JSON.stringify({ tasks: { notify: 'bogus' } }));
+    expect((await readSettings()).tasks.notify).toBe('alert');
+    writeFileSync(path, JSON.stringify({ quickChat: {} }));
+    expect((await readSettings()).tasks.notify).toBe('alert');
   });
 });
 

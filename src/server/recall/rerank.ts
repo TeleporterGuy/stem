@@ -21,6 +21,18 @@ export interface RerankClient {
   /** Whether a usable (enabled + configured) endpoint is present right now. */
   available(): Promise<boolean>;
   /**
+   * The raw-score floor below which this backend's scores mean "not relevant",
+   * or null when the scale is unknowable. Ranking callers ignore this; only a
+   * caller that needs a yes/no (skill inlining) reads it, and a null answer is
+   * its signal to fall back to a scale-free rule rather than invent a constant.
+   *
+   * Null for every remote server by construction: /rerank endpoints run
+   * arbitrary models and normalise differently (Cohere-style returns 0..1, a
+   * local cross-encoder returns unbounded logits), so a number here would be a
+   * guess about someone else's model.
+   */
+  minRelevantScore?(): Promise<number | null>;
+  /**
    * Rerank `docs` against `query`; returns up to `topN` results, best first.
    * `index` refers into the input `docs`. Throws {@link RerankUnavailableError}
    * when unconfigured, or a plain Error on any transport/shape failure.

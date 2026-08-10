@@ -1370,6 +1370,26 @@ export interface ChatsSettings {
   previewLines: 0 | 1 | 2;
 }
 
+/**
+ * How much a scheduled run is allowed to interrupt you when it calls `notify_user`:
+ * - `alert` — raise and focus the main window, nudge at the OS level, and show the
+ *             alert modal. The default: what watch-style tasks were built for.
+ * - `nudge` — no window raise, no modal; just the OS-level nudge (dock bounce /
+ *             taskbar flash) over the unread row the run leaves in the Inbox.
+ * - `inbox` — nothing interrupts. The run's chat simply goes bold in the Inbox,
+ *             the way any other new message would.
+ *
+ * The run counts as having found something in all three: the notify is what keeps
+ * its turn out of {@link noteSilentRun}, so the chat lifts out of the archive and
+ * the row goes unread whatever the user chose here. Only the interruption differs.
+ */
+export type TaskNotifyMode = 'alert' | 'nudge' | 'inbox';
+
+/** Scheduled tasks: how a run that has something to say reaches you. */
+export interface TasksSettings {
+  notify: TaskNotifyMode;
+}
+
 /** Skills: the automatic-authoring policy plus the model that does the writing. */
 export interface SkillsSettings {
   /** `provider/model` id; null = the backend default. */
@@ -1625,6 +1645,8 @@ export interface AppSettings {
   skills: SkillsSettings;
   /** The Chats panel: subject writing (mode + model) and Inbox preview lines. */
   chats: ChatsSettings;
+  /** Scheduled tasks: how prominently a run's notify_user is allowed to interrupt. */
+  tasks: TasksSettings;
   /** Command execution (run_command) policy: enable switch, judge model, learned allowlist. */
   exec: ExecSettings;
   retrieval: RetrievalSettings;
@@ -2172,6 +2194,8 @@ export interface StemApi {
   updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<AppSettings>;
   /** Patch the Chats panel settings (subject mode/model, Inbox preview lines). */
   updateChatsSettings(patch: Partial<ChatsSettings>): Promise<AppSettings>;
+  /** Patch the scheduled-task settings (how loudly a run's notify_user arrives). */
+  updateTasksSettings(patch: Partial<TasksSettings>): Promise<AppSettings>;
   /** The model you chat with, and the fallback every background role inherits. */
   updateDefaults(patch: Partial<DefaultsSettings>): Promise<AppSettings>;
   /** Patch the standing custom instructions (e.g. { main } or { quickChat }). */

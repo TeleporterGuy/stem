@@ -46,7 +46,8 @@ import type {
   StartTurnInput,
   StemApi,
   TaskNotifyPayload,
-  TaskSchedulePatch
+  TaskSchedulePatch,
+  TasksSettings
 } from '../shared/types';
 
 const api: StemApi = {
@@ -313,6 +314,7 @@ const api: StemApi = {
   updateSkillsSettings: (patch: Partial<SkillsSettings>) =>
     ipcRenderer.invoke('settings:updateSkills', patch),
   updateChatsSettings: (patch: Partial<ChatsSettings>) => ipcRenderer.invoke('settings:updateChats', patch),
+  updateTasksSettings: (patch: Partial<TasksSettings>) => ipcRenderer.invoke('settings:updateTasks', patch),
   updateDefaults: (patch: Partial<DefaultsSettings>) => ipcRenderer.invoke('settings:updateDefaults', patch),
   updateRetrievalSettings: (patch: PartialRetrievalSettings) =>
     ipcRenderer.invoke('settings:updateRetrieval', patch),

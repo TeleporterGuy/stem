@@ -32,8 +32,10 @@ Future runs and their answers return to that same conversation.
   custom instructions do not carry over.
 - Runs can use enabled tools. Web-search tasks request search automatically. Native
   search needs a compatible model; otherwise enable a search-capable tool.
-- Every run and answer is recorded in that chat. A prominent alert appears only when
-  the task explicitly asks Stem to notify you.
+- Every run and answer is recorded in that chat. Stem speaks up only when the task
+  explicitly asks it to notify you — by default with a pop-up that brings Stem to the
+  front. Settings → App → **Notifications** turns that down to a dock bounce, or to
+  nothing at all; the chat still turns up unread in your Inbox in every case.
 - A one-time task disappears after its scheduled run finishes, even if it fails.
 - Commands needing interactive approval are denied. Use clearly safe commands or a
   narrowly saved allowed prefix.

@@ -13,7 +13,6 @@ process.env.STEM_SKILLS_DIR = skillsDir;
 
 import {
   MAX_INLINED_SKILLS,
-  SKILL_MIN_COSINE,
   formatSkillsBlock,
   selectSkills,
   skillUsageRate,
@@ -66,6 +65,35 @@ function fakeEmbeddings(cosines: Record<string, number>, model = 'fake-embed-v1'
   };
 }
 
+/**
+ * Fake cross-encoder. `scores` is keyed by skill name; anything unlisted lands at
+ * the saturation floor a real one produces for an unrelated pair. `floor: null`
+ * models a backend whose score scale is unknown (any remote /rerank server), for
+ * which no cut may be made.
+ */
+function fakeRerank(scores: Record<string, number>, floor: number | null = -8) {
+  return {
+    available: async () => true,
+    minRelevantScore: async () => floor,
+    rerank: async (_q: string, docs: string[], topN: number) =>
+      docs
+        .map((doc, index) => ({ index, score: scores[doc.split('\n')[0]] ?? -11 }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topN)
+  };
+}
+
+/**
+ * Filler skills so a library is large enough for the relative cut to sample a
+ * background. Below that it takes the documented `small-library` escape, which
+ * would quietly make these assertions about nothing.
+ */
+function filler(n: number, cosine = 0.3): { records: SkillRecordish[]; cosines: Record<string, number> } {
+  const records = Array.from({ length: n }, (_, i) => skill(`filler${i}`));
+  const cosines = Object.fromEntries(records.map((r, i) => [r.slug, cosine + (i % 2) * 0.01]));
+  return { records, cosines };
+}
+
 beforeEach(() => {
   rmSync(skillsDir, { recursive: true, force: true });
   mkdirSync(skillsDir, { recursive: true });
@@ -73,11 +101,11 @@ beforeEach(() => {
 afterAll(() => rmSync(skillsDir, { recursive: true, force: true }));
 
 describe('selectSkills — ranking and gating', () => {
-  it('inlines the best matches in order and indexes the rest', async () => {
+  it('inlines what the cross-encoder accepts and indexes the rest', async () => {
     const { client } = fakeEmbeddings({ deploy: 0.95, release: 0.88, gardening: 0.9 });
     const sel = await selectSkills(QUERY, [skill('gardening'), skill('release'), skill('deploy')], {
       embeddings: client,
-      rerank: null
+      rerank: fakeRerank({ deploy: -2, gardening: -5 })
     });
     expect(sel.inlined.map((s) => s.slug)).toEqual(['deploy', 'gardening']);
     expect(sel.indexed.map((s) => s.slug)).toEqual(['release']);
@@ -86,25 +114,69 @@ describe('selectSkills — ranking and gating', () => {
     expect(sel.indexed[0]).not.toHaveProperty('body');
   });
 
-  it('keeps a below-gate skill out of inlined but still lists it', async () => {
-    const { client } = fakeEmbeddings({ deploy: 0.95, gardening: SKILL_MIN_COSINE - 0.01 });
+  it('keeps a cross-encoder reject out of inlined but still lists it', async () => {
+    const { client } = fakeEmbeddings({ deploy: 0.95, gardening: 0.94 });
     const sel = await selectSkills(QUERY, [skill('deploy'), skill('gardening')], {
       embeddings: client,
-      rerank: null
+      // Near-identical cosines; only the cross-encoder can tell them apart.
+      rerank: fakeRerank({ deploy: -3, gardening: -10.5 })
     });
     expect(sel.inlined.map((s) => s.slug)).toEqual(['deploy']);
     expect(sel.indexed.map((s) => s.slug)).toEqual(['gardening']);
+    expect(sel.decision?.reason).toBe('above-floor');
+  });
+
+  it('inlines nothing when every candidate sits at the saturation floor', async () => {
+    // The turn that needs no saved procedure at all. A high cosine does not
+    // save it — under the retired gate a 0.95 was an automatic inline.
+    const { client } = fakeEmbeddings({ deploy: 0.95, gardening: 0.93 });
+    const sel = await selectSkills(QUERY, [skill('deploy'), skill('gardening')], {
+      embeddings: client,
+      rerank: fakeRerank({})
+    });
+    expect(sel.inlined).toEqual([]);
+    expect(sel.indexed.map((s) => s.slug)).toEqual(['deploy', 'gardening']);
+    expect(sel.decision?.reason).toBe('below-floor');
+  });
+
+  it('degrades to the cosine-only cut when the reranker has no calibrated floor', async () => {
+    const { records, cosines } = filler(8);
+    const { client } = fakeEmbeddings({ deploy: 0.95, ...cosines });
+    const sel = await selectSkills(QUERY, [skill('deploy'), ...records], {
+      embeddings: client,
+      rerank: fakeRerank({ deploy: 0.99 }, null)
+    });
+    expect(sel.inlined.map((s) => s.slug)).toEqual(['deploy']);
+    expect(sel.decision?.reason).toBe('separated');
+  });
+
+  it('degrades to the cosine-only cut when the reranker throws mid-turn', async () => {
+    const { records, cosines } = filler(8);
+    const { client } = fakeEmbeddings({ deploy: 0.95, ...cosines });
+    const sel = await selectSkills(QUERY, [skill('deploy'), ...records], {
+      embeddings: client,
+      rerank: {
+        available: async () => true,
+        minRelevantScore: async () => -8,
+        rerank: async () => {
+          throw new Error('reranker went away');
+        }
+      }
+    });
+    expect(sel.inlined.map((s) => s.slug)).toEqual(['deploy']);
+    expect(sel.decision?.reason).toBe('separated');
   });
 
   it('caps inlined bodies at K even when more clear the gate', async () => {
     const cosines = { a: 0.95, b: 0.94, c: 0.93, d: 0.92 };
     const records = Object.keys(cosines).map((s) => skill(s));
     const { client } = fakeEmbeddings(cosines);
-    const dflt = await selectSkills(QUERY, records, { embeddings: client, rerank: null });
+    const rerank = fakeRerank({ a: -1, b: -2, c: -3, d: -4 });
+    const dflt = await selectSkills(QUERY, records, { embeddings: client, rerank });
     expect(dflt.inlined).toHaveLength(MAX_INLINED_SKILLS);
     expect(dflt.indexed).toHaveLength(records.length - MAX_INLINED_SKILLS);
 
-    const one = await selectSkills(QUERY, records, { embeddings: client, rerank: null, maxInlined: 1 });
+    const one = await selectSkills(QUERY, records, { embeddings: client, rerank, maxInlined: 1 });
     expect(one.inlined.map((s) => s.slug)).toEqual(['a']);
     expect(one.indexed.map((s) => s.slug)).toEqual(['b', 'c', 'd']);
   });
@@ -114,7 +186,7 @@ describe('selectSkills — ranking and gating', () => {
     const sel = await selectSkills(
       QUERY,
       [skill('deploy'), skill('retired', { enabled: false })],
-      { embeddings: client, rerank: null }
+      { embeddings: client, rerank: fakeRerank({ deploy: -2, retired: -1 }) }
     );
     expect(sel.inlined.map((s) => s.slug)).toEqual(['deploy']);
     expect(sel.indexed).toEqual([]);
@@ -124,32 +196,42 @@ describe('selectSkills — ranking and gating', () => {
 describe('selectSkills — usage blend', () => {
   const proven = { timesInjected: 19, timesUsed: 19 };
 
-  it('reorders candidates inside the gate', async () => {
-    const records = [skill('cold'), skill('proven')];
-    const { client } = fakeEmbeddings({ cold: 0.9, proven: 0.86 });
-    const neutral = await selectSkills(QUERY, records, {
-      embeddings: client,
-      rerank: null,
-      maxInlined: 1
+  it('reorders the shortlist the cross-encoder gets to see', async () => {
+    // Usage decides who is in the RUNNING; the cross-encoder decides who gets
+    // in. So it can only change an outcome when the library is bigger than the
+    // shortlist and promotion is what puts a skill in front of the reranker at
+    // all. Six skills, shortlist of four: `proven` ranks fifth on cosine and is
+    // invisible until its usage record lifts it.
+    const also = Array.from({ length: 4 }, (_, i) => skill(`other${i}`));
+    const records = [...also, skill('proven')];
+    const { client } = fakeEmbeddings({
+      other0: 0.9,
+      other1: 0.89,
+      other2: 0.88,
+      other3: 0.87,
+      proven: 0.83
     });
-    expect(neutral.inlined.map((s) => s.slug)).toEqual(['cold']);
+    const rerank = fakeRerank({ proven: -1 });
+
+    const neutral = await selectSkills(QUERY, records, { embeddings: client, rerank, maxInlined: 1 });
+    expect(neutral.inlined).toEqual([]); // never shown to the reranker
 
     const blended = await selectSkills(QUERY, records, {
       embeddings: client,
-      rerank: null,
+      rerank,
       maxInlined: 1,
       usage: (slug) => (slug === 'proven' ? proven : undefined)
     });
     expect(blended.inlined.map((s) => s.slug)).toEqual(['proven']);
   });
 
-  it('never lets usage push a below-gate skill through', async () => {
-    // The gate reads the raw cosine, so even a perfect usage record cannot buy
-    // a seat — it can only reorder skills that already qualify.
-    const { client } = fakeEmbeddings({ deploy: 0.95, beloved: SKILL_MIN_COSINE - 0.02 });
+  it('never lets usage buy a seat the cross-encoder refused', async () => {
+    // The invariant survives the rewrite: usage reaches the ordering and stops
+    // there, so a perfect record cannot lift a skill past the floor.
+    const { client } = fakeEmbeddings({ deploy: 0.95, beloved: 0.94 });
     const sel = await selectSkills(QUERY, [skill('deploy'), skill('beloved')], {
       embeddings: client,
-      rerank: null,
+      rerank: fakeRerank({ deploy: -3, beloved: -10.8 }),
       usage: () => proven
     });
     expect(sel.inlined.map((s) => s.slug)).toEqual(['deploy']);
@@ -202,7 +284,8 @@ describe('selectSkills — degraded paths', () => {
       embeddings: client,
       rerank: null
     });
-    expect(sel).toEqual({ inlined: [], indexed: [] });
+    expect(sel.inlined).toEqual([]);
+    expect(sel.indexed).toEqual([]);
   });
 });
 
@@ -210,14 +293,11 @@ describe('selectSkills — reranking', () => {
   const cosines = { a: 0.95, b: 0.94, c: 0.93 };
   const records = Object.keys(cosines).map((s) => skill(s));
 
-  it('reorders the gated set without dropping anyone from indexed', async () => {
+  it('lets the cross-encoder overrule cosine without dropping anyone from indexed', async () => {
     const { client } = fakeEmbeddings(cosines);
-    const rerank = {
-      available: async () => true,
-      // Cross-encoder disagrees with cosine and prefers the last candidate.
-      rerank: async (_q: string, docs: string[], topN: number) =>
-        [{ index: docs.length - 1, score: 1 }].slice(0, topN)
-    };
+    // Disagrees with cosine and prefers the last candidate. Only `c` clears the
+    // floor, so the disagreement is the whole outcome.
+    const rerank = fakeRerank({ c: -1 });
     const sel = await selectSkills(QUERY, records, { embeddings: client, rerank, maxInlined: 1 });
     expect(sel.inlined.map((s) => s.slug)).toEqual(['c']);
     expect(sel.indexed.map((s) => s.slug).sort()).toEqual(['a', 'b']);
@@ -319,7 +399,7 @@ describe('formatSkillsBlock', () => {
     const sel = await selectSkills(
       QUERY,
       [skill('deploy', { origin: 'user-requested' }), skill('gardening')],
-      { embeddings: client, rerank: null }
+      { embeddings: client, rerank: fakeRerank({ deploy: -2 }) }
     );
     const block = formatSkillsBlock(sel);
     expect(block).toContain('<stem_skills version="1">');

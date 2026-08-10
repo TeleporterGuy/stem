@@ -29,6 +29,15 @@ export function createLocalRerankClient(
       const st = manager.rerankStatus();
       return st.model === sp.id && st.state === 'ready';
     },
+    // Only once the model is actually ready: a floor for a model that is still
+    // downloading would let a caller apply bge's calibration to whatever the
+    // previous backend returns.
+    async minRelevantScore() {
+      const sp = await spec();
+      if (!sp) return null;
+      const st = manager.rerankStatus();
+      return st.model === sp.id && st.state === 'ready' ? sp.minRelevantScore : null;
+    },
     async rerank(query, docs, topN) {
       const sp = await spec();
       if (!sp) throw new RerankUnavailableError('local reranker not enabled');
@@ -60,6 +69,10 @@ export function createRerankRouter(deps: {
   return {
     async available() {
       return (await (await pick())?.available()) ?? false;
+    },
+    async minRelevantScore() {
+      const client = await pick();
+      return (await client?.minRelevantScore?.()) ?? null;
     },
     async rerank(query, docs, topN) {
       const client = await pick();

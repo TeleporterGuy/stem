@@ -2671,6 +2671,18 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // "how I do this" together, ahead of the ambient context blocks.
     try {
       const selection = await selectSkills(input.input, listSkillRecords(), { usage: skillUsageLookup() });
+      // Log the cut on EVERY turn, including — especially — the turns that
+      // inline nothing. The regression this replaced was invisible precisely
+      // because a stage returning nothing and a stage with nothing to say
+      // produced identical output, and the only skills logging in the app was
+      // on the authoring side.
+      if (selection.decision) {
+        log('pi', 'skill cut', {
+          threadId,
+          ...selection.decision,
+          topCosine: selection.decision.topCosine?.toFixed(4)
+        });
+      }
       const skillsBlock = formatSkillsBlock(selection);
       if (skillsBlock) {
         blocks.push(skillsBlock);

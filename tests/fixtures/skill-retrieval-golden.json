@@ -11,7 +11,12 @@
     "most 160 characters, saying WHEN to reach for the skill and never restating the name.",
     "langPair mirrors recall-golden.json: the user writes Slovak about half the time, and",
     "skill descriptions are English, so sk->en is a real retrieval condition and gets its",
-    "own floor."
+    "own floor.",
+    "`queries` are POSITIVES: exactly one skill should be loaded. `negatives` are turns where",
+    "NOTHING should be loaded. Both are needed to measure the cut, and only the pair is",
+    "meaningful: positives alone reward a cut that inlines everything, negatives alone reward",
+    "one that inlines nothing. The gate that shipped scored perfectly on the positives-only",
+    "ranking metrics while inlining nothing at all, which is exactly the hole this closes."
   ],
   "skills": [
     {
@@ -64,26 +69,209 @@
     }
   ],
   "queries": [
-    { "id": "q1", "text": "summarise this youtube video for me, I don't want to sit through 40 minutes", "expectSlug": "extract-video-captions", "langPair": "en->en" },
-    { "id": "q2", "text": "what's the daily menu at the bistro across the street today?", "expectSlug": "scrape-daily-lunch-menu", "langPair": "en->en" },
-    { "id": "q3", "text": "book us a table at Modrá Hviezda for Friday at seven", "expectSlug": "book-restaurant-table", "langPair": "en->en" },
-    { "id": "q4", "text": "where is my package right now, tracking number is CE123456789SK", "expectSlug": "track-parcel-delivery", "langPair": "en->en" },
-    { "id": "q5", "text": "is the Vienna flight delayed this morning?", "expectSlug": "check-flight-status", "langPair": "en->en" },
-    { "id": "q6", "text": "awantech.sk expires in two weeks, sort the renewal out", "expectSlug": "renew-domain-registration", "langPair": "en->en" },
-    { "id": "q7", "text": "I need to submit the quarterly VAT to the tax office", "expectSlug": "file-vat-return-slovakia", "langPair": "en->en" },
-    { "id": "q8", "text": "this client still hasn't paid the September invoice, write them something", "expectSlug": "draft-invoice-reminder-email", "langPair": "en->en" },
-    { "id": "q9", "text": "the lease ends in March, is it worth buying the car out or selling it", "expectSlug": "compare-lease-buyout-offers", "langPair": "en->en" },
-    { "id": "q10", "text": "the lights automation hasn't run in three days and I don't know why", "expectSlug": "diagnose-home-assistant-automation", "langPair": "en->en" },
-    { "id": "q11", "text": "I can't reach my nextcloud from outside anymore, worked yesterday", "expectSlug": "reset-router-port-forwarding", "langPair": "en->en" },
-    { "id": "q12", "text": "these photos from my phone won't open on the laptop", "expectSlug": "convert-heic-photos", "langPair": "en->en" },
-    { "id": "q13", "text": "čo dnes varia na obed v tej reštaurácii pri kancelárii?", "expectSlug": "scrape-daily-lunch-menu", "langPair": "sk->en" },
-    { "id": "q14", "text": "prosím pozri o čom je toto video, nechce sa mi to pozerať celé", "expectSlug": "extract-video-captions", "langPair": "sk->en" },
-    { "id": "q15", "text": "kde je moja zásielka, mala prísť už včera", "expectSlug": "track-parcel-delivery", "langPair": "sk->en" },
-    { "id": "q16", "text": "zákazník stále nezaplatil faktúru, napíš mu slušnú upomienku", "expectSlug": "draft-invoice-reminder-email", "langPair": "sk->en" },
-    { "id": "q17", "text": "automatizácia so svetlami sa už tri dni nespustila, netuším prečo", "expectSlug": "diagnose-home-assistant-automation", "langPair": "sk->en" },
-    { "id": "q18", "text": "fotky z iphonu sa mi nedajú otvoriť na notebooku", "expectSlug": "convert-heic-photos", "langPair": "sk->en" },
-    { "id": "q19", "text": "o dva týždne mi vyprší doména, treba ju predĺžiť", "expectSlug": "renew-domain-registration", "langPair": "sk->en" },
-    { "id": "q20", "text": "mešká ráno let do Viedne?", "expectSlug": "check-flight-status", "langPair": "sk->en" }
+    {
+      "id": "q1",
+      "text": "summarise this youtube video for me, I don't want to sit through 40 minutes",
+      "expectSlug": "extract-video-captions",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q2",
+      "text": "what's the daily menu at the bistro across the street today?",
+      "expectSlug": "scrape-daily-lunch-menu",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q3",
+      "text": "book us a table at Modrá Hviezda for Friday at seven",
+      "expectSlug": "book-restaurant-table",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q4",
+      "text": "where is my package right now, tracking number is CE123456789SK",
+      "expectSlug": "track-parcel-delivery",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q5",
+      "text": "is the Vienna flight delayed this morning?",
+      "expectSlug": "check-flight-status",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q6",
+      "text": "awantech.sk expires in two weeks, sort the renewal out",
+      "expectSlug": "renew-domain-registration",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q7",
+      "text": "I need to submit the quarterly VAT to the tax office",
+      "expectSlug": "file-vat-return-slovakia",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q8",
+      "text": "this client still hasn't paid the September invoice, write them something",
+      "expectSlug": "draft-invoice-reminder-email",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q9",
+      "text": "the lease ends in March, is it worth buying the car out or selling it",
+      "expectSlug": "compare-lease-buyout-offers",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q10",
+      "text": "the lights automation hasn't run in three days and I don't know why",
+      "expectSlug": "diagnose-home-assistant-automation",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q11",
+      "text": "I can't reach my nextcloud from outside anymore, worked yesterday",
+      "expectSlug": "reset-router-port-forwarding",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q12",
+      "text": "these photos from my phone won't open on the laptop",
+      "expectSlug": "convert-heic-photos",
+      "langPair": "en->en"
+    },
+    {
+      "id": "q13",
+      "text": "čo dnes varia na obed v tej reštaurácii pri kancelárii?",
+      "expectSlug": "scrape-daily-lunch-menu",
+      "langPair": "sk->en"
+    },
+    {
+      "id": "q14",
+      "text": "prosím pozri o čom je toto video, nechce sa mi to pozerať celé",
+      "expectSlug": "extract-video-captions",
+      "langPair": "sk->en"
+    },
+    {
+      "id": "q15",
+      "text": "kde je moja zásielka, mala prísť už včera",
+      "expectSlug": "track-parcel-delivery",
+      "langPair": "sk->en"
+    },
+    {
+      "id": "q16",
+      "text": "zákazník stále nezaplatil faktúru, napíš mu slušnú upomienku",
+      "expectSlug": "draft-invoice-reminder-email",
+      "langPair": "sk->en"
+    },
+    {
+      "id": "q17",
+      "text": "automatizácia so svetlami sa už tri dni nespustila, netuším prečo",
+      "expectSlug": "diagnose-home-assistant-automation",
+      "langPair": "sk->en"
+    },
+    {
+      "id": "q18",
+      "text": "fotky z iphonu sa mi nedajú otvoriť na notebooku",
+      "expectSlug": "convert-heic-photos",
+      "langPair": "sk->en"
+    },
+    {
+      "id": "q19",
+      "text": "o dva týždne mi vyprší doména, treba ju predĺžiť",
+      "expectSlug": "renew-domain-registration",
+      "langPair": "sk->en"
+    },
+    {
+      "id": "q20",
+      "text": "mešká ráno let do Viedne?",
+      "expectSlug": "check-flight-status",
+      "langPair": "sk->en"
+    }
+  ],
+  "negatives": [
+    {
+      "_comment": [
+        "Turns where the correct behaviour is to load NOTHING. `hard: true` marks the ones that",
+        "share vocabulary or a domain with a real skill but do not call for its procedure — those",
+        "are the discriminations that matter, and a cut that only clears the easy ones is not",
+        "doing any work. n9 and n10 are verbatim from the Aug 8 session where a bare 'Áno'",
+        "out-scored a genuine YouTube question in absolute cosine (0.638 vs 0.543)."
+      ]
+    },
+    {
+      "id": "n1",
+      "text": "ok thanks, that's all for now",
+      "langPair": "en->en",
+      "hard": false
+    },
+    {
+      "id": "n2",
+      "text": "what's the capital of Portugal?",
+      "langPair": "en->en",
+      "hard": false
+    },
+    {
+      "id": "n3",
+      "text": "write me a haiku about rain on a tin roof",
+      "langPair": "en->en",
+      "hard": false
+    },
+    {
+      "id": "n4",
+      "text": "what time does the post office close on Saturdays?",
+      "langPair": "en->en",
+      "hard": true
+    },
+    {
+      "id": "n5",
+      "text": "can you explain what a CNAME record actually does?",
+      "langPair": "en->en",
+      "hard": true
+    },
+    {
+      "id": "n6",
+      "text": "in general, is leasing or financing better for a company car?",
+      "langPair": "en->en",
+      "hard": true
+    },
+    {
+      "id": "n7",
+      "text": "my laptop fan has been really loud lately, should I worry?",
+      "langPair": "en->en",
+      "hard": false
+    },
+    {
+      "id": "n8",
+      "text": "how much should I tip a waiter in Vienna?",
+      "langPair": "en->en",
+      "hard": true
+    },
+    {
+      "id": "n9",
+      "text": "Áno",
+      "langPair": "sk->en",
+      "hard": false
+    },
+    {
+      "id": "n10",
+      "text": "aké je dnes počasie v Bratislave?",
+      "langPair": "sk->en",
+      "hard": false
+    },
+    {
+      "id": "n11",
+      "text": "vysvetli mi ako funguje DPH pri nákupe tovaru z Nemecka",
+      "langPair": "sk->en",
+      "hard": true
+    },
+    {
+      "id": "n12",
+      "text": "koľko stojí ročná diaľničná známka na Slovensku?",
+      "langPair": "sk->en",
+      "hard": true
+    }
   ],
   "floors": {
     "_comment": [
@@ -110,6 +298,46 @@
           "mrr": 0.6
         }
       }
+    }
+  },
+  "cutFloors": {
+    "_comment": [
+      "Floors on what is INLINED, not on the ordering. `loaded` is a minimum; every other",
+      "key is a maximum. Measured 2026-08-10 with qwen3-embedding:4b (remote) plus the local",
+      "bge-reranker-v2-m3 cross-encoder, over 20 positives and 12 negatives, each bound set",
+      "about one item away from the observation (1/20 = 0.05, 1/12 = 0.084) so a single query",
+      "flipping does not fail the gate.",
+      "",
+      "Scores were taken ONE PAIR PER FORWARD PASS. An earlier batched measurement read",
+      "0.900/0.083 for the same configuration and was simply wrong: this model's logits drift",
+      "with batch composition (-7.890 alone, -8.289 in a batch of six), which flatters the",
+      "numbers and does not survive contact with a shortlist of a different size.",
+      "",
+      "The two profiles are not alternatives to choose between — they are the two paths the",
+      "code can take, and both are floored so that DEGRADING is visible. `rerank` is what runs",
+      "when a calibrated cross-encoder is available; `relative` is the cosine-only fallback,",
+      "and its numbers are recorded as measured rather than tuned to look acceptable: it fires",
+      "on more than half the negatives. A bi-encoder cannot separate 'explain what a CNAME",
+      "record does' from 'renew my domain' — both are about domains, and the difference is",
+      "intent, which is not in the embedding. Worse, a library holding near-duplicate skills",
+      "defeats it outright, since nothing can stand clear of a pack it is a member of. That is",
+      "the argument for the cross-encoder owning the cut.",
+      "",
+      "Both profiles are floored on `loaded` at the same value on purpose: a change that buys",
+      "precision by quietly loading fewer skills is the regression that started all of this,",
+      "and it must fail here rather than read as an improvement."
+    ],
+    "rerank": {
+      "loaded": 0.9,
+      "noise": 0.1,
+      "falseLoad": 0.334,
+      "hardFalse": 0.5
+    },
+    "relative": {
+      "loaded": 0.9,
+      "noise": 0.5,
+      "falseLoad": 0.667,
+      "hardFalse": 0.9
     }
   }
 }

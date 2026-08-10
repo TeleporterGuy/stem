@@ -24,7 +24,9 @@ import type {
   RerankerSettings,
   RetrievalSettings,
   ServerSettings,
-  SkillsSettings
+  SkillsSettings,
+  TaskNotifyMode,
+  TasksSettings
 } from '../../shared/types';
 import { type BackgroundRole, resolveRoleEffort } from '../../shared/modelRoles';
 import { DEFAULT_SCRATCH_TTL_DAYS } from '../exec/scratch';
@@ -74,6 +76,12 @@ const DEFAULTS: ServerSettings = {
   // user typed is never overwritten in any mode. Two preview lines under each
   // Inbox row, which is what makes the list readable without opening anything.
   chats: { subjects: 'everywhere', subjectModel: null, subjectEffort: null, previewLines: 2 },
+  // Scheduled tasks: a run that calls notify_user takes the screen by default —
+  // the watch tasks this was built for ("tell me when the build goes red") are
+  // worth an interruption, and a native OS notification was judged too easy to
+  // miss. `nudge` and `inbox` are for the user who disagrees: both still leave
+  // the run's chat bold in the Inbox, they just stop it grabbing focus.
+  tasks: { notify: 'alert' },
   // Command execution: on by default with the tiered policy as the guard rail.
   // approvalMode 'assisted' = allowlist → LLM judge → approval card ('manual'
   // skips the judge, 'yolo' skips everything but the protected-roots guard);
@@ -134,6 +142,7 @@ const DEFAULTS: ServerSettings = {
 
 const ESCAPE_ACTIONS: readonly EscapeAction[] = ['off', 'single', 'twoStage'];
 const SUBJECT_MODES: readonly ChatSubjectMode[] = ['off', 'inbox', 'everywhere'];
+const TASK_NOTIFY_MODES: readonly TaskNotifyMode[] = ['alert', 'nudge', 'inbox'];
 
 /**
  * Reasoning-effort levels a background role may be pinned to, matching the ones
@@ -280,6 +289,15 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
         ? rawChats.previewLines
         : DEFAULTS.chats.previewLines
   };
+  const rawTasks = (parsed?.tasks ?? {}) as Partial<TasksSettings>;
+  const tasks: TasksSettings = {
+    // Same failure direction as skills.mode and chats.subjects: an unrecognized
+    // (or absent) value takes the default rather than the quietest option, so a
+    // settings file written by an older build cannot silence a watch task.
+    notify: TASK_NOTIFY_MODES.includes(rawTasks.notify as TaskNotifyMode)
+      ? (rawTasks.notify as TaskNotifyMode)
+      : DEFAULTS.tasks.notify
+  };
   const rawExec = (parsed?.exec ?? {}) as Partial<ExecSettings>;
   const exec: ExecSettings = {
     enabled: typeof rawExec.enabled === 'boolean' ? rawExec.enabled : DEFAULTS.exec.enabled,
@@ -381,6 +399,7 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
     memory: mem,
     skills,
     chats,
+    tasks,
     exec,
     retrieval,
     escapeAction,
@@ -492,6 +511,16 @@ export function updateChatsSettings(patch: Partial<ChatsSettings>): Promise<Serv
   return enqueue(async () => {
     const cur = await readSettings();
     const next = coerce({ ...cur, chats: { ...cur.chats, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the scheduled-task settings (notify prominence) and persist; returns full settings. */
+export function updateTasksSettings(patch: Partial<TasksSettings>): Promise<ServerSettings> {
+  return enqueue(async () => {
+    const cur = await readSettings();
+    const next = coerce({ ...cur, tasks: { ...cur.tasks, ...patch } });
     await writeSettings(next);
     return next;
   });

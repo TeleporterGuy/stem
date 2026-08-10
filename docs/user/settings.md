@@ -75,6 +75,17 @@ also left behind when you move Stem to another machine.
 - **Single** — stops the turn and retracts the sent message.
 - **Two-stage** — first press stops; second press retracts.
 
+## Notifications
+
+How a [scheduled task](scheduled-tasks.md) reaches you on a run that found something.
+
+- **Pop-up** — Stem comes to the front and shows the message in a dialog.
+- **Nudge** — the dock bounces (the taskbar flashes); focus stays where it is.
+- **Inbox only** — nothing interrupts you.
+
+All three leave the task's chat unread in your Inbox, so nothing is missed either
+way. Only how much it interrupts changes.
+
 ## Context used across chats
 
 - **Files folder**: files Stem may read from any chat. They are not automatically
