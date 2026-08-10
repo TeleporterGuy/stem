@@ -27,6 +27,7 @@ import type {
   SkillsSettings
 } from '../../shared/types';
 import { type BackgroundRole, resolveRoleEffort } from '../../shared/modelRoles';
+import { DEFAULT_SCRATCH_TTL_DAYS } from '../exec/scratch';
 import { settingsStorePath } from './paths';
 
 // Stem-owned app settings. Like the chat store, kept deliberately tiny and
@@ -78,7 +79,14 @@ const DEFAULTS: ServerSettings = {
   // skips the judge, 'yolo' skips everything but the protected-roots guard);
   // judgeModel null = the shared background model, else the chat's own model;
   // the allowlist grows via the approval card's "Always allow" button.
-  exec: { enabled: true, approvalMode: 'assisted', judgeModel: null, judgeEffort: null, allowlist: [] },
+  exec: {
+    enabled: true,
+    approvalMode: 'assisted',
+    judgeModel: null,
+    judgeEffort: null,
+    allowlist: [],
+    scratchTtlDays: DEFAULT_SCRATCH_TTL_DAYS
+  },
   // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
   // default to the bundled local model (multilingual, in-process, nothing leaves
   // the machine); weights download once on first need, and until they're ready
@@ -288,7 +296,16 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
           .map((p) => p.trim())
           .filter((p) => p && p.length <= 200)
       )
-    ].slice(0, 200)
+    ].slice(0, 200),
+    // null is a real choice here ("Never"), so only an absent/nonsensical value
+    // takes the default — a 0 or a negative would otherwise read as "sweep
+    // everything immediately", which is the one answer nobody picked.
+    scratchTtlDays:
+      rawExec.scratchTtlDays === null
+        ? null
+        : typeof rawExec.scratchTtlDays === 'number' && Number.isFinite(rawExec.scratchTtlDays) && rawExec.scratchTtlDays > 0
+          ? Math.floor(rawExec.scratchTtlDays)
+          : DEFAULTS.exec.scratchTtlDays
   };
   const rawRet = (parsed?.retrieval ?? {}) as Partial<RetrievalSettings>;
   const retrieval: RetrievalSettings = {

@@ -4,11 +4,42 @@ import type {
   ChatsSettings,
   CustomInstructionsSettings,
   ExecSettings,
+  ScratchUsageRow,
   WebSearchSettings
 } from '../../../../shared/types';
 import { InfoTip } from '../../../ui/InfoTip';
 import { ModelPicker } from '../../../ui/ModelPicker';
 import type { ModelTabProps } from '../shared';
+
+/** How long a chat's scratch folder survives being ignored. null = never sweep. */
+const SCRATCH_TTLS: { label: string; days: number | null }[] = [
+  { label: '7 days', days: 7 },
+  { label: '30 days', days: 30 },
+  { label: '90 days', days: 90 },
+  { label: 'Never', days: null }
+];
+
+/** "1.2 MB" / "834 KB" / "512 B" — one significant decimal above KB. */
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+/**
+ * What a row calls itself. The two title-less cases are different things and say
+ * so: the pile predating per-chat folders, and a folder whose chat is gone.
+ */
+function scratchLabel(row: ScratchUsageRow): string {
+  if (row.key === 'unfiled') return 'Unfiled — from before per-chat folders';
+  return row.title || 'Deleted chat';
+}
 
 /**
  * Settings → Chat: everything that shapes an ordinary conversation — which model
@@ -26,6 +57,10 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
   const [chats, setChats] = useState<ChatsSettings | null>(null);
   const [exec, setExec] = useState<ExecSettings | null>(null);
   const [allowInput, setAllowInput] = useState('');
+  // null while the walk is still running — sizing every chat's folder is a disk
+  // walk on the server, so the block says "Measuring…" rather than "0 folders".
+  const [scratch, setScratch] = useState<ScratchUsageRow[] | null>(null);
+  const [confirmClear, setConfirmClear] = useState<string | null>(null);
   // Per-field debounce so typing doesn't spam the atomic settings writer.
   const ciMainTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -36,6 +71,9 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
       setChats(s.chats);
       setExec(s.exec);
     });
+    // Its own request: a disk walk should not hold up the settings the rest of
+    // this tab is made of.
+    void window.stem.getScratchUsage().then(setScratch).catch(() => setScratch([]));
   }, []);
 
   function updateWebSearch(patch: Partial<WebSearchSettings>) {
@@ -56,6 +94,17 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
   function updateExec(patch: Partial<ExecSettings>) {
     setExec((cur) => (cur ? { ...cur, ...patch } : cur)); // optimistic; reconcile below
     window.stem.updateExecSettings(patch).then((s) => setExec(s.exec));
+  }
+
+  function clearScratch(key: string) {
+    setConfirmClear(null);
+    // Optimistic: the row goes now, and the re-read below is what confirms it.
+    setScratch((cur) => cur?.filter((r) => r.key !== key) ?? cur);
+    void window.stem
+      .clearScratch(key)
+      .then(() => window.stem.getScratchUsage())
+      .then(setScratch)
+      .catch(() => undefined);
   }
 
   function saveCiMain(value: string) {
@@ -281,6 +330,71 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
                 </form>
               </div>
             )}
+
+            <div className="set-block">
+              <span className="set-sub">
+                Scratch files{' '}
+                <InfoTip label="About scratch files">
+                  Commands run in a folder of their own per chat, so downloads, scripts and build
+                  output stay with the conversation that made them. Deleting a chat deletes its
+                  folder. A folder is cleared once nothing in it — and nothing in the chat — has
+                  been touched for the chosen time; anything you want kept belongs in your Files.
+                </InfoTip>
+              </span>
+              <div className="seg-ctl">
+                {SCRATCH_TTLS.map((opt) => (
+                  <button
+                    key={opt.label}
+                    className={exec.scratchTtlDays === opt.days ? 'active' : ''}
+                    onClick={() => updateExec({ scratchTtlDays: opt.days })}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <div className="scratch-usage">
+                {scratch === null ? (
+                  <em className="scratch-empty">Measuring…</em>
+                ) : scratch.length === 0 ? (
+                  <em className="scratch-empty">No chat has run a command yet.</em>
+                ) : (
+                  <>
+                    <div className="scratch-total">
+                      {scratch.length} {scratch.length === 1 ? 'folder' : 'folders'} ·{' '}
+                      {formatSize(scratch.reduce((sum, r) => sum + r.bytes, 0))}
+                    </div>
+                    {scratch.map((row) => (
+                      <div key={row.key} className="scratch-row">
+                        <span className="scratch-name" title={scratchLabel(row)}>
+                          {scratchLabel(row)}
+                        </span>
+                        <span className="scratch-size">{formatSize(row.bytes)}</span>
+                        {/* Two-step, like every other irreversible delete here: the
+                            files are gone for good and the chat may still refer to them. */}
+                        {confirmClear === row.key ? (
+                          <>
+                            <button className="link-btn danger" onClick={() => clearScratch(row.key)}>
+                              Delete files
+                            </button>
+                            <button className="link-btn" onClick={() => setConfirmClear(null)}>
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            className="link-btn"
+                            title="Delete this folder's files — the chat itself stays"
+                            onClick={() => setConfirmClear(row.key)}
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
           </>
         )}
       </div>

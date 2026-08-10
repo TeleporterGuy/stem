@@ -70,6 +70,7 @@ function populate(root: string): void {
   mkdirSync(join(root, 'embed-models', 'Xenova'), { recursive: true });
   mkdirSync(join(root, 'uploads', 'abc'), { recursive: true });
   mkdirSync(join(root, 'Code Cache', 'js'), { recursive: true });
+  mkdirSync(join(root, 'pi-home', 'exec-workspace', 'thread-1'), { recursive: true });
 
   writeFileSync(join(root, 'pi-home', 'sessions', 'thread-1', 'turns.jsonl'), '{"role":"user"}\n');
   writeFileSync(join(root, 'pi-home', 'skills', 'invoice-run', 'SKILL.md'), '# invoice run\n');
@@ -81,6 +82,7 @@ function populate(root: string): void {
   writeFileSync(join(root, 'embed-models', 'Xenova', 'model.onnx'), 'weights');
   writeFileSync(join(root, 'uploads', 'abc', 'dropped.txt'), 'staged');
   writeFileSync(join(root, 'Code Cache', 'js', 'blob'), 'chromium');
+  writeFileSync(join(root, 'pi-home', 'exec-workspace', 'thread-1', 'build.log'), 'x'.repeat(4096));
   writeFileSync(join(root, 'folders.json'), JSON.stringify({ version: 1, folders: [{ id: 'f', name: 'Work' }] }));
   writeFileSync(join(root, 'inbox.json'), JSON.stringify({ version: 1, entries: {} }));
   writeFileSync(join(root, 'settings.json'), JSON.stringify({ quickChat: { shortcut: 'Alt+Space' } }));
@@ -243,6 +245,9 @@ describe('what travels and what stays', () => {
     expect(packed.some((p) => p.startsWith('Code Cache'))).toBe(false);
     expect(packed).not.toContain('pi-home/mcp.json.lock');
     expect(packed).not.toContain('pi-home/mcp-status.json');
+    // Per-chat scratch: throwaway by definition, and the one member that could
+    // turn a small export into a multi-gigabyte one.
+    expect(packed.some((p) => p.startsWith('pi-home/exec-workspace'))).toBe(false);
   });
 
   it('drops the recall server entry, whose every field is a path on this machine', async () => {

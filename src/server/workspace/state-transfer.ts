@@ -152,6 +152,11 @@ const OMITTED: Array<{ name: string; reason: string }> = [
     reason: 'Scratch. Stem clears them on a timer anyway.'
   },
   {
+    name: 'Working files from your chats',
+    reason:
+      'Downloads, scripts and build output the assistant made while running commands, kept per chat and cleared on a timer. Your Files place travels; the throwaways around it do not, and they are the one thing that could turn a small export into a very large one.'
+  },
+  {
     name: "The address the old server was listening on",
     reason: 'A port number from another machine, rewritten every time a server starts.'
   }
@@ -164,12 +169,14 @@ const SKIP_NAMES = new Set(['.DS_Store', 'Thumbs.db', '.skills-rev', MANIFEST_NA
 const SKIP_SUFFIXES = ['.lock', '.lock.reaper', '.tmp', '.corrupt', '-wal', '-shm', '.sock'];
 
 /**
- * Paths inside `pi-home` that are rebuilt rather than carried. Both are written
- * by the MCP bridge when it connects, and both describe servers that are not
- * running on the other machine yet — carrying them would mean the first turn
- * after an import advertises tools that aren't there.
+ * Paths inside `pi-home` that are rebuilt rather than carried. The two json files
+ * are written by the MCP bridge when it connects, and both describe servers that
+ * are not running on the other machine yet — carrying them would mean the first
+ * turn after an import advertises tools that aren't there. `exec-workspace` is
+ * the per-chat scratch space: throwaway by definition, and the one member that
+ * could turn a small export into a multi-gigabyte one.
  */
-const SKIP_IN_PI_HOME = new Set(['mcp-catalog.json', 'mcp-status.json']);
+const SKIP_IN_PI_HOME = new Set(['mcp-catalog.json', 'mcp-status.json', 'exec-workspace']);
 
 // ---- export ----
 

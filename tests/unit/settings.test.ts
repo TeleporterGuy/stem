@@ -490,8 +490,19 @@ describe('exec settings', () => {
       approvalMode: 'assisted',
       judgeModel: null,
       judgeEffort: null,
-      allowlist: []
+      allowlist: [],
+      scratchTtlDays: 30
     });
+  });
+
+  it('keeps "Never" for scratch, and refuses a TTL that would sweep everything now', async () => {
+    // null is a real answer here, so it has to survive the coercion that turns
+    // every other unusable value into the default.
+    expect((await updateExecSettings({ scratchTtlDays: null })).exec.scratchTtlDays).toBeNull();
+    for (const bad of [0, -1, Number.NaN]) {
+      expect((await updateExecSettings({ scratchTtlDays: bad })).exec.scratchTtlDays).toBe(30);
+    }
+    expect((await updateExecSettings({ scratchTtlDays: 7 })).exec.scratchTtlDays).toBe(7);
   });
 
   it('round-trips a patch through updateExecSettings', async () => {

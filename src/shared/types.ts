@@ -1404,6 +1404,22 @@ export interface ExecSettings {
   judgeEffort: string | null;
   /** User-approved command prefixes (e.g. "git push", "npm") that auto-run as tier 1. */
   allowlist: string[];
+  /**
+   * Days a chat's scratch folder survives without being touched before the sweep
+   * removes it; null = never. Idle counts from the NEWER of the folder's newest
+   * file and the chat's last message. See server/exec/scratch.ts.
+   */
+  scratchTtlDays: number | null;
+}
+
+/** One chat's scratch folder in Settings → Chat → Command execution → Scratch files. */
+export interface ScratchUsageRow {
+  /** The thread id, or "unfiled" for the aggregate of everything not owned by a chat. */
+  key: string;
+  /** The chat's title; absent when no chat matches (an orphan, or the unfiled pile). */
+  title?: string;
+  bytes: number;
+  files: number;
 }
 
 /**
@@ -2196,6 +2212,10 @@ export interface StemApi {
   onExecApprovalResolved(listener: (payload: ApprovalResolvedPayload) => void): () => void;
   /** Answer a pending exec approval ("Allow once" / "Always allow prefix" / "Deny"). */
   respondExecApproval(id: string, decision: ExecDecision): Promise<void>;
+  /** What each chat's shell commands have left on disk, biggest first. */
+  getScratchUsage(): Promise<ScratchUsageRow[]>;
+  /** Empty one chat's scratch folder (or the unfiled pile); the chat itself stays. */
+  clearScratch(key: string): Promise<void>;
   /** Update the embeddings/reranker retrieval endpoints (deep-merged per stage). */
   updateRetrievalSettings(patch: PartialRetrievalSettings): Promise<AppSettings>;
   /** Live-probe a retrieval endpoint with the current settings (Settings "Test" button). */

@@ -19,6 +19,7 @@ import { piHome } from './workspace/paths';
 import type { TaskScheduler } from './scheduler';
 import { initTaskScheduler } from './startup/scheduler';
 import type { ExecService } from './exec/service';
+import { startScratchSweeper, stopScratchSweeper } from './exec/scratch';
 import { initExecService } from './startup/exec';
 import { initSkills } from './startup/skills';
 import { closeTransport, pushToClients, startTransport, type TransportEndpoint } from './startup/transport';
@@ -556,6 +557,16 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     }
   });
 
+  // Scratch housekeeping: each chat's run_command folder is removed when the chat
+  // is deleted, and idle ones age out on the TTL (Settings → Chat → Command
+  // execution). Swept once now and then daily — the desktop app is quit most
+  // nights, but a headless server can run for a quarter, and that is exactly the
+  // machine where disk creeping up goes unnoticed.
+  startScratchSweeper({
+    listChats: () => runtime!.listThreads(),
+    ttlDays: async () => (await readSettings()).exec.scratchTtlDays
+  });
+
   // Skills (the manage_skill tool): the write, the contract validator, and the
   // Off/Ask/Auto policy all live here. The approval card rides the backend event
   // stream (unlike exec's, which is server-owned end to end), so there is nothing
@@ -738,6 +749,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     shutdown() {
       if (webSearchRestartTimer) clearTimeout(webSearchRestartTimer);
       scheduler?.stop();
+      stopScratchSweeper();
       embedManager?.dispose();
       scanManager?.dispose();
       closeFolderIndexes();

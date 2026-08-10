@@ -119,13 +119,36 @@ export function agentsMdPath(): string {
 }
 
 /**
- * Default working directory for the assistant's `run_command` tool: an isolated,
- * app-owned scratch folder under the pi home. Commands may target real user
- * paths explicitly (via absolute arguments or an explicit cwd), but by default
- * their side effects land here. Created on demand by the exec service.
+ * Root of the assistant's `run_command` scratch space: an isolated, app-owned
+ * folder under the pi home. Commands may target real user paths explicitly (via
+ * absolute arguments or an explicit cwd), but by default their side effects land
+ * here.
+ *
+ * A CONTAINER, not a working directory: each chat gets its own folder inside it
+ * (see {@link threadWorkspaceDir}) so scratch belongs to the conversation that
+ * made it and can be sized, listed and deleted per chat. The root itself is the
+ * "unfiled" bucket — where the pile from before per-chat folders still sits, and
+ * where a command with no live thread lands.
  */
 export function execWorkspaceDir(): string {
   return process.env.STEM_EXEC_WORKSPACE ?? join(piHome(), 'exec-workspace');
+}
+
+/**
+ * True when `id` is safe to use as a single path segment under the scratch root.
+ * pi names its session files by these ids, so in practice they already are; this
+ * is the guard that keeps a surprising one from escaping the root, not a
+ * formatting step. Anything rejected falls back to the unfiled bucket.
+ */
+export function isScratchId(id: string): boolean {
+  if (typeof id !== 'string' || id.length === 0 || id.length > 128) return false;
+  if (id === '.' || id === '..') return false;
+  return /^[A-Za-z0-9._-]+$/.test(id);
+}
+
+/** One chat's own scratch folder. Created on demand by the exec service. */
+export function threadWorkspaceDir(threadId: string): string {
+  return join(execWorkspaceDir(), threadId);
 }
 
 /**

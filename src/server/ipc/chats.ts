@@ -2,6 +2,7 @@ import { registerServer } from './guard';
 import type { IpcDeps } from './deps';
 import { searchChats, searchChatsLexical } from '../chatsearch/search';
 import { reindexChatThread, dropChatThread } from '../chatsearch/index-sync';
+import { copyThreadScratch, deleteThreadScratch } from '../exec/scratch';
 import {
   createFolder,
   deleteFolder,
@@ -83,9 +84,15 @@ export function registerChatsIpc(deps: IpcDeps): void {
   registerServer('chats:rollbackToTurn', (_e, threadId: string, turnId: string) =>
     deps.runtime().rollbackToTurn(threadId, turnId)
   );
-  registerServer('chats:forkThread', (_e, threadId: string, turnId: string) =>
-    deps.runtime().forkThread(threadId, turnId)
-  );
+  registerServer('chats:forkThread', async (_e, threadId: string, turnId: string) => {
+    const forked = await deps.runtime().forkThread(threadId, turnId);
+    // The fork's history already talks about files the original built, so give it
+    // a copy of them — otherwise its first act is to look for something it can
+    // see itself creating. Best-effort: a fork whose files didn't copy is still
+    // a fork worth having.
+    await copyThreadScratch(threadId, forked.threadId).catch(() => undefined);
+    return forked;
+  });
   registerServer('chats:rename', async (_e, threadId: string, name: string) => {
     await deps.runtime().renameThread(threadId, name);
     // The title is indexed for search too — reflect the new name right away.
@@ -99,6 +106,9 @@ export function registerChatsIpc(deps: IpcDeps): void {
       deps.runtime().deleteThread(threadId),
       removeChat(threadId),
       removeInboxEntry(threadId),
+      // The chat's scratch folder goes with it — that is the whole point of
+      // keeping scratch per chat (see server/exec/scratch.ts).
+      deleteThreadScratch(threadId),
       deps.scheduler()?.removeForThread(threadId) ?? Promise.resolve()
     ]);
     dropChatThread(threadId); // forget it from the search index

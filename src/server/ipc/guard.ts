@@ -137,6 +137,9 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'settings:updateDefaults': [a.object],
   'settings:updateExec': [a.object],
   'exec:resolveApproval': [a.string, a.oneOf(['allowOnce', 'alwaysAllow', 'deny'])],
+  // A thread id or the literal 'unfiled'. The handler validates the id shape
+  // itself before it reaches a path (see workspace/paths.ts isScratchId).
+  'exec:clearScratch': [a.string],
   'settings:updateCustomInstructions': [a.object],
   'settings:updateRetrieval': [a.object],
   'settings:testRetrieval': [a.oneOf(['embeddings', 'reranker'])]

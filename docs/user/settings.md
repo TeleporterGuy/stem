@@ -56,6 +56,19 @@ Keep prefixes narrow; `git status` grants less access than `git`.
 
 <!-- TODO(screenshot): Command approval card with Allow once, Always allow, and Deny. -->
 
+### Scratch files
+
+Commands run in a folder of their own per chat, so downloads, scripts and build
+output stay with the conversation that made them. **Scratch files** lists those
+folders biggest-first with the chat each belongs to; **Clear** empties one without
+touching the conversation.
+
+A folder goes when you delete its chat, and otherwise once nothing in it — and
+nothing in the chat — has been touched for the period you choose (7, 30 or 90 days,
+or **Never**). Treat scratch as working space: anything you want to keep belongs in
+your Files, which the assistant can copy into and which is not swept. Scratch is
+also left behind when you move Stem to another machine.
+
 ## Escape key
 
 - **Off** — does nothing while Stem is working.

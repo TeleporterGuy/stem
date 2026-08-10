@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type {
   DefaultsSettings,
@@ -12,7 +12,7 @@ import type {
 import type { ChatBackend, ExecBridge, ExecBridgeResult, ExecRequest } from '../backend/types';
 import { resolveRoleEffort } from '../../shared/modelRoles';
 import { log } from '../log';
-import { execWorkspaceDir } from '../workspace/paths';
+import { ensureThreadScratch } from './scratch';
 import { clampTimeout, execEnv, resolveLoginPath, runCommand } from './executor';
 import { buildJudgePrompt, classify, parseJudgeVerdict, resolveJudgeModel } from './policy';
 import { scanProtected } from './protected';
@@ -93,17 +93,20 @@ export class ExecService implements ExecBridge {
       return { ok: false, error: 'Command execution is disabled in Settings → Chat → Command execution.' };
     }
 
-    // Resolve + validate the working directory (default: the isolated workspace).
+    // Resolve + validate the working directory. The default is this CHAT's own
+    // scratch folder (see exec/scratch.ts); an explicit relative cwd is resolved
+    // against it rather than against the main process's cwd, which means nothing
+    // to the assistant.
+    const scratch = await ensureThreadScratch(req.threadId);
     let cwd: string;
     if (req.cwd) {
-      cwd = resolve(req.cwd);
+      cwd = resolve(scratch, req.cwd);
       const info = await stat(cwd).catch(() => null);
       if (!info?.isDirectory()) {
         return { ok: false, error: `The requested cwd "${req.cwd}" does not exist or is not a directory.` };
       }
     } else {
-      cwd = execWorkspaceDir();
-      await mkdir(cwd, { recursive: true }).catch(() => undefined);
+      cwd = scratch;
     }
 
     // Fail-closed read-only guard: any reference to a protected root blocks.

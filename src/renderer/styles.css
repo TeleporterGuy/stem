@@ -2636,6 +2636,46 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   line-height: 1;
 }
 
+/* Settings → Chat → Command execution: what each chat's commands left on disk. */
+.scratch-usage {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.scratch-empty,
+.scratch-total {
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
+.scratch-total {
+  padding-bottom: 4px;
+}
+.scratch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-12);
+}
+/* The title takes the slack and truncates; the size and the button never do. */
+.scratch-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scratch-size {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.scratch-row .link-btn {
+  flex: none;
+}
+
 /* ---- Settings → Mobile: the phone pairing panel ---- */
 
 /* The QR keeps its own white paper in both themes: an inverted or tinted code is

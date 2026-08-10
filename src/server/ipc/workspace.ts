@@ -9,6 +9,7 @@ import {
   updateConnectedFolder
 } from '../workspace/connected-folders';
 import { getFolderIndexStatuses, seedFolderLearnMarks, syncFolderIndexes } from '../folder-index';
+import { clearScratch, listScratchUsage, UNFILED_KEY } from '../exec/scratch';
 import { recallStore } from '../recall/store';
 import { backgroundRunOf, updateSkillsSettings } from '../workspace/settings';
 import { resetSkills, skillsResetStatus } from '../skills/reset';
@@ -16,7 +17,14 @@ import { learnFromLastTurn } from '../startup/skills';
 import { curateSkills } from '../skills/curate';
 import type { LlmClient } from '../recall/llm';
 import type { ApprovalId } from '../backend/types';
-import type { ConnectedFolderPatch, ScheduledTask, SkillsMode, TaskSchedulePatch } from '../../shared/types';
+import type {
+  ChatSummary,
+  ConnectedFolderPatch,
+  ScheduledTask,
+  ScratchUsageRow,
+  SkillsMode,
+  TaskSchedulePatch
+} from '../../shared/types';
 
 /**
  * Skills, the Files place, connected folders, scheduled tasks, and the phone
@@ -125,5 +133,24 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     return scheduler ? scheduler.updateSchedule(id, patch.schedule) : [];
   });
 
-
+  // What each chat's shell commands have left on disk. Measured here rather than
+  // client-side because the client may be a phone and the disk may be a VPS's.
+  registerServer('exec:scratchUsage', async (): Promise<ScratchUsageRow[]> => {
+    const [usage, chats] = await Promise.all([
+      listScratchUsage(),
+      deps.runtime().listThreads().catch((): ChatSummary[] => [])
+    ]);
+    const titles = new Map(chats.map((c) => [c.threadId, c.title]));
+    return usage
+      .map((row) => ({
+        key: row.key,
+        // Absent for the unfiled pile and for a folder whose chat is gone; the
+        // renderer names both cases in words a person can act on.
+        title: row.key === UNFILED_KEY ? undefined : titles.get(row.key),
+        bytes: row.bytes,
+        files: row.files
+      }))
+      .sort((a, b) => b.bytes - a.bytes);
+  });
+  registerServer('exec:clearScratch', (_e, key: string) => clearScratch(key));
 }

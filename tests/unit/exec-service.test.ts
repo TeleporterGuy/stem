@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExecService, JUDGE_TIMEOUT_MS } from '../../src/server/exec/service';
+import { execWorkspaceDir, threadWorkspaceDir } from '../../src/server/workspace/paths';
 import type { ChatBackend } from '../../src/server/backend/types';
 import type { AppSettings, ExecApprovalRequest, ModelSummary } from '../../src/shared/types';
 import { emptyCompleteError } from '../../src/server/pi/complete-errors';
@@ -207,5 +208,84 @@ describe('ExecService judge', () => {
       currentModel: 'xai/grok-4.5'
     });
     expect(approvals[0]?.judgeReason).toBe('no model was available to run it');
+  });
+});
+
+// Where a command actually runs. The default is no longer one folder shared by
+// every chat — it is the chat's own scratch folder (see server/exec/scratch.ts),
+// which is what makes scratch attributable, sizable and deletable per chat.
+describe('ExecService working directory', () => {
+  let approvals: ExecApprovalRequest[];
+  let settings: AppSettings;
+  let service: ExecService;
+
+  beforeEach(() => {
+    rmSync(execWorkspaceDir(), { recursive: true, force: true });
+    settings = baseSettings();
+    // Manual mode with an unlisted command: the request stops at the approval
+    // card, so the resolved cwd can be read off it without running anything.
+    settings.exec.approvalMode = 'manual';
+    approvals = [];
+    service = new ExecService({
+      runtime: () => ({}) as unknown as ChatBackend,
+      readSettings: async () => settings,
+      updateExecSettings: async () => settings,
+      emitApprovalRequest: (request) => {
+        approvals.push(request);
+        queueMicrotask(() => service.resolveApproval(request.id, 'deny'));
+      },
+      emitApprovalResolved: () => undefined
+    });
+  });
+
+  afterEach(() => {
+    rmSync(execWorkspaceDir(), { recursive: true, force: true });
+  });
+
+  /** Run one request to the card and hand back the cwd it resolved. */
+  async function cwdFor(req: { threadId: string | null; cwd?: string }): Promise<string> {
+    await service.handleExecRequest({ command: PS, isScheduled: false, ...req });
+    return approvals[0]!.cwd;
+  }
+
+  it('defaults to the asking chat’s own folder', async () => {
+    expect(await cwdFor({ threadId: 'chat-a' })).toBe(threadWorkspaceDir('chat-a'));
+  });
+
+  it('keeps two chats apart', async () => {
+    const a = await cwdFor({ threadId: 'chat-a' });
+    approvals = [];
+    expect(await cwdFor({ threadId: 'chat-b' })).not.toBe(a);
+  });
+
+  it('falls back to the unfiled root when no turn owns the command', async () => {
+    expect(await cwdFor({ threadId: null })).toBe(execWorkspaceDir());
+  });
+
+  it('resolves a relative cwd inside the chat’s folder, not the app’s', async () => {
+    mkdirSync(join(threadWorkspaceDir('chat-a'), 'build'), { recursive: true });
+    expect(await cwdFor({ threadId: 'chat-a', cwd: 'build' })).toBe(
+      join(threadWorkspaceDir('chat-a'), 'build')
+    );
+  });
+
+  it('leaves an absolute cwd exactly where the assistant pointed it', async () => {
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'stem-exec-cwd-')));
+    try {
+      expect(await cwdFor({ threadId: 'chat-a', cwd: elsewhere })).toBe(elsewhere);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a cwd that does not exist rather than inventing one', async () => {
+    const result = await service.handleExecRequest({
+      command: PS,
+      cwd: 'no-such-folder',
+      threadId: 'chat-a',
+      isScheduled: false
+    });
+    expect(result).toMatchObject({ ok: false });
+    expect(approvals).toHaveLength(0);
   });
 });
