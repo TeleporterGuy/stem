@@ -16,7 +16,7 @@ import type {
 } from '../../shared/types';
 import { ContextMeter } from './ContextMeter';
 import { useOffline } from '../hooks/useServerReachable';
-import { ShortcutHint, useShortcut } from '../shortcuts';
+import { ShortcutHint, glyphsFor, useShortcut, useShortcutsBound, type ShortcutId } from '../shortcuts';
 import { EFFORT_LABELS } from '../modelLabels';
 import { NOTE_CONFIRM_MS, detectNoteTrigger, noteBodyValid, useNoteMode } from '../noteMode';
 
@@ -296,11 +296,35 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (running) onInterrupt();
   });
 
+  // Hover labels carry their keycap — but only where the keycap is real. This is
+  // also Quick Chat's composer, and that window mounts no shortcuts provider, so
+  // the registrations above are no-ops there and a tooltip promising ⌘U would be
+  // advertising a key that does nothing.
+  const bound = useShortcutsBound();
+  /** Append the keycap to a label the control would carry anyway. */
+  const withKey = useCallback(
+    (label: string, id: ShortcutId) => (bound ? `${label} (${glyphsFor(id)})` : label),
+    [bound]
+  );
+  /** For tooltips that exist only to name the shortcut — with no key, no tooltip. */
+  const keyTitle = useCallback(
+    (label: string, id: ShortcutId) => (bound ? `${label} (${glyphsFor(id)})` : undefined),
+    [bound]
+  );
+
   return (
     <div className="composer">
       <div className="composer-controls">
+        {/* The keycap sits on the group, not the buttons: ⌘E cycles the whole
+            control rather than selecting any one level, and none of the level
+            buttons carries a title of its own to override this one. */}
         {model && model.supportedEfforts.length > 0 && (
-          <div className="seg-ctl compact" role="group" aria-label="Reasoning effort">
+          <div
+            className="seg-ctl compact"
+            role="group"
+            aria-label="Reasoning effort"
+            title={keyTitle('Cycle reasoning effort', 'cycle-effort')}
+          >
             <ShortcutHint id="cycle-effort" />
             {model.supportedEfforts.map((e) => (
               <button
@@ -323,6 +347,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               className={serviceTier === 'priority' ? '' : 'active'}
               onClick={() => onChangeSpeed(null)}
               disabled={running}
+              title={keyTitle('Standard speed', 'toggle-speed')}
             >
               Standard
             </button>
@@ -331,7 +356,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               className={serviceTier === 'priority' ? 'active' : ''}
               onClick={() => onChangeSpeed('priority')}
               disabled={running}
-              title="1.5× speed, increased usage"
+              title={withKey('1.5× speed, increased usage', 'toggle-speed')}
             >
               Fast
             </button>
@@ -344,7 +369,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             className={format === 'mdx' ? 'active' : ''}
             onClick={() => onChangeFormat('mdx')}
             disabled={running}
-            title="Rich components (callouts, steps, collapsibles)"
+            // Em dash rather than the usual parenthetical, so the keycap keeps
+            // the trailing (…) slot the other labels put it in.
+            title={withKey('Rich components — callouts, steps, collapsibles', 'toggle-format')}
           >
             MDX
           </button>
@@ -353,7 +380,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             className={format === 'md' ? 'active' : ''}
             onClick={() => onChangeFormat('md')}
             disabled={running}
-            title="Plain Markdown only"
+            title={withKey('Plain Markdown only', 'toggle-format')}
           >
             MD
           </button>
@@ -441,7 +468,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           <button
             type="button"
             className="composer-attach"
-            title="Attach"
+            title={withKey('Attach', 'attach')}
             onClick={pickFiles}
             disabled={offline}
           >
@@ -516,7 +543,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             rows={1}
           />
           {running && !noteMode ? (
-            <button type="button" className="icon-btn stop" onClick={onInterrupt} title="Stop">
+            <button
+              type="button"
+              className="icon-btn stop"
+              onClick={onInterrupt}
+              title={withKey('Stop', 'stop')}
+            >
               <Square size={16} />
             </button>
           ) : (
@@ -525,7 +557,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               className="icon-btn send"
               onClick={submit}
               disabled={offline || (noteMode ? !draft.trim() : !draft.trim() && attachments.length === 0)}
-              title={noteMode ? 'Save note' : 'Send'}
+              // Not withKey: Enter is handled by the textarea's own keydown, not
+              // by the shortcuts provider, so it is the one keycap here that is
+              // still true in Quick Chat.
+              title={`${noteMode ? 'Save note' : 'Send'} (${glyphsFor('send')})`}
             >
               <ArrowUp size={16} />
               <ShortcutHint id="send" placement="br" />

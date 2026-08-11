@@ -20,7 +20,7 @@ import { formatWake, isUnread, nextWakeAt, placement } from '../../shared/inbox'
 import { useOffline } from '../hooks/useServerReachable';
 import { useRememberedTab } from '../hooks/useRememberedTab';
 import { stripCiteMarkers } from '../../shared/citations';
-import { glyphsFor, useShortcut } from '../shortcuts';
+import { glyphsFor, useShortcut, type ShortcutId } from '../shortcuts';
 import { SnoozeMenu } from './SnoozeMenu';
 import { SelectionBar } from './SelectionBar';
 
@@ -130,6 +130,17 @@ function highlightSnippet(snippet: string): React.ReactNode[] {
     if (rest) nodes.push(rest);
   });
   return nodes;
+}
+
+/**
+ * The accelerator column of a context-menu row, drawn the way a native menu draws
+ * it: label left, keycap right in a dimmed column. Only rows whose action really
+ * has a binding get one — Rename and the Move-to list would otherwise carry an
+ * empty column that reads as a value that failed to load.
+ */
+function Accel({ id }: { id: ShortcutId }) {
+  const glyphs = glyphsFor(id);
+  return glyphs ? <span className="ctx-accel">{glyphs}</span> : null;
 }
 
 const STATUS_LABEL: Record<ThreadStatus, string> = {
@@ -784,7 +795,14 @@ export function ChatList(props: ChatListProps) {
           >
             <Search size={14} />
           </button>
-          <button className="grp-head-add" title="New thread" onClick={() => props.onNewChat(null)}>
+          {/* ⌘N opens a root-level draft, which is exactly this button. The
+              per-folder twin below deliberately stays keycap-free — the shortcut
+              can't target a folder. */}
+          <button
+            className="grp-head-add"
+            title={`New thread (${glyphsFor('new-conversation')})`}
+            onClick={() => props.onNewChat(null)}
+          >
             <SquarePen size={14} />
           </button>
           {tab === 'chats' && (
@@ -971,6 +989,7 @@ export function ChatList(props: ChatListProps) {
                     }}
                   >
                     {where === 'archived' ? 'Move to Inbox' : 'Archive'}
+                    <Accel id="archive-thread" />
                   </button>
                   {where === 'snoozed' ? (
                     <button
@@ -980,6 +999,7 @@ export function ChatList(props: ChatListProps) {
                       }}
                     >
                       Un-snooze
+                      <Accel id="snooze-thread" />
                     </button>
                   ) : (
                     <button
@@ -992,6 +1012,7 @@ export function ChatList(props: ChatListProps) {
                       }}
                     >
                       Snooze…
+                      <Accel id="snooze-thread" />
                     </button>
                   )}
                   <button
@@ -1002,6 +1023,7 @@ export function ChatList(props: ChatListProps) {
                     }}
                   >
                     {unread ? 'Mark as read' : 'Mark as unread'}
+                    <Accel id="toggle-read" />
                   </button>
                   <div className="ctx-sep" />
                   {/* Single-row only: this is a model call per thread, so it is
@@ -1038,6 +1060,11 @@ export function ChatList(props: ChatListProps) {
             }}
           >
             Delete
+            {/* Chats only. The folder half of this row has no binding, and the
+                thread shortcut takes the chat you are reading rather than the one
+                you right-clicked — the keycap names the action, the way a native
+                menu's accelerator does, not the row it happens to sit on. */}
+            {menu.kind === 'chat' && <Accel id="delete-thread" />}
           </button>
           {menu.kind === 'chat' && (
             <>

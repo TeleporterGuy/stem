@@ -1,6 +1,10 @@
 // Stem Recall — standalone stdio MCP server exposing `search_past_chats`
 // (episodic messages), `search_facts` (durable Level-1 facts) and
-// `search_chat_summaries` (Level-1.5 rolling thread summaries).
+// `search_chat_summaries` (Level-1.5 rolling thread summaries). It also serves
+// `read_stem_guide`, which has nothing to do with recall but everything to do
+// with being eager: this is the only server whose tools pi registers natively on
+// every turn (see stem-mcp-extension.mjs), so a question about Stem itself can be
+// answered without a router round-trip, and the pages ride along in this bundle.
 //
 // The pi backend spawns this as an MCP server (registered in mcp.json by
 // pi/mcp-config.ts). It runs under Electron-as-node (ELECTRON_RUN_AS_NODE=1) so
@@ -26,6 +30,7 @@ import { createInterface } from 'node:readline';
 import { connect } from 'node:net';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { STEM_GUIDE_SLUGS, stemGuidePage } from './stem-guide';
 import {
   hybridSearchDocs,
   hybridSearchFacts,
@@ -314,7 +319,7 @@ interface RpcMessage {
   params?: {
     protocolVersion?: string;
     name?: string;
-    arguments?: { query?: unknown; limit?: unknown; folder?: unknown };
+    arguments?: { query?: unknown; limit?: unknown; folder?: unknown; page?: unknown };
   };
 }
 
@@ -387,6 +392,38 @@ const FOLDER_DOCS_TOOL = {
   }
 };
 
+const GUIDE_TOOL = {
+  name: 'read_stem_guide',
+  description:
+    "Read a page of Stem's own user guide — the documentation for the app you are running inside. Use it whenever the user asks how Stem works, how to do something in the app, what a feature does, where a setting lives, which keyboard shortcut to press, or what changed in a recent version: the guide is the authority on all of that, and the app's UI is not something you can see. Returns the page as Markdown. Pages are small, so reading one is cheap; read the `guide` index when unsure which page covers the question, or read two pages together when a question spans both.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      page: {
+        type: 'string',
+        enum: [...STEM_GUIDE_SLUGS],
+        description: 'Which page to read.'
+      }
+    },
+    required: ['page']
+  }
+};
+
+interface ToolDescriptor {
+  name: string;
+  description: string;
+  inputSchema: { type: string; properties: Record<string, unknown>; required?: string[] };
+}
+
+/**
+ * Everything this server advertises. Exported so a test can check a descriptor
+ * against the data behind it — the guide's `page` enum against the page map —
+ * without speaking JSON-RPC over a spawned process.
+ */
+export function toolDescriptors(): ToolDescriptor[] {
+  return [CHATS_TOOL, FACTS_TOOL, SUMMARIES_TOOL, FOLDER_DOCS_TOOL, GUIDE_TOOL];
+}
+
 function handle(msg: RpcMessage): void {
   const { id, method, params } = msg;
   switch (method) {
@@ -404,10 +441,33 @@ function handle(msg: RpcMessage): void {
       reply(id, {});
       return;
     case 'tools/list':
-      reply(id, { tools: [CHATS_TOOL, FACTS_TOOL, SUMMARIES_TOOL, FOLDER_DOCS_TOOL] });
+      reply(id, { tools: toolDescriptors() });
       return;
     case 'tools/call': {
       const name = params?.name;
+      // The guide is static text bundled into this file: no DB, no embed socket,
+      // nothing to fail. It is answered before the memory gate below on purpose —
+      // "how does Stem work?" is not a memory question, and someone who turned
+      // memory off in Settings should still get told where that toggle lives.
+      if (name === 'read_stem_guide') {
+        const page = stemGuidePage(params?.arguments?.page);
+        if (!page) {
+          reply(id, {
+            content: [{
+              type: 'text',
+              text: `Unknown guide page: ${JSON.stringify(params?.arguments?.page ?? null)}. Valid pages: ${STEM_GUIDE_SLUGS.join(', ')}.`
+            }],
+            isError: true
+          });
+          return;
+        }
+        // The source path rides along so an answer can say which page it came
+        // from (and so a wrong page is obvious in the transcript).
+        reply(id, {
+          content: [{ type: 'text', text: `Stem user guide — page "${page.slug}" (${page.source})\n\n${page.markdown}` }]
+        });
+        return;
+      }
       if (
         name !== 'search_past_chats' &&
         name !== 'search_facts' &&

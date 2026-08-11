@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Lightbulb, RotateCw } from 'lucide-react';
-import type { ModelSummary } from '../../shared/types';
 import { Kbd, useShortcutsBound } from '../shortcuts';
-import { eligibleTips, tipAt, tipGlyphs } from './tips';
+import { eligibleTips, tipAt } from './tips';
 
 // Where in the deck to open. Persisted so the rotation keeps advancing across
 // restarts instead of replaying the first few tips every launch — renderer-local
@@ -19,7 +18,7 @@ function readSeq(): number {
 }
 
 /** One rotating tip under the new-chat starter cards. See ./tips for the deck. */
-export function EmptyTips({ format, model }: { format: 'md' | 'mdx'; model: ModelSummary | null }) {
+export function EmptyTips({ format }: { format: 'md' | 'mdx' }) {
   const bound = useShortcutsBound();
   // Mounted with the empty state only, so the deck steps once per *new chat*
   // rather than once per chat opened.
@@ -33,16 +32,15 @@ export function EmptyTips({ format, model }: { format: 'md' | 'mdx'; model: Mode
     }
   }, [seq]);
 
-  const ctx = { format, model, bound };
+  const ctx = { format, bound };
   const tip = tipAt(seq, ctx);
   if (!tip) return null;
-  const glyphs = tipGlyphs(tip);
 
   return (
     <div className="empty-tip">
       <Lightbulb className="empty-tip-icon" size={13} aria-hidden="true" />
       <p>
-        {glyphs && <Kbd glyphs={glyphs} />}
+        {tip.keys && <Kbd glyphs={tip.keys} />}
         {tip.text}
       </p>
       {eligibleTips(ctx).length > 1 && (

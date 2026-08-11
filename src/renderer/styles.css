@@ -1595,6 +1595,18 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 }
 .ctx-menu button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
 .ctx-menu button.danger { color: var(--danger); }
+/* Accelerator column: the keycap for rows whose action also has a shortcut, in
+   the dimmed right-hand column a native menu puts it in. Plain dim text rather
+   than a .kbd badge — that badge is a spotlight built for hint mode, and four of
+   them stacked down a menu would read as a toolbar. Its own colour so it stays
+   dim on the Delete row too, which is otherwise red. */
+.ctx-accel {
+  flex: none;
+  margin-left: auto;
+  padding-left: var(--sp-4); /* on top of the row's own gap — 16px of column */
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
 .ctx-sep { height: 0.5px; background: var(--line); margin: 4px 0; }
 .ctx-label { font-size: var(--fs-10); font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); padding: 4px 9px 2px; }
 .ctx-scroll { max-height: 180px; overflow-y: auto; }

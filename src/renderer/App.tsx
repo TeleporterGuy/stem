@@ -19,7 +19,7 @@ import { emptyInboxState, isUnread, placement } from '../shared/inbox';
 import { resendAttachments } from './attachments';
 import { ChatView, type ChatViewHandle } from './chat/ChatView';
 import { OnboardingGate } from './onboarding/OnboardingGate';
-import { ShortcutHint, useShortcut } from './shortcuts';
+import { ShortcutHint, glyphsFor, useShortcut } from './shortcuts';
 import { ManagePanel } from './manage/ManagePanel';
 import { McpApprovalCard } from './manage/McpApprovalCard';
 import { InstructionsApprovalCard } from './manage/InstructionsApprovalCard';
@@ -1463,7 +1463,7 @@ export default function App() {
     <>
       <button
         className="tbtn"
-        title="New conversation"
+        title={`New conversation (${glyphsFor('new-conversation')})`}
         onClick={() => newConversation()}
         // Allow a new chat even while another runs in the background. Only block
         // when the visible chat is empty, or its first turn hasn't yet produced a
@@ -1485,7 +1485,7 @@ export default function App() {
       <ActivityIndicator />
       <button
         className={`tbtn${showInspector ? ' active' : ''}`}
-        title="Toggle inspector"
+        title={`Toggle inspector (${glyphsFor('toggle-inspector')})`}
         onClick={() => setShowInspector((v) => !v)}
       >
         <PanelRight size={17} />

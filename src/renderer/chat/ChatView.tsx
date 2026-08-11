@@ -612,7 +612,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                 </button>
               ))}
             </div>
-            <EmptyTips format={format} model={model} />
+            <EmptyTips format={format} />
             {draftFolderName && (
               <p className="empty-folder">This chat will be saved in “{draftFolderName}”.</p>
             )}
