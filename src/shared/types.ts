@@ -817,6 +817,18 @@ export interface SkillsResetResult {
   removed: number;
 }
 
+/**
+ * What one curator pass did, alongside the fresh listing. The counts travel with
+ * the list because a merge and a no-op leave the panel looking the same from the
+ * outside — the list just quietly changes — and the caller cannot tell them apart
+ * by diffing it.
+ */
+export interface SkillsCurateResult {
+  skills: SkillSummary[];
+  merged: number;
+  archived: number;
+}
+
 /** Main -> renderer: a pending approval was answered or expired. */
 export interface ApprovalResolvedPayload {
   id: string;
@@ -1944,8 +1956,8 @@ export interface StemApi {
    * the same dialog.
    */
   resetSkills(exportFirst: boolean, mode: SkillsMode): Promise<SkillsResetResult>;
-  /** Run the skills curator now (merge duplicates, archive stale ones). Returns fresh list. */
-  curateSkills(): Promise<SkillSummary[]>;
+  /** Run the skills curator now (merge duplicates, archive stale ones). Returns fresh list plus what changed. */
+  curateSkills(): Promise<SkillsCurateResult>;
   /** Fired after skills change (auto-create/patch by the assistant, or the curator). */
   onSkillsChanged(listener: () => void): () => void;
 

@@ -1,5 +1,6 @@
 import { registerServer } from './guard';
 import type { IpcDeps } from './deps';
+import * as activity from '../activity';
 import { listSkills, setSkillEnabled } from '../workspace/skills';
 import { addFiles, createSubdir, listFiles, removeFile, removeSubdir } from '../files/store';
 import {
@@ -68,9 +69,15 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
       complete: async (prompt) =>
         deps.runtime().complete(prompt, await backgroundRunOf('curator', (s) => ({ model: s.skills.model, effort: s.skills.effort })))
     };
-    await curateSkills(llm, { force: true });
+    // Tracked under the same kind as the automatic pass in startup/recall-tasks.ts.
+    // Pressing the button spends the same tens of seconds on the same model call,
+    // and a manual run that reports nowhere is the one most likely to be watched.
+    const res = await activity.track('skills.curate', 'Curating skills', () => curateSkills(llm, { force: true }), (r) => ({
+      worked: r.merged + r.archived > 0,
+      detail: `Merged ${r.merged}, archived ${r.archived}`
+    }));
     await deps.runtime().requestSkillReload();
-    return listSkills();
+    return { skills: listSkills(), merged: res.merged, archived: res.archived };
   });
   // There is no `skills:distillNow` any more. Its "Collect now" swept the chat
   // backlog for skills, but the recall DB holds no tool calls to sweep; skills

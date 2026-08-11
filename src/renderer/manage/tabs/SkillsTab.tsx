@@ -19,6 +19,7 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
   // yet" is a sentence that would quietly tell someone their skills are gone.
   const offline = useOffline();
   const [tidying, setTidying] = useState(false);
+  const [tidyMsg, setTidyMsg] = useState<string | null>(null);
   // null => use the backend default model for the curator.
   const [curatorModel, setCuratorModel] = useState<string | null>(null);
   const [mode, setMode] = useState<SkillsMode>('ask');
@@ -57,8 +58,20 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
 
   async function tidy() {
     setTidying(true);
+    setTidyMsg(null);
     try {
-      setSkills(await holdFullSpin(window.stem.curateSkills()));
+      const r = await holdFullSpin(window.stem.curateSkills());
+      setSkills(r.skills);
+      // A pass that merged nothing and one that merged three both end with the
+      // list simply redrawn, so say which happened — otherwise the only way to
+      // tell is to have memorised the library beforehand.
+      setTidyMsg(
+        r.merged + r.archived === 0
+          ? 'No duplicate or stale skills found'
+          : `Merged ${r.merged}, archived ${r.archived} — archived skills stay on disk and can be switched back on above.`
+      );
+    } catch {
+      setTidyMsg('Tidy up failed — try again.');
     } finally {
       setTidying(false);
     }
@@ -102,6 +115,7 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
           )}
         </span>
       </div>
+      {tidyMsg && <p className="muted">{tidyMsg}</p>}
       {skills.length === 0 && offline ? (
         <p className="muted">Your skills live on Stem’s server, which can’t be reached right now.</p>
       ) : skills.length === 0 ? (
