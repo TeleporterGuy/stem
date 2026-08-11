@@ -14,17 +14,31 @@ interface ChatStore {
   /** threadId -> folderId. Absent / dangling entries mean "root". */
   assignments: Record<string, string>;
   /**
-   * threadId -> the subject a model wrote from the thread's first message.
+   * threadId -> the subject a model wrote from the thread's conversation.
    * Kept here, next to the folder assignment, because it is thread metadata
    * rather than Inbox state: it has to survive Settings → Chat → Chats being turned
    * down from `everywhere` to `inbox`, and it must not be lost when the user
    * renames the thread by hand.
    */
   subjects: Record<string, string>;
+  /** threadId -> where the thread has got to in its naming schedule. */
+  naming: Record<string, NamingState>;
+}
+
+/**
+ * A thread's place in the widening naming schedule (see server/chats/subject.ts):
+ * `step` counts the namings that have happened, `since` the user turns since the
+ * last one. Persisted rather than held in memory because the schedule has to
+ * survive a restart — otherwise every reopened thread would start counting from
+ * zero and re-name itself a few turns later, forever.
+ */
+export interface NamingState {
+  step: number;
+  since: number;
 }
 
 function emptyStore(): ChatStore {
-  return { version: 1, folders: [], assignments: {}, subjects: {} };
+  return { version: 1, folders: [], assignments: {}, subjects: {}, naming: {} };
 }
 
 /** Keep only string→string pairs; a hand-edited file can hold anything. */
@@ -35,6 +49,19 @@ function coerceMap(raw: unknown): Record<string, string> {
   );
 }
 
+/** Same idea as {@link coerceMap} for the naming records: drop anything that isn't two counters. */
+function coerceNaming(raw: unknown): Record<string, NamingState> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, NamingState> = {};
+  for (const [threadId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue;
+    const { step, since } = value as Partial<NamingState>;
+    if (!Number.isFinite(step) || !Number.isFinite(since)) continue;
+    out[threadId] = { step: Math.max(0, Math.trunc(step as number)), since: Math.max(0, Math.trunc(since as number)) };
+  }
+  return out;
+}
+
 export async function readStore(): Promise<ChatStore> {
   try {
     const parsed = JSON.parse(await readFile(chatStorePath(), 'utf8')) as Partial<ChatStore>;
@@ -42,7 +69,8 @@ export async function readStore(): Promise<ChatStore> {
       version: 1,
       folders: Array.isArray(parsed.folders) ? parsed.folders : [],
       assignments: parsed.assignments && typeof parsed.assignments === 'object' ? parsed.assignments : {},
-      subjects: coerceMap(parsed.subjects)
+      subjects: coerceMap(parsed.subjects),
+      naming: coerceNaming(parsed.naming)
     };
   } catch {
     return emptyStore();
@@ -127,6 +155,36 @@ export function setSubject(threadId: string, subject: string): Promise<void> {
   });
 }
 
+/** Where a thread has got to in its naming schedule, or null if it has never been counted. */
+export async function getNaming(threadId: string): Promise<NamingState | null> {
+  return (await readStore()).naming[threadId] ?? null;
+}
+
+/** Record a thread's naming schedule position. */
+export function setNaming(threadId: string, state: NamingState): Promise<void> {
+  return update((store) => {
+    store.naming[threadId] = { step: Math.max(0, state.step), since: Math.max(0, state.since) };
+  });
+}
+
+/**
+ * Count one settled turn against a thread's schedule and hand back where that
+ * leaves it. `fallbackStep` is where a thread with no record joins — a thread
+ * that predates the schedule has already been named once, and starting it at
+ * step 0 would have it re-named from a single exchange.
+ *
+ * Read-modify-write in one enqueued task, so two turns settling at once can't
+ * both read `since: 2` and lose an increment.
+ */
+export function bumpNaming(threadId: string, fallbackStep: number): Promise<NamingState> {
+  return update((store) => {
+    const prior = store.naming[threadId] ?? { step: fallbackStep, since: 0 };
+    const next = { step: prior.step, since: prior.since + 1 };
+    store.naming[threadId] = next;
+    return next;
+  });
+}
+
 export function createFolder(name: string, parentId: string | null): Promise<Folder[]> {
   return update((store) => {
     const validParent = parentId && store.folders.some((f) => f.id === parentId) ? parentId : null;
@@ -197,10 +255,11 @@ export function setChatFolder(threadId: string, folderId: string | null): Promis
   });
 }
 
-/** Drop a chat's assignment and subject when the chat itself is deleted. */
+/** Drop a chat's assignment, subject and naming schedule when the chat itself is deleted. */
 export function removeChat(threadId: string): Promise<void> {
   return update((store) => {
     delete store.assignments[threadId];
     delete store.subjects[threadId];
+    delete store.naming[threadId];
   });
 }

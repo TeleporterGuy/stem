@@ -44,7 +44,8 @@ import { isContextOverflowError } from '../backend/overflow';
 import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
 import { previewText } from '../chats/preview';
-import { autoTitle, writeSubject } from '../chats/subject';
+import { autoTitle, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
+import { setNaming } from '../workspace/chats';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
 import { buildRecallContext, type RecallTimings } from '../recall/inject';
 import { reconcileExplicitFact } from '../recall/reconcile';
@@ -750,11 +751,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       if (isNewThread) {
         const name = autoTitle(input.input);
         if (name) await this.proc!.request({ type: 'set_session_name', name }).catch(() => undefined);
-        // …and then, in the background, ask a small model for a real subject.
-        // Not awaited: the user is watching a reply stream, and the rename this
-        // may end in queues on the foreground gate so it lands after the turn
-        // rather than switching pi's active session mid-stream.
-        void this.writeThreadSubject(threadId, input.input);
+        // …and start the thread at the top of the naming schedule, so the model
+        // written name is due once this turn settles. Step 0 is what marks the
+        // thread as never-named; without it a new thread would be taken for one
+        // that predates the schedule and re-checked instead of named.
+        void setNaming(threadId, { step: 0, since: 0 }).catch(() => undefined);
       }
 
       if (isRecallEnabled()) {
@@ -1307,30 +1308,42 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     });
   }
 
+  /** What the naming pass reads and writes through (see server/chats/subject.ts). */
+  private subjectDeps(): SubjectDeps {
+    return {
+      // Not priority: unlike the exec judge, nobody is blocked on this.
+      complete: (prompt, opts) => this.complete(prompt, opts),
+      currentTitle: async (id) => (await this.listThreads()).find((c) => c.threadId === id)?.title ?? null,
+      rename: (id, name) => this.renameThread(id, name),
+      readMessages: async (id) => (await this.readThread(id)).messages
+    };
+  }
+
   /**
    * Ask a small model for this thread's subject and apply it (see
-   * server/chats/subject.ts for the policy). Always resolves — a thread with no
-   * subject keeps the first line of the user's message as its name.
+   * server/chats/subject.ts for the policy). Always resolves — a thread that
+   * gets no subject simply keeps the name it already has.
    *
-   * `force` is the explicit "Write a subject" row action; without it the write
-   * obeys Settings → Chat → Chats and leaves a hand-typed name alone.
+   * This is the explicit "Write a subject" row action, so it runs whatever the
+   * mode is, reads the whole thread, and may replace a name the user typed. The
+   * automatic path is {@link nameThreadIfDue}.
    */
-  async writeThreadSubject(threadId: string, firstMessage: string, force = false): Promise<string | null> {
-    const subject = await writeSubject(
-      {
-        // Not priority: unlike the exec judge, nobody is blocked on this.
-        complete: (prompt, opts) => this.complete(prompt, opts),
-        currentTitle: async (id) => (await this.listThreads()).find((c) => c.threadId === id)?.title ?? null,
-        rename: (id, name) => this.renameThread(id, name)
-      },
-      threadId,
-      firstMessage,
-      { force }
-    );
+  async writeThreadSubject(threadId: string, force = true): Promise<string | null> {
+    const subject = await nameThread(this.subjectDeps(), threadId, { force });
     // Only a write that landed is worth a refresh; the skip paths (mode off,
     // hand-renamed thread, model gave nothing usable) changed no list.
     if (subject) this.emit('chats:changed', threadId);
     return subject;
+  }
+
+  /**
+   * Count a settled turn against the thread's naming schedule, and re-name the
+   * thread if it has come due. Cheap on an ordinary turn — the due check is
+   * arithmetic, and nothing reads the thread or calls a model until it fires.
+   */
+  private async nameThreadIfDue(threadId: string): Promise<void> {
+    const subject = await nameIfDue(this.subjectDeps(), threadId);
+    if (subject) this.emit('chats:changed', threadId);
   }
 
   async deleteThread(threadId: string): Promise<void> {
@@ -2142,6 +2155,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         // a throwing subscriber is its own problem, not this turn's
       }
     }
+    // Count the turn against the thread's naming schedule, and let it re-name
+    // itself if it has come due (server/chats/subject.ts owns the policy). Same
+    // fire-and-forget contract as the skills pass above: an ordinary turn costs
+    // nothing here, and the rare turn that does spend a model call must not hold
+    // the settle up or break it.
+    void this.nameThreadIfDue(turn.threadId);
     // Map this live turn's minted id to its persisted entry id so a later
     // fork/edit targets the right pi entry — and persist the turn's timing.
     void this.recordTurnEntry(turn);

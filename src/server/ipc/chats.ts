@@ -117,19 +117,16 @@ export function registerChatsIpc(deps: IpcDeps): void {
     await setChatFolder(threadId, folderId);
     return chatList();
   });
-  // "Write a subject" on a row. New threads get one on their own during their
-  // first turn; this is the explicit ask, so it runs whatever the mode is and is
-  // allowed to replace a name the user typed. Awaited (unlike the automatic
-  // path) because the user pressed a button and is waiting for the row to change.
+  // "Write a subject" on a row. Threads name themselves on their own schedule;
+  // this is the explicit ask, so it runs whatever the mode is, reads the whole
+  // thread rather than only what is new, and is allowed to replace a name the
+  // user typed. Awaited (unlike the automatic path) because the user pressed a
+  // button and is waiting for the row to change.
   registerServer('chats:writeSubject', async (_e, threadId: string) => {
-    const { messages } = await deps.runtime().readThread(threadId);
-    const first = messages.find((m) => m.role === 'user')?.content ?? '';
-    if (first.trim()) {
-      await deps.runtime().writeThreadSubject(threadId, first, true);
-      // A rename went through the same path chats:rename uses, so the search
-      // index needs the same nudge.
-      void reindexChatThread(deps.runtime(), threadId);
-    }
+    const subject = await deps.runtime().writeThreadSubject(threadId, true);
+    // A rename went through the same path chats:rename uses, so the search
+    // index needs the same nudge.
+    if (subject) void reindexChatThread(deps.runtime(), threadId);
     return chatList();
   });
 

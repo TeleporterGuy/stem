@@ -12,7 +12,20 @@ import type {
 } from '../../shared/types';
 import { readTasks } from '../workspace/tasks';
 import { previewText } from '../chats/preview';
-import { autoTitle, writeSubject } from '../chats/subject';
+import { autoTitle, KEEP, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
+import { setNaming } from '../workspace/chats';
+
+/**
+ * The canned model behind the fake's naming pass: "About <the first three words
+ * of the conversation's opening message>", so an e2e row still matches the text
+ * the thread was started with. A re-check answers KEEP — the fake has no
+ * judgement about drift, and a row that holds still is what a spec can assert on.
+ */
+function cannedSubject(prompt: string): string {
+  if (prompt.includes(`the single word ${KEEP}`)) return KEEP;
+  const opening = prompt.split('\n').find((l) => l.startsWith('User: '))?.slice('User: '.length) ?? '';
+  return `About ${opening.trim().split(/\s+/).slice(0, 3).join(' ')}`;
+}
 
 // Hermetic ChatBackend for STEM_E2E runs: the full turn lifecycle — send →
 // streamed deltas → completed/failed/aborted, thread CRUD, retry/edit/fork —
@@ -153,7 +166,7 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     const text = input.input;
     const isNewThread = !thread.title;
     // The same first-line title the pi runtime gives a new session — and the same
-    // fingerprint writeSubject checks before it renames anything.
+    // fingerprint the naming pass checks before it renames anything.
     if (isNewThread) thread.title = autoTitle(text);
     thread.listed = true;
     thread.updatedAt = Math.floor(Date.now() / 1000);
@@ -166,9 +179,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
       ...(input.scheduled ? { scheduled: { at: input.scheduled.at } } : {})
     });
 
-    // Mirrors the pi runtime: a brand-new thread gets its subject written in the
-    // background while the reply streams.
-    if (isNewThread) void this.writeThreadSubject(threadId, text);
+    // Mirrors the pi runtime: a brand-new thread starts at the top of the naming
+    // schedule, so it is named once this turn settles rather than re-checked as
+    // if it predated the schedule.
+    if (isNewThread) void setNaming(threadId, { step: 0, since: 0 }).catch(() => undefined);
 
     const turn: ActiveTurn = {
       turnId,
@@ -267,19 +281,25 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
    * for a canned reply, so a spec can watch a row rename itself without a
    * network call or a nondeterministic answer.
    */
-  async writeThreadSubject(threadId: string, firstMessage: string, force = false): Promise<string | null> {
-    const subject = await writeSubject(
-      {
-        complete: async () => `About ${firstMessage.trim().split(/\s+/).slice(0, 3).join(' ')}`,
-        currentTitle: async (id) => this.threads.get(id)?.title ?? null,
-        rename: (id, name) => this.renameThread(id, name)
-      },
-      threadId,
-      firstMessage,
-      { force }
-    );
+  async writeThreadSubject(threadId: string, force = true): Promise<string | null> {
+    const subject = await nameThread(this.subjectDeps(), threadId, { force });
     if (subject) this.emit('chats:changed', threadId);
     return subject;
+  }
+
+  /** The naming schedule, run off a settled turn exactly as the pi runtime runs it. */
+  private async nameThreadIfDue(threadId: string): Promise<void> {
+    const subject = await nameIfDue(this.subjectDeps(), threadId);
+    if (subject) this.emit('chats:changed', threadId);
+  }
+
+  private subjectDeps(): SubjectDeps {
+    return {
+      complete: async (prompt) => cannedSubject(prompt),
+      currentTitle: async (id) => this.threads.get(id)?.title ?? null,
+      rename: (id, name) => this.renameThread(id, name),
+      readMessages: async (id) => [...(this.threads.get(id)?.messages ?? [])]
+    };
   }
 
   async deleteThread(threadId: string): Promise<void> {
@@ -431,6 +451,7 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
           turn: { id: turnId, status: 'failed' },
           error: 'E2E scripted failure'
         });
+        void this.nameThreadIfDue(threadId);
       });
     } else if (!turn.hang) {
       steps.push(() => {
@@ -453,6 +474,9 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
           cost: null
         });
         this.emitEvent('turn/completed', { threadId, turn: { id: turnId, status: 'completed' } });
+        // The naming schedule runs off a settled turn here too, so an e2e row
+        // renames itself through the same path the app uses.
+        void this.nameThreadIfDue(threadId);
       });
     }
     // [e2e:hang]: no terminal step — the turn stays running until interruptTurn.
@@ -477,6 +501,7 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
       threadId: turn.threadId,
       turn: { id: turn.turnId, status }
     });
+    void this.nameThreadIfDue(turn.threadId);
   }
 
   private recordAssistant(turn: ActiveTurn, text: string): void {

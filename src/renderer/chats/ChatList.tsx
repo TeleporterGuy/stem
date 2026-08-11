@@ -60,7 +60,7 @@ export interface ChatListProps {
    * not keep steering a keystroke.
    */
   onSelectionApi?: (api: InboxSelectionApi | null) => void;
-  /** Have a model write this thread's subject from its first message, now. */
+  /** Have a model write this thread's subject from its conversation, now. */
   onWriteSubject: (threadId: string) => void;
 }
 

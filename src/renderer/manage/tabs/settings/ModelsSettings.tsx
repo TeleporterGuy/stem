@@ -303,12 +303,13 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
           <span className="set-sub">
             Chat subjects{' '}
             <InfoTip label="About the subject model">
-              Writes each new chat a short subject from your first message, once, the way an email
-              names a thread. <strong>The smallest, cheapest model you have is plenty</strong> —
-              this is a few words off your opening line, not a summary of the conversation. It also
-              runs with <strong>reasoning off</strong> unless you say otherwise: naming a thread is
-              extraction, and thinking about it is time spent before the chat you actually opened
-              can be found again. Turn subjects on or off under Chat.
+              Writes each chat a short subject the way an email names a thread — once its first
+              reply has landed, then rarely, so a chat that drifts onto something else stops
+              carrying the name it opened with. <strong>The smallest, cheapest model you have is
+              plenty</strong> — this is a few words off the conversation, not a summary of it. It
+              also runs with <strong>reasoning off</strong> unless you say otherwise: naming a
+              thread is extraction, and thinking about it is time spent before the chat you
+              actually opened can be found again. Turn subjects on or off under Chat.
             </InfoTip>
           </span>
           <ModelPicker

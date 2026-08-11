@@ -159,13 +159,15 @@ export interface ChatBackend extends EventEmitter {
   resumeThread(threadId: string): Promise<void>;
   renameThread(threadId: string, name: string): Promise<void>;
   /**
-   * Ask a small model for the thread's subject and apply it per Settings → Chat → Chats
-   * (see server/chats/subject.ts). Always resolves; a thread with no subject just
-   * keeps the first line of the user's message as its name. `force` = the explicit
-   * "Write a subject" action, which ignores the mode and may replace a hand-typed
-   * name. Emits `chats:changed` when a subject actually lands.
+   * Ask a small model to name the thread from its conversation and apply the name
+   * per Settings → Chat → Chats (see server/chats/subject.ts). Always resolves; a
+   * thread that gets no subject just keeps the name it already has. `force` = the
+   * explicit "Write a subject" action, which ignores the mode, reads the whole
+   * thread and may replace a hand-typed name. The automatic naming schedule runs
+   * inside the backend, off each settled turn. Emits `chats:changed` when a
+   * subject actually lands.
    */
-  writeThreadSubject(threadId: string, firstMessage: string, force?: boolean): Promise<string | null>;
+  writeThreadSubject(threadId: string, force?: boolean): Promise<string | null>;
   deleteThread(threadId: string): Promise<void>;
   rollbackToTurn(threadId: string, turnId: string): Promise<void>;
   forkThread(threadId: string, turnId: string): Promise<{ threadId: string }>;

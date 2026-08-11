@@ -1160,7 +1160,7 @@ export interface ChatSummary {
   /** Computed main-side as `name ?? preview ?? 'New chat'`. */
   title: string;
   /**
-   * A short subject written by a model from the thread's first message, when
+   * A short subject written by a model from the thread's conversation, when
    * Settings → Chat → Chats has subjects on. The Inbox shows this in place of `title`.
    * At the `everywhere` setting the thread was also renamed to it, so the two
    * agree; at `inbox` they deliberately differ. Absent = never written.
@@ -1366,6 +1366,12 @@ export type SkillsMode = 'off' | 'ask' | 'auto';
  * - `inbox`      — write a subject and show it in the Inbox, but leave thread names alone.
  * - `everywhere` — the written subject IS the thread's name, so the Inbox, the
  *                  Chats tree, search and the window title all agree. The default.
+ *
+ * In both writing modes the subject is written once the thread's first reply has
+ * landed and then re-checked on a widening schedule (turns 3, 8, 20, 50…), so a
+ * thread that drifts onto another subject stops carrying the name of the one it
+ * opened with. A re-check keeps the standing name unless the thread has clearly
+ * moved on.
  *
  * A name you typed yourself is never overwritten in any mode.
  */

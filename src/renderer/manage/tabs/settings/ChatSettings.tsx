@@ -141,12 +141,14 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
           <span className="set-sub">
             Subjects{' '}
             <InfoTip label="About chat subjects">
-              Stem writes each new chat a short subject from your first message, the way an email
-              names a thread. <strong>Everywhere</strong> uses it as the chat's name, so the list,
-              search and the window title all agree. <strong>Inbox only</strong> shows it in the
-              Inbox and leaves names alone. <strong>Off</strong> never calls a model — a chat is
-              named after the first line you typed. A name you type yourself is never overwritten.
-              The model that writes them lives under Models.
+              Stem writes each chat a short subject the way an email names a thread — once its
+              first reply has landed, then now and then as the chat grows, so one that wanders onto
+              another topic stops carrying the name it opened with. <strong>Everywhere</strong>
+              uses it as the chat's name, so the list, search and the window title all agree.{' '}
+              <strong>Inbox only</strong> shows it in the Inbox and leaves names alone.{' '}
+              <strong>Off</strong> never calls a model — a chat is named after the first line you
+              typed. A name you type yourself is never overwritten. The model that writes them
+              lives under Models.
             </InfoTip>
           </span>
           <div className="seg-ctl">
