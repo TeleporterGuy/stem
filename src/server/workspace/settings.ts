@@ -63,8 +63,9 @@ const DEFAULTS: ServerSettings = {
   // Memory distillation/tidy-up; null = the model you chat with, and its default
   // effort. Deliberately not the shared background model — see MemoryModelSettings.
   memory: { model: null, effort: null },
-  // Background skills model; null = the backend default. Separate from the memory
-  // model so authoring and curation (harder tasks) can use a stronger model.
+  // Skills model (authoring + curation); null = the model you chat with, like
+  // memory — deliberately NOT the shared quick-tasks model, so making the
+  // background cheap can't quietly hand skill-writing to the cheapest model.
   // `ask` is the default mode: the library this replaces was built by a pass that
   // wrote silently, and 23 of its 25 skills were never used once. Showing the user
   // what is about to be saved is the cheapest available check on that.
@@ -496,7 +497,7 @@ export function updateCustomInstructions(patch: Partial<CustomInstructionsSettin
   });
 }
 
-/** Patch the skills-curator model setting and persist; returns the full settings. */
+/** Patch the skills model/effort/mode settings and persist; returns the full settings. */
 export function updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<ServerSettings> {
   return enqueue(async () => {
     const cur = await readSettings();
@@ -586,9 +587,9 @@ export interface RoleRun {
 }
 
 /**
- * What one background role pins for itself. Both halves nullable and read the
+ * What one quick-tasks role pins for itself. Both halves nullable and read the
  * same way as {@link RoleRun}: null = don't specify here, fall through to the
- * shared Background work setting.
+ * shared Quick tasks setting.
  */
 export interface RolePin {
   model: string | null;
@@ -596,14 +597,14 @@ export interface RolePin {
 }
 
 /**
- * What a background role actually runs on: its own pin, else the shared
- * background setting, else the fallback for that half — null for the model, which
- * sends it through complete()'s own fallback to `defaults.model`, the model you
- * chat with; and the role's {@link ROLE_EFFORT_FLOOR} for the effort.
+ * What a quick-tasks role actually runs on: its own pin, else the shared
+ * quick-tasks setting, else the fallback for that half — null for the model,
+ * which sends it through complete()'s own fallback to `defaults.model`, the
+ * model you chat with; and the role's {@link ROLE_EFFORT_FLOOR} for the effort.
  *
  * Effort falls through separately from the model, so pinning one does not pin the
  * other: the safety check can be moved to a bigger model and still be told to
- * answer fast, and a role left alone keeps following Background work when that
+ * answer fast, and a role left alone keeps following Quick tasks when that
  * changes.
  */
 export function backgroundRunFor(settings: ServerSettings, role: BackgroundRole, pin: RolePin): RoleRun {
@@ -638,6 +639,23 @@ export function memoryRunFor(settings: ServerSettings, pinned: string | null): R
 export async function memoryRunOf(pinned: (settings: ServerSettings) => string | null): Promise<RoleRun> {
   const settings = await readSettings();
   return memoryRunFor(settings, pinned(settings));
+}
+
+/**
+ * What skills work runs on — authoring (the end-of-turn pass and `/learn`) and
+ * curation alike. Memory's chain, not the quick-tasks one: an unpinned model
+ * answers null, which complete() resolves to `defaults.model`, the model you
+ * chat with. Skills used to ride the shared background model, which meant the
+ * advertised move — "point Background work at something small" — silently had
+ * your skills written by that small model too.
+ */
+export function skillsRunFor(settings: ServerSettings): RoleRun {
+  return { model: settings.skills.model, effort: settings.skills.effort };
+}
+
+/** {@link skillsRunFor} for call sites that don't otherwise read settings. */
+export async function skillsRunOf(): Promise<RoleRun> {
+  return skillsRunFor(await readSettings());
 }
 
 /** Patch one local provider (Ollama / LM Studio / custom) and persist; returns the full settings. */

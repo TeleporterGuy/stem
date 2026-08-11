@@ -11,7 +11,7 @@ import type {
   LocalProviderTestResult
 } from '../../../../shared/types';
 import { API_KEY_PROVIDER_IDS, AUTH_PROVIDER_IDS, isLocalProviderId, providerName } from '../../../../shared/providers';
-import { resolveBackgroundModel, resolveMemoryModel, resolveRoleEffort } from '../../../../shared/modelRoles';
+import { resolveBackgroundModel, resolveMemoryModel, resolveRoleEffort, resolveSkillsModel } from '../../../../shared/modelRoles';
 import { clampEffort, EffortSelect, effortsOf } from '../../../ui/EffortSelect';
 import { localProbeTarget, probeStillDescribes } from '../../../localProbe';
 import { RequestGate } from '../../../requestGate';
@@ -30,15 +30,18 @@ import {
 } from '../../searchBackends';
 
 /**
- * Settings → Models: which model does which job, who Stem is signed in to, and
+ * Settings → Models: who Stem is signed in to, which model does which job, and
  * who answers a search.
  *
- * Three lists that look unrelated and aren't. Model roles is the top of the
- * chain — what each job runs on. The AI providers are who Stem is allowed to ask
- * at all, which is what makes a role assignable. And the search backend is who
- * it asks when the answer isn't in a model; that one shares credentials with the
- * providers above, so a ChatGPT sign-in made here is also a search backend
- * below, and the picker says so.
+ * Three lists that look unrelated and aren't — and they are ordered by
+ * dependency. The AI providers come first because they are who Stem is allowed
+ * to ask at all: until one is connected, every role picker below is an empty
+ * list (and the dead-credential red dot that pulls the panel open is about a
+ * provider row, so that row should not sit below the roles wall). Model roles
+ * then say what each job runs on. And the search backend is who Stem asks when
+ * the answer isn't in a model; it shares credentials with the providers above,
+ * so a ChatGPT sign-in made here is also a search backend below, and the picker
+ * says so.
  */
 export function ModelsSettings({ models, modelId, onSelectModel, deadProvider }: ModelsSettingsProps) {
   // Connected AI providers, so the search picker can tell you which backends
@@ -57,8 +60,8 @@ export function ModelsSettings({ models, modelId, onSelectModel, deadProvider }:
 
   return (
     <div>
-      <ModelRolesSection models={models} modelId={modelId} onSelectModel={onSelectModel} />
       <ProvidersSection deadProvider={deadProvider} />
+      <ModelRolesSection models={models} modelId={modelId} onSelectModel={onSelectModel} />
       <WebSearchSection providers={providers} />
     </div>
   );
@@ -69,12 +72,16 @@ type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
 /**
  * Every job Stem runs a model for, in one list.
  *
- * Two of them are decisions: the model you chat with, and the one the background
- * falls back to. The rest are grouped by which of those they follow — Quick Chat
- * and memory follow the model you chat with, because you read one and the other
- * cannot afford to be small; chat subjects, the safety check and skills curation
- * follow Background work, so the common want ("stop spending my good model on
- * chat subjects") is one picker rather than three.
+ * Two of them are decisions: the model you chat with, and the one Quick tasks
+ * falls back to. The rest are grouped by what the job NEEDS, not by where it
+ * runs — everything here runs in the background, which is why the group used to
+ * be called "Background work" and why that name was wrong. Quick Chat, memory
+ * and skills follow the model you chat with: you read the first, and the other
+ * two are judgment work that fails quietly on a model too small for it. Chat
+ * subjects and the safety check follow Quick tasks: both are extraction on a
+ * latency budget, so the common want ("stop spending my good model on chat
+ * subjects") is one picker — and it can no longer degrade skills on the way
+ * past, which is exactly what the old grouping did.
  *
  * Every picker says which rung it landed on: a role's own pin, else the group's
  * fallback. Stem does not guess a cheaper model, because it cannot — pi's
@@ -89,14 +96,12 @@ type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
  * above it does — and a level the new model can't do is cleared rather than left
  * showing as a choice that isn't.
  *
- * The three jobs in the Background group each get their own, because "cheap" is
- * not one decision for all of them: the safety check is a latency budget (it
- * stands between you and every command), chat subjects are three words off a
- * sentence, and curation is editorial judgement that can want more thinking than
- * either — on the same model. Left alone they end at a level chosen per job
- * rather than at "whatever pi picks" (see ROLE_EFFORT_FLOOR), and each says
- * underneath what that comes out as, so the default is legible without reading
- * the chain.
+ * The two Quick tasks jobs each get their own effort, because "cheap" is not
+ * one decision for both: the safety check is a latency budget (it stands
+ * between you and every command), and chat subjects are three words off a
+ * sentence. Left alone they end at a level chosen per job rather than at
+ * "whatever pi picks" (see ROLE_EFFORT_FLOOR), and each says underneath what
+ * that comes out as, so the default is legible without reading the chain.
  *
  * A role that is switched off elsewhere still shows its model, with a line
  * saying it is idle. An overview that hid them would answer "what is running on
@@ -114,8 +119,8 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
   const [judgeIdle, setJudgeIdle] = useState<string | null>(null);
   const [memoryModel, setMemoryModel] = useState<string | null>(null);
   const [memoryEffort, setMemoryEffort] = useState<string | null>(null);
-  const [curatorModel, setCuratorModel] = useState<string | null>(null);
-  const [curatorEffort, setCuratorEffort] = useState<string | null>(null);
+  const [skillsModel, setSkillsModel] = useState<string | null>(null);
+  const [skillsEffort, setSkillsEffort] = useState<string | null>(null);
   const [folderOverrides, setFolderOverrides] = useState(0);
 
   useEffect(() => {
@@ -131,8 +136,8 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
       setJudgeIdle(judgeIdleReason(s.exec));
       setMemoryModel(s.memory.model);
       setMemoryEffort(s.memory.effort);
-      setCuratorModel(s.skills.model);
-      setCuratorEffort(s.skills.effort);
+      setSkillsModel(s.skills.model);
+      setSkillsEffort(s.skills.effort);
     });
     void window.stem
       .listConnectedFolders()
@@ -145,6 +150,7 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
   // list has been refetched with a new isDefault.
   const backgroundResolved = resolveBackgroundModel(null, background, modelId);
   const memoryResolved = resolveMemoryModel(memoryModel, modelId);
+  const skillsResolved = resolveSkillsModel(skillsModel, modelId);
 
   return (
     <>
@@ -153,10 +159,12 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
         <InfoTip label="About model roles">
           Stem runs more than one model. The one you chat with writes the replies; the rest work in
           the background, on jobs you never watch. A role left unset falls back to its group —
-          Quick Chat and memory to the model you chat with, the last three to{' '}
-          <strong>Background work</strong> — and every picker says underneath where it landed. Stem
-          never picks a cheaper model for you: the catalog it gets carries no prices, so it would
-          be guessing from names.
+          Quick Chat, memory and skills to the model you chat with, chat subjects and the safety
+          check to <strong>Quick tasks</strong> — and every picker says underneath where it landed.
+          The split is by what a job needs, not where it runs: quick tasks are extraction a small
+          fast model does well, while memory and skills are judgment work that quietly degrades on
+          one. Stem never picks a cheaper model for you: the catalog it gets carries no prices, so
+          it would be guessing from names.
         </InfoTip>
       </div>
       <div className="formgroup">
@@ -179,62 +187,11 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
 
         <div className="set-block fg-divider">
           <span className="set-sub">
-            Background work{' '}
-            <InfoTip label="About the background model">
-              The fallback for the jobs you never read the output of: chat subjects, skills
-              curation, the command safety check. They run constantly and unattended, so{' '}
-              <strong>a small fast model here is the single biggest saving available</strong>. Set
-              it once and every unpinned role in its group follows; pin one individually to take it
-              out of the deal. Memory is not in this group — it reads whole transcripts, so it
-              follows the model you chat with instead and has its own picker.
-              <br />
-              <strong>Effort</strong> is the same bargain by a different route: how much these jobs
-              are allowed to think before answering. Nearly all of them are extraction rather than
-              reasoning, and <strong>Low is a good place to start</strong> — the safety check in
-              particular sits between you and every command you run, where waiting costs more than
-              depth buys. Each job below can override it with a level of its own; left alone they
-              all follow this one — and where this is left on <em>Model default</em>, they end at a
-              level chosen for that job rather than at whatever pi picks, which each of them says
-              underneath.
-            </InfoTip>
-          </span>
-          <ModelPicker
-            models={models}
-            value={background}
-            onChange={(id) => {
-              // Optimistic, then reconciled from what was actually saved.
-              setBackground(id);
-              const effort = clampEffort(models, resolveBackgroundModel(null, id, modelId), backgroundEffort);
-              setBackgroundEffort(effort);
-              window.stem.updateDefaults({ backgroundModel: id, backgroundEffort: effort }).then((s) => {
-                setBackground(s.defaults.backgroundModel);
-                setBackgroundEffort(s.defaults.backgroundEffort);
-              });
-            }}
-            emptyLabel="Same as main"
-            ariaLabel="Background work model"
-            resolvedDefault={modelId}
-          />
-          <EffortSelect
-            label="Background work effort"
-            value={backgroundEffort}
-            efforts={effortsOf(models, backgroundResolved)}
-            onChange={(effort) => {
-              setBackgroundEffort(effort);
-              window.stem
-                .updateDefaults({ backgroundEffort: effort })
-                .then((s) => setBackgroundEffort(s.defaults.backgroundEffort));
-            }}
-          />
-        </div>
-
-        <div className="set-block fg-divider">
-          <span className="set-sub">
             Quick Chat{' '}
             <InfoTip label="About the Quick Chat model">
               The overlay you summon from anywhere, for short questions you want answered before you
               have finished thinking about them. You do read this one, so it follows the model you
-              chat with rather than Background work — though{' '}
+              chat with rather than Quick tasks — though{' '}
               <strong>speed matters more than depth here</strong>, and a fast mid-tier model often
               serves it better.
             </InfoTip>
@@ -299,7 +256,99 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
           )}
         </div>
 
+        <div className="set-block">
+          <span className="set-sub">
+            Skills{' '}
+            <InfoTip label="About the skills model">
+              Writes and maintains your skills library: it authors a new skill (or improves an
+              existing one) after a turn that earned it, handles <code>/learn</code>, and runs the
+              tidy-up pass that merges duplicates. Like memory, it is deliberately{' '}
+              <strong>not part of Quick tasks</strong>: writing a skill is judgment work, and a
+              library authored by your cheapest model is worse than none. Left unset it follows the
+              model you chat with; pin a solid mid-tier model here if you would rather not spend
+              your best one on it. Retiring skills unused for 90 days is a plain clock and uses no
+              model at all.
+            </InfoTip>
+          </span>
+          <ModelPicker
+            models={models}
+            value={skillsModel}
+            onChange={(id) => {
+              setSkillsModel(id);
+              const effort = clampEffort(models, resolveSkillsModel(id, modelId), skillsEffort);
+              setSkillsEffort(effort);
+              window.stem.updateSkillsSettings({ model: id, effort }).then((s) => {
+                setSkillsModel(s.skills.model);
+                setSkillsEffort(s.skills.effort);
+              });
+            }}
+            emptyLabel="Same as main"
+            ariaLabel="Skills model"
+            resolvedDefault={modelId}
+          />
+          <EffortSelect
+            label="Skills effort"
+            value={skillsEffort}
+            efforts={effortsOf(models, skillsResolved)}
+            onChange={(effort) => {
+              setSkillsEffort(effort);
+              window.stem.updateSkillsSettings({ effort }).then((s) => setSkillsEffort(s.skills.effort));
+            }}
+          />
+        </div>
+
         <div className="set-block fg-divider">
+          <span className="set-sub">
+            Quick tasks{' '}
+            <InfoTip label="About the quick-tasks model">
+              The fallback for the two jobs that want a <strong>small, fast model</strong>: chat
+              subjects and the command safety check. Both are extraction rather than reasoning,
+              they run constantly and unattended, and{' '}
+              <strong>a cheap model here is the single biggest saving available</strong> — set it
+              once and both follow; pin one individually to take it out of the deal. Memory and
+              skills are deliberately not in this group: they are judgment work, so they follow the
+              model you chat with and have their own pickers above.
+              <br />
+              <strong>Effort</strong> is the same bargain by a different route: how much these jobs
+              are allowed to think before answering. <strong>Low is a good place to start</strong> —
+              the safety check in particular sits between you and every command you run, where
+              waiting costs more than depth buys. Each job below can override it with a level of
+              its own; left alone they follow this one — and where this is left on{' '}
+              <em>Model default</em>, they end at a level chosen for that job rather than at
+              whatever pi picks, which each of them says underneath.
+            </InfoTip>
+          </span>
+          <ModelPicker
+            models={models}
+            value={background}
+            onChange={(id) => {
+              // Optimistic, then reconciled from what was actually saved.
+              setBackground(id);
+              const effort = clampEffort(models, resolveBackgroundModel(null, id, modelId), backgroundEffort);
+              setBackgroundEffort(effort);
+              window.stem.updateDefaults({ backgroundModel: id, backgroundEffort: effort }).then((s) => {
+                setBackground(s.defaults.backgroundModel);
+                setBackgroundEffort(s.defaults.backgroundEffort);
+              });
+            }}
+            emptyLabel="Same as main"
+            ariaLabel="Quick tasks model"
+            resolvedDefault={modelId}
+          />
+          <EffortSelect
+            label="Quick tasks effort"
+            value={backgroundEffort}
+            efforts={effortsOf(models, backgroundResolved)}
+            onChange={(effort) => {
+              setBackgroundEffort(effort);
+              window.stem
+                .updateDefaults({ backgroundEffort: effort })
+                .then((s) => setBackgroundEffort(s.defaults.backgroundEffort));
+            }}
+          />
+        </div>
+
+        <div className="set-block">
           <span className="set-sub">
             Chat subjects{' '}
             <InfoTip label="About the subject model">
@@ -325,7 +374,7 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
                 window.dispatchEvent(new CustomEvent('stem:chat-settings'));
               });
             }}
-            emptyLabel="Background work"
+            emptyLabel="Quick tasks"
             ariaLabel="Subject model"
             resolvedDefault={subjectsOff ? null : backgroundResolved}
           />
@@ -333,7 +382,7 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             label="Subject effort"
             value={subjectEffort}
             efforts={effortsOf(models, subjectModel ?? backgroundResolved)}
-            emptyLabel="Background work"
+            emptyLabel="Quick tasks"
             resolved={resolveRoleEffort('subject', null, backgroundEffort)}
             onChange={(effort) => {
               setSubjectEffort(effort);
@@ -370,7 +419,7 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
                 setJudgeIdle(judgeIdleReason(s.exec));
               });
             }}
-            emptyLabel="Background work"
+            emptyLabel="Quick tasks"
             ariaLabel="Safety-check model"
             resolvedDefault={judgeIdle ? null : backgroundResolved}
           />
@@ -378,7 +427,7 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             label="Safety-check effort"
             value={judgeEffort}
             efforts={effortsOf(models, judgeModel ?? backgroundResolved)}
-            emptyLabel="Background work"
+            emptyLabel="Quick tasks"
             resolved={resolveRoleEffort('judge', null, backgroundEffort)}
             onChange={(effort) => {
               setJudgeEffort(effort);
@@ -386,46 +435,6 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             }}
           />
           {judgeIdle && <em className="mp-resolved">{judgeIdle}</em>}
-        </div>
-
-        <div className="set-block">
-          <span className="set-sub">
-            Skills curator{' '}
-            <InfoTip label="About the curator model">
-              Tidies your skills library in the background — merging duplicates, sharpening sloppy
-              ones, archiving what has gone stale. It runs rarely and the work is editorial
-              judgement rather than volume, so <strong>this is the one background role worth a
-              strong model</strong>. New skills are still written by the model you chat with; this
-              only affects upkeep.
-            </InfoTip>
-          </span>
-          <ModelPicker
-            models={models}
-            value={curatorModel}
-            onChange={(id) => {
-              setCuratorModel(id);
-              const effort = clampEffort(models, id ?? backgroundResolved, curatorEffort);
-              setCuratorEffort(effort);
-              window.stem.updateSkillsSettings({ model: id, effort }).then((s) => {
-                setCuratorModel(s.skills.model);
-                setCuratorEffort(s.skills.effort);
-              });
-            }}
-            emptyLabel="Background work"
-            ariaLabel="Skills curator model"
-            resolvedDefault={backgroundResolved}
-          />
-          <EffortSelect
-            label="Skills curator effort"
-            value={curatorEffort}
-            efforts={effortsOf(models, curatorModel ?? backgroundResolved)}
-            emptyLabel="Background work"
-            resolved={resolveRoleEffort('curator', null, backgroundEffort)}
-            onChange={(effort) => {
-              setCuratorEffort(effort);
-              window.stem.updateSkillsSettings({ effort }).then((s) => setCuratorEffort(s.skills.effort));
-            }}
-          />
         </div>
       </div>
     </>

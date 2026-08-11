@@ -8,7 +8,7 @@ import type {
 } from '../../../shared/types';
 import { useOffline } from '../../hooks/useServerReachable';
 import { InfoTip } from '../../ui/InfoTip';
-import { resolveBackgroundModel } from '../../../shared/modelRoles';
+import { appDefaultModel, resolveSkillsModel } from '../../../shared/modelRoles';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { holdFullSpin } from './shared';
 
@@ -20,10 +20,10 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
   const offline = useOffline();
   const [tidying, setTidying] = useState(false);
   const [tidyMsg, setTidyMsg] = useState<string | null>(null);
-  // null => use the backend default model for the curator.
-  const [curatorModel, setCuratorModel] = useState<string | null>(null);
+  // null => skills work follows the model you chat with (see Settings → Models).
+  const [skillsModel, setSkillsModel] = useState<string | null>(null);
   const [mode, setMode] = useState<SkillsMode>('ask');
-  // What "Background work" resolves to — see Settings → Models.
+  // What "Same as main" resolves to — the model you chat with.
   const [defaults, setDefaults] = useState<DefaultsSettings>({
     model: null,
     backgroundModel: null,
@@ -32,7 +32,7 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
   useEffect(() => {
     window.stem.listSkills().then(setSkills);
     window.stem.getSettings().then((s) => {
-      setCuratorModel(s.skills.model);
+      setSkillsModel(s.skills.model);
       setMode(s.skills.mode);
       setDefaults(s.defaults);
     });
@@ -42,9 +42,9 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
     });
   }, []);
 
-  function selectCuratorModel(id: string | null) {
-    setCuratorModel(id);
-    window.stem.updateSkillsSettings({ model: id }).then((s) => setCuratorModel(s.skills.model));
+  function selectSkillsModel(id: string | null) {
+    setSkillsModel(id);
+    window.stem.updateSkillsSettings({ model: id }).then((s) => setSkillsModel(s.skills.model));
   }
 
   function selectMode(next: SkillsMode) {
@@ -183,21 +183,23 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
       </div>
 
       <div className="grp-head grp-head-row">
-        Curator model
-        <InfoTip label="About the curator model">
-          Runs the background skills curator — merging duplicate skills, sharpening sloppy ones, and
-          archiving stale ones. Separate from the memory model so you can give curation a stronger
-          model. New skills are still written by the model you chat with; this only affects upkeep.
+        Skills model
+        <InfoTip label="About the skills model">
+          Does all the model-driven skills work: writes a new skill (or improves an existing one)
+          after a turn that earned it, handles /learn, and runs the tidy-up pass that merges
+          duplicates. Writing a skill is judgment work, so left unset it follows the model you chat
+          with — never the cheap Quick tasks model. Retiring skills unused for 90 days is a plain
+          clock and uses no model.
         </InfoTip>
       </div>
       <div className="formgroup">
         <ModelPicker
           models={models}
-          value={curatorModel}
-          onChange={selectCuratorModel}
-          emptyLabel="Background work"
-          ariaLabel="Skills curator model"
-          resolvedDefault={resolveBackgroundModel(null, defaults.backgroundModel, defaults.model)}
+          value={skillsModel}
+          onChange={selectSkillsModel}
+          emptyLabel="Same as main"
+          ariaLabel="Skills model"
+          resolvedDefault={resolveSkillsModel(null, defaults.model ?? appDefaultModel(models))}
         />
       </div>
     </div>

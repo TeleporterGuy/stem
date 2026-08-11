@@ -1,6 +1,6 @@
 import { SkillBridge } from '../skills/bridge';
 import { authorForTurn, firstExistingSkill, settleSkills } from '../skills/settle';
-import { backgroundRunFor, readSettings } from '../workspace/settings';
+import { readSettings, skillsRunFor } from '../workspace/settings';
 import { log } from '../log';
 import type { PiRuntime } from '../pi/runtime';
 import type { SettledTurnTrace } from '../pi/normalize';
@@ -137,7 +137,7 @@ export async function learnFromLastTurn(threadId: string, focus?: string): Promi
 
   const settings = await readSettings();
   const llm: LlmClient = {
-    complete: async (prompt) => runtime.complete!(prompt, backgroundRunFor(settings, 'curator', { model: settings.skills.model, effort: settings.skills.effort }))
+    complete: async (prompt) => runtime.complete!(prompt, skillsRunFor(settings))
   };
   // Same resolution as the end-of-turn pass, through the same helper: patch what
   // the turn was graded as following, and otherwise let the author read the
@@ -200,7 +200,7 @@ async function runEndOfTurnPass(turn: SettledTurnTrace, bridge: SkillBridge, run
     const settings = await readSettings();
     if (settings.skills.mode === 'off') return;
     const llm: LlmClient = {
-      complete: async (prompt) => runtime.complete!(prompt, backgroundRunFor(settings, 'curator', { model: settings.skills.model, effort: settings.skills.effort }))
+      complete: async (prompt) => runtime.complete!(prompt, skillsRunFor(settings))
     };
     const outcome = await settleSkills(turn, settings.skills.mode, llm);
     if (!outcome.decision.fire) {

@@ -32,9 +32,9 @@ test('the model you chat with reaches the server, where background jobs can see 
 test('the background model is its own setting, and starts unset', async ({ mainWindow }) => {
   await openSettings(mainWindow, 'Models');
 
-  // Unset = the four background roles follow the model you chat with, which is
+  // Unset = the quick-tasks roles follow the model you chat with, which is
   // what their pickers say. Nothing is guessed on your behalf.
-  const picker = mainWindow.getByLabel('Background work model', { exact: true });
+  const picker = mainWindow.getByLabel('Quick tasks model', { exact: true });
   await expect(picker).toContainText('Same as main');
   expect((await readDefaults(mainWindow)).backgroundModel).toBeNull();
 
@@ -47,22 +47,25 @@ test('the background model is its own setting, and starts unset', async ({ mainW
   expect((await readDefaults(mainWindow)).model).toBe('e2e/stem-e2e-model');
 });
 
-test('each role falls back to its own group, and memory is not in the cheap one', async ({
+test('each role falls back to its own group, and the judgment roles are not in the cheap one', async ({
   mainWindow
 }) => {
   await openSettings(mainWindow, 'Models');
 
-  for (const role of ['Subject model', 'Safety-check model', 'Skills curator model']) {
-    await expect(mainWindow.getByLabel(role, { exact: true })).toContainText('Background work');
+  // The cheap group holds exactly the two extraction jobs. Skills used to be
+  // the third member, which meant "point Background work at something small"
+  // silently had every skill authored by that small model.
+  for (const role of ['Subject model', 'Safety-check model']) {
+    await expect(mainWindow.getByLabel(role, { exact: true })).toContainText('Quick tasks');
   }
-  // Two exceptions, for opposite reasons. You read Quick Chat's output, so it
-  // follows the model you chat with. Memory follows it because it CANNOT be
-  // made cheap safely — it reads whole transcripts, and a model too small to
-  // hold one stops learning without erroring. Routing it through Background
-  // work would let "make the background cheap" silently break memory, which is
-  // exactly what this list is meant to make visible.
-  await expect(mainWindow.getByLabel('Quick Chat default model', { exact: true })).toContainText('Same as main');
-  await expect(mainWindow.getByLabel('Memory model', { exact: true })).toContainText('Same as main');
+  // The rest follow the model you chat with, each for its own reason: you read
+  // Quick Chat's output word for word; memory and skills are judgment work that
+  // CANNOT be made cheap safely — memory reads whole transcripts, and skills
+  // writes the library the assistant will follow later. A model too small for
+  // either fails quietly, so the cheap knob must not be able to reach them.
+  for (const role of ['Quick Chat default model', 'Memory model', 'Skills model']) {
+    await expect(mainWindow.getByLabel(role, { exact: true })).toContainText('Same as main');
+  }
 });
 
 test('effort is a setting on the two roles that chose a model, and it persists', async ({
@@ -73,7 +76,7 @@ test('effort is a setting on the two roles that chose a model, and it persists',
   // Unset everywhere = what every background job did before this existed: the
   // model's own default, chosen by pi rather than by anyone.
   expect((await readDefaults(mainWindow)).backgroundEffort).toBeNull();
-  const background = mainWindow.getByLabel('Background work effort', { exact: true });
+  const background = mainWindow.getByLabel('Quick tasks effort', { exact: true });
   await expect(background).toHaveValue('');
 
   await background.selectOption('low');
@@ -98,11 +101,13 @@ test('effort is a setting on the two roles that chose a model, and it persists',
 test('each background job can be told how hard to think, without leaving the group', async ({
   mainWindow
 }) => {
-  // The three jobs under Background work share a model picker and now share an
-  // effort the same way: unset means "follow Background work", so turning the
-  // group down still turns all three down. What this guards is the half-wired
-  // version — a select that saves into settings.json and is then read by nobody,
-  // or one that quietly writes over the group's own level on its way past.
+  // The two jobs under Quick tasks share a model picker and share an effort the
+  // same way: unset means "follow Quick tasks", so turning the group down still
+  // turns both down. Skills carries its own level too, but OUTSIDE the group —
+  // its empty option means the model's own default, never the cheap level. What
+  // this guards is the half-wired version — a select that saves into
+  // settings.json and is then read by nobody, or one that quietly writes over
+  // the group's own level on its way past.
   await openSettings(mainWindow, 'Models');
 
   const roleEfforts = async (): Promise<Record<string, string | null>> =>
@@ -120,18 +125,24 @@ test('each background job can be told how hard to think, without leaving the gro
       ).stem.getSettings().then((s) => ({
         subject: s.chats.subjectEffort,
         judge: s.exec.judgeEffort,
-        curator: s.skills.effort
+        skills: s.skills.effort
       }))
     );
 
-  for (const label of ['Subject effort', 'Safety-check effort', 'Skills curator effort']) {
+  for (const label of ['Subject effort', 'Safety-check effort']) {
     const select = mainWindow.getByLabel(label, { exact: true });
     await expect(select).toHaveValue('');
     // The empty option has to name the rung above it. "Model default" would be a
-    // lie here: these three follow Background work, not pi.
-    await expect(select.locator('option', { hasText: 'Background work' })).toHaveCount(1);
+    // lie here: these two follow Quick tasks, not pi.
+    await expect(select.locator('option', { hasText: 'Quick tasks' })).toHaveCount(1);
   }
-  expect(await roleEfforts()).toEqual({ subject: null, judge: null, curator: null });
+  // Skills is not in the group, and its empty option says what unset really
+  // means there — the model's own default.
+  const skillsEffort = mainWindow.getByLabel('Skills effort', { exact: true });
+  await expect(skillsEffort).toHaveValue('');
+  await expect(skillsEffort.locator('option', { hasText: 'Model default' })).toHaveCount(1);
+  await expect(skillsEffort.locator('option', { hasText: 'Quick tasks' })).toHaveCount(0);
+  expect(await roleEfforts()).toEqual({ subject: null, judge: null, skills: null });
 
   // Unset is not the same as undecided: with nothing set anywhere the two cheap
   // jobs land on a level chosen for them, and the row says which. This is what
@@ -147,19 +158,15 @@ test('each background job can be told how hard to think, without leaving the gro
   await expect(rows.filter({ has: mainWindow.getByLabel('Safety-check effort', { exact: true }) })).toContainText(
     'uses Low'
   );
-  // Curation has no floor: it keeps whatever the model does on its own.
-  await expect(rows.filter({ has: mainWindow.getByLabel('Skills curator effort', { exact: true }) })).toContainText(
-    'uses the model’s own default'
-  );
 
   await mainWindow.getByLabel('Safety-check effort', { exact: true }).selectOption('low');
   await expect.poll(async () => (await roleEfforts()).judge).toBe('low');
-  // One role's level is one role's: the other two stay on the group, and the
+  // One role's level is one role's: the others stay unset, and the
   // group's own level is untouched.
-  expect(await roleEfforts()).toMatchObject({ subject: null, curator: null });
+  expect(await roleEfforts()).toMatchObject({ subject: null, skills: null });
   expect((await readDefaults(mainWindow)).backgroundEffort).toBeNull();
 
-  await mainWindow.getByLabel('Skills curator effort', { exact: true }).selectOption('high');
-  await expect.poll(async () => (await roleEfforts()).curator).toBe('high');
+  await skillsEffort.selectOption('high');
+  await expect.poll(async () => (await roleEfforts()).skills).toBe('high');
   expect(await roleEfforts()).toMatchObject({ judge: 'low' });
 });

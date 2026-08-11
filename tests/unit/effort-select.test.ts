@@ -73,12 +73,12 @@ describe('effectiveEffort', () => {
 
 describe('EffortSelect', () => {
   it('offers the model’s levels under an empty option that names what it falls back to', () => {
-    // Background work has nothing above it, so unset means the model's own
-    // default; the roles under it are following Background work, and saying
+    // Quick tasks has nothing above it, so unset means the model's own
+    // default; the roles under it are following Quick tasks, and saying
     // "Model default" there would claim they ignore the level set one block up.
     const group = renderToStaticMarkup(
       createElement(EffortSelect, {
-        label: 'Background work effort',
+        label: 'Quick tasks effort',
         value: null,
         efforts: ['off', 'low', 'medium', 'high'],
         onChange: () => undefined
@@ -97,11 +97,11 @@ describe('EffortSelect', () => {
         label: 'Safety-check effort',
         value: null,
         efforts: ['low'],
-        emptyLabel: 'Background work',
+        emptyLabel: 'Quick tasks',
         onChange: () => undefined
       })
     );
-    expect(options(role)[0]).toEqual(['', 'Background work']);
+    expect(options(role)[0]).toEqual(['', 'Quick tasks']);
   });
 
   it('keeps showing a saved level the current model cannot do, marked as such', () => {
@@ -109,10 +109,10 @@ describe('EffortSelect', () => {
     // value in settings.json with no way to reach it from the app.
     const html = renderToStaticMarkup(
       createElement(EffortSelect, {
-        label: 'Skills curator effort',
+        label: 'Skills effort',
         value: 'xhigh',
         efforts: ['low', 'medium'],
-        emptyLabel: 'Background work',
+        emptyLabel: 'Quick tasks',
         onChange: () => undefined
       })
     );
@@ -121,7 +121,7 @@ describe('EffortSelect', () => {
   });
 
   it('says what the empty option comes out as, and only while it is the choice', () => {
-    // The cheap defaults are invisible otherwise: "Background work" is itself
+    // The cheap defaults are invisible otherwise: "Quick tasks" is itself
     // unset out of the box, so the row would name a rung and stop, leaving the
     // reader to walk the chain to find that subjects run with reasoning off.
     const render = (value: string | null, resolved: string | null): string =>
@@ -130,7 +130,7 @@ describe('EffortSelect', () => {
           label: 'Subject effort',
           value,
           efforts: ['off', 'low', 'medium'],
-          emptyLabel: 'Background work',
+          emptyLabel: 'Quick tasks',
           resolved,
           onChange: () => undefined
         })
@@ -151,7 +151,7 @@ describe('EffortSelect', () => {
           label: 'Subject effort',
           value: null,
           efforts: [],
-          emptyLabel: 'Background work',
+          emptyLabel: 'Quick tasks',
           onChange: () => undefined
         })
       )

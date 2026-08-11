@@ -792,7 +792,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
         Model
         <InfoTip label="About the memory model">
           Used to distill and tidy up memories in the background. Left unset it follows the model
-          you chat with — deliberately <em>not</em> the shared Background work model in Settings →
+          you chat with — deliberately <em>not</em> the shared Quick tasks model in Settings →
           Models, because this job reads a whole transcript plus everything already remembered, and
           a model too small to hold that stops learning without ever reporting an error. Pin a
           solid mid-tier model here if you would rather not spend your best one on it.

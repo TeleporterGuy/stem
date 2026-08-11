@@ -22,16 +22,33 @@ export function appDefaultModel(models: ModelSummary[]): string | null {
 
 /**
  * What memory runs on: its own pin, else the model you chat with — skipping the
- * shared background model entirely.
+ * shared quick-tasks model entirely.
  *
- * Every other background role is one you can safely make cheap. This one reads a
+ * The quick-tasks roles are the ones you can safely make cheap. This one reads a
  * whole transcript plus everything already remembered, and a model that cannot
  * hold that doesn't fail loudly; it replies with truncated nonsense and memory
- * stops learning without saying so. Routing it through Background work would
+ * stops learning without saying so. Routing it through Quick tasks would
  * mean the one setting whose whole purpose is "make the background cheap" also
  * quietly degrades the one role that can't take it.
  */
 export function resolveMemoryModel(pinned: string | null, mainModel: string | null): string | null {
+  return pinned ?? mainModel;
+}
+
+/**
+ * What skills work runs on: its own pin, else the model you chat with — the same
+ * short chain as memory, for the same reason.
+ *
+ * This role used to sit in the shared background group, which inverted the
+ * advice printed right above the group picker: "set something small here and
+ * stop spending your good model on chat subjects" also silently pointed skill
+ * AUTHORING at that small model — the end-of-turn pass, `/learn` and the curator
+ * all run on it, and a library written by the cheapest model you own is the
+ * failure the skills rebuild exists to prevent. Judgment roles follow the chat
+ * model; only extraction roles (subjects, the safety check) belong in the cheap
+ * group.
+ */
+export function resolveSkillsModel(pinned: string | null, mainModel: string | null): string | null {
   return pinned ?? mainModel;
 }
 
@@ -56,14 +73,21 @@ export function resolveBackgroundModel(
   return pinned ?? backgroundModel ?? mainModel;
 }
 
-/** The background jobs that carry an effort setting of their own. */
-export type BackgroundRole = 'subject' | 'judge' | 'curator';
+/**
+ * The quick-tasks jobs — the ones that share the cheap model group and carry an
+ * effort setting of their own. Deliberately just these two: both are extraction
+ * on a latency budget, which is what makes one shared "make these cheap" knob
+ * coherent. Skills (authoring + curation) used to be the third member and is
+ * not a member at all now — it is editorial judgment, so it follows the model
+ * you chat with (see {@link resolveSkillsModel}).
+ */
+export type BackgroundRole = 'subject' | 'judge';
 
 /**
- * How hard each background job thinks when nobody has said anything at all —
- * neither the job nor Background work above it.
+ * How hard each quick-tasks job thinks when nobody has said anything at all —
+ * neither the job nor Quick tasks above it.
  *
- * Not a pin: it is the last rung of the same chain, so setting Background work
+ * Not a pin: it is the last rung of the same chain, so setting Quick tasks
  * still moves every job that hasn't been given a level of its own. What it
  * replaces is the old last rung, "whatever pi picks for the model", which for
  * most models is Medium — real reasoning spent on writing three words off your
@@ -74,18 +98,15 @@ export type BackgroundRole = 'subject' | 'judge' | 'curator';
  * safety check is the same bargain with a floor under it — it is a judgement
  * about whether a command matches what you asked for, so it thinks a little, and
  * it thinks fast because it stands between you and every command you run.
- * Curation is left alone: it is editorial judgement over a whole library, and
- * the one background role worth the model's full attention.
  */
 export const ROLE_EFFORT_FLOOR: Record<BackgroundRole, string | null> = {
   subject: 'off',
-  judge: 'low',
-  curator: null
+  judge: 'low'
 };
 
 /**
- * How hard a background job may think: its own level, else the shared Background
- * work one, else the job's floor above.
+ * How hard a quick-tasks job may think: its own level, else the shared Quick
+ * tasks one, else the job's floor above.
  *
  * Shared for the same reason the model chain is: the answer is shown as well as
  * used. An effort select left unset says underneath what it comes out as today,

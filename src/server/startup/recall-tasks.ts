@@ -1,4 +1,4 @@
-import { backgroundRunOf, memoryRunOf } from '../workspace/settings';
+import { memoryRunOf, skillsRunOf } from '../workspace/settings';
 import { isRecallEnabled } from '../workspace/memory';
 import * as activity from '../activity';
 import { embedNewMessages } from '../recall/embed-episodic';
@@ -91,12 +91,12 @@ export function initRecallTasks(deps: {
   };
   scheduleMemoryRebuild();
 
-  // The skills curator gets its OWN model setting (separate from memory) — curation
-  // can be a harder task than fact distillation, so it can be pointed at a stronger
-  // model. Read fresh each pass so a Settings change applies to the next run.
+  // The skills model (shared by curation and authoring): its own pin, else the
+  // model you chat with — never the cheap quick-tasks model, because curation is
+  // editorial judgment over the whole library. Read fresh each pass so a
+  // Settings change applies to the next run.
   const skillsLlm: LlmClient = {
-    complete: async (prompt) =>
-      deps.runtime().complete(prompt, await backgroundRunOf('curator', (s) => ({ model: s.skills.model, effort: s.skills.effort })))
+    complete: async (prompt) => deps.runtime().complete(prompt, await skillsRunOf())
   };
 
   let distilling = false;

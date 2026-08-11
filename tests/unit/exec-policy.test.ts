@@ -286,7 +286,7 @@ describe('resolveJudgeModel', () => {
     // Deliberately NOT the cheapest-looking model of that provider. Guessing
     // that from names is what put the check on a mini variant while a newer,
     // cheaper, better small model sat beside it — the catalog carries no prices,
-    // so Stem states what it is doing and lets Background work be set on purpose.
+    // so Stem states what it is doing and lets Quick tasks be set on purpose.
     expect(resolveJudgeModel({ judgeModel: null }, none, models, 'anthropic/claude-opus-4')).toBe(
       'anthropic/claude-opus-4'
     );

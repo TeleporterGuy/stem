@@ -12,7 +12,7 @@ import {
 import { getFolderIndexStatuses, seedFolderLearnMarks, syncFolderIndexes } from '../folder-index';
 import { clearScratch, listScratchUsage, UNFILED_KEY } from '../exec/scratch';
 import { recallStore } from '../recall/store';
-import { backgroundRunOf, updateSkillsSettings } from '../workspace/settings';
+import { skillsRunOf, updateSkillsSettings } from '../workspace/settings';
 import { resetSkills, skillsResetStatus } from '../skills/reset';
 import { learnFromLastTurn } from '../startup/skills';
 import { curateSkills } from '../skills/curate';
@@ -67,8 +67,7 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     // Same hidden one-shot seam the curator uses; `force` bypasses the size floor
     // so a manual "Tidy up" always runs. Reload so pi rescans the updated skills.
     const llm: LlmClient = {
-      complete: async (prompt) =>
-        deps.runtime().complete(prompt, await backgroundRunOf('curator', (s) => ({ model: s.skills.model, effort: s.skills.effort })))
+      complete: async (prompt) => deps.runtime().complete(prompt, await skillsRunOf())
     };
     // Tracked under the same kind as the automatic pass in startup/recall-tasks.ts.
     // Pressing the button spends the same tens of seconds on the same model call,

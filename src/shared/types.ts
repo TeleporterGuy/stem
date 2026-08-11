@@ -1337,13 +1337,13 @@ export interface WebSearchSettings {
 /**
  * What reads your conversations and decides what is worth remembering.
  *
- * Memory sits outside the Background work deal on purpose. Every other
- * background role is something you can safely make cheap; this one works against
- * a whole transcript plus everything already remembered, and a model too small
- * to hold that doesn't fail — it replies with truncated nonsense and memory
- * quietly stops learning. So an unset memory model follows the model you chat
- * with, not the background one: the shared cheap-model setting cannot silently
- * take this role with it.
+ * Memory sits outside the Quick tasks deal on purpose (as does skills). The
+ * quick-tasks roles are the ones you can safely make cheap; this one works
+ * against a whole transcript plus everything already remembered, and a model too
+ * small to hold that doesn't fail — it replies with truncated nonsense and
+ * memory quietly stops learning. So an unset memory model follows the model you
+ * chat with, not the quick-tasks one: the shared cheap-model setting cannot
+ * silently take this role with it.
  */
 export interface MemoryModelSettings {
   /** `provider/model` id; null = the model you chat with. */
@@ -1416,9 +1416,14 @@ export interface TasksSettings {
 
 /** Skills: the automatic-authoring policy plus the model that does the writing. */
 export interface SkillsSettings {
-  /** `provider/model` id; null = the backend default. */
+  /**
+   * `provider/model` id for all skills work — authoring (the end-of-turn pass,
+   * `/learn`) and curation. null = the model you chat with, like memory:
+   * writing skills is judgment work, so it deliberately does NOT follow the
+   * shared quick-tasks model.
+   */
   model: string | null;
-  /** Reasoning effort for curation; null = {@link DefaultsSettings.backgroundEffort}. */
+  /** Reasoning effort for skills work; null = the model's own default. */
   effort: string | null;
   mode: SkillsMode;
 }
@@ -1645,13 +1650,14 @@ export interface DefaultsSettings {
    */
   model: string | null;
   /**
-   * What the background roles (chat subjects, skills curation, the command
-   * safety check) run on when they aren't pinned to a model of their own. Null =
-   * the same model you chat with, which is the honest default: Stem has no price
-   * or size data to guess a cheaper one from, so it says what it is doing rather
-   * than picking for you.
+   * What the quick-tasks roles (chat subjects and the command safety check) run
+   * on when they aren't pinned to a model of their own. Null = the same model
+   * you chat with, which is the honest default: Stem has no price or size data
+   * to guess a cheaper one from, so it says what it is doing rather than picking
+   * for you.
    *
-   * Memory is deliberately NOT on this list — see {@link MemoryModelSettings}.
+   * Memory and skills are deliberately NOT on this list — both are judgment
+   * work; see {@link MemoryModelSettings} and {@link SkillsSettings}.
    */
   backgroundModel: string | null;
   /**

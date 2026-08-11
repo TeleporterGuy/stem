@@ -9,6 +9,7 @@ import {
   markOnboardingCompleted,
   memoryRunFor,
   readSettings,
+  skillsRunFor,
   updateChatsSettings,
   updateDefaultModel,
   updateDefaults,
@@ -94,11 +95,11 @@ describe('onboarding + default-model settings', () => {
       backgroundEffort: 'low'
     });
     const withBackground = await readSettings();
-    expect(backgroundRunFor(withBackground, 'curator', { model: 'x/pinned', effort: null })).toEqual({
+    expect(backgroundRunFor(withBackground, 'judge', { model: 'x/pinned', effort: null })).toEqual({
       model: 'x/pinned',
       effort: 'low'
     });
-    expect(backgroundRunFor(withBackground, 'curator', { model: null, effort: null })).toEqual({
+    expect(backgroundRunFor(withBackground, 'judge', { model: null, effort: null })).toEqual({
       model: 'anthropic/claude-haiku-4',
       effort: 'low'
     });
@@ -106,11 +107,11 @@ describe('onboarding + default-model settings', () => {
     // resolving it here would freeze the chat model into every background call
     // instead of letting it follow.
     await updateDefaults({ backgroundModel: null });
-    expect(backgroundRunFor(await readSettings(), 'curator', { model: null, effort: null }).model).toBeNull();
+    expect(backgroundRunFor(await readSettings(), 'judge', { model: null, effort: null }).model).toBeNull();
   });
 
   it('memoryRunFor skips the background model entirely', async () => {
-    // The whole point of memory being outside the deal: turning Background work
+    // The whole point of memory being outside the deal: turning Quick tasks
     // down to a small cheap model must not drag the one role that reads whole
     // transcripts down with it. Unpinned memory answers null, which complete()
     // resolves to defaults.model — the model you chat with.
@@ -125,8 +126,25 @@ describe('onboarding + default-model settings', () => {
     expect(memoryRunFor(s, 'x/folder-override')).toEqual({ model: 'x/folder-override', effort: 'high' });
   });
 
-  it('lets a background role pin its own effort, and follows Background work when it has not', async () => {
-    // The three jobs in the Background group each carry their own level, and the
+  it('skillsRunFor skips the background model too — skills follow the chat model', async () => {
+    // Skills used to be the third quick-tasks role, which meant the advertised
+    // move — "point Background work at something small" — silently had every
+    // skill AUTHORED by that small model. Same shape as memory now: unpinned
+    // answers null, which complete() resolves to defaults.model, and the shared
+    // cheap model is never consulted.
+    await updateDefaults({
+      model: 'anthropic/claude-opus-4',
+      backgroundModel: 'anthropic/claude-haiku-4',
+      backgroundEffort: 'low'
+    });
+    expect(skillsRunFor(await readSettings())).toEqual({ model: null, effort: null });
+
+    await updateSkillsSettings({ model: 'x/skills-pin', effort: 'high' });
+    expect(skillsRunFor(await readSettings())).toEqual({ model: 'x/skills-pin', effort: 'high' });
+  });
+
+  it('lets a quick-tasks role pin its own effort, and follows Quick tasks when it has not', async () => {
+    // Each job in the Quick tasks group carries its own level, and the
     // two halves fall through INDEPENDENTLY: pinning a model must not silently
     // pin the effort with it (the safety check moved to a bigger model still
     // wants to answer fast), and pinning an effort must not freeze the model.
@@ -135,20 +153,20 @@ describe('onboarding + default-model settings', () => {
     // per-role select saved a value nothing ever looked at.
     await updateDefaults({ backgroundModel: 'anthropic/claude-haiku-4', backgroundEffort: 'low' });
     const s = await readSettings();
-    expect(backgroundRunFor(s, 'curator', { model: null, effort: null })).toEqual({
+    expect(backgroundRunFor(s, 'judge', { model: null, effort: null })).toEqual({
       model: 'anthropic/claude-haiku-4',
       effort: 'low'
     });
-    expect(backgroundRunFor(s, 'curator', { model: null, effort: 'high' })).toEqual({
+    expect(backgroundRunFor(s, 'judge', { model: null, effort: 'high' })).toEqual({
       model: 'anthropic/claude-haiku-4',
       effort: 'high'
     });
-    expect(backgroundRunFor(s, 'curator', { model: 'x/curator', effort: null })).toEqual({
-      model: 'x/curator',
+    expect(backgroundRunFor(s, 'judge', { model: 'x/judge', effort: null })).toEqual({
+      model: 'x/judge',
       effort: 'low'
     });
-    expect(backgroundRunFor(s, 'curator', { model: 'x/curator', effort: 'off' })).toEqual({
-      model: 'x/curator',
+    expect(backgroundRunFor(s, 'judge', { model: 'x/judge', effort: 'off' })).toEqual({
+      model: 'x/judge',
       effort: 'off'
     });
   });
@@ -157,19 +175,16 @@ describe('onboarding + default-model settings', () => {
     // The sane-defaults rung. Out of the box a subject is three words off your
     // first line — reasoning on that is time spent before the chat can be found
     // again — and the safety check answers in front of you on every command.
-    // Curation is the exception: editorial judgement over the whole library, so
-    // it keeps the model's full attention.
     //
-    // Crucially these are the LAST rung, not a pin. Setting Background work
-    // still moves all three, which is what the group knob is for.
+    // Crucially these are the LAST rung, not a pin. Setting Quick tasks
+    // still moves both, which is what the group knob is for.
     const bare = await readSettings();
     expect(backgroundRunFor(bare, 'subject', { model: null, effort: null }).effort).toBe('off');
     expect(backgroundRunFor(bare, 'judge', { model: null, effort: null }).effort).toBe('low');
-    expect(backgroundRunFor(bare, 'curator', { model: null, effort: null }).effort).toBeNull();
 
     await updateDefaults({ backgroundEffort: 'high' });
     const group = await readSettings();
-    for (const role of ['subject', 'judge', 'curator'] as const) {
+    for (const role of ['subject', 'judge'] as const) {
       expect(backgroundRunFor(group, role, { model: null, effort: null }).effort).toBe('high');
     }
   });

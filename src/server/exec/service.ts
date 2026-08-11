@@ -210,7 +210,7 @@ export class ExecService implements ExecBridge {
         model,
         // The judge sits between you and every command you run, so it feels the
         // effort setting more than any other role does — its own if it has been
-        // given one, else the shared Background work level, else Low.
+        // given one, else the shared Quick tasks level, else Low.
         effort: resolveRoleEffort('judge', settings.judgeEffort, defaults.backgroundEffort),
         timeoutMs: JUDGE_TIMEOUT_MS,
         priority: true

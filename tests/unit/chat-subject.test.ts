@@ -169,7 +169,7 @@ describe('naming a new thread', () => {
     expect(s.prompt()).toContain('up 12% on Q2');
   });
 
-  it('runs on the subject role’s own model and effort, else the Background work ones', async () => {
+  it('runs on the subject role’s own model and effort, else the Quick tasks ones', async () => {
     // The seam that swallowed this before: SubjectDeps.complete took `{ model,
     // timeoutMs }` and the effort rode in on a spread, so it type-checked either
     // way and a destructure at the other end would have dropped it silently.

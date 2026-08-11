@@ -46,15 +46,15 @@ export function effectiveEffort(efforts: string[], effort: string | null): strin
  * specify at all — and six segments would not survive the 320px rail.
  *
  * `emptyLabel` names what that empty option actually falls through to, which
- * differs by role and is the whole point of the row: Background work has nothing
+ * differs by role and is the whole point of the row: Quick tasks has nothing
  * above it, so unset means "Model default", while the roles that follow it are
- * saying "Background work" instead. Naming both "Model default" would claim the
+ * saying "Quick tasks" instead. Naming both "Model default" would claim the
  * jobs under it ignore the level set one block up, which is the opposite of true.
  *
  * `resolved` is what that fallthrough currently comes out as, said underneath the
  * way the model picker says which model an unset role lands on. Without it the
  * cheap defaults would be invisible: a subject writer left alone runs with
- * reasoning off, and a row that only said "Background work" — itself unset —
+ * reasoning off, and a row that only said "Quick tasks" — itself unset —
  * would leave you reading the whole chain to find that out.
  *
  * Hidden entirely for a model that doesn't reason, since there is nothing to
