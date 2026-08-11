@@ -11,10 +11,25 @@ import { SKILL_CONTRACT_TEXT, formatViolations, validateSkill, type SkillDraft, 
 // skill or with a reason it declined; declining is the expected outcome and the
 // prompt says so, because a judge that must justify a "no" learns to say "yes".
 //
+// On the create path there is a third answer: name an existing skill this belongs
+// in. Stem decides create-vs-patch before the model sees anything (unlike Hermes,
+// which forks an agent that browses the library itself), and the only affirmative
+// routing signal — the graded-used set — is empty on most turns that fire. So when
+// nothing routed, the author is handed the library and asked, and its answer comes
+// back as `reason: 'target'` for the caller to load and re-ask. See SKILLS-UPKEEP.md.
+//
 // This is NOT the path used when the user asks for a skill in conversation. There
 // the model authors inline in its own turn, where it holds the live thread rather
 // than this serialized trace — strictly more context. `authorSkill` exists for the
 // cases with no live turn to author from: the end-of-turn pass and `/learn`.
+
+/** A skill the author is shown in full so it can recognize its own procedure in one. */
+export interface AuthorCandidate {
+  slug: string;
+  name: string;
+  description: string;
+  body: string;
+}
 
 /** What the author is shown: the turn, reduced to evidence. */
 export interface AuthorInput {
@@ -24,13 +39,45 @@ export interface AuthorInput {
   assistantText: string;
   /** Set when the turn used an existing skill: improve that one instead of adding another. */
   existing?: { name: string; description: string; body: string };
+  /**
+   * True when `existing` is the skill the author itself named on a first shot,
+   * rather than one this turn was graded as having followed. It changes the
+   * question: not "did this skill let you down" but "fold what you just did into
+   * it", because the author has already decided that is where it belongs.
+   */
+  chosenTarget?: boolean;
+  /**
+   * Create path only: the skills whose bodies were inlined this turn, in full.
+   * Injection is not evidence the turn followed them — it is the top-2 of a
+   * cosine ranking — so these are shown as candidates, not as a routed target.
+   */
+  candidates?: AuthorCandidate[];
+  /** Create path only: every other skill in the library, name + description. */
+  libraryIndex?: { slug: string; description: string }[];
   /** Free-text steer from `/learn <focus>` — what the user wants captured. */
   focus?: string;
 }
 
+/**
+ * `reason: 'target'` is not a failure so much as a redirect: the author read the
+ * library and answered "this belongs in <slug>" instead of drafting. The caller
+ * (skills/settle.ts) loads that skill and comes back for a patch. It only ever
+ * reaches an outer caller when the named skill cannot be honoured, and then
+ * writing nothing is right — the author said this was not a new skill.
+ *
+ * `target` on the success variant names the skill a patch is patching, so the
+ * caller can set `expect_existing` on the write without inferring it from
+ * `patched` plus the draft name.
+ */
 export type AuthorOutcome =
-  | { ok: true; draft: SkillDraft; patched: boolean; attempts: number }
-  | { ok: false; reason: 'declined' | 'invalid' | 'unparseable' | 'error'; detail: string; attempts: number };
+  | { ok: true; draft: SkillDraft; patched: boolean; attempts: number; target?: string }
+  | {
+      ok: false;
+      reason: 'declined' | 'invalid' | 'unparseable' | 'error' | 'target';
+      detail: string;
+      attempts: number;
+      target?: string;
+    };
 
 /**
  * When to save a skill at all. Held apart from the contract (what a saved skill
@@ -68,6 +115,32 @@ export const SKILL_PATCH_INSTRUCTIONS = `This turn already used the skill shown 
 
 Return the FULL corrected skill (same name) when the evidence shows a step that was wrong, missing, or ambiguous enough to cost the assistant a detour. Return null when the skill did its job. Do not rewrite it for style, do not add steps you did not just exercise, and do not broaden its scope — a skill that grows every time it is used stops being followable.`;
 
+/**
+ * Extra framing on the create path, where nothing routed this turn to a skill.
+ *
+ * The author is the only thing in Stem that can notice "we already know how to do
+ * this". Retrieval put two bodies in front of the turn by cosine rank and the
+ * turn may well have ignored both; the skill that actually matches can be sitting
+ * in the index under a name nobody read. That is not hypothetical — it is the
+ * 2026-08-11 duplicate, where `extract-youtube-transcript` was in the index and a
+ * second copy of it got written anyway. So the whole library is shown here, and
+ * naming a target is a first-class answer rather than something the model has to
+ * volunteer a tool call for.
+ */
+export const SKILL_LIBRARY_INSTRUCTIONS = `Before you write anything new, read what is already there. The skills below are the whole library: a few in full, because this turn had them loaded, and the rest by name and description.
+
+If the procedure you would write belongs in one of them — the same job, or the same job with a wrinkle this turn just discovered — do not write a second skill beside it. Name that one instead, with ONLY:
+{"target": "<the existing skill's name, spelled exactly as listed>"}
+
+You will then be shown that skill in full and asked to fold this turn into it, so you do not have to write the merged version now.
+
+Two write-ups of one procedure is the failure this question exists to catch: nothing merges them afterwards, retrieval has to choose between them, and whichever loses takes its detail with it. But a procedure that merely happens nearby is not the same procedure — a skill that grows a subsection every time something adjacent happens stops being followable. Same job: name it. Neighbouring job: write the new one. Neither: decline.`;
+
+/** Framing for the second shot, once the author's own named target has been loaded. */
+export const SKILL_TARGET_PATCH_INSTRUCTIONS = `You named the skill below as where this turn's procedure belongs. Here it is in full.
+
+Return the FULL skill under the SAME name, with this turn folded in: the step that was missing, the argument that turned out to matter, the dead end worth a warning. Keep what is already there unless the evidence shows it wrong, and do not restructure it to make room. Return null if, now that you can read it, the skill already covers what happened — that is an honest answer and it costs nothing.`;
+
 const MAX_ATTEMPTS = 2;
 
 /** One tool call as a line of evidence. Long results are already truncated upstream. */
@@ -91,8 +164,26 @@ export function renderEvidence(input: AuthorInput): string {
   );
   if (input.assistantText.trim()) parts.push(`What the assistant replied:\n${input.assistantText.trim()}`);
   if (input.existing) {
+    const heading = input.chosenTarget ? 'The skill you named' : 'The skill this turn used';
     parts.push(
-      `The skill this turn used:\nname: ${input.existing.name}\ndescription: ${input.existing.description}\n\n${input.existing.body}`
+      `${heading}:\nname: ${input.existing.name}\ndescription: ${input.existing.description}\n\n${input.existing.body}`
+    );
+  }
+  // The library, when the author is being asked to choose. Bodies first: those
+  // are the ones it can judge properly, and a name-and-description line is a
+  // weaker claim to be weighed against a body it can read.
+  if (input.candidates?.length) {
+    parts.push(
+      `Skills already loaded in this turn, in full:\n\n${input.candidates
+        .map((c) => `name: ${c.slug}\ndescription: ${c.description}\n\n${c.body}`)
+        .join('\n\n----\n\n')}`
+    );
+  }
+  if (input.libraryIndex?.length) {
+    parts.push(
+      `Every skill in the library (name — description):\n${input.libraryIndex
+        .map((s) => `- ${s.slug} — ${s.description}`)
+        .join('\n')}`
     );
   }
   return parts.join('\n\n');
@@ -100,12 +191,19 @@ export function renderEvidence(input: AuthorInput): string {
 
 export function buildAuthorPrompt(input: AuthorInput): string {
   const parts = [SKILL_AUTHORING_INSTRUCTIONS];
-  if (input.existing) parts.push(SKILL_PATCH_INSTRUCTIONS);
+  if (input.existing) parts.push(input.chosenTarget ? SKILL_TARGET_PATCH_INSTRUCTIONS : SKILL_PATCH_INSTRUCTIONS);
+  // Only when there is actually a library to read: an empty list under "read what
+  // is already there" invites a target the author cannot have seen.
+  else if (input.candidates?.length || input.libraryIndex?.length) parts.push(SKILL_LIBRARY_INSTRUCTIONS);
   parts.push(SKILL_CONTRACT_TEXT, '---', renderEvidence(input));
   return parts.join('\n\n');
 }
 
-type ParsedReply = { kind: 'skill'; draft: SkillDraft } | { kind: 'declined'; reason: string } | { kind: 'unparseable' };
+type ParsedReply =
+  | { kind: 'skill'; draft: SkillDraft }
+  | { kind: 'target'; slug: string }
+  | { kind: 'declined'; reason: string }
+  | { kind: 'unparseable' };
 
 /**
  * Read the model's reply. Tolerant of surrounding prose and fences (the JSON is
@@ -123,6 +221,11 @@ export function parseAuthorReply(output: string): ParsedReply {
     return { kind: 'unparseable' };
   }
   if (!parsed || typeof parsed !== 'object') return { kind: 'unparseable' };
+  // A named target outranks anything else in the reply. A model that answers with
+  // both a target and a draft has told us where the procedure belongs and then
+  // written it in the wrong place; the second shot writes the right one.
+  const target = (parsed as { target?: unknown }).target;
+  if (typeof target === 'string' && target.trim()) return { kind: 'target', slug: target.trim() };
   const skill = (parsed as { skill?: unknown }).skill;
   if (skill === null || skill === undefined) {
     const reason = (parsed as { reason?: unknown }).reason;
@@ -158,6 +261,15 @@ export function buildRetryPrompt(base: string, draft: SkillDraft, violations: Sk
 export async function authorSkill(llm: LlmClient, input: AuthorInput): Promise<AuthorOutcome> {
   const base = buildAuthorPrompt(input);
   let prompt = base;
+  // What the author was actually shown. A target outside this set is a slug it
+  // invented or half-remembered, and honouring one would patch a skill nobody
+  // put in front of it — including, if it guessed a name, a file the user wrote
+  // by hand. Checked here rather than at the caller so the model gets the one
+  // retry that can fix it.
+  const offered = new Set([
+    ...(input.candidates ?? []).map((c) => c.slug),
+    ...(input.libraryIndex ?? []).map((s) => s.slug)
+  ]);
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     let reply: string;
@@ -169,6 +281,16 @@ export async function authorSkill(llm: LlmClient, input: AuthorInput): Promise<A
 
     const parsed = parseAuthorReply(reply);
     if (parsed.kind === 'declined') return { ok: false, reason: 'declined', detail: parsed.reason, attempts: attempt };
+    if (parsed.kind === 'target') {
+      if (offered.has(parsed.slug)) {
+        return { ok: false, reason: 'target', detail: `belongs in "${parsed.slug}"`, target: parsed.slug, attempts: attempt };
+      }
+      if (attempt === MAX_ATTEMPTS) {
+        return { ok: false, reason: 'target', detail: `named "${parsed.slug}", which is not in the library`, attempts: attempt };
+      }
+      prompt = `${base}\n\n---\n\nYou named "${parsed.slug}", which is not one of the skills listed above. Name one exactly as it is listed, or write the new skill, or decline.`;
+      continue;
+    }
     if (parsed.kind === 'unparseable') {
       if (attempt === MAX_ATTEMPTS) return { ok: false, reason: 'unparseable', detail: 'the model did not return the JSON shape', attempts: attempt };
       prompt = `${base}\n\n---\n\nYour previous answer was not valid JSON in the required shape. Reply with ONLY the JSON object.`;
@@ -179,7 +301,9 @@ export async function authorSkill(llm: LlmClient, input: AuthorInput): Promise<A
     // by another name, which is exactly the duplication this path exists to avoid.
     const draft = input.existing ? { ...parsed.draft, name: input.existing.name } : parsed.draft;
     const violations = validateSkill(draft);
-    if (violations.length === 0) return { ok: true, draft, patched: !!input.existing, attempts: attempt };
+    if (violations.length === 0) {
+      return { ok: true, draft, patched: !!input.existing, target: input.existing?.name, attempts: attempt };
+    }
     if (attempt === MAX_ATTEMPTS) {
       return { ok: false, reason: 'invalid', detail: formatViolations(violations), attempts: attempt };
     }

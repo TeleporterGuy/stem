@@ -65,6 +65,12 @@ export interface SkillBridgeDeps {
   requestApproval(proposal: { name: string; description: string; body: string; isPatch: boolean }): Promise<SkillApprovalOutcome>;
   /** A skill file changed on disk: reload the backend and refresh the Manage panel. */
   onChanged(): void;
+  /**
+   * A genuinely NEW skill landed (never fired for updates). A duplicate is only
+   * ever introduced by a create, so this is the one event worth reacting to with
+   * a curator pass — see the curate-on-create trigger in startup/recall-tasks.ts.
+   */
+  onCreated?(): void;
 }
 
 /**
@@ -171,6 +177,7 @@ export class SkillBridge {
     const res = saveSkill(draft, { origin, expectExisting });
     if (!res.ok) return { ok: false, text: res.error };
     this.deps.onChanged();
+    if (res.created) this.deps.onCreated?.();
     return {
       ok: true,
       text: res.created

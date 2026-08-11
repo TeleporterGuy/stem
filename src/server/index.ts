@@ -155,6 +155,8 @@ const USER_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 let scheduleMemoryRebuild: () => void = () => {};
 let scheduleFolderIndexScan: (delayMs?: number) => void = () => {};
 let scheduleFolderLearn: (delayMs?: number) => void = () => {};
+// Late-bound by initRecallTasks; initSkills (wired earlier in boot) closes over it.
+let scheduleCurateAfterCreate: (() => void) | null = null;
 
 /**
  * The one server → client path (see startup/transport.ts). Every connected client
@@ -584,7 +586,11 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     onChanged: () => {
       void runtime?.requestSkillReload();
       emit('skills:changed', undefined);
-    }
+    },
+    // Late-bound: the recall tasks (which own the curator) are wired a few lines
+    // below this call. A create before that assignment simply doesn't schedule,
+    // which cannot happen outside boot and is covered by the startup pass anyway.
+    onCreated: () => scheduleCurateAfterCreate?.()
   });
 
   // Background-activity feed for the toolbar indicator. Wired before the passes
@@ -615,6 +621,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     emit
   });
   scheduleMemoryRebuild = recallTasks.scheduleMemoryRebuild;
+  scheduleCurateAfterCreate = recallTasks.scheduleCurateAfterCreate;
   const { scheduleDistill, scheduleEpisodicEmbed } = recallTasks;
 
   // Indexed connected folders: startup kick + periodic incremental rescan

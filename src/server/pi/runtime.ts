@@ -2129,6 +2129,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     const injected = turn.skillsInjected ?? [];
     if (injected.length > 0) {
       const used = gradeSkillUse(injected, turn.trace);
+      // The same verdict routes authoring: `snapshotTurnTrace` runs a few lines
+      // down and reads this off the turn, so the settle pass gets the graded set
+      // without a second pass over the trace. It must be assigned to `turn`
+      // itself — the object handed to the snapshot — or the routing goes back to
+      // being permanently empty, which is the bug this replaced.
+      turn.skillsGradedUsed = used;
       recordGrades(
         injected.map((s) => s.slug),
         used

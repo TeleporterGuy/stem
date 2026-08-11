@@ -76,18 +76,25 @@ export interface TurnContext {
    */
   pendingUserCapture?: { text: string; cwd?: string };
   /**
-   * Slugs of skills consulted this turn (a read/grep/find/ls inside the skill's
-   * folder). A Set so a skill counts at most once per turn; flushed to the usage
-   * sidecar by PiRuntime.settleTurn.
-   */
-  skillsUsed?: Set<string>;
-  /**
    * Skills whose full body was inlined into this turn's context. Set by the
-   * message builder, graded at turn end (skills/grade.ts), and — when the turn
-   * earns a skill write — what routes authoring to PATCH the skill that was
-   * already loaded rather than adding a near-duplicate beside it.
+   * message builder and graded at turn end (skills/grade.ts). NOT a routing
+   * signal on its own: injection is the top-2 of a cosine ranking, so it says
+   * what we put in front of the model, not what the model followed.
    */
   skillsInjected?: InlinedSkill[];
+  /**
+   * The graded subset of `skillsInjected` — the slugs this turn showed evidence
+   * of actually following. Written by PiRuntime.settleTurn from the
+   * `gradeSkillUse` result it already computes for the usage sidecar, so the
+   * snapshot taken a few lines later carries it for free.
+   *
+   * This is the ONLY affirmative signal available at settle time, and it is what
+   * routes authoring to patch instead of create (skills/settle.ts). Its
+   * predecessor, `skillsUsed`, was fed by watching for a read inside a skill's
+   * folder; inlining removed that signal by construction and nothing ever wrote
+   * the field again, so every end-of-turn write was a create for months.
+   */
+  skillsGradedUsed?: string[];
   /**
    * True for an autonomous scheduled-task run. Set by PiRuntime.startTurn from the
    * scheduler's input marker; the exec bridge uses it to reject commands that would
@@ -152,8 +159,14 @@ export interface SettledTurnTrace {
   userText: string;
   assistantText: string;
   trace: TraceEntry[];
-  /** Skills consulted this turn — routes authoring to patch rather than create. */
-  skillsUsed: string[];
+  /**
+   * Slugs whose bodies were inlined into this turn. Not a routing signal — the
+   * author is shown these as candidates so it can recognize "this already
+   * exists", but nothing here is evidence the turn followed any of them.
+   */
+  skillsInjected: string[];
+  /** The graded subset of the above — the only affirmative use signal, and what routes patch-vs-create. */
+  skillsGradedUsed: string[];
   /** The turn read inside a memorize:false folder: never author from it. */
   memoryTainted: boolean;
   isScheduled: boolean;
@@ -167,7 +180,8 @@ export function snapshotTurnTrace(turn: TurnContext, endedAt: number): SettledTu
     userText: turn.userText ?? '',
     assistantText: turn.assistantText,
     trace: turn.trace,
-    skillsUsed: [...(turn.skillsUsed ?? [])],
+    skillsInjected: (turn.skillsInjected ?? []).map((s) => s.slug),
+    skillsGradedUsed: [...(turn.skillsGradedUsed ?? [])],
     memoryTainted: turn.memoryTainted === true,
     isScheduled: turn.isScheduled === true
   };

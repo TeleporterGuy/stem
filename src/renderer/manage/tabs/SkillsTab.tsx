@@ -65,10 +65,13 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
       // A pass that merged nothing and one that merged three both end with the
       // list simply redrawn, so say which happened — otherwise the only way to
       // tell is to have memorised the library beforehand.
+      // "90 days" is ARCHIVE_AFTER_DAYS in server/skills/lifecycle.ts, spelled out
+      // here rather than plumbed through IPC: it is a sentence, not a setting.
+      const retired = r.expired ? `, retired ${r.expired} unused >90 days` : '';
       setTidyMsg(
-        r.merged + r.archived === 0
+        r.merged + r.archived + r.expired === 0
           ? 'No duplicate or stale skills found'
-          : `Merged ${r.merged}, archived ${r.archived} — archived skills stay on disk and can be switched back on above.`
+          : `Merged ${r.merged}, archived ${r.archived}${retired} — archived skills stay on disk and can be switched back on above.`
       );
     } catch {
       setTidyMsg('Tidy up failed — try again.');

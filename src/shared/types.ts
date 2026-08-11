@@ -827,6 +827,12 @@ export interface SkillsCurateResult {
   skills: SkillSummary[];
   merged: number;
   archived: number;
+  /**
+   * Skills the deterministic lifecycle clock retired on this run (server/skills/
+   * lifecycle.ts) — reported separately from `archived` because it is not the
+   * curator's doing: no model saw them, they simply went untouched past the cutoff.
+   */
+  expired: number;
 }
 
 /** Main -> renderer: a pending approval was answered or expired. */

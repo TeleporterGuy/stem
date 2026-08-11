@@ -10,9 +10,24 @@ import { mergeUsage, pruneUsage, readUsage, type SkillsUsage } from './usage';
 
 // Level-2 cleanup for self-authored skills, mirroring recall/consolidate.ts for
 // durable facts. The assistant only ever ADDS or updates skills via manage_skill,
-// so over time the library accumulates near-duplicate procedures and stale ones.
-// This pass periodically asks the LLM for merge/archive operations, then applies
-// them with the same KEEP-by-default posture and a drop-fraction guard.
+// so over time the library accumulates narrow siblings of the same procedure and
+// skills a better one has superseded. This pass periodically asks the LLM for
+// merge/archive operations and applies them behind a drop-fraction guard.
+//
+// The two operations run on DIFFERENT postures, which is the correction recorded
+// in SKILLS-UPKEEP.md ("Defect 2"). Merge is an umbrella-building pass: the bar is
+// "would a maintainer write these as N skills, or one skill with N labeled
+// subsections?", not "do they cover the same task". Archive keeps the cautious
+// KEEP-by-default posture. The asymmetry is in the cost of being wrong — a bad
+// merge preserves every skill's content inside the winner and is visible in
+// Manage, while a bad archive silently stops a skill from ever being retrieved
+// again. The prompt this replaces let the cautious posture govern both lists; it
+// archived nothing in the library's whole recorded history, and let four skills
+// for the same YouTube procedure accumulate before two of them merged.
+//
+// Retiring skills nobody uses is deliberately NOT this pass's job: the
+// deterministic clock in skills/lifecycle.ts does that without a model call, which
+// is why the prompt below tells the model not to read anything into a zero count.
 //
 // It used to also PATCH bodies, and no longer does. Body edits belong to the
 // assistant at the moment it uses a skill and finds it wrong: that is when the
@@ -58,7 +73,9 @@ interface CurateOps {
 }
 const EMPTY_OPS: CurateOps = { merge: [], archive: [] };
 
-const INSTRUCTIONS = `You maintain a library of an assistant's self-authored SKILL files. Each skill is a reusable procedure with a name, a one-line description (what it does and when to use it), and a step-by-step body. Over time the library accumulates near-duplicate skills and skills superseded by a better one.
+const INSTRUCTIONS = `You maintain a library of an assistant's self-authored SKILL files. Each skill is a reusable procedure with a name, a one-line description (what it does and when to use it), and a step-by-step body.
+
+This is a CONSOLIDATION pass, not a duplicate-hunt and not a passive audit. A library where each skill records one afternoon's specific problem has failed at its job: the assistant finds a skill by matching its description, and one broad skill with labeled subsections is easier to match — and easier to keep correct — than five narrow siblings.
 
 Return ONLY a JSON object (no prose, no markdown fences) with this shape:
 {
@@ -66,12 +83,24 @@ Return ONLY a JSON object (no prose, no markdown fences) with this shape:
   "archive": ["<slug of a stale/superseded/useless skill>"]
 }
 
-Rules:
-- DEFAULT TO KEEP. Only act on skills you are confident are duplicates or superseded. If unsure, leave a skill out of both lists.
-- merge: combine skills that cover the SAME task. The FIRST slug in "slugs" is kept, keeps its name, and is rewritten with your "description" and "content"; the rest are retired. List at least two slugs. Keep the body under 4096 bytes with the headings "## When to use", "## Steps", "## Verification", in that order.
-- archive: only a skill made redundant or obsolete by another, or one that is clearly not a reusable procedure.
+The two lists have OPPOSITE postures, deliberately. A merge you get wrong is recoverable: every skill's content is still there inside the winner, and a person can see it and split it again. An archive you get wrong is silent — the skill stays on disk but is never retrieved again, and nobody finds out. So: be aggressive about merging, cautious about archiving.
+
+merge — the bar is NOT "these cover the same task":
+- Ask instead: would a human maintainer write these as N separate skills, or as ONE skill with N labeled subsections? When the answer is one skill, merge them.
+- Pairwise distinctness is the WRONG test. "Each one has a different trigger" is not a reason to leave them apart; a labeled subsection can have its own trigger.
+- Scan the whole list for CLUSTERS before deciding anything: skills sharing a domain, a service, a tool, or a keyword in their names or descriptions. Work cluster by cluster, not pair by pair. For each cluster ask what class of work it serves and which member is already broad enough to be the umbrella.
+- Look for skills whose NAME is too narrow to be a class of work — a specific error message, a one-off project or device or feature name, one investigation. Those almost always belong as a subsection under a broader skill rather than as an entry of their own.
+- Iterate. After forming one umbrella, scan what is left for the next one. Do not stop at the first merge.
+- Mechanics: the FIRST slug in "slugs" is kept, keeps its name, and is rewritten with your "description" and "content"; the rest are retired. List at least two slugs.
+- SIZE LIMIT, and it is enforced: the merged body must be under 4096 bytes and must carry the headings "## When to use", "## Steps", "## Verification", in that order. A body that breaks either rule is rejected outright and the merge does not happen. So compress as you merge: give each absorbed skill a short labeled subsection under "## Steps" (e.g. "### Playlists"), keep the exact commands, arguments and traps, and drop restated prose. If a cluster will not fit, do TWO smaller merges instead of one that overflows.
+
+archive — DEFAULT TO KEEP:
+- Only archive a skill made redundant or obsolete by another one, or a skill that is clearly not a reusable procedure at all. If you are unsure, leave it out of both lists.
+- Never archive a skill merely to make the library smaller. Merging is how the library gets smaller.
+
+Both lists:
 - Do NOT improve, tidy, or reword a body you are keeping. You cannot see whether it works; the assistant fixes a skill when it uses one and finds it wrong.
-- Usage counts are advisory, never decisive on their own. A skill NEVER used since tracking began, created after tracking started and more than ~30 days ago, is a strong archive candidate. A skill that WAS used but has been dormant since is a WEAK signal — seasonal or rarely-needed procedures are legitimate; keep it by default.
+- Usage counts are NEVER a reason to skip a merge — judge overlap on content alone. And "never used since tracking began" is absence of evidence, not evidence of absence: some procedures are legitimately ungradeable, and some are seasonal. A separate automatic clock retires skills that go untouched for long enough, so you do not need to do that from the counters.
 - Use ONLY the slugs listed below. Never invent a skill or a slug.
 - If nothing needs changing, return {"merge":[],"archive":[]}.`;
 
@@ -242,7 +271,16 @@ function applyCurate(skills: AgentSkill[], ops: CurateOps): CurateResult {
       { name: winnerSlug, description: m.description || winner.description, body: m.content },
       { expectExisting: true, origin: 'unknown' }
     );
-    if (!written.ok) continue;
+    if (!written.ok) {
+      // Say so. A rejected merge used to be indistinguishable from "nothing to
+      // merge" — the pass reported zero and the caller told the user there were no
+      // duplicates. The 4096-byte cap is the likeliest cause now that the prompt
+      // asks for umbrellas, and how often it is what stops a merge is the evidence
+      // SKILLS-UPKEEP.md's open question 1 wants before touching the cap.
+      const why = written.violations?.map((v) => v.message).join(' ') ?? written.error;
+      console.warn(`[skills curator] merge into "${winnerSlug}" rejected (losers: ${losers.join(', ') || 'none'}): ${why}`);
+      continue;
+    }
     try {
       for (const loser of losers) {
         if (loser === winnerSlug) continue;
@@ -260,8 +298,10 @@ function applyCurate(skills: AgentSkill[], ops: CurateOps): CurateResult {
     try {
       archiveSkill(slug);
       archived += 1;
-    } catch {
-      // best-effort
+    } catch (error) {
+      // Best-effort, but not silent — same reason as the merge above: a marker the
+      // filesystem refused looks exactly like a pass that decided to keep everything.
+      console.warn(`[skills curator] could not archive "${slug}": ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

@@ -10,6 +10,8 @@ import { consolidateFacts } from '../recall/consolidate';
 import { getMemoryRebuildStatus, runMemoryRebuildStep } from '../recall/rebuild';
 import { recallStore } from '../recall/store';
 import { curateSkills } from '../skills/curate';
+import { applyAutomaticTransitions } from '../skills/lifecycle';
+import { isSettlePassRunning } from './skills';
 import { getEmbeddingsClient } from '../recall/retrieval';
 import type { LlmClient } from '../recall/llm';
 import type { ChatBackend } from '../backend';
@@ -31,6 +33,8 @@ export interface RecallTasks {
   scheduleDistill: (delayMs?: number) => void;
   /** Debounced episodic embed pass (message vectors for semantic recall). */
   scheduleEpisodicEmbed: (delayMs?: number) => void;
+  /** Debounced curator pass after a skill CREATE — see the comment at its definition. */
+  scheduleCurateAfterCreate: () => void;
 }
 
 /**
@@ -187,20 +191,32 @@ export function initRecallTasks(deps: {
     }, delayMs);
   };
 
-  // Skills curator: the Level-2 cleanup of self-authored skills (merge duplicates,
-  // patch sloppy bodies, archive stale ones), mirroring fact consolidation. Uses the
-  // same hidden LlmClient seam, and is gated by the memory toggle since it's the same
-  // kind of background self-improvement pass. On any change, reload so pi rescans skills.
+  // Skills upkeep: the deterministic lifecycle clock, then the Level-2 LLM cleanup
+  // of self-authored skills (merge near-duplicates into umbrellas, archive
+  // superseded ones), mirroring fact consolidation. The curator uses the same hidden
+  // LlmClient seam and is gated by the memory toggle, since it's the same kind of
+  // background self-improvement pass; the clock is not. On any change, reload so pi
+  // rescans skills.
   let curating = false;
   const runCurate = async (): Promise<void> => {
-    if (curating || !isRecallEnabled()) return;
+    if (curating) return;
     curating = true;
     try {
+      // The deterministic clock runs FIRST and outside every gate the curator has,
+      // this wrapper's memory toggle included: it costs no model call, and a
+      // lifecycle that stops with recall off is not a lifecycle (SKILLS-UPKEEP.md
+      // step 4). Synchronous fs work over a dozen small files — cheap enough to sit
+      // in front of the early return.
+      const expired = applyAutomaticTransitions();
+      if (!isRecallEnabled()) {
+        if (expired) await deps.runtime().requestSkillReload();
+        return;
+      }
       const res = await activity.track('skills.curate', 'Curating skills', () => curateSkills(skillsLlm), (r) => ({
-        worked: r.merged + r.archived > 0,
-        detail: `Merged ${r.merged}, archived ${r.archived}`
+        worked: r.merged + r.archived + expired > 0,
+        detail: `Merged ${r.merged}, archived ${r.archived}, expired ${expired}`
       }));
-      if (res.merged || res.archived) await deps.runtime().requestSkillReload();
+      if (res.merged || res.archived || expired) await deps.runtime().requestSkillReload();
     } catch {
       // non-fatal
     } finally {
@@ -210,6 +226,34 @@ export function initRecallTasks(deps: {
   // A pass shortly after startup, then a low-frequency recurring pass while idle.
   setTimeout(() => void runCurate(), 90_000);
   setInterval(() => void runCurate(), 24 * 60 * 60_000);
+
+  // Curate-on-create: a duplicate is only ever introduced by a CREATE, so that is
+  // the event worth reacting to — the 08-11 duplicate lived 49 minutes because the
+  // next scheduled pass was ~22 hours out and the user happened to press the
+  // button (SKILLS-UPKEEP.md step 5). Debounced long enough that a burst of
+  // creates costs one pass, and deferred while the settle pass is authoring: a
+  // merge here deletes its losers, and one of those can be the very skill a
+  // concurrent patch write is aimed at — that write refuses cleanly but silently,
+  // and patches are the primary write path now.
+  const CURATE_AFTER_CREATE_MS = 10 * 60_000;
+  const CURATE_RETRY_MS = 5 * 60_000;
+  const CURATE_MAX_DEFERRALS = 6;
+  let curateTimer: NodeJS.Timeout | null = null;
+  const scheduleCurateAfterCreate = (delayMs = CURATE_AFTER_CREATE_MS, deferrals = 0): void => {
+    if (curateTimer) clearTimeout(curateTimer);
+    curateTimer = setTimeout(() => {
+      curateTimer = null;
+      if ((curating || isSettlePassRunning() || deps.busyWithin(30_000)) && deferrals < CURATE_MAX_DEFERRALS) {
+        scheduleCurateAfterCreate(CURATE_RETRY_MS, deferrals + 1);
+        return;
+      }
+      // Out of deferrals on a machine that never goes quiet: drop it. The 24 h
+      // interval pass is the backstop, and stacking more retries would just make
+      // this the thing that never stops running.
+      if (curating || isSettlePassRunning()) return;
+      void runCurate();
+    }, delayMs);
+  };
 
   // Summary backfill for dormant threads (history that predates summaries, or
   // fell behind while the app was closed). Opportunistic like the rebuild pass:
@@ -259,5 +303,5 @@ export function initRecallTasks(deps: {
   scheduleDistill(20_000);
   scheduleEpisodicEmbed(25_000);
 
-  return { scheduleMemoryRebuild, scheduleDistill, scheduleEpisodicEmbed };
+  return { scheduleMemoryRebuild, scheduleDistill, scheduleEpisodicEmbed, scheduleCurateAfterCreate };
 }

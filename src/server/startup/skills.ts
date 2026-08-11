@@ -1,7 +1,5 @@
 import { SkillBridge } from '../skills/bridge';
-import { authorSkill } from '../skills/author';
-import { readSkillRecord } from '../skills/store';
-import { settleSkills } from '../skills/settle';
+import { authorForTurn, firstExistingSkill, settleSkills } from '../skills/settle';
 import { backgroundRunFor, readSettings } from '../workspace/settings';
 import { log } from '../log';
 import type { PiRuntime } from '../pi/runtime';
@@ -26,6 +24,8 @@ import type { LlmClient } from '../recall/llm';
 export function initSkills(deps: {
   runtime: ChatBackend;
   onChanged: () => void;
+  /** A create landed (never an update) — see the bridge's onCreated. */
+  onCreated?: () => void;
   /** True while a turn is running or the user interacted within `idleMs`. */
   busyWithin: (idleMs: number) => boolean;
 }): SkillBridge | null {
@@ -40,7 +40,8 @@ export function initSkills(deps: {
   const bridge = new SkillBridge({
     mode: async () => (await readSettings()).skills.mode,
     requestApproval: (proposal) => runtime.requestSkillApproval!(proposal),
-    onChanged: deps.onChanged
+    onChanged: deps.onChanged,
+    onCreated: deps.onCreated
   });
   deps.runtime.setSkillBridge(bridge);
 
@@ -64,6 +65,18 @@ const SETTLE_MAX_DEFERRALS = 5;
 // the user is still thinking about, and the trace ring keeps only three anyway.
 let settleRunning = false;
 let settleTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Whether the end-of-turn authoring pass is mid-flight. The curate-on-create
+ * trigger (startup/recall-tasks.ts) holds off while this is true: a curator merge
+ * deletes its losers, and one of those can be the very skill a concurrent settle
+ * pass is about to patch — the write refuses cleanly (`expectExisting` on a
+ * missing slug), but it refuses silently, and patches are the primary write path
+ * now that routing works. Cheaper to sequence the two than to explain the race.
+ */
+export function isSettlePassRunning(): boolean {
+  return settleRunning;
+}
 
 function scheduleEndOfTurnPass(
   turn: SettledTurnTrace,
@@ -126,21 +139,23 @@ export async function learnFromLastTurn(threadId: string, focus?: string): Promi
   const llm: LlmClient = {
     complete: async (prompt) => runtime.complete!(prompt, backgroundRunFor(settings, 'curator', { model: settings.skills.model, effort: settings.skills.effort }))
   };
-  const existing = firstExistingSkill(turn.skillsUsed);
-  const author = await authorSkill(llm, {
-    trace: turn.trace,
-    userText: turn.userText,
-    assistantText: turn.assistantText,
-    existing,
-    focus
-  });
+  // Same resolution as the end-of-turn pass, through the same helper: patch what
+  // the turn was graded as following, and otherwise let the author read the
+  // library and name its own target (settle.ts owns both halves — `/learn` reading
+  // the routing field its own way is how the dead field survived here longest).
+  const existing = firstExistingSkill(turn.skillsGradedUsed);
+  const author = await authorForTurn(turn, llm, { existing, focus });
   if (!author.ok) {
     return {
       ok: false,
       message:
         author.reason === 'declined'
           ? `Nothing reusable in that turn — ${author.detail}.`
-          : 'Could not write a skill from that turn.'
+          : // A target that could not be honoured is the one non-failure here: the
+            // author decided this belonged in a skill that has since gone.
+            author.reason === 'target'
+            ? `Nothing new to save — that procedure ${author.detail}.`
+            : 'Could not write a skill from that turn.'
     };
   }
 
@@ -151,21 +166,15 @@ export async function learnFromLastTurn(threadId: string, focus?: string): Promi
       name: author.draft.name,
       description: author.draft.description,
       body: author.draft.body,
+      // A patch — routed by grading or chosen by the author — writes with
+      // `expect_existing`, so a skill that vanished between the model call and the
+      // write refuses instead of quietly creating itself from a patch-shaped draft.
       expectExisting: author.patched,
       origin: 'learn'
     },
     { isScheduled: false }
   );
   return { ok: result.ok, slug: author.draft.name, saved: result.ok, message: result.text } as LearnResult;
-}
-
-/** The first of these slugs that still has a file — the skill to improve. */
-function firstExistingSkill(slugs: string[]): { name: string; description: string; body: string } | undefined {
-  for (const slug of slugs) {
-    const record = readSkillRecord(slug);
-    if (record) return { name: record.name, description: record.description, body: record.body };
-  }
-  return undefined;
 }
 
 /**
@@ -214,7 +223,10 @@ async function runEndOfTurnPass(turn: SettledTurnTrace, bridge: SkillBridge, run
         detail: outcome.author?.detail,
         attempts: outcome.author?.attempts,
         tools: turn.trace.length,
-        patching: outcome.decision.existing?.name
+        // Whichever was true: routed at a skill by grading, or aimed at one the
+        // author named and could not be given. Both are worth telling apart from a
+        // plain decline when the fire rate is read back off these lines.
+        patching: outcome.decision.existing?.name ?? outcome.author?.target
       });
       return;
     }
@@ -226,6 +238,10 @@ async function runEndOfTurnPass(turn: SettledTurnTrace, bridge: SkillBridge, run
         name: outcome.author.draft.name,
         description: outcome.author.draft.description,
         body: outcome.author.draft.body,
+        // See `/learn` above: every patch write is guarded, so a skill deleted or
+        // merged away while the author was thinking degrades to a refusal rather
+        // than reappearing as a create. After this step patches are the primary
+        // write path, so that window is no longer a rare one.
         expectExisting: outcome.author.patched,
         origin: 'turn'
       },
@@ -235,6 +251,8 @@ async function runEndOfTurnPass(turn: SettledTurnTrace, bridge: SkillBridge, run
       threadId: turn.threadId,
       skill: outcome.author.draft.name,
       patched: outcome.author.patched,
+      // Set when the author chose its own target rather than being routed at one.
+      chosen: outcome.author.patched && !outcome.decision.existing,
       saved: result.ok
     });
   } catch (error) {

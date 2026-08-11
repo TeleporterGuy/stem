@@ -16,6 +16,7 @@ import { backgroundRunOf, updateSkillsSettings } from '../workspace/settings';
 import { resetSkills, skillsResetStatus } from '../skills/reset';
 import { learnFromLastTurn } from '../startup/skills';
 import { curateSkills } from '../skills/curate';
+import { applyAutomaticTransitions } from '../skills/lifecycle';
 import type { LlmClient } from '../recall/llm';
 import type { ApprovalId } from '../backend/types';
 import type {
@@ -72,12 +73,16 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     // Tracked under the same kind as the automatic pass in startup/recall-tasks.ts.
     // Pressing the button spends the same tens of seconds on the same model call,
     // and a manual run that reports nowhere is the one most likely to be watched.
+    // The lifecycle clock first, outside the curator's gates and its model call —
+    // pressing "Tidy up" should also apply anything the 24 h timer has not reached
+    // yet, and it costs one walk of the skills dir.
+    const expired = applyAutomaticTransitions();
     const res = await activity.track('skills.curate', 'Curating skills', () => curateSkills(llm, { force: true }), (r) => ({
-      worked: r.merged + r.archived > 0,
-      detail: `Merged ${r.merged}, archived ${r.archived}`
+      worked: r.merged + r.archived + expired > 0,
+      detail: `Merged ${r.merged}, archived ${r.archived}, expired ${expired}`
     }));
     await deps.runtime().requestSkillReload();
-    return { skills: listSkills(), merged: res.merged, archived: res.archived };
+    return { skills: listSkills(), merged: res.merged, archived: res.archived, expired };
   });
   // There is no `skills:distillNow` any more. Its "Collect now" swept the chat
   // backlog for skills, but the recall DB holds no tool calls to sweep; skills
