@@ -29,7 +29,12 @@ import { MdxView } from '../../chat/MdxView';
 import { useOffline } from '../../hooks/useServerReachable';
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
-import { holdFullSpin, type ActiveFactsViewProps } from './shared';
+import { createJobStore, holdFullSpin, useJob, type ActiveFactsViewProps } from './shared';
+
+// Module-level so a running consolidation survives the tab unmounting: leave for
+// another tab mid-run and come back, and the button is still spinning — and the
+// outcome message still lands — instead of the pass silently vanishing.
+const consolidateJob = createJobStore();
 
 // Auto tidy-up cadence, expressed as the new-fact count that triggers a pass
 // (0 = manual only). Mirrors CONSOLIDATE defaults in the recall store.
@@ -464,8 +469,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
     }, 400);
     return () => clearTimeout(t);
   }, [previewActive, previewDraft]);
-  const [consolidating, setConsolidating] = useState(false);
-  const [consolidateMsg, setConsolidateMsg] = useState<string | null>(null);
+  const { running: consolidating, msg: consolidateMsg } = useJob(consolidateJob);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
   // null => use the backend default model for distillation/tidy-up.
@@ -516,9 +520,16 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
       setRetrieval(s.retrieval);
       setDefaults(s.defaults);
     });
-    loadContents();
     loadTrustState();
   }, []);
+
+  // The contents load rides the consolidation flag rather than mount alone: a
+  // pass that ends while this tab is away has no component to hand its result
+  // to, so re-read when the flag drops. (Runs on mount too, whatever the flag
+  // says — that is the initial load.)
+  useEffect(() => {
+    loadContents();
+  }, [consolidating]);
 
   // Main pushes a status after every rebuild step, so the panel follows along
   // without a poll — and without a manual Refresh action to compensate for one.
@@ -605,39 +616,34 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
       return;
     }
     setResetting(true);
-    setConsolidateMsg(null);
+    consolidateJob.setMsg(null);
     try {
       setContents(await window.stem.resetFactsMemory());
-      setConsolidateMsg('Facts cleared.');
+      consolidateJob.setMsg('Facts cleared.');
     } catch {
-      setConsolidateMsg('Reset failed — try again.');
+      consolidateJob.setMsg('Reset failed — try again.');
     } finally {
       setResetting(false);
       setConfirmReset(false);
     }
   }
 
-  async function consolidate() {
-    setConsolidating(true);
-    setConsolidateMsg(null);
-    try {
-      const r = await holdFullSpin(window.stem.consolidateMemory());
-      setContents(r.contents);
-      const changed = r.merged + r.corrected + r.dropped;
-      const outcome =
-        changed === 0
-          ? 'No duplicates or stale facts found'
-          : `Merged ${r.merged}, corrected ${r.corrected}, retired ${r.dropped} — retired facts move to Superseded below`;
-      setConsolidateMsg(
-        r.failedChunks > 0
+  function consolidate() {
+    consolidateJob.start(async () => {
+      try {
+        const r = await holdFullSpin(window.stem.consolidateMemory());
+        const changed = r.merged + r.corrected + r.dropped;
+        const outcome =
+          changed === 0
+            ? 'No duplicates or stale facts found'
+            : `Merged ${r.merged}, corrected ${r.corrected}, retired ${r.dropped} — retired facts move to Superseded below`;
+        return r.failedChunks > 0
           ? `${outcome}. The memory model failed on ${r.failedChunks} ${r.failedChunks === 1 ? 'batch' : 'batches'} of facts — those weren't reviewed; try again.`
-          : `${outcome}.`
-      );
-    } catch {
-      setConsolidateMsg('Consolidation failed — try again.');
-    } finally {
-      setConsolidating(false);
-    }
+          : `${outcome}.`;
+      } catch {
+        return 'Consolidation failed — try again.';
+      }
+    });
   }
 
   // Everything on this tab is read from the server. When it cannot be reached

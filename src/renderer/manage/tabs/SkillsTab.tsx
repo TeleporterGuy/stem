@@ -10,7 +10,12 @@ import { useOffline } from '../../hooks/useServerReachable';
 import { InfoTip } from '../../ui/InfoTip';
 import { appDefaultModel, resolveSkillsModel } from '../../../shared/modelRoles';
 import { ModelPicker } from '../../ui/ModelPicker';
-import { holdFullSpin } from './shared';
+import { createJobStore, holdFullSpin, useJob } from './shared';
+
+// Module-level so a running tidy pass survives the tab unmounting: leave for
+// another tab mid-run and come back, and the button is still spinning — and the
+// outcome message still lands — instead of the pass silently vanishing.
+const tidyJob = createJobStore();
 
 export function SkillsTab({ models }: { models: ModelSummary[] }) {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
@@ -18,8 +23,7 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
   // could not ask, which is not the same thing as having none — and "No skills
   // yet" is a sentence that would quietly tell someone their skills are gone.
   const offline = useOffline();
-  const [tidying, setTidying] = useState(false);
-  const [tidyMsg, setTidyMsg] = useState<string | null>(null);
+  const { running: tidying, msg: tidyMsg } = useJob(tidyJob);
   // null => skills work follows the model you chat with (see Settings → Models).
   const [skillsModel, setSkillsModel] = useState<string | null>(null);
   const [mode, setMode] = useState<SkillsMode>('ask');
@@ -30,7 +34,6 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
     backgroundEffort: null
   });
   useEffect(() => {
-    window.stem.listSkills().then(setSkills);
     window.stem.getSettings().then((s) => {
       setSkillsModel(s.skills.model);
       setMode(s.skills.mode);
@@ -41,6 +44,13 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
       window.stem.listSkills().then(setSkills);
     });
   }, []);
+  // The list load rides the tidy flag rather than mount alone: a pass that ends
+  // while this tab is away has no component to hand its result to, so re-read
+  // when the flag drops. (Runs on mount too, whatever the flag says — that is
+  // the initial load.)
+  useEffect(() => {
+    window.stem.listSkills().then(setSkills);
+  }, [tidying]);
 
   function selectSkillsModel(id: string | null) {
     setSkillsModel(id);
@@ -56,28 +66,23 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
     setSkills(await window.stem.setSkillEnabled(slug, enabled));
   }
 
-  async function tidy() {
-    setTidying(true);
-    setTidyMsg(null);
-    try {
-      const r = await holdFullSpin(window.stem.curateSkills());
-      setSkills(r.skills);
-      // A pass that merged nothing and one that merged three both end with the
-      // list simply redrawn, so say which happened — otherwise the only way to
-      // tell is to have memorised the library beforehand.
-      // "90 days" is ARCHIVE_AFTER_DAYS in server/skills/lifecycle.ts, spelled out
-      // here rather than plumbed through IPC: it is a sentence, not a setting.
-      const retired = r.expired ? `, retired ${r.expired} unused >90 days` : '';
-      setTidyMsg(
-        r.merged + r.archived + r.expired === 0
+  function tidy() {
+    tidyJob.start(async () => {
+      try {
+        const r = await holdFullSpin(window.stem.curateSkills());
+        // A pass that merged nothing and one that merged three both end with the
+        // list simply redrawn, so say which happened — otherwise the only way to
+        // tell is to have memorised the library beforehand.
+        // "90 days" is ARCHIVE_AFTER_DAYS in server/skills/lifecycle.ts, spelled out
+        // here rather than plumbed through IPC: it is a sentence, not a setting.
+        const retired = r.expired ? `, retired ${r.expired} unused >90 days` : '';
+        return r.merged + r.archived + r.expired === 0
           ? 'No duplicate or stale skills found'
-          : `Merged ${r.merged}, archived ${r.archived}${retired} — archived skills stay on disk and can be switched back on above.`
-      );
-    } catch {
-      setTidyMsg('Tidy up failed — try again.');
-    } finally {
-      setTidying(false);
-    }
+          : `Merged ${r.merged}, archived ${r.archived}${retired} — archived skills stay on disk and can be switched back on above.`;
+      } catch {
+        return 'Tidy up failed — try again.';
+      }
+    });
   }
 
   // There is no "Collect now" button: nothing accumulates to collect. Skills are
