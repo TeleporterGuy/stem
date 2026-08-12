@@ -12,7 +12,7 @@ Maintainer notes:
   date, tag.
 -->
 
-## 0.4.0 — Unreleased
+## 0.4.0 — 2026-08-12
 
 ### Removed
 
@@ -51,6 +51,12 @@ Maintainer notes:
   one passphrase-protected file; `stem-server import` on another machine makes it the same Stem,
   and the same file is your backup. Paired devices, this computer's own settings and the
   downloaded models deliberately stay behind — the import says what came along and what needs you.
+
+### Fixed
+
+- **A scheduled run that asks for your attention now shows you its reply.** The answer used to
+  hide inside the collapsed "Scheduled run" row — the notification pointed at a fold you had to
+  open. The reply now appears as a normal message; the run's inner steps stay tucked away.
 
 ## 0.3.0 — 2026-08-04
 
