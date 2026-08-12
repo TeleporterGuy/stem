@@ -16,37 +16,37 @@ Maintainer notes:
 
 ### Removed
 
-- **The phone client is gone, for now.** Settings → Mobile, the pairing QR and the phone web app
+- **Phone client.** Settings → Mobile, the pairing QR and the phone web app
   are removed, and a paired phone stops working. Stem's brain is moving to a server you can reach
   from anywhere, and the phone app that talks to it is being rebuilt properly rather than kept
   limping — nothing about Stem at the desk changes.
 
 ### Added
 
-- **Point Stem at a server somewhere else.** Stem still runs entirely on this computer by default,
+- **Stem server.** Stem still runs entirely on this computer by default,
   but Settings → Server can now aim the app at a Stem running elsewhere — same chats, same memory,
   same skills, from any machine you sit at. [Running on a server](docs/running-on-a-server.md)
   walks the whole move.
-- **An Inbox for your chats.** The chat list now has two tabs, and the Inbox works like mail:
+- **Inbox.** The chat list now has two tabs, and the Inbox works like mail:
   every thread waits there until you archive or snooze it, and anything new — a scheduled task
   that ran overnight, a reply you never came back to — shows up bold and unread. It's also the
   start of something bigger: one day Stems will be able to send each other messages, and this is
   where they'll arrive.
-- **Stem tells you when there's a new Stem.** A quiet strip at the top of the window says when a
+- **Updates.** A quiet strip at the top of the window says when a
   new release is out — on Linux it downloads in the background and installs on the next restart,
   on a Mac it points you at the download. "Check now" and a switch for the automatic check are in
   Settings → App → About.
-- **Every job picks its model — and how hard it thinks.** Settings → Models now shows everything
+- **Model roles.** Settings → Models now shows everything
   Stem runs a model for — your chat, Quick Chat, memory, skills, chat subjects, the command safety
   check — in one place, each with its own model and its own thinking effort. Left alone, the quick
   tasks follow a cheap default and the rest follow the model you chat with.
-- **Chats name themselves.** Stem writes each new chat a short subject from your opening message
+- **Chat subjects.** Stem writes each new chat a short subject from your opening message
   instead of quoting its first line; a name you type yourself is never overwritten. Settings →
   Chats picks the model, or turns it off.
 - **Devices.** Settings → Devices lists everything signed in to your Stem and can withdraw any of
   them, effective immediately. Adding one works like a door code: an eight-character code, valid
   for ten minutes and one device.
-- **Take your whole Stem with you, or keep a copy of it.** "Move or back up this Stem" in
+- **Backup and move.** "Move or back up this Stem" in
   Settings → Server writes your chats, memory, skills, Files, settings and connected tools into
   one passphrase-protected file; `stem-server import` on another machine makes it the same Stem,
   and the same file is your backup. Paired devices, this computer's own settings and the
@@ -58,21 +58,21 @@ Maintainer notes:
 
 - **Sign in with xAI (Grok).** Grok joins ChatGPT, Claude, OpenRouter and the local servers in the
   provider list, with the same in-app sign-in.
-- **Web search is faster.** Several queries now run at once, pages are fetched in batches, and the
+- **Faster web search.** Several queries now run at once, pages are fetched in batches, and the
   model that runs the search itself was swapped for a quicker one — the answers and sources held
   up in benchmarking, because the thinking happens in your chat model afterwards either way.
 - **Grok web search.** Grok can now be picked as the backend Stem searches the web with.
-- **A clearer search picker.** The backend list is grouped by what's actually ready to use (works
+- **Clearer search picker.** The backend list is grouped by what's actually ready to use (works
   on your sign-in / needs a key / not configured), and the assistant is told which backend it is
   searching with, so citations name the right source.
 - **Custom OpenAI-compatible endpoint.** Point Stem at any server that speaks the OpenAI API —
   your own proxy, a hosted gateway, a colleague's box — and pick which models it offers. Endpoints
   that speak the Anthropic Messages API work too; Stem detects which one yours is.
-- **Skills that earn their place.** Skills are rebuilt around what the assistant actually did —
+- **Skills rebuilt.** Skills are rebuilt around what the assistant actually did —
   the real tool trace of a turn, not its narration of one — and are checked against a contract
   before they are saved. Stem now picks the few skills relevant to your message instead of
   broadcasting every description at every turn.
-- **Memory that keeps itself true.** A new fact is checked against what Stem already knows, so an
+- **Self-correcting memory.** A new fact is checked against what Stem already knows, so an
   outdated one is retired even when it is worded nothing like its replacement. Merging facts keeps
   the dates they were asserted on, and disagreements Stem can settle on its own are settled.
 - **This popup.** Stem shows what changed once, the first time you open it after an update.
