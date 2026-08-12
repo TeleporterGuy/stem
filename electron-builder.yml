@@ -6,6 +6,19 @@ directories:
   # electron-vite owns dist/ (the compiled app); keep packaged artifacts apart.
   output: release
 
+# Where updates come from. At build time this block does two things: it embeds
+# resources/app-update.yml into the packaged app (how electron-updater knows
+# where to look) and writes latest-linux*.yml beside the artifacts (what it finds
+# there). The build itself never uploads — the dist scripts say `--publish never`
+# and the release workflow attaches these files to the GitHub Release instead.
+# Only the AppImage self-updates; macOS is unsigned (Squirrel refuses unsigned
+# apps) and a deb belongs to dpkg, so both get a notify-and-download-yourself
+# check against the same releases page (src/desktop/updates.ts).
+publish:
+  provider: github
+  owner: join3r
+  repo: stem
+
 # No asar. Several pieces are executed by plain-Node children (spawned with
 # ELECTRON_RUN_AS_NODE) that cannot read asar archives at all: pi's dist/cli.js,
 # dist/main/recall-mcp-server.js, and the copied pi/stem-mcp-extension.mjs +

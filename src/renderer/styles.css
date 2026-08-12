@@ -1284,6 +1284,45 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 }
 .offline-banner-msg { flex: 1; min-width: 0; }
 
+/* "A newer Stem exists" strip, same slot as the two above. Accent rather than
+   warn or danger: nothing is wrong — this is the one banner that is good news,
+   and it offers a button rather than asking for one. */
+.update-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-6);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  border-bottom: 0.5px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  color: var(--ink);
+  font-size: var(--fs-12);
+}
+.update-banner-msg { flex: 1; min-width: 0; }
+.update-banner-btn {
+  flex: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: var(--fs-12);
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--radius);
+  border: none;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.update-banner-btn:hover { background: color-mix(in srgb, var(--accent) 85%, black); }
+.update-banner-later {
+  flex: none;
+  cursor: pointer;
+  font-size: var(--fs-12);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--radius);
+  border: none;
+  background: none;
+  color: var(--muted);
+}
+.update-banner-later:hover { color: var(--ink); }
+
 /* Connection status dot — a quiet green circle says "running fine" without a pill. */
 .mcp-dot { flex: none; width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--success); }
 .mcp-dot.pending { background: var(--warn); animation: stem-dot-pulse 1.2s ease-in-out infinite; }

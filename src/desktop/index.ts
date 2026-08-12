@@ -13,6 +13,7 @@ import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, re
 import { createServerProxy, type ServerProxy } from './proxy';
 import { clientCredentials, resolveServerUrl } from './server-endpoint';
 import { readClientSettings, seedReleaseNotesMarker } from './settings';
+import { createUpdates } from './updates';
 import { createQuickChat } from './quickchat';
 import { loadRenderer, PRELOAD_SCRIPT } from './renderer-assets';
 import { initTray } from './tray';
@@ -261,6 +262,15 @@ function revealMainWindow(): void {
   win.focus();
 }
 
+// Whether a newer release exists and what this install can do about it — see
+// desktop/updates.ts for the auto/manual/none split. Status changes ride the
+// main window's push queue like any server event, so one arriving during
+// bootstrap waits for React rather than falling on the floor.
+const updates = createUpdates({
+  send: (status) => sendToMain('updates:status', status),
+  openExternal: openExternalUrl
+});
+
 const quickChat = createQuickChat({
   mainWindow: () => mainWindow,
   sendToMain,
@@ -411,7 +421,8 @@ app.whenReady().then(async () => {
     connection: () => ({ serverUrl, remote: !server, pinnedByEnv: configured.pinnedByEnv }),
     reachable: () => serverReachable,
     credentials: () => endpoint,
-    settings: () => proxy!.invoke('settings:get', []) as Promise<AppSettings>
+    settings: () => proxy!.invoke('settings:get', []) as Promise<AppSettings>,
+    updates
   });
   quickChat.registerIpc();
   ipcMain.on('renderer:ready', (event) => {
@@ -447,6 +458,9 @@ app.whenReady().then(async () => {
   });
 
   quickChat.start(settings.quickChat);
+  // After the windows exist and the first prompt's warm-up is on its way; the
+  // first check waits a further beat inside (FIRST_CHECK_DELAY_MS).
+  updates.start();
   windowsReady = true;
   if (coldSummon) quickChat.toggle();
   // Linux-only for now: the tray is the discoverable summon/quit affordance where
@@ -477,6 +491,7 @@ app.whenReady().then(async () => {
 let quitting = false;
 app.on('before-quit', (event) => {
   if (quitting) return;
+  updates.close();
   proxy?.close();
   oauthCourier?.close();
   // Nothing to drain when the server is somebody else's process.

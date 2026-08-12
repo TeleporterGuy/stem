@@ -1637,6 +1637,41 @@ export interface ReleaseNotesSnapshot {
   unseen: string[];
 }
 
+/** Whether this machine looks for new Stem releases on its own. */
+export interface UpdatesSettings {
+  checkAutomatically: boolean;
+}
+
+/**
+ * How a new release reaches this install.
+ *
+ * `auto` — the AppImage: Stem downloads the new build itself and swaps it in on
+ * restart. `manual` — the mac and deb builds, which can only be told: Stem
+ * points at the release page and the user installs the way they installed the
+ * first time. `none` — a dev run or a test, where there is nothing to update.
+ */
+export type UpdateMode = 'auto' | 'manual' | 'none';
+
+/**
+ * Where the updater stands, pushed on every change and askable on mount. One
+ * shape for both modes; `state: 'ready'` only ever happens under `auto`.
+ */
+export interface UpdateStatus {
+  /** The version running here — the thing every comparison is against. */
+  appVersion: string;
+  mode: UpdateMode;
+  /** `idle` covers both "never checked" and "checked, nothing newer". */
+  state: 'idle' | 'checking' | 'downloading' | 'ready' | 'error';
+  /** The newer version, once one is known. Null while current or unchecked. */
+  available: string | null;
+  /** The release page for `available` — where a `manual` install goes to get it. */
+  downloadUrl: string | null;
+  /** When the last check finished, ms epoch; null before the first. */
+  checkedAt: number | null;
+  /** What went wrong, in words a person can act on. Only under `state: 'error'`. */
+  error: string | null;
+}
+
 /**
  * App-level backend defaults. `model` is 'provider/modelId' (same shape as
  * ModelSummary.id); null = the built-in constant. Set after onboarding so the
@@ -1688,6 +1723,8 @@ export interface AppSettings {
   onboarding: OnboardingSettings;
   /** "What's new" popup: whether to raise it after an update, and what's been seen. */
   releaseNotes: ReleaseNotesSettings;
+  /** Whether this machine checks for new releases on its own. */
+  updates: UpdatesSettings;
   /** App-level backend defaults (default model). */
   defaults: DefaultsSettings;
   /** Local model servers (Ollama, LM Studio) registered with the chat backend. */
@@ -1703,7 +1740,7 @@ export interface AppSettings {
  * document reaches a window, so `window.stem.getSettings()` still resolves to a
  * whole {@link AppSettings} and no call site knows the split happened.
  */
-export interface ServerSettings extends Omit<AppSettings, 'quickChat' | 'releaseNotes'> {
+export interface ServerSettings extends Omit<AppSettings, 'quickChat' | 'releaseNotes' | 'updates'> {
   quickChat: Omit<QuickChatSettings, keyof ClientQuickChatSettings>;
 }
 
@@ -1720,6 +1757,12 @@ export interface ServerSettings extends Omit<AppSettings, 'quickChat' | 'release
 export interface ClientSettings {
   quickChat: ClientQuickChatSettings;
   releaseNotes: ReleaseNotesSettings;
+  /**
+   * Here for the reason the other two are: the version that could be updated is
+   * the one installed on THIS machine, and two clients of one server are free to
+   * differ on whether they want to hear about it.
+   */
+  updates: UpdatesSettings;
 }
 
 /**
@@ -2193,6 +2236,19 @@ export interface StemApi {
   markReleaseNotesSeen(): Promise<void>;
   /** Turn the after-update popup on or off. */
   updateReleaseNotesSettings(patch: Partial<ReleaseNotesSettings>): Promise<AppSettings>;
+  /** Where the updater stands right now — asked on mount, then pushed. */
+  getUpdateStatus(): Promise<UpdateStatus>;
+  /** Look for a new release now. Resolves with where things stand afterwards. */
+  checkForUpdates(): Promise<UpdateStatus>;
+  /**
+   * Act on a found update: restart into the downloaded build (`auto`), or open
+   * the release page to get it (`manual`). A no-op unless one is waiting.
+   */
+  installUpdate(): Promise<void>;
+  /** Turn the automatic check on or off. */
+  updateUpdatesSettings(patch: Partial<UpdatesSettings>): Promise<AppSettings>;
+  /** The updater moved — checking, found something, finished a download, failed. */
+  onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
   // Devices: which clients may reach the server, and how a new one is admitted.
   /** Every registered device plus any pairing code still outstanding. */
   listDevices(): Promise<DevicesSnapshot>;

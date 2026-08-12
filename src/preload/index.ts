@@ -47,7 +47,9 @@ import type {
   StemApi,
   TaskNotifyPayload,
   TaskSchedulePatch,
-  TasksSettings
+  TasksSettings,
+  UpdateStatus,
+  UpdatesSettings
 } from '../shared/types';
 
 const api: StemApi = {
@@ -307,6 +309,16 @@ const api: StemApi = {
   markReleaseNotesSeen: () => ipcRenderer.invoke('releaseNotes:markSeen'),
   updateReleaseNotesSettings: (patch: Partial<ReleaseNotesSettings>) =>
     ipcRenderer.invoke('settings:updateReleaseNotes', patch),
+  getUpdateStatus: () => ipcRenderer.invoke('updates:get'),
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  installUpdate: () => ipcRenderer.invoke('updates:install'),
+  updateUpdatesSettings: (patch: Partial<UpdatesSettings>) =>
+    ipcRenderer.invoke('settings:updateUpdates', patch),
+  onUpdateStatus: (listener: (status: UpdateStatus) => void) => {
+    const handler = (_e: unknown, status: UpdateStatus) => listener(status);
+    ipcRenderer.on('updates:status', handler);
+    return () => ipcRenderer.removeListener('updates:status', handler);
+  },
   updateMemorySettings: (patch: Partial<MemoryModelSettings>) =>
     ipcRenderer.invoke('settings:updateMemory', patch),
   updateCustomInstructions: (patch: Partial<CustomInstructionsSettings>) =>

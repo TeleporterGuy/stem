@@ -42,6 +42,10 @@ import { updateClientQuickChat, withClientSettings } from './settings';
 //   releaseNotes:get, releaseNotes:markSeen,     the "what's new" popup, decided
 //   settings:updateReleaseNotes                  from the version installed HERE
 //                                                and the notes shipped beside it
+//   updates:get, updates:check,                  whether a newer release exists
+//   updates:install, settings:updateUpdates      and what to do about it — a fact
+//                                                about the build installed HERE
+//                                                (see desktop/updates.ts)
 //   dialog:openFiles, dialog:openDirectory       native pickers
 //   files:reveal, files:preview                  shell.showItemInFolder; preview
 //                                                reads an image path that, by

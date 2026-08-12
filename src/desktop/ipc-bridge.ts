@@ -37,6 +37,7 @@ const LOCAL_IPC_ARGS: Record<string, ArgSpec[]> = {
   'client:pair': [a.string, a.string],
   'stem:exportState': [a.object],
   'settings:updateReleaseNotes': [a.object],
+  'settings:updateUpdates': [a.object],
   'quickchat:run': [a.object],
   'quickchat:handoff': [a.object]
 };

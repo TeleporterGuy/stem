@@ -8,7 +8,8 @@ import type {
   ClientSettings,
   QuickChatSettings,
   ReleaseNotesSettings,
-  ServerSettings
+  ServerSettings,
+  UpdatesSettings
 } from '../shared/types';
 
 // The settings seam. settings.json is Stem's; client.json holds the handful of
@@ -42,13 +43,17 @@ const DEFAULTS: ClientSettings = {
   // means "show the version you are running, once" — which is right for an
   // install upgrading into this, and wrong for one that has never been set up,
   // so startup seeds it in that case (see seedReleaseNotesMarker).
-  releaseNotes: { showOnUpdate: true, lastSeenVersion: null }
+  releaseNotes: { showOnUpdate: true, lastSeenVersion: null },
+  // Looking for new releases: on. The check is a version comparison, not an
+  // install — nothing changes on disk without the user acting on it.
+  updates: { checkAutomatically: true }
 };
 
 /** Same contract as the server's `coerce`: anything unreadable takes the default. */
 function coerceClientSettings(raw: Partial<ClientSettings> | undefined): ClientSettings {
   const qc = (raw?.quickChat ?? {}) as Partial<ClientQuickChatSettings>;
   const rn = (raw?.releaseNotes ?? {}) as Partial<ReleaseNotesSettings>;
+  const up = (raw?.updates ?? {}) as Partial<UpdatesSettings>;
   const d = DEFAULTS;
   return {
     quickChat: {
@@ -67,6 +72,10 @@ function coerceClientSettings(raw: Partial<ClientSettings> | undefined): ClientS
         typeof rn.lastSeenVersion === 'string' && /^\d+(\.\d+)*$/.test(rn.lastSeenVersion.trim())
           ? rn.lastSeenVersion.trim()
           : null
+    },
+    updates: {
+      checkAutomatically:
+        typeof up.checkAutomatically === 'boolean' ? up.checkAutomatically : d.updates.checkAutomatically
     }
   };
 }
@@ -134,6 +143,15 @@ export function updateClientReleaseNotes(patch: Partial<ReleaseNotesSettings>): 
   });
 }
 
+/** Turn the automatic release check on or off; returns the new state. */
+export function updateClientUpdates(patch: Partial<UpdatesSettings>): Promise<ClientSettings> {
+  return updateClientDocument(async (doc) => {
+    const cur = await migrated(doc);
+    doc.settings = coerceClientSettings({ ...cur, updates: { ...cur.updates, ...patch } });
+    return doc.settings;
+  });
+}
+
 /**
  * Point the "what's new" marker at the running version unless something is
  * already recorded — so a brand-new user isn't greeted by notes for releases
@@ -161,7 +179,8 @@ export function mergeSettings(server: ServerSettings, client: ClientSettings): A
   return {
     ...server,
     quickChat: { ...server.quickChat, ...client.quickChat },
-    releaseNotes: client.releaseNotes
+    releaseNotes: client.releaseNotes,
+    updates: client.updates
   };
 }
 

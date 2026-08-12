@@ -10,8 +10,15 @@ import { readClientIdentity, storedServerUrl } from '../client-store';
 import { downloadFile } from '../file-transfer';
 import { markReleaseNotesRead, releaseNotesSnapshot } from '../release-notes';
 import { pairWithServer, useBuiltInServer, type ServerCredentials } from '../server-endpoint';
-import { updateClientReleaseNotes, withClientSettings } from '../settings';
-import type { AppSettings, ClientInfo, ReleaseNotesSettings, StateExportReport } from '../../shared/types';
+import { updateClientReleaseNotes, updateClientUpdates, withClientSettings } from '../settings';
+import type { Updates } from '../updates';
+import type {
+  AppSettings,
+  ClientInfo,
+  ReleaseNotesSettings,
+  StateExportReport,
+  UpdatesSettings
+} from '../../shared/types';
 
 // Handlers that act on THIS machine — a native picker, a file manager, a local
 // image read — and so can never be answered by a server that might be somewhere
@@ -55,6 +62,8 @@ export interface LocalIpcDeps {
   credentials(): ServerCredentials;
   /** The settings document, for the handlers that need the server's half of it. */
   settings(): Promise<AppSettings>;
+  /** The updater for the build installed HERE (see desktop/updates.ts). */
+  updates: Updates;
 }
 
 /**
@@ -122,6 +131,20 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
       // The renderer is handed a whole settings document here as it is by every
       // other settings channel, which costs one round trip for the half this
       // machine doesn't own. Cheaper than a second shape for one toggle.
+      return withClientSettings(await deps.settings());
+    }
+  );
+
+  // Updates: client-owned for the reason the release notes are — the version a
+  // new release would replace is the one installed HERE. The status is askable
+  // (a window that just mounted) and pushed (`updates:status`, on every change).
+  handleLocal('updates:get', () => deps.updates.status());
+  handleLocal('updates:check', () => deps.updates.check());
+  handleLocal('updates:install', () => deps.updates.install());
+  handleLocal(
+    'settings:updateUpdates',
+    async (_e, patch: Partial<UpdatesSettings>): Promise<AppSettings> => {
+      await updateClientUpdates(patch);
       return withClientSettings(await deps.settings());
     }
   );

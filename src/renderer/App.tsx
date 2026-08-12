@@ -12,7 +12,8 @@ import type {
   ScheduledTask,
   TaskNotifyPayload,
   TurnAttachment,
-  ThreadStatus
+  ThreadStatus,
+  UpdateStatus
 } from '../shared/types';
 import { AUTH_PROVIDER_IDS, providerName } from '../shared/providers';
 import { emptyInboxState, isUnread, placement } from '../shared/inbox';
@@ -114,6 +115,12 @@ export default function App() {
   // which main seeds as already-seen so it never opens on a first launch.
   const [releaseNotes, setReleaseNotes] = useState<ReleaseNotesSnapshot | null>(null);
   const [releaseNotesShowAll, setReleaseNotesShowAll] = useState(false);
+  // A newer release, as main last reported it. The banner only rises for the
+  // two states worth interrupting for — downloaded-and-waiting (`ready`) or
+  // available on an install that can't fetch it itself (`manual`) — and a
+  // dismissal holds for this run; the update itself waits in Settings → App.
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   // The dialog only opens when the preference is on (main withholds `unseen`
   // otherwise), so `true` is the state it opens in — not an assumption.
   const [releaseNotesShowOnUpdate, setReleaseNotesShowOnUpdate] = useState(true);
@@ -288,6 +295,14 @@ export default function App() {
       if (snapshot.unseen.length > 0) setReleaseNotes(snapshot);
     });
   }, [onboardingCompleted]);
+
+  // Where the updater stands: asked once (the first push can predate this
+  // window), then pushed on every change.
+  useEffect(() => {
+    if (!window.stem) return;
+    void window.stem.getUpdateStatus().then(setUpdate);
+    return window.stem.onUpdateStatus(setUpdate);
+  }, []);
 
   // A retract request hands its captured text/attachments here; ChatView applies it
   // to the composer on the next render. Routed through App (not a direct setDraft)
@@ -1321,6 +1336,27 @@ export default function App() {
           </button>
         </div>
       )}
+      {update &&
+        !updateDismissed &&
+        (update.state === 'ready' || (update.mode === 'manual' && !!update.available)) && (
+          // Good news, said once: the update is either sitting downloaded (the
+          // AppImage) or sitting on a web page (everywhere else). "Later" is a
+          // real answer — a ready build installs itself on the next quit anyway,
+          // and the row in Settings → App keeps the offer open.
+          <div className="update-banner" role="status">
+            <span className="update-banner-msg">
+              {update.state === 'ready'
+                ? `Stem ${update.available} is ready — it installs when you restart.`
+                : `Stem ${update.available} is out. Yours keeps working; update when it suits you.`}
+            </span>
+            <button className="update-banner-btn" onClick={() => void window.stem.installUpdate()}>
+              {update.state === 'ready' ? 'Restart now' : 'Get the update'}
+            </button>
+            <button className="update-banner-later" onClick={() => setUpdateDismissed(true)}>
+              Later
+            </button>
+          </div>
+        )}
       <div className={`app${showInspector ? '' : ' no-inspector'}`}>
         <main className="conversation">
           <ChatView

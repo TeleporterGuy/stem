@@ -17,6 +17,7 @@ import {
   seedReleaseNotesMarker,
   updateClientQuickChat,
   updateClientReleaseNotes,
+  updateClientUpdates,
   withClientSettings
 } from '../../src/desktop/settings';
 import { readSettings } from '../../src/server/workspace/settings';
@@ -60,7 +61,10 @@ describe('carrying an existing install across the split', () => {
 
     expect(await readClientSettings()).toEqual({
       quickChat: { shortcut: 'Alt+Space', showOnAllDisplays: false, followAcrossSpaces: false },
-      releaseNotes: { showOnUpdate: false, lastSeenVersion: '0.2.0' }
+      releaseNotes: { showOnUpdate: false, lastSeenVersion: '0.2.0' },
+      // Not in PRE_SPLIT: the updates block postdates the split, so it always
+      // starts from its default rather than migrating from anywhere.
+      updates: { checkAutomatically: true }
     });
     // And the whole document the renderer sees is unchanged by the move.
     const merged = mergeSettings(await readSettings(), await readClientSettings());
@@ -86,7 +90,8 @@ describe('carrying an existing install across the split', () => {
     // (see seedReleaseNotesMarker).
     expect(await readClientSettings()).toEqual({
       quickChat: { shortcut: null, showOnAllDisplays: true, followAcrossSpaces: true },
-      releaseNotes: { showOnUpdate: true, lastSeenVersion: null }
+      releaseNotes: { showOnUpdate: true, lastSeenVersion: null },
+      updates: { checkAutomatically: true }
     });
   });
 
@@ -95,12 +100,14 @@ describe('carrying an existing install across the split', () => {
       settingsPath,
       JSON.stringify({
         quickChat: { shortcut: '   ', showOnAllDisplays: 'yes' },
-        releaseNotes: { showOnUpdate: 'yes', lastSeenVersion: 'v-next' }
+        releaseNotes: { showOnUpdate: 'yes', lastSeenVersion: 'v-next' },
+        updates: { checkAutomatically: 'yes' }
       })
     );
     expect(await readClientSettings()).toEqual({
       quickChat: { shortcut: null, showOnAllDisplays: true, followAcrossSpaces: true },
-      releaseNotes: { showOnUpdate: true, lastSeenVersion: null }
+      releaseNotes: { showOnUpdate: true, lastSeenVersion: null },
+      updates: { checkAutomatically: true }
     });
   });
 });
@@ -157,6 +164,16 @@ describe('the "what\'s new" marker', () => {
     await updateClientReleaseNotes({ lastSeenVersion: '0.2.0' });
     await seedReleaseNotesMarker();
     expect((await readClientSettings()).releaseNotes.lastSeenVersion).toBe('0.2.0');
+  });
+});
+
+describe('the automatic-update toggle', () => {
+  it('round-trips, and a patch does not disturb the other blocks', async () => {
+    await updateClientQuickChat({ shortcut: 'Alt+Space' });
+    await updateClientUpdates({ checkAutomatically: false });
+    const settings = await readClientSettings();
+    expect(settings.updates).toEqual({ checkAutomatically: false });
+    expect(settings.quickChat.shortcut).toBe('Alt+Space');
   });
 });
 

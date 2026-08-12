@@ -16,6 +16,14 @@ Maintainer notes:
 
 ### Added
 
+- **Stem tells you when there's a new Stem.** The app checks for new releases a few times a day
+  and says so in a quiet strip at the top of the window — your Stem keeps working; update when it
+  suits you. On Linux (the AppImage) the new version downloads in the background and installs
+  itself the next time you start Stem, or right away if you click "Restart now". On a Mac the
+  strip points you at the download and you install it the way you did the first time. Settings →
+  App → About has the same offer, a "Check now" button, and a switch to turn the automatic check
+  off — the check asks one question of GitHub, where Stem's releases live, and sends nothing about
+  you or your chats.
 - **An Inbox for your chats.** The chat list now has two tabs — Inbox and Chats — and the Inbox
   works like mail. Every thread waits there until you archive it or snooze it for later, and a
   thread that has something new in it — a scheduled task that ran overnight, a reply you never came

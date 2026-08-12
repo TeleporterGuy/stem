@@ -6,6 +6,7 @@ import type {
   ModelSummary,
   ReleaseNotesSnapshot,
   TaskNotifyMode,
+  UpdateStatus,
   WebSearchSettings,
   QuickChatSettings,
   QuickChatShortcutStatus
@@ -437,14 +438,38 @@ function QuickChatSection({ models }: { models: ModelSummary[] }) {
  * on it. Also the only place the version is shown at all, which is what you want
  * a user to read back to you when they report something.
  */
+/** What the Updates row says about where the updater stands. */
+function updateLine(u: UpdateStatus): string {
+  switch (u.state) {
+    case 'checking':
+      return 'Checking…';
+    case 'downloading':
+      return `Downloading Stem ${u.available}…`;
+    case 'ready':
+      return `Stem ${u.available} is downloaded — it installs when you restart`;
+    case 'error':
+      return `The last check didn't get through — it'll try again later`;
+    default:
+      if (u.available) return `Stem ${u.available} is available`;
+      return u.checkedAt ? "You're up to date" : 'Not checked yet';
+  }
+}
+
 function AboutSection() {
   const [notes, setNotes] = useState<ReleaseNotesSnapshot | null>(null);
   const [showOnUpdate, setShowOnUpdate] = useState(true);
   const [open, setOpen] = useState(false);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [checkAuto, setCheckAuto] = useState(true);
 
   useEffect(() => {
     void window.stem.getReleaseNotes().then(setNotes);
-    void window.stem.getSettings().then((s) => setShowOnUpdate(s.releaseNotes.showOnUpdate));
+    void window.stem.getSettings().then((s) => {
+      setShowOnUpdate(s.releaseNotes.showOnUpdate);
+      setCheckAuto(s.updates.checkAutomatically);
+    });
+    void window.stem.getUpdateStatus().then(setUpdate);
+    return window.stem.onUpdateStatus(setUpdate);
   }, []);
 
   function toggle() {
@@ -454,6 +479,19 @@ function AboutSection() {
       setShowOnUpdate(s.releaseNotes.showOnUpdate)
     );
   }
+
+  function toggleCheckAuto() {
+    const next = !checkAuto;
+    setCheckAuto(next); // optimistic; reconcile from the saved settings
+    window.stem.updateUpdatesSettings({ checkAutomatically: next }).then((s) =>
+      setCheckAuto(s.updates.checkAutomatically)
+    );
+  }
+
+  // `none` is a dev run or a test — there is nothing a release could replace,
+  // so the whole updates block stays out of the pane.
+  const updatable = update !== null && update.mode !== 'none';
+  const busy = update?.state === 'checking' || update?.state === 'downloading';
 
   return (
     <>
@@ -465,6 +503,56 @@ function AboutSection() {
             <em>The version you're running</em>
           </span>
         </div>
+
+        {updatable && (
+          <>
+            <div className="set-row">
+              <span className="set-label">
+                <strong>Updates</strong>
+                <em>{updateLine(update)}</em>
+              </span>
+              {update.state === 'ready' ? (
+                <button className="retrieval-test-btn" onClick={() => void window.stem.installUpdate()}>
+                  Restart now
+                </button>
+              ) : update.available && update.mode === 'manual' ? (
+                <button
+                  className="retrieval-test-btn"
+                  onClick={() => void window.stem.installUpdate()}
+                  title="Open the release page to download it"
+                >
+                  Get the update
+                </button>
+              ) : (
+                <button
+                  className="retrieval-test-btn"
+                  onClick={() => void window.stem.checkForUpdates()}
+                  disabled={busy}
+                >
+                  Check now
+                </button>
+              )}
+            </div>
+
+            <div className="set-row">
+              <span className="set-label">
+                <strong>Check for updates automatically</strong>
+                <em>
+                  {update.mode === 'auto'
+                    ? 'New releases download in the background and install on the next restart'
+                    : "A few times a day; you'll be told here and pointed at the download"}
+                </em>
+              </span>
+              <button
+                className={`switch${checkAuto ? ' on' : ''}`}
+                role="switch"
+                aria-checked={checkAuto}
+                aria-label="Check for updates automatically"
+                onClick={toggleCheckAuto}
+              />
+            </div>
+          </>
+        )}
 
         <div className="set-row">
           <span className="set-label">

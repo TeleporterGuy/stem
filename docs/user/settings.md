@@ -114,6 +114,14 @@ shortcut; the recorded global shortcut cannot fire there.
 
 Shows the version you're running — worth quoting when you report a problem.
 
+**Updates** says whether a newer Stem exists and what to do about it. On Linux
+(the AppImage) a new release downloads in the background and installs itself the
+next time you start Stem — or right away with **Restart now**. On a Mac, **Get
+the update** opens the release page and you install it the way you did the first
+time. **Check now** asks immediately; **Check for updates automatically** turns
+the periodic check off entirely. The check asks one question of GitHub, where
+Stem's releases live, and sends nothing about you or your chats.
+
 **Show what's new after an update** opens the release notes once, the first time you
 run a new version; the popup has the same switch if you'd rather turn it off there.
 **View release notes** opens the full history at any time.
