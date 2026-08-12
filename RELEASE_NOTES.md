@@ -16,7 +16,7 @@ Maintainer notes:
 
 ### Removed
 
-- **Phone client.** Settings → Mobile, the pairing QR and the phone web app
+- **Phone client removed.** Settings → Mobile, the pairing QR and the phone web app
   are removed, and a paired phone stops working. Stem's brain is moving to a server you can reach
   from anywhere, and the phone app that talks to it is being rebuilt properly rather than kept
   limping — nothing about Stem at the desk changes.
