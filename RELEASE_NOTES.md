@@ -14,51 +14,6 @@ Maintainer notes:
 
 ## 0.4.0 — Unreleased
 
-### Added
-
-- **Stem tells you when there's a new Stem.** A quiet strip at the top of the window says when a
-  new release is out — on Linux it downloads in the background and installs on the next restart,
-  on a Mac it points you at the download. "Check now" and a switch for the automatic check are in
-  Settings → App → About.
-- **An Inbox for your chats.** The chat list now has two tabs, and the Inbox works like mail:
-  every thread waits there until you archive or snooze it, and anything new — a scheduled task
-  that ran overnight, a reply you never came back to — shows up bold and unread. Archiving never
-  moves a thread out of its folders or out of search, and dealing with one takes you straight to
-  the next.
-- **Chats name themselves.** Stem writes each new chat a short subject from your opening message
-  instead of quoting its first line; a name you type yourself is never overwritten. Settings →
-  Chats picks the model, or turns it off.
-- **Inbox rows show what's in them.** A line or two of the newest message under each subject, so
-  you can tell what's waiting without opening it.
-- **Devices.** Settings → Devices lists everything signed in to your Stem and can withdraw any of
-  them, effective immediately. Adding one works like a door code: an eight-character code, valid
-  for ten minutes and one device.
-- **Point Stem at a server somewhere else.** Stem still runs entirely on this computer by default,
-  but Settings → Server can now aim the app at a Stem running elsewhere — same chats, same memory,
-  same skills, from any machine you sit at. [Running on a server](docs/running-on-a-server.md)
-  walks the whole move.
-- **Signing in works when Stem is on another computer.** A sign-in that finishes in your browser
-  used to hand its result to the wrong machine and hang; now the app catches it and passes it
-  along, so connecting an account from a laptop feels the same as at the desk.
-- **Your shortcut and your window settings stay with your machine.** The Quick Chat key, the
-  overlay's display choices and which release notes you've seen are kept per computer, so a laptop
-  and a desktop on the same Stem can differ; everything already set carries over untouched.
-- **Attaching files works when Stem is on another computer.** Files you attach or drop are sent
-  across rather than assumed to be on the server's disk, and every file in your Files folder has a
-  Download button that saves a copy here.
-- **A reply being written while you're offline finishes anyway.** Close the lid mid-answer and
-  Stem's server carries on; when the app reconnects it fills in what it missed, so you come back
-  to a finished reply rather than a spinner that never stops.
-- **Your chats are readable with no connection at all.** When Stem's server is on another
-  computer, this one keeps its own copy of recent conversations, so the app opens on a train with
-  everything there to read. It says plainly when it can't reach the server, and refreshes on its
-  own the moment the connection returns.
-- **Take your whole Stem with you, or keep a copy of it.** "Move or back up this Stem" in
-  Settings → Server writes your chats, memory, skills, Files, settings and connected tools into
-  one passphrase-protected file; `stem-server import` on another machine makes it the same Stem,
-  and the same file is your backup. Paired devices, this computer's own settings and the
-  downloaded models deliberately stay behind — the import says what came along and what needs you.
-
 ### Removed
 
 - **The phone client is gone, for now.** Settings → Mobile, the pairing QR and the phone web app
@@ -66,10 +21,51 @@ Maintainer notes:
   from anywhere, and the phone app that talks to it is being rebuilt properly rather than kept
   limping — nothing about Stem at the desk changes.
 
+### Added
+
+- **Point Stem at a server somewhere else.** Stem still runs entirely on this computer by default,
+  but Settings → Server can now aim the app at a Stem running elsewhere — same chats, same memory,
+  same skills, from any machine you sit at. [Running on a server](docs/running-on-a-server.md)
+  walks the whole move.
+- **An Inbox for your chats.** The chat list now has two tabs, and the Inbox works like mail:
+  every thread waits there until you archive or snooze it, and anything new — a scheduled task
+  that ran overnight, a reply you never came back to — shows up bold and unread. It's also the
+  start of something bigger: one day Stems will be able to send each other messages, and this is
+  where they'll arrive.
+- **Inbox rows show what's in them.** A line or two of the newest message under each subject, so
+  you can tell what's waiting without opening it.
+- **Stem tells you when there's a new Stem.** A quiet strip at the top of the window says when a
+  new release is out — on Linux it downloads in the background and installs on the next restart,
+  on a Mac it points you at the download. "Check now" and a switch for the automatic check are in
+  Settings → App → About.
+- **Chats name themselves.** Stem writes each new chat a short subject from your opening message
+  instead of quoting its first line; a name you type yourself is never overwritten. Settings →
+  Chats picks the model, or turns it off.
+- **Devices.** Settings → Devices lists everything signed in to your Stem and can withdraw any of
+  them, effective immediately. Adding one works like a door code: an eight-character code, valid
+  for ten minutes and one device.
+- **Take your whole Stem with you, or keep a copy of it.** "Move or back up this Stem" in
+  Settings → Server writes your chats, memory, skills, Files, settings and connected tools into
+  one passphrase-protected file; `stem-server import` on another machine makes it the same Stem,
+  and the same file is your backup. Paired devices, this computer's own settings and the
+  downloaded models deliberately stay behind — the import says what came along and what needs you.
+
 ## 0.3.0 — 2026-08-04
 
 ### Added
 
+- **Sign in with xAI (Grok).** Grok joins ChatGPT, Claude, OpenRouter and the local servers in the
+  provider list, with the same in-app sign-in.
+- **Web search is faster.** Several queries now run at once, pages are fetched in batches, and the
+  model that runs the search itself was swapped for a quicker one — the answers and sources held
+  up in benchmarking, because the thinking happens in your chat model afterwards either way.
+- **Grok web search.** Grok can now be picked as the backend Stem searches the web with.
+- **A clearer search picker.** The backend list is grouped by what's actually ready to use (works
+  on your sign-in / needs a key / not configured), and the assistant is told which backend it is
+  searching with, so citations name the right source.
+- **Custom OpenAI-compatible endpoint.** Point Stem at any server that speaks the OpenAI API —
+  your own proxy, a hosted gateway, a colleague's box — and pick which models it offers. Endpoints
+  that speak the Anthropic Messages API work too; Stem detects which one yours is.
 - **Skills that earn their place.** Skills are rebuilt around what the assistant actually did —
   the real tool trace of a turn, not its narration of one — and are checked against a contract
   before they are saved. Stem now picks the few skills relevant to your message instead of
@@ -77,18 +73,6 @@ Maintainer notes:
 - **Memory that keeps itself true.** A new fact is checked against what Stem already knows, so an
   outdated one is retired even when it is worded nothing like its replacement. Merging facts keeps
   the dates they were asserted on, and disagreements Stem can settle on its own are settled.
-- **Sign in with xAI (Grok).** Grok joins ChatGPT, Claude, OpenRouter and the local servers in the
-  provider list, with the same in-app sign-in.
-- **Grok web search.** Grok can now be picked as the backend Stem searches the web with.
-- **Custom OpenAI-compatible endpoint.** Point Stem at any server that speaks the OpenAI API —
-  your own proxy, a hosted gateway, a colleague's box — and pick which models it offers. Endpoints
-  that speak the Anthropic Messages API work too; Stem detects which one yours is.
-- **A clearer search picker.** The backend list is grouped by what's actually ready to use (works
-  on your sign-in / needs a key / not configured), and the assistant is told which backend it is
-  searching with, so citations name the right source.
-- **Web search is faster.** Several queries now run at once, pages are fetched in batches, and the
-  model that runs the search itself was swapped for a quicker one — the answers and sources held
-  up in benchmarking, because the thinking happens in your chat model afterwards either way.
 - **This popup.** Stem shows what changed once, the first time you open it after an update.
   Settings → About turns it off and keeps the full history.
 
