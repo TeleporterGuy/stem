@@ -32,12 +32,14 @@ Maintainer notes:
   that ran overnight, a reply you never came back to — shows up bold and unread. It's also the
   start of something bigger: one day Stems will be able to send each other messages, and this is
   where they'll arrive.
-- **Inbox rows show what's in them.** A line or two of the newest message under each subject, so
-  you can tell what's waiting without opening it.
 - **Stem tells you when there's a new Stem.** A quiet strip at the top of the window says when a
   new release is out — on Linux it downloads in the background and installs on the next restart,
   on a Mac it points you at the download. "Check now" and a switch for the automatic check are in
   Settings → App → About.
+- **Every job picks its model — and how hard it thinks.** Settings → Models now shows everything
+  Stem runs a model for — your chat, Quick Chat, memory, skills, chat subjects, the command safety
+  check — in one place, each with its own model and its own thinking effort. Left alone, the quick
+  tasks follow a cheap default and the rest follow the model you chat with.
 - **Chats name themselves.** Stem writes each new chat a short subject from your opening message
   instead of quoting its first line; a name you type yourself is never overwritten. Settings →
   Chats picks the model, or turns it off.
