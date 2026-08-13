@@ -450,12 +450,15 @@ export default function App() {
         threadId && !deletedThreadsRef.current.has(threadId) ? threadId : null,
       settledStatus: (method, id) => {
         // A settled turn bumps the thread's mtime, which is what the Inbox reads as
-        // "something happened here". If it happened in the chat you're looking at,
-        // stamp it read so your own reply can't mark the thread unread; otherwise
-        // leave it — the mtime now sits past readAt and the row goes bold on its own.
-        // Either way refresh the list so the Inbox and the tab badge stay honest.
+        // "something happened here". If it happened in the chat you're looking at —
+        // window focused, so you're actually seeing the answer — stamp it read so
+        // your own reply can't mark the thread unread; otherwise leave it — the
+        // mtime now sits past readAt and the row goes bold on its own (a blurred
+        // window counts as away, and the reading-marks-read effect below consumes
+        // the unread when focus returns). Either way refresh the list so the Inbox
+        // and the tab badge stay honest.
         if (id) {
-          if (id === activeThreadIdRef.current)
+          if (id === activeThreadIdRef.current && document.hasFocus())
             void window.stem
               .setInboxRead([id], true)
               .then(setChatList)
@@ -815,6 +818,36 @@ export default function App() {
     },
     [core, setThread]
   );
+
+  // Reading is what marks a thread read, and "reading" means the thread is on
+  // screen in a focused window — the same rule mail clients and Slack use.
+  // `openChat` stamps the navigate-to-it order; this effect covers the other one:
+  // unread lands in the thread you already have open (a reply from another
+  // device, a scheduled run, a turn that settled while the window was blurred),
+  // so re-check whenever the window gains focus or the list changes. A thread the
+  // user explicitly marked unread stays that way — forcedUnread is a decision,
+  // not something happening to be on screen may overrule. The (id, mtime) memo
+  // keeps a stamp that didn't stick (offline, clock skew) from retrying forever.
+  const readStampRef = useRef<{ id: string; updatedAt: number } | null>(null);
+  useEffect(() => {
+    const markVisibleRead = () => {
+      const id = activeThreadIdRef.current;
+      if (!id || !document.hasFocus()) return;
+      if (displayList.inbox.entries[id]?.forcedUnread) return;
+      const chat = displayList.chats.find((c) => c.threadId === id);
+      if (!chat || !isUnread(chat, displayList.inbox)) return;
+      const last = readStampRef.current;
+      if (last && last.id === id && last.updatedAt === chat.updatedAt) return;
+      readStampRef.current = { id, updatedAt: chat.updatedAt };
+      void window.stem
+        .setInboxRead([id], true)
+        .then(setChatList)
+        .catch(() => {});
+    };
+    markVisibleRead();
+    window.addEventListener('focus', markVisibleRead);
+    return () => window.removeEventListener('focus', markVisibleRead);
+  }, [displayList, activeThreadId]);
 
   // ---- Coming back after the event stream was away ----
   //

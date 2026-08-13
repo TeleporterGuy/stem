@@ -141,7 +141,12 @@ export function registerChatsIpc(deps: IpcDeps): void {
     return chatList();
   });
   registerServer('inbox:setRead', async (_e, threadIds: string[], read: boolean) => {
-    await setRead(threadIds, read);
+    // Hand setRead the threads' own mtimes so a stamp lands at least on the mtime
+    // (clock skew on a networked home dir) — the markAllRead guard, per-thread.
+    const updatedAt = read
+      ? new Map((await deps.runtime().listThreads()).map((t) => [t.threadId, t.updatedAt]))
+      : undefined;
+    await setRead(threadIds, read, updatedAt);
     return chatList();
   });
   registerServer('inbox:markAllRead', async () => {

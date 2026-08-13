@@ -175,13 +175,22 @@ export function setSnooze(threadIds: string[], until: number | null): Promise<In
   });
 }
 
-export function setRead(threadIds: string[], read: boolean): Promise<InboxState> {
+/**
+ * `updatedAt` (ms or backend seconds, per thread) lets a read stamp cover the
+ * thread's own mtime when that sits in the future relative to `now` — the same
+ * clock-skew guard `markAllRead` has, so the row can't stay stubbornly bold.
+ */
+export function setRead(
+  threadIds: string[],
+  read: boolean,
+  updatedAt?: ReadonlyMap<string, number>
+): Promise<InboxState> {
   const now = Date.now();
   return update((store) => {
     for (const threadId of threadIds) {
       const entry = entryOf(store, threadId);
       if (read) {
-        entry.readAt = now;
+        entry.readAt = Math.max(now, toMs(updatedAt?.get(threadId) ?? 0));
         delete entry.forcedUnread;
       } else {
         entry.forcedUnread = true;

@@ -144,6 +144,14 @@ describe('read state', () => {
     expect(isUnread(chat, state)).toBe(false);
   });
 
+  it('setRead with the thread’s mtime clears a row dated in the future', async () => {
+    // Same clock-skew guard markAllRead has, but per-thread: the IPC handler
+    // passes each thread's own mtime so the stamp lands at least on it.
+    const chat = { threadId: 'a', updatedAt: Date.now() + 10 * HOUR };
+    const state = await setRead(['a'], true, new Map([['a', chat.updatedAt]]));
+    expect(isUnread(chat, state)).toBe(false);
+  });
+
   it('markAllRead clears every listed thread, including one dated in the future', async () => {
     const base = await readInbox();
     const chats = [
