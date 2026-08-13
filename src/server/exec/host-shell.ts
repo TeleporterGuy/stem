@@ -1,0 +1,43 @@
+import type { HostShell } from '../../shared/types';
+
+/**
+ * Default host shell from the OS: Windows is cmd.exe until Settings opts into
+ * Git Bash. Callers that have ExecSettings should use resolveHostShell instead.
+ */
+export function hostShellFromPlatform(platform: NodeJS.Platform = process.platform): HostShell {
+  return platform === 'win32' ? 'cmd' : 'zsh';
+}
+
+/** True for cmd.exe's quoting rules (`'` is not a quote, `%` expands, `^` escapes). */
+export function isCmdShell(shell: HostShell): boolean {
+  return shell === 'cmd';
+}
+
+/** How to describe the host shell to the judge — one shell, the one that will run. */
+export function hostShellLabel(shell: HostShell = hostShellFromPlatform()): string {
+  if (shell === 'cmd') return 'a Windows machine, under cmd.exe';
+  if (shell === 'git-bash') return 'a Windows machine, under Git Bash';
+  return "the user's machine, under zsh";
+}
+
+/**
+ * Per-turn hint so the model writes commands for the one shell that will run.
+ * Empty on zsh: the run_command tool description already covers that.
+ */
+export function hostShellAgentHint(shell: HostShell): string {
+  if (shell === 'cmd') {
+    return (
+      'run_command on this machine uses cmd.exe (/d /s /c, no AutoRun). Quote with double quotes: ' +
+      "cmd does not treat a single quote as a quote character. POSIX names like ls, cat, and grep " +
+      'are not commands here — use dir, type, findstr. A bare | is a cmd pipe. If you need PowerShell, ' +
+      'invoke powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "..." and put pipelines inside -Command.'
+    );
+  }
+  if (shell === 'git-bash') {
+    return (
+      'run_command on this machine uses Git Bash (bash --noprofile --norc). POSIX quoting and commands ' +
+      '(ls, cat, grep) work. Paths may be Windows (C:\\Users\\...) or Git Bash (/c/Users/...).'
+    );
+  }
+  return '';
+}

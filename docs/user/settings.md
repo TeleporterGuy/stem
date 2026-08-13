@@ -54,6 +54,11 @@ that text on its provider.
 On an approval card, **Always allow** saves a command prefix for future turns.
 Keep prefixes narrow; `git status` grants less access than `git`.
 
+On Windows, **Windows shell** chooses Command Prompt (the default) or Git Bash.
+Stem looks for Git Bash on disk without using PowerShell. If it is not in a usual
+place, paste the path to `bash.exe`. Commands then run in that one shell — quoting
+and the always-allowed list follow it (`dir` vs `ls`).
+
 <!-- TODO(screenshot): Command approval card with Allow once, Always allow, and Deny. -->
 
 ### Scratch files

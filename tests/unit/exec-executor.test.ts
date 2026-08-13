@@ -33,27 +33,39 @@ describe('clampTimeout', () => {
 
 describe('shellInvocation', () => {
   it('uses zsh -c on Unix platforms', () => {
-    expect(shellInvocation('echo hi', 'darwin')).toEqual({
+    expect(shellInvocation('echo hi', 'zsh')).toEqual({
       command: '/bin/zsh',
       args: ['-c', 'echo hi'],
-      detached: true
-    });
-    expect(shellInvocation('echo hi', 'linux')).toEqual({
-      command: '/bin/zsh',
-      args: ['-c', 'echo hi'],
-      detached: true
+      detached: true,
+      verbatimArguments: false
     });
   });
 
-  it('uses cmd.exe /d /s /c on win32 (no AutoRun)', () => {
-    const inv = shellInvocation('echo hi', 'win32');
+  it('uses cmd.exe /d /s /c on cmd (no AutoRun)', () => {
+    const inv = shellInvocation('echo hi', 'cmd');
     // Quoted /c payload so cmd /s strips one outer pair; inner quotes stay intact.
     expect(inv.args).toEqual(['/d', '/s', '/c', '"echo hi"']);
     expect(inv.detached).toBe(false);
+    expect(inv.verbatimArguments).toBe(true);
     // ComSpec may be set; otherwise the default is cmd.exe.
     expect(inv.command.toLowerCase()).toMatch(/cmd\.exe$/);
   });
 
+  it('uses bash --noprofile --norc -c for Git Bash (no login profile)', () => {
+    const bash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+    expect(shellInvocation('echo hi', 'git-bash', bash)).toEqual({
+      command: bash,
+      args: ['--noprofile', '--norc', '-c', 'echo hi'],
+      detached: false,
+      verbatimArguments: false
+    });
+  });
+
+  it('falls back to cmd when Git Bash is selected without a path', () => {
+    const inv = shellInvocation('echo hi', 'git-bash', null);
+    expect(inv.args).toEqual(['/d', '/s', '/c', '"echo hi"']);
+    expect(inv.verbatimArguments).toBe(true);
+  });
 });
 
 describe('resolveLoginPath', () => {

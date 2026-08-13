@@ -81,7 +81,7 @@ node node_modules\electron\install.js
 
 ## Shell Stem uses for `run_command`
 
-On Windows, approved commands run as:
+On Windows, approved commands run in **Command Prompt** by default:
 
 `cmd.exe /d /s /c "<command>"`
 
@@ -90,14 +90,25 @@ On Windows, approved commands run as:
 - The command is wrapped in quotes and spawned with `windowsVerbatimArguments` so
   inner `"` (e.g. PowerShell `-Command "..."`) are not turned into `\"`.
 
-### What auto-runs, and what doesn’t
+**Git Bash** is optional. Settings → Chat → Command execution has a Windows shell
+picker. Stem looks for `bash.exe` on disk (usual Git for Windows paths, then PATH)
+without running PowerShell. If Git is installed somewhere unusual, paste the path
+to `bash.exe`. When Git Bash is on, commands run as:
 
-The safety tiers are the same as on macOS, but the parser follows **cmd.exe**
-rules, not zsh’s. That changes which commands can skip the safety check:
+`bash.exe --noprofile --norc -c "<command>"`
+
+`--noprofile --norc` skips `.bashrc` / `/etc/profile` (the same idea as cmd `/d`).
+Git’s `usr\bin` is prepended to PATH so `ls` / `cat` / `grep` work. The safety
+parser then follows **bash** quoting, not cmd’s — `ls` auto-runs, `dir` does not.
+
+### What auto-runs, and what doesn’t (cmd.exe)
+
+The safety tiers are the same as on macOS, but the **cmd.exe** parser is not zsh’s.
+That changes which commands can skip the safety check:
 
 - Read-only probes auto-run: `dir`, `type`, `where`, `echo`, `cd`, `git status`
-  and friends. The POSIX names (`ls`, `cat`, `grep`) are not on the Windows
-  allowlist — under cmd they are not commands.
+  and friends. The POSIX names (`ls`, `cat`, `grep`) are not on the cmd allowlist
+  — under cmd they are not commands.
 - `'` is **not** a quote character to cmd, so anything containing one goes to the
   safety check rather than auto-running. `cmd` would read `type 'a & whoami'` as
   two commands, and Stem will not auto-run something it cannot bound.
@@ -138,3 +149,7 @@ Or avoid pipes with `(...)` / property access when that is enough
 9. Check that `%APPDATA%\Stem\` appears and survives a restart.
 10. Memory / search: if hybrid embeddings fail, check the main log for
     `embed-endpoint` / named-pipe errors (FTS-only fallback is safe but weaker).
+11. Optional Git Bash: Settings → Chat → Command execution → Windows shell →
+    Git Bash (path auto-filled if Git for Windows is installed). Ask Stem to run
+    `ls` — POSIX commands should work. `cat 'a & whoami'` must not run `whoami`
+    as a second command (bash honours the quotes).

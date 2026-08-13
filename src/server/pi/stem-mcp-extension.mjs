@@ -1611,12 +1611,9 @@ function registerExecTool(pi) {
     label: 'Run command',
     description:
       'Run a shell command on the user\'s machine. On macOS/Linux Stem uses zsh with the login-shell PATH ' +
-      '(Homebrew/npm CLIs like `agent-browser` work). On Windows Stem uses cmd.exe (/d /s /c — no AutoRun); ' +
-      'if you need PowerShell, invoke it explicitly as `powershell.exe -NoProfile -ExecutionPolicy Bypass ' +
-      '-Command "..."` so a broken profile.ps1 cannot block the run. A bare `|` is a cmd pipe (it splits ' +
-      'before PowerShell) — put PowerShell pipelines inside `-Command "..."` (or use `(...)` / property ' +
-      'access instead). Quote with double quotes there: cmd does not treat `\'` as a quote, so a ' +
-      'single-quoted argument goes to the safety check instead of running. ' +
+      '(Homebrew/npm CLIs like `agent-browser` work). On Windows Stem uses the shell chosen in Settings → ' +
+      'Chat → Command execution (Command Prompt by default, or Git Bash). Each turn names the one shell ' +
+      'that will run — follow that, not both. ' +
       'Use this to drive CLIs, git, build tools, or quick scripts — NOT to read files ' +
       '(use the dedicated read/grep/find/ls tools). By default the command runs in a scratch folder ' +
       'belonging to THIS conversation: other chats cannot see it, and it is deleted when the user ' +

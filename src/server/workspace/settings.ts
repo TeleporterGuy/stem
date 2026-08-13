@@ -94,7 +94,9 @@ const DEFAULTS: ServerSettings = {
     judgeModel: null,
     judgeEffort: null,
     allowlist: [],
-    scratchTtlDays: DEFAULT_SCRATCH_TTL_DAYS
+    scratchTtlDays: DEFAULT_SCRATCH_TTL_DAYS,
+    windowsShell: 'cmd',
+    gitBashPath: null
   },
   // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
   // default to the bundled local model (multilingual, in-process, nothing leaves
@@ -324,7 +326,18 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
         ? null
         : typeof rawExec.scratchTtlDays === 'number' && Number.isFinite(rawExec.scratchTtlDays) && rawExec.scratchTtlDays > 0
           ? Math.floor(rawExec.scratchTtlDays)
-          : DEFAULTS.exec.scratchTtlDays
+          : DEFAULTS.exec.scratchTtlDays,
+    gitBashPath:
+      typeof rawExec.gitBashPath === 'string' && rawExec.gitBashPath.trim()
+        ? rawExec.gitBashPath.trim().slice(0, 500)
+        : null,
+    // git-bash without a path is cmd — resolveHostShell also falls back if the file is gone.
+    windowsShell:
+      rawExec.windowsShell === 'git-bash' &&
+      typeof rawExec.gitBashPath === 'string' &&
+      rawExec.gitBashPath.trim()
+        ? 'git-bash'
+        : 'cmd'
   };
   const rawRet = (parsed?.retrieval ?? {}) as Partial<RetrievalSettings>;
   const retrieval: RetrievalSettings = {

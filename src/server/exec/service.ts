@@ -6,6 +6,7 @@ import type {
   ExecApprovalRequest,
   ExecDecision,
   ExecSettings,
+  HostShell,
   ModelSummary,
   ServerSettings
 } from '../../shared/types';
@@ -14,6 +15,7 @@ import { resolveRoleEffort } from '../../shared/modelRoles';
 import { log } from '../log';
 import { ensureThreadScratch } from './scratch';
 import { clampTimeout, execEnv, resolveLoginPath, runCommand } from './executor';
+import { gitBashPathEnv, resolveHostShell } from './git-bash';
 import { buildJudgePrompt, classify, parseJudgeVerdict, resolveJudgeModel } from './policy';
 import { scanProtected } from './protected';
 
@@ -92,6 +94,7 @@ export class ExecService implements ExecBridge {
     if (!settings.enabled) {
       return { ok: false, error: 'Command execution is disabled in Settings → Chat → Command execution.' };
     }
+    const shell = resolveHostShell(settings);
 
     // Resolve + validate the working directory. The default is this CHAT's own
     // scratch folder (see exec/scratch.ts); an explicit relative cwd is resolved
@@ -110,14 +113,14 @@ export class ExecService implements ExecBridge {
     }
 
     // Fail-closed read-only guard: any reference to a protected root blocks.
-    const guard = scanProtected(command, cwd);
+    const guard = scanProtected(command, cwd, undefined, shell);
     if (guard.blocked) return { ok: false, error: guard.reason ?? 'Blocked by the read-only folder guard.' };
 
     // Yolo mode: everything runs — the protected-roots guard above is the only gate.
-    if (settings.approvalMode === 'yolo') return this.run(command, cwd, req);
+    if (settings.approvalMode === 'yolo') return this.run(command, cwd, req, settings);
 
     // Tier 1: static + user allowlist (every chained segment must clear it).
-    const cls = classify(command, settings);
+    const cls = classify(command, settings, shell);
     if (cls.tier !== 'run') {
       // Tier 2 (assisted mode only): one-word LLM judge classification (intent-aware
       // when the turn's user message is known); errors/timeouts escalate. Manual mode
@@ -125,8 +128,8 @@ export class ExecService implements ExecBridge {
       let judgeVerdict: 'unsafe' | 'unsure' | 'failed' | null = null;
       let judgeReason: string | undefined;
       if (settings.approvalMode === 'assisted') {
-        const verdict = await this.judge(command, cwd, settings, all.defaults, req.userText, req.currentModel);
-        if (verdict.verdict === 'safe') return this.run(command, cwd, req);
+        const verdict = await this.judge(command, cwd, settings, all.defaults, req.userText, req.currentModel, shell);
+        if (verdict.verdict === 'safe') return this.run(command, cwd, req, settings);
         judgeVerdict = verdict.verdict;
         judgeReason = verdict.reason;
       }
@@ -157,7 +160,7 @@ export class ExecService implements ExecBridge {
       }
     }
 
-    return this.run(command, cwd, req);
+    return this.run(command, cwd, req, settings);
   }
 
   abortThread(threadId: string): void {
@@ -195,8 +198,9 @@ export class ExecService implements ExecBridge {
     cwd: string,
     settings: ExecSettings,
     defaults: DefaultsSettings,
-    userText?: string,
-    currentModel?: string | null
+    userText: string | undefined,
+    currentModel: string | null | undefined,
+    shell: HostShell
   ): Promise<{ verdict: 'safe' | 'unsafe' | 'unsure' | 'failed'; reason?: string }> {
     try {
       const runtime = this.deps.runtime();
@@ -206,7 +210,7 @@ export class ExecService implements ExecBridge {
       // and complete() then uses its own default, which is the best available
       // answer anyway.
       const model = resolveJudgeModel(settings, defaults, models, currentModel ?? null);
-      const reply = await runtime.complete(buildJudgePrompt(command, cwd, userText), {
+      const reply = await runtime.complete(buildJudgePrompt(command, cwd, userText, shell), {
         model,
         // The judge sits between you and every command you run, so it feels the
         // effort setting more than any other role does — its own if it has been
@@ -243,19 +247,31 @@ export class ExecService implements ExecBridge {
     return true;
   }
 
-  private async run(command: string, cwd: string, req: ExecRequest): Promise<ExecBridgeResult> {
+  private async run(
+    command: string,
+    cwd: string,
+    req: ExecRequest,
+    settings: ExecSettings
+  ): Promise<ExecBridgeResult> {
     await this.acquireSlot();
     const controller = new AbortController();
     const entry: RunningExec = { threadId: req.threadId ?? '', controller };
     this.running.add(entry);
     try {
+      const shell = resolveHostShell(settings);
       const loginPath = await resolveLoginPath();
+      const pathForChild =
+        shell === 'git-bash' && settings.gitBashPath
+          ? gitBashPathEnv(settings.gitBashPath, loginPath)
+          : loginPath;
       const outcome = await runCommand({
         command,
         cwd,
         timeoutMs: clampTimeout(req.timeoutMs),
-        env: execEnv(loginPath),
-        signal: controller.signal
+        env: execEnv(pathForChild),
+        signal: controller.signal,
+        shell,
+        gitBashPath: settings.gitBashPath
       });
       if (controller.signal.aborted && !outcome.timedOut) {
         return { ok: false, error: 'The command was cancelled.' };
