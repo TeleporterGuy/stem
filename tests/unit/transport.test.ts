@@ -488,3 +488,52 @@ describe('acquiring a credential', () => {
     }
   });
 });
+
+// The event stream is the one thing on this side that is not `fetch`: step 5 had
+// to hand-roll it to get `Last-Event-ID` onto the wire. `fetch` follows a URL's
+// scheme; `node:http` does not — it throws ERR_INVALID_PROTOCOL at an `https:`
+// URL rather than handing over to `node:https`. So POST /rpc and GET /channels
+// worked against a TLS server from the day they were written and the stream did
+// not, and the failure surfaced as the whole app refusing to start.
+describe('a server reached over TLS', () => {
+  /** The deps a proxy needs when nothing is being asserted about the fan-out. */
+  const inert = {
+    remote: true,
+    sendToMain: () => undefined,
+    sendToOverlay: () => undefined,
+    revealIfOwns: () => undefined,
+    routeBackendEvent: () => undefined,
+    revealMainWindow: () => undefined,
+    requestAttention: () => undefined,
+    oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
+    threadOpened: async () => undefined,
+    applyQuickChatSettings: () => undefined,
+    resync: () => undefined,
+    liveTurns: () => undefined,
+    // Unlike the proxies above, this one is expected to go unreachable — which is
+    // the only transition that reports one.
+    connection: () => undefined
+  };
+
+  it('opens its event stream instead of refusing to start', async () => {
+    const credentials = await clientCredentials(endpoint.url, { external: false });
+
+    // start() only reaches the stream if it has a channel list, so give the
+    // cache one to answer with. This is not scaffolding for its own sake: it is
+    // the shape a client is actually in on the launch after it was pointed
+    // somewhere new — a remembered list, and an address it may or may not reach.
+    const seed = createServerProxy({ ...credentials, ...inert });
+    await seed.start();
+    seed.close();
+
+    // Nothing listens here. What matters is *how* it fails: a connection that
+    // was attempted and refused, retried in the background, rather than a throw
+    // out of start() before a packet was sent.
+    const tls = createServerProxy({ ...credentials, ...inert, url: 'https://127.0.0.1:1' });
+    try {
+      await expect(tls.start()).resolves.toContain('chats:rename');
+    } finally {
+      tls.close();
+    }
+  });
+});
