@@ -99,18 +99,28 @@ export const FACT_LEXICAL_GATE_MIN_FACTS = 32;
  * `limit` facts, best first; empty when the query has no searchable terms or
  * nothing matches — callers then fall back to recency.
  */
-export function rankFactsLexically(rawQuery: string, limit: number, nowSec?: number): Fact[] {
+export function rankFactsLexically(
+  rawQuery: string,
+  limit: number,
+  nowSec?: number,
+  opts: { trigramFill?: boolean } = {}
+): Fact[] {
   if (limit <= 0) return [];
+  // One count per query: chooseFacts' getInjectableFacts() can't stand in for it,
+  // since the gate is sized against every fact row and that list holds only the
+  // active, injectable ones.
+  const gated = countFacts() >= FACT_LEXICAL_GATE_MIN_FACTS;
+  // trigramFill:false is how the no-reranker injection fallback keeps the
+  // recency-ordered trigram leg out of the final selection — but only at scale.
+  // In a small store a trigram substring IS a direct match ("live" → "lives"),
+  // the same reasoning that stands the bm25 gates down below the threshold.
+  const trigramFill = (opts.trigramFill ?? true) || !gated;
   const now = nowSec ?? Math.floor(Date.now() / 1000);
   const ranked: Fact[] = [];
   const seen = new Set<number>();
 
   const termMatch = buildMatchQuery(rawQuery);
   if (termMatch) {
-    // One count per query: chooseFacts' getInjectableFacts() can't stand in for it,
-    // since the gate is sized against every fact row and that list holds only the
-    // active, injectable ones.
-    const gated = countFacts() >= FACT_LEXICAL_GATE_MIN_FACTS;
     // Pull a pool wider than `limit`, then re-sort with the recency blend folded in.
     factTermSearch(termMatch, Math.max(limit * 4, limit))
       .filter((f) => !gated || f.score <= FTS_SCORE_CEILING)
@@ -124,7 +134,7 @@ export function rankFactsLexically(rawQuery: string, limit: number, nowSec?: num
       });
   }
 
-  if (ranked.length < limit) {
+  if (trigramFill && ranked.length < limit) {
     const trigMatch = buildTrigramQuery(rawQuery);
     if (trigMatch) {
       for (const f of factTrigramSearch(trigMatch, limit)) {

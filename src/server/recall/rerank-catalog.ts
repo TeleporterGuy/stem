@@ -27,6 +27,16 @@ export interface LocalRerankModelSpec {
    * to a scale-free rule.
    */
   minRelevantScore: number;
+  /**
+   * Raw-logit floor for the fact-injection gate (inject.ts): a durable fact
+   * scoring below this against the user's message is noise, not context. A
+   * separate number from minRelevantScore because it is a separate measurement:
+   * facts ANSWER the query directly (unlike skill descriptions), and the gate is
+   * applied to production-style BATCHED scoring, whose padding drift the skill
+   * floor explicitly excludes. Same ownership rule: this is a property of THIS
+   * model's logit scale and lives next to the weights it was measured against.
+   */
+  factGateScore: number;
 }
 
 export const RERANK_CATALOG: Record<LocalRerankModelId, LocalRerankModelSpec> = {
@@ -71,7 +81,21 @@ export const RERANK_CATALOG: Record<LocalRerankModelId, LocalRerankModelSpec> = 
     // near here. Callers that compare against this MUST score one pair per
     // forward pass. Re-measure with `npm run eval:skill-retrieval -- --rerank`
     // before changing it.
-    minRelevantScore: -9
+    minRelevantScore: -9,
+    // Measured 2026-08-13 on the fact-injection benchmark (recall-bench/: 60
+    // real turns, dual-labeled + adjudicated gold, scored with production-style
+    // batch-8 forward passes — so unlike minRelevantScore this floor already
+    // absorbs padding drift). Sweep over the union candidate pool:
+    //
+    //    −6   P 0.23  R 0.19  leaks  9/60 turns
+    //    −8   P 0.15  R 0.30  leaks 23/60   (+2 sensitive margin → leaks 4)
+    //   −10   admits the trigram-fill noise tier this gate exists to kill
+    //
+    // −8 with the sensitive margin (inject.ts) rather than −6: recall parity
+    // with the old fill-to-limit pipeline at 6× its precision, and the margin —
+    // not a harsher global floor — is what removes the sensitive-fact leaks.
+    // Re-run recall-bench/ (README has the procedure) before changing it.
+    factGateScore: -8
   }
 };
 

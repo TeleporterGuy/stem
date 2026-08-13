@@ -111,7 +111,12 @@ const DEFAULTS: ServerSettings = {
       apiKey: null
     },
     reranker: {
-      mode: 'off',
+      // On by default since the reranker became the fact-injection GATE
+      // (inject.ts): without it, selection degrades to the scale-free fallback
+      // tiers, which recall-bench/ measured as materially worse. The model
+      // (~570 MB) downloads lazily on first use; until it is ready, turns
+      // degrade gracefully rather than wait.
+      mode: 'local',
       localModel: 'bge-reranker-v2-m3',
       baseUrl: 'http://localhost:8080',
       model: '',
@@ -167,7 +172,9 @@ function coerceReranker(
   const r = raw ?? {};
   // Migration from the pre-mode shape ({ enabled: boolean } + endpoint fields):
   // enabled:true meant "user pointed us at their own /rerank server" → remote;
-  // anything else takes the default (off — the rerank stage is opt-in).
+  // anything else takes the default. An explicit mode ('off' included) is
+  // always preserved — defaulting the gate on must not override a user who
+  // turned it off.
   const mode: RerankerMode = RERANKER_MODES.includes(r.mode as RerankerMode)
     ? (r.mode as RerankerMode)
     : r.enabled === true

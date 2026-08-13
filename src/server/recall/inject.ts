@@ -7,21 +7,36 @@ import { getEmbeddingsClient, getRerankClient } from './retrieval';
 import type { EmbeddingsClient } from './embeddings';
 import { cosineSim, dot, magnitude } from './vector';
 import { recallStore, MAX_PINNED_FACTS, type Fact, type FactTier, type InjectedDocRef } from './store';
-const { dbHandle, enqueueRelationChecks, getInjectableFacts, getFactsGeneration, getFactsMissingVector, getFactVectors, getUsageWeight, upsertFactVectorForSnapshot, getMaxRelevantFacts, getFactCosineM, getFactRerankK } = recallStore;
+const { dbHandle, enqueueRelationChecks, getInjectableFacts, getFactsGeneration, getFactsMissingVector, getFactVectors, getUsageWeight, upsertFactVectorForSnapshot, getMaxRelevantFacts, getFactCosineM } = recallStore;
 
 // Builds the per-turn recall context Stem prepends to the user's message.
 // Two parts: Level-1 durable facts and Level-2 episodic hits relevant to the
 // current message (excluding the current thread, whose history the backend
 // already has). Returns null when there's nothing to add.
 //
-// Facts selection: pinned facts always go in. The rest are ranked by relevance to
-// the current message — embed the query, cosine-shortlist, then rerank — and only
-// those clearing their sensitivity's cosine gate are injected, capped at
-// getMaxRelevantFacts(). If embeddings are disabled/unreachable, we fall back to a
-// model-free lexical (BM25 + trigram) tier that is still query-aware and keeps
-// its own sensitivity bar (see SENSITIVE_LEXICAL_MAX_BM25 in search.ts); if even
-// that finds no signal, a turn injects only pinned facts (possibly none) rather
-// than breaking.
+// Facts selection: pinned facts always go in. The rest run a two-stage pipeline:
+//
+//   1. Candidates (recall-oriented, UNGATED): cosine rank-order over the query
+//      embedding unioned with the lexical BM25+trigram leg. No absolute score
+//      floor anywhere in this stage — a cosine floor is a property of one
+//      embedding model's scale, and a floor left behind across an embedder swap
+//      silently kills the tier (that exact bug shipped: e5-calibrated 0.72/0.82
+//      floors against qwen3 vectors whose ceiling is ~0.77 — see recall-bench/).
+//   2. Gate: the cross-encoder scores every candidate and only facts clearing
+//      the reranker's own per-model floor (factGateScore, stored in
+//      rerank-catalog.ts next to the weights it was measured against) are
+//      injected; sensitive facts must clear it by SENSITIVE_RERANK_MARGIN.
+//      There is deliberately NO fill-to-limit: on most turns the right
+//      injection is a few facts or none, and topping up to a fixed budget is
+//      where the old pipeline's noise came from.
+//
+// Without a reranker the gate degrades to scale-free rules that work on any
+// embedding model: a per-turn z-score cutoff over the candidate cosines, or —
+// with no embeddings either — the strong-BM25 lexical tier without its trigram
+// fill (trigram order is recency, which carries no relevance signal, so it is
+// only ever safe as reranker *input*). Sensitive facts never ride the
+// fallbacks: only the measured cross-encoder gate can admit them. If nothing
+// clears a gate, a turn injects only pinned facts (possibly none).
 
 const MAX_HITS = 3;
 // Per-leg noise gates (bm25 ceiling, semantic min-cosine) live inside the hybrid
@@ -31,8 +46,35 @@ const MAX_SNIPPET_CHARS = 400;
 // 2–3 summaries at full length would triple the block the old 3×400-char message
 // snippets occupied. Full text stays in the DB / MCP drill-down.
 const MAX_SUMMARY_SNIPPET_CHARS = 600;
-export const STANDARD_FACT_MIN_COSINE = 0.72;
-export const SENSITIVE_FACT_MIN_COSINE = 0.82;
+/**
+ * Extra logits a sensitive fact must clear above factGateScore. Measured with
+ * the floor itself on recall-bench/: the margin, not a harsher global floor, is
+ * what removed the sensitive-fact leaks without costing standard-fact recall.
+ */
+export const SENSITIVE_RERANK_MARGIN = 2;
+/**
+ * Candidates sent to the cross-encoder per turn. Sized for latency, not
+ * quality: ~22 ms/pair batched, so 24 pairs ≈ half a second worst-case on the
+ * bundled model — comparable to the old pipeline's embed+rerank budget.
+ */
+export const RERANK_POOL_MAX = 24;
+/**
+ * No-reranker fallback: admit a fact only when its cosine sits FALLBACK_MIN_Z
+ * standard deviations above the candidate pool's mean. Scale-free by
+ * construction (z-scores are invariant to the embedder's score range), unlike
+ * the absolute floors this replaced. Measured on recall-bench: z=2.0 lands at
+ * F1 0.15 vs 0.19 for a per-model-tuned absolute gate — the price of working
+ * unchanged on whatever embedding model the user configures.
+ */
+export const FALLBACK_MIN_Z = 2.0;
+/**
+ * Sensitive facts need to stand out further to ride the fallback — the
+ * scale-free counterpart of the lexical tier's stricter bm25 bar and the
+ * reranker gate's SENSITIVE_RERANK_MARGIN.
+ */
+export const FALLBACK_MIN_Z_SENSITIVE = 3.0;
+/** Cap for both no-reranker fallbacks — they lack the precision stage, so stay small. */
+export const FALLBACK_MAX_FACTS = 6;
 // When summaries land, raw hits are mostly redundant — but a summary compresses
 // verbatim specifics away, so a very strong raw hit from a thread no injected
 // summary covers still earns a seat. "Strong" sits well above the per-leg noise
@@ -133,44 +175,45 @@ export function usageRate(
   return 0.5 + (raw - 0.5) * Math.pow(0.5, ageDays / USAGE_HALF_LIFE_DAYS);
 }
 
-/**
- * Cosine-rank `facts` against the query vector; return the top `m` facts.
- * Ordering blends in the usage signal — blended = cosine + W·(usageRate − 0.5) —
- * but the sensitivity gate always tests the RAW cosine: usage reorders
- * candidates within the gate, it never admits a fact the gate rejected (nor
- * ejects one it passed). W = getUsageWeight(), 0 disables.
- */
-function cosineTopM(qVec: Float32Array, facts: Fact[], vectors: Map<number, Float32Array>, m: number): Fact[] {
-  const qMag = magnitude(qVec) || 1;
-  const usageW = getUsageWeight();
-  const scored: Array<{ fact: Fact; score: number; blended: number }> = [];
-  for (const fact of facts) {
-    const v = vectors.get(fact.id);
-    if (!v || v.length !== qVec.length) continue; // missing/dim-mismatch → skip
-    const score = dot(qVec, v) / (qMag * (magnitude(v) || 1));
-    scored.push({ fact, score, blended: score + usageW * (usageRate(fact) - 0.5) });
-  }
-  scored.sort((a, b) => b.blended - a.blended);
-  return scored
-    .filter(({ fact, score }) => score >= (fact.sensitivity === 'sensitive' ? SENSITIVE_FACT_MIN_COSINE : STANDARD_FACT_MIN_COSINE))
-    .slice(0, m)
-    .map((s) => ({ ...s.fact, selectionReason: 'semantic' }));
+/** A semantic candidate: the fact plus the raw cosine the fallback gate needs. */
+interface ScoredCandidate {
+  fact: Fact;
+  cosine: number;
 }
 
 /**
- * Relevance-rank ALL facts for the current message: embed the query, ensure every
- * fact has a cached vector (lazy, batched), cosine-shortlist to M, then rerank to
- * K (or cosine top-K when no reranker). Throws on any unavailability/error so the
- * caller can fall back to recency.
+ * Cosine-rank `facts` against the query vector; return the top `m`, best first.
+ * Rank order ONLY — no absolute score floor (see module header). Ordering blends
+ * in the usage signal — blended = cosine + W·(usageRate − 0.5) — but the raw
+ * cosine rides along untouched because the fallback z-gate must test the real
+ * distribution, not the blended one. W = getUsageWeight(), 0 disables.
  */
-async function selectRelevantFacts(
-  userText: string,
+function cosineRank(qVec: Float32Array, facts: Fact[], vectors: Map<number, Float32Array>, m: number): ScoredCandidate[] {
+  const qMag = magnitude(qVec) || 1;
+  const usageW = getUsageWeight();
+  const scored: Array<{ fact: Fact; cosine: number; blended: number }> = [];
+  for (const fact of facts) {
+    const v = vectors.get(fact.id);
+    if (!v || v.length !== qVec.length) continue; // missing/dim-mismatch → skip
+    const cosine = dot(qVec, v) / (qMag * (magnitude(v) || 1));
+    scored.push({ fact, cosine, blended: cosine + usageW * (usageRate(fact) - 0.5) });
+  }
+  scored.sort((a, b) => b.blended - a.blended);
+  return scored.slice(0, m).map((s) => ({ fact: { ...s.fact, selectionReason: 'semantic' as const }, cosine: s.cosine }));
+}
+
+/**
+ * Semantic candidate stage: embed the query, ensure every fact has a cached
+ * vector (lazy, batched), cosine-rank to M. No gating here — that is the next
+ * stage's job. Throws on any unavailability/error so the caller can degrade.
+ */
+async function rankSemanticCandidates(
   facts: Fact[],
   getQueryEmbedding: QueryEmbedGetter,
   timings: RecallTimings | undefined,
   factsGeneration: number,
   vectorSink?: { vectors?: Map<number, Float32Array> }
-): Promise<Fact[]> {
+): Promise<ScoredCandidate[]> {
   const qe = await getQueryEmbedding();
   if (getFactsGeneration() !== factsGeneration) throw new Error('facts reset during selection');
   if (!qe) throw new Error('embeddings unavailable');
@@ -191,27 +234,24 @@ async function selectRelevantFacts(
 
   const vectors = getFactVectors(model);
   if (vectorSink) vectorSink.vectors = vectors;
-  const candidates = cosineTopM(qVec, facts, vectors, getFactCosineM());
-  const k = Math.min(getFactRerankK(), getMaxRelevantFacts());
+  return cosineRank(qVec, facts, vectors, getFactCosineM());
+}
 
-  const rr = getRerankClient();
-  if (rr && candidates.length > 0 && (await rr.available())) {
-    if (getFactsGeneration() !== factsGeneration) throw new Error('facts reset during selection');
-    const rrStart = Date.now();
-    try {
-      const ranked = await rr.rerank(userText, candidates.map((f) => f.text), k);
-      if (getFactsGeneration() !== factsGeneration) throw new Error('facts reset during selection');
-      const picked = ranked.map((r) => candidates[r.index]).filter((f): f is Fact => !!f);
-      if (timings) timings.rerank = Date.now() - rrStart;
-      if (picked.length > 0) return picked;
-    } catch {
-      // The reranker is the optional precision stage. If it's down/misconfigured,
-      // degrade to the cosine ranking rather than discarding the (working) embedding
-      // result and falling all the way back to recency.
-      if (timings) timings.rerank = Date.now() - rrStart;
-    }
-  }
-  return candidates.slice(0, k);
+/**
+ * The no-reranker semantic gate: admit candidates whose raw cosine sits
+ * FALLBACK_MIN_Z standard deviations above the candidate pool's own mean.
+ * Sensitive facts are excluded outright — only the measured cross-encoder gate
+ * can admit them (module header).
+ */
+function zGate(candidates: ScoredCandidate[], limit: number): Fact[] {
+  if (candidates.length < 3) return []; // no distribution to stand out from
+  const mean = candidates.reduce((s, c) => s + c.cosine, 0) / candidates.length;
+  const sd = Math.sqrt(candidates.reduce((s, c) => s + (c.cosine - mean) ** 2, 0) / candidates.length);
+  if (sd === 0) return [];
+  return candidates
+    .filter((c) => c.fact.sensitivity !== 'sensitive' && (c.cosine - mean) / sd >= FALLBACK_MIN_Z)
+    .slice(0, limit)
+    .map((c) => c.fact);
 }
 
 /**
@@ -270,40 +310,100 @@ async function chooseFacts(
     .map((f) => ({ ...f, selectionReason: 'pinned' as const }));
   const candidates = all.filter((f) => !f.pinned);
   const candidateIds = new Set(candidates.map((f) => f.id));
-  const lexical = rankFactsLexically(userText, limit)
+  // Both trigram substring hits and weak term matches are welcome HERE: they
+  // only reach the user if the gate below admits them.
+  const lexical = rankFactsLexically(userText, RERANK_POOL_MAX)
     .filter((f) => candidateIds.has(f.id))
     .map((f) => ({ ...f, selectionReason: 'lexical' as const }));
-  let semantic: Fact[] = [];
+  let semantic: ScoredCandidate[] = [];
   const vectorSink: { vectors?: Map<number, Float32Array> } = {};
   try {
-    semantic = await selectRelevantFacts(userText, candidates, getQueryEmbedding, timings, factsGeneration, vectorSink);
+    semantic = await rankSemanticCandidates(candidates, getQueryEmbedding, timings, factsGeneration, vectorSink);
   } catch {
-    // Lexical results below remain the safe, model-free fallback.
+    // Gate stage below degrades: reranker over lexical-only, or pure lexical.
   }
   // A reset invalidates pinned, semantic, and lexical snapshots alike. Do not
   // degrade to the old lexical snapshot or it would still inject cleared text.
   if (getFactsGeneration() !== factsGeneration) return { facts: [], tier: 'none' };
-  const relevant: Fact[] = [];
-  const seen = new Set(pinned.map((f) => f.id));
-  for (const fact of [...semantic, ...lexical]) {
-    if (seen.has(fact.id)) continue;
-    seen.add(fact.id);
-    relevant.push(fact);
-    if (relevant.length >= limit) break;
+
+  // Candidate pool: semantic rank order first (it is the better-calibrated
+  // leg), lexical-only hits after, capped for cross-encoder latency.
+  const pool: Fact[] = [];
+  const inPool = new Set<number>(pinned.map((f) => f.id));
+  for (const { fact } of semantic) {
+    if (inPool.has(fact.id)) continue;
+    inPool.add(fact.id);
+    pool.push(fact);
+    if (pool.length >= RERANK_POOL_MAX) break;
   }
-  const facts = [...pinned, ...relevant];
+  for (const fact of lexical) {
+    if (pool.length >= RERANK_POOL_MAX) break;
+    if (inPool.has(fact.id)) continue;
+    inPool.add(fact.id);
+    pool.push(fact);
+  }
+
+  let relevant: Fact[] | null = null;
+  let tier: FactTier = 'none';
+  const rr = getRerankClient();
+  if (rr && pool.length > 0 && (await rr.available())) {
+    if (getFactsGeneration() !== factsGeneration) return { facts: [], tier: 'none' };
+    const rrStart = Date.now();
+    try {
+      // Score the whole pool (topN = pool size): the floor decides how many
+      // survive, not a preset count.
+      const ranked = await rr.rerank(userText, pool.map((f) => f.text), pool.length);
+      if (getFactsGeneration() !== factsGeneration) return { facts: [], tier: 'none' };
+      const floor = (await rr.factGateScore?.()) ?? null;
+      const admitted: Fact[] = [];
+      const topScore = ranked[0]?.score ?? 0;
+      const span = ranked.length > 1 ? topScore - ranked[ranked.length - 1].score : 0;
+      for (const r of ranked) {
+        const fact = pool[r.index];
+        if (!fact) continue;
+        const sensitive = fact.sensitivity === 'sensitive';
+        const pass = floor != null
+          ? r.score >= floor + (sensitive ? SENSITIVE_RERANK_MARGIN : 0)
+          // Unknown scale (remote server): scale-free margin rule — keep scores
+          // in the top part of this turn's own span. Unmeasured heuristic; a
+          // per-backend floor via factGateScore is always preferable.
+          : span > 0 && (topScore - r.score) / span <= (sensitive ? 0.2 : 0.4);
+        if (pass) admitted.push(fact);
+        if (admitted.length >= limit) break;
+      }
+      relevant = admitted;
+      tier = 'reranked';
+      if (timings) timings.rerank = Date.now() - rrStart;
+    } catch {
+      // The reranker is the precision stage, but a down/misconfigured one must
+      // not cost the turn — fall through to the scale-free gates below.
+      if (timings) timings.rerank = Date.now() - rrStart;
+    }
+  }
+  if (relevant == null && semantic.length > 0) {
+    relevant = zGate(semantic, Math.min(limit, FALLBACK_MAX_FACTS));
+    tier = relevant.length > 0 ? 'embedding' : tier;
+  }
+  if (relevant == null || (relevant.length === 0 && tier === 'none')) {
+    // Model-free last resort: strong term matches only. The trigram fill is
+    // deliberately absent — recency order is not a relevance signal — and
+    // sensitive facts never ride a lexical-only selection (rankFactsLexically
+    // keeps its own bm25 bar for them, but without a precision stage even a
+    // strong term match is only topical overlap).
+    const lex = rankFactsLexically(userText, Math.min(limit, FALLBACK_MAX_FACTS), undefined, { trigramFill: false })
+      .filter((f) => candidateIds.has(f.id) && f.sensitivity !== 'sensitive')
+      .map((f) => ({ ...f, selectionReason: 'lexical' as const }));
+    if (relevant == null || lex.length > 0) {
+      relevant = lex;
+      tier = lex.length > 0 ? 'lexical' : tier;
+    }
+  }
+
+  const seen = new Set(pinned.map((f) => f.id));
+  const deduped = (relevant ?? []).filter((f) => !seen.has(f.id) && seen.add(f.id));
+  const facts = [...pinned, ...deduped];
   enqueueCoinjectedPairs(facts, vectorSink.vectors);
-  const hasSemantic = relevant.some((f) => f.selectionReason === 'semantic');
-  const hasLexical = relevant.some((f) => f.selectionReason === 'lexical');
-  const tier: FactTier = hasSemantic && hasLexical
-    ? 'hybrid'
-    : hasSemantic
-      ? 'embedding'
-      : hasLexical
-        ? 'lexical'
-        : pinned.length
-          ? 'pinned-only'
-          : 'none';
+  if (deduped.length === 0) tier = pinned.length ? 'pinned-only' : 'none';
   return { facts, tier };
 }
 

@@ -477,9 +477,9 @@ describe('embeddings settings migration + coercion', () => {
 });
 
 describe('reranker settings migration + coercion', () => {
-  it('defaults to off / bge-reranker-v2-m3 when no file exists', async () => {
+  it('defaults to local / bge-reranker-v2-m3 when no file exists (the gate ships on)', async () => {
     const rr = (await readSettings()).retrieval.reranker;
-    expect(rr.mode).toBe('off');
+    expect(rr.mode).toBe('local');
     expect(rr.localModel).toBe('bge-reranker-v2-m3');
   });
 
@@ -499,24 +499,29 @@ describe('reranker settings migration + coercion', () => {
     expect(rr.apiKey).toBe('sk-2');
   });
 
-  it('migrates a legacy enabled:false endpoint to off (the rerank stage is opt-in)', async () => {
+  it('migrates a legacy enabled:false endpoint to the local default (never had a mode choice)', async () => {
     writeFileSync(
       path,
       JSON.stringify({
         retrieval: { reranker: { baseUrl: 'http://localhost:8080', model: '', apiKey: null, enabled: false } }
       })
     );
+    expect((await readSettings()).retrieval.reranker.mode).toBe('local');
+  });
+
+  it('preserves an explicit off — defaulting the gate on must not override the user', async () => {
+    writeFileSync(path, JSON.stringify({ retrieval: { reranker: { mode: 'off' } } }));
     expect((await readSettings()).retrieval.reranker.mode).toBe('off');
   });
 
-  it('coerces garbage mode/localModel back to defaults and round-trips local mode', async () => {
+  it('coerces garbage mode/localModel back to defaults and round-trips an explicit off', async () => {
     writeFileSync(path, JSON.stringify({ retrieval: { reranker: { mode: 'bogus', localModel: 'bogus' } } }));
     let rr = (await readSettings()).retrieval.reranker;
-    expect(rr.mode).toBe('off');
-    expect(rr.localModel).toBe('bge-reranker-v2-m3');
-    await updateRetrievalSettings({ reranker: { mode: 'local' } });
-    rr = (await readSettings()).retrieval.reranker;
     expect(rr.mode).toBe('local');
+    expect(rr.localModel).toBe('bge-reranker-v2-m3');
+    await updateRetrievalSettings({ reranker: { mode: 'off' } });
+    rr = (await readSettings()).retrieval.reranker;
+    expect(rr.mode).toBe('off');
     expect(rr.localModel).toBe('bge-reranker-v2-m3');
   });
 });

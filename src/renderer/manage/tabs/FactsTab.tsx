@@ -381,6 +381,8 @@ function RerankerFields({
 /** Human label for a fact-selection tier, shown in the active-facts summary. */
 function tierLabel(t: FactTier): string {
   switch (t) {
+    case 'reranked':
+      return 'rerank-gated';
     case 'hybrid':
       return 'semantic + lexical';
     case 'pinned-only':

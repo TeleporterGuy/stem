@@ -952,6 +952,7 @@ export interface MemoryContents {
 
 /** Which selection path chose a turn's durable facts (see chooseFacts in recall/inject). */
 export type FactTier =
+  | 'reranked'
   | 'hybrid'
   | 'embedding'
   | 'lexical'
