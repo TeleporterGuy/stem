@@ -1101,7 +1101,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .insp-tabs {
   display: flex;
   justify-content: center;
-  padding: 9px;
+  padding: 9px 9px 4px;
   position: sticky;
   top: 0;
   background: var(--panel);
@@ -1155,9 +1155,9 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .insp-seg button:hover .insp-tab-tip { opacity: 1; transition-delay: 350ms; }
 .insp-seg button:focus-visible .insp-tab-tip { opacity: 1; }
 
-.manage-body { padding: 14px; }
+.manage-body { padding: 6px 14px 14px; }
 /* Chats list runs close to the panel edges so rows/selection use the full width. */
-.manage-body.chats { padding: 14px 4px; }
+.manage-body.chats { padding: 6px 4px 14px; }
 
 .muted { color: var(--muted); font-size: var(--fs-12); }
 .error { color: var(--danger); font-size: var(--fs-12); }
