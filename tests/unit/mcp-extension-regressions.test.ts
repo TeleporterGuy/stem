@@ -11,7 +11,8 @@ import stemMcpBridge, {
   McpHttpClient,
   MCP_HTTP_REQUEST_TIMEOUT_MS,
   mcpConnectionsSettledForTests,
-  resetMcpConnectionCacheForTests
+  resetMcpConnectionCacheForTests,
+  withServiceTier
 } from '../../src/server/pi/stem-mcp-extension.mjs';
 import { mcpServerAuthIdentity } from '../../src/server/pi/mcp-config';
 
@@ -313,5 +314,30 @@ describe('assistant MCP administration', () => {
     };
     expect(proposal.input?.oauthClientSecret).toBe('real-client-secret');
     expect(await readFile(configPath, 'utf8')).toBe(initial);
+  });
+});
+
+describe('service tier ("Fast") payload injection', () => {
+  const codexBody = { input: [{ role: 'user' }], instructions: 'You are…', model: 'gpt-5.2-codex' };
+  const grokResponsesBody = { input: [{ role: 'user' }], model: 'grok-4.5' };
+  const grokCompletionsBody = { messages: [{ role: 'user' }], model: 'grok-4.3' };
+
+  it('injects priority into codex and Grok bodies, over both API shapes', () => {
+    for (const body of [codexBody, grokResponsesBody, grokCompletionsBody]) {
+      expect(withServiceTier(body, 'priority')).toEqual({ ...body, service_tier: 'priority' });
+    }
+  });
+
+  it('leaves unrecognized providers alone, including OpenRouter-hosted Grok', () => {
+    expect(withServiceTier({ messages: [], model: 'llama3:8b' }, 'priority')).toBeUndefined();
+    expect(withServiceTier({ messages: [], model: 'x-ai/grok-4.3' }, 'priority')).toBeUndefined();
+    // Anthropic-shaped body whose model name could one day collide.
+    expect(withServiceTier({ model: 'grok-4.3', max_tokens: 10 }, 'priority')).toBeUndefined();
+  });
+
+  it('never overwrites an explicit tier and does nothing on Standard', () => {
+    expect(withServiceTier({ ...codexBody, service_tier: 'flex' }, 'priority')).toBeUndefined();
+    expect(withServiceTier(codexBody, null)).toBeUndefined();
+    expect(withServiceTier(undefined, 'priority')).toBeUndefined();
   });
 });

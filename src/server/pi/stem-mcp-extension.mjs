@@ -749,6 +749,26 @@ function makeServiceTierGate(stPath) {
   };
 }
 
+/**
+ * The request payload with `service_tier` injected, or undefined to leave the
+ * request alone. Only two providers accept 'priority', and each is identified
+ * from the body itself so we never touch a provider we don't recognize:
+ * openai-codex responses by their shape (input[] + instructions), and xAI by a
+ * bare `grok…` model id over either the responses or chat-completions shape.
+ * OpenRouter-hosted Grok is deliberately not matched — its ids are prefixed
+ * (`x-ai/grok…`) and OpenRouter doesn't take xAI's tier.
+ */
+export function withServiceTier(payload, tier) {
+  if (tier !== 'priority' || !payload || typeof payload !== 'object' || payload.service_tier) return undefined;
+  const isCodexBody = Array.isArray(payload.input) && typeof payload.instructions === 'string';
+  const isGrokBody =
+    typeof payload.model === 'string' &&
+    payload.model.startsWith('grok') &&
+    (Array.isArray(payload.input) || Array.isArray(payload.messages));
+  if (!isCodexBody && !isGrokBody) return undefined;
+  return { ...payload, service_tier: tier };
+}
+
 // ---- Lazy MCP router ----
 //
 // Re-registering every server's tools as native pi tools puts all their JSON input
@@ -1211,17 +1231,8 @@ export default async function stemMcpBridge(pi) {
       }
       return undefined;
     });
-    // Service tier ("Fast"): openai-codex responses accept service_tier:'priority'
-    // only, identified by the request body's shape so we never touch a provider we
-    // don't recognize.
-    pi.on('before_provider_request', (event) => {
-      const p = event && event.payload;
-      if (!p || typeof p !== 'object') return undefined;
-      const tier = serviceTier();
-      const isCodexBody = Array.isArray(p.input) && typeof p.instructions === 'string';
-      if (tier === 'priority' && isCodexBody && !p.service_tier) return { ...p, service_tier: tier };
-      return undefined;
-    });
+    // Service tier ("Fast"): see withServiceTier for which requests accept it.
+    pi.on('before_provider_request', (event) => withServiceTier(event && event.payload, serviceTier()));
   }
 }
 

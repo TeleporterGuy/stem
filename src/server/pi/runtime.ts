@@ -380,10 +380,15 @@ function effortsFor(m: PiModel): string[] {
   return DISPLAY_EFFORTS.filter((lvl) => (lvl in map ? map[lvl] !== null : BASE_EFFORTS.has(lvl)));
 }
 
-// openai-codex models accept service_tier:'priority' (1.5× speed); other providers have none.
+// openai-codex and xAI models accept service_tier:'priority'; other providers have
+// none. The description doubles as the Fast button's tooltip, so it carries each
+// provider's own promise: OpenAI states 1.5× speed, xAI only "higher priority".
 function serviceTiersFor(m: PiModel): ModelServiceTier[] {
-  if (m.provider !== 'openai-codex') return [];
-  return [{ id: 'priority', name: 'Fast', description: '1.5× speed, increased usage' }];
+  if (m.provider === 'openai-codex')
+    return [{ id: 'priority', name: 'Fast', description: '1.5× speed, increased usage' }];
+  if (m.provider === 'xai')
+    return [{ id: 'priority', name: 'Fast', description: 'Higher scheduling priority, increased usage' }];
+  return [];
 }
 
 /**

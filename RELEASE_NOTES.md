@@ -12,6 +12,14 @@ Maintainer notes:
   date, tag.
 -->
 
+## 0.5.0 — Unreleased
+
+### Added
+
+- **Fast for Grok.** The Standard/Fast speed switch now appears for Grok models too — Fast asks
+  xAI to schedule your request with higher priority. Until now the switch only existed for
+  ChatGPT models, which is why it seemed to vanish when you picked Grok.
+
 ## 0.4.0 — 2026-08-12
 
 ### Removed

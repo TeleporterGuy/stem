@@ -223,7 +223,8 @@ function QuickChatSection({ models }: { models: ModelSummary[] }) {
   const qcEfforts = qcModel?.supportedEfforts.length ? qcModel.supportedEfforts : ['low', 'medium', 'high', 'xhigh'];
   // Only models with a priority (Fast) tier can default to Fast. With no concrete model
   // ("Same as main"), offer it — the runtime ignores Fast on models that don't support it.
-  const qcHasFast = qcModel ? qcModel.serviceTiers.some((t) => t.id === 'priority') : true;
+  const qcFastTier = qcModel?.serviceTiers.find((t) => t.id === 'priority');
+  const qcHasFast = qcModel ? !!qcFastTier : true;
 
   // Switch the default model, clamping a now-unsupported saved effort/speed into range.
   function selectQcModel(id: string | null) {
@@ -348,7 +349,7 @@ function QuickChatSection({ models }: { models: ModelSummary[] }) {
               <button
                 className={qc.defaultServiceTier === 'priority' ? 'active' : ''}
                 onClick={() => update({ defaultServiceTier: 'priority' })}
-                title="1.5× speed, increased usage"
+                title={qcFastTier?.description ?? '1.5× speed, increased usage'}
               >
                 Fast
               </button>

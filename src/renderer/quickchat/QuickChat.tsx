@@ -446,7 +446,8 @@ export function QuickChat() {
 
   const efforts =
     selectedModel && selectedModel.supportedEfforts.length ? selectedModel.supportedEfforts : ['low', 'medium', 'high'];
-  const hasFast = selectedModel ? selectedModel.serviceTiers.some((t) => t.id === 'priority') : true;
+  const fastTier = selectedModel?.serviceTiers.find((t) => t.id === 'priority');
+  const hasFast = selectedModel ? !!fastTier : true;
 
   // Web-search toggle for Quick Chat turns. Search is served by the vendored
   // pi-web-access extension rather than the provider, so unlike before there is no
@@ -579,7 +580,7 @@ export function QuickChat() {
                 type="button"
                 className={serviceTier === 'priority' ? 'active' : ''}
                 onClick={() => setServiceTier('priority')}
-                title="1.5× speed, increased usage"
+                title={fastTier?.description ?? '1.5× speed, increased usage'}
               >
                 Fast
               </button>

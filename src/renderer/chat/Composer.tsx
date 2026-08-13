@@ -273,7 +273,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     await addFilesToComposer(Array.from(e.dataTransfer.files));
   }
 
-  const hasFast = !!model?.serviceTiers.some((t) => t.id === 'priority');
+  const fastTier = model?.serviceTiers.find((t) => t.id === 'priority');
+  const hasFast = !!fastTier;
 
   // Composer shortcuts. Effort/format mirror the seg-ctls (inert while running, like
   // the buttons themselves); ⌘. stops only when a turn is in flight.
@@ -356,7 +357,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               className={serviceTier === 'priority' ? 'active' : ''}
               onClick={() => onChangeSpeed('priority')}
               disabled={running}
-              title={withKey('1.5× speed, increased usage', 'toggle-speed')}
+              title={withKey(fastTier?.description ?? '1.5× speed, increased usage', 'toggle-speed')}
             >
               Fast
             </button>
