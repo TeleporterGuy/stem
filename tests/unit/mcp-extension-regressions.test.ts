@@ -288,7 +288,9 @@ describe('assistant MCP administration', () => {
       setActiveTools: (_tools: string[]) => {}
     };
     await stemMcpBridge(fakePi);
-    const confirm = vi.fn(async () => true);
+    // Declared as variadic because the assertions below read the arguments the
+    // bridge passed; a zero-arg mock types every recorded call as an empty tuple.
+    const confirm = vi.fn(async (..._args: unknown[]) => true);
     const ctx = { ui: { confirm } };
     const add = registered.find((tool) => tool.name === 'add_mcp_server');
     const remove = registered.find((tool) => tool.name === 'remove_mcp_server');

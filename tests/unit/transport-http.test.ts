@@ -294,7 +294,12 @@ describe('POST /upload', () => {
     return fetch(`${base}/upload?name=${encodeURIComponent(init.name ?? 'notes.txt')}`, {
       method: 'POST',
       headers,
-      body
+      // A Buffer IS a Uint8Array and fetch takes one at runtime, but BodyInit
+      // admits only a view backed by a plain ArrayBuffer, and Buffer's is typed
+      // ArrayBufferLike (it may be shared). Copied into one rather than cast:
+      // the bodies here are a few bytes each, and a cast would be asserting
+      // something about the allocator that this file has no way to know.
+      body: typeof body === 'string' ? body : new Uint8Array(body)
     });
   }
 

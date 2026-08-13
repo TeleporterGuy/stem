@@ -53,7 +53,14 @@ describe('retrieval eval — scorer math', () => {
       { tier: 'fts', langPair: 'en->en', metrics: scoreRanking(['x'], ['x']) },
       { tier: 'fts', langPair: 'sk->en', metrics: scoreRanking(['y'], ['x']) }
     ];
-    const agg = aggregate(rows);
+    // aggregate() builds its buckets from the rows' own `tier`/`langPair`
+    // values, so what it returns is an empty object as far as inference can see.
+    // Naming the shape here is the only way to say what those keys are.
+    type Means = Record<string, number>;
+    const agg = aggregate(rows) as {
+      byTier: Record<string, Means>;
+      byTierLangPair: Record<string, Record<string, Means>>;
+    };
     expect(agg.byTier.fts['recall@5']).toBeCloseTo(0.5);
     expect(agg.byTier.fts.n).toBe(2);
     expect(agg.byTierLangPair.fts['en->en']['recall@5']).toBe(1);
