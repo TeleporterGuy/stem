@@ -750,13 +750,20 @@ async function dockerAvailability() {
   return null;
 }
 
-/** A free TCP port on loopback, so two runs of this script cannot collide. */
+/**
+ * A free TCP port on loopback, so two runs of this script cannot collide.
+ * `listen` is asynchronous even for port 0 — `address()` is null until the
+ * 'listening' event, so this has to wait for it rather than read straight back.
+ */
 function freePort() {
-  const probe = createServer();
-  probe.listen(0, '127.0.0.1');
-  const { port } = probe.address();
-  probe.close();
-  return port;
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
 }
 
 const dockerMissing = await dockerAvailability();
@@ -772,7 +779,7 @@ if (dockerMissing) {
   console.log('[server-boot] with Docker before deploying or upgrading a server.');
   console.log('='.repeat(78) + '\n');
 } else {
-  const port = freePort();
+  const port = await freePort();
   const containerState = join(sandbox, 'container-state');
   mkdirSync(containerState, { recursive: true });
 
@@ -805,6 +812,23 @@ if (dockerMissing) {
       env: composeEnv,
       onChunk: quiet ? undefined : (chunk) => process.stdout.write(`  [docker] ${chunk}`)
     });
+  }
+
+  /**
+   * `/proc/net/tcp`'s `local_address` as something a person can read: the IP is
+   * four little-endian hex bytes and the port is big-endian hex, so `0B00007F:0035`
+   * is 127.0.0.11:53. A failure here names the listener it found, and a hex blob
+   * would send whoever reads it back to the kernel docs to find out whose it is.
+   */
+  function decodeProcAddress(field) {
+    const [ipHex, portHex] = String(field).split(':');
+    const port = parseInt(portHex, 16);
+    // v6 addresses are 32 hex digits; nothing here needs them spelled out in
+    // full, only distinguished from the one v4 address we expect to see.
+    if (ipHex?.length !== 8) return `${ipHex}:${port}`;
+    const octets = [];
+    for (let i = 6; i >= 0; i -= 2) octets.push(parseInt(ipHex.slice(i, i + 2), 16));
+    return `${octets.join('.')}:${port}`;
   }
 
   /** One request through Caddy, with a Host header fetch() would not let us set. */
@@ -867,23 +891,38 @@ if (dockerMissing) {
 
       // The claim the socket exists to make, checked at the kernel rather than
       // taken on trust: /proc/net/tcp lists every socket in this network
-      // namespace, and state 0A is LISTEN. There must not be one.
+      // namespace, and state 0A is LISTEN. Nothing of Stem's may be among them.
       const listeners = await compose(['exec', '-T', 'stem', 'sh', '-c', 'cat /proc/net/tcp /proc/net/tcp6'], { quiet: true });
       const listening = listeners.output
         .split('\n')
         .filter((line) => / 0A /.test(line))
-        .map((line) => line.trim().split(/\s+/)[1]);
-      check('the container has no TCP listener at all — not even on loopback', listening.length === 0, listening.join(' '));
+        .map((line) => decodeProcAddress(line.trim().split(/\s+/)[1]))
+        // 127.0.0.11 is the daemon's own embedded DNS resolver, which Docker puts
+        // in every container on a user-defined network before the image's own
+        // process starts. It is not ours, we cannot switch it off, and it answers
+        // only inside this namespace — so the claim being made is about Stem, not
+        // about the namespace being empty.
+        .filter((addr) => !addr.startsWith('127.0.0.11:'));
+      check('the container has no TCP listener of its own — not even on loopback', listening.length === 0, listening.join(' '));
 
-      // From here on everything goes through Caddy, over that socket.
+      // From here on everything goes through Caddy, over that socket. Stem
+      // logging "listening" says nothing about the proxy in front of it: Caddy
+      // starts in parallel, and a request sent the instant Stem is up arrives
+      // before anything is accepting on the published port. So wait for the
+      // refusals to stop, and let a proxy that never comes up fail as itself
+      // rather than as whichever check happened to be first.
+      let reachable = false;
+      const proxyDeadline = Date.now() + 60_000;
+      while (Date.now() < proxyDeadline && !reachable) {
+        reachable = await through('/channels')
+          .then(() => true)
+          .catch(() => false);
+        if (!reachable) await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      check('Caddy accepts connections on the published port', reachable, (await compose(['logs', '--no-color', 'caddy'], { quiet: true })).output.slice(-400));
+
       const anonymous = await through('/channels');
       check('an unauthenticated call through Caddy is refused', anonymous.status === 401, `HTTP ${anonymous.status}`);
-
-      // The DNS-rebinding check, from behind a proxy. Caddy passes the Host
-      // header through untouched, and a name the deployment never declared in
-      // STEM_TRUSTED_HOSTS is still refused — by Stem, not by Caddy.
-      const wrongHost = await through('/channels', { host: 'stem.attacker.example' });
-      check('a Host nobody declared is refused behind the proxy', wrongHost.status === 403, `HTTP ${wrongHost.status} ${wrongHost.body.slice(0, 120)}`);
 
       // An imported state root has no devices, so the server prints a code.
       const codeThere = /\[stem-server\] pairing code: (\S+)/.exec(logs)?.[1] ?? null;
@@ -902,6 +941,20 @@ if (dockerMissing) {
 
       if (tokenThere) {
         const auth = { authorization: `Bearer ${tokenThere}`, 'content-type': 'application/json' };
+
+        // The DNS-rebinding check, from behind a proxy: Caddy passes the Host
+        // header through untouched, and a name the deployment never declared in
+        // STEM_TRUSTED_HOSTS is refused — by Stem, not by Caddy. It has to carry
+        // a real token to prove that, because `gate()` in transport/server.ts
+        // answers 401 before it ever looks at the Host, so an anonymous request
+        // gets turned away for the wrong reason and proves nothing about origin.
+        const wrongHost = await through('/channels', { host: 'stem.attacker.example', headers: auth });
+        check(
+          'a Host nobody declared is refused behind the proxy, token or no token',
+          wrongHost.status === 403,
+          `HTTP ${wrongHost.status} ${wrongHost.body.slice(0, 120)}`
+        );
+
         const chats = await through('/rpc', {
           method: 'POST',
           headers: auth,
