@@ -7,7 +7,8 @@ export {
   registerServer,
   serverChannels,
   type ArgSpec,
-  type NoCallerEvent
+  type Caller,
+  type CallerContext
 } from './guard';
 export type { IpcDeps } from './deps';
 export { registerAuthIpc } from './auth';

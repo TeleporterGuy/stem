@@ -1,5 +1,6 @@
-import { registerServer } from './guard';
-import { readDevices, revokeDevice } from '../transport/auth';
+import { registerServer, type CallerContext } from './guard';
+import { readDevices, revokeDevice, setDevicePushToken } from '../transport/auth';
+import { forgetPresence } from '../push/presence';
 import { createPairingCode, pendingPairings } from '../transport/pairing';
 import { dropDeviceStreams } from '../startup/transport';
 import { log } from '../log';
@@ -14,11 +15,18 @@ import type { DeviceInfo, DevicesSnapshot, PairingCodeInfo } from '../../shared/
  * only value that ever leaves is a fresh pairing code, and that one is minted
  * expressly to be read out loud.
  *
- * Nor is there any notion of "the device asking". dispatchLocal has no caller
- * identity by design — every call arrives having already proved itself at the
- * transport, and nothing downstream re-derives who it was. A client that wants
- * to point at its own row in the list knows its own id (client.json) and says so
+ * Almost nothing here has a notion of "the device asking", and that is still the
+ * rule: every call arrives having already proved itself at the transport, and no
+ * handler re-derives who it was to decide what it may do. A client that wants to
+ * point at its own row in the list knows its own id (client.json) and says so
  * locally; see `client:info` in src/desktop/local.
+ *
+ * `devices:registerPush` is the exception, and a narrow one. A push token is a
+ * fact ABOUT the caller — "wake me here" — so it has to land on the caller's own
+ * record, and taking a device id as an argument would let any paired device
+ * redirect or silence another's notifications for the sake of a parameter nobody
+ * needs. So it reads the identity the transport already resolved from the bearer
+ * token (see ipc/guard.ts), which is the one input a client cannot write.
  */
 export function registerDevicesIpc(): void {
   registerServer('devices:list', () => snapshot());
@@ -28,9 +36,41 @@ export function registerDevicesIpc(): void {
     // stream is a socket that is already open, and would otherwise keep
     // delivering every push for as long as it stayed up.
     const dropped = removed ? dropDeviceStreams(id) : 0;
+    // The record went with the revoke, and the APNs token with it — a revoked
+    // phone must not keep being woken by a server it can no longer read. What
+    // does NOT live in that file is the presence report, so drop it here: a
+    // desktop revoked while "recently active" would otherwise go on suppressing
+    // everyone's notifications until the window ran out.
+    if (removed) forgetPresence(id);
     if (removed) log('devices', 'revoked a device', { id, streamsDropped: dropped });
     return snapshot();
   });
+  // Called by the phone on launch and whenever iOS rotates its token. Idempotent
+  // by construction — it stores what it is given for whoever is calling — so a
+  // client that cannot tell a rotation from a relaunch can simply always call it.
+  registerServer(
+    'devices:registerPush',
+    async (caller: CallerContext, token: string, platform: 'ios' = 'ios'): Promise<void> => {
+      if (!caller) {
+        // A local caller (an Electron window over ipcMain) has no device record to
+        // put this on. Nothing does this; refusing loudly is better than writing
+        // the token onto some arbitrary row.
+        throw new Error('devices:registerPush needs a paired device — it registers the CALLER for push.');
+      }
+      // Shape-checked here rather than in the arg spec: the guard's specs are
+      // structural (is it a string), and "looks like an APNs device token" is a
+      // domain rule. A malformed one would be stored, sent, and rejected by Apple
+      // on every notification from now until somebody read the log.
+      if (!/^[0-9a-f]{64,200}$/i.test(token)) {
+        throw new Error('that is not an APNs device token');
+      }
+      const stored = await setDevicePushToken(caller.deviceId, token.toLowerCase(), platform);
+      log('devices', stored ? 'registered a device for push' : 'ignored push registration for an unknown device', {
+        id: caller.deviceId,
+        platform
+      });
+    }
+  );
   registerServer(
     'devices:createPairingCode',
     (_e, label: string): Promise<PairingCodeInfo> => createPairingCode(label)

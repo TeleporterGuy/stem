@@ -1,5 +1,5 @@
 import { ipcMain, type IpcMainInvokeEvent } from 'electron';
-import { a, argsProblem, ipcArgSpecs, type ArgSpec, type NoCallerEvent } from '../server/ipc';
+import { a, argsProblem, ipcArgSpecs, type ArgSpec, type CallerContext } from '../server/ipc';
 import { log } from '../server/log';
 
 // The Electron half of the IPC guard (the other half is src/server/ipc/guard.ts).
@@ -80,18 +80,21 @@ function bind(channel: string, specs: ArgSpec[], invoke: (args: unknown[]) => un
 }
 
 /** The client-owned handlers, looked up per call so a re-registration takes. */
-const localHandlers = new Map<string, (event: NoCallerEvent, ...args: unknown[]) => unknown>();
+const localHandlers = new Map<string, (event: CallerContext, ...args: unknown[]) => unknown>();
 
 /**
  * Register a channel the DESKTOP answers (see the client-owned bucket above).
- * The handler takes the same absent first parameter as a server one, so a block
- * of code can move between the two sides unchanged.
+ * The handler takes the same first parameter as a server one, so a block of code
+ * can move between the two sides unchanged — and it is always undefined here,
+ * because a call from one of our own windows arrived over ipcMain and carries no
+ * device identity at all. Nothing client-owned wants one: these channels are
+ * about this machine, and this machine is the only thing that can call them.
  */
 export function handleLocal(
   channel: string,
-  handler: (event: NoCallerEvent, ...args: never[]) => unknown
+  handler: (event: CallerContext, ...args: never[]) => unknown
 ): void {
-  localHandlers.set(channel, handler as (event: NoCallerEvent, ...args: unknown[]) => unknown);
+  localHandlers.set(channel, handler as (event: CallerContext, ...args: unknown[]) => unknown);
   bind(channel, LOCAL_IPC_ARGS[channel] ?? [], (args) => localHandlers.get(channel)!(undefined, ...args));
 }
 

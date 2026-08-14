@@ -24,7 +24,9 @@ import { initExecService } from './startup/exec';
 import { initSkills } from './startup/skills';
 import { closeTransport, pushToClients, startTransport, type TransportEndpoint } from './startup/transport';
 import { setActivityEmitter } from './activity';
-import { liveTurnCount, noteTurnEvent } from './live-turns';
+import { liveTurnAgeMs, liveTurnCount, noteTurnEvent } from './live-turns';
+import { pushApprovalRequest, pushTurnFinished, type ApprovalPushKind } from './push';
+import { closeApns } from './push/apns';
 import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
 import { ensureUsageTracking } from './skills/usage';
@@ -170,6 +172,22 @@ let scheduleCurateAfterCreate: (() => void) | null = null;
  */
 function emit(channel: string, payload: unknown): void {
   pushToClients(channel, payload);
+}
+
+/**
+ * The other half of "something happened": wake a phone that is not looking at
+ * the stream. Every call is beside an emit(), never instead of one — the SSE
+ * frame is what a client acts on, and the push only asks it to come and look.
+ *
+ * Off unless APNs is configured, which it is not on an ordinary install, and
+ * silent while somebody is at a machine. See server/push/.
+ */
+function pushApproval(kind: ApprovalPushKind, params: unknown): void {
+  // Every one of the four cards carries these two, under these names (see
+  // ExecApprovalRequest / McpAdminProposal / InstructionsProposal / SkillProposal).
+  const card = params as { id?: string | number; threadId?: string } | undefined;
+  if (card?.id === undefined) return;
+  pushApprovalRequest(kind, { id: card.id, ...(card.threadId ? { threadId: card.threadId } : {}) });
 }
 
 /** Pick a sensible app default from the models the signed-in providers expose. */
@@ -560,6 +578,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     runtime,
     emitApprovalRequest: (request) => {
       emit('exec:approvalRequest', request);
+      // The agent is blocked on this one until somebody answers it.
+      pushApproval('exec', request);
     },
     emitApprovalResolved: (id) => {
       emit('exec:approvalResolved', { id });
@@ -649,6 +669,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     // (never as a backend thread event, and never captured into recall).
     if (event.method === 'mcp/admin/approvalRequest') {
       emit('mcp:adminApproval', event.params);
+      pushApproval('mcp', event.params);
       return;
     }
     if (event.method === 'mcp/admin/approvalResolved') {
@@ -657,10 +678,12 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     }
     if (event.method === 'instructions/approvalRequest') {
       emit('instructions:approvalRequest', event.params);
+      pushApproval('instructions', event.params);
       return;
     }
     if (event.method === 'skills/approvalRequest') {
       emit('skills:approvalRequest', event.params);
+      pushApproval('skill', event.params);
       return;
     }
     if (event.method === 'skills/approvalResolved') {
@@ -686,6 +709,11 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     const threadId = (event.params as { threadId?: string } | undefined)?.threadId;
     // Hidden internal threads (distillation) are neither shown nor captured.
     if (threadId && runtime!.isInternalThread(threadId)) return;
+    // Read BEFORE the fold below, which is what forgets the turn: after it there
+    // is no start time left to measure a finished turn against.
+    const ranForMs = threadId && (event.method === 'turn/completed' || event.method === 'turn/failed')
+      ? liveTurnAgeMs(threadId)
+      : null;
     noteTurnEvent(
       event.method,
       threadId,
@@ -700,6 +728,25 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     // phone role gone the narrowing selected every connected client anyway, and
     // the claim it read (`client:claimThread`) had no other reader — so both went.
     emit('backend:event', event);
+    // A long turn ending is the second thing worth a phone buzzing for: whoever
+    // started it has had half a minute to walk away, and the answer is now
+    // sitting there. Short turns push nothing — see MIN_TURN_PUSH_MS, which is
+    // where that rule lives. The title is a thunk so the lookup only happens if
+    // the push is actually going out.
+    //
+    // A scheduled run is excluded, and not as an optimization: nobody is waiting
+    // on it, it fires on a cron, and most of its runs find nothing. Whether one
+    // was worth interrupting anybody is a question its own notify_user answers
+    // (see startup/scheduler.ts) — treating "it finished" as news would put a
+    // notification on the phone every time a watch task ticked.
+    if (threadId && ranForMs !== null && !scheduler?.runningTask(threadId)) {
+      pushTurnFinished({
+        threadId,
+        failed: event.method === 'turn/failed',
+        ranForMs,
+        label: async () => (await runtime!.listThreads()).find((c) => c.threadId === threadId)?.title ?? null
+      });
+    }
     if (isRecallEnabled()) {
       // Skip capture when the turn read inside a memorize:false connected folder, so
       // its (potentially confidential) reply never enters Recall. scheduleDistill still
@@ -770,6 +817,10 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       // Destroys any open SSE stream before closing the listener — without that,
       // close() waits for a connection that by design never ends.
       void closeTransport();
+      // The APNs connection is unref'd and would not hold the process open, but
+      // a half-open HTTP/2 session outliving the server it belonged to is the
+      // kind of thing that only shows up as a mystery in a long-lived host.
+      closeApns();
       return runtime!.shutdown();
     }
   };

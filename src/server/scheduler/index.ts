@@ -113,6 +113,18 @@ export class TaskScheduler {
     if (this.activeRun?.threadId === threadId) this.activeRun.notified = true;
   }
 
+  /**
+   * The task whose run is in flight, or null. Read by the notify bridge so a push
+   * can name the task instead of the thread — the same scoping as noteNotify: an
+   * interactive turn that calls the tool is nobody's scheduled run and answers
+   * null here.
+   */
+  runningTask(threadId: string): ScheduledTask | null {
+    const run = this.activeRun;
+    if (!run || run.threadId !== threadId) return null;
+    return this.tasks.find((t) => t.id === run.taskId) ?? null;
+  }
+
   /** Load persisted tasks, run any overdue ones once (catch-up), then arm the timer. */
   async start(): Promise<void> {
     if (this.started) return;

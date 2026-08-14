@@ -1,4 +1,5 @@
 import { TaskScheduler } from '../scheduler';
+import { pushTaskAlert } from '../push';
 import { noteSilentRun } from '../workspace/inbox';
 import { readSettings } from '../workspace/settings';
 import type { ChatBackend } from '../backend';
@@ -63,6 +64,17 @@ export function initTaskScheduler(deps: {
       // after startup, and the toggle must apply to the very next run.
       const mode = (await readSettings().catch(() => null))?.tasks.notify ?? 'alert';
       if (mode === 'inbox') return;
+      // Both louder modes wake a phone, and this is the line that says so: `alert`
+      // and `nudge` differ only in how they disturb the machine at the desk, and a
+      // phone in a pocket is not at the desk. `inbox` returned above — that mode's
+      // whole meaning is "do not interrupt me", on any device.
+      //
+      // Above the emit rather than beside it, because `nudge` never reaches the
+      // emit; the push is not the modal's travelling companion, it is the second
+      // audience for the same alert. The label is the task's own name, never the
+      // notification's title or message (see server/push).
+      const task = scheduler.runningTask(threadId);
+      pushTaskAlert({ threadId, ...(task ? { taskId: task.id, label: task.title } : {}) });
       if (mode === 'alert') deps.revealMainWindow();
       deps.requestAttention();
       if (mode === 'nudge') return;

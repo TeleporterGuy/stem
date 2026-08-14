@@ -14,8 +14,15 @@
 
 import { isSettledMethod } from '../shared/settledTurns';
 
-/** Thread id → the turn currently running in it (empty string when unknown). */
-const live = new Map<string, string>();
+/** What is known about one running turn: its id (empty when unknown) and its clock. */
+interface LiveTurn {
+  turnId: string;
+  /** When this turn's first event arrived, in epoch ms. */
+  startedAt: number;
+}
+
+/** Thread id → the turn currently running in it. */
+const live = new Map<string, LiveTurn>();
 
 /**
  * Fold one backend event into the set. A `threadId` of undefined means a
@@ -34,7 +41,15 @@ export function noteTurnEvent(method: string, threadId: string | undefined, turn
     // thread overwrites it, which is what a client resuming needs — the turn id is
     // what its Stop button interrupts, and an id from the previous turn would
     // interrupt nothing.
-    live.set(threadId, turnId ?? live.get(threadId) ?? '');
+    const current = live.get(threadId);
+    const id = turnId ?? current?.turnId ?? '';
+    // The clock belongs to the TURN, not the thread: a later event of the turn
+    // already being tracked keeps the original start (including the case where
+    // the first event arrived without an id and this one names it), and only a
+    // genuinely different turn restarts it. Anything else would measure "time
+    // since the last delta", which is nearly zero for every turn there is.
+    const startedAt = current && (!current.turnId || !id || current.turnId === id) ? current.startedAt : Date.now();
+    live.set(threadId, { turnId: id, startedAt });
   } else if (isSettledMethod(method)) live.delete(threadId);
 }
 
@@ -54,7 +69,21 @@ export function liveTurnCount(): number {
  * is settled, not merely unmentioned.
  */
 export function liveTurnSnapshot(): { threadId: string; turnId: string | null }[] {
-  return [...live].map(([threadId, turnId]) => ({ threadId, turnId: turnId || null }));
+  return [...live].map(([threadId, turn]) => ({ threadId, turnId: turn.turnId || null }));
+}
+
+/**
+ * How long the turn in `threadId` has been running, or null when none is. Read
+ * by the push triggers just BEFORE the terminal event is folded in — this fold
+ * is what forgets the turn, so afterwards there is nothing left to measure.
+ *
+ * It answers from the same map every other consumer reads rather than from a
+ * second set of timestamps kept alongside it, which is the only way the answer
+ * cannot disagree with "is this thread live".
+ */
+export function liveTurnAgeMs(threadId: string): number | null {
+  const turn = live.get(threadId);
+  return turn ? Date.now() - turn.startedAt : null;
 }
 
 /** Drop every mark (tests; a fresh server). */
