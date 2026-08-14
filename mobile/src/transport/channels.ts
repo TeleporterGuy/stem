@@ -13,9 +13,8 @@
 // stop compiling on the same commit that changed it, which is the only kind of
 // contract that survives a codebase with two clients in it.
 //
-// Small on purpose: step 4 is the transport, so it carries the two channels the
-// chat list needs. Adding one is a line here plus its StemApi method — never a
-// new type.
+// Small on purpose: it carries what the screens that exist actually call.
+// Adding one is a line here plus its StemApi method — never a new type.
 
 import type { StemApi } from '@shared/types';
 
@@ -24,6 +23,35 @@ export interface ChannelSignatures {
   'chats:list': StemApi['listChats'];
   /** One thread's transcript. */
   'chats:open': StemApi['openChat'];
+
+  // Writing. `backend:startTurn` is the only channel on the phone that causes a
+  // model to be paid for, which is why the composer gates it on the connection
+  // being live rather than merely paired.
+  'backend:startTurn': StemApi['startTurn'];
+  'backend:interruptTurn': StemApi['interruptTurn'];
+
+  // Inbox triage. Every mutator returns the fresh ChatListResult, so the list
+  // screen replaces its state with the answer instead of re-fetching.
+  'inbox:setArchived': StemApi['setInboxArchived'];
+  'inbox:snooze': StemApi['snoozeChats'];
+  'inbox:setRead': StemApi['setInboxRead'];
+  'inbox:markAllRead': StemApi['markInboxAllRead'];
+
+  // Approvals. The requests arrive as pushes (see ../approvals/queue.ts); these
+  // are the four ways to answer one. Each holds a backend tool call open until
+  // some client calls it, which is why the phone can answer at all — the desk
+  // does not have to be the one to say yes.
+  'exec:resolveApproval': StemApi['respondExecApproval'];
+  'mcp:adminDecision': StemApi['respondMcpAdminApproval'];
+  'instructions:resolveApproval': StemApi['respondInstructionsApproval'];
+  'skills:resolveApproval': StemApi['respondSkillApproval'];
+
+  /**
+   * Read-only, and here for exactly one reason: an `append` instructions
+   * proposal resolves against the current text, so the card cannot compute what
+   * it would write without it. The phone never writes settings.
+   */
+  'settings:get': StemApi['getSettings'];
 }
 
 export type ChannelName = keyof ChannelSignatures;

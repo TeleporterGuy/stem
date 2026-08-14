@@ -1,0 +1,274 @@
+// One conversation, live: the transcript on disk plus everything the stream has
+// said since, folded by the same reducer the desktop uses.
+//
+// The fold is @shared/chatState — lifted out of the renderer for this. Nothing
+// about turn assembly is re-decided here; what this file owns is the three
+// wirings that fold needs and cannot do for itself:
+//
+//   1. HYDRATE. `chats:open` reads a file, and events keep arriving while it is
+//      being read. mergeHydratedThread reconciles the two, and it needs the
+//      slice as it stood when the request went out — hence `stateAtRequest`.
+//      Identity, not a flag: a whole turn can start and settle during the read,
+//      leaving `running` false again at both ends.
+//   2. FILTER. Every device gets every frame (the server broadcasts; see
+//      src/server/transport/server.ts), so this screen drops everything whose
+//      threadId is not its own. That is by design and not a waste: it is the
+//      same wire the chat list is reading for other threads.
+//   3. SEED. A thread opened while a turn is already running has no events yet
+//      to say so, and may not get one for a minute if the model is thinking.
+//      The `snapshot` frame is the only thing that knows, so the running flag
+//      and the id Stop interrupts both fall back to it.
+//
+// WHAT IS SIMPLER THAN THE DESKTOP'S, deliberately: there are no drafts (the
+// phone opens threads that exist, it does not start them), so there is no
+// draft→real migration and no generation counter. The pending-send rule that
+// survives is the one that matters — Stop must interrupt a turn whose startTurn
+// has not returned yet, rather than pretending locally that it stopped while the
+// backend keeps going (src/renderer/pendingTurn.ts, interruptibleTurnId). That
+// is `pending.turnId` below, a promise rather than a mutated field so the
+// microtask ordering it depends on is written down instead of relied upon.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  EMPTY_STATE,
+  appendSystemMessage,
+  applyBackendEventToThread,
+  applyProcessExitToThread,
+  backendEventThreadId,
+  mergeHydratedThread,
+  type ThreadState
+} from '@shared/chatState';
+import type { ChatMessage } from '@shared/types';
+import { createEventBatcher } from '../transport/eventBatcher';
+import { useTransport } from '../transport/provider';
+import { useLiveTurns } from './useLiveTurns';
+
+export interface ThreadView {
+  state: ThreadState;
+  title: string;
+  /** The transcript is being read. False once it has been, even if it failed. */
+  loading: boolean;
+  /** Failure to READ the thread. Turn failures arrive as system bubbles instead. */
+  error: string | null;
+  /** A turn is running: this screen's events say so, or the snapshot does. */
+  running: boolean;
+  /** A send is in flight but startTurn has not answered yet. */
+  sending: boolean;
+  /** Why the connection makes sending impossible, or null when it doesn't. */
+  blocked: string | null;
+  send(text: string): void;
+  interrupt(): void;
+  reload(): void;
+}
+
+/** An in-flight startTurn, kept only so Stop can wait for the id it minted. */
+interface PendingSend {
+  /** The turn id once the server answers, or null if the send failed. */
+  turnId: Promise<string | null>;
+}
+
+export function useThread(threadId: string): ThreadView {
+  const { connection, status } = useTransport();
+  const live = useLiveTurns();
+
+  const [state, setState] = useState<ThreadState>(EMPTY_STATE);
+  const [title, setTitle] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+
+  // The reducer is applied from callbacks that also need to READ the current
+  // slice (hydration's stateAtRequest, Stop's activeTurnId), and a setter's
+  // argument is not readable outside it — so the ref is the source and the state
+  // is its mirror. One writer (`apply`) keeps them from parting company.
+  const stateRef = useRef<ThreadState>(EMPTY_STATE);
+  const apply = useCallback((next: (prev: ThreadState) => ThreadState) => {
+    stateRef.current = next(stateRef.current);
+    setState(stateRef.current);
+  }, []);
+
+  const request = useRef(0);
+  const pending = useRef<PendingSend | null>(null);
+  const nonce = useRef(0);
+
+  const liveTurnId = live.get(threadId) ?? null;
+  const liveTurnRef = useRef<string | null>(liveTurnId);
+  liveTurnRef.current = liveTurnId;
+
+  const load = useCallback(async () => {
+    if (!connection.status().paired) return;
+    const mine = ++request.current;
+    const stateAtRequest = stateRef.current;
+    setLoading(true);
+    try {
+      const history = await connection.rpc('chats:open', threadId);
+      if (mine !== request.current) return;
+      setTitle(history.title);
+      apply((liveState) => mergeHydratedThread(history.messages, liveState, stateAtRequest));
+      setError(null);
+    } catch (e) {
+      if (mine !== request.current) return;
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      if (mine === request.current) setLoading(false);
+    }
+  }, [apply, connection, threadId]);
+
+  // Opening a different thread is a different conversation, not a refresh: drop
+  // the old slice before the new transcript arrives so no bubble from the
+  // previous thread is ever on screen under this one's title.
+  useEffect(() => {
+    request.current += 1;
+    stateRef.current = EMPTY_STATE;
+    setState(EMPTY_STATE);
+    setTitle('');
+    setError(null);
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    const batcher = createEventBatcher((event) =>
+      apply((prev) => applyBackendEventToThread(prev, event) ?? prev)
+    );
+    const offEvent = connection.onBackendEvent((event) => {
+      const eventThread = backendEventThreadId(event);
+      // A thread-less event is the backend itself going away, and it ends every
+      // turn there is — including this one, whether or not it was named.
+      if (eventThread === undefined) {
+        batcher.flush();
+        apply(applyProcessExitToThread);
+        return;
+      }
+      if (eventThread !== threadId) return;
+      batcher.push(event);
+    });
+    // Resync means the stream could not be resumed, so the deltas that would
+    // have completed this transcript are gone. Re-reading it is the only honest
+    // answer, and the same one every other screen gives.
+    const offResync = connection.onResync(() => void load());
+    return () => {
+      offEvent();
+      offResync();
+      batcher.flush();
+    };
+  }, [apply, connection, load, threadId]);
+
+  const send = useCallback(
+    (text: string) => {
+      const input = text.trim();
+      if (!input || pending.current) return;
+      // A turn already running on this thread — ours or one started at the desk.
+      // The backend refuses a second one, so accepting the text here would only
+      // produce a bubble that fails a round trip later.
+      if (stateRef.current.running || liveTurnRef.current !== null) return;
+
+      // The optimistic bubble carries no turnId yet; the answer stamps one on so
+      // a later failure can be traced to the message that caused it.
+      const id = `user-${Date.now()}-${++nonce.current}`;
+      const optimistic: ChatMessage = {
+        id,
+        role: 'user',
+        content: input,
+        createdAt: new Date().toISOString()
+      };
+      apply((prev) => ({
+        ...prev,
+        messages: [...prev.messages, optimistic],
+        running: true,
+        status: 'running'
+      }));
+
+      setSending(true);
+      // Declared before the chain that closes over it: the `finally` must only
+      // clear `pending` if it is still the send that set it.
+      let entry: PendingSend | null = null;
+      const started = connection
+        .rpc('backend:startTurn', { input, threadId, format: 'md' })
+        .then(
+          (result) => {
+            const turnId = result.turnId ?? null;
+            if (turnId) {
+              apply((prev) => ({
+                ...prev,
+                messages: prev.messages.map((m) => (m.id === id ? { ...m, turnId } : m))
+              }));
+            }
+            return turnId;
+          },
+          (e: unknown) => {
+            // The send never became a turn (offline, or the agent is already
+            // busy). Mark the bubble so it does not look sent, and say why —
+            // the same split the desktop makes with `sendFailed`.
+            apply((prev) =>
+              appendSystemMessage(
+                {
+                  ...prev,
+                  messages: prev.messages.map((m) => (m.id === id ? { ...m, sendFailed: true } : m))
+                },
+                e
+              )
+            );
+            return null;
+          }
+        )
+        .finally(() => {
+          if (pending.current === entry) pending.current = null;
+          setSending(false);
+        });
+      entry = { turnId: started };
+      pending.current = entry;
+    },
+    [apply, connection, threadId]
+  );
+
+  const interrupt = useCallback(async () => {
+    // Prefer what the stream has already told us; fall back to the snapshot for a
+    // turn that started before this screen was listening; and if a send is still
+    // in the air, wait for the id it is about to mint rather than giving up.
+    let turnId = stateRef.current.activeTurnId ?? liveTurnRef.current ?? null;
+    if (!turnId && pending.current) turnId = await pending.current.turnId;
+    if (!turnId && stateRef.current.running) {
+      // startTurn answered with an id, but no event has arrived yet to make it
+      // the active turn — the gap between "sent" and the model's first move,
+      // which on a slow provider is exactly when Stop gets pressed. The id was
+      // stamped onto the message that started it.
+      for (let i = stateRef.current.messages.length - 1; i >= 0; i -= 1) {
+        const message = stateRef.current.messages[i];
+        if (message.role === 'user' && message.turnId) {
+          turnId = message.turnId;
+          break;
+        }
+      }
+    }
+    if (!turnId) return;
+    try {
+      await connection.rpc('backend:interruptTurn', turnId);
+    } catch (e) {
+      apply((prev) => appendSystemMessage(prev, e));
+    }
+  }, [apply, connection]);
+
+  const running = state.running || liveTurnId !== null;
+  // Offline composing is blocked rather than queued: there is no sync layer on
+  // this phone by design, so a message accepted here would be a message that
+  // exists nowhere else and might never be sent.
+  const blocked = useMemo(() => {
+    if (!status.paired) return 'This phone is not paired with a server.';
+    if (status.unauthorized) return 'This phone’s pairing was rejected. Pair it again.';
+    if (!status.reachable) return 'Offline — messages can’t be sent from here.';
+    return null;
+  }, [status.paired, status.reachable, status.unauthorized]);
+
+  return {
+    state,
+    title,
+    loading,
+    error,
+    running,
+    sending,
+    blocked,
+    send,
+    interrupt: () => void interrupt(),
+    reload: () => void load()
+  };
+}

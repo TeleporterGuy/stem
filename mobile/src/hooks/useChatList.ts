@@ -38,6 +38,13 @@ export interface ChatListState {
    * list plus "couldn't refresh" beats an empty screen. */
   error: string | null;
   refresh: () => void;
+  /**
+   * Adopt a list the caller already has. The Inbox mutators (`inbox:setArchived`
+   * and friends) answer with the fresh ChatListResult precisely so acting on a
+   * row does not cost a second round trip — this is where that answer lands.
+   * Counted as a request so an older in-flight fetch cannot overwrite it.
+   */
+  replace: (next: ChatListResult) => void;
 }
 
 export function useChatList(): ChatListState {
@@ -123,5 +130,15 @@ export function useChatList(): ChatListState {
 
   useEffect(() => cancelPending, [cancelPending]);
 
-  return { list, loading, error, refresh: fetchNow };
+  const replace = useCallback(
+    (next: ChatListResult) => {
+      request.current += 1;
+      cancelPending();
+      setList(next);
+      setError(null);
+    },
+    [cancelPending]
+  );
+
+  return { list, loading, error, refresh: fetchNow, replace };
 }
