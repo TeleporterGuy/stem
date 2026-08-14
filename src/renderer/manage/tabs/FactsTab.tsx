@@ -378,6 +378,62 @@ function RerankerFields({
   );
 }
 
+/**
+ * The measured-best retrieval setup, stated where it can be seen. Everything the
+ * claim rests on lives in recall-bench/ (60 real turns, hand-adjudicated gold):
+ * qwen3-embedding:4b via a server endpoint feeding the reranker gate beat the
+ * bundled local embedders, every cosine gate, deeper candidate pools, and an
+ * external memory system. The row sits outside the collapsed advanced section
+ * on purpose — a recommendation hidden behind "advanced" reaches nobody who
+ * hasn't already found it.
+ */
+function RecallQualityRow({
+  retrieval,
+  onReview
+}: {
+  retrieval: RetrievalSettings;
+  onReview: () => void;
+}) {
+  const embedBest =
+    retrieval.embeddings.mode === 'remote' &&
+    /qwen3-embedding/i.test(retrieval.embeddings.model ?? '');
+  const rerankOn = retrieval.reranker.mode !== 'off';
+  const best = embedBest && rerankOn;
+  const hint = best
+    ? 'Best measured setup — qwen3-embedding:4b with the reranker'
+    : !embedBest && rerankOn
+      ? 'Best measured: qwen3-embedding:4b via a server endpoint (Ollama)'
+      : embedBest && !rerankOn
+        ? 'Reranker is off — it measured best at choosing which facts to send'
+        : 'Best measured: qwen3-embedding:4b (Ollama) with the reranker on';
+  return (
+    <div className="group-row">
+      <span className="row-main">
+        <strong>
+          Recall quality{' '}
+          <InfoTip label="How this was measured">
+            Benchmarked on 60 real conversations with hand-labeled relevance:{' '}
+            <code>qwen3-embedding:4b</code> (served via Ollama) feeding the built-in reranker chose
+            the right facts best — ahead of the bundled local models, similarity thresholds, wider
+            candidate pools, and an external memory system. The reranker is what catches
+            cross-language matches, like a Slovak question finding an English fact.
+          </InfoTip>
+        </strong>
+        <em>{hint}</em>
+      </span>
+      {best ? (
+        <span className="retrieval-test-status ok" title="This is the configuration that measured best">
+          <Check size={12} /> in use
+        </span>
+      ) : (
+        <button className="link-btn" onClick={onReview}>
+          Review setup
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** Human label for a fact-selection tier, shown in the active-facts summary. */
 function tierLabel(t: FactTier): string {
   switch (t) {
@@ -794,6 +850,9 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
             onClick={toggle}
           />
         </div>
+        {settings.enabled && retrieval && (
+          <RecallQualityRow retrieval={retrieval} onReview={() => setShowRetrieval(true)} />
+        )}
       </div>
 
       <div className="grp-head grp-head-row">
