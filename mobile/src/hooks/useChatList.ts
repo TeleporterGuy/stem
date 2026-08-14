@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isSettledMethod } from '@shared/settledTurns';
 import type { ChatListResult } from '@shared/types';
+import { IDLE_READ, isCurrent, readIdle, readSettled, readStarted, type ReadState } from '../chat/reads';
 import { useTransport } from '../transport/provider';
 
 /** Long enough to swallow a burst of terminal events, short enough to feel live. */
@@ -42,7 +43,8 @@ export interface ChatListState {
    * Adopt a list the caller already has. The Inbox mutators (`inbox:setArchived`
    * and friends) answer with the fresh ChatListResult precisely so acting on a
    * row does not cost a second round trip — this is where that answer lands.
-   * Counted as a request so an older in-flight fetch cannot overwrite it.
+   * Counted as a request, so an older in-flight fetch cannot overwrite it and
+   * whatever spinner was waiting on that fetch stops here.
    */
   replace: (next: ChatListResult) => void;
 }
@@ -50,10 +52,16 @@ export interface ChatListState {
 export function useChatList(): ChatListState {
   const { connection, status } = useTransport();
   const [list, setList] = useState<ChatListResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  /** Answers from superseded requests are dropped rather than raced. */
-  const request = useRef(0);
+  // Answers from superseded requests are dropped rather than raced, and every
+  // way this read can end settles the spinner — see ../chat/reads.ts. The ref is
+  // the source and the state its mirror, because the callbacks below have to
+  // read the current request number, which a setter's argument cannot give them.
+  const [read, setRead] = useState<ReadState>(IDLE_READ);
+  const readRef = useRef<ReadState>(IDLE_READ);
+  const applyRead = useCallback((next: (prev: ReadState) => ReadState) => {
+    readRef.current = next(readRef.current);
+    setRead(readRef.current);
+  }, []);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seenStream = useRef(false);
 
@@ -65,21 +73,21 @@ export function useChatList(): ChatListState {
 
   const fetchNow = useCallback(async () => {
     cancelPending();
-    if (!connection.status().paired) return;
-    const mine = ++request.current;
-    setLoading(true);
+    if (!connection.status().paired) {
+      applyRead(readIdle);
+      return;
+    }
+    applyRead(readStarted);
+    const mine = readRef.current.request;
     try {
       const answer = await connection.rpc('chats:list');
-      if (mine !== request.current) return;
+      if (!isCurrent(readRef.current, mine)) return;
       setList(answer);
-      setError(null);
+      applyRead((prev) => readSettled(prev, mine, null));
     } catch (e) {
-      if (mine !== request.current) return;
-      setError(String((e as Error)?.message ?? e));
-    } finally {
-      if (mine === request.current) setLoading(false);
+      applyRead((prev) => readSettled(prev, mine, e));
     }
-  }, [cancelPending, connection]);
+  }, [applyRead, cancelPending, connection]);
 
   const schedule = useCallback(() => {
     cancelPending();
@@ -94,15 +102,13 @@ export function useChatList(): ChatListState {
       // Unpaired: the list belonged to a server this phone no longer has a
       // credential for, and leaving it on screen would be showing somebody
       // else's data.
-      request.current += 1;
       cancelPending();
+      applyRead(readIdle);
       setList(null);
-      setError(null);
-      setLoading(false);
       return;
     }
     void fetchNow();
-  }, [status.paired, fetchNow, cancelPending]);
+  }, [status.paired, applyRead, fetchNow, cancelPending]);
 
   useEffect(() => {
     if (!status.streaming) return;
@@ -132,13 +138,15 @@ export function useChatList(): ChatListState {
 
   const replace = useCallback(
     (next: ChatListResult) => {
-      request.current += 1;
       cancelPending();
+      // This IS the fresh data, so the read the user is waiting on is over — a
+      // pull-to-refresh that archived a row underneath it must not be left
+      // turning until some unrelated refetch happens along and settles it.
+      applyRead(readIdle);
       setList(next);
-      setError(null);
     },
-    [cancelPending]
+    [applyRead, cancelPending]
   );
 
-  return { list, loading, error, refresh: fetchNow, replace };
+  return { list, loading: read.loading, error: read.error, refresh: fetchNow, replace };
 }

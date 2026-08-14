@@ -73,6 +73,14 @@ export interface ChannelSignatures {
    * client contract that the desktop must never call.
    */
   'devices:registerPush': (token: string, platform?: 'ios') => Promise<void>;
+
+  /**
+   * "Forget this phone." Called with the phone's OWN device id and nowhere else
+   * — unpairing is the one thing a client may do to the registry, and it does it
+   * to itself (../transport/unpair.ts). The desk is where devices are managed;
+   * this app has no Devices screen and is not going to grow one.
+   */
+  'devices:revoke': StemApi['revokeDevice'];
 }
 
 export type ChannelName = keyof ChannelSignatures;

@@ -115,6 +115,12 @@ export interface EventStream {
    * is what an app coming back to the foreground calls, and what a successful
    * RPC calls: the server answered, so a stream that is still down is down for
    * a reason that will not fix itself by waiting.
+   *
+   * "Nothing is open" includes a connect that has been made but not yet
+   * answered. An RPC finishing while the /events request is still in the air is
+   * the ORDINARY case on a slow link — every screen makes one — and treating it
+   * as a reason to start over would abort the handshake it was waiting for and
+   * do it again, forever. See the `connecting` guard below.
    */
   retryNow(): void;
   streaming(): boolean;
@@ -124,6 +130,13 @@ export function createEventStream(deps: EventStreamDeps): EventStream {
   const log = deps.log ?? ((): void => undefined);
   let closed = true;
   let streaming = false;
+  /**
+   * A connect has been made and has not yet come back — the window between the
+   * /events request going out and its response headers landing. `streaming` only
+   * covers the half after that, so this is the flag that makes "there is already
+   * an attempt in flight" answerable while the attempt is the slow part.
+   */
+  let connecting = false;
   let attempt = 0;
   let generation = 0;
   let controller: AbortController | null = null;
@@ -236,6 +249,7 @@ export function createEventStream(deps: EventStreamDeps): EventStream {
     const mineController = new AbortController();
     controller = mineController;
     setStreaming(false);
+    connecting = true;
     parser.reset();
 
     let res: StreamingResponse;
@@ -252,7 +266,11 @@ export function createEventStream(deps: EventStreamDeps): EventStream {
         signal: mineController.signal
       });
     } catch (e) {
+      // A superseded attempt leaves `connecting` alone: it belongs to the newer
+      // connect that replaced this one, and clearing it here would open the door
+      // this flag exists to hold shut.
       if (mine !== generation) return;
+      connecting = false;
       // A connect that could not be made at all. This — not a stream ending —
       // is what "offline" means.
       deps.onReachable(false);
@@ -261,6 +279,9 @@ export function createEventStream(deps: EventStreamDeps): EventStream {
       return;
     }
     if (mine !== generation) return;
+    // The handshake is over either way: the server answered this request, so
+    // whatever happens next is no longer "an attempt in flight".
+    connecting = false;
 
     if (res.status !== 200 || !res.body) {
       // Refused, but refused BY something: the server is up and saying no, which
@@ -318,6 +339,7 @@ export function createEventStream(deps: EventStreamDeps): EventStream {
     stop(): void {
       closed = true;
       generation += 1;
+      connecting = false;
       clearRetry();
       clearStall();
       controller?.abort();
@@ -331,7 +353,14 @@ export function createEventStream(deps: EventStreamDeps): EventStream {
       setStreaming(false);
     },
     retryNow(): void {
-      if (closed || streaming) return;
+      // Open, or on its way to being open: either way there is nothing here to
+      // improve on, and interrupting an attempt that is merely slow is how a
+      // phone on a bad link ends up connecting forever without ever finishing.
+      if (closed || streaming || connecting) return;
+      // Nothing is in flight, so this is a genuine fresh start: the caller has
+      // evidence the server is answering (an RPC just did, or the app came
+      // back), which is exactly the situation the accumulated backoff was a
+      // guess about and is now wrong about.
       attempt = 0;
       void connect();
     },

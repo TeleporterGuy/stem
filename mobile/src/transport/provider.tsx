@@ -22,6 +22,7 @@ import { createConnection, type Connection, type ConnectionStatus } from './conn
 import { clearPairing, readPairing, writePairing, type StoredPairing } from './credentials';
 import { streamingFetch } from './expo-fetch';
 import { redeemPairingCode } from './pair-request';
+import { unpairDevice } from './unpair';
 
 export interface TransportValue {
   connection: Connection;
@@ -34,7 +35,10 @@ export interface TransportValue {
   pairing: StoredPairing | null | undefined;
   /** Spend a code, store what comes back, and point the connection at it. */
   pair(serverUrl: string, code: string): Promise<void>;
-  /** Forget the server and its credential, in one act. */
+  /**
+   * Forget the server and its credential — and ask the server to forget this
+   * phone, which is best effort and not waited on. See ./unpair.ts.
+   */
   unpair(): Promise<void>;
 }
 
@@ -103,16 +107,25 @@ export function TransportProvider({ children }: { children: ReactNode }): ReactN
     [connection]
   );
 
-  const unpair = useCallback(async () => {
-    generation.current += 1;
-    connection.setEndpoint(null);
-    setPairing(null);
-    // The cached chats belong to a server this phone no longer holds a credential
-    // for. Leaving them would mean an unpaired phone still shows somebody's
-    // conversations the moment it loses its network.
-    cache.clear();
-    await clearPairing();
-  }, [cache, connection]);
+  const unpair = useCallback(
+    () =>
+      unpairDevice({
+        deviceId: pairing?.deviceId ?? null,
+        revoke: (deviceId) => connection.rpc('devices:revoke', deviceId),
+        log: (message, meta) => console.log(`[transport] ${message}`, meta ?? ''),
+        forget: async () => {
+          generation.current += 1;
+          connection.setEndpoint(null);
+          setPairing(null);
+          // The cached chats belong to a server this phone no longer holds a
+          // credential for. Leaving them would mean an unpaired phone still
+          // shows somebody's conversations the moment it loses its network.
+          cache.clear();
+          await clearPairing();
+        }
+      }),
+    [cache, connection, pairing?.deviceId]
+  );
 
   const value = useMemo<TransportValue>(
     () => ({ connection, status, pairing, pair, unpair }),

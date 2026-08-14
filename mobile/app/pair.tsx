@@ -16,7 +16,7 @@
 
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Redirect, Stack } from 'expo-router';
-import { useCallback, useState, type ReactElement } from 'react';
+import { useCallback, useRef, useState, type ReactElement } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -30,6 +30,7 @@ import {
 } from 'react-native';
 import { parsePairPayload, PAIRING_CODE_LENGTH, normalizePairingCode } from '../src/transport/pairing';
 import { useTransport } from '../src/transport/provider';
+import { createScanLatch } from '../src/ui/scan-latch';
 import { useTheme } from '../src/ui/theme';
 
 export default function PairScreen(): ReactElement {
@@ -41,6 +42,9 @@ export default function PairScreen(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
+  // The camera calls back per frame; this is what makes one code one submission.
+  // See ../src/ui/scan-latch.ts for why it cannot be state.
+  const latch = useRef(createScanLatch()).current;
 
   const submit = useCallback(
     async (url: string, pairingCode: string) => {
@@ -69,8 +73,9 @@ export default function PairScreen(): ReactElement {
         return;
       }
     }
+    latch.reset();
     setScanning(true);
-  }, [permission?.granted, requestPermission]);
+  }, [latch, permission?.granted, requestPermission]);
 
   const onScan = useCallback(
     (data: string) => {
@@ -78,13 +83,16 @@ export default function PairScreen(): ReactElement {
       // A camera pointed at the world sees a great many barcodes; anything that
       // is not a Stem pairing link is simply not this, and the scanner keeps
       // looking rather than complaining.
-      if (!target || busy) return;
+      if (!target) return;
+      // The first frame carrying a readable code wins; the rest of the burst is
+      // the same code again, and spending it twice costs a pairing attempt.
+      if (!latch.accept()) return;
       setScanning(false);
       setServerUrl(target.serverUrl);
       setCode(target.code);
       void submit(target.serverUrl, target.code);
     },
-    [busy, submit]
+    [latch, submit]
   );
 
   if (pairing) return <Redirect href="/" />;

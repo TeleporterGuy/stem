@@ -39,6 +39,8 @@ import {
   type ThreadState
 } from '@shared/chatState';
 import type { ChatMessage } from '@shared/types';
+import { IDLE_READ, isCurrent, readIdle, readSettled, readStarted, type ReadState } from '../chat/reads';
+import { applyStartTurnResult, interruptTarget } from '../chat/turns';
 import { createEventBatcher } from '../transport/eventBatcher';
 import { useTransport } from '../transport/provider';
 import { useLiveTurns } from './useLiveTurns';
@@ -46,7 +48,11 @@ import { useLiveTurns } from './useLiveTurns';
 export interface ThreadView {
   state: ThreadState;
   title: string;
-  /** The transcript is being read. False once it has been, even if it failed. */
+  /**
+   * The transcript is being read. False once it has been, even if it failed —
+   * and false while there is nothing to read at all, which an unpaired phone
+   * waiting on its Keychain is.
+   */
   loading: boolean;
   /** Failure to READ the thread. Turn failures arrive as system bubbles instead. */
   error: string | null;
@@ -73,8 +79,6 @@ export function useThread(threadId: string): ThreadView {
 
   const [state, setState] = useState<ThreadState>(EMPTY_STATE);
   const [title, setTitle] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
   // The reducer is applied from callbacks that also need to READ the current
@@ -87,7 +91,19 @@ export function useThread(threadId: string): ThreadView {
     setState(stateRef.current);
   }, []);
 
-  const request = useRef(0);
+  // The transcript read, same shape and same rules as the chat list's — and read
+  // back from a ref for the same reason the slice above is (../chat/reads.ts).
+  //
+  // Paired at mount means the effect below is about to make a request, and
+  // starting out already loading is the difference between opening a thread on a
+  // spinner and opening it on one frame of “Nothing in this chat yet”.
+  const [read, setRead] = useState<ReadState>(() => (status.paired ? readStarted(IDLE_READ) : IDLE_READ));
+  const readRef = useRef<ReadState>(read);
+  const applyRead = useCallback((next: (prev: ReadState) => ReadState) => {
+    readRef.current = next(readRef.current);
+    setRead(readRef.current);
+  }, []);
+
   const pending = useRef<PendingSend | null>(null);
   const nonce = useRef(0);
 
@@ -96,35 +112,41 @@ export function useThread(threadId: string): ThreadView {
   liveTurnRef.current = liveTurnId;
 
   const load = useCallback(async () => {
-    if (!connection.status().paired) return;
-    const mine = ++request.current;
+    if (!status.paired) {
+      // There is nothing to ask yet, and that is not a failure — but it is not a
+      // read in progress either. Leaving `loading` set here is what made a cold
+      // launch straight into a thread (a notification tap, a deep link) spin
+      // forever: the Keychain had not answered when this first ran, and nothing
+      // ever ran it again. Pairing is this callback's dependency now, so the
+      // effect below re-runs and turns this into a real read the moment a
+      // credential exists.
+      applyRead(readIdle);
+      return;
+    }
+    applyRead(readStarted);
+    const mine = readRef.current.request;
     const stateAtRequest = stateRef.current;
-    setLoading(true);
     try {
       const history = await connection.rpc('chats:open', threadId);
-      if (mine !== request.current) return;
+      if (!isCurrent(readRef.current, mine)) return;
       setTitle(history.title);
       apply((liveState) => mergeHydratedThread(history.messages, liveState, stateAtRequest));
-      setError(null);
+      applyRead((prev) => readSettled(prev, mine, null));
     } catch (e) {
-      if (mine !== request.current) return;
-      setError(String((e as Error)?.message ?? e));
-    } finally {
-      if (mine === request.current) setLoading(false);
+      applyRead((prev) => readSettled(prev, mine, e));
     }
-  }, [apply, connection, threadId]);
+  }, [apply, applyRead, connection, status.paired, threadId]);
 
   // Opening a different thread is a different conversation, not a refresh: drop
   // the old slice before the new transcript arrives so no bubble from the
   // previous thread is ever on screen under this one's title.
   useEffect(() => {
-    request.current += 1;
+    applyRead(readIdle);
     stateRef.current = EMPTY_STATE;
     setState(EMPTY_STATE);
     setTitle('');
-    setError(null);
     void load();
-  }, [load]);
+  }, [applyRead, load]);
 
   useEffect(() => {
     const batcher = createEventBatcher((event) =>
@@ -189,14 +211,13 @@ export function useThread(threadId: string): ThreadView {
         .rpc('backend:startTurn', { input, threadId })
         .then(
           (result) => {
-            const turnId = result.turnId ?? null;
-            if (turnId) {
-              apply((prev) => ({
-                ...prev,
-                messages: prev.messages.map((m) => (m.id === id ? { ...m, turnId } : m))
-              }));
-            }
-            return turnId;
+            // One fold for both answers a send can get: a turn to wait for, or a
+            // reply the server has already handled and no turn at all — the
+            // second of which has to end the optimistic `running` set above,
+            // because no event ever will. See ../chat/turns.ts.
+            const outcome = applyStartTurnResult(stateRef.current, result, id);
+            apply(() => outcome.state);
+            return outcome.turnId;
           },
           (e: unknown) => {
             // The send never became a turn (offline, or the agent is already
@@ -230,19 +251,10 @@ export function useThread(threadId: string): ThreadView {
     // in the air, wait for the id it is about to mint rather than giving up.
     let turnId = stateRef.current.activeTurnId ?? liveTurnRef.current ?? null;
     if (!turnId && pending.current) turnId = await pending.current.turnId;
-    if (!turnId && stateRef.current.running) {
-      // startTurn answered with an id, but no event has arrived yet to make it
-      // the active turn — the gap between "sent" and the model's first move,
-      // which on a slow provider is exactly when Stop gets pressed. The id was
-      // stamped onto the message that started it.
-      for (let i = stateRef.current.messages.length - 1; i >= 0; i -= 1) {
-        const message = stateRef.current.messages[i];
-        if (message.role === 'user' && message.turnId) {
-          turnId = message.turnId;
-          break;
-        }
-      }
-    }
+    // Read AFTER the await: the send that was in the air has landed by now, and
+    // whether this thread is still running is the question that decides whether
+    // there is an older turn worth aiming at (interruptTarget in ../chat/turns.ts).
+    if (!turnId) turnId = interruptTarget(stateRef.current);
     if (!turnId) return;
     try {
       await connection.rpc('backend:interruptTurn', turnId);
@@ -265,8 +277,8 @@ export function useThread(threadId: string): ThreadView {
   return {
     state,
     title,
-    loading,
-    error,
+    loading: read.loading,
+    error: read.error,
     running,
     sending,
     blocked,

@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LiveTurn } from '@shared/types';
-import { createEventStream, reconnectDelay, RECONNECT_MAX_MS, STALL_MS, type StreamingFetch } from '../src/transport/stream';
+import {
+  createEventStream,
+  reconnectDelay,
+  RECONNECT_BASE_MS,
+  RECONNECT_MAX_MS,
+  STALL_MS,
+  type StreamingFetch
+} from '../src/transport/stream';
 
 // The reader, driven over a fake socket. Everything a phone's event stream does
 // badly happens here on purpose: the server closes it, the connect fails
@@ -18,13 +25,27 @@ interface FakeSocket {
 function harness(): {
   fetch: StreamingFetch;
   sockets: FakeSocket[];
+  /** How many connects have been ATTEMPTED — sockets counts the ones answered. */
+  callCount(): number;
   refuseNext(status: number): void;
   failNext(error: Error): void;
+  /** Leave the next connect hanging in the handshake until release() is called. */
+  holdNext(): void;
+  release(): void;
 } {
   const sockets: FakeSocket[] = [];
   let status = 200;
   let thrown: Error | null = null;
+  let calls = 0;
+  let held: Promise<void> | null = null;
+  let releaseHeld: (() => void) | null = null;
   const fetch: StreamingFetch = async (url, init) => {
+    calls += 1;
+    if (held) {
+      const wait = held;
+      held = null;
+      await wait;
+    }
     if (thrown) {
       const error = thrown;
       thrown = null;
@@ -61,11 +82,21 @@ function harness(): {
   return {
     fetch,
     sockets,
+    callCount: () => calls,
     refuseNext: (next) => {
       status = next;
     },
     failNext: (error) => {
       thrown = error;
+    },
+    holdNext: () => {
+      held = new Promise<void>((resolve) => {
+        releaseHeld = resolve;
+      });
+    },
+    release: () => {
+      releaseHeld?.();
+      releaseHeld = null;
     }
   };
 }
@@ -269,6 +300,53 @@ describe('createEventStream', () => {
     stream.retryNow();
     await settle();
     expect(net.sockets).toHaveLength(1);
+    stream.stop();
+  });
+
+  it('starts the backoff over when an idle wait is cut short', async () => {
+    const net = harness();
+    net.failNext(new Error('down'));
+    const { stream } = start(net);
+    await settle();
+    expect(net.callCount()).toBe(1);
+
+    // An RPC came back, so the server is answering and the 250ms this was about
+    // to spend waiting is a guess we now know to be wrong.
+    net.failNext(new Error('still down'));
+    stream.retryNow();
+    await settle();
+    expect(net.callCount()).toBe(2);
+    expect(net.sockets).toHaveLength(0);
+
+    // And the count went back to zero with it: the next wait is the base one,
+    // not the doubled one two failures would otherwise have earned.
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS + 5);
+    expect(net.sockets).toHaveLength(1);
+    stream.stop();
+  });
+
+  it('leaves a handshake that is merely slow alone, however many RPCs succeed', async () => {
+    const net = harness();
+    // The /events request goes out and its headers do not come back yet — a
+    // phone on a slow link, which is precisely when every screen's RPC is also
+    // in flight and about to succeed.
+    net.holdNext();
+    const { seen, stream } = start(net);
+    await settle();
+    expect(net.callCount()).toBe(1);
+    expect(net.sockets).toHaveLength(0);
+
+    // Each of these used to abort the connect in flight and start another,
+    // leaving the badge on "Connecting" for as long as screens kept talking.
+    stream.retryNow();
+    stream.retryNow();
+    await settle();
+    expect(net.callCount()).toBe(1);
+
+    net.release();
+    await settle();
+    expect(net.sockets).toHaveLength(1);
+    expect(seen.streaming).toEqual([true]);
     stream.stop();
   });
 

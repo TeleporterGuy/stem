@@ -7,6 +7,7 @@ import {
   serverUrlProblem
 } from '../src/transport/pairing';
 import { redeemPairingCode } from '../src/transport/pair-request';
+import { createScanLatch } from '../src/ui/scan-latch';
 
 describe('normalizePairingCode', () => {
   it('is the same transformation the server hashes', () => {
@@ -61,6 +62,29 @@ describe('parsePairPayload', () => {
     expect(parsePairPayload('stem://pair?url=notaurl&code=ABCDEFGH')).toBeNull();
     expect(parsePairPayload('stem://pair?url=https://x&code=SHORT')).toBeNull();
     expect(parsePairPayload('')).toBeNull();
+  });
+});
+
+describe('createScanLatch', () => {
+  it('lets one scan through however many frames carry the same code', () => {
+    // expo-camera calls back per frame, so a code held in view arrives dozens of
+    // times. A pairing code is one-shot: the second submission spends a failure
+    // against the eight that lock the route, and answers 401 to a pairing that
+    // actually worked.
+    const latch = createScanLatch();
+    expect(latch.accept()).toBe(true);
+    expect(latch.accept()).toBe(false);
+    expect(latch.accept()).toBe(false);
+  });
+
+  it('opens again when the scanner does', () => {
+    // A first scan that failed — an expired code — must not leave a camera that
+    // can never scan anything again.
+    const latch = createScanLatch();
+    expect(latch.accept()).toBe(true);
+    latch.reset();
+    expect(latch.accept()).toBe(true);
+    expect(latch.accept()).toBe(false);
   });
 });
 

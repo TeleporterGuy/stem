@@ -111,7 +111,11 @@ export default function ChatsScreen(): ReactElement {
   const askToUnpair = (): void => {
     Alert.alert(
       'Unpair this phone?',
-      'The token is deleted from this device. The server keeps its record until you revoke it there.',
+      // Truthful about an attempt, not a promise: the revoke is sent but not
+      // waited for (src/transport/unpair.ts), so a server that is offline — or
+      // gone for good, the usual reason to be here — keeps its record and the
+      // desk is the only place left to remove it.
+      'The token is deleted from this device, and the server is asked to forget this phone. If it can’t be reached, remove this device in Settings → Devices on the desktop.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Unpair', style: 'destructive', onPress: () => void unpair() }
