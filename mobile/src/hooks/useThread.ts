@@ -183,7 +183,10 @@ export function useThread(threadId: string): ThreadView {
       // clear `pending` if it is still the send that set it.
       let entry: PendingSend | null = null;
       const started = connection
-        .rpc('backend:startTurn', { input, threadId, format: 'md' })
+        // No `format`: StartTurnInput defaults to 'mdx', which is what the desk
+        // asks for and what src/mdx/ now renders. Step 5 pinned this to 'md'
+        // while the component map did not exist yet.
+        .rpc('backend:startTurn', { input, threadId })
         .then(
           (result) => {
             const turnId = result.turnId ?? null;

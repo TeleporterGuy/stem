@@ -564,8 +564,12 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     emit,
     isUserActive: () => busyWithin(USER_ACTIVE_WINDOW_MS),
     // Raising a window and bouncing a dock are things only a machine with a
-    // screen can do, so they leave as pushes rather than calls. Desktop-only by
-    // construction: neither channel is on the phone's push allowlist.
+    // screen can do, so they leave as pushes rather than calls. There is no
+    // allowlist deciding who hears them — every SSE client gets every channel
+    // (see transport/server.ts) — so these reach a paired phone too and are
+    // ignored there, because nothing on the phone subscribes to them. Waking a
+    // phone for a task is a separate, deliberate act: an APNs push, sent by
+    // push/index.ts under its own suppression rules.
     revealMainWindow: () => emit('client:revealMainWindow', null),
     requestAttention: () => emit('client:requestAttention', null)
   });

@@ -5,24 +5,26 @@
 // Split out from ./credentials.ts and ./client.ts so it can be tested without
 // Expo and without a socket — and because the two normalizations here have to
 // agree with code that lives on the other side of the wire. `normalizePairingCode`
-// is deliberately the same transformation as normalizeCode() in
-// src/server/transport/pairing.ts: the server hashes the NORMALIZED code, so a
-// client that normalized differently would send something that hashes to nothing
-// and would be told, unhelpfully, that a perfectly good code was wrong.
+// is not merely the same transformation as the server's, it is literally the same
+// function: both sides import it from @shared/pairing-code, because the server
+// hashes the NORMALIZED code and a client that normalized differently would send
+// something that hashes to nothing and be told, unhelpfully, that a perfectly good
+// code was wrong.
 //
 // The trailing-slash rule for the URL is client-store.ts's rule, for its reason:
 // the stored form and the compared form must agree, or the same server reached
 // via "https://x/" and "https://x" looks like two servers and the second one
 // throws away the first one's credential.
 
+import { normalizePairingCode, PAIRING_CODE_LENGTH } from '@shared/pairing-code';
+
+export { normalizePairingCode, PAIRING_CODE_LENGTH };
+
 /** What the QR the desktop renders decodes to, and what the manual form fills in. */
 export interface PairingTarget {
   serverUrl: string;
   code: string;
 }
-
-/** Codes are eight characters; see ALPHABET in src/server/transport/pairing.ts. */
-export const PAIRING_CODE_LENGTH = 8;
 
 /** Trailing slashes off, whitespace off. */
 export function normalizeServerUrl(raw: string): string {
@@ -42,15 +44,6 @@ export function serverUrlProblem(raw: string): string | null {
     return `"${raw.trim()}" is not a server address — it needs to start with http:// or https://.`;
   }
   return null;
-}
-
-/**
- * A typed code as the server will read it: dashes, spaces and lowercase all fall
- * away, because a code is meant to be read aloud and `abcd-efgh` is the same code
- * as `ABCDEFGH`.
- */
-export function normalizePairingCode(raw: string): string {
-  return raw.toUpperCase().replace(/[^2-9A-Z]/g, '');
 }
 
 /** Why this code cannot be spent, phrased for a person, or null when it can. */

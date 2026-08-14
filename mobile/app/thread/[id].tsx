@@ -20,7 +20,7 @@
 // change shape to gain a picker, so none was faked.
 
 import { Stack, useLocalSearchParams } from 'expo-router';
-import { useCallback, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useMemo, useRef, useState, type ReactElement } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -37,6 +37,7 @@ import {
 import { activityLabel } from '@shared/activity';
 import type { ActivityItem, ChatMessage } from '@shared/types';
 import { useThread } from '../../src/hooks/useThread';
+import { MdxActionContext } from '../../src/mdx/actions';
 import { AgentMarkdown } from '../../src/ui/AgentMarkdown';
 import { ConnectionBadge } from '../../src/ui/ConnectionBadge';
 import { isPinnedToBottom } from '../../src/ui/scroll';
@@ -78,6 +79,19 @@ export default function ThreadScreen(): ReactElement {
 
   const canSend = draft.trim().length > 0 && !thread.blocked && !thread.running && !thread.sending;
 
+  // What a <Quiz> or <Form> in a reply may do: exactly what the composer does,
+  // and only when the composer itself could. `running` is the flag those
+  // components disable their own send button on, so it carries every reason a
+  // send would not land — a turn in flight, and the connection being unable to
+  // carry one at all — rather than only the first.
+  const mdxActions = useMemo(
+    () => ({
+      submit: thread.send,
+      running: thread.running || thread.sending || thread.blocked !== null
+    }),
+    [thread.blocked, thread.running, thread.send, thread.sending]
+  );
+
   return (
     <KeyboardAvoidingView
       style={[styles.screen, { backgroundColor: theme.bg }]}
@@ -92,33 +106,39 @@ export default function ThreadScreen(): ReactElement {
           <Text style={[styles.bannerText, { color: theme.bad }]}>{thread.error} — tap to retry</Text>
         </Pressable>
       ) : null}
-      <FlatList
-        ref={list}
-        data={thread.state.messages}
-        keyExtractor={(message) => message.id}
-        contentContainerStyle={styles.transcript}
-        onScroll={onScroll}
-        scrollEventThrottle={64}
-        onContentSizeChange={onGrew}
-        keyboardDismissMode="interactive"
-        ListEmptyComponent={
-          thread.loading ? (
-            <ActivityIndicator style={styles.loading} color={theme.dim} />
-          ) : (
-            <Text style={[styles.empty, { color: theme.dim }]}>Nothing in this chat yet.</Text>
-          )
-        }
-        ListFooterComponent={
-          <LiveActivity
-            theme={theme}
-            running={thread.running}
-            streaming={thread.state.streamingId !== null}
-            label={thread.state.activity}
-            activities={thread.state.activities}
-          />
-        }
-        renderItem={({ item }) => <Bubble message={item} theme={theme} />}
-      />
+      {/* A context provider is transparent to the native layout tree, so the
+          FlatList is still the KeyboardAvoidingView's own child. */}
+      <MdxActionContext.Provider value={mdxActions}>
+        <FlatList
+          ref={list}
+          data={thread.state.messages}
+          keyExtractor={(message) => message.id}
+          contentContainerStyle={styles.transcript}
+          onScroll={onScroll}
+          scrollEventThrottle={64}
+          onContentSizeChange={onGrew}
+          keyboardDismissMode="interactive"
+          ListEmptyComponent={
+            thread.loading ? (
+              <ActivityIndicator style={styles.loading} color={theme.dim} />
+            ) : (
+              <Text style={[styles.empty, { color: theme.dim }]}>Nothing in this chat yet.</Text>
+            )
+          }
+          ListFooterComponent={
+            <LiveActivity
+              theme={theme}
+              running={thread.running}
+              streaming={thread.state.streamingId !== null}
+              label={thread.state.activity}
+              activities={thread.state.activities}
+            />
+          }
+          renderItem={({ item }) => (
+            <Bubble message={item} theme={theme} streaming={item.id === thread.state.streamingId} />
+          )}
+        />
+      </MdxActionContext.Provider>
       <Composer
         theme={theme}
         value={draft}
@@ -133,7 +153,15 @@ export default function ThreadScreen(): ReactElement {
   );
 }
 
-function Bubble({ message, theme }: { message: ChatMessage; theme: Theme }): ReactElement {
+function Bubble({
+  message,
+  theme,
+  streaming
+}: {
+  message: ChatMessage;
+  theme: Theme;
+  streaming: boolean;
+}): ReactElement {
   if (message.role === 'user') {
     return (
       <View style={[styles.userBubble, { backgroundColor: theme.card, borderColor: theme.line }]}>
@@ -154,7 +182,10 @@ function Bubble({ message, theme }: { message: ChatMessage; theme: Theme }): Rea
   return (
     <View style={styles.agentBubble}>
       {message.activity?.length ? <ActivityRows rows={message.activity} theme={theme} /> : null}
-      <AgentMarkdown text={message.content} theme={theme} />
+      {/* The bubble still arriving takes the incremental renderer, which parses
+          only the growing tail; the settled ones take the exact full parse that
+          heals any block-split artifact it left behind. */}
+      <AgentMarkdown text={message.content} theme={theme} streaming={streaming} />
     </View>
   );
 }

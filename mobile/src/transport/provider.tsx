@@ -16,6 +16,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
+import { createOfflineCache, type OfflineCache } from '../offline/cache';
+import { openCacheDatabase } from '../offline/sqlite';
 import { createConnection, type Connection, type ConnectionStatus } from './connection';
 import { clearPairing, readPairing, writePairing, type StoredPairing } from './credentials';
 import { streamingFetch } from './expo-fetch';
@@ -39,13 +41,26 @@ export interface TransportValue {
 const TransportContext = createContext<TransportValue | null>(null);
 
 export function TransportProvider({ children }: { children: ReactNode }): ReactNode {
+  // One cache for the life of the app, like the connection and for the same
+  // reason: it owns a debounce timer and a run in flight. The database file is
+  // opened lazily on first use, so a launch that never reaches a server never
+  // touches sqlite at all.
+  const cache = useMemo<OfflineCache>(
+    () =>
+      createOfflineCache({
+        open: openCacheDatabase,
+        log: (message, meta) => console.log(`[cache] ${message}`, meta ?? '')
+      }),
+    []
+  );
   const connection = useMemo(
     () =>
       createConnection({
         streamingFetch,
+        cache,
         log: (message, meta) => console.log(`[transport] ${message}`, meta ?? '')
       }),
-    []
+    [cache]
   );
   const [status, setStatus] = useState<ConnectionStatus>(() => connection.status());
   const [pairing, setPairing] = useState<StoredPairing | null | undefined>(undefined);
@@ -92,8 +107,12 @@ export function TransportProvider({ children }: { children: ReactNode }): ReactN
     generation.current += 1;
     connection.setEndpoint(null);
     setPairing(null);
+    // The cached chats belong to a server this phone no longer holds a credential
+    // for. Leaving them would mean an unpaired phone still shows somebody's
+    // conversations the moment it loses its network.
+    cache.clear();
     await clearPairing();
-  }, [connection]);
+  }, [cache, connection]);
 
   const value = useMemo<TransportValue>(
     () => ({ connection, status, pairing, pair, unpair }),

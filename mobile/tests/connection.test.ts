@@ -141,3 +141,110 @@ describe('createConnection', () => {
     connection.stop();
   });
 });
+
+// Where the offline cache is allowed to speak.
+//
+// The cache's own rules are tested in offline-cache.test.ts; what is tested here
+// is the seam, which is the part that makes them safe. A cached answer may only
+// ever replace a request that reached NOBODY. A server that answers with an
+// error is a server that is up, and its error is what the screen must get —
+// getting this backwards is how a stale thread quietly overwrites a live one.
+describe('createConnection and the offline cache', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function stubCache(replayWith?: unknown) {
+    return {
+      record: vi.fn(),
+      replay: vi.fn(() => replayWith),
+      schedulePrefetch: vi.fn(),
+      cancel: vi.fn(),
+      clear: vi.fn(),
+      close: vi.fn()
+    };
+  }
+
+  /** An ordinary fetch that answers, or throws as an unreachable network does. */
+  function rpcFetch(answer: { ok: boolean; result?: unknown; error?: string } | Error): typeof globalThis.fetch {
+    return (async () => {
+      if (answer instanceof Error) throw answer;
+      return { ok: true, status: 200, json: async () => answer } as Response;
+    }) as typeof globalThis.fetch;
+  }
+
+  it('answers from the cache when nothing answered at all', async () => {
+    const net = harness();
+    const cache = stubCache({ chats: [], offline: true });
+    const connection = createConnection({
+      streamingFetch: net.fetch,
+      fetch: rpcFetch(new TypeError('Network request failed')),
+      cache
+    });
+    connection.start();
+    connection.setEndpoint(endpoint);
+    await settle();
+
+    await expect(connection.rpc('chats:list')).resolves.toMatchObject({ offline: true });
+    expect(cache.replay).toHaveBeenCalledWith('chats:list', []);
+    connection.stop();
+  });
+
+  it('lets the error the server itself sent through, and never consults the cache for it', async () => {
+    const net = harness();
+    const cache = stubCache({ chats: [], offline: true });
+    const connection = createConnection({
+      streamingFetch: net.fetch,
+      fetch: rpcFetch({ ok: false, error: 'that chat is gone' }),
+      cache
+    });
+    connection.start();
+    connection.setEndpoint(endpoint);
+    await settle();
+
+    await expect(connection.rpc('chats:open', 'a')).rejects.toThrow('that chat is gone');
+    expect(cache.replay).not.toHaveBeenCalled();
+    connection.stop();
+  });
+
+  it('still fails when nothing answered and the cache has nothing either', async () => {
+    const net = harness();
+    const cache = stubCache(undefined);
+    const connection = createConnection({
+      streamingFetch: net.fetch,
+      fetch: rpcFetch(new TypeError('Network request failed')),
+      cache
+    });
+    connection.start();
+    connection.setEndpoint(endpoint);
+    await settle();
+
+    await expect(connection.rpc('chats:open', 'a')).rejects.toThrow(/could not reach/);
+    connection.stop();
+  });
+
+  it('writes every answer through, and tops the cache up once a stream is open', async () => {
+    const net = harness();
+    const cache = stubCache();
+    const connection = createConnection({
+      streamingFetch: net.fetch,
+      fetch: rpcFetch({ ok: true, result: { chats: [] } }),
+      cache
+    });
+    connection.start();
+    connection.setEndpoint(endpoint);
+    await settle();
+
+    // The stream came up, which is the moment the phone is demonstrably on a
+    // network and may not be in a minute.
+    expect(cache.schedulePrefetch).toHaveBeenCalled();
+
+    await connection.rpc('chats:list');
+    expect(cache.record).toHaveBeenCalledWith('chats:list', [], { chats: [] });
+
+    // A server we are no longer pointed at must not have its answers land under
+    // the next one's name.
+    connection.setEndpoint(null);
+    expect(cache.cancel).toHaveBeenCalled();
+    connection.stop();
+  });
+});

@@ -14,7 +14,9 @@
 // contract that survives a codebase with two clients in it.
 //
 // Small on purpose: it carries what the screens that exist actually call.
-// Adding one is a line here plus its StemApi method — never a new type.
+// Adding one is a line here naming its StemApi method — never a new type. The
+// single exception is at the bottom, and it earns its exception by being a
+// channel a desktop renderer is structurally unable to call.
 
 import type { StemApi } from '@shared/types';
 
@@ -23,6 +25,14 @@ export interface ChannelSignatures {
   'chats:list': StemApi['listChats'];
   /** One thread's transcript. */
   'chats:open': StemApi['openChat'];
+  /**
+   * The same transcript, without the backend pre-warm the open does — what the
+   * offline cache's catch-up run walks a list with (../offline/cache.ts). Its
+   * signature IS openChat's; there is no separate StemApi method because no
+   * renderer calls it, the desktop reaching it from inside its proxy for the same
+   * reason this does.
+   */
+  'chats:history': StemApi['openChat'];
 
   // Writing. `backend:startTurn` is the only channel on the phone that causes a
   // model to be paid for, which is why the composer gates it on the connection
@@ -52,6 +62,17 @@ export interface ChannelSignatures {
    * it would write without it. The phone never writes settings.
    */
   'settings:get': StemApi['getSettings'];
+
+  /**
+   * "Wake THIS device at this APNs token." The one channel in this table with a
+   * hand-written signature, because it is the one channel no desktop renderer can
+   * call: the server reads the caller's device record to decide whose token it is
+   * (src/server/ipc/devices.ts), and an Electron window calling over ipcMain has
+   * no device record at all — it is refused by name there. So there is no StemApi
+   * method to point at, and inventing one would put a method on the desktop's
+   * client contract that the desktop must never call.
+   */
+  'devices:registerPush': (token: string, platform?: 'ios') => Promise<void>;
 }
 
 export type ChannelName = keyof ChannelSignatures;

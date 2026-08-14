@@ -3,6 +3,11 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { hashEquals, hashToken, mintDevice, type MintedDevice } from './auth';
 import { pairingStorePath } from '../workspace/paths';
+import {
+  normalizePairingCode,
+  PAIRING_CODE_ALPHABET,
+  PAIRING_CODE_LENGTH
+} from '../../shared/pairing-code';
 
 // How a device that does NOT share this server's disk gets a credential.
 //
@@ -38,13 +43,12 @@ const CODE_TTL_MS = 10 * 60_000;
 const MAX_FAILURES = 8;
 const LOCKOUT_MS = 15 * 60_000;
 
-/**
- * Crockford-ish: no 0/1/I/L/O/U, so nothing in a code can be misheard or
- * mistyped into a different valid character. 30 symbols over 8 characters is
- * ~2^39, which the lockout above turns into an unguessable ten-minute window.
- */
-const ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ';
-const CODE_LENGTH = 8;
+// The alphabet, the length and what a typed code normalizes to live in
+// src/shared/pairing-code.ts, because the phone has to agree with this file
+// exactly: what is hashed below is the NORMALIZED code, so a client normalizing
+// differently sends a hash of something else and is told its good code is wrong.
+const ALPHABET = PAIRING_CODE_ALPHABET;
+const CODE_LENGTH = PAIRING_CODE_LENGTH;
 
 interface StoredCode {
   /** SHA-256 of the normalized code. The code itself is never persisted. */
@@ -137,14 +141,11 @@ function generateCode(): string {
 }
 
 /**
- * What a typed code means. Case and punctuation are the user's business, not
- * ours: dashes, spaces and lowercase all normalize away. Characters outside the
- * alphabet are NOT rewritten — an `O` for a `Q` is a wrong code, and pretending
- * otherwise would quietly widen the code space.
+ * What a typed code means — the shared rule, re-exported under the name this
+ * side has always called it so nothing that imports it has to care that the
+ * transformation moved.
  */
-export function normalizeCode(input: string): string {
-  return input.toUpperCase().replace(/[^2-9A-Z]/g, '');
-}
+export const normalizeCode = normalizePairingCode;
 
 /**
  * Mint a code for a device that will be labelled `label`. Any number may be

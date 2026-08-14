@@ -20,8 +20,9 @@
 // this for?) happens in the screen that knows.
 
 import type { BackendEventEnvelope, LiveTurn } from '@shared/types';
+import type { OfflineCache } from '../offline/cache';
 import type { ChannelArgs, ChannelName, ChannelResult } from './channels';
-import { rpc, type Endpoint } from './rpc';
+import { rpc, rpcRaw, UnreachableError, type Endpoint } from './rpc';
 import { createEventStream, type EventStream, type StreamingFetch } from './stream';
 
 /** What the connection indicator renders, and what a composer would gate on. */
@@ -47,6 +48,14 @@ export interface ConnectionDeps {
   streamingFetch: StreamingFetch;
   /** The ordinary fetch used for POST /rpc. Defaults to the platform's. */
   fetch?: typeof globalThis.fetch;
+  /**
+   * The read-only chat cache, or nothing. Wired HERE rather than in a screen for
+   * the reason the desktop wires it into proxy.ts: this is the only layer that
+   * knows the difference between "the server said no" and "nothing answered",
+   * and that distinction is the cache's whole safety argument. See
+   * ../offline/cache.ts.
+   */
+  cache?: OfflineCache;
   log?: (message: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -125,6 +134,22 @@ export function createConnection(deps: ConnectionDeps): Connection {
     statusListeners.emit(status);
   };
 
+  /**
+   * How a catch-up run reaches the server. Untyped on purpose — it walks channels
+   * (`chats:history`) by name, and it writes through the cache itself so the
+   * watermarks are in place by the time the run diffs against them.
+   *
+   * No `onReachable`: while a run is happening the stream is open and it is the
+   * authority on reachability. A background fetch failing would otherwise flip
+   * the whole UI to "offline" without a user having asked for anything.
+   */
+  const prefetchCall = async (channel: string, args: unknown[], signal: AbortSignal): Promise<unknown> => {
+    if (!endpoint) throw new Error('This phone is not paired with a Stem server yet.');
+    const result = await rpcRaw(endpoint, channel, args, { fetch: deps.fetch, signal });
+    deps.cache?.record(channel, args, result);
+    return result;
+  };
+
   const stream: EventStream = createEventStream({
     endpoint: () => endpoint,
     fetch: deps.streamingFetch,
@@ -134,8 +159,14 @@ export function createConnection(deps: ConnectionDeps): Connection {
     onSnapshot: (liveTurns) => liveTurnListeners.emit(liveTurns),
     onReachable: (reachable) => patchStatus({ reachable }),
     // A connect that got as far as a stream is a connect the credential passed,
-    // so this is also where a stale `unauthorized` is cleared.
-    onStreaming: (streaming) => patchStatus(streaming ? { streaming, unauthorized: false } : { streaming }),
+    // so this is also where a stale `unauthorized` is cleared — and the moment
+    // worth topping the offline cache up in, since the phone is demonstrably on
+    // a network right now and may not be in a minute.
+    onStreaming: (streaming) => {
+      patchStatus(streaming ? { streaming, unauthorized: false } : { streaming });
+      if (streaming) deps.cache?.schedulePrefetch(prefetchCall);
+      else deps.cache?.cancel();
+    },
     onRefused: (httpStatus) => patchStatus({ unauthorized: httpStatus === 401 })
   });
 
@@ -158,10 +189,25 @@ export function createConnection(deps: ConnectionDeps): Connection {
     onLiveTurns: (listener) => liveTurnListeners.add(listener),
     async rpc<C extends ChannelName>(channel: C, ...args: ChannelArgs<C>): Promise<ChannelResult<C>> {
       if (!endpoint) throw new Error('This phone is not paired with a Stem server yet.');
-      const result = await rpc(endpoint, channel, args, {
-        fetch: deps.fetch,
-        onReachable: (reachable) => patchStatus({ reachable })
-      });
+      let result: ChannelResult<C>;
+      try {
+        result = await rpc(endpoint, channel, args, {
+          fetch: deps.fetch,
+          onReachable: (reachable) => patchStatus({ reachable })
+        });
+      } catch (e) {
+        // The ONLY place the cache is ever read, and the reason the throw is
+        // narrowed to UnreachableError: an `{ok:false}` or an HTTP 500 is a
+        // server that is up and saying something, and answering it from a copy
+        // would be the cache overruling a server it can reach. Nothing answered
+        // is a different fact, and the only one a cached answer improves on.
+        if (e instanceof UnreachableError) {
+          const cached = deps.cache?.replay(channel, args);
+          if (cached !== undefined) return cached as ChannelResult<C>;
+        }
+        throw e;
+      }
+      deps.cache?.record(channel, args, result);
       // The server answered, so it is up. That does not make the stream healthy
       // — a dead stream means missed events — so re-open it now rather than
       // waiting out the backoff.
@@ -177,6 +223,9 @@ export function createConnection(deps: ConnectionDeps): Connection {
         reachable: false,
         unauthorized: false
       });
+      // A catch-up run in flight is aimed at the server we just stopped talking
+      // to; its answers must not land in the cache under the new one's name.
+      deps.cache?.cancel();
       stream.stop();
       if (next) stream.start();
     },
@@ -187,6 +236,7 @@ export function createConnection(deps: ConnectionDeps): Connection {
       stream.start();
     },
     stop() {
+      deps.cache?.cancel();
       stream.stop();
     }
   };

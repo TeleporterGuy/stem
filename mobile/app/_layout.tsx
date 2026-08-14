@@ -13,6 +13,7 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import type { ReactElement } from 'react';
+import { PushNotifications } from '../src/notifications/PushNotifications';
 import { TransportProvider } from '../src/transport/provider';
 import { ApprovalSheet } from '../src/ui/ApprovalSheet';
 
@@ -22,6 +23,9 @@ export default function RootLayout(): ReactElement {
       <StatusBar style="auto" />
       <Stack screenOptions={{ headerBackButtonDisplayMode: 'minimal' }} />
       <ApprovalSheet />
+      {/* Renders nothing; it is here for the same reason the sheet is — a
+          notification can arrive whatever screen is up, including none yet. */}
+      <PushNotifications />
     </TransportProvider>
   );
 }
