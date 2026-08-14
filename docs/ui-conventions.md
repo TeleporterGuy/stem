@@ -30,6 +30,11 @@ and the drop-overlay glyphs keep their decorative app-icon curve (`18px`/`22px`)
 floating panels (gate card, HUD pill, MCP confirm card) keep context-tuned one-off shadows because
 each is tuned to its own backdrop. Anything else should use a token.
 
+The one surface that does not follow the theme is the QR plate in the "Pair a phone" dialog
+(`.pair-qr-plate`), which is literal `#fff` and `#000`. It is not read by a person: phone scanners
+expect dark modules on a light field, and an inverted symbol is a coin flip across iOS and Android.
+Nothing else may hard-code a color.
+
 ## Manage panel & settings building blocks
 
 Stem's settings surfaces (the Brain / Memory tab, MCP & Skills, Settings) share one visual
@@ -131,7 +136,8 @@ token layer. Both are transparent-bodied so native vibrancy/blur shows through.
 | `.ctx-menu` (`--z-menu`) | Right-click context menu; `.danger` items, `.ctx-sep`, `.ctx-label`. |
 | `.mp-pop` (`--z-popover`) | The filterable model picker popover (sits above context menus). |
 | `.drop-overlay` / `.drop-zone` / `.drop-band` (`--z-overlay`) | Drag-to-place overlay; `.dz-glyph` are the decorative destination glyphs (keep their own radius). |
-| `.mcp-approval-backdrop` / `.mcp-approval-card` (`--z-modal`) | Assistant-proposed MCP change confirm dialog. |
+| `.mcp-approval-backdrop` / `.mcp-approval-card` (`--z-modal`) | Assistant-proposed MCP change confirm dialog. Every modal in Stem reuses this pair — delete-thread, release notes, skills reset, "Pair a phone" — adding only a width class of its own. |
+| `.pair-phone-card` / `.pair-qr-plate` / `.pair-qr` / `.pair-code` | Settings → Server → Devices → "Pair a phone": the QR, its fixed-color plate (see above), and the code in reading-aloud form. |
 
 Pick the matching `--z-*` rung for anything that floats; don't invent a magic z-index.
 

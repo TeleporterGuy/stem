@@ -2617,6 +2617,41 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   margin-top: 14px;
 }
 
+/* ---- "Pair a phone": the QR, the code, and the address ---- */
+/* Narrower than the other cards on purpose — the content is a square and two
+   short lines, and a 440px column would leave the QR marooned in the middle. */
+.pair-phone-card { width: min(360px, calc(100vw - 48px)); }
+/* The one surface in Stem that does not follow the theme. A QR is read by a
+   camera, not a person, and phone scanners expect dark modules on a light field;
+   inverted symbols are a coin flip across iOS and Android. So the plate stays
+   white and the modules black in both themes, and the plate is what supplies the
+   contrast rather than the card behind it. */
+/* Sized to the symbol, not to the card: in dark mode a full-width plate is a
+   slab of white across the dialog, and the light field only has to be wide
+   enough to be the symbol's own background. */
+.pair-qr-plate {
+  display: flex;
+  width: max-content;
+  background: #fff;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4);
+  margin: var(--sp-6) auto;
+}
+.pair-qr {
+  width: 200px;
+  height: 200px;
+  /* Modules are whole pixels; antialiasing their edges is what makes a small
+     symbol fail to scan. */
+  shape-rendering: crispEdges;
+}
+.pair-qr path { fill: #000; }
+.pair-detail { align-items: baseline; }
+.pair-code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-16);
+  letter-spacing: 0.08em;
+}
+
 /* Custom-instructions textareas (Settings + approval card). */
 .ci-textarea,
 .instructions-approval-text,

@@ -6,6 +6,7 @@ import type {
   StateExportReport
 } from '../../../../shared/types';
 import { InfoTip } from '../../../ui/InfoTip';
+import { PairPhoneDialog } from '../../PairPhoneDialog';
 
 /**
  * Settings → Server: where this Stem actually runs, and everything that follows
@@ -318,12 +319,18 @@ function seenLabel(iso: string | null): string {
  * copying a token around — so nothing here can show you an existing device's
  * credential. The server does not have one to show: it keeps hashes. That much
  * is background, so it sits in the header ⓘ; the list itself is the page.
+ *
+ * A phone is admitted by the same code, and differs only in how it is carried:
+ * nobody types eight characters into a phone if a camera is right there. So the
+ * second button mints exactly what the first one does and shows it as a QR
+ * (PairPhoneDialog) — one pairing mechanism, two ways of reading it out.
  */
 function DevicesSection() {
   const [snapshot, setSnapshot] = useState<DevicesSnapshot | null>(null);
   const [me, setMe] = useState<ClientInfo | null>(null);
   const [label, setLabel] = useState('');
   const [minted, setMinted] = useState<PairingCodeInfo | null>(null);
+  const [phone, setPhone] = useState<PairingCodeInfo | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -333,18 +340,35 @@ function DevicesSection() {
     void window.stem.clientInfo().then(setMe).catch(() => undefined);
   }, []);
 
-  async function createCode() {
+  /**
+   * Mint a code, named by the field if it was filled in. Both buttons land here:
+   * the pending list has to be re-read either way, because a code that has not
+   * been spent yet is a row in it.
+   */
+  async function mint(fallbackLabel: string): Promise<PairingCodeInfo | null> {
     setBusy(true);
     setError(null);
     try {
-      setMinted(await window.stem.createPairingCode(label.trim() || 'Paired device'));
+      const code = await window.stem.createPairingCode(label.trim() || fallbackLabel);
       setLabel('');
       setSnapshot(await window.stem.listDevices());
+      return code;
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
+      return null;
     } finally {
       setBusy(false);
     }
+  }
+
+  async function createCode() {
+    const code = await mint('Paired device');
+    if (code) setMinted(code);
+  }
+
+  async function pairPhone() {
+    const code = await mint('Phone');
+    if (code) setPhone(code);
   }
 
   async function revoke(id: string) {
@@ -433,6 +457,9 @@ function DevicesSection() {
             onChange={(e) => setLabel(e.target.value)}
           />
           <div className="push-row">
+            <button type="button" className="push" disabled={busy} onClick={() => void pairPhone()}>
+              Pair a phone
+            </button>
             <button type="submit" className="push default" disabled={busy}>
               Get a code
             </button>
@@ -443,9 +470,23 @@ function DevicesSection() {
               device. It works once, and only until {new Date(minted.expiresAt).toLocaleTimeString()}.
             </p>
           )}
-          {error && <p className="muted">{error}</p>}
+          {error && !phone && <p className="muted">{error}</p>}
         </form>
       </div>
+
+      {phone && (
+        <PairPhoneDialog
+          minted={phone}
+          // The server this app is TALKING to, not the one it is configured for:
+          // a code lives on the server that minted it, and after a move that is
+          // still the old one until Stem restarts.
+          serverUrl={me?.serverUrl ?? null}
+          busy={busy}
+          error={error}
+          onAnotherCode={() => void pairPhone()}
+          onClose={() => setPhone(null)}
+        />
+      )}
     </>
   );
 }
