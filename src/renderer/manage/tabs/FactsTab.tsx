@@ -66,9 +66,10 @@ const EMBED_MODES: { id: EmbeddingsMode; label: string; hint: string }[] = [
   { id: 'off', label: 'Off', hint: 'Rank facts by keywords/recency only' }
 ];
 
-// The curated local reranker, mirrored from server/recall/rerank-catalog.ts.
+// The curated local rerankers, mirrored from server/recall/rerank-catalog.ts.
 const LOCAL_RERANK_MODELS: { id: LocalRerankModelId; label: string; detail: string }[] = [
-  { id: 'bge-reranker-v2-m3', label: 'BGE Reranker v2 M3', detail: '~570 MB · multilingual' }
+  { id: 'qwen3-reranker-0.6b', label: 'Qwen3 Reranker 0.6B', detail: '~1.2 GB · multilingual · best recall measured' },
+  { id: 'bge-reranker-v2-m3', label: 'BGE Reranker v2 M3', detail: '~570 MB · multilingual · fastest' }
 ];
 
 const RERANK_MODES: { id: RerankerMode; label: string; hint: string }[] = [
@@ -398,14 +399,19 @@ function RecallQualityRow({
     retrieval.embeddings.mode === 'remote' &&
     /qwen3-embedding/i.test(retrieval.embeddings.model ?? '');
   const rerankOn = retrieval.reranker.mode !== 'off';
-  const best = embedBest && rerankOn;
+  const rerankBest =
+    (retrieval.reranker.mode === 'local' && retrieval.reranker.localModel === 'qwen3-reranker-0.6b') ||
+    (retrieval.reranker.mode === 'remote' && /qwen3-reranker/i.test(retrieval.reranker.model ?? ''));
+  const best = embedBest && rerankBest;
   const hint = best
-    ? 'Best measured setup — qwen3-embedding:4b with the reranker'
-    : !embedBest && rerankOn
-      ? 'Best measured: qwen3-embedding:4b via a server endpoint (Ollama)'
-      : embedBest && !rerankOn
-        ? 'Reranker is off — it measured best at choosing which facts to send'
-        : 'Best measured: qwen3-embedding:4b (Ollama) with the reranker on';
+    ? 'Best measured setup — qwen3-embedding:4b with the Qwen3 reranker'
+    : embedBest && !rerankOn
+      ? 'Reranker is off — it measured best at choosing which facts to send'
+      : embedBest
+        ? 'Qwen3 Reranker 0.6B now measures best — switch the reranker model'
+        : rerankOn
+          ? 'Best measured: qwen3-embedding:4b via a server endpoint (Ollama)'
+          : 'Best measured: qwen3-embedding:4b (Ollama) with the Qwen3 reranker';
   return (
     <div className="group-row">
       <span className="row-main">
@@ -413,10 +419,11 @@ function RecallQualityRow({
           Recall quality{' '}
           <InfoTip label="How this was measured">
             Benchmarked on 60 real conversations with hand-labeled relevance:{' '}
-            <code>qwen3-embedding:4b</code> (served via Ollama) feeding the built-in reranker chose
-            the right facts best — ahead of the bundled local models, similarity thresholds, wider
-            candidate pools, and an external memory system. The reranker is what catches
-            cross-language matches, like a Slovak question finding an English fact.
+            <code>qwen3-embedding:4b</code> (served via Ollama) feeding the Qwen3 Reranker 0.6B chose
+            the right facts best — ahead of the bundled local models, larger embedders, similarity
+            thresholds, wider candidate pools, and an external memory system. The reranker is what
+            catches cross-language and association matches, like a Slovak question finding an
+            English fact; the Qwen3 reranker separates those from noise markedly better than BGE.
           </InfoTip>
         </strong>
         <em>{hint}</em>

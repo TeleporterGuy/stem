@@ -1536,7 +1536,7 @@ export interface LocalEmbedStatus {
 export type RerankerMode = 'off' | 'local' | 'remote';
 
 /** Curated local reranker models (specs live in server/recall/rerank-catalog.ts). */
-export type LocalRerankModelId = 'bge-reranker-v2-m3';
+export type LocalRerankModelId = 'bge-reranker-v2-m3' | 'qwen3-reranker-0.6b';
 
 /**
  * Reranker-stage settings: an exclusive mode plus the config for both backends
