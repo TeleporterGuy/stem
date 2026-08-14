@@ -8,8 +8,8 @@ import { log } from '../log';
 // it as presence would silence the phone precisely in the case the phone exists
 // for. What is reported here is real input (the desktop reads the OS idle timer
 // and reports while it is under a few minutes — see the heartbeat in
-// startup/devices, wired in step 2), so a machine that is merely powered on says
-// nothing.
+// src/desktop/presence.ts, arriving over the `devices:presence` channel in
+// ipc/devices.ts), so a machine that is merely powered on says nothing.
 //
 // In memory, never devices.json. Presence is a fact about the last few minutes;
 // persisting it would mean a server that restarts believes somebody is at a desk

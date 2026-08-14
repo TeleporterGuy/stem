@@ -131,6 +131,11 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   // The APNs token, and the push network it belongs to. No device id: the caller
   // is the device, and the transport already knows which one (see Caller below).
   'devices:registerPush': [a.string, a.optional(a.oneOf(['ios']))],
+  // How long the caller's machine has been idle. Declared, and required, because
+  // the argument is what makes the heartbeat readable in a log and leaves room to
+  // act on it later — the handler does not read it today, and the contract says
+  // it never has to (see ipc/devices.ts).
+  'devices:presence': [a.number],
   'settings:updateQuickChat': [a.object],
   'settings:updateWebSearch': [a.object],
   'settings:updateEscapeAction': [a.oneOf(['off', 'single', 'twoStage'])],

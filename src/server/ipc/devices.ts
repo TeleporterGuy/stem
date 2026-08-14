@@ -1,6 +1,6 @@
 import { registerServer, type CallerContext } from './guard';
 import { readDevices, revokeDevice, setDevicePushToken } from '../transport/auth';
-import { forgetPresence } from '../push/presence';
+import { forgetPresence, reportPresence } from '../push/presence';
 import { createPairingCode, pendingPairings } from '../transport/pairing';
 import { dropDeviceStreams } from '../startup/transport';
 import { log } from '../log';
@@ -21,12 +21,13 @@ import type { DeviceInfo, DevicesSnapshot, PairingCodeInfo } from '../../shared/
  * point at its own row in the list knows its own id (client.json) and says so
  * locally; see `client:info` in src/desktop/local.
  *
- * `devices:registerPush` is the exception, and a narrow one. A push token is a
- * fact ABOUT the caller — "wake me here" — so it has to land on the caller's own
- * record, and taking a device id as an argument would let any paired device
- * redirect or silence another's notifications for the sake of a parameter nobody
- * needs. So it reads the identity the transport already resolved from the bearer
- * token (see ipc/guard.ts), which is the one input a client cannot write.
+ * The two push channels are the exception, and both for the same narrow reason:
+ * what they carry is a fact ABOUT the caller — "wake me here", "somebody is at
+ * me" — so it has to land on the caller's own record, and taking a device id as
+ * an argument would let any paired device redirect another's notifications to
+ * itself or silence them by claiming to be sitting at it. So they read the
+ * identity the transport already resolved from the bearer token (see
+ * ipc/guard.ts), which is the one input a client cannot write.
  */
 export function registerDevicesIpc(): void {
   registerServer('devices:list', () => snapshot());
@@ -71,6 +72,25 @@ export function registerDevicesIpc(): void {
       });
     }
   );
+  // Somebody is at that machine right now. The desktop calls this about once a
+  // minute while its OS idle timer is under a few minutes, and stops calling the
+  // moment it is not — which is the whole protocol: the CLIENT decides whether it
+  // is present, and a report arriving is the answer.
+  //
+  // So `idleSeconds` is not consulted, deliberately. Reading it here would make
+  // the server the second place that decides what "at the machine" means, and the
+  // two would drift; worse, it would put the decision in a number the caller
+  // writes, when the useful signal — a heartbeat that simply stops — is one it
+  // cannot fake by lying about. It rides along because it is worth having in a
+  // log the day this behaves oddly.
+  //
+  // Caller-less dispatch is ignored rather than refused, unlike registerPush.
+  // There the call is meaningless without a device (a token has to land on a
+  // record); here it is merely uninformative, and the honest answer to "somebody
+  // used a machine we cannot name" is to learn nothing and say nothing.
+  registerServer('devices:presence', (caller: CallerContext, _idleSeconds: number): void => {
+    if (caller) reportPresence(caller.deviceId);
+  });
   registerServer(
     'devices:createPairingCode',
     (_e, label: string): Promise<PairingCodeInfo> => createPairingCode(label)
