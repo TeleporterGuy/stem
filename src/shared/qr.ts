@@ -482,3 +482,29 @@ export function qrPath(symbol: QrSymbol, quiet = 4): { d: string; extent: number
   }
   return { d: parts.join(''), extent: symbol.size + quiet * 2 };
 }
+
+/**
+ * The same path, or null when there is no symbol to draw.
+ *
+ * encodeQr throws on text past version 14 — deliberately, since a caller that
+ * knows what it is encoding wants to hear about a payload that outgrew the
+ * format. A UI is not that caller. The pairing dialog encodes a link built from
+ * an address the user chose, and a long one (a tunnel hostname, a proxied path)
+ * takes the throw straight through a renderer with no error boundary, blanking
+ * the whole Settings window over a picture. Nothing about a QR code is worth a
+ * white window: the code and the address beside it are the fallback the dialog
+ * already shows to anyone whose camera cannot help them.
+ *
+ * Every failure is treated the same way for the same reason — a bug in here
+ * should cost the plate, not the surface it sits on.
+ */
+export function tryQrPath(
+  text: string,
+  opts: { ecLevel?: QrEcLevel; quiet?: number } = {}
+): { d: string; extent: number } | null {
+  try {
+    return qrPath(encodeQr(text, { ecLevel: opts.ecLevel }), opts.quiet);
+  } catch {
+    return null;
+  }
+}

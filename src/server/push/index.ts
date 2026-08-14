@@ -1,5 +1,5 @@
 import { log } from '../log';
-import { devicesWithPushTokens, setDevicePushToken } from '../transport/auth';
+import { devicesWithPushTokens, setDevicePushToken, type DeviceRecord } from '../transport/auth';
 import { apnsConfigured, sendApns } from './apns';
 import { isAnyDesktopPresent, PRESENCE_WINDOW_MS } from './presence';
 
@@ -163,18 +163,33 @@ async function deliver(wake: WakeUp, label?: LabelSource): Promise<void> {
   const targets = await devicesWithPushTokens();
   if (targets.length === 0) return;
   const payload = wakeUpPayload(wake, await resolveLabel(label));
+  // Once per TOKEN, not once per record. A token addresses an app install, and
+  // the registry addresses pairings — one phone can hold two rows (unpair,
+  // re-pair) and sending down both would buzz it twice for one event. The write
+  // path keeps that from arising (see setDevicePushToken), and this makes the
+  // duplicate harmless wherever it came from — a hand-edited devices.json, a
+  // restored backup, a bug on either side of that write.
+  const byToken = new Map<string, DeviceRecord[]>();
   for (const device of targets) {
-    const result = await sendApns(device.apnsToken!, payload);
+    const sharing = byToken.get(device.apnsToken!);
+    if (sharing) sharing.push(device);
+    else byToken.set(device.apnsToken!, [device]);
+  }
+  for (const [token, devices] of byToken) {
+    const result = await sendApns(token, payload);
     if (result === 'gone') {
       // The token outlived the app it addressed. Drop it now, or every later
-      // push spends a request learning the same thing.
-      await setDevicePushToken(device.id, null).catch(() => undefined);
-      log('push', 'dropped a dead push token', { deviceId: device.id });
+      // push spends a request learning the same thing — from every record that
+      // still carries it, since one dead address can be written on several.
+      for (const device of devices) {
+        await setDevicePushToken(device.id, null).catch(() => undefined);
+        log('push', 'dropped a dead push token', { deviceId: device.id });
+      }
       continue;
     }
     log('push', result === 'sent' ? 'sent a wake-up' : 'could not send a wake-up', {
       kind: wake.kind,
-      deviceId: device.id
+      deviceId: devices[0].id
     });
   }
 }

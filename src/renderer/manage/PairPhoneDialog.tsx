@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Smartphone } from 'lucide-react';
 import type { PairingCodeInfo } from '../../shared/types';
 import { pairingLink } from '../../shared/pair-link';
-import { encodeQr, qrPath } from '../../shared/qr';
+import { tryQrPath } from '../../shared/qr';
 
 // Settings → Server → Devices → "Pair a phone": one code, shown three ways.
 //
@@ -69,7 +69,13 @@ export function PairPhoneDialog({
   // Level M: a symbol on a screen is scanned at arm's length in room light, so
   // the fifteen percent it tolerates is the right trade against a denser grid
   // that a phone camera has to be held closer to resolve.
-  const qr = useMemo(() => (link ? qrPath(encodeQr(link, { ecLevel: 'M' })) : null), [link]);
+  //
+  // Null two ways, and the dialog says which: no link at all (loopback — this
+  // Stem has no address a phone could dial), or a link too long to fit a symbol
+  // this encoder draws. Both leave the code and the address on screen, which is
+  // the whole of what the phone needs; see tryQrPath for why the second one must
+  // not be allowed to throw here.
+  const qr = useMemo(() => (link ? tryQrPath(link, { ecLevel: 'M' }) : null), [link]);
 
   const remaining = Date.parse(minted.expiresAt) - now;
   const expired = remaining <= 0;
@@ -126,6 +132,11 @@ export function PairPhoneDialog({
                   </svg>
                 </div>
               </>
+            ) : link ? (
+              <p className="muted">
+                This server’s address is too long to fit in a scannable code. Type the code and the
+                address into Stem on your phone instead — they pair exactly the same way.
+              </p>
             ) : (
               <p className="muted">
                 This Stem runs on this computer, at an address only this computer can reach, so

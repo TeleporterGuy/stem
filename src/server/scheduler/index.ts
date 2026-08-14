@@ -8,6 +8,7 @@ import type {
   TaskSchedule
 } from '../../shared/types';
 import { isContextOverflowError } from '../backend/overflow';
+import { noteTurnStart } from '../live-turns';
 import { toMs } from '../../shared/inbox';
 import { isValidCron, nextAfter } from './cron';
 import { readTasks, saveTasks, titleFromPrompt } from '../workspace/tasks';
@@ -403,6 +404,10 @@ export class TaskScheduler {
       });
       if (turnId) {
         run.turnId = turnId;
+        // Start this turn's clock now rather than at its first streamed event, so
+        // a run that hangs without producing one is still measurable — same
+        // reason as the interactive path in server/index.ts (see noteTurnStart).
+        noteTurnStart(task.threadId, turnId);
         // A preempt that landed while startTurn was still building: interrupt now.
         if (run.preempted && this.opts.interrupt) void this.opts.interrupt(turnId).catch(() => undefined);
         this.opts.onRun({ threadId: task.threadId, turnId, taskId: task.id, prompt: task.prompt, at: atIso });
@@ -425,6 +430,7 @@ export class TaskScheduler {
             });
             if (retry.turnId) {
               run.turnId = retry.turnId;
+              noteTurnStart(task.threadId, retry.turnId);
               if (run.preempted && this.opts.interrupt) {
                 void this.opts.interrupt(retry.turnId).catch(() => undefined);
               }

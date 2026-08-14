@@ -199,6 +199,28 @@ describe('registering for push', () => {
     ).rejects.toThrow(/one of ios/);
   });
 
+  it('takes the token off the row a re-paired phone left behind', async () => {
+    // Unpairing withdraws a credential; it does not uninstall the app, and iOS
+    // hands the same native token back to the same install. So a phone paired
+    // twice arrives as a new record carrying the old record's address. Both rows
+    // are then the same phone, APNs answers 200 to both, and nothing downstream
+    // could ever notice — the user just gets everything twice, forever.
+    const stale = await pairedPhone();
+    const { device: fresh } = await mintDevice('The same phone, paired again');
+
+    await dispatchLocal('devices:registerPush', [PHONE_TOKEN, 'ios'], { deviceId: fresh.id });
+
+    const devices = await readDevices();
+    expect(devices.find((d) => d.id === fresh.id)).toMatchObject({ apnsToken: PHONE_TOKEN, platform: 'ios' });
+    // The old row survives — it is somebody's device history, and the label in
+    // Settings → Server → Devices is how they recognize what to revoke. It is
+    // just no longer an address.
+    const before = devices.find((d) => d.id === stale);
+    expect(before).toBeTruthy();
+    expect(before?.apnsToken).toBeUndefined();
+    expect(before?.platform).toBeUndefined();
+  });
+
   it('takes the token away with the device when it is revoked', async () => {
     const id = await pairedPhone();
     reportPresence(id);
@@ -520,32 +542,118 @@ describe('talking to Apple', () => {
   });
 });
 
-/** Enough of a backend for the task bridge to be wired over. */
+describe('two records naming one phone', () => {
+  /**
+   * devices.json holding what the write path now prevents: one APNs token on two
+   * rows. A restored backup, a hand-edit, a bug on either side of that write —
+   * the sender is the last place this can be caught, and it is worth catching
+   * there too because the symptom (everything twice) never heals by itself:
+   * Apple answers 200 to both, so no 410 ever arrives to clean one up.
+   */
+  beforeEach(() => {
+    const row = (id: string, hash: string) => ({
+      id,
+      tokenHash: hash.repeat(64),
+      role: 'device',
+      label: 'A phone',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      lastSeenAt: null,
+      apnsToken: PHONE_TOKEN,
+      platform: 'ios'
+    });
+    writeFileSync(
+      devicesPath,
+      JSON.stringify({ version: 2, devices: [row('older', '1'), row('newer', '2')] }),
+      'utf8'
+    );
+    forgetCachedDevices();
+    apnsEnv();
+  });
+
+  it('wakes it once, not once per record', async () => {
+    pushApprovalRequest('exec', { id: 'x1', threadId: 't1' });
+
+    await waitForSends(1);
+    expect(sent[0].path).toBe(`/3/device/${PHONE_TOKEN}`);
+    expect(await quiet()).toBe(1);
+  });
+
+  it('clears a dead token from every record that carried it', async () => {
+    answers = [{ status: 410, body: '{"reason":"Unregistered"}' }];
+
+    pushApprovalRequest('exec', { id: 'x1', threadId: 't1' });
+    await waitForSends(1);
+    await sleep(80);
+
+    // One request learned the address was dead; leaving it on the other record
+    // would spend a request per push proving it again.
+    expect((await readDevices()).map((d) => d.apnsToken)).toEqual([undefined, undefined]);
+  });
+});
+
+/**
+ * Enough of a backend for the task bridge to be wired over, and for a scheduled
+ * run to go all the way through: the scheduler needs the thread to still exist,
+ * a turn to start, and a settle event to end it. `duringTurn` is the hook that
+ * matters — notify_user reaches the bridge from INSIDE a running turn, which is
+ * the only state in which the alert has a task to be about.
+ */
 class FakeRuntime extends EventEmitter {
   bridge: TaskBridge | null = null;
+  duringTurn: ((threadId: string) => Promise<void>) | null = null;
   setTaskBridge(bridge: TaskBridge | null): void {
     this.bridge = bridge;
   }
-  async listThreads(): Promise<[]> {
-    return [];
+  async listThreads(): Promise<{ threadId: string; title: string; updatedAt: number }[]> {
+    return [{ threadId: 't1', title: 'The build', updatedAt: 0 }];
+  }
+  async startTurn(input: { threadId?: string }): Promise<{ threadId: string; turnId: string }> {
+    const threadId = input.threadId!;
+    const turnId = 'turn-1';
+    await this.duringTurn?.(threadId);
+    // Settle on the next tick, so the scheduler's listener is attached first.
+    setTimeout(
+      () => this.emit('event', { method: 'turn/completed', params: { threadId, turn: { id: turnId } } }),
+      0
+    );
+    return { threadId, turnId };
   }
 }
 
 describe('task notifications', () => {
-  /** Run one notify_user through the real bridge under `mode`. */
-  async function notifyUnder(mode: TaskNotifyMode): Promise<number> {
-    await updateTasksSettings({ notify: mode });
-    const runtime = new FakeRuntime();
-    const scheduler = initTaskScheduler({
+  function wire(runtime: FakeRuntime) {
+    return initTaskScheduler({
       runtime: runtime as unknown as ChatBackend,
       emit: () => undefined,
       isUserActive: () => false,
       revealMainWindow: () => undefined,
       requestAttention: () => undefined
     });
-    await runtime.bridge!.notify({ title: 'Build', message: 'main went red' }, 't1');
+  }
+
+  /**
+   * One notify_user under `mode`, raised from inside a real scheduled run —
+   * created, dispatched and settled through the scheduler, because "is a task
+   * actually running" is now part of what decides whether the phone hears it.
+   */
+  async function notifyUnder(mode: TaskNotifyMode): Promise<{ sends: number; taskTitle: string }> {
+    await updateTasksSettings({ notify: mode });
+    const runtime = new FakeRuntime();
+    const scheduler = wire(runtime);
+    // A schedule far enough away that only runNow() below fires it.
+    const created = await scheduler.create({ prompt: 'Watch the build', cron: '0 4 * * *' }, 't1');
+    if (!created.ok) throw new Error(created.error);
+    let notified: () => void = () => undefined;
+    const raised = new Promise<void>((resolve) => (notified = resolve));
+    runtime.duringTurn = async (threadId) => {
+      await runtime.bridge!.notify({ title: 'Build', message: 'main went red' }, threadId);
+      notified();
+    };
+    scheduler.runNow(created.task.id);
+    await raised;
+    const sends = await quiet();
     scheduler.stop();
-    return quiet();
+    return { sends, taskTitle: created.task.title };
   }
 
   beforeEach(async () => {
@@ -554,24 +662,39 @@ describe('task notifications', () => {
   });
 
   it('wakes the phone in alert mode', async () => {
-    expect(await notifyUnder('alert')).toBe(1);
+    expect((await notifyUnder('alert')).sends).toBe(1);
     expect(lastStem()).toMatchObject({ kind: 'task', threadId: 't1' });
   });
 
   it('wakes the phone in nudge mode too — the phone is not the machine being nudged', async () => {
-    expect(await notifyUnder('nudge')).toBe(1);
+    expect((await notifyUnder('nudge')).sends).toBe(1);
   });
 
   it('stays silent in inbox mode, which means do not interrupt me', async () => {
-    expect(await notifyUnder('inbox')).toBe(0);
+    expect((await notifyUnder('inbox')).sends).toBe(0);
   });
 
   it('says nothing about what the task found', async () => {
-    await notifyUnder('alert');
+    const { taskTitle } = await notifyUnder('alert');
     // `title` and `message` are the model's words about what it saw. The phone
-    // gets the fixed phrase and the ids; the Inbox has the rest.
+    // gets the fixed phrase and the task's OWN name; the Inbox has the rest.
     expect(sent[0].body).not.toContain('main went red');
-    expect(sent[0].body).not.toContain('Build');
-    expect(lastAlert()).toEqual({ title: 'Task alert', body: 'A scheduled task has something for you.' });
+    expect(sent[0].body).not.toContain('Build:');
+    expect(lastAlert()).toEqual({ title: 'Task alert', body: taskTitle });
+  });
+
+  it('says nothing at all when no task is running', async () => {
+    // notify_user is registered for EVERY turn — "scheduled tasks only" is
+    // wording in a prompt, not a gate — so an ordinary chat can call it. There is
+    // no task then, and "a scheduled task has something for you" would be about
+    // nothing at all, arriving next to the push that turn's own ending sends.
+    await updateTasksSettings({ notify: 'alert' });
+    const runtime = new FakeRuntime();
+    const scheduler = wire(runtime);
+
+    await runtime.bridge!.notify({ title: 'Build', message: 'main went red' }, 't1');
+
+    expect(await quiet()).toBe(0);
+    scheduler.stop();
   });
 });

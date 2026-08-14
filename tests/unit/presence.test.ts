@@ -85,13 +85,13 @@ describe('the devices:presence channel', () => {
 
 describe('deciding whether to report', () => {
   it('reports while the machine is in use, and falls silent once it is not', () => {
-    expect(shouldReportPresence(0)).toBe(true);
-    expect(shouldReportPresence(59)).toBe(true);
-    expect(shouldReportPresence(PRESENCE_IDLE_LIMIT_SECONDS - 1)).toBe(true);
+    expect(shouldReportPresence(0, true)).toBe(true);
+    expect(shouldReportPresence(59, true)).toBe(true);
+    expect(shouldReportPresence(PRESENCE_IDLE_LIMIT_SECONDS - 1, true)).toBe(true);
     // At the limit is already too idle: the boundary belongs to silence, so the
     // suppression window can only ever err towards sending a push.
-    expect(shouldReportPresence(PRESENCE_IDLE_LIMIT_SECONDS)).toBe(false);
-    expect(shouldReportPresence(6 * 60)).toBe(false);
+    expect(shouldReportPresence(PRESENCE_IDLE_LIMIT_SECONDS, true)).toBe(false);
+    expect(shouldReportPresence(6 * 60, true)).toBe(false);
   });
 
   it('treats an idle timer that cannot answer as no evidence at all', () => {
@@ -99,8 +99,20 @@ describe('deciding whether to report', () => {
     // be able to silence somebody's phone by accident — the failure mode of
     // this whole feature is a redundant notification, never a missed one.
     for (const bad of [NaN, Infinity, -1, -0.5]) {
-      expect(shouldReportPresence(bad)).toBe(false);
+      expect(shouldReportPresence(bad, true)).toBe(false);
     }
+  });
+
+  it('does not take a zero on trust from a timer never seen to move', () => {
+    // Zero is the answer a working timer gives while somebody types AND the
+    // answer a dead one (XWayland's missing idle extension) gives forever. Until
+    // the timer has been observed at some other value there is nothing to tell
+    // them apart, and believing it is the failure that has no symptom.
+    expect(shouldReportPresence(0, false)).toBe(false);
+    // Any nonzero reading is its own proof, so nothing is withheld from a
+    // machine whose timer works.
+    expect(shouldReportPresence(1, false)).toBe(true);
+    expect(shouldReportPresence(PRESENCE_IDLE_LIMIT_SECONDS - 1, false)).toBe(true);
   });
 });
 
@@ -122,7 +134,10 @@ describe('the heartbeat', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    idle = 0;
+    // A machine last touched a few seconds ago: in use, and its idle timer
+    // visibly counting — which is what most of these tests are not about. The
+    // constant-zero backend has its own tests below.
+    idle = 5;
     reported = [];
     answer = async () => undefined;
   });
@@ -136,11 +151,43 @@ describe('the heartbeat', () => {
     beat.start();
     // Launching Stem is itself input; waiting out the first interval would leave
     // a minute in which the phone of somebody at their desk could be woken.
-    expect(reported).toEqual([0]);
+    expect(reported).toEqual([5]);
 
     idle = 30;
     await vi.advanceTimersByTimeAsync(HEARTBEAT_EVERY_MS);
-    expect(reported).toEqual([0, 30]);
+    expect(reported).toEqual([5, 30]);
+
+    beat.close();
+  });
+
+  it('says nothing at all to an idle timer stuck at zero', async () => {
+    // XWayland, and anywhere else the X idle extension is absent: getSystemIdleTime
+    // returns a constant zero and never throws. Every beat then LOOKS like somebody
+    // with a hand on the mouse, and believing it would suppress every push to this
+    // user's phone for the life of the process — the one failure this feature must
+    // not have, because it produces no symptom to notice.
+    idle = 0;
+    const beat = heartbeat();
+    beat.start();
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_EVERY_MS * 10);
+    expect(reported).toEqual([]);
+
+    beat.close();
+  });
+
+  it('trusts a zero once it has seen the timer count', async () => {
+    // The other side of the same rule: somebody typing continuously reads zero
+    // beat after beat on a perfectly good timer, and they are at their desk. One
+    // nonzero reading is all it takes to tell that machine from the broken one.
+    idle = 12;
+    const beat = heartbeat();
+    beat.start();
+    expect(reported).toEqual([12]);
+
+    idle = 0;
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_EVERY_MS * 2);
+    expect(reported).toEqual([12, 0, 0]);
 
     beat.close();
   });

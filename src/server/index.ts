@@ -24,7 +24,7 @@ import { initExecService } from './startup/exec';
 import { initSkills } from './startup/skills';
 import { closeTransport, pushToClients, startTransport, type TransportEndpoint } from './startup/transport';
 import { setActivityEmitter } from './activity';
-import { liveTurnAgeMs, liveTurnCount, noteTurnEvent } from './live-turns';
+import { foldTurnEvent, liveTurnCount, noteTurnStart } from './live-turns';
 import { pushApprovalRequest, pushTurnFinished, type ApprovalPushKind } from './push';
 import { closeApns } from './push/apns';
 import { initRetrieval } from './startup/retrieval';
@@ -302,13 +302,27 @@ function registerIpc(): void {
     const settings = await readSettings();
     const ci = settings.customInstructions;
     const quickChat = input.surface === 'quickChat';
-    return runtime!.startTurn({
+    const started = await runtime!.startTurn({
       ...input,
       webSearch: quickChat ? settings.webSearch.quickChat : settings.webSearch.main,
       instructions: quickChat
         ? [ci.main, ci.quickChat].map((s) => s.trim()).filter(Boolean).join('\n')
         : ci.main
     });
+    // Start the turn's clock the moment there is a turn. Waiting for its first
+    // event (which is where the fold otherwise learns of it) means a turn that
+    // hangs without ever streaming anything has no start time at all, and its
+    // eventual failure is measured as "unknown" and pushes nothing — silence for
+    // precisely the turns worth a notification. An input the backend answered
+    // itself (a remembered fact) has no turn and no clock.
+    //
+    // Internal threads are skipped for the same reason the event handler below
+    // ignores them: their events never reach the fold, so a mark made here would
+    // have nothing to clear it.
+    if (started.threadId && started.turnId && !runtime!.isInternalThread(started.threadId)) {
+      noteTurnStart(started.threadId, started.turnId);
+    }
+    return started;
   });
   registerServer('backend:interruptTurn', (_e, turnId: string) => {
     lastInteractiveAt = Date.now();
@@ -713,12 +727,10 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     const threadId = (event.params as { threadId?: string } | undefined)?.threadId;
     // Hidden internal threads (distillation) are neither shown nor captured.
     if (threadId && runtime!.isInternalThread(threadId)) return;
-    // Read BEFORE the fold below, which is what forgets the turn: after it there
-    // is no start time left to measure a finished turn against.
-    const ranForMs = threadId && (event.method === 'turn/completed' || event.method === 'turn/failed')
-      ? liveTurnAgeMs(threadId)
-      : null;
-    noteTurnEvent(
+    // Folding and measuring in one call: the fold is what forgets the turn, so
+    // the age has to be read first — see foldTurnEvent, where that ordering lives
+    // with its test.
+    const { ranForMs } = foldTurnEvent(
       event.method,
       threadId,
       (event.params as { turnId?: string } | undefined)?.turnId

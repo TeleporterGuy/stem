@@ -17,7 +17,7 @@ import { isSettledMethod } from '../shared/settledTurns';
 /** What is known about one running turn: its id (empty when unknown) and its clock. */
 interface LiveTurn {
   turnId: string;
-  /** When this turn's first event arrived, in epoch ms. */
+  /** When this turn was first heard of, in epoch ms — see noteTurnStart. */
   startedAt: number;
 }
 
@@ -53,6 +53,35 @@ export function noteTurnEvent(method: string, threadId: string | undefined, turn
   } else if (isSettledMethod(method)) live.delete(threadId);
 }
 
+/**
+ * A turn has just been handed to the backend — the prompt is written and the turn
+ * id exists. Called by whoever starts one (the `backend:startTurn` handler, the
+ * scheduler's runTask), which is the ONLY moment known to every turn.
+ *
+ * The fold above learns of a turn from its first item or token, and for a turn
+ * that produces neither — one that hangs and is eventually failed by a timeout —
+ * that moment never comes. Such a turn had no start time, so it measured as
+ * "unknown" and its ending pushed nothing: the long silent turns most worth
+ * telling somebody about were exactly the ones nothing was ever said about.
+ *
+ * First-of-the-two wins. A turn whose events arrive before this call keeps the
+ * earlier clock (and this only fills in an id it may have been missing), because
+ * an event of a turn cannot precede the turn; a different turn id means a genuinely
+ * new turn and restarts it. Only the CLOCK is taken on trust here — everything
+ * else about which thread is live still comes out of the event stream, and this
+ * cannot strand a mark the stream would not have cleared anyway: turns serialize
+ * through the backend's foreground gate, so the previous turn's terminal event has
+ * been folded in by the time the next one is dispatched.
+ */
+export function noteTurnStart(threadId: string, turnId: string): void {
+  const current = live.get(threadId);
+  if (current && (!current.turnId || current.turnId === turnId)) {
+    live.set(threadId, { turnId: current.turnId || turnId, startedAt: current.startedAt });
+    return;
+  }
+  live.set(threadId, { turnId, startedAt: Date.now() });
+}
+
 /** Threads still streaming — the scheduler's defer/preempt signal. */
 export function liveTurnCount(): number {
   return live.size;
@@ -84,6 +113,32 @@ export function liveTurnSnapshot(): { threadId: string; turnId: string | null }[
 export function liveTurnAgeMs(threadId: string): number | null {
   const turn = live.get(threadId);
   return turn ? Date.now() - turn.startedAt : null;
+}
+
+/**
+ * Fold one event AND, when it is the event that ends a turn, say how long that
+ * turn ran.
+ *
+ * One call rather than two because the two only work in one order, and the wrong
+ * order fails silently: the fold is what forgets the turn, so an age read after
+ * it is always null, and "always null" reads downstream as "not worth a
+ * notification" rather than as a bug. Keeping the pair here means the ordering is
+ * tested once, in tests/unit/live-turns.test.ts, instead of re-argued at each
+ * call site in a comment.
+ *
+ * Only the two endings somebody might want to hear about are measured. A turn
+ * that was ABORTED is somebody's own Stop, pressed on a device they were holding
+ * — never news.
+ */
+export function foldTurnEvent(
+  method: string,
+  threadId: string | undefined,
+  turnId?: string
+): { ranForMs: number | null } {
+  const ranForMs =
+    threadId && (method === 'turn/completed' || method === 'turn/failed') ? liveTurnAgeMs(threadId) : null;
+  noteTurnEvent(method, threadId, turnId);
+  return { ranForMs };
 }
 
 /** Drop every mark (tests; a fresh server). */

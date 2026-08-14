@@ -51,10 +51,26 @@ export const HEARTBEAT_EVERY_MS = 60_000;
  * cannot answer is likelier than it sounds — reads as "no idea", and no idea is
  * not evidence anybody is here. Fail-quiet, which costs a redundant notification
  * rather than a missed one.
+ *
+ * `timerHasMoved` is the same fail-quiet rule applied to a backend that answers
+ * WITHOUT working. Under XWayland (and any other setup where the X idle
+ * extension is missing) getSystemIdleTime does not throw — it returns a constant
+ * zero — and a constant zero is indistinguishable, one reading at a time, from
+ * somebody with their hand on the mouse. Believed, it reports presence forever
+ * and silences every push this feature exists to send, which inverts the failure
+ * mode above from "one notification too many" into "none, ever, and no way to
+ * tell". So a zero only counts once this process has seen the timer at some
+ * NONZERO value: a working timer shows one within a beat or two, because nobody
+ * touches input in every single second for hours, and a broken one never does.
+ * The cost of the wait is at most a redundant notification, which is the side
+ * this is meant to fail on.
  */
-export function shouldReportPresence(idleSeconds: number): boolean {
+export function shouldReportPresence(idleSeconds: number, timerHasMoved: boolean): boolean {
   if (!Number.isFinite(idleSeconds) || idleSeconds < 0) return false;
-  return idleSeconds < PRESENCE_IDLE_LIMIT_SECONDS;
+  if (idleSeconds >= PRESENCE_IDLE_LIMIT_SECONDS) return false;
+  // A nonzero reading proves the timer for itself, so an idle machine that comes
+  // back into use reports on the very beat it does.
+  return idleSeconds > 0 || timerHasMoved;
 }
 
 export interface PresenceDeps {
@@ -84,6 +100,13 @@ export function createPresenceHeartbeat(deps: PresenceDeps): PresenceHeartbeat {
   let inFlight = false;
   /** See the header — the first failure is a diagnostic, the rest are noise. */
   let loggedFailure = false;
+  /**
+   * Has the OS idle timer ever been seen at a value other than zero? Until it
+   * has, this process has no evidence the timer is a timer at all — see
+   * shouldReportPresence. Once, and for the life of the process: a backend that
+   * counted seconds a minute ago is not going to stop being one.
+   */
+  let timerHasMoved = false;
 
   async function beat(): Promise<void> {
     if (closed || inFlight) return;
@@ -94,7 +117,8 @@ export function createPresenceHeartbeat(deps: PresenceDeps): PresenceHeartbeat {
       // A platform that cannot answer answers every time; nothing to say about it.
       return;
     }
-    if (!shouldReportPresence(idle)) return;
+    if (Number.isFinite(idle) && idle > 0) timerHasMoved = true;
+    if (!shouldReportPresence(idle, timerHasMoved)) return;
     inFlight = true;
     try {
       await deps.report(idle);

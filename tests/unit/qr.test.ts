@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { encodeQr, qrPath, MAX_QR_VERSION, type QrEcLevel } from '../../src/shared/qr';
+import { encodeQr, qrPath, tryQrPath, MAX_QR_VERSION, type QrEcLevel } from '../../src/shared/qr';
 
 // The QR encoder against symbols nobody here produced.
 //
@@ -101,5 +101,25 @@ describe('qrPath', () => {
     const symbol = encodeQr('Stem', { ecLevel: 'M' });
     const dark = symbol.modules.flat().filter(Boolean).length;
     expect(qrPath(symbol).d.split('M').length - 1).toBe(dark);
+  });
+});
+
+// The form a user interface asks in. A renderer has no error boundary, so a
+// throw from here does not degrade a picture — it takes the window with it.
+describe('tryQrPath', () => {
+  it('draws the same path as the pair it replaces', () => {
+    const link = 'stem://pair?code=ABC-123&url=https%3A%2F%2Fmac.tailnet.ts.net';
+    expect(tryQrPath(link, { ecLevel: 'M' })).toEqual(qrPath(encodeQr(link, { ecLevel: 'M' })));
+  });
+
+  it('answers null for an address too long to fit a symbol', () => {
+    // A real shape, not padding: a pairing link carries the server URL, and a
+    // deployment behind a tunnel or a path-prefixed proxy can produce a long
+    // one. Version 14 stops somewhere under 500 bytes at level M.
+    const link = `stem://pair?code=ABC-123&url=${encodeURIComponent(`https://${'a'.repeat(460)}.example.com`)}`;
+    expect(() => encodeQr(link, { ecLevel: 'M' })).toThrow();
+    // Which is the whole point of the wrapper: the caller gets no plate, and the
+    // Settings window it lives in stays on screen.
+    expect(tryQrPath(link, { ecLevel: 'M' })).toBeNull();
   });
 });

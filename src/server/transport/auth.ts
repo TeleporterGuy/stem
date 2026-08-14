@@ -237,6 +237,25 @@ export function revokeDevice(id: string): Promise<boolean> {
 }
 
 /**
+ * The record with no push fields at all. Rebuilt field by field rather than
+ * spread-and-delete, so that clearing really removes both: the fields go away
+ * together, because a record carrying a platform but no token would claim a push
+ * network for a device we cannot address on it. Returns the SAME object when
+ * there was nothing to clear, so a caller can tell a no-op from a change.
+ */
+function withoutPushToken(d: DeviceRecord): DeviceRecord {
+  if (d.apnsToken === undefined && d.platform === undefined) return d;
+  return {
+    id: d.id,
+    tokenHash: d.tokenHash,
+    role: d.role,
+    label: d.label,
+    createdAt: d.createdAt,
+    lastSeenAt: d.lastSeenAt
+  };
+}
+
+/**
  * Record (or drop) the APNs token a device wants to be woken on. Returns whether
  * a record was touched — false for a device that is no longer registered, which
  * is a no-op rather than an error: a phone that was revoked mid-flight should not
@@ -246,6 +265,16 @@ export function revokeDevice(id: string): Promise<boolean> {
  * has gone (the app was deleted, the device restored), and the sender clears it
  * through here — otherwise every later push would spend a request proving the
  * same thing again.
+ *
+ * ONE TOKEN IS ONE APP INSTALL, so storing it here takes it away from every other
+ * record. A phone that is unpaired and paired again keeps its native token (iOS
+ * mints that per install, and knows nothing about our pairing) but arrives as a
+ * NEW device row, since the old row's credential is what was withdrawn, not the
+ * phone. Left alone, both rows would name the same phone and it would be woken
+ * twice for everything, forever: APNs answers 200 to both, so the 410 healing
+ * above never fires and nothing else would ever notice. The stale row keeps its
+ * identity and its place in Settings → Server → Devices; it just stops being an
+ * address.
  */
 export function setDevicePushToken(
   id: string,
@@ -254,27 +283,20 @@ export function setDevicePushToken(
 ): Promise<boolean> {
   return enqueue(async () => {
     const devices = await loadDevices();
-    const current = devices.find((d) => d.id === id);
-    if (!current) return false;
-    if (current.apnsToken === (apnsToken ?? undefined)) return true;
-    await writeDevices(
-      devices.map((d) => {
-        if (d !== current) return d;
-        // Rebuilt field by field rather than spread-and-delete, so that clearing
-        // really removes both: the fields go away together, because a record
-        // carrying a platform but no token would claim a push network for a
-        // device we cannot address on it.
-        const next: DeviceRecord = {
-          id: d.id,
-          tokenHash: d.tokenHash,
-          role: d.role,
-          label: d.label,
-          createdAt: d.createdAt,
-          lastSeenAt: d.lastSeenAt
-        };
-        return apnsToken ? { ...next, apnsToken, platform } : next;
-      })
-    );
+    if (!devices.some((d) => d.id === id)) return false;
+    const next = devices.map((d) => {
+      if (d.id !== id) {
+        // Somebody else's row holding this very token: it is not theirs.
+        return apnsToken && d.apnsToken === apnsToken ? withoutPushToken(d) : d;
+      }
+      if (!apnsToken) return withoutPushToken(d);
+      if (d.apnsToken === apnsToken && d.platform === platform) return d;
+      return { ...withoutPushToken(d), apnsToken, platform };
+    });
+    // Nothing moved — the ordinary case for a phone re-registering the token it
+    // already had on launch, and not worth a file write.
+    if (next.every((d, i) => d === devices[i])) return true;
+    await writeDevices(next);
     return true;
   });
 }

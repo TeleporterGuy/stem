@@ -73,8 +73,16 @@ export function initTaskScheduler(deps: {
       // emit; the push is not the modal's travelling companion, it is the second
       // audience for the same alert. The label is the task's own name, never the
       // notification's title or message (see server/push).
+      //
+      // Only for a run that is actually in flight. `notify_user` is registered for
+      // EVERY turn — "scheduled tasks only" is prompt guidance, not a gate — so an
+      // ordinary interactive turn can call it, and then there is no task: the
+      // phone would be told "a scheduled task has something for you" about
+      // nothing, on top of the push that turn's own ending already sends. The
+      // desktop half below still runs, because a model that asked for the user's
+      // attention at the desk should get it either way.
       const task = scheduler.runningTask(threadId);
-      pushTaskAlert({ threadId, ...(task ? { taskId: task.id, label: task.title } : {}) });
+      if (task) pushTaskAlert({ threadId, taskId: task.id, label: task.title });
       if (mode === 'alert') deps.revealMainWindow();
       deps.requestAttention();
       if (mode === 'nudge') return;
