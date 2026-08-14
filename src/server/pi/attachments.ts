@@ -2,8 +2,9 @@
 //
 // pi's `prompt` RPC accepts images natively (`images: [{type:'image', data, mimeType}]`).
 // It has no slot for arbitrary files, so text-like files are inlined into the message as
-// fenced blocks and binary files are rejected. This module is the single place that reads
-// attachment bytes (from `dataBase64` or an on-disk `path`) and classifies them.
+// fenced blocks, PDFs are inlined as their extracted text layer, and other binary files
+// are rejected. This module is the single place that reads attachment bytes (from
+// `dataBase64` or an on-disk `path`) and classifies them.
 //
 // `path` is the CLIENT's path, which is only a path we can read when the client is on
 // this machine. A client whose server is elsewhere streams the bytes to POST /upload
@@ -13,6 +14,7 @@
 import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { isUploadHandle, resolveUploadHandle } from '../files/staging';
+import { extractPdfText } from '../folder-index/pdf';
 import type { TurnAttachment } from '../../shared/types';
 
 /** pi `ImageContent` — the shape of each entry in the prompt's `images` array. */
@@ -27,7 +29,7 @@ export interface ResolvedAttachments {
   images: PiImageContent[];
   /** Fenced file contents appended to the message text. */
   textBlocks: string[];
-  /** Basenames of attachments skipped because they're unsupported binaries. */
+  /** Basenames of attachments skipped: unsupported binaries, unreadable bytes, or PDFs with no text layer. */
   rejected: string[];
 }
 
@@ -143,6 +145,22 @@ export async function resolveAttachments(atts: TurnAttachment[]): Promise<Resolv
 
     if (imageMime) {
       out.images.push({ type: 'image', data: bytes.toString('base64'), mimeType: imageMime });
+      continue;
+    }
+
+    if (ext === '.pdf' || att.mime?.toLowerCase() === 'application/pdf') {
+      // Same extractor the folder index uses. One char over the cap so a
+      // document that exactly fills it isn't marked truncated. A PDF that
+      // can't be parsed (corrupt, encrypted) or has no text layer (a scan —
+      // there's no OCR) goes to `rejected` like any other opaque binary.
+      const pdf = await extractPdfText(bytes, MAX_INLINE_BYTES + 1);
+      if (pdf?.text) {
+        const truncated = pdf.text.length > MAX_INLINE_BYTES;
+        const body = truncated ? pdf.text.slice(0, MAX_INLINE_BYTES) : pdf.text;
+        out.textBlocks.push(fenceText(att.name, '', body, truncated));
+      } else {
+        out.rejected.push(att.name);
+      }
       continue;
     }
 
