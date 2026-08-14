@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { applyPrefixes } from './embed-catalog';
 import type { LocalEmbedModelSpec } from './embed-catalog';
@@ -155,6 +155,25 @@ function progressAggregator(
   };
 }
 
+/**
+ * A cached weights file that ONNX Runtime cannot parse is a truncated download
+ * (killed process, full disk) — transformers.js trusts the cache blindly, so
+ * without intervention the same corrupt file fails on every restart forever.
+ * The remedy: purge that model's cache dir so the bytes get fetched again, and
+ * tell the manager (via `purgedCorruptCache`) to restart this process before
+ * retrying. Retrying HERE does not work: a failed session load poisons
+ * transformers.js module state, and every later load in this process — any
+ * model, healthy weights or not — rejects with the first failure's error.
+ * That poisoning is also why the path check matters: a load taken down by an
+ * EARLIER model's corruption reports the earlier model's file, and purging our
+ * own healthy cache over it would throw away good bytes.
+ */
+function purgeIfCorrupt(message: string, repo: string, cacheDir: string): boolean {
+  if (!/protobuf parsing failed/i.test(message) || !message.includes(join(cacheDir, repo))) return false;
+  rmSync(join(cacheDir, repo), { recursive: true, force: true });
+  return true;
+}
+
 async function load(nextSpec: LocalEmbedModelSpec, cacheDir: string): Promise<void> {
   spec = nextSpec;
   postStatus({ state: 'loading' });
@@ -174,8 +193,13 @@ async function load(nextSpec: LocalEmbedModelSpec, cacheDir: string): Promise<vo
     extractor = pipe;
     postStatus({ state: 'ready', dim });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     extractor = null;
-    postStatus({ state: 'error', error: err instanceof Error ? err.message : String(err) });
+    postStatus({
+      state: 'error',
+      error: message,
+      purgedCorruptCache: purgeIfCorrupt(message, nextSpec.repo, cacheDir) || undefined
+    });
   }
 }
 
@@ -226,8 +250,13 @@ async function loadRerank(nextSpec: LocalRerankModelSpec, cacheDir: string): Pro
     reranker = next;
     postRerankStatus({ state: 'ready' });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     reranker = null;
-    postRerankStatus({ state: 'error', error: err instanceof Error ? err.message : String(err) });
+    postRerankStatus({
+      state: 'error',
+      error: message,
+      purgedCorruptCache: purgeIfCorrupt(message, nextSpec.repo, cacheDir) || undefined
+    });
   }
 }
 
@@ -324,11 +353,20 @@ async function dispose(): Promise<void> {
   post({ type: 'disposed' });
 }
 
+// Model loads run ONE AT A TIME. Not just politeness: concurrent
+// InferenceSession creations in onnxruntime-node cross-contaminate — with a
+// corrupt e5-base cache, a simultaneous bge reranker load rejects with the E5
+// file's "Protobuf parsing failed" error (reproduced on the bundled 3.8.1),
+// which both takes down a healthy model and defeats purgeIfCorrupt's own-path
+// check. Serialized, the corrupt model fails alone with its own file named.
+// load()/loadRerank() never reject, so the chain can't wedge.
+let loadChain: Promise<void> = Promise.resolve();
+
 port.on('message', (e: { data: WorkerInMessage }) => {
   const msg = e.data;
-  if (msg.type === 'load') void load(msg.spec, msg.cacheDir);
+  if (msg.type === 'load') loadChain = loadChain.then(() => load(msg.spec, msg.cacheDir));
   else if (msg.type === 'embed') void embed(msg.id, msg.texts, msg.kind);
-  else if (msg.type === 'load-rerank') void loadRerank(msg.spec, msg.cacheDir);
+  else if (msg.type === 'load-rerank') loadChain = loadChain.then(() => loadRerank(msg.spec, msg.cacheDir));
   else if (msg.type === 'rerank') void rerank(msg.id, msg.query, msg.docs, msg.topN);
   else if (msg.type === 'dispose') void dispose();
 });

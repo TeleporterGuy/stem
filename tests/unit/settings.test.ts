@@ -23,6 +23,8 @@ import {
   updateTasksSettings
 } from '../../src/server/workspace/settings';
 import { settingsStorePath } from '../../src/server/workspace/paths';
+import { RERANK_CATALOG } from '../../src/server/recall/rerank-catalog';
+import type { LocalRerankModelId } from '../../src/shared/types';
 
 const path = settingsStorePath();
 
@@ -523,6 +525,16 @@ describe('reranker settings migration + coercion', () => {
     rr = (await readSettings()).retrieval.reranker;
     expect(rr.mode).toBe('off');
     expect(rr.localModel).toBe('bge-reranker-v2-m3');
+  });
+
+  // Regression: the allowlist used to be a hand-kept copy of the catalog and
+  // silently reverted 'qwen3-reranker-0.6b' to bge on save. Every catalog id
+  // must round-trip.
+  it('accepts every catalog reranker model, not just the default', async () => {
+    for (const id of Object.keys(RERANK_CATALOG)) {
+      await updateRetrievalSettings({ reranker: { mode: 'local', localModel: id as LocalRerankModelId } });
+      expect((await readSettings()).retrieval.reranker.localModel).toBe(id);
+    }
   });
 });
 

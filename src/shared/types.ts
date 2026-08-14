@@ -1523,6 +1523,13 @@ export interface LocalEmbedStatus {
   dim?: number;
   /** Human-readable failure while state === 'error'. */
   error?: string;
+  /**
+   * The load failed on unparseable cached weights (truncated download) and the
+   * worker purged that model's cache. Signals the manager to restart the worker
+   * and re-download — the retry must be a NEW process, because a failed ONNX
+   * session load poisons transformers.js state for every later load in it.
+   */
+  purgedCorruptCache?: boolean;
 }
 
 /**
@@ -1560,6 +1567,8 @@ export interface LocalRerankStatus {
   progressPct?: number;
   /** Human-readable failure while state === 'error'. */
   error?: string;
+  /** See LocalEmbedStatus.purgedCorruptCache. */
+  purgedCorruptCache?: boolean;
 }
 
 /**
