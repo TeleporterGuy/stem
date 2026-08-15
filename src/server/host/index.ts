@@ -104,6 +104,18 @@ function defaultAppDataRoot(): string {
 function defaultStateRoot(): string {
   // STEM_STATE_DIR is the deployment knob (a container mounts one volume) and
   // the test seam — the unit suite points it at a per-process throwaway dir.
+  //
+  // Tripwire: vitest launched WITHOUT desktop/vitest.config.ts (say, from the
+  // repo's parent directory) never runs tests/setup-unit.ts, so nothing sets
+  // STEM_STATE_DIR and this fallback aims the whole suite at the developer's
+  // REAL profile — on macOS's case-insensitive disk, 'Stem' IS the live
+  // Electron 'stem' dir. That has happened: store tests overwrote real state
+  // and cost this machine its server pairing. Refuse loudly instead.
+  if (process.env.VITEST && !process.env.STEM_STATE_DIR) {
+    throw new Error(
+      'running under vitest without STEM_STATE_DIR — run the suite from desktop/ so vitest.config.ts loads tests/setup-unit.ts'
+    );
+  }
   return process.env.STEM_STATE_DIR || join(defaultAppDataRoot(), 'Stem');
 }
 
