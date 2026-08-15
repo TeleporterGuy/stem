@@ -235,7 +235,12 @@ export function headlessHost(): StemHost {
  * and the message protocol either side speaks is identical.
  */
 function forkNodeWorker(entry: string, _serviceName: string): WorkerTransport {
-  const child = fork(entry, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+  // 'advanced' (structured clone), not the default JSON serialization: the
+  // embed worker answers with Float32Array vectors, which JSON flattens into
+  // plain index-keyed objects — .buffer undefined, and the vector upserts die
+  // with "first argument must be ... Received undefined". Electron's
+  // utilityProcess clones structurally; the server's fork must match it.
+  const child = fork(entry, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'], serialization: 'advanced' });
   return {
     send: (msg) => {
       child.send(msg as never);
