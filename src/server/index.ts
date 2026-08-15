@@ -791,7 +791,9 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
         // The user message is held back until the turn's suppression verdict is
         // knowable; flushing it here keeps its row id below its reply's.
         if (threadId) runtime!.flushPendingUserCapture(threadId);
-        captureFromEvent(event); // tap assistant replies into Stem Recall (all threads)
+        // Assistant replies from a web-using turn are captured flagged `web`, so
+        // distillation never treats restated page content as trusted provenance.
+        captureFromEvent(event, { web: !!threadId && runtime!.isWebTainted(threadId) });
       }
       if (event.method === 'turn/completed') {
         scheduleDistill();

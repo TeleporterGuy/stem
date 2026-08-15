@@ -984,8 +984,10 @@ export interface FactEvidence {
   role: 'user' | 'assistant' | null;
   timestamp: number;
   excerpt: string;
-  /** 'folder_doc' = an indexed connected-folder file (folderId/relPath set). */
-  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'legacy' | 'folder_doc' | 'segment_context';
+  /** 'folder_doc' = an indexed connected-folder file (folderId/relPath set).
+   *  'assistant_claim_web' = an assistant message from a turn that used web tools,
+   *  i.e. the excerpt may restate untrusted public-web content. */
+  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'assistant_claim_web' | 'legacy' | 'folder_doc' | 'segment_context';
   /** Connected-folder id, for 'folder_doc' evidence. */
   folderId?: string | null;
   /** Folder-relative file path, for 'folder_doc' evidence. */

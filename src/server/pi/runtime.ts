@@ -666,7 +666,14 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   async startTurn(input: StartTurnInput): Promise<StartTurnResult> {
-    const memory = await captureMemoryFromUserInput(input.input);
+    // The explicit-remember fast path is for text the user TYPED. A scheduled
+    // run's prompt re-enters here too, and schedule_task needs no approval — so
+    // without this gate a model-authored task prompt saying "Remember that …"
+    // would mint an explicit, confidence-1, consolidation-protected fact with
+    // supersede authority. Scheduled input never gets the user's word treatment.
+    const memory = input.scheduled
+      ? { captured: false, shouldAcknowledge: false, factId: undefined, path: undefined }
+      : await captureMemoryFromUserInput(input.input);
     if (memory.shouldAcknowledge) {
       if (memory.factId != null) {
         // Reconciliation is deliberately off the acknowledgement path: the fact is
@@ -763,12 +770,19 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         void setNaming(threadId, { step: 0, since: 0 }).catch(() => undefined);
       }
 
-      if (isRecallEnabled()) {
+      if (isRecallEnabled() && !input.scheduled) {
         // Deferred, not captured: at prompt time the turn's memorize:false
         // verdict is unknowable (the taint is only set once the assistant reads
         // a private folder). The message is flushed by flushPendingUserCapture
         // on the first unsuppressed capture event, or at settleTurn — so a
         // suppressed turn's prompt never touches the recall DB at all.
+        //
+        // A scheduled run's prompt is excluded on purpose: it would land in the
+        // messages table as role 'user', and the distiller treats cited user
+        // messages as the user's own words (0.9 confidence, supersede
+        // authority). Task prompts can be model-authored without approval, so
+        // they must never impersonate the user in recall. The run's assistant
+        // reply is still captured normally.
         turn.pendingUserCapture = { text: input.input, cwd: this.options.workspaceRoot };
       }
       return { threadId, turnId };
@@ -889,6 +903,17 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    */
   isCaptureSuppressed(threadId: string): boolean {
     return this.currentTurn?.threadId === threadId && this.currentTurn.memoryTainted === true;
+  }
+
+  /**
+   * True when the active turn called a web-access tool, so its assistant reply
+   * may restate untrusted public-web content. Read at the same point as
+   * isCaptureSuppressed (the `item/completed` agentMessage precedes agent_end),
+   * and recorded as the `web` flag on captured messages rather than suppressing
+   * them — see TurnContext.webTainted.
+   */
+  isWebTainted(threadId: string): boolean {
+    return this.currentTurn?.threadId === threadId && this.currentTurn.webTainted === true;
   }
 
   /**

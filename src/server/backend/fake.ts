@@ -221,6 +221,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     return false;
   }
 
+  isWebTainted(): boolean {
+    return false;
+  }
+
   flushPendingUserCapture(): void {
     // The fake backend captures nothing.
   }

@@ -52,6 +52,12 @@ export interface RecordMessageInput {
   cwd?: string | null;
   /** Unix seconds. Defaults to now. */
   ts?: number;
+  /**
+   * The turn this message belongs to used web tools (web_search/fetch_content/…),
+   * so an assistant text may restate untrusted public-web content. Distillation
+   * reads this to keep web-derived claims out of trusted fact provenance.
+   */
+  web?: boolean;
 }
 
 
@@ -239,6 +245,8 @@ export interface StoredMessage {
   role: MessageRole;
   ts: number;
   text: string;
+  /** True when the message's turn used web tools — see RecordMessageInput.web. */
+  web: boolean;
 }
 
 
@@ -544,7 +552,8 @@ export class RecallStore {
         ts        INTEGER NOT NULL,
         cwd       TEXT,
         text      TEXT NOT NULL,
-        dedup_key TEXT UNIQUE
+        dedup_key TEXT UNIQUE,
+        web       INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 
@@ -887,6 +896,14 @@ export class RecallStore {
     for (const name of ['folder_id', 'rel_path']) {
       if (!evidenceColumns.has(name)) handle.exec(`ALTER TABLE fact_evidence ADD COLUMN ${name} TEXT`);
     }
+    // Web-taint flag on messages, added after the table shipped. Default must
+    // match the CREATE TABLE above.
+    const messageColumns = new Set(
+      (handle.prepare(`PRAGMA table_info(messages)`).all() as Array<{ name: string }>).map((r) => r.name)
+    );
+    if (!messageColumns.has('web')) {
+      handle.exec(`ALTER TABLE messages ADD COLUMN web INTEGER NOT NULL DEFAULT 0`);
+    }
     // Existing v1 rows predate the external-content FTS table. Populate it before
     // the metadata backfill below fires the UPDATE trigger; deleting an absent FTS
     // row from that trigger can otherwise report a malformed index.
@@ -1054,8 +1071,8 @@ export class RecallStore {
       }
       handle
         .prepare(
-          `INSERT OR IGNORE INTO messages (thread_id, turn_id, role, ts, cwd, text, dedup_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+          `INSERT OR IGNORE INTO messages (thread_id, turn_id, role, ts, cwd, text, dedup_key, web)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           input.threadId,
@@ -1064,7 +1081,8 @@ export class RecallStore {
           input.ts ?? this.nowSeconds(),
           input.cwd ?? null,
           text,
-          this.dedupKey(input.threadId, input.turnId, input.role, text)
+          this.dedupKey(input.threadId, input.turnId, input.role, text),
+          input.web ? 1 : 0
         );
       handle.exec('COMMIT');
     } catch (err) {
@@ -1486,7 +1504,8 @@ export class RecallStore {
       turnId: (r.turnId as string | null) ?? null,
       role: r.role as MessageRole,
       ts: r.ts as number,
-      text: r.text as string
+      text: r.text as string,
+      web: (r.web as number | null) === 1
     };
   };
 
@@ -1500,7 +1519,7 @@ export class RecallStore {
     const handle = this.open();
     const rows = handle
       .prepare(
-        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
+        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text, web
          FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?`
       )
       .all(sinceId, limit) as Array<Record<string, unknown>>;
@@ -1512,7 +1531,7 @@ export class RecallStore {
   getMessagesForDistillFrom = (fromId: number, limit = 200): StoredMessage[] => {
     const rows = this.open()
       .prepare(
-        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
+        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text, web
          FROM messages WHERE id >= ? ORDER BY id ASC LIMIT ?`
       )
       .all(fromId, limit) as Array<Record<string, unknown>>;
@@ -1527,7 +1546,7 @@ export class RecallStore {
   getThreadMessagesAfter = (threadId: string, afterId: number, limit = 200): StoredMessage[] => {
     const rows = this.open()
       .prepare(
-        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
+        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text, web
          FROM messages WHERE thread_id = ? AND id > ? ORDER BY id ASC LIMIT ?`
       )
       .all(threadId, afterId, limit) as Array<Record<string, unknown>>;
@@ -1537,7 +1556,7 @@ export class RecallStore {
 
   getMessageById = (id: number): StoredMessage | null => {
     const r = this.open().prepare(
-      `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text FROM messages WHERE id = ?`
+      `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text, web FROM messages WHERE id = ?`
     ).get(id) as Record<string, unknown> | undefined;
     return r ? this.mapStoredMessage(r) : null;
   };
@@ -1636,6 +1655,26 @@ export class RecallStore {
     const rows = handle
       .prepare(`SELECT ${FACT_SELECT} FROM facts WHERE status = 'active' ORDER BY updated_at DESC LIMIT ?`)
       .all(limit) as Array<Record<string, unknown>>;
+    return rows.map(this.mapFact);
+  };
+
+
+  /**
+   * Facts first written at/after `ts` (Unix seconds), optionally filtered by a
+   * source LIKE pattern ('distilled', 'folder:%'). Re-upserts of an existing
+   * fact bump updated_at, not created_at, so this returns only genuinely new
+   * rows — the background passes use it to NAME what they just learned in the
+   * activity feed instead of reporting a bare count.
+   */
+  getFactsCreatedSince = (ts: number, sourceLike?: string): Fact[] => {
+    const handle = this.open();
+    const rows = (sourceLike
+      ? handle
+          .prepare(`SELECT ${FACT_SELECT} FROM facts WHERE created_at >= ? AND source LIKE ? ORDER BY id ASC`)
+          .all(ts, sourceLike)
+      : handle
+          .prepare(`SELECT ${FACT_SELECT} FROM facts WHERE created_at >= ? ORDER BY id ASC`)
+          .all(ts)) as Array<Record<string, unknown>>;
     return rows.map(this.mapFact);
   };
 
@@ -2428,7 +2467,7 @@ export class RecallStore {
   getMessagesForEmbedding = (afterId: number, limit = 200): StoredMessage[] => {
     const rows = this.open()
       .prepare(
-        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text
+        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text, web
          FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?`
       )
       .all(afterId, limit) as Array<Record<string, unknown>>;

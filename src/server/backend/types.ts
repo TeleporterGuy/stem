@@ -133,6 +133,8 @@ export interface ChatBackend extends EventEmitter {
   isInternalThread(threadId: string): boolean;
   /** True when the active turn read a memorize:false connected folder → skip Recall capture. */
   isCaptureSuppressed(threadId: string): boolean;
+  /** True when the active turn used web tools → captured messages are flagged `web` (untrusted content). */
+  isWebTainted(threadId: string): boolean;
   /**
    * Capture the live turn's held-back user message (deferred until the turn's
    * memorize:false verdict is knowable). Called by main just before capturing
