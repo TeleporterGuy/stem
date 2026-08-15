@@ -129,10 +129,13 @@ function LocalStatusLine({
 // persist on blur; mode/model switches persist immediately.
 function EmbeddingsFields({
   value,
-  onPatch
+  onPatch,
+  remoteError
 }: {
   value: EmbeddingsSettings;
   onPatch: (patch: Partial<EmbeddingsSettings>) => void;
+  /** Last recorded failure of the user's remote endpoint, shown under its fields. */
+  remoteError?: string | null;
 }) {
   const [local, setLocal] = useState(value);
   const [testing, setTesting] = useState(false);
@@ -232,6 +235,11 @@ function EmbeddingsFields({
             onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
             onBlur={() => onPatch({ apiKey: local.apiKey })}
           />
+          {remoteError && (
+            <p className="retrieval-status-error">
+              <TriangleAlert size={12} /> Error: {remoteError}
+            </p>
+          )}
         </>
       )}
       {mode !== 'off' && (
@@ -265,10 +273,13 @@ function EmbeddingsFields({
 // cosine ranking misses.
 function RerankerFields({
   value,
-  onPatch
+  onPatch,
+  remoteError
 }: {
   value: RerankerSettings;
   onPatch: (patch: Partial<RerankerSettings>) => void;
+  /** Last recorded failure of the user's remote endpoint, shown under its fields. */
+  remoteError?: string | null;
 }) {
   const [local, setLocal] = useState(value);
   const [testing, setTesting] = useState(false);
@@ -372,6 +383,11 @@ function RerankerFields({
             onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
             onBlur={() => onPatch({ apiKey: local.apiKey })}
           />
+          {remoteError && (
+            <p className="retrieval-status-error">
+              <TriangleAlert size={12} /> Error: {remoteError}
+            </p>
+          )}
         </>
       )}
       {mode !== 'off' && (
@@ -863,26 +879,29 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
   return (
     <div>
       {health.broken && (
-        // A down retrieval model, said out loud at the top of the tab — the
-        // model controls live in the collapsed advanced section below, and an
-        // error only visible there is an error nobody sees. Recall keeps
-        // working while this shows, just worse: the summary line names what
-        // the ranking has degraded to.
+        // A down retrieval stage, said out loud at the top of the tab — the
+        // controls live in the collapsed advanced section below, and an error
+        // only visible there is an error nobody sees. Recall keeps working
+        // while this shows, just worse: the summary line names what the
+        // ranking has degraded to. "Model" vs "server" per the failure's
+        // source, so a dead Ollama isn't blamed on the bundled model.
         <div className="retrieval-alert" role="alert">
           <TriangleAlert size={16} />
           <div className="retrieval-alert-msg">
-            {health.embedError && (
+            {health.embed && (
               <span>
-                <strong>Embedding model failed.</strong> {health.embedError}
+                <strong>{health.embed.remote ? 'Embeddings server failed.' : 'Embedding model failed.'}</strong>{' '}
+                {health.embed.error}
               </span>
             )}
-            {health.rerankError && (
+            {health.rerank && (
               <span>
-                <strong>Reranker model failed.</strong> {health.rerankError}
+                <strong>{health.rerank.remote ? 'Reranker server failed.' : 'Reranker model failed.'}</strong>{' '}
+                {health.rerank.error}
               </span>
             )}
             <span className="muted">
-              {health.embedError
+              {health.embed
                 ? 'Until this is fixed, memories are picked by keywords and recency alone — matches by meaning are missed.'
                 : 'Until this is fixed, memories rank by embedding similarity alone — cross-language matches are missed.'}
             </span>
@@ -1101,8 +1120,16 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                   ))}
                 </div>
               </div>
-              <EmbeddingsFields value={retrieval.embeddings} onPatch={patchEmbeddings} />
-              <RerankerFields value={retrieval.reranker} onPatch={patchReranker} />
+              <EmbeddingsFields
+                value={retrieval.embeddings}
+                onPatch={patchEmbeddings}
+                remoteError={health.embed?.remote ? health.embed.error : null}
+              />
+              <RerankerFields
+                value={retrieval.reranker}
+                onPatch={patchReranker}
+                remoteError={health.rerank?.remote ? health.rerank.error : null}
+              />
             </div>
           )}
         </>

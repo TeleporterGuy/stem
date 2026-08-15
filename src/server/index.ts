@@ -41,6 +41,7 @@ import { EMBED_CATALOG } from './recall/embed-catalog';
 import type { EmbedWorkerManager } from './recall/embed-manager';
 import { RERANK_CATALOG } from './recall/rerank-catalog';
 import type { ScanWorkerManager } from './recall/scan-manager';
+import type { RemoteHealthTracker } from './recall/remote-health';
 import { backfillChatIndex, reindexChatThread } from './chatsearch/index-sync';
 import {
   markOnboardingCompleted,
@@ -149,6 +150,9 @@ let embedManager: EmbedWorkerManager | null = null;
 // Recall scan worker manager (cosine scans + episodic VACUUM off the main event
 // loop). Created in startServer; the worker itself spawns lazily.
 let scanManager: ScanWorkerManager | null = null;
+// Verdict cache for the user's remote retrieval endpoints (created in startServer
+// with the rest of the retrieval wiring).
+let remoteHealth: RemoteHealthTracker | null = null;
 // When the user last started/stopped a turn, on any surface. Drives the
 // scheduler's isUserActive signal so scheduled runs defer while they're chatting.
 let lastInteractiveAt = 0;
@@ -275,6 +279,7 @@ function registerIpc(): void {
     scheduler: () => scheduler,
     providerAuth: () => providerAuth,
     embedManager: () => embedManager,
+    remoteHealth: () => remoteHealth,
     emit,
     onAuthenticated,
     scheduleMemoryRebuild: () => scheduleMemoryRebuild(),
@@ -471,6 +476,12 @@ function registerIpc(): void {
       if (after.reranker.mode === 'local') embedManager.reconfigureRerank(RERANK_CATALOG[after.reranker.localModel]);
       else if (before.reranker.mode === 'local') embedManager.reconfigureRerank(null);
     }
+    // A touched stage gets its remote-endpoint verdict wiped: it described the
+    // OLD config (a mode that's no longer remote, a URL the user just fixed),
+    // and a stale red marker would say "still broken" about a change the next
+    // real request hasn't judged yet.
+    if (patch.embeddings) remoteHealth?.reset('embeddings');
+    if (patch.reranker) remoteHealth?.reset('reranker');
     return next;
   });
   registerServer('settings:testRetrieval', async (_e, stage: RetrievalStage): Promise<RetrievalTestResult> => {
@@ -530,6 +541,7 @@ function registerIpc(): void {
     try {
       if (stage === 'embeddings') {
         const [vec] = await createHttpEmbeddingsClient(getCfg, { timeoutMs: 20_000 }).embed(['Stem retrieval test']);
+        remoteHealth?.recordOk(stage);
         return { ok: true, detail: `${vec.length}-dim · ${Date.now() - startedAt} ms` };
       }
       const ranked = await createHttpRerankClient(getCfg, { timeoutMs: 20_000 }).rerank(
@@ -537,10 +549,17 @@ function registerIpc(): void {
         ['I have a dog', 'the sky is blue'],
         2
       );
+      remoteHealth?.recordOk(stage);
       return { ok: true, detail: `ranked ${ranked.length} · ${Date.now() - startedAt} ms` };
     } catch (err) {
       const e = err as { message?: string; cause?: { code?: string } };
-      return { ok: false, detail: e.cause?.code ?? e.message ?? 'request failed' };
+      const detail = e.cause?.code ?? e.message ?? 'request failed';
+      // Test outcomes feed the verdict cache both ways: a passing test clears
+      // the red markers immediately (the fix shouldn't wait for the next recall
+      // pass to be believed), and a failing one raises them without waiting for
+      // a pass to trip over the endpoint.
+      remoteHealth?.recordError(stage, detail);
+      return { ok: false, detail };
     }
   });
 }
@@ -644,6 +663,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   });
   embedManager = retrieval.embedManager;
   scanManager = retrieval.scanManager;
+  remoteHealth = retrieval.remoteHealth;
 
   // Skill usage tracking: anchor trackingSince and prune entries for deleted
   // skills. Unconditional — usage feeds the Manage panel regardless of the

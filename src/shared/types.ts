@@ -1572,6 +1572,26 @@ export interface LocalRerankStatus {
 }
 
 /**
+ * Last known verdict on a user-configured remote retrieval endpoint (mode ===
+ * 'remote'), per stage. Unlike the local statuses there is no lifecycle to
+ * stream — just the outcome of the most recent real request: 'unknown' until
+ * one has been made (or after a settings change wipes a stale verdict), then
+ * 'ok'/'error'. An 'error' here means recall is silently degrading on every
+ * pass, which is why it feeds the same red markers the local statuses do.
+ */
+export interface RemoteEndpointHealth {
+  state: 'unknown' | 'ok' | 'error';
+  /** Human-readable failure while state === 'error'. */
+  error?: string;
+}
+
+/** Both stages' remote-endpoint verdicts, as pushed on 'retrieval:remoteHealth'. */
+export interface RemoteRetrievalHealth {
+  embeddings: RemoteEndpointHealth;
+  reranker: RemoteEndpointHealth;
+}
+
+/**
  * Reusable two-stage retrieval config: embeddings (candidate ranking) + reranker
  * (precision reorder). Used today to rank durable facts at inject time; the same
  * seam can back episodic semantic search later.
@@ -2354,6 +2374,10 @@ export interface StemApi {
   getLocalRerankStatus(): Promise<LocalRerankStatus>;
   /** Fired whenever the local reranker model's status changes (incl. download progress). */
   onLocalRerankStatus(listener: (status: LocalRerankStatus) => void): () => void;
+  /** Last known verdicts on the remote retrieval endpoints (mode === 'remote'). */
+  getRemoteRetrievalHealth(): Promise<RemoteRetrievalHealth>;
+  /** Fired whenever a remote retrieval endpoint's verdict changes. */
+  onRemoteRetrievalHealth(listener: (health: RemoteRetrievalHealth) => void): () => void;
   /** Overlay → main: run a prompt in the overlay's own thread (main hides the
    *  overlay + raises the HUD, pre-creating a thread for a fresh session). */
   runQuickChat(prompt: QuickChatPrompt): Promise<StartTurnResult>;
