@@ -81,9 +81,10 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
     return { deviceId: identity?.deviceId ?? null, configuredUrl, ...deps.connection() };
   }
 
-  // Who this client is. Deliberately answered here and not by the server: the
-  // server has no notion of "the device asking" (dispatchLocal carries no caller
-  // — see ipc/guard.ts), and every fact here is about this machine anyway. It is
+  // Who this client is. Deliberately answered here and not by the server: what
+  // the server knows about "the device asking" is one id it resolved from a
+  // bearer token (see ipc/guard.ts), and every fact here — the configured URL,
+  // whether we can reach it — is about this machine and not in that. It is
   // what lets Settings → Server → Devices point at your own row instead of offering to
   // revoke the credential you are holding.
   handleLocal('client:info', clientInfo);

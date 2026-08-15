@@ -56,6 +56,20 @@ export interface DeviceRecord {
   createdAt: string;
   /** Last successful authentication, or null if it has never connected. */
   lastSeenAt: string | null;
+  /**
+   * The device's APNs token, when it has asked to be woken (devices:registerPush).
+   * Absent for every device that never did, which is every device today except an
+   * iOS client — so devices.json stays version 2: an older file simply has no
+   * such field, and a record without one is a device we never push to.
+   *
+   * It is not a credential. An APNs token addresses a device on Apple's network
+   * and can only be spent by whoever also holds our provider key, so it is stored
+   * in the clear where the bearer token deliberately is not — hashing it would
+   * make it unusable for the one thing it is for.
+   */
+  apnsToken?: string;
+  /** Which push network `apnsToken` belongs to. Only iOS has one today. */
+  platform?: 'ios';
 }
 
 /** A freshly minted device, and the one moment its token is knowable. */
@@ -148,7 +162,12 @@ function parseDevices(raw: string): DeviceRecord[] | null {
         role: 'device',
         label: typeof record.label === 'string' ? record.label : 'Unnamed device',
         createdAt: typeof record.createdAt === 'string' ? record.createdAt : '',
-        lastSeenAt: typeof record.lastSeenAt === 'string' ? record.lastSeenAt : null
+        lastSeenAt: typeof record.lastSeenAt === 'string' ? record.lastSeenAt : null,
+        // Carried through rather than defaulted: a device with no push token is
+        // the ordinary case, and the field is absent rather than empty so an old
+        // file and a new one round-trip to the same JSON.
+        ...(typeof record.apnsToken === 'string' && record.apnsToken ? { apnsToken: record.apnsToken } : {}),
+        ...(record.platform === 'ios' ? { platform: 'ios' as const } : {})
       }
     ];
   });
@@ -215,6 +234,80 @@ export function revokeDevice(id: string): Promise<boolean> {
     await writeDevices(remaining);
     return true;
   });
+}
+
+/**
+ * The record with no push fields at all. Rebuilt field by field rather than
+ * spread-and-delete, so that clearing really removes both: the fields go away
+ * together, because a record carrying a platform but no token would claim a push
+ * network for a device we cannot address on it. Returns the SAME object when
+ * there was nothing to clear, so a caller can tell a no-op from a change.
+ */
+function withoutPushToken(d: DeviceRecord): DeviceRecord {
+  if (d.apnsToken === undefined && d.platform === undefined) return d;
+  return {
+    id: d.id,
+    tokenHash: d.tokenHash,
+    role: d.role,
+    label: d.label,
+    createdAt: d.createdAt,
+    lastSeenAt: d.lastSeenAt
+  };
+}
+
+/**
+ * Record (or drop) the APNs token a device wants to be woken on. Returns whether
+ * a record was touched — false for a device that is no longer registered, which
+ * is a no-op rather than an error: a phone that was revoked mid-flight should not
+ * be able to resurrect anything about itself by registering.
+ *
+ * Dropping is not only the phone's to ask for. APNs answers 410 for a token that
+ * has gone (the app was deleted, the device restored), and the sender clears it
+ * through here — otherwise every later push would spend a request proving the
+ * same thing again.
+ *
+ * ONE TOKEN IS ONE APP INSTALL, so storing it here takes it away from every other
+ * record. A phone that is unpaired and paired again keeps its native token (iOS
+ * mints that per install, and knows nothing about our pairing) but arrives as a
+ * NEW device row, since the old row's credential is what was withdrawn, not the
+ * phone. Left alone, both rows would name the same phone and it would be woken
+ * twice for everything, forever: APNs answers 200 to both, so the 410 healing
+ * above never fires and nothing else would ever notice. The stale row keeps its
+ * identity and its place in Settings → Server → Devices; it just stops being an
+ * address.
+ */
+export function setDevicePushToken(
+  id: string,
+  apnsToken: string | null,
+  platform: 'ios' = 'ios'
+): Promise<boolean> {
+  return enqueue(async () => {
+    const devices = await loadDevices();
+    if (!devices.some((d) => d.id === id)) return false;
+    const next = devices.map((d) => {
+      if (d.id !== id) {
+        // Somebody else's row holding this very token: it is not theirs.
+        return apnsToken && d.apnsToken === apnsToken ? withoutPushToken(d) : d;
+      }
+      if (!apnsToken) return withoutPushToken(d);
+      if (d.apnsToken === apnsToken && d.platform === platform) return d;
+      return { ...withoutPushToken(d), apnsToken, platform };
+    });
+    // Nothing moved — the ordinary case for a phone re-registering the token it
+    // already had on launch, and not worth a file write.
+    if (next.every((d, i) => d === devices[i])) return true;
+    await writeDevices(next);
+    return true;
+  });
+}
+
+/**
+ * Every device that has asked to be woken. The push sender's whole address book —
+ * a device absent from here is one we have no way to reach out-of-band, which is
+ * every device until an iOS client registers one.
+ */
+export async function devicesWithPushTokens(): Promise<readonly DeviceRecord[]> {
+  return (await readDevices()).filter((d) => !!d.apnsToken);
 }
 
 /**

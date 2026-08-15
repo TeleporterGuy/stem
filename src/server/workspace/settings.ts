@@ -30,6 +30,8 @@ import type {
 } from '../../shared/types';
 import { type BackgroundRole, resolveRoleEffort } from '../../shared/modelRoles';
 import { DEFAULT_SCRATCH_TTL_DAYS } from '../exec/scratch';
+import { EMBED_CATALOG } from '../recall/embed-catalog';
+import { RERANK_CATALOG } from '../recall/rerank-catalog';
 import { settingsStorePath } from './paths';
 
 // Stem-owned app settings. Like the chat store, kept deliberately tiny and
@@ -113,7 +115,12 @@ const DEFAULTS: ServerSettings = {
       apiKey: null
     },
     reranker: {
-      mode: 'off',
+      // On by default since the reranker became the fact-injection GATE
+      // (inject.ts): without it, selection degrades to the scale-free fallback
+      // tiers, which recall-bench/ measured as materially worse. The model
+      // (~570 MB) downloads lazily on first use; until it is ready, turns
+      // degrade gracefully rather than wait.
+      mode: 'local',
       localModel: 'bge-reranker-v2-m3',
       baseUrl: 'http://localhost:8080',
       model: '',
@@ -160,7 +167,12 @@ function coerceEffort(raw: unknown): string | null {
 }
 
 const RERANKER_MODES: readonly RerankerMode[] = ['off', 'local', 'remote'];
-const LOCAL_RERANK_MODELS: readonly LocalRerankModelId[] = ['bge-reranker-v2-m3'];
+// Derived from the catalog, not written out by hand: a hand-kept copy silently
+// rejected 'qwen3-reranker-0.6b' when it was added everywhere but here, and
+// "selecting the new model silently reverts to the old one" is the failure mode.
+const LOCAL_RERANK_MODELS: readonly LocalRerankModelId[] = Object.keys(
+  RERANK_CATALOG
+) as LocalRerankModelId[];
 
 function coerceReranker(
   raw: (Partial<RerankerSettings> & { enabled?: unknown }) | undefined,
@@ -169,7 +181,9 @@ function coerceReranker(
   const r = raw ?? {};
   // Migration from the pre-mode shape ({ enabled: boolean } + endpoint fields):
   // enabled:true meant "user pointed us at their own /rerank server" → remote;
-  // anything else takes the default (off — the rerank stage is opt-in).
+  // anything else takes the default. An explicit mode ('off' included) is
+  // always preserved — defaulting the gate on must not override a user who
+  // turned it off.
   const mode: RerankerMode = RERANKER_MODES.includes(r.mode as RerankerMode)
     ? (r.mode as RerankerMode)
     : r.enabled === true
@@ -187,11 +201,10 @@ function coerceReranker(
 }
 
 const EMBEDDINGS_MODES: readonly EmbeddingsMode[] = ['off', 'local', 'remote'];
-const LOCAL_EMBED_MODELS: readonly LocalEmbedModelId[] = [
-  'multilingual-e5-small',
-  'multilingual-e5-base',
-  'embeddinggemma-300m'
-];
+// Same rule as LOCAL_RERANK_MODELS: the catalog is the one source of truth.
+const LOCAL_EMBED_MODELS: readonly LocalEmbedModelId[] = Object.keys(
+  EMBED_CATALOG
+) as LocalEmbedModelId[];
 
 function coerceEmbeddings(
   raw: (Partial<EmbeddingsSettings> & { enabled?: unknown }) | undefined,

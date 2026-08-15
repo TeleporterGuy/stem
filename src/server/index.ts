@@ -25,7 +25,9 @@ import { initExecService } from './startup/exec';
 import { initSkills } from './startup/skills';
 import { closeTransport, pushToClients, startTransport, type TransportEndpoint } from './startup/transport';
 import { setActivityEmitter } from './activity';
-import { liveTurnCount, noteTurnEvent } from './live-turns';
+import { foldTurnEvent, liveTurnCount, noteTurnStart } from './live-turns';
+import { pushApprovalRequest, pushTurnFinished, type ApprovalPushKind } from './push';
+import { closeApns } from './push/apns';
 import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
 import { ensureUsageTracking } from './skills/usage';
@@ -40,6 +42,7 @@ import { EMBED_CATALOG } from './recall/embed-catalog';
 import type { EmbedWorkerManager } from './recall/embed-manager';
 import { RERANK_CATALOG } from './recall/rerank-catalog';
 import type { ScanWorkerManager } from './recall/scan-manager';
+import type { RemoteHealthTracker } from './recall/remote-health';
 import { backfillChatIndex, reindexChatThread } from './chatsearch/index-sync';
 import {
   markOnboardingCompleted,
@@ -148,6 +151,9 @@ let embedManager: EmbedWorkerManager | null = null;
 // Recall scan worker manager (cosine scans + episodic VACUUM off the main event
 // loop). Created in startServer; the worker itself spawns lazily.
 let scanManager: ScanWorkerManager | null = null;
+// Verdict cache for the user's remote retrieval endpoints (created in startServer
+// with the rest of the retrieval wiring).
+let remoteHealth: RemoteHealthTracker | null = null;
 // When the user last started/stopped a turn, on any surface. Drives the
 // scheduler's isUserActive signal so scheduled runs defer while they're chatting.
 let lastInteractiveAt = 0;
@@ -171,6 +177,22 @@ let scheduleCurateAfterCreate: (() => void) | null = null;
  */
 function emit(channel: string, payload: unknown): void {
   pushToClients(channel, payload);
+}
+
+/**
+ * The other half of "something happened": wake a phone that is not looking at
+ * the stream. Every call is beside an emit(), never instead of one — the SSE
+ * frame is what a client acts on, and the push only asks it to come and look.
+ *
+ * Off unless APNs is configured, which it is not on an ordinary install, and
+ * silent while somebody is at a machine. See server/push/.
+ */
+function pushApproval(kind: ApprovalPushKind, params: unknown): void {
+  // Every one of the four cards carries these two, under these names (see
+  // ExecApprovalRequest / McpAdminProposal / InstructionsProposal / SkillProposal).
+  const card = params as { id?: string | number; threadId?: string } | undefined;
+  if (card?.id === undefined) return;
+  pushApprovalRequest(kind, { id: card.id, ...(card.threadId ? { threadId: card.threadId } : {}) });
 }
 
 /** Pick a sensible app default from the models the signed-in providers expose. */
@@ -258,6 +280,7 @@ function registerIpc(): void {
     scheduler: () => scheduler,
     providerAuth: () => providerAuth,
     embedManager: () => embedManager,
+    remoteHealth: () => remoteHealth,
     emit,
     onAuthenticated,
     scheduleMemoryRebuild: () => scheduleMemoryRebuild(),
@@ -285,13 +308,27 @@ function registerIpc(): void {
     const settings = await readSettings();
     const ci = settings.customInstructions;
     const quickChat = input.surface === 'quickChat';
-    return runtime!.startTurn({
+    const started = await runtime!.startTurn({
       ...input,
       webSearch: quickChat ? settings.webSearch.quickChat : settings.webSearch.main,
       instructions: quickChat
         ? [ci.main, ci.quickChat].map((s) => s.trim()).filter(Boolean).join('\n')
         : ci.main
     });
+    // Start the turn's clock the moment there is a turn. Waiting for its first
+    // event (which is where the fold otherwise learns of it) means a turn that
+    // hangs without ever streaming anything has no start time at all, and its
+    // eventual failure is measured as "unknown" and pushes nothing — silence for
+    // precisely the turns worth a notification. An input the backend answered
+    // itself (a remembered fact) has no turn and no clock.
+    //
+    // Internal threads are skipped for the same reason the event handler below
+    // ignores them: their events never reach the fold, so a mark made here would
+    // have nothing to clear it.
+    if (started.threadId && started.turnId && !runtime!.isInternalThread(started.threadId)) {
+      noteTurnStart(started.threadId, started.turnId);
+    }
+    return started;
   });
   registerServer('backend:interruptTurn', (_e, turnId: string) => {
     lastInteractiveAt = Date.now();
@@ -441,6 +478,12 @@ function registerIpc(): void {
       if (after.reranker.mode === 'local') embedManager.reconfigureRerank(RERANK_CATALOG[after.reranker.localModel]);
       else if (before.reranker.mode === 'local') embedManager.reconfigureRerank(null);
     }
+    // A touched stage gets its remote-endpoint verdict wiped: it described the
+    // OLD config (a mode that's no longer remote, a URL the user just fixed),
+    // and a stale red marker would say "still broken" about a change the next
+    // real request hasn't judged yet.
+    if (patch.embeddings) remoteHealth?.reset('embeddings');
+    if (patch.reranker) remoteHealth?.reset('reranker');
     return next;
   });
   registerServer('settings:testRetrieval', async (_e, stage: RetrievalStage): Promise<RetrievalTestResult> => {
@@ -500,6 +543,7 @@ function registerIpc(): void {
     try {
       if (stage === 'embeddings') {
         const [vec] = await createHttpEmbeddingsClient(getCfg, { timeoutMs: 20_000 }).embed(['Stem retrieval test']);
+        remoteHealth?.recordOk(stage);
         return { ok: true, detail: `${vec.length}-dim · ${Date.now() - startedAt} ms` };
       }
       const ranked = await createHttpRerankClient(getCfg, { timeoutMs: 20_000 }).rerank(
@@ -507,10 +551,17 @@ function registerIpc(): void {
         ['I have a dog', 'the sky is blue'],
         2
       );
+      remoteHealth?.recordOk(stage);
       return { ok: true, detail: `ranked ${ranked.length} · ${Date.now() - startedAt} ms` };
     } catch (err) {
       const e = err as { message?: string; cause?: { code?: string } };
-      return { ok: false, detail: e.cause?.code ?? e.message ?? 'request failed' };
+      const detail = e.cause?.code ?? e.message ?? 'request failed';
+      // Test outcomes feed the verdict cache both ways: a passing test clears
+      // the red markers immediately (the fix shouldn't wait for the next recall
+      // pass to be believed), and a failing one raises them without waiting for
+      // a pass to trip over the endpoint.
+      remoteHealth?.recordError(stage, detail);
+      return { ok: false, detail };
     }
   });
 }
@@ -548,8 +599,12 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     emit,
     isUserActive: () => busyWithin(USER_ACTIVE_WINDOW_MS),
     // Raising a window and bouncing a dock are things only a machine with a
-    // screen can do, so they leave as pushes rather than calls. Desktop-only by
-    // construction: neither channel is on the phone's push allowlist.
+    // screen can do, so they leave as pushes rather than calls. There is no
+    // allowlist deciding who hears them — every SSE client gets every channel
+    // (see transport/server.ts) — so these reach a paired phone too and are
+    // ignored there, because nothing on the phone subscribes to them. Waking a
+    // phone for a task is a separate, deliberate act: an APNs push, sent by
+    // push/index.ts under its own suppression rules.
     revealMainWindow: () => emit('client:revealMainWindow', null),
     requestAttention: () => emit('client:requestAttention', null)
   });
@@ -562,6 +617,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     runtime,
     emitApprovalRequest: (request) => {
       emit('exec:approvalRequest', request);
+      // The agent is blocked on this one until somebody answers it.
+      pushApproval('exec', request);
     },
     emitApprovalResolved: (id) => {
       emit('exec:approvalResolved', { id });
@@ -608,6 +665,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   });
   embedManager = retrieval.embedManager;
   scanManager = retrieval.scanManager;
+  remoteHealth = retrieval.remoteHealth;
 
   // Skill usage tracking: anchor trackingSince and prune entries for deleted
   // skills. Unconditional — usage feeds the Manage panel regardless of the
@@ -651,6 +709,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     // (never as a backend thread event, and never captured into recall).
     if (event.method === 'mcp/admin/approvalRequest') {
       emit('mcp:adminApproval', event.params);
+      pushApproval('mcp', event.params);
       return;
     }
     if (event.method === 'mcp/admin/approvalResolved') {
@@ -659,10 +718,12 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     }
     if (event.method === 'instructions/approvalRequest') {
       emit('instructions:approvalRequest', event.params);
+      pushApproval('instructions', event.params);
       return;
     }
     if (event.method === 'skills/approvalRequest') {
       emit('skills:approvalRequest', event.params);
+      pushApproval('skill', event.params);
       return;
     }
     if (event.method === 'skills/approvalResolved') {
@@ -688,7 +749,10 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     const threadId = (event.params as { threadId?: string } | undefined)?.threadId;
     // Hidden internal threads (distillation) are neither shown nor captured.
     if (threadId && runtime!.isInternalThread(threadId)) return;
-    noteTurnEvent(
+    // Folding and measuring in one call: the fold is what forgets the turn, so
+    // the age has to be read first — see foldTurnEvent, where that ordering lives
+    // with its test.
+    const { ranForMs } = foldTurnEvent(
       event.method,
       threadId,
       (event.params as { turnId?: string } | undefined)?.turnId
@@ -702,6 +766,25 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     // phone role gone the narrowing selected every connected client anyway, and
     // the claim it read (`client:claimThread`) had no other reader — so both went.
     emit('backend:event', event);
+    // A long turn ending is the second thing worth a phone buzzing for: whoever
+    // started it has had half a minute to walk away, and the answer is now
+    // sitting there. Short turns push nothing — see MIN_TURN_PUSH_MS, which is
+    // where that rule lives. The title is a thunk so the lookup only happens if
+    // the push is actually going out.
+    //
+    // A scheduled run is excluded, and not as an optimization: nobody is waiting
+    // on it, it fires on a cron, and most of its runs find nothing. Whether one
+    // was worth interrupting anybody is a question its own notify_user answers
+    // (see startup/scheduler.ts) — treating "it finished" as news would put a
+    // notification on the phone every time a watch task ticked.
+    if (threadId && ranForMs !== null && !scheduler?.runningTask(threadId)) {
+      pushTurnFinished({
+        threadId,
+        failed: event.method === 'turn/failed',
+        ranForMs,
+        label: async () => (await runtime!.listThreads()).find((c) => c.threadId === threadId)?.title ?? null
+      });
+    }
     if (isRecallEnabled()) {
       // Skip capture when the turn read inside a memorize:false connected folder, so
       // its (potentially confidential) reply never enters Recall. scheduleDistill still
@@ -772,6 +855,10 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       // Destroys any open SSE stream before closing the listener — without that,
       // close() waits for a connection that by design never ends.
       void closeTransport();
+      // The APNs connection is unref'd and would not hold the process open, but
+      // a half-open HTTP/2 session outliving the server it belonged to is the
+      // kind of thing that only shows up as a mystery in a long-lived host.
+      closeApns();
       return runtime!.shutdown();
     }
   };

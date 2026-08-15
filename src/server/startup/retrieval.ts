@@ -13,6 +13,7 @@ import { createEmbedWorkerManager, type EmbedWorkerManager } from '../recall/emb
 import { createEmbeddingsRouter, createLocalEmbeddingsClient } from '../recall/embed-local';
 import { RERANK_CATALOG } from '../recall/rerank-catalog';
 import { createLocalRerankClient, createRerankRouter } from '../recall/rerank-local';
+import { createRemoteHealthTracker, type RemoteHealthTracker } from '../recall/remote-health';
 import { spawnEmbedWorker } from '../recall/embed-worker-host';
 import { createScanWorkerManager, type ScanWorkerManager } from '../recall/scan-manager';
 import { spawnScanWorker } from '../recall/scan-worker-host';
@@ -24,6 +25,8 @@ const { getEpisodicGeneration, getFactsGeneration, getFactsMissingVector, pruneM
 export interface RetrievalRuntime {
   embedManager: EmbedWorkerManager;
   scanManager: ScanWorkerManager;
+  /** Verdict cache for the user's remote retrieval endpoints (mode === 'remote'). */
+  remoteHealth: RemoteHealthTracker;
 }
 
 /**
@@ -111,16 +114,23 @@ export function initRetrieval(deps: {
   const getEmbedSettings = async () => (await readSettings()).retrieval.embeddings;
   const getRerankSettings = async () => (await readSettings()).retrieval.reranker;
   const localEmbeddings = createLocalEmbeddingsClient(getEmbedSettings, embedManager);
+  // Remote endpoints have no lifecycle to stream the way the local worker does,
+  // so their health is the recorded outcome of the requests recall makes anyway
+  // — the wrappers below write it, and the Memory tab's red markers read it.
+  const remoteHealth = createRemoteHealthTracker();
+  remoteHealth.onChange((health) => deps.emit('retrieval:remoteHealth', health));
   setRetrievalClients({
     embeddings: createEmbeddingsRouter({
       getMode: async () => (await getEmbedSettings()).mode,
       local: localEmbeddings,
-      remote: createHttpEmbeddingsClient(async () => {
-        const e = await getEmbedSettings();
-        return e.mode === 'remote' && e.baseUrl && e.model
-          ? { baseUrl: e.baseUrl, model: e.model, apiKey: e.apiKey }
-          : null;
-      })
+      remote: remoteHealth.wrapEmbeddings(
+        createHttpEmbeddingsClient(async () => {
+          const e = await getEmbedSettings();
+          return e.mode === 'remote' && e.baseUrl && e.model
+            ? { baseUrl: e.baseUrl, model: e.model, apiKey: e.apiKey }
+            : null;
+        })
+      )
     }),
     // Precision rerank stage: the bundled cross-encoder (co-hosted in the embed
     // worker) or the user's own Cohere/Jina-style /rerank endpoint (llama.cpp
@@ -129,12 +139,14 @@ export function initRetrieval(deps: {
     rerank: createRerankRouter({
       getMode: async () => (await getRerankSettings()).mode,
       local: createLocalRerankClient(getRerankSettings, embedManager),
-      remote: createHttpRerankClient(async () => {
-        const r = await getRerankSettings();
-        return r.mode === 'remote' && r.baseUrl && r.model
-          ? { baseUrl: r.baseUrl, model: r.model, apiKey: r.apiKey }
-          : null;
-      })
+      remote: remoteHealth.wrapRerank(
+        createHttpRerankClient(async () => {
+          const r = await getRerankSettings();
+          return r.mode === 'remote' && r.baseUrl && r.model
+            ? { baseUrl: r.baseUrl, model: r.model, apiKey: r.apiKey }
+            : null;
+        })
+      )
     })
   });
   // Serve query embeddings to the stem-recall MCP server over a local unix
@@ -227,5 +239,5 @@ export function initRetrieval(deps: {
       });
     }, 1_500);
   }
-  return { embedManager, scanManager };
+  return { embedManager, scanManager, remoteHealth };
 }

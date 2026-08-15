@@ -53,6 +53,11 @@ RUN npm ci --no-audit --no-fund
 COPY tsconfig.json electron.vite.config.ts ./
 COPY src ./src
 COPY scripts ./scripts
+# The bundle inlines documentation: stem-guide.ts and friends import
+# docs/**/*.md and RELEASE_NOTES.md with `?raw`, so the build stage needs the
+# actual files (screenshots stay out via .dockerignore).
+COPY docs ./docs
+COPY RELEASE_NOTES.md ./
 RUN npx electron-vite build
 
 # ---- stage 2: production dependencies ----------------------------------------
@@ -66,7 +71,14 @@ ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 COPY package.json package-lock.json ./
 COPY patches ./patches
 COPY scripts/ensure-electron.mjs ./scripts/ensure-electron.mjs
-RUN npm ci --omit=dev --no-audit --no-fund
+# `postinstall` runs patch-package, which is a devDependency and so is not
+# installed by --omit=dev — the bare `npm ci` dies with `patch-package: not
+# found`. Skip scripts and apply the patches with a fetched patch-package
+# instead: pi-web-access is a production dependency and must ship patched.
+# (ensure-electron.mjs is the other postinstall step; it exits 0 immediately
+# when electron is absent, which with --omit=dev it always is.)
+RUN npm ci --omit=dev --no-audit --no-fund --ignore-scripts \
+  && npx --yes patch-package@8.0.1
 
 # ---- stage 3: what actually ships --------------------------------------------
 FROM ${NODE_IMAGE} AS runtime

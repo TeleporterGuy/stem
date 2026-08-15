@@ -7,6 +7,7 @@ import { SourcesTab } from './tabs/FoldersTab';
 import { TasksTab } from './tabs/TasksTab';
 import { SettingsTab } from './tabs/settings/SettingsTab';
 import { useRememberedTab } from '../hooks/useRememberedTab';
+import { useRetrievalHealth } from '../hooks/useRetrievalHealth';
 import type { ModelTabProps, ActiveFactsViewProps } from './tabs/shared';
 
 type Tab = 'chats' | 'memory' | 'mcp' | 'folders' | 'tasks' | 'settings';
@@ -61,6 +62,9 @@ function ManagePanelImpl({
     onTogglePreview
   };
   const [tab, setTab] = useRememberedTab<Tab>('stem.manage.tab', TAB_IDS, 'chats');
+  // A down retrieval model degrades recall silently (selection falls back to
+  // lexical/recency), so it gets the same red dot a dead provider does.
+  const retrievalBroken = useRetrievalHealth().broken;
   return (
     <div className="manage">
       <div className="insp-tabs">
@@ -70,9 +74,11 @@ function ManagePanelImpl({
             const tip =
               id === 'settings' && authDeadProvider
                 ? `${label} — a provider needs reconnecting`
-                : unread
-                  ? `${label} — ${unread} unread`
-                  : label;
+                : id === 'memory' && retrievalBroken
+                  ? `${label} — a retrieval model failed`
+                  : unread
+                    ? `${label} — ${unread} unread`
+                    : label;
             return (
               <button
                 key={id}
@@ -88,6 +94,7 @@ function ManagePanelImpl({
                   {tip}
                 </span>
                 {id === 'settings' && authDeadProvider && <span className="tab-alert-dot" />}
+                {id === 'memory' && retrievalBroken && <span className="tab-alert-dot" />}
                 {/* Capped at 99+ so a long-ignored Inbox can't widen the rail. */}
                 {unread > 0 && (
                   <span className="tab-count-badge" aria-hidden="true">

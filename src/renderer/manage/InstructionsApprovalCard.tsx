@@ -1,23 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Pencil } from 'lucide-react';
 import type { CustomInstructionsSettings, InstructionsProposal } from '../../shared/types';
+// The append/replace/clear rule moved to shared/ when the phone gained the same
+// card — see the header there for why both clients must resolve it identically.
+import { resolvedInstructionsText as resolvedText } from '../../shared/instructions';
 import { enqueueApproval, removeApproval } from './approvalQueue';
 
 type Surface = 'main' | 'quickChat';
-
-// Compute the resulting full text for a surface from the assistant's proposed action.
-// The card writes the WHOLE surface string (main is the sole writer), so append is
-// resolved here against the current value rather than in the backend.
-function resolvedText(
-  action: InstructionsProposal['action'],
-  incomingText: string,
-  current: string
-): string {
-  if (action === 'clear') return '';
-  if (action === 'replace') return incomingText;
-  // append
-  return current ? `${current}\n${incomingText}` : incomingText;
-}
 
 // Modal confirm card shown when the assistant proposes a custom-instructions change
 // (the `set_custom_instructions` tool). The user edits the final text and picks the

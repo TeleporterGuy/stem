@@ -316,8 +316,12 @@ describe('Stem Recall — fact relevance ranking', () => {
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
   });
 
-  it('always relevance-ranks facts, even for a small store', async () => {
+  it('a flat cosine distribution admits nothing semantic; only the direct lexical match injects', async () => {
     store.resetFacts();
+    // This embedder scores every fact identically against the query — pure
+    // ambiguity. The old pipeline injected ALL of them (its absolute gate saw
+    // three passing scores); the z-gate correctly reads "nothing stands out"
+    // and stands aside for the lexical direct match.
     const emb = keywordEmbeddings(/anything/i);
     retrieval.setRetrievalClients({ embeddings: emb.client, rerank: null });
 
@@ -326,10 +330,10 @@ describe('Stem Recall — fact relevance ranking', () => {
     store.upsertFact('The user codes in TypeScript', 'distilled');
 
     const ctx = (await inject.buildRecallContext('where do I live', {})) ?? '';
-    expect(emb.calls()).toBe(2); // query + passage-vector backfill
+    expect(emb.calls()).toBe(2); // query + passage-vector backfill still run
     expect(ctx).toMatch(/Bratislava/);
-    expect(ctx).toMatch(/Rex/);
-    expect(ctx).toMatch(/TypeScript/);
+    expect(ctx).not.toMatch(/Rex/);
+    expect(ctx).not.toMatch(/TypeScript/);
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
   });
 
@@ -423,7 +427,7 @@ describe('Stem Recall — fact relevance ranking', () => {
     expect(ctx).toBe('');
   });
 
-  it('trigram substring fallback recalls a partial-word match the term index misses', async () => {
+  it('trigram substring hits are reranker candidates, never direct injections', async () => {
     store.resetFacts();
     retrieval.setRetrievalClients({ embeddings: null, rerank: null });
     if (!store.factsTrigramAvailable()) return; // skip where the trigram tokenizer is unavailable
@@ -431,9 +435,30 @@ describe('Stem Recall — fact relevance ranking', () => {
     store.upsertFact('The user is optimizing the reranking stage of their pipeline', 'distilled');
     for (let i = 0; i < 45; i++) store.upsertFact(`The user dislikes vegetable ${i}`, 'distilled');
 
-    // "rank" is no unicode61 token in "reranking", but it is a trigram substring of it.
-    const ctx = (await inject.buildRecallContext('how does rank work here', {})) ?? '';
-    expect(ctx).toMatch(/reranking stage/);
+    // "rank" is no unicode61 token in "reranking", but it is a trigram substring
+    // of it. Without a reranker the trigram leg stays out of the injection —
+    // its ordering is recency, which carries no relevance signal.
+    const ungated = (await inject.buildRecallContext('how does rank work here', {})) ?? '';
+    expect(ungated).not.toMatch(/reranking stage/);
+
+    // With the gate up, the same trigram hit enters the candidate pool and the
+    // cross-encoder decides — this is what keeps morphology recall (Slovak
+    // inflections) alive under the gated pipeline.
+    retrieval.setRetrievalClients({
+      embeddings: null,
+      rerank: {
+        available: async () => true,
+        factGateScore: async () => -8,
+        rerank: async (_q: string, docs: string[], topN: number) =>
+          docs
+            .map((d, index) => ({ index, score: /reranking/.test(d) ? 0 : -11 }))
+            .sort((a, b) => b.score - a.score)
+            .slice(0, topN)
+      }
+    });
+    const gated = (await inject.buildRecallContext('how does rank work here', {})) ?? '';
+    expect(gated).toMatch(/reranking stage/);
+    retrieval.setRetrievalClients({ embeddings: null, rerank: null });
   });
 
   it('v2 injection is structured, partial, and points at on-demand search', async () => {

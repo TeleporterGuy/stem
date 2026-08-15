@@ -226,8 +226,14 @@ export interface TransportServerOptions {
    * authorization are decided from one lookup and can never disagree.
    */
   authenticate(presented: string | null): DeviceIdentity | null | Promise<DeviceIdentity | null>;
-  /** Runs a registered channel — guard.ts's dispatchLocal. */
-  dispatch(channel: string, args: unknown[]): Promise<unknown>;
+  /**
+   * Runs a registered channel — guard.ts's dispatchLocal. `caller` is the device
+   * this request authenticated as, passed through because a handler cannot
+   * otherwise know: every other input on this route comes from the body, which is
+   * the client's to write. It is an identity, not a permission — see the registry
+   * comment in ipc/guard.ts, which is still the whole of the authorization story.
+   */
+  dispatch(channel: string, args: unknown[], caller: { deviceId: string }): Promise<unknown>;
   /** Every channel registered on the server, for GET /channels to answer with. */
   registeredChannels(): readonly string[];
   /**
@@ -466,8 +472,18 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
    * is safe. There is no device-scoped push in this transport — `push()` has no
    * parameter that could express one, and the one producer above it broadcasts
    * (see startup/transport.ts) — so a frame in here is by construction a frame
-   * every authenticated device was already entitled to. If a per-device push is
-   * ever added, this buffer has to learn about it on the same day.
+   * every authenticated device was already entitled to.
+   *
+   * Phase 4 added an out-of-band per-device path (server/push/apns.ts wakes one
+   * phone through Apple's network), and it deliberately does NOT touch this. An
+   * APNs frame never enters the ring, because it is not a position in the stream
+   * and carries no state to replay: it is a tap on the shoulder saying "look at
+   * Stem", holding an id to deep-link to and a short label, never a message. SSE
+   * is still the sole state channel, and a client that missed or ignored a push
+   * loses nothing — it re-reads this stream and is whole again. The invariant is
+   * therefore unchanged and this buffer needs no per-device knowledge; what would
+   * break it is a push aimed at one device *through here*, and there is still no
+   * way to express one.
    *
    * Cost when nothing ever disconnects — which is every embedded install on a
    * good day — is the memory alone: the text stored here is the SAME string the
@@ -579,7 +595,7 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
       // dispatch runs the same per-channel argsProblem validation the renderer's
       // IPC gets, then the real handler — so a malformed startTurn is refused
       // here for exactly the reason it would be refused at the desk.
-      const result = await opts.dispatch(channel, args);
+      const result = await opts.dispatch(channel, args, { deviceId: gated.device.id });
       sendJson(res, 200, { ok: true, result: result ?? null });
     } catch (e) {
       const error = String((e as Error)?.message ?? e);

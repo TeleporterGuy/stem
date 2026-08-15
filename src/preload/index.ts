@@ -21,6 +21,7 @@ import type {
   LocalProviderId,
   LocalProviderSettings,
   LocalRerankStatus,
+  RemoteRetrievalHealth,
   McpAdminProposal,
   McpServerInput,
   McpServerStatus,
@@ -350,6 +351,12 @@ const api: StemApi = {
     const handler = (_e: unknown, status: LocalRerankStatus) => listener(status);
     ipcRenderer.on('reranker:localStatus', handler);
     return () => ipcRenderer.removeListener('reranker:localStatus', handler);
+  },
+  getRemoteRetrievalHealth: () => ipcRenderer.invoke('retrieval:remoteHealth'),
+  onRemoteRetrievalHealth: (listener: (health: RemoteRetrievalHealth) => void) => {
+    const handler = (_e: unknown, health: RemoteRetrievalHealth) => listener(health);
+    ipcRenderer.on('retrieval:remoteHealth', handler);
+    return () => ipcRenderer.removeListener('retrieval:remoteHealth', handler);
   },
   runQuickChat: (prompt: QuickChatPrompt) => ipcRenderer.invoke('quickchat:run', prompt),
   newQuickChatThread: () => ipcRenderer.invoke('quickchat:newThread'),

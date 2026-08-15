@@ -60,6 +60,13 @@ const EMBED_TIMEOUT_MS = 60_000;
 const RERANK_TIMEOUT_MS = 30_000;
 const ERROR_RETRY_MS = 5 * 60_000;
 const MAX_RESPAWNS = 3;
+// Restarts granted when the worker reports it purged a corrupt weights cache
+// (truncated download). The retry MUST be a new process — a failed ONNX load
+// poisons transformers.js state for every later load in the same one — and the
+// budget is 2 so the embedder and the reranker can each self-heal once per
+// kick; a re-download that comes back corrupt again settles into 'error'
+// instead of looping the download forever.
+const MAX_CORRUPT_RESPAWNS = 2;
 // A worker that survives this long before dying is treated as a genuine one-off
 // crash (fresh respawn budget), not a crash loop. Shorter than this counts toward
 // MAX_RESPAWNS so a worker that aborts moments after loading — e.g. an ONNX OOM on
@@ -84,6 +91,7 @@ export function createEmbedWorkerManager(deps: {
   let lastErrorAt = 0;
   let lastRerankErrorAt = 0;
   let respawns = 0;
+  let corruptRespawns = 0;
   let spawnedAt = 0;
   let nextId = 1;
   const inflight = new Map<number, PendingEmbed>();
@@ -152,9 +160,25 @@ export function createEmbedWorkerManager(deps: {
     transport.send({ type: 'rerank', id, query: p.query, docs: p.docs, topN: p.topN });
   }
 
+  /**
+   * The worker found and purged a corrupt weights cache: restart it so the
+   * re-download happens in a clean process, silently (statuses go back to
+   * 'loading' rather than surfacing an error the restart is about to fix).
+   * Within budget only; past it the error status flows through as usual.
+   */
+  function restartAfterCorruptPurge(status: { state: string; purgedCorruptCache?: boolean }): boolean {
+    if (status.state !== 'error' || !status.purgedCorruptCache) return false;
+    if (corruptRespawns >= MAX_CORRUPT_RESPAWNS) return false;
+    corruptRespawns += 1;
+    stop();
+    spawnProcess();
+    return true;
+  }
+
   function handleMessage(raw: unknown): void {
     const msg = raw as WorkerOutMessage;
     if (msg.type === 'status') {
+      if (restartAfterCorruptPurge(msg.status)) return;
       setStatus(msg.status);
       if (msg.status.state === 'ready') {
         // Reaching 'ready' does NOT reset the respawn budget: a worker can load
@@ -168,6 +192,7 @@ export function createEmbedWorkerManager(deps: {
       return;
     }
     if (msg.type === 'rerank-status') {
+      if (restartAfterCorruptPurge(msg.status)) return;
       setRerankStatus(msg.status);
       if (msg.status.state === 'ready') {
         for (const p of rerankQueued.splice(0)) sendRerank(p);
@@ -297,6 +322,7 @@ export function createEmbedWorkerManager(deps: {
       if (transport) stop();
       spec = target;
       respawns = 0;
+      corruptRespawns = 0;
       spawnProcess();
     },
     status: () => status,
@@ -318,6 +344,7 @@ export function createEmbedWorkerManager(deps: {
       if (!target) setStatus({ model: status.model, state: 'idle' });
       if (target || rerankSpec) {
         respawns = 0;
+        corruptRespawns = 0;
         spawnProcess();
       }
     },
@@ -341,6 +368,7 @@ export function createEmbedWorkerManager(deps: {
       }
       rerankSpec = target;
       respawns = 0;
+      corruptRespawns = 0;
       spawnProcess();
     },
     rerankStatus: () => rrStatus,
@@ -369,6 +397,7 @@ export function createEmbedWorkerManager(deps: {
       if (!target) setRerankStatus({ model: rrStatus.model, state: 'idle' });
       if (target || spec) {
         respawns = 0;
+        corruptRespawns = 0;
         spawnProcess();
       }
     },

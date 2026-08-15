@@ -1,4 +1,5 @@
 import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { log } from '../server/log';
 import type {
   AuthUiEvent,
@@ -242,6 +243,17 @@ export interface ServerProxy {
   invoke(channel: string, args: unknown[]): Promise<unknown>;
   /** Drop the stream and stop reconnecting (quit; tests). */
   close(): void;
+}
+
+/**
+ * `node:http` and `node:https` are separate modules that refuse each other's
+ * URLs outright — `request()` throws ERR_INVALID_PROTOCOL rather than following
+ * the scheme. `fetch` hides that, which is why only the hand-rolled event-stream
+ * reader below has to care: everything else here goes through `fetch`. Same
+ * dispatch as file-transfer.ts, for the same reason.
+ */
+function openStream(url: string, options: Parameters<typeof httpRequest>[1], onRes: Parameters<typeof httpRequest>[2]) {
+  return (url.startsWith('https:') ? httpsRequest : httpRequest)(url, options, onRes);
 }
 
 export function createServerProxy(deps: ProxyDeps): ServerProxy {
@@ -565,7 +577,7 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     clearRetry();
     stream?.destroy();
     streamOpen = false;
-    const req = httpRequest(
+    const req = openStream(
       `${base}/events`,
       {
         method: 'GET',

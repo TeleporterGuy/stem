@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send } from 'lucide-react';
+import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send, TriangleAlert } from 'lucide-react';
 import type {
   DefaultsSettings,
   MemoryContents,
@@ -27,6 +27,7 @@ import { resolveMemoryModel } from '../../../shared/modelRoles';
 import { clampEffort, EffortSelect, effortsOf } from '../../ui/EffortSelect';
 import { MdxView } from '../../chat/MdxView';
 import { useOffline } from '../../hooks/useServerReachable';
+import { useRetrievalHealth } from '../../hooks/useRetrievalHealth';
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { createJobStore, holdFullSpin, useJob, type ActiveFactsViewProps } from './shared';
@@ -66,9 +67,10 @@ const EMBED_MODES: { id: EmbeddingsMode; label: string; hint: string }[] = [
   { id: 'off', label: 'Off', hint: 'Rank facts by keywords/recency only' }
 ];
 
-// The curated local reranker, mirrored from server/recall/rerank-catalog.ts.
+// The curated local rerankers, mirrored from server/recall/rerank-catalog.ts.
 const LOCAL_RERANK_MODELS: { id: LocalRerankModelId; label: string; detail: string }[] = [
-  { id: 'bge-reranker-v2-m3', label: 'BGE Reranker v2 M3', detail: '~570 MB · multilingual' }
+  { id: 'qwen3-reranker-0.6b', label: 'Qwen3 Reranker 0.6B', detail: '~1.2 GB · multilingual · best recall measured' },
+  { id: 'bge-reranker-v2-m3', label: 'BGE Reranker v2 M3', detail: '~570 MB · multilingual · fastest' }
 ];
 
 const RERANK_MODES: { id: RerankerMode; label: string; hint: string }[] = [
@@ -103,16 +105,37 @@ function localStatusLabel(
   }
 }
 
+/** The status line under a local model picker — red with a warning mark on error,
+ *  muted otherwise. Errors here must not look like just another muted state: a
+ *  down model silently degrades every recall pass until someone notices. */
+function LocalStatusLine({
+  status
+}: {
+  status: { state: LocalEmbedStatus['state']; dim?: number; error?: string } | null;
+}) {
+  if (status?.state === 'error') {
+    return (
+      <p className="retrieval-status-error">
+        <TriangleAlert size={12} /> {localStatusLabel(status)}
+      </p>
+    );
+  }
+  return <p className="muted">{localStatusLabel(status)}</p>;
+}
+
 // Embeddings-stage controls: an exclusive Built-in / Server / Off mode, the local
 // model picker + live download/ready status, or the remote endpoint fields (free
 // text — Stem just makes the HTTP call). Text edits stay local while typing and
 // persist on blur; mode/model switches persist immediately.
 function EmbeddingsFields({
   value,
-  onPatch
+  onPatch,
+  remoteError
 }: {
   value: EmbeddingsSettings;
   onPatch: (patch: Partial<EmbeddingsSettings>) => void;
+  /** Last recorded failure of the user's remote endpoint, shown under its fields. */
+  remoteError?: string | null;
 }) {
   const [local, setLocal] = useState(value);
   const [testing, setTesting] = useState(false);
@@ -178,7 +201,7 @@ function EmbeddingsFields({
               </option>
             ))}
           </select>
-          <p className="muted">{localStatusLabel(status)}</p>
+          <LocalStatusLine status={status} />
         </>
       )}
       {mode === 'remote' && (
@@ -212,6 +235,11 @@ function EmbeddingsFields({
             onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
             onBlur={() => onPatch({ apiKey: local.apiKey })}
           />
+          {remoteError && (
+            <p className="retrieval-status-error">
+              <TriangleAlert size={12} /> Error: {remoteError}
+            </p>
+          )}
         </>
       )}
       {mode !== 'off' && (
@@ -245,10 +273,13 @@ function EmbeddingsFields({
 // cosine ranking misses.
 function RerankerFields({
   value,
-  onPatch
+  onPatch,
+  remoteError
 }: {
   value: RerankerSettings;
   onPatch: (patch: Partial<RerankerSettings>) => void;
+  /** Last recorded failure of the user's remote endpoint, shown under its fields. */
+  remoteError?: string | null;
 }) {
   const [local, setLocal] = useState(value);
   const [testing, setTesting] = useState(false);
@@ -322,7 +353,7 @@ function RerankerFields({
               </option>
             ))}
           </select>
-          <p className="muted">{localStatusLabel(status)}</p>
+          <LocalStatusLine status={status} />
         </>
       )}
       {mode === 'remote' && (
@@ -352,6 +383,11 @@ function RerankerFields({
             onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
             onBlur={() => onPatch({ apiKey: local.apiKey })}
           />
+          {remoteError && (
+            <p className="retrieval-status-error">
+              <TriangleAlert size={12} /> Error: {remoteError}
+            </p>
+          )}
         </>
       )}
       {mode !== 'off' && (
@@ -378,9 +414,73 @@ function RerankerFields({
   );
 }
 
+/**
+ * The measured-best retrieval setup, stated where it can be seen. Everything the
+ * claim rests on lives in recall-bench/ (60 real turns, hand-adjudicated gold):
+ * qwen3-embedding:4b via a server endpoint feeding the reranker gate beat the
+ * bundled local embedders, every cosine gate, deeper candidate pools, and an
+ * external memory system. The row sits outside the collapsed advanced section
+ * on purpose — a recommendation hidden behind "advanced" reaches nobody who
+ * hasn't already found it.
+ */
+function RecallQualityRow({
+  retrieval,
+  onReview
+}: {
+  retrieval: RetrievalSettings;
+  onReview: () => void;
+}) {
+  const embedBest =
+    retrieval.embeddings.mode === 'remote' &&
+    /qwen3-embedding/i.test(retrieval.embeddings.model ?? '');
+  const rerankOn = retrieval.reranker.mode !== 'off';
+  const rerankBest =
+    (retrieval.reranker.mode === 'local' && retrieval.reranker.localModel === 'qwen3-reranker-0.6b') ||
+    (retrieval.reranker.mode === 'remote' && /qwen3-reranker/i.test(retrieval.reranker.model ?? ''));
+  const best = embedBest && rerankBest;
+  const hint = best
+    ? 'Best measured setup — qwen3-embedding:4b with the Qwen3 reranker'
+    : embedBest && !rerankOn
+      ? 'Reranker is off — it measured best at choosing which facts to send'
+      : embedBest
+        ? 'Qwen3 Reranker 0.6B now measures best — switch the reranker model'
+        : rerankOn
+          ? 'Best measured: qwen3-embedding:4b via a server endpoint (Ollama)'
+          : 'Best measured: qwen3-embedding:4b (Ollama) with the Qwen3 reranker';
+  return (
+    <div className="group-row">
+      <span className="row-main">
+        <strong>
+          Recall quality{' '}
+          <InfoTip label="How this was measured">
+            Benchmarked on 60 real conversations with hand-labeled relevance:{' '}
+            <code>qwen3-embedding:4b</code> (served via Ollama) feeding the Qwen3 Reranker 0.6B chose
+            the right facts best — ahead of the bundled local models, larger embedders, similarity
+            thresholds, wider candidate pools, and an external memory system. The reranker is what
+            catches cross-language and association matches, like a Slovak question finding an
+            English fact; the Qwen3 reranker separates those from noise markedly better than BGE.
+          </InfoTip>
+        </strong>
+        <em>{hint}</em>
+      </span>
+      {best ? (
+        <span className="retrieval-test-status ok" title="This is the configuration that measured best">
+          <Check size={12} /> in use
+        </span>
+      ) : (
+        <button className="link-btn" onClick={onReview}>
+          Review setup
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** Human label for a fact-selection tier, shown in the active-facts summary. */
 function tierLabel(t: FactTier): string {
   switch (t) {
+    case 'reranked':
+      return 'rerank-gated';
     case 'hybrid':
       return 'semantic + lexical';
     case 'pinned-only':
@@ -431,6 +531,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
   const [settings, setSettings] = useState<MemorySettings | null>(null);
   const [contents, setContents] = useState<MemoryContents | null>(null);
   const offline = useOffline();
+  const health = useRetrievalHealth();
   const [showTech, setShowTech] = useState(false);
   const [showSuperseded, setShowSuperseded] = useState(false);
   const [showMemories, setShowMemories] = useState(false);
@@ -777,6 +878,39 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
 
   return (
     <div>
+      {health.broken && (
+        // A down retrieval stage, said out loud at the top of the tab — the
+        // controls live in the collapsed advanced section below, and an error
+        // only visible there is an error nobody sees. Recall keeps working
+        // while this shows, just worse: the summary line names what the
+        // ranking has degraded to. "Model" vs "server" per the failure's
+        // source, so a dead Ollama isn't blamed on the bundled model.
+        <div className="retrieval-alert" role="alert">
+          <TriangleAlert size={16} />
+          <div className="retrieval-alert-msg">
+            {health.embed && (
+              <span>
+                <strong>{health.embed.remote ? 'Embeddings server failed.' : 'Embedding model failed.'}</strong>{' '}
+                {health.embed.error}
+              </span>
+            )}
+            {health.rerank && (
+              <span>
+                <strong>{health.rerank.remote ? 'Reranker server failed.' : 'Reranker model failed.'}</strong>{' '}
+                {health.rerank.error}
+              </span>
+            )}
+            <span className="muted">
+              {health.embed
+                ? 'Until this is fixed, memories are picked by keywords and recency alone — matches by meaning are missed.'
+                : 'Until this is fixed, memories rank by embedding similarity alone — cross-language matches are missed.'}
+            </span>
+          </div>
+          <button className="link-btn" onClick={() => setShowRetrieval(true)}>
+            Review setup
+          </button>
+        </div>
+      )}
       <div className="grp-head">Memory</div>
       <div className="group">
         <div className="group-row">
@@ -792,6 +926,9 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
             onClick={toggle}
           />
         </div>
+        {settings.enabled && retrieval && (
+          <RecallQualityRow retrieval={retrieval} onReview={() => setShowRetrieval(true)} />
+        )}
       </div>
 
       <div className="grp-head grp-head-row">
@@ -983,8 +1120,16 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                   ))}
                 </div>
               </div>
-              <EmbeddingsFields value={retrieval.embeddings} onPatch={patchEmbeddings} />
-              <RerankerFields value={retrieval.reranker} onPatch={patchReranker} />
+              <EmbeddingsFields
+                value={retrieval.embeddings}
+                onPatch={patchEmbeddings}
+                remoteError={health.embed?.remote ? health.embed.error : null}
+              />
+              <RerankerFields
+                value={retrieval.reranker}
+                onPatch={patchReranker}
+                remoteError={health.rerank?.remote ? health.rerank.error : null}
+              />
             </div>
           )}
         </>

@@ -104,6 +104,18 @@ function defaultAppDataRoot(): string {
 function defaultStateRoot(): string {
   // STEM_STATE_DIR is the deployment knob (a container mounts one volume) and
   // the test seam — the unit suite points it at a per-process throwaway dir.
+  //
+  // Tripwire: vitest launched WITHOUT desktop/vitest.config.ts (say, from the
+  // repo's parent directory) never runs tests/setup-unit.ts, so nothing sets
+  // STEM_STATE_DIR and this fallback aims the whole suite at the developer's
+  // REAL profile — on macOS's case-insensitive disk, 'Stem' IS the live
+  // Electron 'stem' dir. That has happened: store tests overwrote real state
+  // and cost this machine its server pairing. Refuse loudly instead.
+  if (process.env.VITEST && !process.env.STEM_STATE_DIR) {
+    throw new Error(
+      'running under vitest without STEM_STATE_DIR — run the suite from desktop/ so vitest.config.ts loads tests/setup-unit.ts'
+    );
+  }
   return process.env.STEM_STATE_DIR || join(defaultAppDataRoot(), 'Stem');
 }
 
@@ -223,7 +235,12 @@ export function headlessHost(): StemHost {
  * and the message protocol either side speaks is identical.
  */
 function forkNodeWorker(entry: string, _serviceName: string): WorkerTransport {
-  const child = fork(entry, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+  // 'advanced' (structured clone), not the default JSON serialization: the
+  // embed worker answers with Float32Array vectors, which JSON flattens into
+  // plain index-keyed objects — .buffer undefined, and the vector upserts die
+  // with "first argument must be ... Received undefined". Electron's
+  // utilityProcess clones structurally; the server's fork must match it.
+  const child = fork(entry, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'], serialization: 'advanced' });
   return {
     send: (msg) => {
       child.send(msg as never);

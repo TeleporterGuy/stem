@@ -23,7 +23,7 @@ there:
   increases usage.
 - Watch tool activity while Stem works.
 - Web answers include cited sources.
-- The context meter shows how full the conversation is and its estimated cost.
+- The context meter shows how full the conversation is.
 
 ## Organize and find work
 

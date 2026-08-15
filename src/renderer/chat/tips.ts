@@ -105,7 +105,7 @@ export const TIPS: Tip[] = [
   },
   {
     id: 'context-meter',
-    text: 'The meter in the composer row shows how full the conversation is, and what it is costing.',
+    text: 'The meter in the composer row shows how full the conversation is.',
     // The composer is too narrow for the meter in Quick Chat, so it isn't there.
     when: (c) => c.bound
   },

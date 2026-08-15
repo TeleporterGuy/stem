@@ -30,6 +30,14 @@ import { clientCredentials } from '../../src/desktop/server-endpoint';
 import type { AppSettings, BackendEventEnvelope, QuickChatSettings } from '../../src/shared/types';
 
 let endpoint: TransportEndpoint;
+/**
+ * `endpoint.url` is `string | null` since the transport learned to listen on a
+ * Unix socket instead (the containerized deployment). Nothing in this file asks
+ * for that, so it is narrowed once at boot rather than at each of nine call
+ * sites — and if it ever were null here, the failure should be the assertion in
+ * beforeAll and not nine unrelated ones.
+ */
+let serverUrl: string;
 let proxy: ServerProxy;
 let channels: string[];
 
@@ -72,10 +80,12 @@ beforeAll(async () => {
   registerServer('files:add', (_e, paths, subdir) => [paths, subdir]);
 
   endpoint = await startTransport({ devUrl: null });
+  if (!endpoint.url) throw new Error('the transport published no URL to talk to');
+  serverUrl = endpoint.url;
   // The server publishes no credential any more: this client mints its own off
   // the state root they share, exactly as the desktop does at startup.
   proxy = createServerProxy({
-    ...(await clientCredentials(endpoint.url, { external: false })),
+    ...(await clientCredentials(serverUrl, { external: false })),
     // The embedded shape: this process started the server, so paths still mean
     // the same thing on both sides and nothing is uploaded before a turn.
     remote: false,
@@ -95,7 +105,10 @@ beforeAll(async () => {
       clientSide.push(`client:applyQuickChat(${JSON.stringify(patch)}→${next.shortcut})`);
     },
     resync: () => routed.push({ to: 'resync', channel: '', payload: null }),
-    liveTurns: (turns) => routed.push({ to: 'liveTurns', channel: '', payload: turns })
+    liveTurns: (turns) => routed.push({ to: 'liveTurns', channel: '', payload: turns }),
+    // Recorded like every other push. Nothing in this file takes the server
+    // away, so it should stay empty — which is itself worth being able to see.
+    connection: (reachable) => routed.push({ to: 'connection', channel: '', payload: reachable })
   });
   channels = await proxy.start();
 });
@@ -139,7 +152,7 @@ describe('POST /rpc', () => {
   });
 
   it('refuses a token that is not in the registry', async () => {
-    const res = await fetch(`${endpoint.url}/rpc`, {
+    const res = await fetch(`${serverUrl}/rpc`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer a'.repeat(1) },
       body: JSON.stringify({ channel: 'chats:rename', args: ['t-1', 'x'] })
@@ -199,7 +212,7 @@ describe('when the server is somewhere else', () => {
   beforeAll(async () => {
     writeFileSync(localFile, 'the contents of a file on the client');
     far = createServerProxy({
-      ...(await clientCredentials(endpoint.url, { external: false })),
+      ...(await clientCredentials(serverUrl, { external: false })),
       // The whole difference: a server this process did not start may not share
       // this disk, so a path in an argument means nothing to it.
       remote: true,
@@ -213,7 +226,8 @@ describe('when the server is somewhere else', () => {
       threadOpened: async () => undefined,
       applyQuickChatSettings: () => undefined,
       resync: () => undefined,
-      liveTurns: () => undefined
+      liveTurns: () => undefined,
+      connection: () => undefined
     });
   });
 
@@ -339,7 +353,7 @@ describe('resuming a dropped stream', () => {
   }
 
   beforeAll(async () => {
-    const creds = await clientCredentials(endpoint.url, { external: false });
+    const creds = await clientCredentials(serverUrl, { external: false });
     deviceId = (await readClientIdentity())!.deviceId;
     resumer = createServerProxy({
       ...creds,
@@ -359,7 +373,8 @@ describe('resuming a dropped stream', () => {
       resync: () => {
         resyncs += 1;
       },
-      liveTurns: (turns) => snapshots.push(turns)
+      liveTurns: (turns) => snapshots.push(turns),
+      connection: () => undefined
     });
     await resumer.start();
     await until(() => snapshots.length > 0, 'the connect snapshot');
@@ -433,18 +448,18 @@ describe('acquiring a credential', () => {
     // beforeAll already went through this path once. A second call must be a
     // read: minting per launch would fill Settings → Devices with one row per
     // start of the app.
-    const again = await clientCredentials(`${endpoint.url}/`, { external: false });
+    const again = await clientCredentials(`${serverUrl}/`, { external: false });
     expect(again.token).toBe((await readClientIdentity())!.token);
     expect((await readDevices()).length).toBe(1);
     // A trailing slash must not survive into `${url}/rpc`.
-    expect(again.url).toBe(endpoint.url);
+    expect(again.url).toBe(serverUrl);
   });
 
   it('prefers STEM_SERVER_TOKEN, and does not persist it', async () => {
     const stored = (await readClientIdentity())!.token;
     process.env.STEM_SERVER_TOKEN = 'e'.repeat(64);
     try {
-      expect((await clientCredentials(endpoint.url, { external: false })).token).toBe('e'.repeat(64));
+      expect((await clientCredentials(serverUrl, { external: false })).token).toBe('e'.repeat(64));
     } finally {
       delete process.env.STEM_SERVER_TOKEN;
     }
@@ -458,7 +473,7 @@ describe('acquiring a credential', () => {
     const { code } = await createPairingCode('A machine far away');
     process.env.STEM_PAIRING_CODE = code;
     try {
-      const paired = await clientCredentials(endpoint.url, { external: false });
+      const paired = await clientCredentials(serverUrl, { external: false });
       // The token came back over POST /pair — the one unauthenticated route —
       // and works against the same server the desktop is already talking to.
       expect(paired.token).not.toBe(identity!.token);
@@ -485,6 +500,55 @@ describe('acquiring a credential', () => {
       if (endpointFile) process.env.STEM_SERVER_ENDPOINT_FILE = endpointFile;
       else delete process.env.STEM_SERVER_ENDPOINT_FILE;
       await writeClientIdentity(identity!);
+    }
+  });
+});
+
+// The event stream is the one thing on this side that is not `fetch`: step 5 had
+// to hand-roll it to get `Last-Event-ID` onto the wire. `fetch` follows a URL's
+// scheme; `node:http` does not — it throws ERR_INVALID_PROTOCOL at an `https:`
+// URL rather than handing over to `node:https`. So POST /rpc and GET /channels
+// worked against a TLS server from the day they were written and the stream did
+// not, and the failure surfaced as the whole app refusing to start.
+describe('a server reached over TLS', () => {
+  /** The deps a proxy needs when nothing is being asserted about the fan-out. */
+  const inert = {
+    remote: true,
+    sendToMain: () => undefined,
+    sendToOverlay: () => undefined,
+    revealIfOwns: () => undefined,
+    routeBackendEvent: () => undefined,
+    revealMainWindow: () => undefined,
+    requestAttention: () => undefined,
+    oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
+    threadOpened: async () => undefined,
+    applyQuickChatSettings: () => undefined,
+    resync: () => undefined,
+    liveTurns: () => undefined,
+    // Unlike the proxies above, this one is expected to go unreachable — which is
+    // the only transition that reports one.
+    connection: () => undefined
+  };
+
+  it('opens its event stream instead of refusing to start', async () => {
+    const credentials = await clientCredentials(serverUrl, { external: false });
+
+    // start() only reaches the stream if it has a channel list, so give the
+    // cache one to answer with. This is not scaffolding for its own sake: it is
+    // the shape a client is actually in on the launch after it was pointed
+    // somewhere new — a remembered list, and an address it may or may not reach.
+    const seed = createServerProxy({ ...credentials, ...inert });
+    await seed.start();
+    seed.close();
+
+    // Nothing listens here. What matters is *how* it fails: a connection that
+    // was attempted and refused, retried in the background, rather than a throw
+    // out of start() before a packet was sent.
+    const tls = createServerProxy({ ...credentials, ...inert, url: 'https://127.0.0.1:1' });
+    try {
+      await expect(tls.start()).resolves.toContain('chats:rename');
+    } finally {
+      tls.close();
     }
   });
 });

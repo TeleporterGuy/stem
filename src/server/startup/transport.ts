@@ -165,8 +165,10 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
     socketPath: socket ?? undefined,
     authenticate,
     // dispatchLocal applies the same per-channel argument validation the
-    // renderer's IPC always got, then the real handler.
-    dispatch: (channel, args) => dispatchLocal(channel, args),
+    // renderer's IPC always got, then the real handler. The caller rides along
+    // untouched: it is the one input a client cannot write for itself, which is
+    // what makes `devices:registerPush` able to mean "this device".
+    dispatch: (channel, args, caller) => dispatchLocal(channel, args, caller),
     registeredChannels: serverChannels,
     pair: async (code) => {
       const minted = await redeemPairingCode(code);
@@ -207,6 +209,13 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
  * device that was offline at the time discloses nothing it would not have been
  * sent live. A push aimed at a single device would break that, which is why
  * there is no parameter here to aim one with.
+ *
+ * Phase 4's APNs wake-ups are per-device and do not contradict any of that,
+ * because they are not on this path at all. server/push/ addresses one phone
+ * over Apple's network with a payload that is an id and a short label — no
+ * message, no state, nothing to replay — so nothing device-scoped ever reaches
+ * this fan-out or the buffer behind it. This stays the sole channel by which a
+ * client learns what happened; a push only asks it to come and look.
  */
 export function pushToClients(channel: string, payload: unknown): void {
   if (!primary) return;

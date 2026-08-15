@@ -1,4 +1,14 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, nativeImage, nativeTheme, session, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  globalShortcut,
+  ipcMain,
+  nativeImage,
+  nativeTheme,
+  powerMonitor,
+  session,
+  shell
+} from 'electron';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { electronHost } from './host';
@@ -10,6 +20,7 @@ import { bindServerChannels } from './ipc-bridge';
 import { registerLocalIpc } from './local';
 import { createOAuthCourier, type OAuthCourier } from './oauth-courier';
 import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, requestAttention } from './platform';
+import { createPresenceHeartbeat, type PresenceHeartbeat } from './presence';
 import { createServerProxy, type ServerProxy } from './proxy';
 import { clientCredentials, resolveServerUrl } from './server-endpoint';
 import { readClientSettings, seedReleaseNotesMarker } from './settings';
@@ -304,6 +315,7 @@ process.on('unhandledRejection', (reason) => {
 let server: ServerHandle | null = null;
 let proxy: ServerProxy | null = null;
 let oauthCourier: OAuthCourier | null = null;
+let presence: PresenceHeartbeat | null = null;
 
 /**
  * Whether the server is answering, as last reported by the proxy. Kept here
@@ -461,6 +473,17 @@ app.whenReady().then(async () => {
   // After the windows exist and the first prompt's warm-up is on its way; the
   // first check waits a further beat inside (FIRST_CHECK_DELAY_MS).
   updates.start();
+
+  // Tell the server somebody is at this machine, so it doesn't wake a phone for
+  // something already on screen here. Over the proxy like every other call, which
+  // is what makes it work identically against the server in this process and one
+  // across the internet — and what makes the report carry this client's identity,
+  // since the far side takes the device from the bearer token and not from us.
+  presence = createPresenceHeartbeat({
+    idleSeconds: () => powerMonitor.getSystemIdleTime(),
+    report: (idleSeconds) => proxy!.invoke('devices:presence', [idleSeconds])
+  });
+  presence.start();
   windowsReady = true;
   if (coldSummon) quickChat.toggle();
   // Linux-only for now: the tray is the discoverable summon/quit affordance where
@@ -492,6 +515,7 @@ let quitting = false;
 app.on('before-quit', (event) => {
   if (quitting) return;
   updates.close();
+  presence?.close();
   proxy?.close();
   oauthCourier?.close();
   // Nothing to drain when the server is somebody else's process.

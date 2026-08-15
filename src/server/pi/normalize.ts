@@ -1,6 +1,7 @@
 import type { PiEvent } from './rpc';
 import type { ActivityItem, SourceRef, TurnUsage } from '../../shared/types';
 import { stripCiteMarkers } from '../../shared/citations';
+import { WEB_ACCESS_TOOL_NAMES } from '../../shared/activity';
 import { SECRET_ENVELOPE_KEY, toolArgsOf } from './protocol';
 import type { InlinedSkill } from '../skills/inject';
 import { extractSources } from './web-search';
@@ -341,12 +342,9 @@ export function toTurnUsage(usage: PiUsage | undefined | null): TurnUsage | null
   };
 }
 
-/**
- * The tools the vendored pi-web-access extension registers. `fetch_content` is
- * named for what it does rather than for the web, so it would otherwise fall
- * through to the generic "Using a tool…" row.
- */
-const WEB_ACCESS_TOOLS = new Set(['web_search', 'source_check', 'fetch_content', 'get_search_content']);
+// The tools the vendored pi-web-access extension registers, shared with the
+// label logic so classification and phrasing can't drift apart.
+const WEB_ACCESS_TOOLS = WEB_ACCESS_TOOL_NAMES;
 
 /** True for a tool whose result carries citable web sources. */
 export function isWebSearchTool(toolName: string | undefined): boolean {
@@ -361,8 +359,8 @@ function toolItemType(toolName: string | undefined): string {
     return 'commandExecution';
   if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'apply_patch') return 'fileChange';
   if (WEB_ACCESS_TOOLS.has(n)) return 'webSearch';
-  if (n.startsWith('mcp')) return 'mcpToolCall';
-  if (n.includes('search') || n.includes('web')) return 'webSearch';
+  // No substring guessing beyond this point: MCP tools unwrapped from
+  // invoke_tool keep server-side names like ha_search, which are not web tools.
   return 'mcpToolCall'; // generic tool → "Using a tool…"
 }
 
@@ -425,7 +423,9 @@ export function toolCallActivity(
     if (real) {
       name = real;
       const innerArgs = args?.args as Record<string, unknown> | undefined;
-      detail = detailFromArgs(innerArgs) ?? (typeof args?.server === 'string' ? args.server : undefined);
+      // Parenthesized so the label reads "Used ha_get_history (homeassistant)"
+      // rather than running the tool and server names together.
+      detail = detailFromArgs(innerArgs) ?? (typeof args?.server === 'string' ? `(${args.server})` : undefined);
     }
   }
   const type = toolItemType(name);

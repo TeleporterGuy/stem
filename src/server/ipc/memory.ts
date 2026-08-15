@@ -32,7 +32,8 @@ import type {
   ActiveFacts,
   ConflictResolution,
   LocalEmbedStatus,
-  LocalRerankStatus
+  LocalRerankStatus,
+  RemoteRetrievalHealth
 } from '../../shared/types';
 import { recallStore } from '../recall/store';
 import * as activity from '../activity';
@@ -120,6 +121,11 @@ export function registerMemoryIpc(deps: IpcDeps): void {
     if (!deps.e2e && r.mode === 'local') deps.embedManager()?.ensureRerank(RERANK_CATALOG[r.localModel]);
     return deps.embedManager()?.rerankStatus() ?? { model: DEFAULT_LOCAL_RERANK_MODEL, state: 'idle' };
   });
+  registerServer(
+    'retrieval:remoteHealth',
+    (): RemoteRetrievalHealth =>
+      deps.remoteHealth()?.get() ?? { embeddings: { state: 'unknown' }, reranker: { state: 'unknown' } }
+  );
   registerServer('memory:activeFacts', (_e, threadId: string | null): ActiveFacts | null => {
     if (!threadId) return null;
     const rec = getActiveFactIds(threadId);

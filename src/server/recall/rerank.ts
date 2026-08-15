@@ -33,6 +33,12 @@ export interface RerankClient {
    */
   minRelevantScore?(): Promise<number | null>;
   /**
+   * The raw-score floor for the fact-injection gate, or null when the scale is
+   * unknowable (every remote server, same reasoning as minRelevantScore — the
+   * caller then applies its scale-free margin rule instead).
+   */
+  factGateScore?(): Promise<number | null>;
+  /**
    * Rerank `docs` against `query`; returns up to `topN` results, best first.
    * `index` refers into the input `docs`. Throws {@link RerankUnavailableError}
    * when unconfigured, or a plain Error on any transport/shape failure.

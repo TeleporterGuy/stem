@@ -43,7 +43,18 @@ export type ScanWorkerOutMessage =
   | { type: 'vacuumed'; id: number }
   | { type: 'error'; id: number; message: string };
 
-const port = process.parentPort;
+// Under Electron's utilityProcess this is the real parentPort. Under the
+// headless server's plain child_process.fork (host/index.ts forkNodeWorker)
+// there is no parentPort, only node IPC — wrapped here in the same
+// `{ data }` envelope so the rest of the file cannot tell who forked it.
+const port = (process.parentPort ??
+  ({
+    postMessage: (msg: unknown) => process.send?.(msg),
+    on(_event: string, cb: (e: { data: unknown }) => void) {
+      process.on('message', (msg) => cb({ data: msg }));
+      return this;
+    }
+  } as unknown)) as NonNullable<typeof process.parentPort>;
 
 let dbPath: string | null = null;
 let db: DatabaseSync | null = null;

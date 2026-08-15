@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { applyPrefixes } from './embed-catalog';
 import type { LocalEmbedModelSpec } from './embed-catalog';
@@ -46,18 +46,55 @@ type Extractor = (
   opts: { pooling: 'mean'; normalize: boolean }
 ) => Promise<{ dims: number[]; data: Float32Array }>;
 
-/** Tokenizer + sequence-classification model pair for the reranker cross-encoder. */
+interface RerankTokenizerOutput extends Record<string, unknown> {
+  attention_mask: { data: ArrayLike<number | bigint> };
+}
+
+/**
+ * Tokenizer + model pair for the reranker. Two shapes share it:
+ * - classifier: sequence-classification head, tokenized with text_pair, one
+ *   logit per pair at logits[row].
+ * - causal-yes-no: a causal LM fed the Qwen3-Reranker chat template as a
+ *   single text per pair; the score is read from the vocab logits at each
+ *   row's last real token (yesId/noId set only for this kind).
+ */
 interface Reranker {
   tokenizer: (
     texts: string[],
-    opts: { text_pair: string[]; padding: boolean; truncation: boolean }
-  ) => Record<string, unknown>;
-  model: ((inputs: Record<string, unknown>) => Promise<{ logits: { data: Float32Array } }>) & {
+    opts: { text_pair?: string[]; padding: boolean; truncation: boolean }
+  ) => RerankTokenizerOutput;
+  model: ((inputs: Record<string, unknown>) => Promise<{ logits: { dims: number[]; data: Float32Array } }>) & {
     dispose?: () => Promise<void>;
   };
+  scoring: LocalRerankModelSpec['scoring'];
+  yesId?: number;
+  noId?: number;
 }
 
-const port = process.parentPort;
+// The Qwen3-Reranker scoring contract (model card, "no thinking" form): the
+// pair rides a fixed chat template and the instruct line comes from the
+// catalog spec, where it was frozen alongside the measured floors.
+const QWEN3_RERANK_PREFIX =
+  '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. ' +
+  'Note that the answer can only be "yes" or "no".<|im_end|>\n<|im_start|>user\n';
+const QWEN3_RERANK_SUFFIX = '<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n';
+
+function formatCausalRerankPair(instruct: string, query: string, doc: string): string {
+  return `${QWEN3_RERANK_PREFIX}<Instruct>: ${instruct}\n<Query>: ${query}\n<Document>: ${doc}${QWEN3_RERANK_SUFFIX}`;
+}
+
+// Under Electron's utilityProcess this is the real parentPort. Under the
+// headless server's plain child_process.fork (host/index.ts forkNodeWorker)
+// there is no parentPort, only node IPC — wrapped here in the same
+// `{ data }` envelope so the rest of the file cannot tell who forked it.
+const port = (process.parentPort ??
+  ({
+    postMessage: (msg: unknown) => process.send?.(msg),
+    on(_event: string, cb: (e: { data: unknown }) => void) {
+      process.on('message', (msg) => cb({ data: msg }));
+      return this;
+    }
+  } as unknown)) as NonNullable<typeof process.parentPort>;
 
 let spec: LocalEmbedModelSpec | null = null;
 let extractor: Extractor | null = null;
@@ -118,6 +155,25 @@ function progressAggregator(
   };
 }
 
+/**
+ * A cached weights file that ONNX Runtime cannot parse is a truncated download
+ * (killed process, full disk) — transformers.js trusts the cache blindly, so
+ * without intervention the same corrupt file fails on every restart forever.
+ * The remedy: purge that model's cache dir so the bytes get fetched again, and
+ * tell the manager (via `purgedCorruptCache`) to restart this process before
+ * retrying. Retrying HERE does not work: a failed session load poisons
+ * transformers.js module state, and every later load in this process — any
+ * model, healthy weights or not — rejects with the first failure's error.
+ * That poisoning is also why the path check matters: a load taken down by an
+ * EARLIER model's corruption reports the earlier model's file, and purging our
+ * own healthy cache over it would throw away good bytes.
+ */
+function purgeIfCorrupt(message: string, repo: string, cacheDir: string): boolean {
+  if (!/protobuf parsing failed/i.test(message) || !message.includes(join(cacheDir, repo))) return false;
+  rmSync(join(cacheDir, repo), { recursive: true, force: true });
+  return true;
+}
+
 async function load(nextSpec: LocalEmbedModelSpec, cacheDir: string): Promise<void> {
   spec = nextSpec;
   postStatus({ state: 'loading' });
@@ -137,8 +193,13 @@ async function load(nextSpec: LocalEmbedModelSpec, cacheDir: string): Promise<vo
     extractor = pipe;
     postStatus({ state: 'ready', dim });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     extractor = null;
-    postStatus({ state: 'error', error: err instanceof Error ? err.message : String(err) });
+    postStatus({
+      state: 'error',
+      error: message,
+      purgedCorruptCache: purgeIfCorrupt(message, nextSpec.repo, cacheDir) || undefined
+    });
   }
 }
 
@@ -155,25 +216,47 @@ async function loadRerank(nextSpec: LocalRerankModelSpec, cacheDir: string): Pro
   rerankSpec = nextSpec;
   postRerankStatus({ state: 'loading' });
   try {
-    const { AutoTokenizer, AutoModelForSequenceClassification, env } = await import('@huggingface/transformers');
+    const { AutoTokenizer, AutoModelForSequenceClassification, AutoModelForCausalLM, env } = await import(
+      '@huggingface/transformers'
+    );
     env.cacheDir = cacheDir;
     const cached = existsSync(join(cacheDir, nextSpec.repo, 'onnx', weightsFile(nextSpec.dtype)));
     const onProgress = progressAggregator(cached, postRerankStatus);
     const tokenizer = (await AutoTokenizer.from_pretrained(nextSpec.repo, {
       progress_callback: onProgress
     })) as unknown as Reranker['tokenizer'];
-    const model = (await AutoModelForSequenceClassification.from_pretrained(nextSpec.repo, {
+    const loader = nextSpec.scoring === 'causal-yes-no' ? AutoModelForCausalLM : AutoModelForSequenceClassification;
+    const model = (await loader.from_pretrained(nextSpec.repo, {
       dtype: nextSpec.dtype,
       progress_callback: onProgress
     })) as unknown as Reranker['model'];
-    // Warm-up probe: verifies the model scores pairs and pays the first-run
-    // graph-optimization cost before a user-facing rerank does.
-    await model(tokenizer(['ping'], { text_pair: ['pong'], padding: true, truncation: true }));
-    reranker = { tokenizer, model };
+    const next: Reranker = { tokenizer, model, scoring: nextSpec.scoring };
+    if (nextSpec.scoring === 'causal-yes-no') {
+      const enc = tokenizer as unknown as { encode?: (t: string) => number[] };
+      next.yesId = enc.encode?.('yes')[0];
+      next.noId = enc.encode?.('no')[0];
+      if (next.yesId == null || next.noId == null) throw new Error('tokenizer lacks yes/no tokens');
+      // Warm-up probe: verifies the causal path end-to-end (template, forward,
+      // last-token read) and pays the first-run graph-optimization cost.
+      await model(tokenizer([formatCausalRerankPair(nextSpec.instruct ?? '', 'ping', 'pong')], {
+        padding: true,
+        truncation: true
+      }));
+    } else {
+      // Warm-up probe: verifies the model scores pairs and pays the first-run
+      // graph-optimization cost before a user-facing rerank does.
+      await model(tokenizer(['ping'], { text_pair: ['pong'], padding: true, truncation: true }));
+    }
+    reranker = next;
     postRerankStatus({ state: 'ready' });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     reranker = null;
-    postRerankStatus({ state: 'error', error: err instanceof Error ? err.message : String(err) });
+    postRerankStatus({
+      state: 'error',
+      error: message,
+      purgedCorruptCache: purgeIfCorrupt(message, nextSpec.repo, cacheDir) || undefined
+    });
   }
 }
 
@@ -211,13 +294,35 @@ async function rerank(id: number, query: string, docs: string[], topN: number): 
     const scores: number[] = [];
     for (let i = 0; i < docs.length; i += RUN_BATCH) {
       const batch = docs.slice(i, i + RUN_BATCH);
-      const inputs = reranker.tokenizer(new Array<string>(batch.length).fill(query), {
-        text_pair: batch,
-        padding: true,
-        truncation: true
-      });
-      const { logits } = await reranker.model(inputs);
-      for (let row = 0; row < batch.length; row++) scores.push(logits.data[row]);
+      if (reranker.scoring === 'causal-yes-no') {
+        // ONE PAIR PER FORWARD PASS, not an oversight: this ONNX export (GQA
+        // fused for transformers.js v4) mis-attends across padding on the
+        // bundled 3.8.1 runtime — a mixed-length batch shifts EVERY row's
+        // logits by whole logit units (measured: identical-length batches
+        // reproduce single-pair scores exactly, mixed-length batches do not).
+        // Unbatched scoring is also what makes the catalog floors stable
+        // numbers at all; the bge notes document the same padding-drift class.
+        const instruct = rerankSpec?.instruct ?? '';
+        for (const doc of batch) {
+          const inputs = reranker.tokenizer([formatCausalRerankPair(instruct, query, doc)], {
+            padding: true,
+            truncation: true
+          });
+          const { logits } = await reranker.model(inputs);
+          const [, seq, vocab] = logits.dims;
+          const base = (seq - 1) * vocab;
+          // log-odds of "yes" — the raw-logit scale the catalog floors use.
+          scores.push(logits.data[base + reranker.yesId!] - logits.data[base + reranker.noId!]);
+        }
+      } else {
+        const inputs = reranker.tokenizer(new Array<string>(batch.length).fill(query), {
+          text_pair: batch,
+          padding: true,
+          truncation: true
+        });
+        const { logits } = await reranker.model(inputs);
+        for (let row = 0; row < batch.length; row++) scores.push(logits.data[row]);
+      }
     }
     const results = scores
       .map((score, index) => ({ index, score }))
@@ -248,11 +353,20 @@ async function dispose(): Promise<void> {
   post({ type: 'disposed' });
 }
 
+// Model loads run ONE AT A TIME. Not just politeness: concurrent
+// InferenceSession creations in onnxruntime-node cross-contaminate — with a
+// corrupt e5-base cache, a simultaneous bge reranker load rejects with the E5
+// file's "Protobuf parsing failed" error (reproduced on the bundled 3.8.1),
+// which both takes down a healthy model and defeats purgeIfCorrupt's own-path
+// check. Serialized, the corrupt model fails alone with its own file named.
+// load()/loadRerank() never reject, so the chain can't wedge.
+let loadChain: Promise<void> = Promise.resolve();
+
 port.on('message', (e: { data: WorkerInMessage }) => {
   const msg = e.data;
-  if (msg.type === 'load') void load(msg.spec, msg.cacheDir);
+  if (msg.type === 'load') loadChain = loadChain.then(() => load(msg.spec, msg.cacheDir));
   else if (msg.type === 'embed') void embed(msg.id, msg.texts, msg.kind);
-  else if (msg.type === 'load-rerank') void loadRerank(msg.spec, msg.cacheDir);
+  else if (msg.type === 'load-rerank') loadChain = loadChain.then(() => loadRerank(msg.spec, msg.cacheDir));
   else if (msg.type === 'rerank') void rerank(msg.id, msg.query, msg.docs, msg.topN);
   else if (msg.type === 'dispose') void dispose();
 });

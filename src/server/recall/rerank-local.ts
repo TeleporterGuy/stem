@@ -38,6 +38,12 @@ export function createLocalRerankClient(
       const st = manager.rerankStatus();
       return st.model === sp.id && st.state === 'ready' ? sp.minRelevantScore : null;
     },
+    async factGateScore() {
+      const sp = await spec();
+      if (!sp) return null;
+      const st = manager.rerankStatus();
+      return st.model === sp.id && st.state === 'ready' ? sp.factGateScore : null;
+    },
     async rerank(query, docs, topN) {
       const sp = await spec();
       if (!sp) throw new RerankUnavailableError('local reranker not enabled');
@@ -73,6 +79,10 @@ export function createRerankRouter(deps: {
     async minRelevantScore() {
       const client = await pick();
       return (await client?.minRelevantScore?.()) ?? null;
+    },
+    async factGateScore() {
+      const client = await pick();
+      return (await client?.factGateScore?.()) ?? null;
     },
     async rerank(query, docs, topN) {
       const client = await pick();

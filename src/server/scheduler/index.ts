@@ -8,6 +8,7 @@ import type {
   TaskSchedule
 } from '../../shared/types';
 import { isContextOverflowError } from '../backend/overflow';
+import { noteTurnStart } from '../live-turns';
 import { toMs } from '../../shared/inbox';
 import { isValidCron, nextAfter } from './cron';
 import { readTasks, saveTasks, titleFromPrompt } from '../workspace/tasks';
@@ -111,6 +112,18 @@ export class TaskScheduler {
    */
   noteNotify(threadId: string): void {
     if (this.activeRun?.threadId === threadId) this.activeRun.notified = true;
+  }
+
+  /**
+   * The task whose run is in flight, or null. Read by the notify bridge so a push
+   * can name the task instead of the thread — the same scoping as noteNotify: an
+   * interactive turn that calls the tool is nobody's scheduled run and answers
+   * null here.
+   */
+  runningTask(threadId: string): ScheduledTask | null {
+    const run = this.activeRun;
+    if (!run || run.threadId !== threadId) return null;
+    return this.tasks.find((t) => t.id === run.taskId) ?? null;
   }
 
   /** Load persisted tasks, run any overdue ones once (catch-up), then arm the timer. */
@@ -391,6 +404,10 @@ export class TaskScheduler {
       });
       if (turnId) {
         run.turnId = turnId;
+        // Start this turn's clock now rather than at its first streamed event, so
+        // a run that hangs without producing one is still measurable — same
+        // reason as the interactive path in server/index.ts (see noteTurnStart).
+        noteTurnStart(task.threadId, turnId);
         // A preempt that landed while startTurn was still building: interrupt now.
         if (run.preempted && this.opts.interrupt) void this.opts.interrupt(turnId).catch(() => undefined);
         this.opts.onRun({ threadId: task.threadId, turnId, taskId: task.id, prompt: task.prompt, at: atIso });
@@ -413,6 +430,7 @@ export class TaskScheduler {
             });
             if (retry.turnId) {
               run.turnId = retry.turnId;
+              noteTurnStart(task.threadId, retry.turnId);
               if (run.preempted && this.opts.interrupt) {
                 void this.opts.interrupt(retry.turnId).catch(() => undefined);
               }

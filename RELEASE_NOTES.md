@@ -14,11 +14,26 @@ Maintainer notes:
 
 ## 0.5.0 — Unreleased
 
+### Changed
+
+- **Memory recall.** A small local relevance model — on by default now, downloaded once in the
+  background — judges every remembered fact against your message before Stem shows it to the
+  assistant. This replaces keyword matching that padded chats with unrelated, occasionally
+  sensitive, memories. Expect a few well-chosen facts per chat and often none at all; the model
+  can be switched off in Manage → Memory.
+
 ### Added
 
 - **Fast for Grok.** The Standard/Fast speed switch now appears for Grok models too — Fast asks
   xAI to schedule your request with higher priority. Until now the switch only existed for
   ChatGPT models, which is why it seemed to vanish when you picked Grok.
+
+### Fixed
+
+- **MCP tools no longer pose as web searches.** Any tool with "search" in its name — Home
+  Assistant lookups included — used to appear in the activity feed as "Searched the web" with a
+  globe icon, even though no web search happened. Tool calls are now labeled by what they
+  actually are.
 
 ## 0.4.0 — 2026-08-12
 

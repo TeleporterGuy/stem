@@ -692,6 +692,13 @@ describe('usage blend in fact ranking', () => {
     const liveId = store.upsertFact('The user runs a homelab server rack', 'distilled', { confidence: 0.9 })!;
     // Below-gate fact ([0,1] → cosine 0 against the query) with perfect usage.
     const gatedId = store.upsertFact('The user owns a submarine poster', 'distilled', { confidence: 0.9 })!;
+    // Contrast pool for the scale-free z-gate: with only equal-cosine facts the
+    // distribution is flat and the gate correctly admits nothing (pinned by the
+    // small-store test in recall.test.ts). These 0-cosine fillers give the two
+    // 1.0-cosine facts something to stand out FROM.
+    for (let i = 0; i < 30; i++) {
+      store.upsertFact(`Note ${i} about the submarine poster collection`, 'distilled', { confidence: 0.9 });
+    }
     // deadId: injected 10×, never used. liveId: used every time. gatedId: perfect
     // usage. Recent timestamps — staleness decay must not soften these grades.
     const now = Math.floor(Date.now() / 1000);
@@ -709,7 +716,8 @@ describe('usage blend in fact ranking', () => {
       const ids = preview.facts.map((f) => f.id);
       // Equal raw cosine (1.0) → the used fact outranks the never-used one.
       expect(ids.indexOf(liveId)).toBeLessThan(ids.indexOf(deadId));
-      // The gate tests RAW cosine: perfect usage cannot admit a 0-cosine fact.
+      // The gate tests RAW cosine z-scores: perfect usage cannot admit a
+      // 0-cosine fact — the blend reorders candidates, it never admits.
       expect(ids).not.toContain(gatedId);
       // Both above-gate facts still injected — the blend reorders, never excludes.
       expect(ids).toContain(deadId);

@@ -128,6 +128,14 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'folders:move': [a.string, a.nullish(a.string)],
   'devices:revoke': [a.string],
   'devices:createPairingCode': [a.string],
+  // The APNs token, and the push network it belongs to. No device id: the caller
+  // is the device, and the transport already knows which one (see Caller below).
+  'devices:registerPush': [a.string, a.optional(a.oneOf(['ios']))],
+  // How long the caller's machine has been idle. Declared, and required, because
+  // the argument is what makes the heartbeat readable in a log and leaves room to
+  // act on it later — the handler does not read it today, and the contract says
+  // it never has to (see ipc/devices.ts).
+  'devices:presence': [a.number],
   'settings:updateQuickChat': [a.object],
   'settings:updateWebSearch': [a.object],
   'settings:updateEscapeAction': [a.oneOf(['off', 'single', 'twoStage'])],
@@ -165,26 +173,44 @@ export function argsProblem(specs: ArgSpec[], args: unknown[]): string | null {
 
 // ---- the registry ----
 //
-// Every caller reaches a handler the same way: through dispatchLocal, with no
-// event object. Every caller is now literally the same caller — the transport,
-// answering a POST /rpc over loopback — so there is no BrowserWindow, no frame,
-// and nothing that could be an Electron event, whether the request came from a
-// paired laptop across the internet or from the Electron app in this very
-// process. One registry, the SAME per-channel argument validation, the SAME handler.
+// Every caller reaches a handler the same way: through dispatchLocal. Every caller
+// is now literally the same caller — the transport, answering a POST /rpc over
+// loopback — so there is no BrowserWindow, no frame, and nothing that could be an
+// Electron event, whether the request came from a paired laptop across the
+// internet or from the Electron app in this very process. One registry, the SAME
+// per-channel argument validation, the SAME handler.
 //
-// Why passing no event is safe: no handler registered here reads its event
-// object — every call site ignores the first parameter. The parameter survives,
-// typed as the nothing it now is, precisely so that a future handler which
-// reaches for a sender has to acknowledge that a server does not have one.
+// The first parameter is what used to be Electron's IpcMainInvokeEvent. For years
+// it was always `undefined`, and it survived typed as that nothing precisely so a
+// handler that reached for a sender would have to acknowledge the server does not
+// have one. `devices:registerPush` is the first handler that genuinely needs to
+// know which device is calling — a push token belongs to the device that offered
+// it and to no other — so the parameter now carries the identity the transport
+// already resolved from the bearer token, and nothing else.
+//
+// It is a NARROW thing on purpose. It is not an authorization input: the registry
+// is still the whole surface, every authenticated device may still call every
+// channel, and no handler is allowed to start deciding what a caller may do from
+// it (see the header comment). It is an argument the caller cannot forge — which
+// is the entire reason it is not simply a deviceId parameter on the channel.
+// A handler that needs it must cope with it being absent, because the desktop
+// binds these same handlers to its own client-owned channels with no device on
+// the other end (src/desktop/ipc-bridge.ts).
+
+/** The device a call arrived from, as the transport authenticated it. */
+export interface Caller {
+  /** The registry id from devices.json — never the token. */
+  deviceId: string;
+}
 
 /**
- * The vestigial first parameter of every registered handler: what used to be
- * Electron's IpcMainInvokeEvent, and is now always absent. See above.
+ * The first parameter of every registered handler: who is calling, when anyone
+ * knows. Undefined for a call that did not come over the transport. See above.
  */
-export type NoCallerEvent = undefined;
+export type CallerContext = Caller | undefined;
 
-/** A registered invoke handler, viewed without the event it never reads. */
-type LocalHandler = (event: NoCallerEvent, ...args: unknown[]) => unknown;
+/** A registered invoke handler, viewed without knowing its argument types. */
+type LocalHandler = (event: CallerContext, ...args: unknown[]) => unknown;
 
 const localHandlers = new Map<string, LocalHandler>();
 
@@ -195,7 +221,7 @@ const localHandlers = new Map<string, LocalHandler>();
  */
 export function registerServer(
   channel: string,
-  handler: (event: NoCallerEvent, ...args: never[]) => unknown
+  handler: (event: CallerContext, ...args: never[]) => unknown
 ): void {
   localHandlers.set(channel, handler as LocalHandler);
 }
@@ -213,8 +239,12 @@ export function hasLocalHandler(channel: string): boolean {
 /**
  * Invoke a registered channel: argument validation first, then the handler.
  * Rejects when the channel has no handler or the arguments don't fit.
+ *
+ * `caller` is the transport's answer to "whose token was this", passed through
+ * untouched. Omitting it is not a way to call as somebody else — nothing here
+ * reads it — it is what an in-process caller with no device honestly has.
  */
-export async function dispatchLocal(channel: string, args: unknown[]): Promise<unknown> {
+export async function dispatchLocal(channel: string, args: unknown[], caller?: Caller): Promise<unknown> {
   const handler = localHandlers.get(channel);
   if (!handler) throw new Error(`Rejected local call to ${channel}: no handler registered.`);
   const problem = argsProblem(IPC_ARGS[channel] ?? [], args);
@@ -222,5 +252,5 @@ export async function dispatchLocal(channel: string, args: unknown[]): Promise<u
     log('ipc', `rejected local ${channel}`, { problem });
     throw new Error(`Rejected local call to ${channel}: ${problem}.`);
   }
-  return handler(undefined, ...args);
+  return handler(caller, ...args);
 }

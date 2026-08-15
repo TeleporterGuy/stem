@@ -2760,7 +2760,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
     if (input.format === 'md') blocks.push(PLAIN_MD_DIRECTIVE);
 
-    // Images go to pi natively; text-like files are inlined, binaries noted and dropped.
+    // Images go to pi natively; text-like files and PDF text layers are inlined,
+    // other binaries noted and dropped.
     const { images, textBlocks, rejected } = await resolveAttachments(input.attachments ?? []);
 
     // The user's text comes last; context blocks precede it across a `---` rule, while
