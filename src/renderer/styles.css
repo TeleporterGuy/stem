@@ -1830,6 +1830,39 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .retrieval-test-status.err { color: var(--danger); }
 .retrieval-test-status svg { flex: none; }
 
+/* A built-in retrieval model (embedder/reranker) is down: red card at the top of
+   the Memory tab. Recall silently degrades to keyword/recency ranking while this
+   is true, so it must be visible without opening the collapsed advanced section
+   the model controls live in. */
+.retrieval-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  margin: 0 0 var(--sp-4);
+  border: 0.5px solid color-mix(in srgb, var(--danger) 40%, var(--line));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  font-size: var(--fs-12);
+  color: var(--ink);
+}
+.retrieval-alert > svg { flex: none; margin-top: 1px; color: var(--danger); }
+.retrieval-alert-msg { flex: 1; min-width: 0; display: grid; gap: 2px; overflow-wrap: anywhere; }
+.retrieval-alert-msg strong { color: var(--danger); font-weight: 600; }
+.retrieval-alert .link-btn { flex: none; }
+
+/* The status line under a local model picker when the model is in error — same
+   information as the muted line, refusing to be mistaken for one. */
+.retrieval-status-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  font-size: var(--fs-11);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.retrieval-status-error svg { flex: none; margin-top: 1px; }
+
 .seg-ctl { display: flex; background: color-mix(in srgb, var(--ink) 7%, var(--surface)); border-radius: var(--radius); padding: 2px; }
 .seg-ctl button { flex: 1; border: none; background: none; border-radius: var(--radius); padding: 4px; font: inherit; font-size: var(--fs-12); color: var(--muted); cursor: pointer; white-space: nowrap; }
 .seg-ctl button.active { background: var(--field); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14); }

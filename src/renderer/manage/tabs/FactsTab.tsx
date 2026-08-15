@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send } from 'lucide-react';
+import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send, TriangleAlert } from 'lucide-react';
 import type {
   DefaultsSettings,
   MemoryContents,
@@ -27,6 +27,7 @@ import { resolveMemoryModel } from '../../../shared/modelRoles';
 import { clampEffort, EffortSelect, effortsOf } from '../../ui/EffortSelect';
 import { MdxView } from '../../chat/MdxView';
 import { useOffline } from '../../hooks/useServerReachable';
+import { useRetrievalHealth } from '../../hooks/useRetrievalHealth';
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { createJobStore, holdFullSpin, useJob, type ActiveFactsViewProps } from './shared';
@@ -104,6 +105,24 @@ function localStatusLabel(
   }
 }
 
+/** The status line under a local model picker — red with a warning mark on error,
+ *  muted otherwise. Errors here must not look like just another muted state: a
+ *  down model silently degrades every recall pass until someone notices. */
+function LocalStatusLine({
+  status
+}: {
+  status: { state: LocalEmbedStatus['state']; dim?: number; error?: string } | null;
+}) {
+  if (status?.state === 'error') {
+    return (
+      <p className="retrieval-status-error">
+        <TriangleAlert size={12} /> {localStatusLabel(status)}
+      </p>
+    );
+  }
+  return <p className="muted">{localStatusLabel(status)}</p>;
+}
+
 // Embeddings-stage controls: an exclusive Built-in / Server / Off mode, the local
 // model picker + live download/ready status, or the remote endpoint fields (free
 // text — Stem just makes the HTTP call). Text edits stay local while typing and
@@ -179,7 +198,7 @@ function EmbeddingsFields({
               </option>
             ))}
           </select>
-          <p className="muted">{localStatusLabel(status)}</p>
+          <LocalStatusLine status={status} />
         </>
       )}
       {mode === 'remote' && (
@@ -323,7 +342,7 @@ function RerankerFields({
               </option>
             ))}
           </select>
-          <p className="muted">{localStatusLabel(status)}</p>
+          <LocalStatusLine status={status} />
         </>
       )}
       {mode === 'remote' && (
@@ -496,6 +515,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
   const [settings, setSettings] = useState<MemorySettings | null>(null);
   const [contents, setContents] = useState<MemoryContents | null>(null);
   const offline = useOffline();
+  const health = useRetrievalHealth();
   const [showTech, setShowTech] = useState(false);
   const [showSuperseded, setShowSuperseded] = useState(false);
   const [showMemories, setShowMemories] = useState(false);
@@ -842,6 +862,36 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
 
   return (
     <div>
+      {health.broken && (
+        // A down retrieval model, said out loud at the top of the tab — the
+        // model controls live in the collapsed advanced section below, and an
+        // error only visible there is an error nobody sees. Recall keeps
+        // working while this shows, just worse: the summary line names what
+        // the ranking has degraded to.
+        <div className="retrieval-alert" role="alert">
+          <TriangleAlert size={16} />
+          <div className="retrieval-alert-msg">
+            {health.embedError && (
+              <span>
+                <strong>Embedding model failed.</strong> {health.embedError}
+              </span>
+            )}
+            {health.rerankError && (
+              <span>
+                <strong>Reranker model failed.</strong> {health.rerankError}
+              </span>
+            )}
+            <span className="muted">
+              {health.embedError
+                ? 'Until this is fixed, memories are picked by keywords and recency alone — matches by meaning are missed.'
+                : 'Until this is fixed, memories rank by embedding similarity alone — cross-language matches are missed.'}
+            </span>
+          </div>
+          <button className="link-btn" onClick={() => setShowRetrieval(true)}>
+            Review setup
+          </button>
+        </div>
+      )}
       <div className="grp-head">Memory</div>
       <div className="group">
         <div className="group-row">
