@@ -8,11 +8,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { registerAuthIpc } from '../../src/main/ipc/auth';
-import { dispatchLocal } from '../../src/main/ipc/guard';
-import type { IpcDeps } from '../../src/main/ipc/deps';
-import { readSettings, updateDefaultModel, updateLocalProvider } from '../../src/main/workspace/settings';
-import { settingsStorePath } from '../../src/main/workspace/paths';
+import { registerAuthIpc } from '../../src/server/ipc/auth';
+import { dispatchLocal } from '../../src/server/ipc/guard';
+import type { IpcDeps } from '../../src/server/ipc/deps';
+import { readSettings, updateDefaultModel, updateLocalProvider } from '../../src/server/workspace/settings';
+import { settingsStorePath } from '../../src/server/workspace/paths';
 
 const removed: string[] = [];
 const restarts: number[] = [];

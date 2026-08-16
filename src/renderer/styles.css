@@ -404,6 +404,46 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .empty-starter:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--shadow-focus); }
 .empty-starter:disabled { opacity: 0.5; cursor: default; }
 
+/* One rotating tip under the starters. Quieter than the cards on purpose — it
+   teaches, it doesn't ask to be clicked — and centred as a block so the icon and
+   the cycle button ride with the text instead of pinning to the measure edges. */
+.empty-tip {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: var(--sp-3);
+  margin: 18px auto 0;
+  max-width: 560px;
+  text-align: left;
+  font-size: var(--fs-12);
+  line-height: 1.5;
+  opacity: 0.85;
+}
+.empty-tip p { margin: 0; }
+.empty-tip .kbd { margin-right: var(--sp-3); transform: translateY(1px); }
+.empty-tip-icon { flex: none; transform: translateY(2px); color: var(--muted); }
+.empty-tip-next {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.45;
+  transform: translateY(2px);
+  transition: opacity var(--motion-med) ease, color var(--motion-med) ease;
+}
+.empty-tip:hover .empty-tip-next,
+.empty-tip-next:focus-visible { opacity: 1; }
+.empty-tip-next:hover { color: var(--ink); }
+.empty-tip-next:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+@media (prefers-reduced-motion: reduce) {
+  .empty-tip-next { transition: none; }
+}
+
 /* message rows with an avatar gutter */
 .message { display: flex; gap: var(--sp-6); margin-bottom: 20px; }
 .msg-avatar {
@@ -1061,7 +1101,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .insp-tabs {
   display: flex;
   justify-content: center;
-  padding: 9px;
+  padding: 9px 9px 4px;
   position: sticky;
   top: 0;
   background: var(--panel);
@@ -1115,9 +1155,9 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .insp-seg button:hover .insp-tab-tip { opacity: 1; transition-delay: 350ms; }
 .insp-seg button:focus-visible .insp-tab-tip { opacity: 1; }
 
-.manage-body { padding: 14px; }
+.manage-body { padding: 6px 14px 14px; }
 /* Chats list runs close to the panel edges so rows/selection use the full width. */
-.manage-body.chats { padding: 14px 4px; }
+.manage-body.chats { padding: 6px 4px 14px; }
 
 .muted { color: var(--muted); font-size: var(--fs-12); }
 .error { color: var(--danger); font-size: var(--fs-12); }
@@ -1134,9 +1174,6 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 /* Disabled server: still listed (config + token kept) but the bridge skips it. */
 .group-row.disabled .row-icon, .group-row.disabled .row-main { opacity: 0.5; }
 .row-icon { width: 24px; height: 24px; border-radius: var(--radius); display: flex; align-items: center; justify-content: center; color: #fff; flex: none; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25); }
-/* MCP transport icons: quiet glyphs (globe = remote, hard-drive = local) rather
-   than loud filled tiles — the shape carries the meaning, like the chat list. */
-.row-icon.remote, .row-icon.local { width: 16px; background: transparent; color: var(--muted); box-shadow: none; }
 .row-main { flex: 1; min-width: 0; }
 .row-main strong { display: block; font-size: var(--fs-13); font-weight: 500; }
 .row-main em { font-style: normal; font-size: var(--fs-11); color: var(--muted); display: block; overflow-wrap: anywhere; }
@@ -1145,6 +1182,30 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .pill.ok { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
 .pill.off { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
 .pill.danger { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
+/* Something is waiting on the person reading it — an MCP server pinned to this
+   computer that nobody here has approved yet. Not a failure (danger) and not a
+   dormant setting (off): it is the one pill that means "your turn". */
+.pill.warn { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+/* Where an MCP server runs, when that is not the machine hosting the server.
+   A line under the address rather than a pill beside the name: a place is not a
+   state, and it must not take its width out of the only column with anything in
+   it. This panel can be 300px wide and an MCP row already carries a name, a URL
+   or a command, a state and a switch — a pill here broke names across three
+   lines and chopped commands mid-word. */
+.row-place { display: block; font-size: var(--fs-10); color: var(--muted); margin-top: 2px; }
+.row-place.orphaned { color: var(--danger); }
+
+/* And the text column gets the space that frees up. The name stays on one line;
+   the address is clamped to two, with the whole of it on the element's title,
+   because an npx invocation with four flags is longer than any panel will ever
+   be and wrapping all of it turns a list of servers into a wall. */
+.mcp-list .row-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-list .row-main em {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
 
 /* A signed-in provider whose token has died: a clickable "reconnect" pill on its
    Settings row. Reuses the danger pill; button reset so it sits inline. */
@@ -1162,6 +1223,24 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   border-radius: var(--radius-pill);
   background: var(--danger);
   box-shadow: 0 0 0 1.5px var(--panel);
+}
+/* Unread-inbox count on the Chats tab. Same anchor as .tab-alert-dot, but it
+   carries a number and is accent-colored — this is a "there's something for you",
+   not the red "something is broken" the alert dot means. */
+.tab-count-badge {
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  min-width: 14px;
+  padding: 0 3px;
+  font-size: var(--fs-10);
+  line-height: 14px;
+  text-align: center;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--paper);
+  box-shadow: 0 0 0 1.5px var(--panel);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Recall v2 trust/provenance controls. */
@@ -1208,6 +1287,62 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   color: #fff;
 }
 .auth-banner-btn:hover { background: color-mix(in srgb, var(--danger) 85%, black); }
+
+/* "Stem can't reach its server" strip, in the same slot as the auth banner and
+   stacking above it when both apply. Warn rather than danger: nothing is broken
+   and nothing is lost — the app is simply reading rather than reading and
+   writing, and a red bar would say something worse than what happened. */
+.offline-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-6);
+  background: color-mix(in srgb, var(--warn) 14%, var(--panel));
+  border-bottom: 0.5px solid color-mix(in srgb, var(--warn) 40%, var(--line));
+  color: var(--ink);
+  font-size: var(--fs-12);
+}
+.offline-banner-msg { flex: 1; min-width: 0; }
+
+/* "A newer Stem exists" strip, same slot as the two above. Accent rather than
+   warn or danger: nothing is wrong — this is the one banner that is good news,
+   and it offers a button rather than asking for one. */
+.update-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-6);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  border-bottom: 0.5px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  color: var(--ink);
+  font-size: var(--fs-12);
+}
+.update-banner-msg { flex: 1; min-width: 0; }
+.update-banner-btn {
+  flex: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: var(--fs-12);
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--radius);
+  border: none;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.update-banner-btn:hover { background: color-mix(in srgb, var(--accent) 85%, black); }
+.update-banner-later {
+  flex: none;
+  cursor: pointer;
+  font-size: var(--fs-12);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--radius);
+  border: none;
+  background: none;
+  color: var(--muted);
+}
+.update-banner-later:hover { color: var(--ink); }
 
 /* Connection status dot — a quiet green circle says "running fine" without a pill. */
 .mcp-dot { flex: none; width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--success); }
@@ -1272,6 +1407,155 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   color: var(--ink);
   outline: none;
 }
+
+/* ---- inbox: tabs, previews, unread, triage actions ---- */
+/* Inbox | Chats leads the panel, in the position and shape Memory's Facts | Recall
+   established. Bare, not inside a .formgroup card: the chat list is a
+   native-feeling sidebar, not a settings surface. */
+.seg-ctl.chats-modes { margin: 0 12px 8px; }
+.seg-ctl.chats-modes button { gap: var(--sp-2); display: inline-flex; align-items: center; justify-content: center; }
+.seg-count {
+  font-size: var(--fs-10);
+  font-weight: 700;
+  color: var(--accent);
+}
+/* Unread reads as weight + a leading accent dot, not color: the row's title is
+   already the only strong thing on it, so tinting the text would fight the
+   selected state. */
+.chats-panel .group-row.chat-row.unread .row-main strong { font-weight: 600; }
+.chats-panel .group-row.chat-row.unread .row-icon.chat { color: var(--accent); }
+/* Multi-selection: a tint plus an accent edge, so it stays distinguishable from
+   the single "currently open" row, which uses the tint alone. */
+.chats-panel .group-row.chat-row.multi { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); }
+.chat-actions { flex: none; display: inline-flex; align-items: center; gap: var(--sp-1); opacity: 0; transition: opacity var(--motion-fast) ease; }
+.chats-panel .group-row:hover .chat-actions, .chats-panel .group-row.multi .chat-actions { opacity: 1; }
+.chat-action {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 2px;
+  display: inline-flex;
+  align-items: center;
+}
+.chat-action:hover { color: var(--ink); }
+/* Wake time on a snoozed row — recessive, and it must not shove the title. */
+.chat-wake { flex: none; font-size: var(--fs-10); color: var(--muted); white-space: nowrap; }
+/* Snoozed / Archived: what you've already dealt with, collapsed at the foot of
+   the Inbox. The Archived one doubles as the drag-to-archive drop target. */
+.inbox-snoozed-toggle { margin: 10px 12px 4px; font-size: var(--fs-11); }
+.inbox-snoozed-toggle.drop-target { color: var(--ink); }
+/* An Inbox row reads like mail: subject over an excerpt of the newest message,
+   clamped to the chosen number of lines. The tree keeps one line per thread. */
+.chats-panel .group-row.chat-row.has-preview { align-items: flex-start; }
+.chats-panel .group-row.chat-row.has-preview .row-icon { margin-top: 1px; }
+.chat-preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--fs-11);
+  line-height: 1.35;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.chat-row.lines-1 .chat-preview { -webkit-line-clamp: 1; }
+.chat-row.lines-2 .chat-preview { -webkit-line-clamp: 2; }
+/* Bulk-action bar: present only while a selection exists. */
+.inbox-selbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin: 0 12px 6px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--sel);
+}
+.inbox-selbar-count { font-size: var(--fs-11); color: var(--ink); }
+.inbox-selbar-actions { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.inbox-selbar-actions .link-btn { font-size: var(--fs-11); }
+/* Snooze popover: a .ctx-menu with a right-aligned resolved time per preset. */
+.snooze-menu button { justify-content: space-between; gap: var(--sp-6); }
+.snooze-when { color: var(--muted); font-variant-numeric: tabular-nums; }
+/* The custom step: a month grid where the day IS the commit. Sized so the
+   popover is the same width with the calendar open as with the presets up. */
+.snooze-cal { padding: 2px 6px 6px; width: 210px; }
+.snooze-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 2px 2px 4px;
+}
+.snooze-cal-head > span {
+  flex: 1;
+  text-align: center;
+  /* The month name must never wrap — a two-line header shoves the grid down and
+     the popover changes height as you page through the year. */
+  white-space: nowrap;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--ink);
+}
+/* Overrides .ctx-menu button, which is a full-width menu row — these two are
+   chevrons in a header, not entries in the list. */
+.snooze-cal-head > button {
+  display: flex;
+  width: auto;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+.snooze-cal-head > button:hover { color: var(--ink); }
+.snooze-cal-week,
+.snooze-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+}
+.snooze-cal-week > span {
+  padding: 2px 0;
+  text-align: center;
+  font-size: var(--fs-10);
+  color: var(--muted);
+}
+.snooze-cal-grid > .snooze-day {
+  display: block;
+  width: auto;
+  padding: 4px 0;
+  text-align: center;
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  border-radius: var(--radius-sm);
+}
+/* Leading/trailing days of the neighbouring months: still pickable, just not
+   what this page is about. */
+.snooze-cal-grid > .snooze-day.outside { color: var(--muted); }
+.snooze-cal-grid > .snooze-day.today { box-shadow: inset 0 0 0 1px var(--accent); }
+.snooze-cal-grid > .snooze-day:disabled { opacity: 0.3; cursor: default; background: none; }
+.snooze-cal-grid > .snooze-day:focus-visible { outline: none; background: var(--accent); color: var(--accent-ink); }
+.snooze-cal-time {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 0.5px solid var(--line);
+}
+.snooze-cal-time > span { font-size: var(--fs-11); color: var(--muted); }
+.snooze-cal-time > input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--fs-11);
+  padding: 3px 6px;
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--field);
+  color: var(--ink);
+  outline: none;
+}
+.snooze-cal-time > input:focus { border-color: var(--accent); }
 
 /* ---- chat search ---- */
 .chat-search {
@@ -1371,6 +1655,18 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 }
 .ctx-menu button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
 .ctx-menu button.danger { color: var(--danger); }
+/* Accelerator column: the keycap for rows whose action also has a shortcut, in
+   the dimmed right-hand column a native menu puts it in. Plain dim text rather
+   than a .kbd badge — that badge is a spotlight built for hint mode, and four of
+   them stacked down a menu would read as a toolbar. Its own colour so it stays
+   dim on the Delete row too, which is otherwise red. */
+.ctx-accel {
+  flex: none;
+  margin-left: auto;
+  padding-left: var(--sp-4); /* on top of the row's own gap — 16px of column */
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
 .ctx-sep { height: 0.5px; background: var(--line); margin: 4px 0; }
 .ctx-label { font-size: var(--fs-10); font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); padding: 4px 9px 2px; }
 .ctx-scroll { max-height: 180px; overflow-y: auto; }
@@ -1395,6 +1691,36 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .mp-trigger-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mp-trigger-provider { color: var(--muted); }
 .mp-trigger-chevron { flex: none; color: var(--muted); }
+/* What "Default"/"Auto" resolves to right now. A footnote to the field above it,
+   so it reads as an answer rather than another setting — the negative top margin
+   cancels the .set-block row gap, which would otherwise leave the note floating
+   between two settings and looking like a label for the next one. */
+.mp-resolved {
+  display: block;
+  margin: calc(2px - var(--sp-3)) 0 0 2px;
+  font-size: var(--fs-10);
+  font-style: normal;
+  color: var(--muted);
+}
+/* "Effort  [ Model default ]" under a role's model picker. A labelled row rather
+   than another full-width field: it is a rider on the model above it, not a
+   second decision, and the label is what stops it reading as one. */
+.mp-effort {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: calc(2px - var(--sp-3));
+}
+.mp-effort > span {
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
+.mp-effort > .ifield {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-12);
+  padding: 3px 6px;
+}
 .mp-pop {
   position: fixed;
   z-index: var(--z-popover);
@@ -1525,9 +1851,55 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .retrieval-test-status.err { color: var(--danger); }
 .retrieval-test-status svg { flex: none; }
 
+/* A built-in retrieval model (embedder/reranker) is down: red card at the top of
+   the Memory tab. Recall silently degrades to keyword/recency ranking while this
+   is true, so it must be visible without opening the collapsed advanced section
+   the model controls live in. */
+.retrieval-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  margin: 0 0 var(--sp-4);
+  border: 0.5px solid color-mix(in srgb, var(--danger) 40%, var(--line));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  font-size: var(--fs-12);
+  color: var(--ink);
+}
+.retrieval-alert > svg { flex: none; margin-top: 1px; color: var(--danger); }
+.retrieval-alert-msg { flex: 1; min-width: 0; display: grid; gap: 2px; overflow-wrap: anywhere; }
+.retrieval-alert-msg strong { color: var(--danger); font-weight: 600; }
+.retrieval-alert .link-btn { flex: none; }
+
+/* The status line under a local model picker when the model is in error — same
+   information as the muted line, refusing to be mistaken for one. */
+.retrieval-status-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  font-size: var(--fs-11);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.retrieval-status-error svg { flex: none; margin-top: 1px; }
+
 .seg-ctl { display: flex; background: color-mix(in srgb, var(--ink) 7%, var(--surface)); border-radius: var(--radius); padding: 2px; }
 .seg-ctl button { flex: 1; border: none; background: none; border-radius: var(--radius); padding: 4px; font: inherit; font-size: var(--fs-12); color: var(--muted); cursor: pointer; white-space: nowrap; }
 .seg-ctl button.active { background: var(--field); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14); }
+/* "Something in here is broken" on a segment — the sub-tab echo of .tab-alert-dot
+   on the rail, so a dead provider is still visible once you're inside Settings.
+   Inline rather than absolutely positioned: a segment is sized by its label, and
+   a corner dot would sit outside the one that's active. */
+.seg-ctl .seg-alert-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 4px;
+  vertical-align: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+}
 .ifield { width: 100%; border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 9px; font: inherit; font-size: var(--fs-13); background: var(--field); color: var(--ink); }
 .ifield::placeholder { color: var(--muted); }
 .ifield:focus { outline: none; border-color: var(--accent); box-shadow: var(--shadow-focus); }
@@ -2108,6 +2480,7 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 .files-newdir { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin: 0 4px 10px; }
 .files-newdir .ifield { flex: 1; min-width: 120px; width: auto; }
 .files-newdir-error { flex-basis: 100%; font-size: var(--fs-11); color: var(--danger); }
+.files-error { margin: 0 4px 10px; font-size: var(--fs-11); color: var(--danger); }
 .files-row { padding: 6px 12px; gap: var(--sp-3); }
 .files-row .row-icon { width: 16px; background: transparent; color: var(--muted); box-shadow: none; }
 .files-row .row-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2298,6 +2671,82 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   margin-top: 14px;
 }
 
+/* ---- "Pair a phone": the QR, the code, and the address ---- */
+/* Narrower than the other cards on purpose — the content is a square and two
+   short lines, and a 440px column would leave the QR marooned in the middle. */
+.pair-phone-card { width: min(360px, calc(100vw - 48px)); }
+/* The one surface in Stem that does not follow the theme. A QR is read by a
+   camera, not a person, and phone scanners expect dark modules on a light field;
+   inverted symbols are a coin flip across iOS and Android. So the plate stays
+   white and the modules black in both themes, and the plate is what supplies the
+   contrast rather than the card behind it. */
+/* Sized to the symbol, not to the card: in dark mode a full-width plate is a
+   slab of white across the dialog, and the light field only has to be wide
+   enough to be the symbol's own background. */
+.pair-qr-plate {
+  display: flex;
+  width: max-content;
+  background: #fff;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4);
+  margin: var(--sp-6) auto;
+}
+.pair-qr {
+  width: 200px;
+  height: 200px;
+  /* Modules are whole pixels; antialiasing their edges is what makes a small
+     symbol fail to scan. */
+  shape-rendering: crispEdges;
+}
+.pair-qr path { fill: #000; }
+.pair-detail { align-items: baseline; }
+.pair-code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-16);
+  letter-spacing: 0.08em;
+}
+
+/* ---- Server-side folder picker (remote installs' "add connected folder") ---- */
+.folder-picker-card { width: min(480px, calc(100vw - 48px)); }
+.folder-picker-hint { margin: 0 0 10px; font-size: var(--fs-12); }
+.folder-picker-path { display: flex; align-items: center; gap: var(--sp-3); }
+.folder-picker-path .ifield {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-12);
+}
+.folder-picker-error { margin: 8px 2px 0; font-size: var(--fs-11); color: var(--danger); }
+/* Fixed height on purpose: navigating between a full folder and an empty one
+   must not bounce the action buttons under the pointer. */
+.folder-picker-list {
+  height: min(38vh, 300px);
+  overflow-y: auto;
+  margin-top: var(--sp-6);
+  border: 0.5px solid var(--hair);
+  border-radius: var(--radius);
+  padding: var(--sp-2);
+}
+.folder-picker-none { margin: 8px; font-size: var(--fs-12); }
+.folder-picker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-13);
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.folder-picker-row:hover { background: var(--sel); }
+.folder-picker-row svg { flex: none; color: var(--muted); }
+.folder-picker-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Custom-instructions textareas (Settings + approval card). */
 .ci-textarea,
 .instructions-approval-text,
@@ -2352,7 +2801,7 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   overflow-y: auto;
 }
 
-/* Settings → Command execution: the learned-prefix allowlist editor. */
+/* Settings → Chat → Command execution: the learned-prefix allowlist editor. */
 .exec-allowlist {
   display: flex;
   flex-wrap: wrap;
@@ -2366,6 +2815,46 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   cursor: pointer;
   padding: 0 0 0 4px;
   line-height: 1;
+}
+
+/* Settings → Chat → Command execution: what each chat's commands left on disk. */
+.scratch-usage {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.scratch-empty,
+.scratch-total {
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
+.scratch-total {
+  padding-bottom: 4px;
+}
+.scratch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-12);
+}
+/* The title takes the slack and truncates; the size and the button never do. */
+.scratch-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scratch-size {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.scratch-row .link-btn {
+  flex: none;
 }
 
 /* ---- Settings → Mobile: the phone pairing panel ---- */

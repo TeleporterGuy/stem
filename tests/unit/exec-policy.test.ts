@@ -5,7 +5,7 @@ import {
   parseCommand,
   parseJudgeVerdict,
   resolveJudgeModel
-} from '../../src/main/exec/policy';
+} from '../../src/server/exec/policy';
 import type { ModelSummary } from '../../src/shared/types';
 
 // The run_command auto-approve policy: quote-aware segment parsing, conservative
@@ -268,46 +268,35 @@ describe('resolveJudgeModel', () => {
     model('anthropic/claude-haiku-4', 'anthropic'),
     model('openai-codex/gpt-5.3-codex-spark', 'openai-codex')
   ];
+  const none = { backgroundModel: null };
 
-  it('an explicit setting wins', () => {
-    expect(resolveJudgeModel({ judgeModel: 'x/y' }, models, 'anthropic/claude-opus-4')).toBe('x/y');
-  });
-
-  it('auto-picks the cheap model of the current provider', () => {
-    expect(resolveJudgeModel({ judgeModel: null }, models, 'anthropic/claude-opus-4')).toBe(
-      'anthropic/claude-haiku-4'
-    );
-    expect(resolveJudgeModel({ judgeModel: null }, models, 'openai-codex/gpt-5.3-codex')).toBe(
-      'openai-codex/gpt-5.3-codex-spark'
+  it('an explicit setting wins over everything', () => {
+    expect(resolveJudgeModel({ judgeModel: 'x/y' }, { backgroundModel: 'b/g' }, models, 'anthropic/claude-opus-4')).toBe(
+      'x/y'
     );
   });
 
-  it('falls back to the default provider cheap model, then null on an empty list', () => {
-    expect(resolveJudgeModel({ judgeModel: null }, models, null)).toBe('anthropic/claude-haiku-4');
-    expect(resolveJudgeModel({ judgeModel: null }, [], null)).toBeNull();
+  it('falls back to the shared background model before the chat model', () => {
+    expect(
+      resolveJudgeModel({ judgeModel: null }, { backgroundModel: 'anthropic/claude-haiku-4' }, models, 'anthropic/claude-opus-4')
+    ).toBe('anthropic/claude-haiku-4');
   });
 
-  it("recognises the cheap tier under names that aren't -mini/-haiku", () => {
-    // The frontier model is the fallback, so a provider whose small tier is
-    // called something else was paying frontier prices on every judged command.
-    const xai = [model('xai/grok-4.5', 'xai', true), model('xai/grok-4-fast', 'xai')];
-    expect(resolveJudgeModel({ judgeModel: null }, xai, 'xai/grok-4.5')).toBe('xai/grok-4-fast');
-    const other = [model('acme/big-1', 'acme', true), model('acme/big-1-turbo', 'acme')];
-    expect(resolveJudgeModel({ judgeModel: null }, other, 'acme/big-1')).toBe('acme/big-1-turbo');
+  it('runs on the model you chat with when nothing else is set', () => {
+    // Deliberately NOT the cheapest-looking model of that provider. Guessing
+    // that from names is what put the check on a mini variant while a newer,
+    // cheaper, better small model sat beside it — the catalog carries no prices,
+    // so Stem states what it is doing and lets Quick tasks be set on purpose.
+    expect(resolveJudgeModel({ judgeModel: null }, none, models, 'anthropic/claude-opus-4')).toBe(
+      'anthropic/claude-opus-4'
+    );
   });
 
-  it('reuses the live chat model when the provider really has no cheap tier', () => {
+  it('never answers null while signed-in models exist', () => {
+    // null would make complete() spawn its built-in openai-codex default, which
+    // fails with "No API key" for anyone signed in only to another provider.
     const xai = [model('xai/grok-4.5', 'xai', true), model('xai/grok-4.3', 'xai')];
-    expect(resolveJudgeModel({ judgeModel: null }, xai, 'xai/grok-4.5')).toBe('xai/grok-4.5');
-    // No currentModel: still must not return null while signed-in models exist
-    // (null would make complete() spawn the built-in openai-codex default).
-    expect(resolveJudgeModel({ judgeModel: null }, xai, null)).toBe('xai/grok-4.5');
-  });
-
-  it('stays on the chat provider rather than borrowing a cheap model from another', () => {
-    // Reaching across providers would pick a model the user may not be signed in
-    // to — the failure this fallback exists to prevent.
-    const mixed = [model('xai/grok-4.5', 'xai', true), model('anthropic/claude-haiku-4', 'anthropic')];
-    expect(resolveJudgeModel({ judgeModel: null }, mixed, 'xai/grok-4.5')).toBe('xai/grok-4.5');
+    expect(resolveJudgeModel({ judgeModel: null }, none, xai, null)).toBe('xai/grok-4.5');
+    expect(resolveJudgeModel({ judgeModel: null }, none, [], null)).toBeNull();
   });
 });

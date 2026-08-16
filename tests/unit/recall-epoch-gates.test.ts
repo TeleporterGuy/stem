@@ -5,10 +5,10 @@
 // capture reclaims the erased rowid (id is a plain INTEGER PRIMARY KEY, so the
 // VACUUM hands the same id back). Each one persists corrupt state without its gate.
 import { afterAll, describe, expect, it } from 'vitest';
-import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/main/recall/store';
-import { embedNewMessages } from '../../src/main/recall/embed-episodic';
-import { runMemoryRebuildStep, startMemoryRebuild } from '../../src/main/recall/rebuild';
-import { backfillSummaryVectors } from '../../src/main/startup/retrieval';
+import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/server/recall/store';
+import { embedNewMessages } from '../../src/server/recall/embed-episodic';
+import { runMemoryRebuildStep, startMemoryRebuild } from '../../src/server/recall/rebuild';
+import { backfillSummaryVectors } from '../../src/server/startup/retrieval';
 
 afterAll(() => store.close());
 

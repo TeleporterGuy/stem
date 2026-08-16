@@ -10,6 +10,7 @@ import {
 } from 'react';
 
 import { IS_MAC } from './accel';
+import { SHORTCUTS, chordFor, keycapFor, type Chord, type ShortcutId } from '../shared/shortcut-defs';
 
 // Mod-key shortcuts + the "hold the mod key to reveal" helper. The mod key is
 // ⌘ (metaKey) on macOS and Ctrl elsewhere.
@@ -24,17 +25,11 @@ import { IS_MAC } from './accel';
 // `ChatView` is reused in the Quick Chat window, which has no provider; the default
 // context is a no-op so the hook/components degrade silently there (no badges).
 
-export type ShortcutId =
-  | 'new-conversation'
-  | 'toggle-inspector'
-  | 'cycle-effort'
-  | 'toggle-speed'
-  | 'toggle-format'
-  | 'attach'
-  | 'stop'
-  | 'delete-thread'
-  | 'focus-chat-search'
-  | 'send';
+// Which shortcuts exist, what they are called, and which keys they use all live in
+// ../shared/shortcut-defs — the platform-neutral table the docs page is generated
+// from. This module is the half that needs a browser: keydown predicates, the
+// IS_MAC keycaps, and the React plumbing around them.
+export type { ShortcutId };
 
 interface Binding {
   id: ShortcutId;
@@ -47,43 +42,50 @@ interface Binding {
 // The platform mod key: ⌘ on macOS, Ctrl elsewhere — each exclusive of the other.
 const mod = (e: KeyboardEvent) =>
   IS_MAC ? e.metaKey && !e.ctrlKey && !e.altKey : e.ctrlKey && !e.metaKey && !e.altKey;
+// The literal Control key. On macOS ⌃ is a modifier of its own, so this is not
+// `mod`; off macOS the two are the same key and the two predicates coincide.
+const control = (e: KeyboardEvent) => e.ctrlKey && !e.metaKey && !e.altKey;
 const isKey = (e: KeyboardEvent, k: string) => e.key.toLowerCase() === k;
 
-/** Hint keycap for a mod-key combo: '⌘N' / '⌘⇧F' on mac, 'Ctrl+N' / 'Ctrl+Shift+F' elsewhere. */
-const cap = (key: string, shift = false) =>
-  IS_MAC ? `⌘${shift ? '⇧' : ''}${key}` : `Ctrl+${shift ? 'Shift+' : ''}${key}`;
+/**
+ * The keydown predicate for a chord. A chord that leaves `shift` unset ignores the
+ * Shift state — see the field's note in shortcut-defs; every other modifier must
+ * match exactly, so AltGr typing and Super combos never trigger a shortcut.
+ */
+const matcher =
+  (chord: Chord) =>
+  (e: KeyboardEvent): boolean => {
+    if (!(chord.mod ? mod(e) : control(e))) return false;
+    if (chord.shift !== undefined && e.shiftKey !== chord.shift) return false;
+    return isKey(e, chord.key.toLowerCase());
+  };
 
-// Single source of truth for every mod-key shortcut and its hint glyphs.
-export const BINDINGS: Binding[] = [
-  { id: 'new-conversation', glyphs: cap('N'), match: (e) => mod(e) && !e.shiftKey && isKey(e, 'n') },
-  { id: 'toggle-inspector', glyphs: cap('\\'), match: (e) => mod(e) && isKey(e, '\\') },
-  { id: 'cycle-effort', glyphs: cap('E'), match: (e) => mod(e) && !e.shiftKey && isKey(e, 'e') },
-  { id: 'toggle-speed', glyphs: cap('F', true), match: (e) => mod(e) && e.shiftKey && isKey(e, 'f') },
-  { id: 'toggle-format', glyphs: cap('M', true), match: (e) => mod(e) && e.shiftKey && isKey(e, 'm') },
-  { id: 'attach', glyphs: cap('U'), match: (e) => mod(e) && !e.shiftKey && isKey(e, 'u') },
-  { id: 'focus-chat-search', glyphs: cap('F'), match: (e) => mod(e) && !e.shiftKey && isKey(e, 'f') },
-  { id: 'stop', glyphs: cap('.'), match: (e) => mod(e) && isKey(e, '.') },
-  // mac: Control (not ⌘) — the only ctrl-based mac binding; no hold-⌘ hint anchors
-  // it. Elsewhere Ctrl+X must keep meaning "cut", so deletion moves to Ctrl+Shift+X.
-  IS_MAC
-    ? { id: 'delete-thread', glyphs: '⌃X', match: (e) => e.ctrlKey && !e.metaKey && !e.altKey && isKey(e, 'x') }
-    : {
-        id: 'delete-thread',
-        glyphs: 'Ctrl+Shift+X',
-        match: (e) => e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && isKey(e, 'x')
-      },
-  { id: 'send', glyphs: IS_MAC ? '⏎' : 'Enter', match: null }
-];
+// Every mod-key shortcut, resolved for the platform this renderer is running on:
+// the shared table supplies the keys and the keycap text, this file supplies the
+// predicate that reads a real keydown.
+export const BINDINGS: Binding[] = SHORTCUTS.map((def) => ({
+  id: def.id,
+  glyphs: keycapFor(def, IS_MAC),
+  match: def.bound === false ? null : matcher(chordFor(def, IS_MAC))
+}));
+
+/** Keycap glyphs for a binding, already platform-formatted ('⌘N' / 'Ctrl+N'). */
+export function glyphsFor(id: ShortcutId): string | null {
+  return BINDINGS.find((b) => b.id === id)?.glyphs ?? null;
+}
 
 type Handler = () => void;
 
 interface ShortcutsCtx {
+  /** False under the default context — i.e. no provider, so no shortcut works here. */
+  bound: boolean;
   hintMode: boolean;
   register: (id: ShortcutId, handler: Handler) => void;
   unregister: (id: ShortcutId) => void;
 }
 
 const NOOP: ShortcutsCtx = {
+  bound: false,
   hintMode: false,
   register: () => {},
   unregister: () => {}
@@ -158,7 +160,7 @@ export function ShortcutsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const api = useMemo<ShortcutsCtx>(
-    () => ({ hintMode, register, unregister }),
+    () => ({ bound: true, hintMode, register, unregister }),
     [hintMode, register, unregister]
   );
 
@@ -174,6 +176,15 @@ export function useShortcut(id: ShortcutId, handler: Handler) {
     register(id, () => ref.current());
     return () => unregister(id);
   }, [id, register, unregister]);
+}
+
+/**
+ * Whether shortcuts are live in this window. False in Quick Chat, which mounts no
+ * provider — so surfaces that *advertise* shortcuts (rather than merely decorating
+ * a control that works either way) can stay quiet there.
+ */
+export function useShortcutsBound(): boolean {
+  return useContext(Ctx).bound;
 }
 
 /** A keycap, e.g. ⌘N. */

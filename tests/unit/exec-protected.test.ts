@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanProtected } from '../../src/main/exec/protected';
+import { scanProtected } from '../../src/server/exec/protected';
 
 // The main-side fail-closed guard for read-only connected folders: any command
 // or cwd referencing a protected root is blocked; unreadable gate state blocks

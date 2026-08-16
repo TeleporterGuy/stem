@@ -1,23 +1,23 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/main/recall/store';
-import * as activity from '../../src/main/activity';
-import * as distill from '../../src/main/recall/distill';
-import * as inject from '../../src/main/recall/inject';
-import * as retrieval from '../../src/main/recall/retrieval';
-import * as search from '../../src/main/recall/search';
+import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/server/recall/store';
+import * as activity from '../../src/server/activity';
+import * as distill from '../../src/server/recall/distill';
+import * as inject from '../../src/server/recall/inject';
+import * as retrieval from '../../src/server/recall/retrieval';
+import * as search from '../../src/server/recall/search';
 import {
   chunkEpisodicText,
   embedNewMessages,
   EPISODIC_EMBED_MAX_CHARS
-} from '../../src/main/recall/embed-episodic';
-import { RELATION_PROMPT_HEADER, reconcileExplicitFact, type FactRelation } from '../../src/main/recall/reconcile';
+} from '../../src/server/recall/embed-episodic';
+import { RELATION_PROMPT_HEADER, reconcileExplicitFact, type FactRelation } from '../../src/server/recall/reconcile';
 import {
   getMemoryRebuildStatus,
   pauseMemoryRebuild,
   resumeMemoryRebuild,
   runMemoryRebuildStep,
   startMemoryRebuild
-} from '../../src/main/recall/rebuild';
+} from '../../src/server/recall/rebuild';
 
 afterAll(() => store.close());
 beforeEach(() => {
@@ -321,20 +321,36 @@ describe('distill prompt budgets', () => {
   });
 });
 
+/**
+ * Fake cross-encoder for gate tests: scores each doc via `scoreFn`, reports
+ * `floor` as its per-model fact gate (null = unknown scale, like every remote
+ * backend). Mirrors the RerankClient contract inject.ts consumes.
+ */
+function fakeRerank(scoreFn: (query: string, doc: string) => number, floor: number | null = -8) {
+  return {
+    available: async () => true,
+    factGateScore: async () => floor,
+    rerank: async (query: string, docs: string[], topN: number) =>
+      docs
+        .map((d, index) => ({ index, score: scoreFn(query, d) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topN)
+  };
+}
+
 describe('Recall v2 injection trust boundary', () => {
-  it('uses sensitive facts only for a direct match and excludes low-confidence assistant claims', async () => {
+  it('sensitive facts never ride a lexical-only selection — the gate is the only door', async () => {
     store.upsertFact('The user has diabetes', { category: 'health', sensitivity: 'sensitive', confidence: 0.9 });
     store.upsertFact('The user owns a hidden sailboat', { confidence: 0.55 });
     expect((await inject.previewFacts('recommend a keyboard')).facts).toHaveLength(0);
-    expect((await inject.previewFacts('what should I know about my diabetes?')).facts.map((f) => f.text))
-      .toContain('The user has diabetes');
+    // Even a direct term match cannot admit a sensitive fact without the
+    // cross-encoder: bm25 cannot separate direct from incidental (measured in
+    // search.ts), so the model-free tier refuses the whole class.
+    expect((await inject.previewFacts('what should I know about my diabetes?')).facts).toHaveLength(0);
     expect((await inject.previewFacts('tell me about my sailboat')).facts).toHaveLength(0);
   });
 
-  it('at scale, the lexical tier holds sensitive facts to a strong term match', async () => {
-    // Enough active facts that bm25 magnitudes are meaningful — below
-    // FACT_LEXICAL_GATE_MIN_FACTS the gates deliberately stand down (in a tiny
-    // store a term match IS a direct match; see the small-store case above).
+  it('the rerank gate admits a direct sensitive match and refuses an incidental one', async () => {
     for (let i = 0; i < 40; i++) {
       store.upsertFact(`Filler note ${i}: weekly errand management and grocery planning round ${i}`, { confidence: 0.9 });
     }
@@ -343,13 +359,70 @@ describe('Recall v2 injection trust boundary', () => {
       sensitivity: 'sensitive',
       confidence: 0.9
     });
-    // One incidental low-signal shared word ('management') is not a direct
-    // match — before the gate this injected the sensitive fact.
+    // Scores like a cross-encoder would: the PAIR matters — high only when the
+    // query and the fact are about the same thing, saturated-low otherwise.
+    retrieval.setRetrievalClients({
+      embeddings: null,
+      rerank: fakeRerank((q, doc) => (/insulin/.test(q) && /insulin/.test(doc) ? 1 : -11))
+    });
+    // 'management' overlap alone: the candidate pool contains the sensitive
+    // fact (lexical leg), but the gate scores the pair -11 < floor — refused,
+    // along with every filler.
     const weak = await inject.previewFacts('any management tips for my team offsite?');
-    expect(weak.facts.map((f) => f.text)).not.toContain('The user takes insulin for diabetes management');
-    // A genuinely direct query still clears the stricter sensitive bar.
+    expect(weak.facts).toHaveLength(0);
+    // A direct query clears floor + SENSITIVE_RERANK_MARGIN (1 >= -8 + 2).
     const strong = await inject.previewFacts('remind me about my insulin and diabetes management');
+    expect(strong.tier).toBe('reranked');
     expect(strong.facts.map((f) => f.text)).toContain('The user takes insulin for diabetes management');
+  });
+
+  it('a sensitive fact needs SENSITIVE_RERANK_MARGIN above the floor, a standard one does not', async () => {
+    for (let i = 0; i < 40; i++) {
+      store.upsertFact(`Filler note ${i}: weekly errand management and grocery planning round ${i}`, { confidence: 0.9 });
+    }
+    store.upsertFact('The user prefers metformin brand A for diabetes care', { confidence: 0.9 });
+    store.upsertFact('The user takes insulin for diabetes management', {
+      category: 'health',
+      sensitivity: 'sensitive',
+      confidence: 0.9
+    });
+    // Both facts score -7: above the -8 floor, below the sensitive bar (-6).
+    retrieval.setRetrievalClients({
+      embeddings: null,
+      rerank: fakeRerank((_q, doc) => (/diabetes/.test(doc) ? -7 : -11))
+    });
+    const r = await inject.previewFacts('what should I know about my diabetes?');
+    expect(r.facts.map((f) => f.text)).toContain('The user prefers metformin brand A for diabetes care');
+    expect(r.facts.map((f) => f.text)).not.toContain('The user takes insulin for diabetes management');
+  });
+
+  it('the gate never fills to the limit — only facts clearing the floor inject', async () => {
+    for (let i = 0; i < 40; i++) {
+      store.upsertFact(`Filler note ${i}: weekly errand management and grocery planning round ${i}`, { confidence: 0.9 });
+    }
+    store.upsertFact('The user plays badminton on Tuesdays', { confidence: 0.9 });
+    retrieval.setRetrievalClients({
+      embeddings: null,
+      rerank: fakeRerank((_q, doc) => (/badminton/.test(doc) ? 0 : -11))
+    });
+    const r = await inject.previewFacts('when is my badminton management session?');
+    expect(r.tier).toBe('reranked');
+    // 'management' matches 40 filler candidates lexically; none clear the floor.
+    expect(r.facts.map((f) => f.text)).toEqual(['The user plays badminton on Tuesdays']);
+  });
+
+  it('an unknown-scale reranker (no floor) falls back to the scale-free margin rule', async () => {
+    for (let i = 0; i < 40; i++) {
+      store.upsertFact(`Filler note ${i}: weekly errand management and grocery planning round ${i}`, { confidence: 0.9 });
+    }
+    store.upsertFact('The user plays badminton on Tuesdays', { confidence: 0.9 });
+    // Cohere-style normalized scores, factGateScore unknown (null).
+    retrieval.setRetrievalClients({
+      embeddings: null,
+      rerank: fakeRerank((_q, doc) => (/badminton/.test(doc) ? 0.95 : 0.1), null)
+    });
+    const r = await inject.previewFacts('when is my badminton management session?');
+    expect(r.facts.map((f) => f.text)).toEqual(['The user plays badminton on Tuesdays']);
   });
 
   it('limits pinned facts to five and uses pinned-only when no relevance signal exists', async () => {

@@ -19,8 +19,8 @@ import {
   recordGrades,
   recordInjections,
   recordUses
-} from '../../src/main/skills/usage';
-import { listSkills } from '../../src/main/workspace/skills';
+} from '../../src/server/skills/usage';
+import { listSkills } from '../../src/server/workspace/skills';
 
 const usageFile = join(skillsDir, SKILLS_USAGE_FILE);
 

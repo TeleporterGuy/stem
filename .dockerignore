@@ -1,0 +1,31 @@
+# What must never reach the build daemon.
+#
+# node_modules first and for a reason that is not size: onnxruntime-node's
+# compiled binary is platform-specific, and a macOS build copied in would be
+# found by `npm ci`'s cache-aware resolution and shipped in a Linux image, where
+# it loads as far as the first embedding. The Dockerfile installs its own.
+node_modules
+dist
+out
+release
+build
+
+# The developer's own Stem, and everything downloaded on the way to one.
+.embed-smoke-cache
+.recall-build
+.skills-build
+.external
+test-results
+playwright-report
+
+.git
+.github
+docs/screenshots
+*.log
+.DS_Store
+
+# The key file, if somebody made one here while following the runbook. It is a
+# Compose secret and it is mounted at runtime; a copy in an image layer is a copy
+# that survives every `docker save` and every registry push.
+stem_key
+*.tar

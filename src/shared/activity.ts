@@ -6,6 +6,18 @@
 // Shared by the main window (ChatView), the Quick Chat overlay, and the main
 // process (status HUD) so all three agree on labels.
 
+// Exact names of the web-access tools (the pi-web-access set gated by the bridge
+// extension). Only these get the "web" phrasing — substring matching on
+// 'search'/'web' is wrong here because MCP tools unwrapped from invoke_tool keep
+// their server-side names (e.g. Home Assistant's ha_search), and those must not
+// masquerade as web searches.
+export const WEB_ACCESS_TOOL_NAMES = new Set([
+  'web_search',
+  'source_check',
+  'fetch_content',
+  'get_search_content'
+]);
+
 /** Phrase a specific label from the raw tool name + optional target. */
 function labelForTool(name: string, detail?: string): string | undefined {
   const n = name.toLowerCase();
@@ -16,7 +28,7 @@ function labelForTool(name: string, detail?: string): string | undefined {
   if (n === 'glob' || n === 'ls') return 'Listing files…';
   if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'apply_patch')
     return detail ? `Editing ${detail}…` : 'Editing files…';
-  if (n.includes('search') || n.includes('web')) return detail ? `Searching the web for ${detail}…` : 'Searching the web…';
+  if (WEB_ACCESS_TOOL_NAMES.has(n)) return detail ? `Searching the web for ${detail}…` : 'Searching the web…';
   if (n.startsWith('mcp')) {
     // mcp__server__tool → show the tool segment; keep it readable.
     const tool = name.split('__').filter(Boolean).pop() ?? name;
@@ -35,7 +47,7 @@ export function settledActivityLabel(type: string, name?: string, detail?: strin
   if (n === 'glob' || n === 'ls') return 'Listed files';
   if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'apply_patch')
     return detail ? `Edited ${detail}` : 'Edited files';
-  if (n.includes('search') || n.includes('web') || type === 'webSearch' || type === 'web_search')
+  if (WEB_ACCESS_TOOL_NAMES.has(n) || type === 'webSearch' || type === 'web_search')
     return detail ? `Searched the web for ${detail}` : 'Searched the web';
   if (n.startsWith('mcp')) {
     const tool = (name ?? '').split('__').filter(Boolean).pop() ?? name;

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send } from 'lucide-react';
+import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send, TriangleAlert } from 'lucide-react';
 import type {
+  DefaultsSettings,
   MemoryContents,
   MemorySettings,
   ModelSummary,
@@ -22,10 +23,19 @@ import type {
   AutoResolvedConflict,
   MemoryRebuildStatus
 } from '../../../shared/types';
+import { resolveMemoryModel } from '../../../shared/modelRoles';
+import { clampEffort, EffortSelect, effortsOf } from '../../ui/EffortSelect';
 import { MdxView } from '../../chat/MdxView';
+import { useOffline } from '../../hooks/useServerReachable';
+import { useRetrievalHealth } from '../../hooks/useRetrievalHealth';
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
-import { holdFullSpin, type ActiveFactsViewProps } from './shared';
+import { createJobStore, holdFullSpin, useJob, type ActiveFactsViewProps } from './shared';
+
+// Module-level so a running consolidation survives the tab unmounting: leave for
+// another tab mid-run and come back, and the button is still spinning — and the
+// outcome message still lands — instead of the pass silently vanishing.
+const consolidateJob = createJobStore();
 
 // Auto tidy-up cadence, expressed as the new-fact count that triggers a pass
 // (0 = manual only). Mirrors CONSOLIDATE defaults in the recall store.
@@ -43,7 +53,7 @@ const FACT_INJECT_PRESETS: { label: string; value: number }[] = [
   { label: '16', value: 16 }
 ];
 
-// The curated local models, mirrored from main/recall/embed-catalog.ts (labels +
+// The curated local models, mirrored from server/recall/embed-catalog.ts (labels +
 // sizes only — the specs live in main; the id is the contract).
 const LOCAL_EMBED_MODELS: { id: LocalEmbedModelId; label: string; detail: string }[] = [
   { id: 'multilingual-e5-small', label: 'Multilingual E5 Small', detail: '~120 MB · recommended' },
@@ -57,9 +67,10 @@ const EMBED_MODES: { id: EmbeddingsMode; label: string; hint: string }[] = [
   { id: 'off', label: 'Off', hint: 'Rank facts by keywords/recency only' }
 ];
 
-// The curated local reranker, mirrored from main/recall/rerank-catalog.ts.
+// The curated local rerankers, mirrored from server/recall/rerank-catalog.ts.
 const LOCAL_RERANK_MODELS: { id: LocalRerankModelId; label: string; detail: string }[] = [
-  { id: 'bge-reranker-v2-m3', label: 'BGE Reranker v2 M3', detail: '~570 MB · multilingual' }
+  { id: 'qwen3-reranker-0.6b', label: 'Qwen3 Reranker 0.6B', detail: '~1.2 GB · multilingual · best recall measured' },
+  { id: 'bge-reranker-v2-m3', label: 'BGE Reranker v2 M3', detail: '~570 MB · multilingual · fastest' }
 ];
 
 const RERANK_MODES: { id: RerankerMode; label: string; hint: string }[] = [
@@ -94,16 +105,37 @@ function localStatusLabel(
   }
 }
 
+/** The status line under a local model picker — red with a warning mark on error,
+ *  muted otherwise. Errors here must not look like just another muted state: a
+ *  down model silently degrades every recall pass until someone notices. */
+function LocalStatusLine({
+  status
+}: {
+  status: { state: LocalEmbedStatus['state']; dim?: number; error?: string } | null;
+}) {
+  if (status?.state === 'error') {
+    return (
+      <p className="retrieval-status-error">
+        <TriangleAlert size={12} /> {localStatusLabel(status)}
+      </p>
+    );
+  }
+  return <p className="muted">{localStatusLabel(status)}</p>;
+}
+
 // Embeddings-stage controls: an exclusive Built-in / Server / Off mode, the local
 // model picker + live download/ready status, or the remote endpoint fields (free
 // text — Stem just makes the HTTP call). Text edits stay local while typing and
 // persist on blur; mode/model switches persist immediately.
 function EmbeddingsFields({
   value,
-  onPatch
+  onPatch,
+  remoteError
 }: {
   value: EmbeddingsSettings;
   onPatch: (patch: Partial<EmbeddingsSettings>) => void;
+  /** Last recorded failure of the user's remote endpoint, shown under its fields. */
+  remoteError?: string | null;
 }) {
   const [local, setLocal] = useState(value);
   const [testing, setTesting] = useState(false);
@@ -169,7 +201,7 @@ function EmbeddingsFields({
               </option>
             ))}
           </select>
-          <p className="muted">{localStatusLabel(status)}</p>
+          <LocalStatusLine status={status} />
         </>
       )}
       {mode === 'remote' && (
@@ -203,6 +235,11 @@ function EmbeddingsFields({
             onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
             onBlur={() => onPatch({ apiKey: local.apiKey })}
           />
+          {remoteError && (
+            <p className="retrieval-status-error">
+              <TriangleAlert size={12} /> Error: {remoteError}
+            </p>
+          )}
         </>
       )}
       {mode !== 'off' && (
@@ -236,10 +273,13 @@ function EmbeddingsFields({
 // cosine ranking misses.
 function RerankerFields({
   value,
-  onPatch
+  onPatch,
+  remoteError
 }: {
   value: RerankerSettings;
   onPatch: (patch: Partial<RerankerSettings>) => void;
+  /** Last recorded failure of the user's remote endpoint, shown under its fields. */
+  remoteError?: string | null;
 }) {
   const [local, setLocal] = useState(value);
   const [testing, setTesting] = useState(false);
@@ -313,7 +353,7 @@ function RerankerFields({
               </option>
             ))}
           </select>
-          <p className="muted">{localStatusLabel(status)}</p>
+          <LocalStatusLine status={status} />
         </>
       )}
       {mode === 'remote' && (
@@ -343,6 +383,11 @@ function RerankerFields({
             onChange={(e) => setLocal({ ...local, apiKey: e.target.value })}
             onBlur={() => onPatch({ apiKey: local.apiKey })}
           />
+          {remoteError && (
+            <p className="retrieval-status-error">
+              <TriangleAlert size={12} /> Error: {remoteError}
+            </p>
+          )}
         </>
       )}
       {mode !== 'off' && (
@@ -369,9 +414,73 @@ function RerankerFields({
   );
 }
 
+/**
+ * The measured-best retrieval setup, stated where it can be seen. Everything the
+ * claim rests on lives in recall-bench/ (60 real turns, hand-adjudicated gold):
+ * qwen3-embedding:4b via a server endpoint feeding the reranker gate beat the
+ * bundled local embedders, every cosine gate, deeper candidate pools, and an
+ * external memory system. The row sits outside the collapsed advanced section
+ * on purpose — a recommendation hidden behind "advanced" reaches nobody who
+ * hasn't already found it.
+ */
+function RecallQualityRow({
+  retrieval,
+  onReview
+}: {
+  retrieval: RetrievalSettings;
+  onReview: () => void;
+}) {
+  const embedBest =
+    retrieval.embeddings.mode === 'remote' &&
+    /qwen3-embedding/i.test(retrieval.embeddings.model ?? '');
+  const rerankOn = retrieval.reranker.mode !== 'off';
+  const rerankBest =
+    (retrieval.reranker.mode === 'local' && retrieval.reranker.localModel === 'qwen3-reranker-0.6b') ||
+    (retrieval.reranker.mode === 'remote' && /qwen3-reranker/i.test(retrieval.reranker.model ?? ''));
+  const best = embedBest && rerankBest;
+  const hint = best
+    ? 'Best measured setup — qwen3-embedding:4b with the Qwen3 reranker'
+    : embedBest && !rerankOn
+      ? 'Reranker is off — it measured best at choosing which facts to send'
+      : embedBest
+        ? 'Qwen3 Reranker 0.6B now measures best — switch the reranker model'
+        : rerankOn
+          ? 'Best measured: qwen3-embedding:4b via a server endpoint (Ollama)'
+          : 'Best measured: qwen3-embedding:4b (Ollama) with the Qwen3 reranker';
+  return (
+    <div className="group-row">
+      <span className="row-main">
+        <strong>
+          Recall quality{' '}
+          <InfoTip label="How this was measured">
+            Benchmarked on 60 real conversations with hand-labeled relevance:{' '}
+            <code>qwen3-embedding:4b</code> (served via Ollama) feeding the Qwen3 Reranker 0.6B chose
+            the right facts best — ahead of the bundled local models, larger embedders, similarity
+            thresholds, wider candidate pools, and an external memory system. The reranker is what
+            catches cross-language and association matches, like a Slovak question finding an
+            English fact; the Qwen3 reranker separates those from noise markedly better than BGE.
+          </InfoTip>
+        </strong>
+        <em>{hint}</em>
+      </span>
+      {best ? (
+        <span className="retrieval-test-status ok" title="This is the configuration that measured best">
+          <Check size={12} /> in use
+        </span>
+      ) : (
+        <button className="link-btn" onClick={onReview}>
+          Review setup
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** Human label for a fact-selection tier, shown in the active-facts summary. */
 function tierLabel(t: FactTier): string {
   switch (t) {
+    case 'reranked':
+      return 'rerank-gated';
     case 'hybrid':
       return 'semantic + lexical';
     case 'pinned-only':
@@ -391,13 +500,28 @@ function tierLabel(t: FactTier): string {
 
 /**
  * The chip a non-active fact wears. 'conflicted' is the store's status name;
- * "conflicting" is the one word the user sees for it everywhere — this chip,
- * mobile's memory peek, and the docs.
+ * "conflicting" is the one word the user sees for it everywhere — this chip and
+ * the docs.
  */
 const FACT_STATUS_LABEL: Record<FactStatus, string> = {
   active: 'active',
   conflicted: 'conflicting',
   superseded: 'superseded'
+};
+
+/**
+ * Evidence-origin wording for the expanded provenance rows. The store names are
+ * fine for most origins, but 'assistant_claim_web' has to SAY what it means —
+ * it marks evidence that may restate untrusted web content, which is exactly
+ * what the user needs to see before confirming such a fact.
+ */
+const EVIDENCE_ORIGIN_LABEL: Record<string, string> = {
+  explicit_user: 'you asked to remember',
+  user_message: 'your message',
+  assistant_claim: 'assistant claim',
+  assistant_claim_web: 'assistant claim (turn used the web — unverified)',
+  segment_context: 'surrounding conversation',
+  legacy: 'legacy'
 };
 
 /**
@@ -421,6 +545,8 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
   const { activeThreadId, activeRunning, previewActive, previewDraft, onTogglePreview } = activeFacts;
   const [settings, setSettings] = useState<MemorySettings | null>(null);
   const [contents, setContents] = useState<MemoryContents | null>(null);
+  const offline = useOffline();
+  const health = useRetrievalHealth();
   const [showTech, setShowTech] = useState(false);
   const [showSuperseded, setShowSuperseded] = useState(false);
   const [showMemories, setShowMemories] = useState(false);
@@ -459,13 +585,21 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
     }, 400);
     return () => clearTimeout(t);
   }, [previewActive, previewDraft]);
-  const [consolidating, setConsolidating] = useState(false);
-  const [consolidateMsg, setConsolidateMsg] = useState<string | null>(null);
+  const { running: consolidating, msg: consolidateMsg } = useJob(consolidateJob);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
   // null => use the backend default model for distillation/tidy-up.
   const [memoryModel, setMemoryModel] = useState<string | null>(null);
   const [retrieval, setRetrieval] = useState<RetrievalSettings | null>(null);
+  // How hard memory is allowed to think; null = the model's own default.
+  const [memoryEffort, setMemoryEffort] = useState<string | null>(null);
+  // What "Same as main" means today. Read here so the note under the picker is
+  // the same answer the server will reach.
+  const [defaults, setDefaults] = useState<DefaultsSettings>({
+    model: null,
+    backgroundModel: null,
+    backgroundEffort: null
+  });
   const [showRetrieval, setShowRetrieval] = useState(false);
   const [rebuild, setRebuild] = useState<MemoryRebuildStatus | null>(null);
   const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
@@ -498,11 +632,20 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
     window.stem.getMemorySettings().then(setSettings);
     window.stem.getSettings().then((s) => {
       setMemoryModel(s.memory.model);
+      setMemoryEffort(s.memory.effort);
       setRetrieval(s.retrieval);
+      setDefaults(s.defaults);
     });
-    loadContents();
     loadTrustState();
   }, []);
+
+  // The contents load rides the consolidation flag rather than mount alone: a
+  // pass that ends while this tab is away has no component to hand its result
+  // to, so re-read when the flag drops. (Runs on mount too, whatever the flag
+  // says — that is the initial load.)
+  useEffect(() => {
+    loadContents();
+  }, [consolidating]);
 
   // Main pushes a status after every rebuild step, so the panel follows along
   // without a poll — and without a manual Refresh action to compensate for one.
@@ -518,7 +661,13 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
 
   function selectMemoryModel(id: string | null) {
     setMemoryModel(id);
-    window.stem.updateMemorySettings({ model: id }).then((s) => setMemoryModel(s.memory.model));
+    // A level the new model can't do is a setting that reads as chosen and isn't.
+    const effort = clampEffort(models, resolveMemoryModel(id, defaults.model), memoryEffort);
+    setMemoryEffort(effort);
+    window.stem.updateMemorySettings({ model: id, effort }).then((s) => {
+      setMemoryModel(s.memory.model);
+      setMemoryEffort(s.memory.effort);
+    });
   }
 
   function patchEmbeddings(patch: Partial<EmbeddingsSettings>) {
@@ -583,42 +732,46 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
       return;
     }
     setResetting(true);
-    setConsolidateMsg(null);
+    consolidateJob.setMsg(null);
     try {
       setContents(await window.stem.resetFactsMemory());
-      setConsolidateMsg('Facts cleared.');
+      consolidateJob.setMsg('Facts cleared.');
     } catch {
-      setConsolidateMsg('Reset failed — try again.');
+      consolidateJob.setMsg('Reset failed — try again.');
     } finally {
       setResetting(false);
       setConfirmReset(false);
     }
   }
 
-  async function consolidate() {
-    setConsolidating(true);
-    setConsolidateMsg(null);
-    try {
-      const r = await holdFullSpin(window.stem.consolidateMemory());
-      setContents(r.contents);
-      const changed = r.merged + r.corrected + r.dropped;
-      const outcome =
-        changed === 0
-          ? 'No duplicates or stale facts found'
-          : `Merged ${r.merged}, corrected ${r.corrected}, retired ${r.dropped} — retired facts move to Superseded below`;
-      setConsolidateMsg(
-        r.failedChunks > 0
+  function consolidate() {
+    consolidateJob.start(async () => {
+      try {
+        const r = await holdFullSpin(window.stem.consolidateMemory());
+        const changed = r.merged + r.corrected + r.dropped;
+        const outcome =
+          changed === 0
+            ? 'No duplicates or stale facts found'
+            : `Merged ${r.merged}, corrected ${r.corrected}, retired ${r.dropped} — retired facts move to Superseded below`;
+        return r.failedChunks > 0
           ? `${outcome}. The memory model failed on ${r.failedChunks} ${r.failedChunks === 1 ? 'batch' : 'batches'} of facts — those weren't reviewed; try again.`
-          : `${outcome}.`
-      );
-    } catch {
-      setConsolidateMsg('Consolidation failed — try again.');
-    } finally {
-      setConsolidating(false);
-    }
+          : `${outcome}.`;
+      } catch {
+        return 'Consolidation failed — try again.';
+      }
+    });
   }
 
-  if (!settings) return <p className="muted">Loading…</p>;
+  // Everything on this tab is read from the server. When it cannot be reached
+  // the calls above never resolve, and an eternal "Loading…" is a worse lie than
+  // an empty list — it says "any second now" about something that is not coming.
+  if (!settings) {
+    return (
+      <p className="muted">
+        {offline ? 'Your memory lives on Stem’s server, which can’t be reached right now.' : 'Loading…'}
+      </p>
+    );
+  }
 
   const allNotes = contents?.files.filter((f) => f.kind === 'note' && f.content.trim()) ?? [];
   // Superseded facts are history, not memory: they never inject, so they don't
@@ -684,7 +837,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                       {details[f.id]!.evidence.map((e) => (
                         <blockquote key={e.id}>
                           {new Date(e.timestamp * 1000).toLocaleDateString()} ·{' '}
-                          {e.origin === 'folder_doc' ? `file ${e.relPath ?? '(unknown)'}` : e.origin}: {e.excerpt}
+                          {e.origin === 'folder_doc' ? `file ${e.relPath ?? '(unknown)'}` : EVIDENCE_ORIGIN_LABEL[e.origin] ?? e.origin}: {e.excerpt}
                         </blockquote>
                       ))}
                     </div>
@@ -740,6 +893,39 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
 
   return (
     <div>
+      {health.broken && (
+        // A down retrieval stage, said out loud at the top of the tab — the
+        // controls live in the collapsed advanced section below, and an error
+        // only visible there is an error nobody sees. Recall keeps working
+        // while this shows, just worse: the summary line names what the
+        // ranking has degraded to. "Model" vs "server" per the failure's
+        // source, so a dead Ollama isn't blamed on the bundled model.
+        <div className="retrieval-alert" role="alert">
+          <TriangleAlert size={16} />
+          <div className="retrieval-alert-msg">
+            {health.embed && (
+              <span>
+                <strong>{health.embed.remote ? 'Embeddings server failed.' : 'Embedding model failed.'}</strong>{' '}
+                {health.embed.error}
+              </span>
+            )}
+            {health.rerank && (
+              <span>
+                <strong>{health.rerank.remote ? 'Reranker server failed.' : 'Reranker model failed.'}</strong>{' '}
+                {health.rerank.error}
+              </span>
+            )}
+            <span className="muted">
+              {health.embed
+                ? 'Until this is fixed, memories are picked by keywords and recency alone — matches by meaning are missed.'
+                : 'Until this is fixed, memories rank by embedding similarity alone — cross-language matches are missed.'}
+            </span>
+          </div>
+          <button className="link-btn" onClick={() => setShowRetrieval(true)}>
+            Review setup
+          </button>
+        </div>
+      )}
       <div className="grp-head">Memory</div>
       <div className="group">
         <div className="group-row">
@@ -755,13 +941,19 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
             onClick={toggle}
           />
         </div>
+        {settings.enabled && retrieval && (
+          <RecallQualityRow retrieval={retrieval} onReview={() => setShowRetrieval(true)} />
+        )}
       </div>
 
       <div className="grp-head grp-head-row">
         Model
         <InfoTip label="About the memory model">
-          Used to distill and tidy up memories in the background. The skills curator has its own
-          model (under MCP &amp; Skills → Skills).
+          Used to distill and tidy up memories in the background. Left unset it follows the model
+          you chat with — deliberately <em>not</em> the shared Quick tasks model in Settings →
+          Models, because this job reads a whole transcript plus everything already remembered, and
+          a model too small to hold that stops learning without ever reporting an error. Pin a
+          solid mid-tier model here if you would rather not spend your best one on it.
         </InfoTip>
       </div>
       <div className="formgroup">
@@ -769,8 +961,18 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
           models={models}
           value={memoryModel}
           onChange={selectMemoryModel}
-          emptyLabel="Default (recommended)"
+          emptyLabel="Same as main"
           ariaLabel="Memory model"
+          resolvedDefault={defaults.model}
+        />
+        <EffortSelect
+          label="Memory effort"
+          value={memoryEffort}
+          efforts={effortsOf(models, resolveMemoryModel(memoryModel, defaults.model))}
+          onChange={(effort) => {
+            setMemoryEffort(effort);
+            window.stem.updateMemorySettings({ effort }).then((s) => setMemoryEffort(s.memory.effort));
+          }}
         />
         <div className="set-block fg-divider">
           <span className="set-sub">Tidy up automatically</span>
@@ -933,8 +1135,16 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                   ))}
                 </div>
               </div>
-              <EmbeddingsFields value={retrieval.embeddings} onPatch={patchEmbeddings} />
-              <RerankerFields value={retrieval.reranker} onPatch={patchReranker} />
+              <EmbeddingsFields
+                value={retrieval.embeddings}
+                onPatch={patchEmbeddings}
+                remoteError={health.embed?.remote ? health.embed.error : null}
+              />
+              <RerankerFields
+                value={retrieval.reranker}
+                onPatch={patchReranker}
+                remoteError={health.rerank?.remote ? health.rerank.error : null}
+              />
             </div>
           )}
         </>
@@ -994,7 +1204,11 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
           </p>
         )}
         {consolidateMsg && <p className="muted">{consolidateMsg}</p>}
-        {!contents && <p className="muted">Loading…</p>}
+        {!contents && (
+          <p className="muted">
+            {offline ? 'Your memory lives on Stem’s server, which can’t be reached right now.' : 'Loading…'}
+          </p>
+        )}
         {showMemories && contents && notes.length === 0 && (
           <p className="muted">No memories stored yet — Stem builds these as you chat.</p>
         )}

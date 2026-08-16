@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Plus, FolderOpen, FolderPlus, Trash2, File as FileIcon } from 'lucide-react';
+import { Plus, Download, FolderOpen, FolderPlus, Trash2, File as FileIcon } from 'lucide-react';
 import { FILES_CONTEXT_LIMIT, type FileEntry, type FilesListing } from '../../../shared/types';
+import { useRemoteServer } from '../../hooks/useRemoteServer';
 import { InfoTip } from '../../ui/InfoTip';
 
 // ---- Files sub-tab: the persistent drop-place inside Stem's own workspace ----
@@ -48,6 +49,12 @@ export function FilesTab() {
   // Non-null while the inline "new folder" row is open; holds its draft name.
   const [newDir, setNewDir] = useState<string | null>(null);
   const [dirError, setDirError] = useState<string | null>(null);
+  /** What a download said when it went wrong; cleared by the next attempt. */
+  const [error, setError] = useState<string | null>(null);
+  // The Files folder is the server's. On a machine that isn't the server's, a
+  // file manager here cannot open it — so Download replaces "reveal" rather than
+  // sitting beside a button that could only ever fail.
+  const remote = useRemoteServer();
 
   const refresh = useCallback(() => {
     window.stem.listFiles().then(setListing).catch(() => undefined);
@@ -74,6 +81,19 @@ export function FilesTab() {
       // Picked files land at the root; the drop overlay is how you target a
       // subfolder (it turns each one into a band).
       if (paths.length) setListing(await window.stem.addFiles(paths));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Save a copy where downloads go and show it there. */
+  async function download(f: FileEntry) {
+    setBusy(true);
+    setError(null);
+    try {
+      await window.stem.downloadFile(f.rel);
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e).replace(/^Error:\s*/, ''));
     } finally {
       setBusy(false);
     }
@@ -124,14 +144,16 @@ export function FilesTab() {
       <div className="grp-head cfolders-head">
         Files
         <span className="grp-head-actions">
-          <button
-            className="grp-head-add"
-            onClick={() => window.stem.revealFiles()}
-            title="Open the Files folder in Finder"
-            aria-label="Open Files folder"
-          >
-            <FolderOpen size={14} />
-          </button>
+          {!remote && (
+            <button
+              className="grp-head-add"
+              onClick={() => window.stem.revealFiles()}
+              title="Open the Files folder in Finder"
+              aria-label="Open Files folder"
+            >
+              <FolderOpen size={14} />
+            </button>
+          )}
           <button
             className={`grp-head-add${newDir !== null ? ' active' : ''}`}
             onClick={() => {
@@ -182,6 +204,8 @@ export function FilesTab() {
         </div>
       )}
 
+      {error && <p className="files-error">{error}</p>}
+
       {empty ? (
         <p className="muted">
           Drop a file anywhere on the Stem window and choose “Add to Files”, and a copy is kept
@@ -222,6 +246,15 @@ export function FilesTab() {
                         <strong title={f.rel}>{f.name}</strong>
                         <em>{formatSize(f.size)}</em>
                       </span>
+                      <button
+                        className="icon-action sm row-action"
+                        onClick={() => void download(f)}
+                        disabled={busy}
+                        title="Save a copy to your Downloads folder"
+                        aria-label={`Download ${f.name}`}
+                      >
+                        <Download size={14} />
+                      </button>
                       <button
                         className="icon-action sm row-action"
                         onClick={() => void remove(f)}

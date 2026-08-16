@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { PiEvent } from '../../src/main/pi/rpc';
-import { newTurnContext, normalizePiEvent, toolCallActivity } from '../../src/main/pi/normalize';
+import type { PiEvent } from '../../src/server/pi/rpc';
+import { newTurnContext, normalizePiEvent, toolCallActivity } from '../../src/server/pi/normalize';
 
 const ev = (o: Record<string, unknown>): PiEvent => o as unknown as PiEvent;
 
@@ -72,11 +72,20 @@ describe('normalize tool activity', () => {
     expect(item).toMatchObject({
       id: 'c2',
       name: 'search_messages',
-      type: 'webSearch', // name contains 'search'
-      kind: 'webSearch',
+      type: 'mcpToolCall', // an MCP search tool is not a web search
+      kind: 'tool',
       detail: 'deploy failure',
       status: 'running'
     });
+  });
+
+  it('falls back to the parenthesized server name when inner args carry no target', () => {
+    const item = toolCallActivity('c4', 'invoke_tool', {
+      server: 'homeassistant',
+      tool: 'ha_get_history',
+      args: { entity_ids: ['climate.spalna'] }
+    });
+    expect(item).toMatchObject({ name: 'ha_get_history', type: 'mcpToolCall', detail: '(homeassistant)' });
   });
 
   it('classifies file edits as fileChange', () => {

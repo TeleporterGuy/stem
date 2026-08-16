@@ -3,7 +3,7 @@
 // stepped job that yields and resumes stays one entry with honest working time,
 // since wall-clock would report an overnight rebuild as eight hours of work.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import * as activity from '../../src/main/activity';
+import * as activity from '../../src/server/activity';
 import type { ActivitySnapshot } from '../../src/shared/types';
 
 beforeEach(() => {

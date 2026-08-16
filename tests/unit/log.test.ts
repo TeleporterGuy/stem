@@ -1,7 +1,7 @@
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { log, logFlushed } from '../../src/main/log';
-import { logFilePath } from '../../src/main/workspace/paths';
+import { log, logFlushed } from '../../src/server/log';
+import { logFilePath } from '../../src/server/workspace/paths';
 
 describe('main-process file logger', () => {
   it('appends one structured line per call and never throws on odd payloads', async () => {

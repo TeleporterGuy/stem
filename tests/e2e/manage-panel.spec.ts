@@ -54,7 +54,7 @@ test('the Sources tab opens on Files and switches to connected folders', async (
 test('the Files sub-tab lists a seeded Files folder and deletes through to disk', async () => {
   // Its own launch: the shared fixture points STEM_FILES_DIR at an empty dir,
   // and files/ has to exist BEFORE the app reads it (there is no store to seed
-  // — the directory itself is the source of truth, see main/files/store.ts).
+  // — the directory itself is the source of truth, see server/files/store.ts).
   const filesDir = mkdtempSync(join(tmpdir(), 'stem-files-'));
   mkdirSync(join(filesDir, 'Recipes'), { recursive: true });
   writeFileSync(join(filesDir, 'notes.txt'), 'top level');

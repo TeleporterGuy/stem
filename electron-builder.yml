@@ -6,6 +6,19 @@ directories:
   # electron-vite owns dist/ (the compiled app); keep packaged artifacts apart.
   output: release
 
+# Where updates come from. At build time this block does two things: it embeds
+# resources/app-update.yml into the packaged app (how electron-updater knows
+# where to look) and writes latest-linux*.yml beside the artifacts (what it finds
+# there). The build itself never uploads — the dist scripts say `--publish never`
+# and the release workflow attaches these files to the GitHub Release instead.
+# Only the AppImage self-updates; macOS is unsigned (Squirrel refuses unsigned
+# apps) and a deb belongs to dpkg, so both get a notify-and-download-yourself
+# check against the same releases page (src/desktop/updates.ts).
+publish:
+  provider: github
+  owner: join3r
+  repo: stem
+
 # No asar. Several pieces are executed by plain-Node children (spawned with
 # ELECTRON_RUN_AS_NODE) that cannot read asar archives at all: pi's dist/cli.js,
 # dist/main/recall-mcp-server.js, and the copied pi/stem-mcp-extension.mjs +
@@ -24,9 +37,9 @@ npmRebuild: false
 # these patterns select the app files on top of that.
 files:
   - dist/**
-  - build/icon.png # loaded at runtime via app.getAppPath() (main/index.ts appIcon)
+  - build/icon.png # loaded at runtime via app.getAppPath() (server/index.ts appIcon)
   - RELEASE_NOTES.md # ditto — the "what's new" popup reads it (workspace/release-notes.ts)
-  # pdf.js is only used for folder-index text extraction (main/folder-index/pdf.ts),
+  # pdf.js is only used for folder-index text extraction (server/folder-index/pdf.ts),
   # which loads legacy/build/pdf.mjs + its fake-worker import pdf.worker.mjs.
   # The browser builds, rendering assets (cmaps/fonts/wasm/icc), minified
   # variants, and sourcemaps are ~33MB of dead weight per artifact.
@@ -35,7 +48,7 @@ files:
   - '!node_modules/pdfjs-dist/legacy/build/*.{map,min.mjs}'
   - '!node_modules/pdfjs-dist/legacy/build/pdf.sandbox*'
   # pdfjs-dist's optional native canvas polyfill (skia) — rendering only; text
-  # extraction runs on the DOMMatrix/Path2D stubs in main/folder-index/pdf.ts.
+  # extraction runs on the DOMMatrix/Path2D stubs in server/folder-index/pdf.ts.
   - '!node_modules/@napi-rs/**'
   # pi-web-access ships a 6MB demo video and a banner in its npm tarball (they are
   # in its `files` list for the npm/GitHub page). pi loads its *.ts sources; the
@@ -99,6 +112,6 @@ linux:
 
 deb:
   # Expose `stem` on PATH so DE keyboard shortcuts can run `stem --quick-chat`
-  # (the Wayland summon path — see the single-instance handler in main/index.ts).
+  # (the Wayland summon path — see the single-instance handler in server/index.ts).
   afterInstall: build/deb/after-install.sh
   afterRemove: build/deb/after-remove.sh

@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/main/recall/store';
-import { getMemoryRebuildStatus, runMemoryRebuildStep, startMemoryRebuild } from '../../src/main/recall/rebuild';
+import { recallStore as store, V1_FACTS_MIGRATED_KEY } from '../../src/server/recall/store';
+import { getMemoryRebuildStatus, runMemoryRebuildStep, startMemoryRebuild } from '../../src/server/recall/rebuild';
 
 // The rebuild's own progress key (private to rebuild.ts). Written directly here to
 // stand in for a store that a pre-gate build already advertised the upgrade on.

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
+import { useOffline } from '../../hooks/useServerReachable';
 import { InfoTip } from '../../ui/InfoTip';
 import type {
   EpisodicStats,
@@ -81,6 +82,10 @@ export function EpisodicTab() {
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [resetMsg, setResetMsg] = useState<string | null>(null);
+  // The two loads below never resolve when the server is unreachable, so the
+  // "Loading…" they leave behind has to say what is actually going on.
+  const offline = useOffline();
+  const unavailable = 'Your memory lives on Stem’s server, which can’t be reached right now.';
 
   function load() {
     window.stem.getEpisodicStats().then(setStats);
@@ -158,7 +163,7 @@ export function EpisodicTab() {
           </span>
         </div>
         {resetMsg && <p className="muted">{resetMsg}</p>}
-        {!stats && <p className="muted">Loading…</p>}
+        {!stats && <p className="muted">{offline ? unavailable : 'Loading…'}</p>}
         {stats && stats.messageCount === 0 && (
           <p className="muted">No episodic memory captured yet — Stem builds this as you chat.</p>
         )}
@@ -210,7 +215,7 @@ export function EpisodicTab() {
             <button className="link-btn" onClick={load}>Refresh</button>
           </span>
         </div>
-        {!summaries && <p className="muted">Loading…</p>}
+        {!summaries && <p className="muted">{offline ? unavailable : 'Loading…'}</p>}
         {summaries && summaries.length === 0 && (
           <p className="muted">Summaries build as you chat (and backfill for older chats while Stem is idle).</p>
         )}

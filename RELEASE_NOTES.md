@@ -12,22 +12,125 @@ Maintainer notes:
   date, tag.
 -->
 
-## 0.3.0 — Unreleased
+## 0.5.0 — Unreleased
+
+### Changed
+
+- **Memory recall.** A small local relevance model — on by default now, downloaded once in the
+  background — judges every remembered fact against your message before Stem shows it to the
+  assistant. This replaces keyword matching that padded chats with unrelated, occasionally
+  sensitive, memories. Expect a few well-chosen facts per chat and often none at all; the model
+  can be switched off in Manage → Memory.
+
+### Added
+
+- **Fast for Grok.** The Standard/Fast speed switch now appears for Grok models too — Fast asks
+  xAI to schedule your request with higher priority. Until now the switch only existed for
+  ChatGPT models, which is why it seemed to vanish when you picked Grok.
+- **Web search switch in the composer.** A **Web** button now sits next to MDX and Note, so
+  turning search off for a question no longer means a trip to Settings. It stays where you leave
+  it, and it is the same switch as Settings → Chat → Web search — so you can still set it once
+  and forget it. Quick Chat has its own, set separately in Settings → Quick Chat, for anyone who
+  wants search on at the desk but off in the overlay.
+
+### Fixed
+
+- **Right-click works on search results.** A chat you found by searching can now be archived,
+  snoozed, renamed, filed or deleted straight from the result row, like any other row in the list.
+  Until now the menu simply didn't open there, so the one chat you had just gone looking for was
+  the one chat you had to close the search and hunt down in the tree to act on.
+- **MCP tools no longer pose as web searches.** Any tool with "search" in its name — Home
+  Assistant lookups included — used to appear in the activity feed as "Searched the web" with a
+  globe icon, even though no web search happened. Tool calls are now labeled by what they
+  actually are.
+
+## 0.4.0 — 2026-08-12
+
+### Removed
+
+- **Phone client removed.** Settings → Mobile, the pairing QR and the phone web app
+  are removed, and a paired phone stops working. Stem's brain is moving to a server you can reach
+  from anywhere, and the phone app that talks to it is being rebuilt properly rather than kept
+  limping — nothing about Stem at the desk changes.
+
+### Added
+
+- **Stem server.** Stem still runs entirely on this computer by default,
+  but Settings → Server can now aim the app at a Stem running elsewhere — same chats, same memory,
+  same skills, from any machine you sit at. [Running on a server](docs/running-on-a-server.md)
+  walks the whole move.
+- **Inbox.** The chat list now has two tabs, and the Inbox works like mail:
+  every thread waits there until you archive or snooze it, and anything new — a scheduled task
+  that ran overnight, a reply you never came back to — shows up bold and unread. It's also the
+  start of something bigger: one day Stems will be able to send each other messages, and this is
+  where they'll arrive.
+- **Updates.** A quiet strip at the top of the window says when a
+  new release is out — on Linux it downloads in the background and installs on the next restart,
+  on a Mac it points you at the download. "Check now" and a switch for the automatic check are in
+  Settings → App → About.
+- **Model roles.** Settings → Models now shows everything
+  Stem runs a model for — your chat, Quick Chat, memory, skills, chat subjects, the command safety
+  check — in one place, each with its own model and its own thinking effort. Left alone, the quick
+  tasks follow a cheap default and the rest follow the model you chat with.
+- **Chat subjects.** Stem writes each new chat a short subject from your opening message
+  instead of quoting its first line; a name you type yourself is never overwritten. Settings →
+  Chats picks the model, or turns it off.
+- **Devices.** Settings → Devices lists everything signed in to your Stem and can withdraw any of
+  them, effective immediately. Adding one works like a door code: an eight-character code, valid
+  for ten minutes and one device.
+- **Backup and move.** "Move or back up this Stem" in
+  Settings → Server writes your chats, memory, skills, Files, settings and connected tools into
+  one passphrase-protected file; `stem-server import` on another machine makes it the same Stem,
+  and the same file is your backup. Paired devices, this computer's own settings and the
+  downloaded models deliberately stay behind — the import says what came along and what needs you.
+
+### Fixed
+
+- **A scheduled run that asks for your attention now shows you its reply.** The answer used to
+  hide inside the collapsed "Scheduled run" row — the notification pointed at a fold you had to
+  open. The reply now appears as a normal message; the run's inner steps stay tucked away.
+
+## 0.3.0 — 2026-08-04
 
 ### Added
 
 - **Sign in with xAI (Grok).** Grok joins ChatGPT, Claude, OpenRouter and the local servers in the
   provider list, with the same in-app sign-in.
+- **Faster web search.** Several queries now run at once, pages are fetched in batches, and the
+  model that runs the search itself was swapped for a quicker one — the answers and sources held
+  up in benchmarking, because the thinking happens in your chat model afterwards either way.
 - **Grok web search.** Grok can now be picked as the backend Stem searches the web with.
+- **Clearer search picker.** The backend list is grouped by what's actually ready to use (works
+  on your sign-in / needs a key / not configured), and the assistant is told which backend it is
+  searching with, so citations name the right source.
 - **Custom OpenAI-compatible endpoint.** Point Stem at any server that speaks the OpenAI API —
   your own proxy, a hosted gateway, a colleague's box — and pick which models it offers. Endpoints
   that speak the Anthropic Messages API work too; Stem detects which one yours is.
-- **A clearer search picker.** The backend list is grouped by what's actually ready to use (works
-  on your sign-in / needs a key / not configured), and the assistant is told which backend it is
-  searching with, so citations name the right source.
+- **Skills rebuilt.** Skills are rebuilt around what the assistant actually did —
+  the real tool trace of a turn, not its narration of one — and are checked against a contract
+  before they are saved. Stem now picks the few skills relevant to your message instead of
+  broadcasting every description at every turn.
+- **Self-correcting memory.** A new fact is checked against what Stem already knows, so an
+  outdated one is retired even when it is worded nothing like its replacement. Merging facts keeps
+  the dates they were asserted on, and disagreements Stem can settle on its own are settled.
+- **This popup.** Stem shows what changed once, the first time you open it after an update.
+  Settings → About turns it off and keeps the full history.
 
 ### Fixed
 
+- **Memory no longer argues with itself.** Conflicting facts are raised and resolved at rates that
+  actually match, a fact retired by mistake can't quietly come back, and "Reset recall" is now a
+  hard stop — a background pass that was already running can't resurrect anything after it.
+- **Memory works without embeddings.** When the local embedding model is off or still loading, the
+  keyword-only fallback keeps its promises instead of silently dropping results or ranking your
+  documents backwards.
+- **"Memory used in this chat" tells the truth about the past.** A conflict raised (or resolved)
+  after a turn no longer rewrites what that turn is shown to have been told.
+- **A reply that arrives in several pieces stays whole** instead of losing everything but the last
+  piece.
+- **Running commands is steadier.** The safety check no longer times out or runs on the expensive
+  model, it says why it refused without pasting an exception at you, and it reads Windows paths
+  and PowerShell quoting correctly.
 - **Stem now starts properly on Linux.** First run off macOS could fail outright; the installer
   also now fetches the Electron runtime it needs. The Linux x64 download is roughly half the size
   it was.

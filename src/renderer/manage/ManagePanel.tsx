@@ -1,11 +1,13 @@
-import { memo, useState } from 'react';
+import { memo } from 'react';
 import { Brain, Plug, FolderTree, CalendarClock, Settings, MessageSquare } from 'lucide-react';
 import { ChatList, type ChatListProps } from '../chats/ChatList';
 import { MemoryTab } from './tabs/MemoryTab';
 import { McpSkillsTab } from './tabs/McpTab';
 import { SourcesTab } from './tabs/FoldersTab';
 import { TasksTab } from './tabs/TasksTab';
-import { SettingsTab } from './tabs/SettingsTab';
+import { SettingsTab } from './tabs/settings/SettingsTab';
+import { useRememberedTab } from '../hooks/useRememberedTab';
+import { useRetrievalHealth } from '../hooks/useRetrievalHealth';
 import type { ModelTabProps, ActiveFactsViewProps } from './tabs/shared';
 
 type Tab = 'chats' | 'memory' | 'mcp' | 'folders' | 'tasks' | 'settings';
@@ -24,11 +26,19 @@ const TABS: { id: Tab; label: string; icon: typeof Brain }[] = [
   { id: 'settings', label: 'Settings', icon: Settings }
 ];
 
+const TAB_IDS = TABS.map((t) => t.id);
+
 export type ManagePanelProps = ChatListProps &
   ModelTabProps &
   ActiveFactsViewProps & {
     /** A signed-in provider whose credential is dead — flags Settings with a red dot. */
     authDeadProvider?: string | null;
+    /**
+     * Unread threads waiting in the Inbox → a count badge on the Chats tab. This is
+     * the only signal a snoozed thread gives when it wakes: it returns to the Inbox
+     * quietly rather than raising a window, so the rail has to say so.
+     */
+    inboxUnreadCount?: number;
   };
 
 function ManagePanelImpl({
@@ -41,6 +51,7 @@ function ManagePanelImpl({
   previewDraft,
   onTogglePreview,
   authDeadProvider,
+  inboxUnreadCount = 0,
   ...chatProps
 }: ManagePanelProps) {
   const activeFacts: ActiveFactsViewProps = {
@@ -50,28 +61,49 @@ function ManagePanelImpl({
     previewDraft,
     onTogglePreview
   };
-  const [tab, setTab] = useState<Tab>('chats');
+  const [tab, setTab] = useRememberedTab<Tab>('stem.manage.tab', TAB_IDS, 'chats');
+  // A down retrieval model degrades recall silently (selection falls back to
+  // lexical/recency), so it gets the same red dot a dead provider does.
+  const retrievalBroken = useRetrievalHealth().broken;
   return (
     <div className="manage">
       <div className="insp-tabs">
         <div className="insp-seg">
-          {TABS.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              className={tab === id ? 'active' : ''}
-              aria-label={label}
-              onClick={() => setTab(id)}
-            >
-              <Icon size={16} />
-              {/* Styled hover/focus tooltip replaces the native title (which is
-                  slow to appear and can't be styled). aria-hidden: the button's
-                  aria-label already carries the name. */}
-              <span className="insp-tab-tip" aria-hidden="true">
-                {id === 'settings' && authDeadProvider ? `${label} — a provider needs reconnecting` : label}
-              </span>
-              {id === 'settings' && authDeadProvider && <span className="tab-alert-dot" />}
-            </button>
-          ))}
+          {TABS.map(({ id, label, icon: Icon }) => {
+            const unread = id === 'chats' && inboxUnreadCount > 0 ? inboxUnreadCount : 0;
+            const tip =
+              id === 'settings' && authDeadProvider
+                ? `${label} — a provider needs reconnecting`
+                : id === 'memory' && retrievalBroken
+                  ? `${label} — a retrieval model failed`
+                  : unread
+                    ? `${label} — ${unread} unread`
+                    : label;
+            return (
+              <button
+                key={id}
+                className={tab === id ? 'active' : ''}
+                aria-label={unread ? `${label}, ${unread} unread` : label}
+                onClick={() => setTab(id)}
+              >
+                <Icon size={16} />
+                {/* Styled hover/focus tooltip replaces the native title (which is
+                    slow to appear and can't be styled). aria-hidden: the button's
+                    aria-label already carries the name. */}
+                <span className="insp-tab-tip" aria-hidden="true">
+                  {tip}
+                </span>
+                {id === 'settings' && authDeadProvider && <span className="tab-alert-dot" />}
+                {id === 'memory' && retrievalBroken && <span className="tab-alert-dot" />}
+                {/* Capped at 99+ so a long-ignored Inbox can't widen the rail. */}
+                {unread > 0 && (
+                  <span className="tab-count-badge" aria-hidden="true">
+                    {unread > 99 ? '99+' : unread}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
       <div className={`manage-body${tab === 'chats' ? ' chats' : ''}`}>

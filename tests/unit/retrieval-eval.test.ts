@@ -6,11 +6,11 @@
 //  - lexOverlap:false queries are NOT (the gap semantic retrieval must close).
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { recallStore as store } from '../../src/main/recall/store';
-import * as search from '../../src/main/recall/search';
-import * as inject from '../../src/main/recall/inject';
-import * as retrieval from '../../src/main/recall/retrieval';
-import { ftsSearchSummaries } from '../../src/main/recall/search-core';
+import { recallStore as store } from '../../src/server/recall/store';
+import * as search from '../../src/server/recall/search';
+import * as inject from '../../src/server/recall/inject';
+import * as retrieval from '../../src/server/recall/retrieval';
+import { ftsSearchSummaries } from '../../src/server/recall/search-core';
 import { aggregate, checkFloors, formatViolation, loadFixture, mrr, recallAtK, scoreRanking } from '../eval/score.mjs';
 import { seedCorpus } from '../eval/seed.mjs';
 
@@ -53,7 +53,14 @@ describe('retrieval eval — scorer math', () => {
       { tier: 'fts', langPair: 'en->en', metrics: scoreRanking(['x'], ['x']) },
       { tier: 'fts', langPair: 'sk->en', metrics: scoreRanking(['y'], ['x']) }
     ];
-    const agg = aggregate(rows);
+    // aggregate() builds its buckets from the rows' own `tier`/`langPair`
+    // values, so what it returns is an empty object as far as inference can see.
+    // Naming the shape here is the only way to say what those keys are.
+    type Means = Record<string, number>;
+    const agg = aggregate(rows) as {
+      byTier: Record<string, Means>;
+      byTierLangPair: Record<string, Record<string, Means>>;
+    };
     expect(agg.byTier.fts['recall@5']).toBeCloseTo(0.5);
     expect(agg.byTier.fts.n).toBe(2);
     expect(agg.byTierLangPair.fts['en->en']['recall@5']).toBe(1);

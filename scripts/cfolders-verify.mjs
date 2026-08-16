@@ -8,7 +8,7 @@
 import { mkdirSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { isInside, makeProtectedRootsGate } from '../src/main/pi/stem-mcp-extension.mjs';
+import { isInside, makeProtectedRootsGate } from '../src/server/pi/stem-mcp-extension.mjs';
 
 let failures = 0;
 function check(name, cond) {

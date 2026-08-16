@@ -2,11 +2,11 @@
 // worker, driven through an in-memory fake transport (the vitest electron stub
 // has no utilityProcess; the WorkerTransport seam exists exactly for this).
 import { describe, expect, it, vi } from 'vitest';
-import { EMBED_CATALOG } from '../../src/main/recall/embed-catalog';
-import { RERANK_CATALOG } from '../../src/main/recall/rerank-catalog';
-import { createEmbedWorkerManager } from '../../src/main/recall/embed-manager';
-import type { WorkerOutMessage } from '../../src/main/recall/embed-worker';
-import type { WorkerTransport } from '../../src/main/recall/embed-worker-host';
+import { EMBED_CATALOG } from '../../src/server/recall/embed-catalog';
+import { RERANK_CATALOG } from '../../src/server/recall/rerank-catalog';
+import { createEmbedWorkerManager } from '../../src/server/recall/embed-manager';
+import type { WorkerOutMessage } from '../../src/server/recall/embed-worker';
+import type { WorkerTransport } from '../../src/server/recall/embed-worker-host';
 import type { LocalEmbedStatus } from '../../src/shared/types';
 
 const SPEC = EMBED_CATALOG['multilingual-e5-small'];
@@ -306,5 +306,43 @@ describe('co-hosted reranker', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // A worker that purged a corrupt weights cache asks (via purgedCorruptCache)
+  // for a NEW process to redo the download in — a failed ONNX load poisons
+  // transformers.js state for every later load in the same one.
+  it('restarts the worker after a corrupt-cache purge instead of surfacing the error', () => {
+    const { mgr, workers } = manager();
+    mgr.ensure(SPEC);
+    mgr.ensureRerank(RERANK_SPEC);
+    workers[0].emit({
+      type: 'status',
+      status: { model: SPEC.id, state: 'error', error: 'Protobuf parsing failed', purgedCorruptCache: true }
+    });
+    expect(workers).toHaveLength(2);
+    // Silent recovery: never an 'error' the restart is about to fix.
+    expect(mgr.status().state).toBe('loading');
+    expect(workers[1].sent.map((m) => m.type).sort()).toEqual(['load', 'load-rerank']);
+    // The replacement loads clean.
+    workers[1].emit(ready());
+    workers[1].emit(rerankReady());
+    expect(mgr.status().state).toBe('ready');
+    expect(mgr.rerankStatus().state).toBe('ready');
+  });
+
+  it('caps corrupt-cache restarts so a persistently bad download settles into error', () => {
+    const { mgr, workers } = manager();
+    mgr.ensure(SPEC);
+    const corrupt = (w: (typeof workers)[number]) =>
+      w.emit({
+        type: 'status',
+        status: { model: SPEC.id, state: 'error', error: 'Protobuf parsing failed', purgedCorruptCache: true }
+      });
+    corrupt(workers[0]);
+    corrupt(workers[1]);
+    expect(workers).toHaveLength(3);
+    corrupt(workers[2]); // budget (2) exhausted — no third restart
+    expect(workers).toHaveLength(3);
+    expect(mgr.status().state).toBe('error');
   });
 });

@@ -9,9 +9,9 @@ import { join } from 'node:path';
 const skillsDir = join(tmpdir(), `stem-skills-${process.pid}`);
 process.env.STEM_SKILLS_DIR = skillsDir;
 
-import { clampCurate, curateSkills, parseCurate } from '../../src/main/skills/curate';
-import { readUsage, recordUses } from '../../src/main/skills/usage';
-import type { LlmClient } from '../../src/main/recall/llm';
+import { clampCurate, curateSkills, parseCurate } from '../../src/server/skills/curate';
+import { readUsage, recordUses } from '../../src/server/skills/usage';
+import type { LlmClient } from '../../src/server/recall/llm';
 
 function fakeLlm(reply: string): LlmClient {
   return { complete: async () => reply };
@@ -152,6 +152,12 @@ describe('curateSkills', () => {
       }
     };
     await curateSkills(llm, { force: true });
+    // Drift guard on the split posture (SKILLS-UPKEEP.md, "Defect 2"): the merge
+    // list is an umbrella pass, and DEFAULT TO KEEP governs archive ONLY. The
+    // previous prompt let one cautious posture govern both, and archived nothing
+    // for the library's whole recorded history.
+    expect(seen).toContain('ONE skill with N labeled subsections');
+    expect(seen).toContain('archive — DEFAULT TO KEEP');
     expect(seen).toContain('Usage has been tracked since');
     expect(seen).toContain('used 2×, last 2026-07-15');
     expect(seen).toContain('never used since tracking began');

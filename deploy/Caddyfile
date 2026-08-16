@@ -1,0 +1,87 @@
+# Stem's front door: the only process in this deployment that talks to strangers.
+#
+# It terminates TLS on a public name and forwards to a Unix socket in a volume it
+# shares with the Stem container. Stem itself binds no TCP port at all (see
+# STEM_SERVER_SOCKET and the bind guard in src/server/transport/server.ts), so
+# this is not the recommended way in — it is the only one there is.
+#
+# {$STEM_SITE_ADDRESS} is the name in docker-compose.yml. A bare hostname
+# (`stem.example.com`) makes Caddy get and renew a real certificate on its own;
+# an `http://` prefix turns that off, which is what the local test harness uses.
+
+{
+	# rate_limit is not a standard directive, so Caddy has to be told where it
+	# goes in the handler chain. Before reverse_proxy: refuse first, forward second.
+	order rate_limit before reverse_proxy
+
+	# Let's Encrypt will warn you before a certificate expires if it knows who to
+	# warn. Uncomment and put your address in.
+	# email you@example.com
+}
+
+{$STEM_SITE_ADDRESS} {
+	# Every request, with the client's real address. Stem's own log is inside the
+	# container and says nothing about who asked — this is the file to read when
+	# something is knocking.
+	log {
+		output stdout
+		format console
+	}
+
+	# A ceiling above Stem's own (25 MB for an RPC body, 100 MB for an upload), so
+	# the refusal for an ordinary oversized file is Stem's, with Stem's wording,
+	# and this only catches something that is not a legitimate request at all.
+	request_body {
+		max_size 110MB
+	}
+
+	# POST /pair is the one route that answers without a token, so it is the one
+	# route where a stranger's request costs anything. Six a minute is generous
+	# for a person typing an eight-character code once and useless for guessing
+	# one. Keyed on the client address, which behind this proxy is the real one.
+	#
+	# Deliberately tighter than pairing.ts's own lockout, which trips after eight
+	# failures: the cheap check should be the one that fires, and a guesser should
+	# be turned away here rather than by writing eight rows into Stem's store and
+	# locking the route for the person who is legitimately trying to pair.
+	@pair path /pair
+	rate_limit @pair {
+		zone stem_pair {
+			key {remote_host}
+			events 6
+			window 1m
+		}
+	}
+
+	# The authenticated surface. This is not a security control — a valid token
+	# gets past it, and a valid token is already trusted — it is a cost control:
+	# 300 requests a minute is far more than a person at a keyboard generates and
+	# far less than a loop that has gone wrong can spend on a model.
+	#
+	# /events is deliberately NOT in here. One long-lived stream per client is the
+	# whole design, and a client that reconnects through a flaky link would be
+	# throttled exactly when it is trying to catch up.
+	@stem path /rpc /upload /files/*
+	rate_limit @stem {
+		zone stem_rpc {
+			key {remote_host}
+			events 300
+			window 1m
+		}
+	}
+
+	# The socket, and nothing but. Caddy passes the original Host header through
+	# untouched, which is what STEM_TRUSTED_HOSTS is set to on the other side —
+	# the DNS-rebinding check in transport/auth.ts is still doing its job here,
+	# now against the public name instead of a loopback port.
+	#
+	# It also adds X-Forwarded-For/-Proto/-Host. Nothing downstream reads them,
+	# and that is on purpose: Stem makes no decision from a client address, so a
+	# forged one buys nothing. They are here for this log and for a human.
+	reverse_proxy unix//run/stem/stem.sock {
+		# GET /events is Server-Sent Events. The default already streams, but a
+		# buffered proxy would hold every delta of an answer until the turn ended
+		# — a failure that looks like the model being slow, so it is pinned.
+		flush_interval -1
+	}
+}

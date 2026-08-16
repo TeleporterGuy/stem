@@ -1,6 +1,6 @@
 {
   "name": "stem",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "An isolated, pi-backed personal assistant with rich MDX output, app-scoped skills, MCP, and Stem Recall memory.",
   "author": {
     "name": "Vladimir Schmotzer",
@@ -18,10 +18,11 @@
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "preview": "electron-vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:server": "node scripts/server-boot.mjs",
     "test:e2e": "playwright test",
     "test:e2e:real": "STEM_E2E_REAL=1 playwright test",
     "test:perf": "STEM_PERF=1 STEM_E2E_REAL=1 playwright test tests/e2e/perf.spec.ts",
@@ -32,11 +33,13 @@
     "eval:memory": "node scripts/memory-eval.mjs",
     "eval:skills": "node scripts/skill-author-eval.mjs",
     "eval:skill-retrieval": "node scripts/skill-retrieval-eval.mjs",
-    "fixtures:skills": "node scripts/skill-fixtures.mjs"
+    "fixtures:skills": "node scripts/skill-fixtures.mjs",
+    "gen:shortcuts-doc": "node scripts/gen-shortcuts-doc.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.82.0",
     "@huggingface/transformers": "^3.8.1",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^0.468.0",
     "pdfjs-dist": "^6.1.200",
     "pi-web-access": "0.18.0",

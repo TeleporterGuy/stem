@@ -74,13 +74,13 @@ function liftConstant(relPath, name) {
   if (/\$\{/.test(match[1])) throw new Error(`${name} gained an interpolation — skill-author-eval.mjs cannot lift it verbatim`);
   return match[1].replace(/\\`/g, '`');
 }
-const AUTHORING_INSTRUCTIONS = liftConstant('src/main/skills/author.ts', 'SKILL_AUTHORING_INSTRUCTIONS');
-const CONTRACT_TEXT = liftConstant('src/main/skills/contract.ts', 'SKILL_CONTRACT_TEXT');
+const AUTHORING_INSTRUCTIONS = liftConstant('src/server/skills/author.ts', 'SKILL_AUTHORING_INSTRUCTIONS');
+const CONTRACT_TEXT = liftConstant('src/server/skills/contract.ts', 'SKILL_CONTRACT_TEXT');
 
 // ---- prompt assembly: a port of renderEvidence + buildAuthorPrompt (author.ts) ----
 // The script cannot import the TS module, so these are reimplementations. They must
 // stay byte-identical to `renderTraceEntry` / `renderEvidence` / `buildAuthorPrompt`
-// in src/main/skills/author.ts — that is the source of truth; if the rendering
+// in src/server/skills/author.ts — that is the source of truth; if the rendering
 // changes there, change it here or the gate grades a prompt nobody ships.
 function renderTraceEntry(entry, index) {
   const head = `${index + 1}. ${entry.name ?? 'tool'}${entry.isError ? ' → FAILED' : ''}`;
@@ -115,7 +115,7 @@ function buildAuthorPrompt(input) {
 }
 
 // ---- contract validation: a port of validateSkill (contract.ts) ----
-// src/main/skills/contract.ts is the source of truth. This is a port, kept to the
+// src/server/skills/contract.ts is the source of truth. This is a port, kept to the
 // same rules and the same limits; when a rule moves there, move it here too.
 const SKILL_NAME_MAX = 64;
 const SKILL_DESCRIPTION_MAX = 160;

@@ -3,9 +3,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   ADMIN_APPROVAL_TITLE,
+  DEVICE_MCP_BRIDGE_TITLE,
   ENV_SECRET_KEY,
   EXEC_BRIDGE_TITLE,
   INSTRUCTIONS_APPROVAL_TITLE,
+  MCP_DEVICE_CATALOG_FILE,
   MCP_OAUTH_FILE,
   NATIVE_SEARCH_GATE_FILE,
   PROTECTED_ROOTS_FILE,
@@ -17,16 +19,16 @@ import {
   TASK_BRIDGE_TITLE,
   TESTED_PI_VERSION,
   toolArgsOf
-} from '../../src/main/pi/protocol';
+} from '../../src/server/pi/protocol';
 
 // Drift guards for the Stem ⇄ pi side-protocol. The bridge extension
 // (stem-mcp-extension.mjs) runs inside the pi process and cannot import
-// src/main/pi/protocol.ts, so its sentinel titles, tool names, and gate-file names
+// src/server/pi/protocol.ts, so its sentinel titles, tool names, and gate-file names
 // are hand-written twins of the TS constants. These tests parse the extension
 // source and fail when either side changes alone.
 
 const ROOT = join(__dirname, '../..');
-const extensionSource = readFileSync(join(ROOT, 'src/main/pi/stem-mcp-extension.mjs'), 'utf8');
+const extensionSource = readFileSync(join(ROOT, 'src/server/pi/stem-mcp-extension.mjs'), 'utf8');
 
 /** Extract `const NAME = '<value>'` from the extension source. */
 function extensionConst(name: string): string | undefined {
@@ -48,6 +50,9 @@ describe('sentinel titles match the bridge extension', () => {
   });
   it('skill bridge', () => {
     expect(extensionConst('SKILL_BRIDGE_TITLE')).toBe(SKILL_BRIDGE_TITLE);
+  });
+  it('device MCP bridge', () => {
+    expect(extensionConst('DEVICE_MCP_BRIDGE_TITLE')).toBe(DEVICE_MCP_BRIDGE_TITLE);
   });
 });
 
@@ -81,6 +86,14 @@ describe('gate files referenced by the bridge extension', () => {
 
   it(`falls back to ${MCP_OAUTH_FILE} next to the config`, () => {
     expect(extensionSource).toContain(`'${MCP_OAUTH_FILE}'`);
+  });
+
+  // Read, not written: main rewrites the device catalog on every announcement and
+  // the bridge reads a pinned server's remembered tools out of it. A rename on
+  // one side alone would leave a device-located server silently tool-less, which
+  // looks exactly like a device that has never connected.
+  it(`reads ${MCP_DEVICE_CATALOG_FILE} next to the config`, () => {
+    expect(extensionConst('MCP_DEVICE_CATALOG_FILE')).toBe(MCP_DEVICE_CATALOG_FILE);
   });
 });
 

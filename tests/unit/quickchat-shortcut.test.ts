@@ -14,7 +14,7 @@ function setPlatform(value: string) {
 async function load() {
   vi.resetModules();
   const [platform, electron] = await Promise.all([
-    import('../../src/main/platform'),
+    import('../../src/desktop/platform'),
     import('../electron-stub')
   ]);
   return { ...platform, switches: electron.app.commandLine.switches, appPath: electron.app.getAppPath() };

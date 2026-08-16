@@ -4,7 +4,7 @@
 // feature is a startup decision, so there is nothing to assert mid-session.
 import { readFileSync, rmSync } from 'node:fs';
 import { test } from '@playwright/test';
-import { expect, launchApp, mainWindowOf, type LaunchedApp } from './electron';
+import { expect, launchApp, mainWindowOf, openSettings, type LaunchedApp } from './electron';
 
 const APP_VERSION = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }).version;
 
@@ -21,8 +21,16 @@ async function withApp(seedSettings: Record<string, unknown>, fn: (app: Launched
   }
 }
 
-function savedSettings(app: LaunchedApp): { releaseNotes: { showOnUpdate: boolean; lastSeenVersion: string | null } } {
-  return JSON.parse(readFileSync(app.settingsStorePath, 'utf8'));
+/**
+ * The marker lives in client.json, not settings.json: which build you are
+ * running is a fact about the machine you are sitting at, and one server may be
+ * answering several of them.
+ */
+function savedMarker(app: LaunchedApp): string | null {
+  const doc = JSON.parse(readFileSync(app.clientStorePath, 'utf8')) as {
+    settings?: { releaseNotes?: { lastSeenVersion?: string | null } };
+  };
+  return doc.settings?.releaseNotes?.lastSeenVersion ?? null;
 }
 
 test('an existing install sees this version once, then never again', async () => {
@@ -45,7 +53,7 @@ test('an existing install sees this version once, then never again', async () =>
 
     // Dismissal is what records it — reopening the app must stay quiet.
     await expect
-      .poll(() => savedSettings(launched).releaseNotes.lastSeenVersion, { timeout: 5000 })
+      .poll(() => savedMarker(launched), { timeout: 5000 })
       .toBe(APP_VERSION);
   });
 });
@@ -72,7 +80,7 @@ test('with the preference off, nothing pops up and the marker still advances', a
       await expect(win.locator('.release-notes-card')).toHaveCount(0);
       // Turning it back on later must not replay what was skipped.
       await expect
-        .poll(() => savedSettings(launched).releaseNotes.lastSeenVersion, { timeout: 5000 })
+        .poll(() => savedMarker(launched), { timeout: 5000 })
         .toBe(APP_VERSION);
     }
   );
@@ -84,7 +92,7 @@ test('Settings → About shows the version and opens the full history', async ()
     async (launched) => {
       const win = await mainWindowOf(launched.app);
       await win.waitForLoadState('domcontentloaded');
-      await win.getByRole('button', { name: 'Settings', exact: true }).click();
+      await openSettings(win, 'App');
 
       await expect(win.getByText(`Stem ${APP_VERSION}`)).toBeVisible();
       await win.getByRole('button', { name: 'View release notes' }).click();

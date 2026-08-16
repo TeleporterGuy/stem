@@ -31,7 +31,9 @@ again or click the pill.
   again to hide.
 - **Open in Stem** hands the live conversation to the main window.
 - **New thread** starts fresh. The previous conversation remains in **Chats**.
-- **Web**, effort, and speed affect this conversation only.
+- Effort and speed affect this conversation only. **Web** is Quick Chat's own
+  web-search switch: it stays where you leave it, separately from the main window,
+  and is the same switch as **Settings → Quick Chat → Web search**.
 - **Note**—or starting with `/note ` or `//`—is the optional direct-save path for
   Memory. No chat turn. Memory must be on; credential-like text is not saved.
 

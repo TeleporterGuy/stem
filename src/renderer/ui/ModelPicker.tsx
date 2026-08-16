@@ -10,13 +10,30 @@ interface ModelPickerProps {
   /** When set, render a clearable first row meaning "no specific model" (id = null). */
   emptyLabel?: string;
   ariaLabel?: string;
+  /** Greyed out and unopenable — for a picker whose feature is switched off. */
+  disabled?: boolean;
+  /**
+   * The model id the empty row currently resolves to. Shown as a small line under
+   * the trigger while nothing specific is picked, because "Default" and "Auto"
+   * name a rule, not a model — and the rule's answer moves when you sign into a
+   * new provider or switch the model you chat with.
+   */
+  resolvedDefault?: string | null;
 }
 
 // A filterable model picker: a field-styled trigger that opens a searchable popup
 // list. Replaces native <select>, which becomes unusable with many models. The
 // popup mirrors the context-menu pattern in ChatList.tsx (fixed position,
 // edge-clamped, dismissed on outside mousedown / Escape).
-export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: ModelPickerProps) {
+export function ModelPicker({
+  models,
+  value,
+  onChange,
+  emptyLabel,
+  ariaLabel,
+  disabled,
+  resolvedDefault
+}: ModelPickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
@@ -26,6 +43,10 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
   const listRef = useRef<HTMLDivElement>(null);
 
   const selected = value ? models.find((m) => m.id === value) ?? null : null;
+  // Only while nothing specific is picked: once you name a model the trigger
+  // already says it, and a second line repeating it is noise.
+  const resolved =
+    value === null && resolvedDefault ? models.find((m) => m.id === resolvedDefault) ?? null : null;
   const triggerLabel = selected?.displayName ?? emptyLabel ?? 'Select a model';
   // Disambiguate the trigger too — the same model name can come from two
   // providers (e.g. Claude via Anthropic vs via OpenRouter).
@@ -127,6 +148,7 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
+        disabled={disabled}
         onClick={() => (open ? setOpen(false) : openMenu())}
       >
         <span className="mp-trigger-label" title={triggerProvider ? `${triggerLabel} · ${triggerProvider}` : triggerLabel}>
@@ -135,6 +157,11 @@ export function ModelPicker({ models, value, onChange, emptyLabel, ariaLabel }: 
         </span>
         <ChevronDown size={14} className="mp-trigger-chevron" />
       </button>
+      {resolved && (
+        <em className="mp-resolved">
+          uses {resolved.displayName} · {resolved.providerName}
+        </em>
+      )}
       {open && (
         <div
           ref={popRef}

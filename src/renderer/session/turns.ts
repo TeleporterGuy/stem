@@ -8,6 +8,7 @@
 import type {
   BackendEventEnvelope,
   ChatMessage,
+  LiveTurn,
   MessageMeta,
   StartTurnResult,
   ThreadStatus,
@@ -24,11 +25,11 @@ import {
 import { createEventBatcher } from '../eventBatcher';
 import { optimisticMessageAttachments, resendAttachments, toMessageAttachments } from '../attachments';
 import { deletePendingIfCurrent, interruptibleTurnId, pendingStartBlocksSend } from '../pendingTurn';
-import { SessionStore } from './store';
+import { SessionStore, type ThreadStates } from './store';
 
-// The settled-turn guard moved to shared/ when the mobile bridge needed the same
-// rule in the main process (which cannot import from renderer/). Re-exported here
-// so this module stays the one place session code imports turn lifecycle from.
+// The settled-turn guard lives in shared/ because the server needs the same rule
+// in a process that cannot import from renderer/. Re-exported here so this module
+// stays the one place session code imports turn lifecycle from.
 import { SettledTurns, isSettledMethod, type TurnSettledMethod } from '../../shared/settledTurns';
 
 export {
@@ -170,6 +171,52 @@ export function attachBackendEvents(
     detach: unsubscribe,
     flush: () => batcher.flush()
   };
+}
+
+/**
+ * Reconcile every slice against what the server says is running, which is what a
+ * client is handed the moment its event stream (re)connects.
+ *
+ * A window that missed part of the stream has no way to tell "this turn is still
+ * going" from "this turn finished without me": both look like a thread that
+ * stopped producing deltas, and they need opposite things on screen — a spinner
+ * that never resolves, or an answer that never appears. The server knows, so it
+ * says, and this is where being told turns into state.
+ *
+ * The list is authoritative in both directions, with one exception that matters:
+ * a slice is only settled if the backend had already acknowledged a turn in it
+ * (`activeTurnId`). A send whose optimistic spinner is up but whose first event
+ * has not arrived yet is not stale — it is early — and clearing it would take the
+ * Stop button away from a turn that is about to start.
+ *
+ * Slices are never created here. A thread nobody has opened has no state to
+ * correct, and inventing an empty running one would make the next open show a
+ * blank conversation (it would look like a live slice worth keeping).
+ */
+export function applyLiveTurns(core: SessionCore, turns: LiveTurn[]): void {
+  const liveByThread = new Map(turns.map((t) => [t.threadId, t.turnId]));
+  const liveTurnIds = new Set(turns.map((t) => t.turnId).filter((id): id is string => !!id));
+  core.store.update((prev) => {
+    let changed = false;
+    const next: ThreadStates = { ...prev };
+    for (const [key, slice] of Object.entries(prev)) {
+      if (liveByThread.has(key)) {
+        const turnId = liveByThread.get(key) ?? slice.activeTurnId;
+        if (slice.running && slice.activeTurnId === turnId) continue;
+        next[key] = { ...slice, running: true, status: 'running', activeTurnId: turnId };
+        changed = true;
+        continue;
+      }
+      // The overlay's key and the main window's DRAFT sentinel are not thread
+      // ids, so they can never match above — they are settled here by turn id
+      // instead, which is the same test and the one that is actually correct.
+      if (slice.running && slice.activeTurnId && !liveTurnIds.has(slice.activeTurnId)) {
+        next[key] = applyProcessExitToThread(slice);
+        changed = true;
+      }
+    }
+    return changed ? next : prev;
+  });
 }
 
 // ---- Sending a turn ----

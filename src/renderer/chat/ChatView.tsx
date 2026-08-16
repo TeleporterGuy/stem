@@ -1,4 +1,5 @@
 import {
+  Fragment,
   forwardRef,
   useCallback,
   useEffect,
@@ -30,6 +31,7 @@ import { HoverTip } from '../ui/InfoTip';
 import { MdxActionContext } from '../mdx/ActionContext';
 import { useAutoHideScroll } from '../hooks/useAutoHideScroll';
 import { EFFORT_LABELS } from '../modelLabels';
+import { EmptyTips } from './EmptyTips';
 
 const AVATAR: Record<ChatMessage['role'], { cls: string; icon: ReactNode; label: string }> = {
   user: { cls: 'you', icon: <User size={15} />, label: 'You' },
@@ -125,6 +127,9 @@ interface ChatViewProps {
   onChangeEffort: (effort: string) => void;
   onChangeSpeed: (serviceTier: string | null) => void;
   onChangeFormat: (format: 'md' | 'mdx') => void;
+  /** Web search for this surface (main or Quick Chat), and its switch. */
+  webSearch: boolean;
+  onToggleWebSearch: (next: boolean) => void;
   /** When true, mirror the live draft upward so the Memory tab can preview which
    *  facts it would inject. Off by default; the normal compose path is unaffected. */
   reportDraft?: boolean;
@@ -193,12 +198,26 @@ interface TimelineGroup {
   key: string;
   scheduledAt?: string;
   items: ChatMessage[];
+  /**
+   * A run that called `notify_user` asked for the user's attention, so its final
+   * reply is pulled out of the fold and rendered as a normal Stem message; only
+   * the prompt and intermediate work stay collapsed. Absent for silent runs.
+   */
+  alert?: ChatMessage;
+}
+
+/** Did this run call notify_user? The tool call rides the reply's activity rows. */
+function ranNotify(items: ChatMessage[]): boolean {
+  return items.some(
+    (m) => m.role === 'assistant' && m.activity?.some((a) => a.name === 'notify_user')
+  );
 }
 
 // Fold the flat message list into groups. A scheduled user message opens a group
 // that absorbs the messages that follow it (its reply, tool/system rows) until the
-// next user message; everything else is its own single-item group.
-function buildTimelineGroups(messages: ChatMessage[]): TimelineGroup[] {
+// next user message; everything else is its own single-item group. A run that
+// notified surfaces its last reply as `alert` instead of folding it.
+export function buildTimelineGroups(messages: ChatMessage[]): TimelineGroup[] {
   const groups: TimelineGroup[] = [];
   for (const m of messages) {
     const open = groups[groups.length - 1];
@@ -209,6 +228,12 @@ function buildTimelineGroups(messages: ChatMessage[]): TimelineGroup[] {
     } else {
       groups.push({ key: m.id, items: [m] });
     }
+  }
+  for (const g of groups) {
+    if (!g.scheduledAt || !ranNotify(g.items)) continue;
+    const last = g.items.map((m) => m.role).lastIndexOf('assistant');
+    g.alert = g.items[last];
+    g.items = g.items.filter((_, i) => i !== last);
   }
   return groups;
 }
@@ -289,6 +314,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   onChangeEffort,
   onChangeSpeed,
   onChangeFormat,
+  webSearch,
+  onToggleWebSearch,
   reportDraft = false,
   onDraftChange,
   onNoteSaved
@@ -611,6 +638,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                 </button>
               ))}
             </div>
+            <EmptyTips format={format} />
             {draftFolderName && (
               <p className="empty-folder">This chat will be saved in “{draftFolderName}”.</p>
             )}
@@ -620,14 +648,17 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
           if (!g.scheduledAt) return g.items.map(renderMessage);
           const open = expandedRuns.has(g.key);
           return (
-            <div key={g.key} className={`sched-run${open ? ' open' : ''}`}>
-              <button type="button" className="sched-run-head" onClick={() => toggleRun(g.key)}>
-                <ChevronRight size={13} className="sched-run-chevron" />
-                <Clock size={13} />
-                <span className="sched-run-title">Scheduled run — {formatRunTime(g.scheduledAt)}</span>
-              </button>
-              {open && <div className="sched-run-body">{g.items.map(renderMessage)}</div>}
-            </div>
+            <Fragment key={g.key}>
+              <div className={`sched-run${open ? ' open' : ''}`}>
+                <button type="button" className="sched-run-head" onClick={() => toggleRun(g.key)}>
+                  <ChevronRight size={13} className="sched-run-chevron" />
+                  <Clock size={13} />
+                  <span className="sched-run-title">Scheduled run — {formatRunTime(g.scheduledAt)}</span>
+                </button>
+                {open && <div className="sched-run-body">{g.items.map(renderMessage)}</div>}
+              </div>
+              {g.alert && renderMessage(g.alert)}
+            </Fragment>
           );
         })}
         {showActivity && !streamingMsg && (
@@ -662,6 +693,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
         onChangeEffort={onChangeEffort}
         onChangeSpeed={onChangeSpeed}
         onChangeFormat={onChangeFormat}
+        webSearch={webSearch}
+        onToggleWebSearch={onToggleWebSearch}
         reportDraft={reportDraft}
         onDraftChange={onDraftChange}
         onNoteSaved={onNoteSaved}

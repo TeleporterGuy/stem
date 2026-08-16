@@ -3,17 +3,17 @@
 // scan.ts fallback seam that keeps retrieval byte-identical to the pre-worker
 // behavior whenever the worker is unset or failing.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createScanWorkerManager, type ScanWorkerManager } from '../../src/main/recall/scan-manager';
-import type { ScanWorkerOutMessage } from '../../src/main/recall/scan-worker';
-import type { WorkerTransport } from '../../src/main/recall/embed-worker-host';
-import type { CoreSearchHit } from '../../src/main/recall/search-core';
+import { createScanWorkerManager, type ScanWorkerManager } from '../../src/server/recall/scan-manager';
+import type { ScanWorkerOutMessage } from '../../src/server/recall/scan-worker';
+import type { WorkerTransport } from '../../src/server/recall/embed-worker-host';
+import type { CoreSearchHit } from '../../src/server/recall/search-core';
 import {
   scanMessagesOffThread,
   requestEpisodicMaintenance,
   setScanWorkerManager,
   vacuumRecallDb
-} from '../../src/main/recall/scan';
-import { recallStore } from '../../src/main/recall/store';
+} from '../../src/server/recall/scan';
+import { recallStore } from '../../src/server/recall/store';
 const { recordMessage } = recallStore;
 
 interface FakeWorker extends WorkerTransport {

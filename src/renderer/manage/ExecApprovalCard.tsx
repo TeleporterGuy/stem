@@ -7,7 +7,7 @@ import { enqueueApproval, removeApproval } from './approvalQueue';
 // tiers (allowlist → LLM judge). The backend holds the tool call open until the
 // user decides; "Always allow" also persists the prefix of every not-yet-allowed
 // chained segment to the user allowlist so the command auto-runs next time
-// (editable in Settings → Command execution).
+// (editable in Settings → Chat → Command execution).
 export function ExecApprovalCard() {
   const [queue, setQueue] = useState<ExecApprovalRequest[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -85,7 +85,7 @@ export function ExecApprovalCard() {
               className="push"
               onClick={() => void decide('alwaysAllow')}
               disabled={busy}
-              title={`Adds ${request.prefixes.map((p) => `"${p}"`).join(', ')} to the allowlist in Settings → Command execution`}
+              title={`Adds ${request.prefixes.map((p) => `"${p}"`).join(', ')} to the allowlist in Settings → Chat → Command execution`}
             >
               Always allow {request.prefixes.map((p) => `“${p}”`).join(', ')}
             </button>

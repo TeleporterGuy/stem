@@ -5,13 +5,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   SKILL_AUTHORING_INSTRUCTIONS,
+  SKILL_LIBRARY_INSTRUCTIONS,
+  SKILL_TARGET_PATCH_INSTRUCTIONS,
   authorSkill,
   buildAuthorPrompt,
   parseAuthorReply,
   renderEvidence
-} from '../../src/main/skills/author';
-import type { LlmClient } from '../../src/main/recall/llm';
-import type { TraceEntry } from '../../src/main/pi/normalize';
+} from '../../src/server/skills/author';
+import type { LlmClient } from '../../src/server/recall/llm';
+import type { TraceEntry } from '../../src/server/pi/normalize';
 
 const GOOD_BODY = `## When to use
 When a YouTube page has auto-generated captions and you need the text.
@@ -169,9 +171,127 @@ describe('authorSkill', () => {
   });
 });
 
+// The third answer, and the reason it exists: Stem decides create-vs-patch before
+// the model sees anything, so when nothing graded used there is no evidence to
+// route on. Rather than guess, the author is handed the library and asked. Its
+// answer comes back as a redirect the caller resolves, never as a write.
+describe('authorSkill: choosing an existing skill', () => {
+  const CANDIDATE = {
+    slug: 'extract-video-captions',
+    name: 'extract-video-captions',
+    description: 'Pull the caption text out of a video.',
+    body: GOOD_BODY
+  };
+  const INDEX = [
+    { slug: 'extract-video-captions', description: 'Pull the caption text out of a video.' },
+    { slug: 'find-prior-request-email', description: 'Find the email where the user asked for something before.' }
+  ];
+
+  it('returns the target when it names a skill it was shown in full', async () => {
+    const llm = scriptedLlm(['{"target":"extract-video-captions"}']);
+    const res = await authorSkill(llm, input({ candidates: [CANDIDATE], libraryIndex: INDEX }));
+    expect(res).toMatchObject({ ok: false, reason: 'target', target: 'extract-video-captions', attempts: 1 });
+    expect(llm.prompts).toHaveLength(1);
+  });
+
+  it('returns the target when it recognizes one from the index alone', async () => {
+    // This is the 2026-08-11 case. The caller sees the same outcome either way and
+    // loads the body for a second shot; nothing here writes.
+    const llm = scriptedLlm(['{"target":"find-prior-request-email"}']);
+    const res = await authorSkill(llm, input({ candidates: [CANDIDATE], libraryIndex: INDEX }));
+    expect(res).toMatchObject({ ok: false, reason: 'target', target: 'find-prior-request-email' });
+  });
+
+  it('shows the loaded bodies and the whole index, and asks for a choice', async () => {
+    const llm = scriptedLlm(['{"skill":null}']);
+    await authorSkill(llm, input({ candidates: [CANDIDATE], libraryIndex: INDEX }));
+    expect(llm.prompts[0]).toContain('Skills already loaded in this turn, in full:');
+    expect(llm.prompts[0]).toContain('Click the "..." menu'); // the candidate's body, not just its name
+    expect(llm.prompts[0]).toContain('- find-prior-request-email — Find the email');
+    expect(llm.prompts[0]).toContain('{"target":');
+  });
+
+  it('does not ask for a choice when there is no library to choose from', async () => {
+    // An empty list under "read what is already there" invites a target the author
+    // cannot have seen.
+    const llm = scriptedLlm(['{"skill":null}']);
+    await authorSkill(llm, input());
+    expect(llm.prompts[0]).not.toContain('read what is already there');
+  });
+
+  it('refuses a target it was not shown, then takes the retry', async () => {
+    // A slug it invented or half-remembered would patch a skill nobody put in
+    // front of it — including, if it guessed, a file the user wrote by hand.
+    const llm = scriptedLlm(['{"target":"some-other-skill"}', JSON.stringify({ skill: GOOD_SKILL })]);
+    const res = await authorSkill(llm, input({ candidates: [CANDIDATE], libraryIndex: INDEX }));
+    expect(llm.prompts[1]).toContain('"some-other-skill", which is not one of the skills listed above');
+    expect(res).toMatchObject({ ok: true, attempts: 2 });
+  });
+
+  it('gives up on a second unlisted target rather than honouring it', async () => {
+    const llm = scriptedLlm(['{"target":"some-other-skill"}', '{"target":"some-other-skill"}']);
+    const res = await authorSkill(llm, input({ candidates: [CANDIDATE], libraryIndex: INDEX }));
+    expect(res).toMatchObject({ ok: false, reason: 'target', attempts: 2 });
+    expect((res as { target?: string }).target).toBeUndefined();
+  });
+
+  it('still creates a fresh skill when nothing in the library fits', async () => {
+    const llm = scriptedLlm([JSON.stringify({ skill: GOOD_SKILL })]);
+    const res = await authorSkill(llm, input({ candidates: [CANDIDATE], libraryIndex: INDEX }));
+    expect(res).toMatchObject({ ok: true, patched: false, attempts: 1 });
+    expect((res as { target?: string }).target).toBeUndefined();
+  });
+
+  it('still declines when the turn holds nothing worth keeping', async () => {
+    const llm = scriptedLlm(['{"skill":null,"reason":"one-off errand"}']);
+    const res = await authorSkill(llm, input({ candidates: [CANDIDATE], libraryIndex: INDEX }));
+    expect(res).toMatchObject({ ok: false, reason: 'declined', detail: 'one-off errand' });
+  });
+
+  it('asks the second shot to fold the turn in, not to audit the skill', async () => {
+    // The patch framing the graded path uses ("did this skill let you down")
+    // would invite a decline here: the author has already decided the procedure
+    // belongs in this skill.
+    const existing = { name: 'extract-video-captions', description: 'd', body: GOOD_BODY };
+    const llm = scriptedLlm([JSON.stringify({ skill: GOOD_SKILL })]);
+    const res = await authorSkill(llm, input({ existing, chosenTarget: true }));
+    expect(llm.prompts[0]).toContain('You named the skill below');
+    expect(llm.prompts[0]).toContain('The skill you named:');
+    expect(llm.prompts[0]).not.toContain('whether that one needs fixing');
+    expect(res).toMatchObject({ ok: true, patched: true, target: 'extract-video-captions' });
+  });
+});
+
+describe('parseAuthorReply: targets', () => {
+  it('reads a bare target', () => {
+    expect(parseAuthorReply('{"target":"extract-video-captions"}')).toEqual({
+      kind: 'target',
+      slug: 'extract-video-captions'
+    });
+  });
+
+  it('lets a target outrank a draft in the same reply', () => {
+    // The model has told us where the procedure belongs and then written it in the
+    // wrong place. The second shot writes the right one.
+    expect(parseAuthorReply(JSON.stringify({ target: 'a-b', skill: { name: 'c-d', description: 'x', body: 'y' } }))).toEqual({
+      kind: 'target',
+      slug: 'a-b'
+    });
+  });
+
+  it('ignores an empty target', () => {
+    expect(parseAuthorReply('{"target":"  ","skill":null,"reason":"nope"}')).toMatchObject({ kind: 'declined' });
+  });
+});
+
 describe('SKILL_AUTHORING_INSTRUCTIONS', () => {
   it('stays liftable by the eval — no interpolation', () => {
     expect(SKILL_AUTHORING_INSTRUCTIONS).not.toContain('${');
+    // The same rule for the branches added beside it: the eval lifts prompt
+    // constants verbatim out of the source, so the moment one carries a template
+    // hole it grades something that never ships.
+    expect(SKILL_LIBRARY_INSTRUCTIONS).not.toContain('${');
+    expect(SKILL_TARGET_PATCH_INSTRUCTIONS).not.toContain('${');
   });
 
   it('is joined with the contract only at prompt-build time', () => {

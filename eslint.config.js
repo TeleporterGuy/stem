@@ -27,6 +27,40 @@ export default [
     }
   },
   {
+    // The headless boundary. src/server has to run under plain `node`, so it may
+    // not reach for Electron — directly or through anything it imports.
+    //
+    // This rule is the fast half of that guarantee, not the whole of it. It sees
+    // the literal specifier and nothing else: an `electron` import pulled in
+    // through a barrel file, or through a module that re-exports one, satisfies
+    // it and still fails at runtime. The real proof is scripts/server-boot.mjs,
+    // which boots dist/main/server.js under a `node` that has no `electron`
+    // module to resolve. Keep both — this one to fail in the editor, that one to
+    // fail in CI.
+    files: ['src/server/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'electron',
+              message:
+                'src/server must run headless. Electron capabilities go through the host shim (src/server/host); windows, dialogs and shell integration belong to src/desktop.'
+            }
+          ],
+          patterns: [
+            {
+              group: ['electron/*', '**/desktop', '**/desktop/**'],
+              message:
+                'src/server must not depend on the Electron client. The dependency runs one way only: src/desktop imports src/server.'
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     // Standalone Node ESM scripts (e.g. the recall MCP server) run outside the
     // TS graph; no-undef can't see Node globals here and would false-positive.
     files: ['**/*.mjs'],

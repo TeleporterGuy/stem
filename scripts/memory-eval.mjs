@@ -28,9 +28,9 @@ const fixture = JSON.parse(readFileSync(join(ROOT, 'tests/fixtures/memory-extrac
  * (node:sqlite, the embedder), none of which this script needs.
  */
 function shippedInstructions() {
-  const source = readFileSync(join(ROOT, 'src/main/recall/distill.ts'), 'utf8');
+  const source = readFileSync(join(ROOT, 'src/server/recall/distill.ts'), 'utf8');
   const match = source.match(/export const DISTILL_INSTRUCTIONS = `([\s\S]*?)`;\n/);
-  if (!match) throw new Error('DISTILL_INSTRUCTIONS not found in src/main/recall/distill.ts — update memory-eval.mjs');
+  if (!match) throw new Error('DISTILL_INSTRUCTIONS not found in src/server/recall/distill.ts — update memory-eval.mjs');
   if (/\$\{/.test(match[1])) throw new Error('DISTILL_INSTRUCTIONS gained an interpolation — memory-eval.mjs cannot lift it verbatim');
   return match[1].replace(/\\`/g, '`');
 }

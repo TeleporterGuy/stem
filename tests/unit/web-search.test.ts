@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 // The module reads piHome() to place web-search.json; point it at a temp dir.
 let home = '';
-vi.mock('../../src/main/workspace/paths', () => ({ piHome: () => home }));
+vi.mock('../../src/server/workspace/paths', () => ({ piHome: () => home }));
 
 const {
   buildWebSearchContext,
@@ -16,7 +16,7 @@ const {
   writeWebSearchConfig,
   SEARCH_BACKENDS,
   WEB_SEARCH_FIELDS
-} = await import('../../src/main/pi/web-search');
+} = await import('../../src/server/pi/web-search');
 
 // The picker's own catalogue. Both files list the same backends for different
 // consumers, and each says it mirrors the other — but nothing enforced it.

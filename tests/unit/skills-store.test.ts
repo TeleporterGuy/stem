@@ -19,9 +19,9 @@ import {
   readSkillRecord,
   removeSkill,
   saveSkill
-} from '../../src/main/skills/store';
-import { readUsage, recordUses } from '../../src/main/skills/usage';
-import type { SkillDraft } from '../../src/main/skills/contract';
+} from '../../src/server/skills/store';
+import { readUsage, recordUses } from '../../src/server/skills/usage';
+import type { SkillDraft } from '../../src/server/skills/contract';
 
 const revFile = join(skillsDir, '.skills-rev');
 

@@ -8,7 +8,7 @@ import {
   effectiveEmbedModelKey,
   EMBED_CATALOG,
   localModelCacheKey
-} from '../../src/main/recall/embed-catalog';
+} from '../../src/server/recall/embed-catalog';
 import type { EmbeddingsSettings } from '../../src/shared/types';
 
 const base: EmbeddingsSettings = {

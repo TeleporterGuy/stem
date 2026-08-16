@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BUILD_DIR = join(ROOT, '.recall-build');
-const BUILD = join(BUILD_DIR, 'main', 'recall');
+const BUILD = join(BUILD_DIR, 'server', 'recall');
 
 const args = process.argv.slice(2);
 const skipBuild = args.includes('--skip-build');
@@ -48,7 +48,7 @@ if (!skipBuild) {
     // Not used by the eval itself, but keeps the compiled MCP server available
     // to scripts/recall-mcp-probe.mjs, which spawns it from .recall-build.
     'mcp-server-main.ts'
-  ].map((f) => `src/main/recall/${f}`);
+  ].map((f) => `src/server/recall/${f}`);
   console.log('compiling recall modules → .recall-build/ …');
   const tsc = spawnSync(
     'npx',

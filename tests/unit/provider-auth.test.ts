@@ -3,9 +3,9 @@
 // bridge, the manual-input round-trip, cancellation, API-key writes, and the
 // persisted-despite-error tolerance around pi's trailing catalog refresh.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { shell } from 'electron';
 import type { AuthUiEvent } from '../../src/shared/types';
-import { ProviderAuth } from '../../src/main/pi/provider-auth';
+import { setHost } from '../../src/server/host';
+import { ProviderAuth } from '../../src/server/pi/provider-auth';
 
 type AuthPrompt = {
   type: 'text' | 'secret' | 'select' | 'manual_code';
@@ -57,7 +57,8 @@ beforeEach(() => {
 
 describe('ProviderAuth.login', () => {
   it('opens the auth URL in the browser and emits auth-url then done', async () => {
-    const openExternal = vi.spyOn(shell, 'openExternal');
+    const openExternal = vi.fn();
+    setHost({ openExternal });
     loginMock.mockImplementation(async (_p, _t, interaction) => {
       interaction.notify({ type: 'auth_url', url: 'https://claude.ai/oauth/authorize?x=1' });
     });
@@ -74,7 +75,8 @@ describe('ProviderAuth.login', () => {
   // has to be opened for the user (pi passes the prefilled URI) AND the code has
   // to reach the UI — the page asks the user to confirm it matches.
   it('opens the device verification URI and emits device-code then done', async () => {
-    const openExternal = vi.spyOn(shell, 'openExternal');
+    const openExternal = vi.fn();
+    setHost({ openExternal });
     loginMock.mockImplementation(async (_p, _t, interaction) => {
       interaction.notify({
         type: 'device_code',

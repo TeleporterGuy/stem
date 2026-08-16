@@ -2,13 +2,13 @@
 // spend a model call on, and what its counters mean. Stateful, order-dependent
 // (shared per-process DB) like the sibling suites.
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { recallStore as store } from '../../src/main/recall/store';
+import { recallStore as store } from '../../src/server/recall/store';
 import {
   RELATION_PROMPT_HEADER,
   processPendingRelationChecks,
   type FactRelation
-} from '../../src/main/recall/reconcile';
-import type { LlmClient } from '../../src/main/recall/llm';
+} from '../../src/server/recall/reconcile';
+import type { LlmClient } from '../../src/server/recall/llm';
 
 afterAll(() => store.close());
 beforeEach(() => {

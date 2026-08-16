@@ -7,7 +7,7 @@
 // These cases pin what is kept, what is deliberately dropped, and — most
 // importantly — that a turn cannot grow the trace without bound.
 import { describe, expect, it } from 'vitest';
-import type { PiEvent } from '../../src/main/pi/rpc';
+import type { PiEvent } from '../../src/server/pi/rpc';
 import {
   TRACE_ARGS_MAX_CHARS,
   TRACE_RESULT_MAX_CHARS,
@@ -15,8 +15,8 @@ import {
   newTurnContext,
   normalizePiEvent,
   snapshotTurnTrace
-} from '../../src/main/pi/normalize';
-import { SECRET_ENVELOPE_KEY } from '../../src/main/pi/protocol';
+} from '../../src/server/pi/normalize';
+import { SECRET_ENVELOPE_KEY } from '../../src/server/pi/protocol';
 
 const ev = (o: Record<string, unknown>): PiEvent => o as unknown as PiEvent;
 
@@ -124,7 +124,10 @@ describe('snapshotTurnTrace', () => {
     ctx.assistantText = 'Here they are.';
     ctx.memoryTainted = true;
     ctx.isScheduled = true;
-    ctx.skillsUsed = new Set(['extract-video-captions']);
+    ctx.skillsInjected = [
+      { slug: 'extract-video-captions', name: 'extract-video-captions', description: 'captions', body: '## Steps\n1. x' }
+    ];
+    ctx.skillsGradedUsed = ['extract-video-captions'];
     call(ctx, 'c1', 'read', { path: '/a' }, textResult('ok'));
 
     const snap = snapshotTurnTrace(ctx, 1_000);
@@ -136,8 +139,24 @@ describe('snapshotTurnTrace', () => {
       assistantText: 'Here they are.',
       memoryTainted: true,
       isScheduled: true,
-      skillsUsed: ['extract-video-captions']
+      skillsInjected: ['extract-video-captions'],
+      skillsGradedUsed: ['extract-video-captions']
     });
     expect(snap.trace).toHaveLength(1);
+  });
+
+  it('carries the injected skills even when none of them graded used', () => {
+    // The two sets are not the same question and the snapshot must not conflate
+    // them: injected is what retrieval offered, graded is what the turn followed.
+    // A turn that ignored both still needs the offered slugs — that is the list
+    // the author is shown so it can recognize "this already exists".
+    const ctx = newTurnContext('t1', 'turn1');
+    ctx.skillsInjected = [
+      { slug: 'a-skill', name: 'a-skill', description: 'a', body: 'x' },
+      { slug: 'b-skill', name: 'b-skill', description: 'b', body: 'y' }
+    ];
+    const snap = snapshotTurnTrace(ctx, 1);
+    expect(snap.skillsInjected).toEqual(['a-skill', 'b-skill']);
+    expect(snap.skillsGradedUsed).toEqual([]);
   });
 });

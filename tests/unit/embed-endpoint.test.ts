@@ -6,8 +6,8 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { getEmbedEndpointToken, startEmbedEndpoint } from '../../src/main/recall/embed-endpoint';
-import type { EmbeddingsClient } from '../../src/main/recall/embeddings';
+import { getEmbedEndpointToken, startEmbedEndpoint } from '../../src/server/recall/embed-endpoint';
+import type { EmbeddingsClient } from '../../src/server/recall/embeddings';
 
 const SOCK = join(tmpdir(), `stem-embed-test-${process.pid}.sock`);
 

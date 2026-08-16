@@ -1,5 +1,9 @@
 // Shared contracts between main, preload, and renderer. Single source of truth.
 
+import type { InboxState } from './inbox';
+
+export type { InboxEntry, InboxState } from './inbox';
+
 export type Role = 'user' | 'assistant' | 'system';
 
 /** How an assistant reply was generated, for the avatar tooltip. */
@@ -284,18 +288,27 @@ export interface StartTurnInput {
   /** Output format for this turn: 'mdx' = rich components (default); 'md' = plain Markdown. */
   format?: 'md' | 'mdx';
   /**
-   * Whether native (server-side) web search is allowed this turn. Decided per
-   * context by the caller (main window vs Quick Chat). The backend only injects
-   * the tool when the selected model's provider actually supports it; otherwise
-   * this is a no-op. Defaults to enabled when omitted.
+   * Which client surface asked for this turn. The two per-surface settings below
+   * are resolved from it by the `backend:startTurn` handler, so a client states
+   * where it is rather than reading the user's settings itself. Omitted means
+   * 'main' — the main window never sends it, and that is what it would say.
+   */
+  surface?: 'main' | 'quickChat';
+  /**
+   * Whether native (server-side) web search is allowed this turn. Resolved from
+   * `surface` (main → `webSearch.main`; Quick Chat → `webSearch.quickChat`), so a
+   * value arriving on the channel is overwritten. The backend only injects the
+   * tool when the selected model's provider actually supports it; otherwise this
+   * is a no-op. Defaults to enabled when omitted, which is how the scheduler's
+   * headless runs — which call the backend directly — ask for it.
    */
   webSearch?: boolean;
   /**
-   * The user's standing custom instructions, already resolved per surface by the
-   * caller (main window → `customInstructions.main`; Quick Chat → main + quickChat).
-   * Injected as an authoritative high-priority block in the turn's context. Empty/
-   * omitted → no block. Internal turns (distill/consolidate via `complete()`) never
-   * set this.
+   * The user's standing custom instructions, resolved from `surface` (main →
+   * `customInstructions.main`; Quick Chat → main + quickChat). Injected as an
+   * authoritative high-priority block in the turn's context. Empty/omitted → no
+   * block. Internal turns (distill/consolidate via `complete()`) and scheduled
+   * runs never set this.
    */
   instructions?: string;
   /** Files/images attached to this turn. */
@@ -477,7 +490,7 @@ export interface SkillSummary {
 
 /**
  * How many file names the per-turn Files context lists before truncating (see
- * main/files/inject.ts). Shared so the Files tab can warn once the folder grows
+ * server/files/inject.ts). Shared so the Files tab can warn once the folder grows
  * past the point where the assistant is still told about every file.
  */
 export const FILES_CONTEXT_LIMIT = 100;
@@ -552,6 +565,25 @@ export interface ConnectedFolder {
 export type ConnectedFolderPatch = Partial<
   Pick<ConnectedFolder, 'label' | 'mode' | 'memorize' | 'note' | 'index' | 'learnMode' | 'learnModel'>
 >;
+
+/**
+ * One directory of the SERVER's filesystem, as the remote folder picker walks
+ * it. The native OS picker opens on the client's machine, which is the wrong
+ * disk whenever the server is elsewhere — so the picker asks the server for one
+ * level at a time and renders this.
+ */
+export interface ServerFolderListing {
+  /** Absolute path listed (resolved on the server). */
+  path: string;
+  /** Its parent, or null when `path` is the filesystem root. */
+  parent: string | null;
+  /** The server user's home directory — where browsing starts. */
+  home: string;
+  /** Sub-directories (dot-directories filtered), sorted by name. */
+  dirs: { name: string; path: string }[];
+  /** Set when `path` could not be read; `dirs` is empty and navigation stays up. */
+  error?: string;
+}
 
 /**
  * Index health for one indexed connected folder (computed from its index DB —
@@ -663,8 +695,39 @@ export interface TaskNotifyPayload {
 
 // ---- MCP servers ----
 
-/** stdio = local `command` + `args`; http = remote streamable-HTTP `url`. */
+/**
+ * HOW a server is spoken to: stdio = a spawned `command` + `args`; http = a
+ * streamable-HTTP `url`. Not WHERE it runs — that is {@link McpServerLocation},
+ * a perpendicular axis, and all four combinations are meaningful.
+ */
 export type McpTransport = 'stdio' | 'http';
+
+/**
+ * Which machine a server runs on, as the panel needs to render it. Absent on a
+ * summary means the machine hosting stem-server, which is where every server has
+ * always run.
+ */
+export interface McpServerLocation {
+  deviceId: string;
+  /** The device's label, carried along so a row can name a place without a second call. */
+  label: string;
+  /** The deviceId is no longer in the registry — that device was unpaired. */
+  orphaned?: boolean;
+  /**
+   * What that device was called when the pin was written, kept in mcp.json
+   * beside the id. Pairing mints a NEW id, so re-pairing the same Mac — after
+   * the rollback in running-on-a-server.md, after an import, after switching to
+   * "this computer's server" and back — orphans every server pinned to it. This
+   * is what lets the orphan say which machine it meant instead of showing an id.
+   *
+   * A display fact and nothing else. Nothing routes on it, nothing matches on it
+   * to decide what may run, and it is not in the spec fingerprint: a label is
+   * typed by a person and duplicated as easily as it is chosen, and ⑩ refuses to
+   * guess which machine an orphan meant precisely because guessing wrong runs
+   * somebody's command somewhere they did not put it.
+   */
+  rememberedLabel?: string;
+}
 
 export interface McpServerSummary {
   name: string;
@@ -683,6 +746,8 @@ export interface McpServerSummary {
    * from `!def.disabled`.
    */
   enabled: boolean;
+  /** Where it runs; absent = on the machine hosting the server. */
+  location?: McpServerLocation;
 }
 
 /**
@@ -719,11 +784,280 @@ export interface McpServerInput {
   oauthClientId?: string;
   oauthClientSecret?: string;
   oauthScope?: string;
+  /**
+   * Pin the server to a paired desktop instead of running it where stem-server
+   * runs. Omitted = the server's own machine, which is what every add has meant
+   * so far. The label is NOT supplied here — it is read from the registry, so a
+   * caller cannot make a row claim to be a machine it is not.
+   */
+  location?: { deviceId: string };
 }
 
 export interface McpLoginResult {
   ok: boolean;
   error?: string;
+}
+
+// ---- Servers pinned to a device (docs/mcp-device-pinning.md) ----
+//
+// A server with a `location` runs on a paired desktop instead of on the machine
+// hosting stem-server, and everything below is what the two ends say to each
+// other about one: what a device is asked to host, what it reports back, and the
+// single call in flight between them.
+//
+// The types live here rather than beside the router because both ends need them
+// and neither owns them — the desktop reads a request off its event stream and
+// answers on a channel the server registered, so a copy on either side would be
+// a copy that can drift.
+
+/**
+ * The name of the addressed control frame that carries one call to the device
+ * hosting a server. A control frame rather than a push because it is addressed:
+ * it goes to one device's streams and never enters the replay ring, which every
+ * connected device is entitled to read (see transport/server.ts).
+ */
+export const MCP_REQUEST_FRAME = 'mcp-request';
+
+/**
+ * The name of the addressed control frame that tells one device its assignments
+ * changed. It carries nothing: the answer to "what do I host now" is
+ * `mcpHost:hello`, and a frame that also carried the new list would be a second
+ * copy of that answer able to disagree with it.
+ *
+ * It exists because mcp.json is written centrally and read by whichever machine
+ * runs the server. Without it, a pin edited from a phone — or by the assistant,
+ * or from a second desktop — reaches the hosting machine only at its next launch
+ * or reconnect, which means a removed server keeps its child alive over there
+ * and a re-added one keeps running the spec it was approved for last week.
+ */
+export const MCP_ASSIGNMENTS_FRAME = 'mcp-assignments';
+
+/**
+ * The transport half of an entry in mcp.json, as the machine that will actually
+ * run the server needs it. Credentials are IN it — decrypted env values, header
+ * values — because the spec is what the client connects with; it travels to
+ * exactly one device, the one the entry names, over the same authenticated
+ * stream everything else rides.
+ */
+export interface DeviceMcpSpec {
+  /** stdio: the command spawned on the hosting machine. */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  /** http: the URL opened FROM the hosting machine's own network. */
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+/** One server a device is asked to host, and the hash it is approved against. */
+export interface DeviceMcpAssignment {
+  name: string;
+  spec: DeviceMcpSpec;
+  /**
+   * The whole spec, hashed (src/shared/mcp-fingerprint.ts). Approval is per
+   * fingerprint rather than per name, which is what makes editing an already
+   * approved entry's `args` or `env` a new approval rather than a silent
+   * widening (docs/mcp-device-pinning.md, ④).
+   */
+  fingerprint: string;
+  /**
+   * Switched off centrally. Sent rather than withheld, because "not yours any
+   * more" and "yours, but off" are different facts and only the first should
+   * cost this machine its approval: turning a server off and on again must not
+   * ask you to approve a spec you already approved (the entry keeps its config
+   * AND its approval — see setMcpServerEnabled). Nothing disabled ever starts
+   * here; a host that receives one stops it and says so.
+   */
+  disabled?: boolean;
+  /**
+   * Names of `env`/`headers` values that are IN mcp.json and could not be
+   * decrypted there — an import with the wrong passphrase, a rotated key. The
+   * values are gone from the spec, so its fingerprint moved and the hosting
+   * machine will ask for approval again; without this the card would say the
+   * spec "changed", which is true and misleading. Nobody edited it, and
+   * approving it starts a server missing a credential.
+   *
+   * Names only, and never the values: this is the same rule McpHostSpecPreview
+   * follows, for the same reason.
+   */
+  lostSecrets?: string[];
+}
+
+/** One tool's real input schema, as the machine hosting it knows it. */
+export interface DeviceMcpToolSchema {
+  name: string;
+  description?: string;
+  /** The server's own JSON Schema, verbatim. Absent when the tool declares none. */
+  inputSchema?: unknown;
+  /**
+   * Set when this could not be fetched from the hosting machine and was rebuilt
+   * from the compact signature instead: what is missing, and why. It is rendered
+   * into the schema's own `description` so the model reads it where it reads the
+   * arguments, rather than somewhere it may not look.
+   */
+  partial?: string;
+}
+
+/** One tool on a hosted server, as the catalog block renders it. */
+export interface DeviceMcpTool {
+  name: string;
+  description?: string;
+  /** Compact argument signature; the full schema is fetched on demand. */
+  signature?: string;
+}
+
+/**
+ * What one hosted server looks like from the machine running it.
+ *
+ * `unapproved` is not a failure: the spec is sitting in that machine's Manage
+ * panel waiting for someone to say yes, and saying so is what lets the assistant
+ * tell the difference between a server that is broken and one nobody has agreed
+ * to run yet.
+ */
+export interface DeviceMcpServerReport {
+  name: string;
+  status: 'ready' | 'failed' | 'unapproved';
+  /** Why it is not ready, in the words the hosting machine used. */
+  error?: string;
+  /**
+   * Which spec this report is about. The server already HAS the spec — it sent
+   * it — so the fingerprint is enough to say which one, and a stale report from
+   * before an edit is recognisable as one.
+   */
+  fingerprint?: string;
+  tools?: DeviceMcpTool[];
+}
+
+/** A client's whole account of what it is hosting — `mcpHost:announce`. */
+export interface DeviceMcpAnnouncement {
+  servers: DeviceMcpServerReport[];
+}
+
+/** One device's last announcement, as the server remembers it. */
+export interface DeviceMcpCatalogEntry {
+  deviceId: string;
+  /** ISO timestamp of the announcement, so a stale catalog can say how stale. */
+  announcedAt: string;
+  servers: DeviceMcpServerReport[];
+}
+
+/**
+ * Every device's announced catalog, kept across disconnection on purpose: an
+ * unavailable server stays listed and marked, so the assistant can say "once
+ * your Mac is awake" instead of silently lacking the capability (③).
+ */
+export interface DeviceMcpCatalog {
+  version: 1;
+  devices: Record<string, DeviceMcpCatalogEntry>;
+}
+
+/** One call, addressed to the device hosting `server`. */
+export interface DeviceMcpRequest {
+  /**
+   * Unguessable and single-use. Every server channel is also bound to ipcMain on
+   * the desktop, so a renderer can call `mcpHost:result` — this id is what keeps
+   * a forged answer from being able to affect anything but a request that device
+   * was legitimately handed.
+   */
+  requestId: string;
+  server: string;
+  /**
+   * `describe` is the on-demand half of the compact catalog: the per-turn block
+   * carries names and a compact signature, and this fetches one tool's real
+   * schema from the machine that handshook with it. It is a separate op rather
+   * than a fatter `tools` because the whole point of the compact list is not
+   * paying for schemas nobody asked for.
+   */
+  op: 'tools' | 'call' | 'describe';
+  /** `call` and `describe` only. */
+  tool?: string;
+  args?: unknown;
+}
+
+/** What the hosting machine answers with — `mcpHost:result`. */
+export type DeviceMcpResult =
+  | { ok: true; tools?: DeviceMcpTool[]; content?: unknown; schema?: DeviceMcpToolSchema }
+  | { ok: false; error: string };
+
+// ---- What the MCP host on THIS machine has to say about itself ----
+//
+// The types below never go on the wire. They are the answer to
+// `mcpHost:localState`, a client-owned channel, because approval is a fact about
+// one computer: the panel in a window on your Mac is asking your Mac, and a
+// server pinned to some other device has nothing to answer with. That is also
+// what makes the panel work against a server whose client half is a phone or an
+// older build — the question was never sent anywhere.
+
+/**
+ * What approving a spec would run, with the credential VALUES left out.
+ *
+ * The spec itself carries decrypted API keys and bearer headers; it stops in the
+ * main process, where the thing that spawns lives. A card needs to show what
+ * gets executed, not what it gets executed with, so the names of the variables
+ * travel and their values do not — enough to notice `AWS_SECRET_ACCESS_KEY`
+ * appearing in something you thought only read your notes.
+ */
+export interface McpHostSpecPreview {
+  command?: string;
+  args?: string[];
+  url?: string;
+  /** Names only. */
+  envKeys?: string[];
+  /** Names only. */
+  headerKeys?: string[];
+}
+
+/** One spec pinned to this machine that nobody here has said yes to yet. */
+export interface McpHostPendingServer {
+  name: string;
+  /** The fingerprint being approved; the approval is sent back with it. */
+  fingerprint: string;
+  preview: McpHostSpecPreview;
+  /**
+   * True when this machine had approved a DIFFERENT spec under this name. The
+   * card says "changed" rather than "new", because the two are answered
+   * differently by somebody who knows they did not edit it.
+   */
+  changed: boolean;
+  /**
+   * Set when the spec looks like it can run anything, rather than exposing a
+   * bounded set of tools. ⑤ removed per-call confirmation on the argument that
+   * an MCP server's surface is fixed at approval time — for a shell-like server
+   * that argument does not hold, and the card has to say so out loud.
+   */
+  unbounded?: string;
+  /**
+   * Names of credentials this spec carries whose values could not be read on the
+   * machine holding mcp.json. See DeviceMcpAssignment.lostSecrets — the card says
+   * a value was LOST rather than changed, because the two are answered
+   * differently and only one of them is somebody's own edit.
+   */
+  lostSecrets?: string[];
+}
+
+/** How one server pinned to this machine is doing, right now, here. */
+export interface McpHostServerStatus {
+  status: 'starting' | 'ready' | 'failed' | 'unapproved' | 'disabled';
+  /** Why it is not ready, in the words the failure used. */
+  error?: string;
+  /** How many tools it exposed, once it has connected. */
+  tools?: number;
+}
+
+/** Everything the panel needs about the MCP servers hosted on this computer. */
+export interface McpHostLocalState {
+  /** server name → the fingerprint this machine approved. */
+  approved: Record<string, string>;
+  pending: McpHostPendingServer[];
+  status: Record<string, McpHostServerStatus>;
+  /**
+   * Set when the server this client is talking to is older than this build and
+   * does not answer the host channels at all. Everything else here is then
+   * empty — not because nothing is pinned here, but because there was nobody to
+   * ask — and an empty panel that says nothing is the one answer a person cannot
+   * act on.
+   */
+  unsupported?: string;
 }
 
 // ---- Assistant-initiated MCP changes (the `stem-admin` self-management server) ----
@@ -802,6 +1136,24 @@ export interface SkillsResetResult {
   exported: number;
   exportFolder: string;
   removed: number;
+}
+
+/**
+ * What one curator pass did, alongside the fresh listing. The counts travel with
+ * the list because a merge and a no-op leave the panel looking the same from the
+ * outside — the list just quietly changes — and the caller cannot tell them apart
+ * by diffing it.
+ */
+export interface SkillsCurateResult {
+  skills: SkillSummary[];
+  merged: number;
+  archived: number;
+  /**
+   * Skills the deterministic lifecycle clock retired on this run (server/skills/
+   * lifecycle.ts) — reported separately from `archived` because it is not the
+   * curator's doing: no model saw them, they simply went untouched past the cutoff.
+   */
+  expired: number;
 }
 
 /** Main -> renderer: a pending approval was answered or expired. */
@@ -921,6 +1273,7 @@ export interface MemoryContents {
 
 /** Which selection path chose a turn's durable facts (see chooseFacts in recall/inject). */
 export type FactTier =
+  | 'reranked'
   | 'hybrid'
   | 'embedding'
   | 'lexical'
@@ -952,8 +1305,10 @@ export interface FactEvidence {
   role: 'user' | 'assistant' | null;
   timestamp: number;
   excerpt: string;
-  /** 'folder_doc' = an indexed connected-folder file (folderId/relPath set). */
-  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'legacy' | 'folder_doc' | 'segment_context';
+  /** 'folder_doc' = an indexed connected-folder file (folderId/relPath set).
+   *  'assistant_claim_web' = an assistant message from a turn that used web tools,
+   *  i.e. the excerpt may restate untrusted public-web content. */
+  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'assistant_claim_web' | 'legacy' | 'folder_doc' | 'segment_context';
   /** Connected-folder id, for 'folder_doc' evidence. */
   folderId?: string | null;
   /** Folder-relative file path, for 'folder_doc' evidence. */
@@ -1134,6 +1489,20 @@ export interface ChatSummary {
   threadId: string;
   /** Computed main-side as `name ?? preview ?? 'New chat'`. */
   title: string;
+  /**
+   * A short subject written by a model from the thread's conversation, when
+   * Settings → Chat → Chats has subjects on. The Inbox shows this in place of `title`.
+   * At the `everywhere` setting the thread was also renamed to it, so the two
+   * agree; at `inbox` they deliberately differ. Absent = never written.
+   */
+  subject?: string;
+  /**
+   * First ~200 characters of the latest message in the thread, whoever wrote it —
+   * the two-line preview under an Inbox row. Read off the session file's tail
+   * during the same mtime-cached scan that produces the title, so it costs
+   * nothing extra; absent for optimistic rows that have no file yet.
+   */
+  preview?: string;
   folderId: string | null;
   /** Unix seconds. */
   createdAt: number;
@@ -1157,12 +1526,41 @@ export interface ChatHistory {
   threadId: string;
   title: string;
   messages: ChatMessage[];
+  /**
+   * This came out of the client's own read-only cache because the server could
+   * not be reached — see src/desktop/offline-cache.ts. Never set by the server,
+   * and never set while it is answering.
+   */
+  offline?: boolean;
+}
+
+/**
+ * One turn the server still has in flight, as reported to a client the moment
+ * its event stream opens.
+ *
+ * `turnId` is what makes this useful rather than decorative: it is the id Stop
+ * interrupts, and a thread marked as running without one would show a button
+ * that cannot do anything. Null only for a turn whose first event predates the
+ * server learning to record it, which is a restart away from impossible.
+ */
+export interface LiveTurn {
+  threadId: string;
+  turnId: string | null;
 }
 
 /** The complete sidebar payload: chats + the folder tree, fetched together. */
 export interface ChatListResult {
   chats: ChatSummary[];
   folders: Folder[];
+  /**
+   * Per-thread read/archive/snooze state for the Inbox mode. Carried alongside the
+   * chats rather than stamped onto each ChatSummary because a summary is also
+   * produced by the backend runtime and by the renderer's optimistic rows, neither
+   * of which knows anything about the Inbox. See src/shared/inbox.ts.
+   */
+  inbox: InboxState;
+  /** Served from the client's offline cache; see {@link ChatHistory.offline}. */
+  offline?: boolean;
 }
 
 // ---- App settings (Stem-owned, persisted by the main process) ----
@@ -1214,6 +1612,20 @@ export interface QuickChatShortcutStatus {
 }
 
 /**
+ * The Quick Chat settings that describe a MACHINE rather than Stem.
+ *
+ * A hotkey is a grab on somebody's keyboard and the two visibility flags are
+ * about where a window sits among that machine's Spaces and displays — none of
+ * them mean anything on a server, and a second paired Mac must be free to
+ * disagree about all three. So they are stored on the client and merged into
+ * {@link AppSettings} on the way to the renderer (src/desktop/settings.ts).
+ */
+export type ClientQuickChatSettings = Pick<
+  QuickChatSettings,
+  'shortcut' | 'showOnAllDisplays' | 'followAcrossSpaces'
+>;
+
+/**
  * Web search, toggled independently per context and available on EVERY provider.
  *
  * Search used to be an openai-codex-only trick (Stem injected the provider's own
@@ -1233,7 +1645,7 @@ export interface WebSearchSettings {
    * can search through Exa, a ChatGPT chat through SearXNG. `auto` walks
    * pi-web-access's fallback chain, which ends at keyless Exa MCP so search works
    * with no configuration at all; `all` fans out across every configured backend.
-   * Otherwise one of the ids in SEARCH_BACKENDS (main/pi/web-search.ts).
+   * Otherwise one of the ids in SEARCH_BACKENDS (server/pi/web-search.ts).
    */
   provider: string;
   /**
@@ -1246,9 +1658,22 @@ export interface WebSearchSettings {
 }
 
 /** Model used for Stem Recall's hidden memory turns (distillation + tidy-up). */
+/**
+ * What reads your conversations and decides what is worth remembering.
+ *
+ * Memory sits outside the Quick tasks deal on purpose (as does skills). The
+ * quick-tasks roles are the ones you can safely make cheap; this one works
+ * against a whole transcript plus everything already remembered, and a model too
+ * small to hold that doesn't fail — it replies with truncated nonsense and
+ * memory quietly stops learning. So an unset memory model follows the model you
+ * chat with, not the quick-tasks one: the shared cheap-model setting cannot
+ * silently take this role with it.
+ */
 export interface MemoryModelSettings {
-  /** `provider/model` id; null = the backend default (gpt-5.3-codex-spark). */
+  /** `provider/model` id; null = the model you chat with. */
   model: string | null;
+  /** Reasoning effort; null = leave the model on its own default. */
+  effort: string | null;
 }
 
 /**
@@ -1265,10 +1690,65 @@ export interface MemoryModelSettings {
  */
 export type SkillsMode = 'off' | 'ask' | 'auto';
 
+/**
+ * How much of a thread's name Stem writes for you:
+ * - `off`        — never call a model; a thread is named after the first line you typed.
+ * - `inbox`      — write a subject and show it in the Inbox, but leave thread names alone.
+ * - `everywhere` — the written subject IS the thread's name, so the Inbox, the
+ *                  Chats tree, search and the window title all agree. The default.
+ *
+ * In both writing modes the subject is written once the thread's first reply has
+ * landed and then re-checked on a widening schedule (turns 3, 8, 20, 50…), so a
+ * thread that drifts onto another subject stops carrying the name of the one it
+ * opened with. A re-check keeps the standing name unless the thread has clearly
+ * moved on.
+ *
+ * A name you typed yourself is never overwritten in any mode.
+ */
+export type ChatSubjectMode = 'off' | 'inbox' | 'everywhere';
+
+/** The Chats panel: how threads get named, and how much of each one the Inbox shows. */
+export interface ChatsSettings {
+  subjects: ChatSubjectMode;
+  /** `provider/model` id for the subject writer; null = the backend default. */
+  subjectModel: string | null;
+  /** Reasoning effort for the subject writer; null = {@link DefaultsSettings.backgroundEffort}. */
+  subjectEffort: string | null;
+  /** Lines of the latest message under each Inbox row: 0 (none), 1 or 2. */
+  previewLines: 0 | 1 | 2;
+}
+
+/**
+ * How much a scheduled run is allowed to interrupt you when it calls `notify_user`:
+ * - `alert` — raise and focus the main window, nudge at the OS level, and show the
+ *             alert modal. The default: what watch-style tasks were built for.
+ * - `nudge` — no window raise, no modal; just the OS-level nudge (dock bounce /
+ *             taskbar flash) over the unread row the run leaves in the Inbox.
+ * - `inbox` — nothing interrupts. The run's chat simply goes bold in the Inbox,
+ *             the way any other new message would.
+ *
+ * The run counts as having found something in all three: the notify is what keeps
+ * its turn out of {@link noteSilentRun}, so the chat lifts out of the archive and
+ * the row goes unread whatever the user chose here. Only the interruption differs.
+ */
+export type TaskNotifyMode = 'alert' | 'nudge' | 'inbox';
+
+/** Scheduled tasks: how a run that has something to say reaches you. */
+export interface TasksSettings {
+  notify: TaskNotifyMode;
+}
+
 /** Skills: the automatic-authoring policy plus the model that does the writing. */
 export interface SkillsSettings {
-  /** `provider/model` id; null = the backend default. */
+  /**
+   * `provider/model` id for all skills work — authoring (the end-of-turn pass,
+   * `/learn`) and curation. null = the model you chat with, like memory:
+   * writing skills is judgment work, so it deliberately does NOT follow the
+   * shared quick-tasks model.
+   */
   model: string | null;
+  /** Reasoning effort for skills work; null = the model's own default. */
+  effort: string | null;
   mode: SkillsMode;
 }
 
@@ -1291,10 +1771,28 @@ export interface ExecSettings {
   enabled: boolean;
   /** Approval policy: manual / LLM-assisted (default) / yolo. */
   approvalMode: ExecApprovalMode;
-  /** `provider/model` id for the safety judge; null = auto (cheapest known for the provider). */
+  /** `provider/model` id for the safety judge; null = {@link DefaultsSettings.backgroundModel}. */
   judgeModel: string | null;
+  /** Reasoning effort for the safety judge; null = {@link DefaultsSettings.backgroundEffort}. */
+  judgeEffort: string | null;
   /** User-approved command prefixes (e.g. "git push", "npm") that auto-run as tier 1. */
   allowlist: string[];
+  /**
+   * Days a chat's scratch folder survives without being touched before the sweep
+   * removes it; null = never. Idle counts from the NEWER of the folder's newest
+   * file and the chat's last message. See server/exec/scratch.ts.
+   */
+  scratchTtlDays: number | null;
+}
+
+/** One chat's scratch folder in Settings → Chat → Command execution → Scratch files. */
+export interface ScratchUsageRow {
+  /** The thread id, or "unfiled" for the aggregate of everything not owned by a chat. */
+  key: string;
+  /** The chat's title; absent when no chat matches (an orphan, or the unfiled pile). */
+  title?: string;
+  bytes: number;
+  files: number;
 }
 
 /**
@@ -1321,7 +1819,7 @@ export interface CustomInstructionsSettings {
  */
 export type EmbeddingsMode = 'off' | 'local' | 'remote';
 
-/** Curated local embedding models (specs live in main/recall/embed-catalog.ts). */
+/** Curated local embedding models (specs live in server/recall/embed-catalog.ts). */
 export type LocalEmbedModelId = 'multilingual-e5-small' | 'multilingual-e5-base' | 'embeddinggemma-300m';
 
 /**
@@ -1348,6 +1846,13 @@ export interface LocalEmbedStatus {
   dim?: number;
   /** Human-readable failure while state === 'error'. */
   error?: string;
+  /**
+   * The load failed on unparseable cached weights (truncated download) and the
+   * worker purged that model's cache. Signals the manager to restart the worker
+   * and re-download — the retry must be a NEW process, because a failed ONNX
+   * session load poisons transformers.js state for every later load in it.
+   */
+  purgedCorruptCache?: boolean;
 }
 
 /**
@@ -1360,8 +1865,8 @@ export interface LocalEmbedStatus {
  */
 export type RerankerMode = 'off' | 'local' | 'remote';
 
-/** Curated local reranker models (specs live in main/recall/rerank-catalog.ts). */
-export type LocalRerankModelId = 'bge-reranker-v2-m3';
+/** Curated local reranker models (specs live in server/recall/rerank-catalog.ts). */
+export type LocalRerankModelId = 'bge-reranker-v2-m3' | 'qwen3-reranker-0.6b';
 
 /**
  * Reranker-stage settings: an exclusive mode plus the config for both backends
@@ -1385,6 +1890,28 @@ export interface LocalRerankStatus {
   progressPct?: number;
   /** Human-readable failure while state === 'error'. */
   error?: string;
+  /** See LocalEmbedStatus.purgedCorruptCache. */
+  purgedCorruptCache?: boolean;
+}
+
+/**
+ * Last known verdict on a user-configured remote retrieval endpoint (mode ===
+ * 'remote'), per stage. Unlike the local statuses there is no lifecycle to
+ * stream — just the outcome of the most recent real request: 'unknown' until
+ * one has been made (or after a settings change wipes a stale verdict), then
+ * 'ok'/'error'. An 'error' here means recall is silently degrading on every
+ * pass, which is why it feeds the same red markers the local statuses do.
+ */
+export interface RemoteEndpointHealth {
+  state: 'unknown' | 'ok' | 'error';
+  /** Human-readable failure while state === 'error'. */
+  error?: string;
+}
+
+/** Both stages' remote-endpoint verdicts, as pushed on 'retrieval:remoteHealth'. */
+export interface RemoteRetrievalHealth {
+  embeddings: RemoteEndpointHealth;
+  reranker: RemoteEndpointHealth;
 }
 
 /**
@@ -1463,55 +1990,70 @@ export interface ReleaseNotesSnapshot {
   unseen: string[];
 }
 
+/** Whether this machine looks for new Stem releases on its own. */
+export interface UpdatesSettings {
+  checkAutomatically: boolean;
+}
+
+/**
+ * How a new release reaches this install.
+ *
+ * `auto` — the AppImage: Stem downloads the new build itself and swaps it in on
+ * restart. `manual` — the mac and deb builds, which can only be told: Stem
+ * points at the release page and the user installs the way they installed the
+ * first time. `none` — a dev run or a test, where there is nothing to update.
+ */
+export type UpdateMode = 'auto' | 'manual' | 'none';
+
+/**
+ * Where the updater stands, pushed on every change and askable on mount. One
+ * shape for both modes; `state: 'ready'` only ever happens under `auto`.
+ */
+export interface UpdateStatus {
+  /** The version running here — the thing every comparison is against. */
+  appVersion: string;
+  mode: UpdateMode;
+  /** `idle` covers both "never checked" and "checked, nothing newer". */
+  state: 'idle' | 'checking' | 'downloading' | 'ready' | 'error';
+  /** The newer version, once one is known. Null while current or unchecked. */
+  available: string | null;
+  /** The release page for `available` — where a `manual` install goes to get it. */
+  downloadUrl: string | null;
+  /** When the last check finished, ms epoch; null before the first. */
+  checkedAt: number | null;
+  /** What went wrong, in words a person can act on. Only under `state: 'error'`. */
+  error: string | null;
+}
+
 /**
  * App-level backend defaults. `model` is 'provider/modelId' (same shape as
  * ModelSummary.id); null = the built-in constant. Set after onboarding so the
  * default matches the provider the user actually signed in with.
  */
 export interface DefaultsSettings {
+  /**
+   * The model you chat with — written whenever you change it, so the background
+   * jobs can see what you actually use. Null only before the first sign-in has
+   * picked one.
+   */
   model: string | null;
-}
-
-/**
- * The phone bridge: a loopback-only HTTP server that serves Stem's mobile client
- * and proxies an allowlisted slice of the IPC surface to it (fronted by
- * `tailscale serve` so the phone reaches it over the tailnet).
- *
- * Off by default — this is the first Stem surface reachable from off-box, so it
- * is opt-in. The bearer token is NOT here: it lives 0600 in its own file (see
- * mobileTokenPath), because settings.json is rewritten wholesale by many paths.
- */
-export interface MobileSettings {
-  enabled: boolean;
-  /** Loopback port to bind; whatever `tailscale serve` is pointed at. */
-  port: number;
   /**
-   * The origin `tailscale serve` publishes the bridge under — normally
-   * `https://<machine>.<tailnet>.ts.net`. Empty until the user has run serve and
-   * told Stem the name: nothing on this machine can discover it, and without it
-   * the pairing URL would only be reachable from the Mac itself.
+   * What the quick-tasks roles (chat subjects and the command safety check) run
+   * on when they aren't pinned to a model of their own. Null = the same model
+   * you chat with, which is the honest default: Stem has no price or size data
+   * to guess a cheaper one from, so it says what it is doing rather than picking
+   * for you.
+   *
+   * Memory and skills are deliberately NOT on this list — both are judgment
+   * work; see {@link MemoryModelSettings} and {@link SkillsSettings}.
    */
-  publicUrl: string;
-}
-
-/** Everything the Settings pairing UI needs to render a QR the phone can scan. */
-export interface MobilePairingInfo {
-  enabled: boolean;
-  /** Whether the loopback server is actually listening right now. */
-  running: boolean;
-  port: number;
-  token: string;
+  backgroundModel: string | null;
   /**
-   * The URL to put in front of the phone, token in the fragment (fragments are
-   * never sent to a server; the client persists it and strips the hash). This is
-   * the `publicUrl` origin when one is configured, and the loopback URL — which
-   * only works on this Mac — when it isn't.
+   * How hard those same roles are allowed to think. Null = leave the model on
+   * its own default, which is what every background job did before this setting
+   * existed — nobody chose it, pi did.
    */
-  url: string;
-  /** The same URL on 127.0.0.1, for trying the client in a browser at the desk. */
-  loopbackUrl: string;
-  /** Whether `url` is the tailnet one, i.e. whether a phone can actually open it. */
-  reachable: boolean;
+  backgroundEffort: string | null;
 }
 
 export interface AppSettings {
@@ -1519,6 +2061,10 @@ export interface AppSettings {
   webSearch: WebSearchSettings;
   memory: MemoryModelSettings;
   skills: SkillsSettings;
+  /** The Chats panel: subject writing (mode + model) and Inbox preview lines. */
+  chats: ChatsSettings;
+  /** Scheduled tasks: how prominently a run's notify_user is allowed to interrupt. */
+  tasks: TasksSettings;
   /** Command execution (run_command) policy: enable switch, judge model, learned allowlist. */
   exec: ExecSettings;
   retrieval: RetrievalSettings;
@@ -1530,12 +2076,46 @@ export interface AppSettings {
   onboarding: OnboardingSettings;
   /** "What's new" popup: whether to raise it after an update, and what's been seen. */
   releaseNotes: ReleaseNotesSettings;
+  /** Whether this machine checks for new releases on its own. */
+  updates: UpdatesSettings;
   /** App-level backend defaults (default model). */
   defaults: DefaultsSettings;
   /** Local model servers (Ollama, LM Studio) registered with the chat backend. */
   localProviders: LocalProvidersSettings;
-  /** The phone bridge (loopback HTTP server + mobile client); off by default. */
-  mobile: MobileSettings;
+}
+
+/**
+ * The half of {@link AppSettings} a SERVER keeps — which is all of it except the
+ * parts that describe a machine. This is the shape of settings.json now, and the
+ * shape every `settings:*` channel answers with on the wire.
+ *
+ * The renderer never sees it: the client merges its own half back in before the
+ * document reaches a window, so `window.stem.getSettings()` still resolves to a
+ * whole {@link AppSettings} and no call site knows the split happened.
+ */
+export interface ServerSettings extends Omit<AppSettings, 'quickChat' | 'releaseNotes' | 'updates'> {
+  quickChat: Omit<QuickChatSettings, keyof ClientQuickChatSettings>;
+}
+
+/**
+ * The other half: what THIS machine keeps for itself, in client.json beside its
+ * device token.
+ *
+ * Both entries are here for the same reason. The hotkey and the overlay's
+ * visibility flags act on this machine's keyboard and displays; the "what's new"
+ * marker tracks the version of the app *installed here*, which two clients of one
+ * server are free to differ on — a Mac still on 0.3.0 must not be told it has
+ * already seen 0.4.0's notes because another one has.
+ */
+export interface ClientSettings {
+  quickChat: ClientQuickChatSettings;
+  releaseNotes: ReleaseNotesSettings;
+  /**
+   * Here for the reason the other two are: the version that could be updated is
+   * the one installed on THIS machine, and two clients of one server are free to
+   * differ on whether they want to hear about it.
+   */
+  updates: UpdatesSettings;
 }
 
 /**
@@ -1611,6 +2191,121 @@ export type QuickChatAdopt = QuickChatHandoff;
 export interface QuickChatSessionStarted {
   threadId: string;
   title: string;
+}
+
+// ---- Devices: who may reach this server ----
+
+/**
+ * One registered client, as Settings → Server → Devices shows it. No credential appears
+ * here and none exists to show — the server keeps only a hash of each device's
+ * token (see server/transport/auth.ts).
+ */
+export interface DeviceInfo {
+  id: string;
+  label: string;
+  createdAt: string;
+  /** Last successful authentication, or null if it has never connected. */
+  lastSeenAt: string | null;
+  /**
+   * What the device said it was when it paired, defaulting to `desktop` for
+   * every record written before the field existed. Surfaced because only a
+   * desktop may host an MCP server (docs/mcp-device-pinning.md, ⑦).
+   */
+  kind: DeviceKind;
+}
+
+/**
+ * A paired client's own account of what it is. Self-asserted at pairing and
+ * never verified — it decides what Stem OFFERS a device, not what it may do, so
+ * a client that lied about it would only be volunteering itself for work it is
+ * bad at. See DeviceRecord in server/transport/auth.ts.
+ */
+export type DeviceKind = 'desktop' | 'mobile';
+
+/** A pairing code that has been issued but not yet spent. */
+export interface PendingPairing {
+  label: string;
+  expiresAt: string;
+}
+
+/** Everything Settings → Server → Devices renders: what is paired, and what is pending. */
+export interface DevicesSnapshot {
+  devices: DeviceInfo[];
+  pending: PendingPairing[];
+}
+
+/** A freshly minted pairing code, shown once so it can be carried to a device. */
+export interface PairingCodeInfo {
+  /** Grouped for reading aloud, e.g. `ABCD-EFGH`. Case and dashes don't matter. */
+  code: string;
+  label: string;
+  expiresAt: string;
+}
+
+/** What became of the data key that opens saved tool credentials, on export. */
+export type SecretsState =
+  /** Unwrapped through this machine's keychain, re-wrapped under the passphrase. */
+  | 'rewrapped'
+  /** There was no key: this install was already keeping tool secrets unencrypted. */
+  | 'none'
+  /** A key file exists but this machine can no longer open it (a keychain reset). */
+  | 'unreadable';
+
+/** One top-level member of an export, rolled up. */
+export interface TransferGroup {
+  name: string;
+  files: number;
+  bytes: number;
+}
+
+/** What an export produced — shown once, in Settings → Server, after it is written. */
+export interface StateExportReport {
+  path: string;
+  bytes: number;
+  files: number;
+  /** What made it in, largest first. */
+  included: TransferGroup[];
+  /** What was deliberately left behind, and why. */
+  omitted: Array<{ name: string; reason: string }>;
+  secrets: SecretsState;
+}
+
+/**
+ * What this client knows about its own connection — answered locally, never by
+ * the server, because every one of these facts is about THIS machine.
+ */
+export interface ClientInfo {
+  /** This client's row in the device registry, so it can mark itself in the list. */
+  deviceId: string | null;
+  /** The server it is talking to. */
+  serverUrl: string;
+  /** False when the server runs in this very process (the default install). */
+  remote: boolean;
+  /**
+   * The server this client is CONFIGURED to use; null = the one it starts itself.
+   * Differs from `serverUrl` exactly when the address was changed since launch —
+   * which is what Settings → Server reads to say "restart to apply".
+   */
+  configuredUrl: string | null;
+  /**
+   * True when STEM_SERVER_URL pinned the address for this launch. The override
+   * outranks anything stored, so the Server pane shows what is in force and
+   * declines to write a setting that would not be read.
+   */
+  pinnedByEnv: boolean;
+}
+
+/**
+ * Whether the server is answering right now. Unlike {@link ClientInfo.remote},
+ * which is settled at launch and never moves, this changes under the app's feet
+ * — so it is asked once on mount and pushed on every change afterwards.
+ *
+ * False means the client is running on its offline cache: chats can be read,
+ * nothing can be sent, and anything that lives only on the server (memory,
+ * skills, search) is unavailable rather than empty.
+ */
+export interface ConnectionState {
+  reachable: boolean;
 }
 
 // ---- Preload API surface exposed on window.stem ----
@@ -1689,8 +2384,8 @@ export interface StemApi {
    * the same dialog.
    */
   resetSkills(exportFirst: boolean, mode: SkillsMode): Promise<SkillsResetResult>;
-  /** Run the skills curator now (merge duplicates, archive stale ones). Returns fresh list. */
-  curateSkills(): Promise<SkillSummary[]>;
+  /** Run the skills curator now (merge duplicates, archive stale ones). Returns fresh list plus what changed. */
+  curateSkills(): Promise<SkillsCurateResult>;
   /** Fired after skills change (auto-create/patch by the assistant, or the curator). */
   onSkillsChanged(listener: () => void): () => void;
 
@@ -1704,8 +2399,17 @@ export interface StemApi {
   createFilesSubdir(name: string): Promise<FilesListing>;
   /** Delete a top-level subfolder and its contents. Returns fresh listing. */
   removeFilesSubdir(name: string): Promise<FilesListing>;
-  /** Open the Files folder in the OS file manager. */
+  /**
+   * Open the Files folder in the OS file manager. Only meaningful when the
+   * server shares this machine's disk — it rejects when it doesn't, and the
+   * button is hidden in that case (see hooks/useRemoteServer.ts).
+   */
   revealFiles(): Promise<void>;
+  /**
+   * Fetch one file out of the Files folder into this machine's Downloads folder
+   * and show it there. Answers with where it landed.
+   */
+  downloadFile(rel: string): Promise<string>;
   /** Read an on-disk image → `data:` URL for a bubble thumbnail (null if not an image). */
   previewImage(path: string): Promise<string | null>;
 
@@ -1728,6 +2432,12 @@ export interface StemApi {
   openWorkspaceFolder(): Promise<void>;
   /** Open a native directory picker; returns chosen absolute paths ([] if canceled). */
   pickDirectory(): Promise<string[]>;
+  /**
+   * List one directory of the SERVER's filesystem (omit `path` for the server
+   * user's home). Backs the remote folder picker, where the native dialog above
+   * would browse the wrong machine.
+   */
+  browseServerFolders(path?: string): Promise<ServerFolderListing>;
 
   // Scheduled tasks. Mutations return the fresh list (like the folders APIs).
   listTasks(): Promise<ScheduledTask[]>;
@@ -1755,6 +2465,13 @@ export interface StemApi {
   removeMcpServer(name: string): Promise<McpServerSummary[]>;
   /** Enable/disable a server without removing it (preserves config + OAuth token). */
   setMcpServerEnabled(name: string, enabled: boolean): Promise<McpServerSummary[]>;
+  /**
+   * Move one server to a paired desktop, or back to the machine hosting the
+   * server with `null`. Only the location changes: the command, the credentials
+   * and the OAuth token stay exactly as they were, and the machine it moves TO
+   * still approves it there before anything runs.
+   */
+  setMcpServerLocation(name: string, deviceId: string | null): Promise<McpServerSummary[]>;
   loginMcpServer(name: string): Promise<McpLoginResult>;
   restartRuntime(): Promise<RuntimeStatus>;
   /** Assistant proposed an MCP change; fired so the UI can show a confirm card. */
@@ -1767,6 +2484,23 @@ export interface StemApi {
   onMcpChanged(listener: () => void): () => void;
   /** Live MCP connection-status updates (keyed by server name). */
   onMcpStatus(listener: (status: Record<string, McpServerStatus>) => void): () => void;
+
+  // The MCP servers pinned to THIS computer. Answered by the desktop itself, not
+  // by the server (see desktop/local/index.ts): approval is a fact about the
+  // machine a server would run on, so these six keep working whatever the
+  // machine at the other end of the wire happens to be.
+  /** What this machine hosts, what it has approved, and what is waiting. */
+  mcpHostState(): Promise<McpHostLocalState>;
+  /** Agree to run one pinned server's current spec; the fingerprint is the one shown. */
+  approveMcpHostServer(name: string, fingerprint: string): Promise<McpHostLocalState>;
+  /** Withdraw agreement to run one pinned server, stopping it. */
+  rejectMcpHostServer(name: string): Promise<McpHostLocalState>;
+  /** Connect one pinned server now and report what actually happened. */
+  testMcpHostServer(name: string): Promise<McpHostLocalState>;
+  /** Re-ask the server which servers are pinned here — after moving one. */
+  refreshMcpHost(): Promise<McpHostLocalState>;
+  /** Fired when a server hosted here settles, fails or is re-synced. */
+  onMcpHostChanged(listener: (state: McpHostLocalState) => void): () => void;
 
   getMemorySettings(): Promise<MemorySettings>;
   setMemoryEnabled(enabled: boolean): Promise<MemorySettings>;
@@ -1833,6 +2567,53 @@ export interface StemApi {
   moveFolder(folderId: string, parentId: string | null): Promise<ChatListResult>;
   setChatFolder(threadId: string, folderId: string | null): Promise<ChatListResult>;
 
+  // Inbox: read/archive/snooze state for the Chats panel's Inbox mode. Every
+  // mutator takes a list of thread ids so a bulk selection is the same call as a
+  // single row, and returns the fresh list the way the folder mutators do.
+  setInboxArchived(threadIds: string[], archived: boolean): Promise<ChatListResult>;
+  /** Snooze until an epoch-ms instant, or pass null to wake the threads now. */
+  snoozeChats(threadIds: string[], until: number | null): Promise<ChatListResult>;
+  setInboxRead(threadIds: string[], read: boolean): Promise<ChatListResult>;
+  markInboxAllRead(): Promise<ChatListResult>;
+  /**
+   * Write (or rewrite) one thread's subject from its first message, right now —
+   * the "Write a subject" row action. New threads get one on their own; this is
+   * how a chat that predates the setting, or one whose subject missed the point,
+   * gets a fresh one. Resolves once the model has answered and the list is settled.
+   */
+  writeChatSubject(threadId: string): Promise<ChatListResult>;
+  /**
+   * The chat list changed underneath the renderer — today, a subject that a
+   * background model call has just finished writing. Payload-free on purpose:
+   * the answer is always "call listChats again".
+   */
+  onChatsChanged(listener: () => void): () => void;
+  /**
+   * The event stream came back after a gap the server could no longer replay, so
+   * nothing this window is showing can be assumed current. Payload-free for the
+   * same reason as onChatsChanged: the answer is always "ask again".
+   */
+  onResync(listener: () => void): () => void;
+  /**
+   * Which turns the server has running, as of the moment the event stream
+   * connected. The whole truth, not an addition to it — a thread that is not in
+   * the list finished while this window was not listening, and the only way to
+   * learn that is to be told.
+   */
+  onLiveTurns(listener: (turns: LiveTurn[]) => void): () => void;
+  /**
+   * Whether the server is answering, right now. Asked on mount because the first
+   * answer can predate this window; see {@link onConnectionChanged}.
+   */
+  connectionState(): Promise<ConnectionState>;
+  /**
+   * The server started or stopped answering. Together with the initial
+   * {@link connectionState} this is what raises the offline banner, disables the
+   * composer, and turns the memory / skills / search empty states into
+   * "unavailable".
+   */
+  onConnectionChanged(listener: (reachable: boolean) => void): () => void;
+
   // App settings + Quick Chat overlay.
   getSettings(): Promise<AppSettings>;
   updateQuickChat(patch: Partial<QuickChatSettings>): Promise<AppSettings>;
@@ -1852,9 +2633,54 @@ export interface StemApi {
   markReleaseNotesSeen(): Promise<void>;
   /** Turn the after-update popup on or off. */
   updateReleaseNotesSettings(patch: Partial<ReleaseNotesSettings>): Promise<AppSettings>;
+  /** Where the updater stands right now — asked on mount, then pushed. */
+  getUpdateStatus(): Promise<UpdateStatus>;
+  /** Look for a new release now. Resolves with where things stand afterwards. */
+  checkForUpdates(): Promise<UpdateStatus>;
+  /**
+   * Act on a found update: restart into the downloaded build (`auto`), or open
+   * the release page to get it (`manual`). A no-op unless one is waiting.
+   */
+  installUpdate(): Promise<void>;
+  /** Turn the automatic check on or off. */
+  updateUpdatesSettings(patch: Partial<UpdatesSettings>): Promise<AppSettings>;
+  /** The updater moved — checking, found something, finished a download, failed. */
+  onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
+  // Devices: which clients may reach the server, and how a new one is admitted.
+  /** Every registered device plus any pairing code still outstanding. */
+  listDevices(): Promise<DevicesSnapshot>;
+  /** Remove a device's credential and cut any event stream it has open. */
+  revokeDevice(id: string): Promise<DevicesSnapshot>;
+  /** Mint a one-shot pairing code for a device that will be called `label`. */
+  createPairingCode(label: string): Promise<PairingCodeInfo>;
+  /** This client's own identity and connection — answered without the wire. */
+  clientInfo(): Promise<ClientInfo>;
+  /**
+   * Point this client at `url`, spending `code` to get a credential for it.
+   * Takes effect on the next launch: the event stream, the bound channel list and
+   * every cached surface hang off the connection made at startup, so there is
+   * nothing honest to do with a new address until Stem restarts.
+   */
+  pairWithServer(url: string, code: string): Promise<ClientInfo>;
+  /** Forget the configured server (and its credential) and go back to the built-in one. */
+  useBuiltInServer(): Promise<ClientInfo>;
+  /**
+   * Write this Stem — chats, memory, skills, settings, connected tools — to one
+   * archive, with saved tool credentials re-wrapped so `passphrase` opens them
+   * wherever it lands. Opens a save dialog; resolves null if that is cancelled.
+   * Refuses when the server is somewhere else, because then its state is too.
+   */
+  exportState(passphrase: string): Promise<StateExportReport | null>;
+
   /** Set the model used for memory distillation/tidy-up ({ model: null } = default). */
   updateMemorySettings(patch: Partial<MemoryModelSettings>): Promise<AppSettings>;
   updateSkillsSettings(patch: Partial<SkillsSettings>): Promise<AppSettings>;
+  /** Patch the Chats panel settings (subject mode/model, Inbox preview lines). */
+  updateChatsSettings(patch: Partial<ChatsSettings>): Promise<AppSettings>;
+  /** Patch the scheduled-task settings (how loudly a run's notify_user arrives). */
+  updateTasksSettings(patch: Partial<TasksSettings>): Promise<AppSettings>;
+  /** The model you chat with, and the fallback every background role inherits. */
+  updateDefaults(patch: Partial<DefaultsSettings>): Promise<AppSettings>;
   /** Patch the standing custom instructions (e.g. { main } or { quickChat }). */
   updateCustomInstructions(patch: Partial<CustomInstructionsSettings>): Promise<AppSettings>;
   /** Assistant proposed a custom-instructions change; fired so the UI can show a card. */
@@ -1893,17 +2719,12 @@ export interface StemApi {
   onExecApprovalResolved(listener: (payload: ApprovalResolvedPayload) => void): () => void;
   /** Answer a pending exec approval ("Allow once" / "Always allow prefix" / "Deny"). */
   respondExecApproval(id: string, decision: ExecDecision): Promise<void>;
+  /** What each chat's shell commands have left on disk, biggest first. */
+  getScratchUsage(): Promise<ScratchUsageRow[]>;
+  /** Empty one chat's scratch folder (or the unfiled pile); the chat itself stays. */
+  clearScratch(key: string): Promise<void>;
   /** Update the embeddings/reranker retrieval endpoints (deep-merged per stage). */
   updateRetrievalSettings(patch: PartialRetrievalSettings): Promise<AppSettings>;
-  /**
-   * Turn the phone bridge on/off or move its port. Applied immediately: the
-   * loopback server starts, stops or rebinds before this resolves.
-   */
-  updateMobileSettings(patch: Partial<MobileSettings>): Promise<AppSettings>;
-  /** Everything the pairing panel shows: the URL to open, the token, and liveness. */
-  getMobilePairing(): Promise<MobilePairingInfo>;
-  /** Mint a new bearer token, un-pairing every phone. Returns the new pairing info. */
-  rerollMobileToken(): Promise<MobilePairingInfo>;
   /** Live-probe a retrieval endpoint with the current settings (Settings "Test" button). */
   testRetrievalEndpoint(stage: RetrievalStage): Promise<RetrievalTestResult>;
   /** Everything the toolbar activity indicator shows: in-flight runs plus recent history. */
@@ -1920,6 +2741,10 @@ export interface StemApi {
   getLocalRerankStatus(): Promise<LocalRerankStatus>;
   /** Fired whenever the local reranker model's status changes (incl. download progress). */
   onLocalRerankStatus(listener: (status: LocalRerankStatus) => void): () => void;
+  /** Last known verdicts on the remote retrieval endpoints (mode === 'remote'). */
+  getRemoteRetrievalHealth(): Promise<RemoteRetrievalHealth>;
+  /** Fired whenever a remote retrieval endpoint's verdict changes. */
+  onRemoteRetrievalHealth(listener: (health: RemoteRetrievalHealth) => void): () => void;
   /** Overlay → main: run a prompt in the overlay's own thread (main hides the
    *  overlay + raises the HUD, pre-creating a thread for a fresh session). */
   runQuickChat(prompt: QuickChatPrompt): Promise<StartTurnResult>;

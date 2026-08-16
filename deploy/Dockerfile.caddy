@@ -1,0 +1,28 @@
+# Caddy, with the one module Stem's front door needs that the stock binary does
+# not have.
+#
+# Rate limiting is not in standard Caddy and there is no plan for it to be — it
+# lives in github.com/mholt/caddy-ratelimit, written by Caddy's own author but
+# kept out of the default build. That leaves three ways to have it, and this file
+# is the choice among them:
+#
+#   1. Build Caddy with the module (here). One extra stage, no third-party image
+#      to trust, and `docker compose build` produces both halves of the deployment
+#      from source. Costs a Go toolchain download on first build, cached after.
+#   2. Use somebody's prebuilt "caddy with plugins" image. Faster, and it means an
+#      unaudited binary terminates TLS for every request to your Stem.
+#   3. Do without, and rely on POST /pair's own attempt lockout (pairing.ts) plus
+#      the bearer token on everything else. Defensible — the lockout is the check
+#      that actually stops a guessed code — but it leaves nothing at all in front
+#      of an unauthenticated route, and /rpc unlimited in front of a model.
+#
+# (1), because a reverse proxy is the one process here that talks to strangers.
+#
+# If the build is ever the thing standing between you and a running Stem, (3) is
+# a two-line edit: drop the `rate_limit` lines from the Caddyfile and change the
+# `build:` in docker-compose.yml to `image: caddy:2`. Nothing else depends on it.
+FROM caddy:2-builder AS builder
+RUN xcaddy build --with github.com/mholt/caddy-ratelimit
+
+FROM caddy:2
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy

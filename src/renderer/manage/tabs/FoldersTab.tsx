@@ -5,9 +5,15 @@ import type {
   FolderIndexStatus,
   ModelSummary
 } from '../../../shared/types';
+import { resolveMemoryModel } from '../../../shared/modelRoles';
+import { useRemoteServer } from '../../hooks/useRemoteServer';
+import { ServerFolderPicker } from '../ServerFolderPicker';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { FilesTab } from './FilesTab';
+import { useRememberedTab } from '../../hooks/useRememberedTab';
+
+const SUBS = ['files', 'folders'] as const;
 
 // ---- Sources tab: everywhere the assistant can read from ----
 // Two kinds, split into sub-tabs because they are different things wearing the
@@ -18,7 +24,7 @@ import { FilesTab } from './FilesTab';
 // so the assistant searches them instead — and each one carries settings that
 // govern how far it may go.
 export function SourcesTab({ models }: { models: ModelSummary[] }) {
-  const [sub, setSub] = useState<'files' | 'folders'>('files');
+  const [sub, setSub] = useRememberedTab('stem.sources.sub', SUBS, 'files');
   return (
     <div>
       <div className="seg-ctl">
@@ -144,6 +150,23 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
   const [confirmAll, setConfirmAll] = useState<Record<string, boolean>>({});
   // Expanded cards (settings visible). Collapsed cards show a summary line instead.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // A connected folder is a path on the SERVER's disk. When that isn't this
+  // machine, revealing it here would open whatever happens to sit at the same
+  // path locally — so the buttons that do it are not offered at all. Adding is
+  // the same fact in the other direction: the native picker browses THIS disk,
+  // so a remote server gets the server-side picker dialog instead.
+  const remote = useRemoteServer();
+  const [picking, setPicking] = useState(false);
+  // What "Memory default" on a folder's model picker actually means today: the
+  // memory model if one is set, else whatever the backend defaults to. Read here
+  // rather than passed in, because Sources knows nothing about Memory's settings.
+  const [memoryModel, setMemoryModel] = useState<string | null>(null);
+
+  useEffect(() => {
+    void window.stem
+      .getSettings()
+      .then((s) => setMemoryModel(resolveMemoryModel(s.memory.model, s.defaults.model)));
+  }, []);
 
   const toggleOpen = (id: string) =>
     setExpanded((s) => {
@@ -170,17 +193,35 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
     return () => clearInterval(timer);
   }, [folders, refreshStatus]);
 
+  async function connect(paths: string[]) {
+    if (!paths.length) return;
+    const before = new Set(folders.map((x) => x.id));
+    const next = await window.stem.addConnectedFolders(paths);
+    setFolders(next);
+    // A just-connected folder is about to be configured — open its card.
+    setExpanded((s) => new Set([...s, ...next.filter((x) => !before.has(x.id)).map((x) => x.id)]));
+  }
+
   async function add() {
+    // The native dialog picks from THIS machine's disk — the right disk only
+    // when the server shares it. Remote, the server-side picker takes over.
+    if (remote) {
+      setPicking(true);
+      return;
+    }
     setBusy(true);
     try {
-      const paths = await window.stem.pickDirectory();
-      if (paths.length) {
-        const before = new Set(folders.map((x) => x.id));
-        const next = await window.stem.addConnectedFolders(paths);
-        setFolders(next);
-        // A just-connected folder is about to be configured — open its card.
-        setExpanded((s) => new Set([...s, ...next.filter((x) => !before.has(x.id)).map((x) => x.id)]));
-      }
+      await connect(await window.stem.pickDirectory());
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function connectPicked(path: string) {
+    setPicking(false);
+    setBusy(true);
+    try {
+      await connect([path]);
     } finally {
       setBusy(false);
     }
@@ -244,12 +285,17 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
 
   return (
     <div>
+      {picking && (
+        <ServerFolderPicker onConnect={(path) => void connectPicked(path)} onClose={() => setPicking(false)} />
+      )}
       <div className="grp-head cfolders-head">
         Connected folders
         <span className="grp-head-actions">
-          <button className="grp-head-add" onClick={() => window.stem.openWorkspaceFolder()} title="Open Stem's own folder in Finder" aria-label="Open Stem's folder">
-            <FolderOpen size={14} />
-          </button>
+          {!remote && (
+            <button className="grp-head-add" onClick={() => window.stem.openWorkspaceFolder()} title="Open Stem's own folder in Finder" aria-label="Open Stem's folder">
+              <FolderOpen size={14} />
+            </button>
+          )}
           <button className="grp-head-add" onClick={add} disabled={busy} title="Connect an external folder Stem can read" aria-label="Add folder">
             <Plus size={14} />
           </button>
@@ -293,17 +339,19 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
                         visually relocating the path's leading slash to the end. */}
                     <em title={f.path}>{`‎${f.path}‎`}</em>
                   </span>
-                  <button
-                    className="icon-action sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      window.stem.revealConnectedFolder(f.id);
-                    }}
-                    title="Reveal in Finder"
-                    aria-label="Reveal in Finder"
-                  >
-                    <FolderOpen size={14} />
-                  </button>
+                  {!remote && (
+                    <button
+                      className="icon-action sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.stem.revealConnectedFolder(f.id);
+                      }}
+                      title="Reveal in Finder"
+                      aria-label="Reveal in Finder"
+                    >
+                      <FolderOpen size={14} />
+                    </button>
+                  )}
                   <button
                     className="icon-action sm"
                     onClick={(e) => {
@@ -417,6 +465,7 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
                             onChange={(id) => void setLearnModel(f.id, id)}
                             emptyLabel="Memory default"
                             ariaLabel="Fact-learning model"
+                            resolvedDefault={memoryModel}
                           />
                         </span>
                       </div>
@@ -440,6 +489,7 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
                           onChange={(id) => void setLearnModel(f.id, id)}
                           emptyLabel="Memory default"
                           ariaLabel="Fact-learning model"
+                          resolvedDefault={memoryModel}
                         />
                       </span>
                     </div>

@@ -6,6 +6,8 @@ import type {
   AuthProviderId,
   AuthUiEvent,
   BackendEventEnvelope,
+  ChatsSettings,
+  DefaultsSettings,
   ConnectedFolderPatch,
   CustomInstructionsSettings,
   EscapeAction,
@@ -13,17 +15,19 @@ import type {
   ExecDecision,
   ExecSettings,
   InstructionsProposal,
+  LiveTurn,
   LocalEmbedStatus,
   LocalProviderApi,
   LocalProviderId,
   LocalProviderSettings,
   LocalRerankStatus,
+  RemoteRetrievalHealth,
   McpAdminProposal,
+  McpHostLocalState,
   McpServerInput,
   McpServerStatus,
   MemoryModelSettings,
   MemoryRebuildStatus,
-  MobileSettings,
   WebSearchSettings,
   PartialRetrievalSettings,
   ReleaseNotesSettings,
@@ -44,7 +48,10 @@ import type {
   StartTurnInput,
   StemApi,
   TaskNotifyPayload,
-  TaskSchedulePatch
+  TaskSchedulePatch,
+  TasksSettings,
+  UpdateStatus,
+  UpdatesSettings
 } from '../shared/types';
 
 const api: StemApi = {
@@ -100,6 +107,7 @@ const api: StemApi = {
   createFilesSubdir: (name: string) => ipcRenderer.invoke('files:mkdir', name),
   removeFilesSubdir: (name: string) => ipcRenderer.invoke('files:rmdir', name),
   revealFiles: () => ipcRenderer.invoke('files:reveal'),
+  downloadFile: (rel: string) => ipcRenderer.invoke('files:download', rel),
   previewImage: (path: string) => ipcRenderer.invoke('files:preview', path),
 
   listConnectedFolders: () => ipcRenderer.invoke('cfolders:list'),
@@ -112,6 +120,7 @@ const api: StemApi = {
   revealConnectedFolder: (id: string) => ipcRenderer.invoke('cfolders:reveal', id),
   openWorkspaceFolder: () => ipcRenderer.invoke('cfolders:revealWorkspace'),
   pickDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
+  browseServerFolders: (path?: string) => ipcRenderer.invoke('cfolders:browse', path),
 
   listTasks: () => ipcRenderer.invoke('tasks:list'),
   taskThreadSettings: (threadId: string) => ipcRenderer.invoke('tasks:threadSettings', threadId),
@@ -142,8 +151,22 @@ const api: StemApi = {
   removeMcpServer: (name: string) => ipcRenderer.invoke('mcp:remove', name),
   setMcpServerEnabled: (name: string, enabled: boolean) =>
     ipcRenderer.invoke('mcp:setEnabled', name, enabled),
+  setMcpServerLocation: (name: string, deviceId: string | null) =>
+    ipcRenderer.invoke('mcp:setLocation', name, deviceId),
   loginMcpServer: (name: string) => ipcRenderer.invoke('mcp:login', name),
   restartRuntime: () => ipcRenderer.invoke('runtime:restart'),
+
+  mcpHostState: () => ipcRenderer.invoke('mcpHost:localState'),
+  approveMcpHostServer: (name: string, fingerprint: string) =>
+    ipcRenderer.invoke('mcpHost:approve', name, fingerprint),
+  rejectMcpHostServer: (name: string) => ipcRenderer.invoke('mcpHost:reject', name),
+  testMcpHostServer: (name: string) => ipcRenderer.invoke('mcpHost:test', name),
+  refreshMcpHost: () => ipcRenderer.invoke('mcpHost:refresh'),
+  onMcpHostChanged: (listener: (state: McpHostLocalState) => void) => {
+    const handler = (_e: unknown, state: McpHostLocalState) => listener(state);
+    ipcRenderer.on('mcpHost:changed', handler);
+    return () => ipcRenderer.removeListener('mcpHost:changed', handler);
+  },
   onMcpAdminApproval: (listener: (proposal: McpAdminProposal) => void) => {
     const handler = (_e: unknown, proposal: McpAdminProposal) => listener(proposal);
     ipcRenderer.on('mcp:adminApproval', handler);
@@ -193,6 +216,8 @@ const api: StemApi = {
   },
   respondExecApproval: (id: string, decision: ExecDecision) =>
     ipcRenderer.invoke('exec:resolveApproval', id, decision),
+  getScratchUsage: () => ipcRenderer.invoke('exec:scratchUsage'),
+  clearScratch: (key: string) => ipcRenderer.invoke('exec:clearScratch', key),
   onMcpChanged: (listener: () => void) => {
     const handler = () => listener();
     ipcRenderer.on('mcp:changed', handler);
@@ -253,6 +278,44 @@ const api: StemApi = {
   setChatFolder: (threadId: string, folderId: string | null) =>
     ipcRenderer.invoke('chats:setFolder', threadId, folderId),
 
+  setInboxArchived: (threadIds: string[], archived: boolean) =>
+    ipcRenderer.invoke('inbox:setArchived', threadIds, archived),
+  snoozeChats: (threadIds: string[], until: number | null) =>
+    ipcRenderer.invoke('inbox:snooze', threadIds, until),
+  setInboxRead: (threadIds: string[], read: boolean) =>
+    ipcRenderer.invoke('inbox:setRead', threadIds, read),
+  markInboxAllRead: () => ipcRenderer.invoke('inbox:markAllRead'),
+  writeChatSubject: (threadId: string) => ipcRenderer.invoke('chats:writeSubject', threadId),
+  onChatsChanged: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on('chats:changed', handler);
+    return () => ipcRenderer.removeListener('chats:changed', handler);
+  },
+  onResync: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on('client:resync', handler);
+    return () => ipcRenderer.removeListener('client:resync', handler);
+  },
+  onLiveTurns: (listener: (turns: LiveTurn[]) => void) => {
+    const handler = (_e: unknown, turns: LiveTurn[]) => listener(turns);
+    ipcRenderer.on('client:liveTurns', handler);
+    return () => ipcRenderer.removeListener('client:liveTurns', handler);
+  },
+  connectionState: () => ipcRenderer.invoke('client:connection'),
+  onConnectionChanged: (listener: (reachable: boolean) => void) => {
+    const handler = (_e: unknown, reachable: boolean) => listener(reachable);
+    ipcRenderer.on('client:connectionChanged', handler);
+    return () => ipcRenderer.removeListener('client:connectionChanged', handler);
+  },
+
+  listDevices: () => ipcRenderer.invoke('devices:list'),
+  revokeDevice: (id: string) => ipcRenderer.invoke('devices:revoke', id),
+  createPairingCode: (label: string) => ipcRenderer.invoke('devices:createPairingCode', label),
+  clientInfo: () => ipcRenderer.invoke('client:info'),
+  pairWithServer: (url: string, code: string) => ipcRenderer.invoke('client:pair', url, code),
+  useBuiltInServer: () => ipcRenderer.invoke('client:useBuiltIn'),
+  exportState: (passphrase: string) => ipcRenderer.invoke('stem:exportState', { passphrase }),
+
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateQuickChat: (patch: Partial<QuickChatSettings>) => ipcRenderer.invoke('settings:updateQuickChat', patch),
   getQuickChatShortcutStatus: () => ipcRenderer.invoke('quickchat:shortcutStatus'),
@@ -263,17 +326,27 @@ const api: StemApi = {
   markReleaseNotesSeen: () => ipcRenderer.invoke('releaseNotes:markSeen'),
   updateReleaseNotesSettings: (patch: Partial<ReleaseNotesSettings>) =>
     ipcRenderer.invoke('settings:updateReleaseNotes', patch),
+  getUpdateStatus: () => ipcRenderer.invoke('updates:get'),
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  installUpdate: () => ipcRenderer.invoke('updates:install'),
+  updateUpdatesSettings: (patch: Partial<UpdatesSettings>) =>
+    ipcRenderer.invoke('settings:updateUpdates', patch),
+  onUpdateStatus: (listener: (status: UpdateStatus) => void) => {
+    const handler = (_e: unknown, status: UpdateStatus) => listener(status);
+    ipcRenderer.on('updates:status', handler);
+    return () => ipcRenderer.removeListener('updates:status', handler);
+  },
   updateMemorySettings: (patch: Partial<MemoryModelSettings>) =>
     ipcRenderer.invoke('settings:updateMemory', patch),
   updateCustomInstructions: (patch: Partial<CustomInstructionsSettings>) =>
     ipcRenderer.invoke('settings:updateCustomInstructions', patch),
   updateSkillsSettings: (patch: Partial<SkillsSettings>) =>
     ipcRenderer.invoke('settings:updateSkills', patch),
+  updateChatsSettings: (patch: Partial<ChatsSettings>) => ipcRenderer.invoke('settings:updateChats', patch),
+  updateTasksSettings: (patch: Partial<TasksSettings>) => ipcRenderer.invoke('settings:updateTasks', patch),
+  updateDefaults: (patch: Partial<DefaultsSettings>) => ipcRenderer.invoke('settings:updateDefaults', patch),
   updateRetrievalSettings: (patch: PartialRetrievalSettings) =>
     ipcRenderer.invoke('settings:updateRetrieval', patch),
-  updateMobileSettings: (patch: Partial<MobileSettings>) => ipcRenderer.invoke('settings:updateMobile', patch),
-  getMobilePairing: () => ipcRenderer.invoke('mobile:pairingInfo'),
-  rerollMobileToken: () => ipcRenderer.invoke('mobile:rerollToken'),
   testRetrievalEndpoint: (stage: RetrievalStage) => ipcRenderer.invoke('settings:testRetrieval', stage),
   getActivity: () => ipcRenderer.invoke('activity:snapshot'),
   onActivity: (listener: (snapshot: ActivitySnapshot) => void) => {
@@ -293,6 +366,12 @@ const api: StemApi = {
     const handler = (_e: unknown, status: LocalRerankStatus) => listener(status);
     ipcRenderer.on('reranker:localStatus', handler);
     return () => ipcRenderer.removeListener('reranker:localStatus', handler);
+  },
+  getRemoteRetrievalHealth: () => ipcRenderer.invoke('retrieval:remoteHealth'),
+  onRemoteRetrievalHealth: (listener: (health: RemoteRetrievalHealth) => void) => {
+    const handler = (_e: unknown, health: RemoteRetrievalHealth) => listener(health);
+    ipcRenderer.on('retrieval:remoteHealth', handler);
+    return () => ipcRenderer.removeListener('retrieval:remoteHealth', handler);
   },
   runQuickChat: (prompt: QuickChatPrompt) => ipcRenderer.invoke('quickchat:run', prompt),
   newQuickChatThread: () => ipcRenderer.invoke('quickchat:newThread'),

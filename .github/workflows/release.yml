@@ -21,12 +21,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run dist:linux
+      # latest-linux.yml is the AppImage's update feed: a running Stem polls it
+      # on this release to learn a newer one exists (src/desktop/updates.ts).
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x64
           path: |
             release/*.AppImage
             release/*.deb
+            release/latest-linux.yml
 
   # Best-effort arm64 lane (native arm runner, so optional deps install natively).
   linux-arm64:
@@ -40,12 +43,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run dist:linux -- --arm64
+      # An arm64 build writes latest-linux-arm64.yml — same feed, per-arch name,
+      # so the two lanes never collide on one file.
       - uses: actions/upload-artifact@v4
         with:
           name: linux-arm64
           path: |
             release/*.AppImage
             release/*.deb
+            release/latest-linux-arm64.yml
 
   mac:
     runs-on: macos-latest

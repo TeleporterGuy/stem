@@ -28,7 +28,7 @@ const plainProcessor = unified().use(remarkParse).use(remarkGfm);
 /** Only allow safe URL schemes; everything else (e.g. javascript:) is dropped. */
 function safeUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
-  if (/^(https?:|mailto:|#|\/)/i.test(url)) return url;
+  if (/^(https?:|mailto:|tel:|#|\/)/i.test(url)) return url;
   if (/^data:image\//i.test(url)) return url;
   return undefined;
 }

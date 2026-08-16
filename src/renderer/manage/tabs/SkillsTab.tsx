@@ -1,35 +1,60 @@
 import { useEffect, useState } from 'react';
 import { Wand2 } from 'lucide-react';
 import type {
+  DefaultsSettings,
   ModelSummary,
   SkillsMode,
   SkillSummary
 } from '../../../shared/types';
+import { useOffline } from '../../hooks/useServerReachable';
 import { InfoTip } from '../../ui/InfoTip';
+import { appDefaultModel, resolveSkillsModel } from '../../../shared/modelRoles';
 import { ModelPicker } from '../../ui/ModelPicker';
-import { holdFullSpin } from './shared';
+import { createJobStore, holdFullSpin, useJob } from './shared';
+
+// Module-level so a running tidy pass survives the tab unmounting: leave for
+// another tab mid-run and come back, and the button is still spinning — and the
+// outcome message still lands — instead of the pass silently vanishing.
+const tidyJob = createJobStore();
 
 export function SkillsTab({ models }: { models: ModelSummary[] }) {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
-  const [tidying, setTidying] = useState(false);
-  // null => use the backend default model for the curator.
-  const [curatorModel, setCuratorModel] = useState<string | null>(null);
+  // Skills live on the server. With it unreachable this list is empty because we
+  // could not ask, which is not the same thing as having none — and "No skills
+  // yet" is a sentence that would quietly tell someone their skills are gone.
+  const offline = useOffline();
+  const { running: tidying, msg: tidyMsg } = useJob(tidyJob);
+  // null => skills work follows the model you chat with (see Settings → Models).
+  const [skillsModel, setSkillsModel] = useState<string | null>(null);
   const [mode, setMode] = useState<SkillsMode>('ask');
+  // What "Same as main" resolves to — the model you chat with.
+  const [defaults, setDefaults] = useState<DefaultsSettings>({
+    model: null,
+    backgroundModel: null,
+    backgroundEffort: null
+  });
   useEffect(() => {
-    window.stem.listSkills().then(setSkills);
     window.stem.getSettings().then((s) => {
-      setCuratorModel(s.skills.model);
+      setSkillsModel(s.skills.model);
       setMode(s.skills.mode);
+      setDefaults(s.defaults);
     });
     // Refresh when the assistant auto-creates/patches a skill or the curator runs.
     return window.stem.onSkillsChanged(() => {
       window.stem.listSkills().then(setSkills);
     });
   }, []);
+  // The list load rides the tidy flag rather than mount alone: a pass that ends
+  // while this tab is away has no component to hand its result to, so re-read
+  // when the flag drops. (Runs on mount too, whatever the flag says — that is
+  // the initial load.)
+  useEffect(() => {
+    window.stem.listSkills().then(setSkills);
+  }, [tidying]);
 
-  function selectCuratorModel(id: string | null) {
-    setCuratorModel(id);
-    window.stem.updateSkillsSettings({ model: id }).then((s) => setCuratorModel(s.skills.model));
+  function selectSkillsModel(id: string | null) {
+    setSkillsModel(id);
+    window.stem.updateSkillsSettings({ model: id }).then((s) => setSkillsModel(s.skills.model));
   }
 
   function selectMode(next: SkillsMode) {
@@ -41,13 +66,23 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
     setSkills(await window.stem.setSkillEnabled(slug, enabled));
   }
 
-  async function tidy() {
-    setTidying(true);
-    try {
-      setSkills(await holdFullSpin(window.stem.curateSkills()));
-    } finally {
-      setTidying(false);
-    }
+  function tidy() {
+    tidyJob.start(async () => {
+      try {
+        const r = await holdFullSpin(window.stem.curateSkills());
+        // A pass that merged nothing and one that merged three both end with the
+        // list simply redrawn, so say which happened — otherwise the only way to
+        // tell is to have memorised the library beforehand.
+        // "90 days" is ARCHIVE_AFTER_DAYS in server/skills/lifecycle.ts, spelled out
+        // here rather than plumbed through IPC: it is a sentence, not a setting.
+        const retired = r.expired ? `, retired ${r.expired} unused >90 days` : '';
+        return r.merged + r.archived + r.expired === 0
+          ? 'No duplicate or stale skills found'
+          : `Merged ${r.merged}, archived ${r.archived}${retired} — archived skills stay on disk and can be switched back on above.`;
+      } catch {
+        return 'Tidy up failed — try again.';
+      }
+    });
   }
 
   // There is no "Collect now" button: nothing accumulates to collect. Skills are
@@ -88,7 +123,10 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
           )}
         </span>
       </div>
-      {skills.length === 0 ? (
+      {tidyMsg && <p className="muted">{tidyMsg}</p>}
+      {skills.length === 0 && offline ? (
+        <p className="muted">Your skills live on Stem’s server, which can’t be reached right now.</p>
+      ) : skills.length === 0 ? (
         <p className="muted">No skills yet. Stem saves reusable procedures it works out, or you can drop a SKILL.md folder into the skills directory.</p>
       ) : (
         <div className="group">
@@ -150,20 +188,23 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
       </div>
 
       <div className="grp-head grp-head-row">
-        Curator model
-        <InfoTip label="About the curator model">
-          Runs the background skills curator — merging duplicate skills, sharpening sloppy ones, and
-          archiving stale ones. Separate from the memory model so you can give curation a stronger
-          model. New skills are still written by the model you chat with; this only affects upkeep.
+        Skills model
+        <InfoTip label="About the skills model">
+          Does all the model-driven skills work: writes a new skill (or improves an existing one)
+          after a turn that earned it, handles /learn, and runs the tidy-up pass that merges
+          duplicates. Writing a skill is judgment work, so left unset it follows the model you chat
+          with — never the cheap Quick tasks model. Retiring skills unused for 90 days is a plain
+          clock and uses no model.
         </InfoTip>
       </div>
       <div className="formgroup">
         <ModelPicker
           models={models}
-          value={curatorModel}
-          onChange={selectCuratorModel}
-          emptyLabel="Default (recommended)"
-          ariaLabel="Skills curator model"
+          value={skillsModel}
+          onChange={selectSkillsModel}
+          emptyLabel="Same as main"
+          ariaLabel="Skills model"
+          resolvedDefault={resolveSkillsModel(null, defaults.model ?? appDefaultModel(models))}
         />
       </div>
     </div>

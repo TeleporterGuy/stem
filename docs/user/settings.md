@@ -56,11 +56,35 @@ Keep prefixes narrow; `git status` grants less access than `git`.
 
 <!-- TODO(screenshot): Command approval card with Allow once, Always allow, and Deny. -->
 
+### Scratch files
+
+Commands run in a folder of their own per chat, so downloads, scripts and build
+output stay with the conversation that made them. **Scratch files** lists those
+folders biggest-first with the chat each belongs to; **Clear** empties one without
+touching the conversation.
+
+A folder goes when you delete its chat, and otherwise once nothing in it — and
+nothing in the chat — has been touched for the period you choose (7, 30 or 90 days,
+or **Never**). Treat scratch as working space: anything you want to keep belongs in
+your Files, which the assistant can copy into and which is not swept. Scratch is
+also left behind when you move Stem to another machine.
+
 ## Escape key
 
 - **Off** — does nothing while Stem is working.
 - **Single** — stops the turn and retracts the sent message.
 - **Two-stage** — first press stops; second press retracts.
+
+## Notifications
+
+How a [scheduled task](scheduled-tasks.md) reaches you on a run that found something.
+
+- **Pop-up** — Stem comes to the front and shows the message in a dialog.
+- **Nudge** — the dock bounces (the taskbar flashes); focus stays where it is.
+- **Inbox only** — nothing interrupts you.
+
+All three leave the task's chat unread in your Inbox, so nothing is missed either
+way. Only how much it interrupts changes.
 
 ## Context used across chats
 
@@ -89,6 +113,14 @@ shortcut; the recorded global shortcut cannot fire there.
 ## About
 
 Shows the version you're running — worth quoting when you report a problem.
+
+**Updates** says whether a newer Stem exists and what to do about it. On Linux
+(the AppImage) a new release downloads in the background and installs itself the
+next time you start Stem — or right away with **Restart now**. On a Mac, **Get
+the update** opens the release page and you install it the way you did the first
+time. **Check now** asks immediately; **Check for updates automatically** turns
+the periodic check off entirely. The check asks one question of GitHub, where
+Stem's releases live, and sends nothing about you or your chats.
 
 **Show what's new after an update** opens the release notes once, the first time you
 run a new version; the popup has the same switch if you'd rather turn it off there.

@@ -11,9 +11,9 @@ import { join } from 'node:path';
 const skillsDir = join(tmpdir(), `stem-skills-settle-${process.pid}`);
 process.env.STEM_SKILLS_DIR = skillsDir;
 
-import { SKILL_GATE_MIN_TOOL_CALLS, decideSettle, settleSkills } from '../../src/main/skills/settle';
-import type { SettledTurnTrace, TraceEntry } from '../../src/main/pi/normalize';
-import type { LlmClient } from '../../src/main/recall/llm';
+import { SKILL_GATE_MIN_TOOL_CALLS, decideSettle, settleSkills } from '../../src/server/skills/settle';
+import type { SettledTurnTrace, TraceEntry } from '../../src/server/pi/normalize';
+import type { LlmClient } from '../../src/server/recall/llm';
 
 const BODY = `## When to use
 When the user asks what was said in a video that has captions.
@@ -36,18 +36,21 @@ function turn(over: Partial<SettledTurnTrace> = {}): SettledTurnTrace {
     userText: 'what did the video say?',
     assistantText: 'Here is the transcript.',
     trace: trace(SKILL_GATE_MIN_TOOL_CALLS),
-    skillsUsed: [],
+    skillsInjected: [],
+    skillsGradedUsed: [],
     memoryTainted: false,
     isScheduled: false,
     ...over
   };
 }
 
-function writeSkill(slug: string, body = BODY): void {
+function writeSkill(slug: string, body = BODY, description = 'pull captions out of a video'): void {
   mkdirSync(join(skillsDir, slug), { recursive: true });
   writeFileSync(
     join(skillsDir, slug, 'SKILL.md'),
-    `---\nname: ${JSON.stringify(slug)}\ndescription: "pull captions out of a video"\n---\n\n${body}\n`,
+    // The `source: agent` marker matters: the author is only ever offered skills
+    // Stem wrote, so a fixture without it is invisible to the create path.
+    `---\nname: ${JSON.stringify(slug)}\ndescription: ${JSON.stringify(description)}\nmetadata:\n  stem:\n    source: agent\n---\n\n${body}\n`,
     'utf8'
   );
 }
@@ -115,26 +118,38 @@ describe('decideSettle', () => {
 describe('routing', () => {
   it('routes to a patch carrying the skill\'s current text', () => {
     writeSkill('extract-video-captions');
-    const decision = decideSettle(turn({ skillsUsed: ['extract-video-captions'] }), 'auto');
+    const decision = decideSettle(turn({ skillsGradedUsed: ['extract-video-captions'] }), 'auto');
     expect(decision).toMatchObject({
       fire: true,
       existing: { name: 'extract-video-captions', description: 'pull captions out of a video', body: BODY }
     });
   });
 
-  it('falls back to a create when the named skill is gone from disk', () => {
+  it('falls back to a create when the graded skill is gone from disk', () => {
     // Slugs come off the turn context, and a skill can be removed or merged
     // between injection and settle. Failing the whole pass over a stale name would
     // lose a skill that has nothing to do with the missing one.
-    expect(decideSettle(turn({ skillsUsed: ['deleted-since'] }), 'auto')).toEqual({ fire: true });
+    expect(decideSettle(turn({ skillsGradedUsed: ['deleted-since'] }), 'auto')).toEqual({ fire: true });
   });
 
   it('takes the first skill that still exists', () => {
-    // Several may have been inlined; the first ranked highest against the message,
-    // so it is the one the turn was actually working from.
+    // Several may have graded used; the first ranked highest against the message,
+    // so it is the one the turn was most likely working from.
     writeSkill('second-skill');
-    const decision = decideSettle(turn({ skillsUsed: ['gone', 'second-skill'] }), 'auto');
+    const decision = decideSettle(turn({ skillsGradedUsed: ['gone', 'second-skill'] }), 'auto');
     expect(decision).toMatchObject({ existing: { name: 'second-skill' } });
+  });
+
+  it('never routes on injection alone', () => {
+    // The signal that matters is affirmative. Injection is the top-2 of a cosine
+    // ranking against the user's message — on 2026-08-11 both inlined skills were
+    // the wrong ones — and `authorSkill` force-renames a draft to whatever it was
+    // routed at, so a blind fallback writes one procedure into another skill's
+    // file. Inlined skills reach the author as candidates instead, never as a
+    // decided target.
+    writeSkill('identify-trailer-music');
+    const decision = decideSettle(turn({ skillsInjected: ['identify-trailer-music'] }), 'auto');
+    expect(decision).toEqual({ fire: true });
   });
 });
 
@@ -174,13 +189,85 @@ describe('settleSkills', () => {
     expect(res.author).toMatchObject({ ok: false, reason: 'declined', detail: 'one-off errand' });
   });
 
-  it('hands the author the existing skill when the turn used one', async () => {
+  it('hands the author the existing skill when the turn graded as using one', async () => {
     writeSkill('extract-video-captions');
     const llm = scriptedLlm(['{"skill":null,"reason":"the skill did its job"}']);
-    const res = await settleSkills(turn({ skillsUsed: ['extract-video-captions'] }), 'auto', llm);
+    const res = await settleSkills(turn({ skillsGradedUsed: ['extract-video-captions'] }), 'auto', llm);
     expect(res.decision).toMatchObject({ existing: { name: 'extract-video-captions' } });
     expect(llm.prompts[0]).toContain('The skill this turn used:');
     expect(llm.prompts[0]).toContain('The transcript panel lists timestamped lines.');
+    // The routed patch is decided before the model sees anything, so there is no
+    // library to browse and no second shot to pay for.
+    expect(llm.prompts[0]).not.toContain('Every skill in the library');
+    expect(llm.prompts).toHaveLength(1);
+  });
+
+  it('shows the whole library on the create path', async () => {
+    // Both halves, and this is why: the inlined body is the one the author can
+    // judge properly, but on 2026-08-11 the skill that actually matched was
+    // name-only in the index. Neither list alone resolves that turn.
+    writeSkill('identify-trailer-music', BODY, 'work out which track a trailer used');
+    writeSkill('extract-youtube-transcript', BODY, 'pull the transcript out of a YouTube video');
+    const llm = scriptedLlm(['{"skill":null}']);
+    await settleSkills(turn({ skillsInjected: ['identify-trailer-music'] }), 'auto', llm);
+    expect(llm.prompts[0]).toContain('Skills already loaded in this turn, in full:');
+    expect(llm.prompts[0]).toContain('The transcript panel lists timestamped lines.');
+    expect(llm.prompts[0]).toContain('- extract-youtube-transcript — pull the transcript out of a YouTube video');
+  });
+
+  it('patches the skill the author names from the index, in a second shot', async () => {
+    // The 08-11 shape end to end: nothing graded used, the right skill known only
+    // by name, and the author recognizing it. The second shot is the ordinary
+    // patch path entered late — same force-rename, now correct by construction
+    // because the model chose the target itself.
+    writeSkill('extract-youtube-transcript', BODY, 'pull the transcript out of a YouTube video');
+    const llm = scriptedLlm([
+      '{"target":"extract-youtube-transcript"}',
+      JSON.stringify({ skill: { name: 'extract-video-details', description: 'Pull the transcript out of a video.', body: BODY } })
+    ]);
+    const res = await settleSkills(turn(), 'auto', llm);
+    expect(llm.prompts).toHaveLength(2);
+    expect(llm.prompts[1]).toContain('You named the skill below');
+    expect(llm.prompts[1]).toContain('The transcript panel lists timestamped lines.');
+    expect(res.author).toMatchObject({ ok: true, patched: true, target: 'extract-youtube-transcript', attempts: 2 });
+    // The draft is renamed onto the target, so the bridge write lands on that
+    // skill with expect_existing rather than creating a third one.
+    expect((res.author as { draft: { name: string } }).draft.name).toBe('extract-youtube-transcript');
+  });
+
+  it('writes nothing when the named skill vanishes before the second shot', async () => {
+    // A curator merge can delete the very skill the author just chose. The author
+    // said this was not a new skill; inventing one now would answer a question
+    // nobody asked, so the pass ends with no write.
+    writeSkill('extract-youtube-transcript');
+    const llm: LlmClient & { calls: number } = {
+      calls: 0,
+      complete: async () => {
+        llm.calls += 1;
+        rmSync(join(skillsDir, 'extract-youtube-transcript'), { recursive: true, force: true });
+        return '{"target":"extract-youtube-transcript"}';
+      }
+    };
+    const res = await settleSkills(turn(), 'auto', llm);
+    expect(llm.calls).toBe(1);
+    expect(res.author).toMatchObject({ ok: false, reason: 'target', target: 'extract-youtube-transcript' });
+  });
+
+  it('leaves the user\'s own skills out of what the author may target', async () => {
+    // Hand-written skills are out of scope for automatic writes — the store keeps
+    // the curator and the model off them — so they are not offered as targets and
+    // an author that names one anyway gets the retry, not the patch.
+    mkdirSync(join(skillsDir, 'hand-written'), { recursive: true });
+    writeFileSync(
+      join(skillsDir, 'hand-written', 'SKILL.md'),
+      `---\nname: "hand-written"\ndescription: "something the user wrote"\n---\n\n${BODY}\n`,
+      'utf8'
+    );
+    const llm = scriptedLlm(['{"target":"hand-written"}', '{"skill":null,"reason":"nothing durable"}']);
+    const res = await settleSkills(turn(), 'auto', llm);
+    expect(llm.prompts[0]).not.toContain('hand-written');
+    expect(llm.prompts[1]).toContain('which is not one of the skills listed above');
+    expect(res.author).toMatchObject({ ok: false, reason: 'declined' });
   });
 
   it('carries the /learn focus through to the prompt', async () => {

@@ -3,7 +3,7 @@
 // is pure — the IPC layer supplies the running version and the saved marker.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { compareVersions, parseReleaseNotes, selectUnseen } from '../../src/main/workspace/release-notes';
+import { compareVersions, parseReleaseNotes, selectUnseen } from '../../src/desktop/release-notes';
 
 const SAMPLE = `# Stem release notes
 
@@ -75,8 +75,9 @@ describe('selectUnseen', () => {
   });
 
   it('hides notes written ahead of the running build', () => {
-    // 0.3.0 is in the file but package.json still says 0.2.0 — the user must not
-    // be told about features their build does not have.
+    // Notes land in the file before the release is cut, so a section can sit above
+    // the running version — the user must not be told about features their build
+    // does not have.
     expect(selectUnseen(entries, '0.1.0', '0.2.0').map((e) => e.version)).toEqual(['0.2.0']);
   });
 

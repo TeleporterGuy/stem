@@ -12,13 +12,15 @@ import type {
   ScheduledTask,
   TaskNotifyPayload,
   TurnAttachment,
-  ThreadStatus
+  ThreadStatus,
+  UpdateStatus
 } from '../shared/types';
 import { AUTH_PROVIDER_IDS, providerName } from '../shared/providers';
+import { emptyInboxState, isUnread, placement } from '../shared/inbox';
 import { resendAttachments } from './attachments';
 import { ChatView, type ChatViewHandle } from './chat/ChatView';
 import { OnboardingGate } from './onboarding/OnboardingGate';
-import { ShortcutHint, useShortcut } from './shortcuts';
+import { ShortcutHint, glyphsFor, useShortcut } from './shortcuts';
 import { ManagePanel } from './manage/ManagePanel';
 import { McpApprovalCard } from './manage/McpApprovalCard';
 import { InstructionsApprovalCard } from './manage/InstructionsApprovalCard';
@@ -26,11 +28,15 @@ import { SkillApprovalCard } from './manage/SkillApprovalCard';
 import { SkillsResetDialog } from './manage/SkillsResetDialog';
 import { ExecApprovalCard } from './manage/ExecApprovalCard';
 import { DeleteThreadDialog } from './DeleteThreadDialog';
+import { SnoozeMenu } from './chats/SnoozeMenu';
+import type { InboxSelectionApi } from './chats/ChatList';
 import { ActivityIndicator } from './ui/ActivityIndicator';
 import { TaskAlertModal } from './TaskAlertModal';
 import { ReleaseNotesModal } from './ReleaseNotesModal';
 import { DropOverlay } from './files/DropOverlay';
+import { useWebSearch } from './webSearch';
 import { useAutoHideScroll } from './hooks/useAutoHideScroll';
+import { useOffline } from './hooks/useServerReachable';
 import { useShallowStable } from './hooks/useShallowStable';
 import {
   EMPTY_STATE,
@@ -41,6 +47,7 @@ import {
   type ThreadState
 } from './chatState';
 import {
+  applyLiveTurns,
   attachBackendEvents,
   createSessionCore,
   deleteFromTurn,
@@ -97,6 +104,9 @@ export default function App() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   // The active thread queued for deletion behind the ⌃X confirm popup (null = closed).
   const [pendingDelete, setPendingDelete] = useState<{ threadId: string; title: string } | null>(null);
+  // The snooze picker opened by ⌘⇧S, and the threads it will apply to. The chat
+  // list has its own for the click path; this one has to work without the list.
+  const [snoozePicker, setSnoozePicker] = useState<{ ids: string[]; x: number; y: number } | null>(null);
   // Scheduled tasks: the full list (drives chat badges) + FIFO notify_user alerts.
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [taskAlerts, setTaskAlerts] = useState<TaskNotifyPayload[]>([]);
@@ -106,6 +116,12 @@ export default function App() {
   // which main seeds as already-seen so it never opens on a first launch.
   const [releaseNotes, setReleaseNotes] = useState<ReleaseNotesSnapshot | null>(null);
   const [releaseNotesShowAll, setReleaseNotesShowAll] = useState(false);
+  // A newer release, as main last reported it. The banner only rises for the
+  // two states worth interrupting for — downloaded-and-waiting (`ready`) or
+  // available on an install that can't fetch it itself (`manual`) — and a
+  // dismissal holds for this run; the update itself waits in Settings → App.
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   // The dialog only opens when the preference is on (main withholds `unseen`
   // otherwise), so `true` is the state it opens in — not an assumption.
   const [releaseNotesShowOnUpdate, setReleaseNotesShowOnUpdate] = useState(true);
@@ -117,7 +133,11 @@ export default function App() {
   // would inject. Reset on send (the draft is consumed) and mirrors the live draft.
   const [previewActive, setPreviewActive] = useState(false);
   const [previewDraft, setPreviewDraft] = useState('');
-  const [chatList, setChatList] = useState<ChatListResult>({ chats: [], folders: [] });
+  const [chatList, setChatList] = useState<ChatListResult>({
+    chats: [],
+    folders: [],
+    inbox: emptyInboxState()
+  });
   // Optimistic rows for chats created this session that the backend's thread/list hasn't
   // returned yet (a brand-new thread isn't listed until its first turn persists).
   // Keyed by threadId; dropped once the real list includes them.
@@ -194,8 +214,19 @@ export default function App() {
   const displayList = useMemo<ChatListResult>(() => {
     const known = new Set(chatList.chats.map((c) => c.threadId));
     const extras = Object.values(pendingChats).filter((c) => !known.has(c.threadId));
-    return extras.length ? { chats: [...extras, ...chatList.chats], folders: chatList.folders } : chatList;
+    return extras.length ? { ...chatList, chats: [...extras, ...chatList.chats] } : chatList;
   }, [chatList, pendingChats]);
+
+  // Unread threads sitting in the Inbox — the count badge on the Chats tab. Only
+  // the Inbox counts: an archived or snoozed thread is one you've decided about,
+  // and a badge you can't clear without un-archiving would be a nag, not a signal.
+  const inboxUnreadCount = useMemo(
+    () =>
+      displayList.chats.filter(
+        (c) => placement(c, displayList.inbox, Date.now()) === 'inbox' && isUnread(c, displayList.inbox)
+      ).length,
+    [displayList]
+  );
 
   // Thread ids that own at least one scheduled task → a clock badge on those chat rows.
   const scheduledThreadIds = useMemo(() => new Set(tasks.map((t) => t.threadId)), [tasks]);
@@ -221,6 +252,10 @@ export default function App() {
   const [format, setFormat] = useState<'md' | 'mdx'>(
     () => (localStorage.getItem('stem.format') === 'md' ? 'md' : 'mdx')
   );
+  // Web search for main-window turns. Unlike the pickers above this one lives in
+  // settings rather than localStorage — it is the same switch Settings → Chat
+  // shows, and the server reads it when the turn starts.
+  const { enabled: webSearch, toggle: toggleWebSearch } = useWebSearch('main');
   const selectedModel = models.find((m) => m.id === modelId) ?? null;
   // Ref mirrors so the (mount-only) backend-event handler can resolve the failed
   // turn's provider from the latest models/selection without a stale closure.
@@ -231,7 +266,7 @@ export default function App() {
   const authProviderRef = useRef(authProvider);
   authProviderRef.current = authProvider;
 
-  // Escape-to-retract behavior (Settings → Input). Read from persisted settings;
+  // Escape-to-retract behavior (Settings → App → Input). Read from persisted settings;
   // re-read on window focus so a change in the Settings tab applies without a restart.
   const [escapeAction, setEscapeAction] = useState<EscapeAction>('off');
   useEffect(() => {
@@ -266,6 +301,14 @@ export default function App() {
     });
   }, [onboardingCompleted]);
 
+  // Where the updater stands: asked once (the first push can predate this
+  // window), then pushed on every change.
+  useEffect(() => {
+    if (!window.stem) return;
+    void window.stem.getUpdateStatus().then(setUpdate);
+    return window.stem.onUpdateStatus(setUpdate);
+  }, []);
+
   // A retract request hands its captured text/attachments here; ChatView applies it
   // to the composer on the next render. Routed through App (not a direct setDraft)
   // because retracting a brand-new chat deletes it and remounts ChatView — the
@@ -278,6 +321,9 @@ export default function App() {
   const restoreNonceRef = useRef(0);
 
   const [bridgeError, setBridgeError] = useState<string | null>(null);
+
+  /** The server has stopped answering: everything below is this Mac's cache. */
+  const offline = useOffline();
 
   const refreshStatus = useCallback(async () => {
     if (!window.stem) {
@@ -300,6 +346,11 @@ export default function App() {
   useEffect(() => {
     if (status?.ok) refreshChats();
   }, [status?.ok, refreshChats]);
+
+  // The server changed the list without being asked — a background subject write
+  // that has just renamed a thread. Push, so the row updates the moment it lands
+  // instead of on whatever the next refresh happens to be.
+  useEffect(() => window.stem?.onChatsChanged(() => void refreshChats()), [refreshChats]);
 
   // Fetch the model catalog once the runtime is ready; seed defaults from the backend
   // (the `isDefault` model + its default effort) when nothing is remembered yet.
@@ -332,9 +383,16 @@ export default function App() {
     return () => window.removeEventListener('stem:providers-changed', onChanged);
   }, [refreshStatus, refreshModels]);
 
-  // Persist the remembered selections.
+  // Persist the remembered selections. The model goes to the SERVER as well as
+  // localStorage: every background job (chat subjects, memory, skills curation,
+  // the safety check) falls back to "the model you chat with", and for years
+  // that meant `defaults.model`, which was written once at sign-in and never
+  // again. Anyone who changed their model left the whole background running on
+  // whatever the wizard picked — and Quick Chat's "Same as main" named it.
   useEffect(() => {
-    if (modelId) localStorage.setItem('stem.modelId', modelId);
+    if (!modelId) return;
+    localStorage.setItem('stem.modelId', modelId);
+    void window.stem.updateDefaults({ model: modelId }).catch(() => undefined);
   }, [modelId]);
   useEffect(() => {
     if (effort) localStorage.setItem('stem.effort', effort);
@@ -396,6 +454,22 @@ export default function App() {
       routeEvent: (threadId) =>
         threadId && !deletedThreadsRef.current.has(threadId) ? threadId : null,
       settledStatus: (method, id) => {
+        // A settled turn bumps the thread's mtime, which is what the Inbox reads as
+        // "something happened here". If it happened in the chat you're looking at —
+        // window focused, so you're actually seeing the answer — stamp it read so
+        // your own reply can't mark the thread unread; otherwise leave it — the
+        // mtime now sits past readAt and the row goes bold on its own (a blurred
+        // window counts as away, and the reading-marks-read effect below consumes
+        // the unread when focus returns). Either way refresh the list so the Inbox
+        // and the tab badge stay honest.
+        if (id) {
+          if (id === activeThreadIdRef.current && document.hasFocus())
+            void window.stem
+              .setInboxRead([id], true)
+              .then(setChatList)
+              .catch(() => {});
+          else void refreshChats();
+        }
         if (method === 'turn/failed') return 'error';
         if (method === 'turn/completed') {
           // Mark unread (a solid dot) if it finished while another chat was open.
@@ -411,7 +485,7 @@ export default function App() {
       }
     });
     return events.detach;
-  }, [core, handlePossibleAuthFailure]);
+  }, [core, handlePossibleAuthFailure, refreshChats]);
 
   // Scheduled tasks: keep the list in sync (drives chat badges + the Tasks tab),
   // insert a collapsed run row into an open thread when a run starts, and raise the
@@ -714,6 +788,13 @@ export default function App() {
       draftSeqRef.current += 1;
       const request = openGateRef.current.begin();
       if (deletedThreadsRef.current.has(threadId)) return;
+      // Opening is what marks a thread read — the persisted half of clearing the
+      // unread dot below. Fire-and-forget: the row is already on screen and the
+      // returned list only settles the bold/not-bold, never the navigation.
+      void window.stem
+        .setInboxRead([threadId], true)
+        .then(setChatList)
+        .catch(() => {});
       const existing = core.store.getThread(threadId);
       // A scheduled run streamed into this thread while it was never open → its slice
       // is partial. Reload from disk unless a turn is actively streaming (which we'd
@@ -743,6 +824,86 @@ export default function App() {
     [core, setThread]
   );
 
+  // Reading is what marks a thread read, and "reading" means the thread is on
+  // screen in a focused window — the same rule mail clients and Slack use.
+  // `openChat` stamps the navigate-to-it order; this effect covers the other one:
+  // unread lands in the thread you already have open (a reply from another
+  // device, a scheduled run, a turn that settled while the window was blurred),
+  // so re-check whenever the window gains focus or the list changes. A thread the
+  // user explicitly marked unread stays that way — forcedUnread is a decision,
+  // not something happening to be on screen may overrule. The (id, mtime) memo
+  // keeps a stamp that didn't stick (offline, clock skew) from retrying forever.
+  const readStampRef = useRef<{ id: string; updatedAt: number } | null>(null);
+  useEffect(() => {
+    const markVisibleRead = () => {
+      const id = activeThreadIdRef.current;
+      if (!id || !document.hasFocus()) return;
+      if (displayList.inbox.entries[id]?.forcedUnread) return;
+      const chat = displayList.chats.find((c) => c.threadId === id);
+      if (!chat || !isUnread(chat, displayList.inbox)) return;
+      const last = readStampRef.current;
+      if (last && last.id === id && last.updatedAt === chat.updatedAt) return;
+      readStampRef.current = { id, updatedAt: chat.updatedAt };
+      void window.stem
+        .setInboxRead([id], true)
+        .then(setChatList)
+        .catch(() => {});
+    };
+    markVisibleRead();
+    window.addEventListener('focus', markVisibleRead);
+    return () => window.removeEventListener('focus', markVisibleRead);
+  }, [displayList, activeThreadId]);
+
+  // ---- Coming back after the event stream was away ----
+  //
+  // Two pushes, in this order, and the order is what makes them work together.
+  //
+  // The live-turn snapshot lands first and settles what is and is not running.
+  // Only then does the resync handler run, so `openChat` reads a `running` flag
+  // that is already correct — and its own rule, never reload a thread from disk
+  // while a turn is streaming into it, then does the right thing in both cases:
+  // a settled thread is reread in full, and a live one is left to the stream
+  // rather than clobbered by a file that does not have the answer in it yet.
+  // Refetching first is the version of this that quietly drops the end of a
+  // reply that is still being written.
+  useEffect(() => window.stem?.onLiveTurns((turns) => applyLiveTurns(core, turns)), [core]);
+
+  useEffect(
+    () =>
+      window.stem?.onResync(() => {
+        // The gap was too old to replay, so nothing on screen can be assumed
+        // current: the list may have gained threads, and the open one may have
+        // gained a whole turn. Only the open thread is refetched — the rest are
+        // read from disk when they are next opened anyway.
+        void refreshChats();
+        const open = activeThreadIdRef.current;
+        if (!open) return;
+        forceReloadRef.current.add(open);
+        void openChat(open);
+      }),
+    [refreshChats, openChat]
+  );
+
+  // The same job, for coming back from being offline rather than from a gap in
+  // the stream. Everything on screen while the server was unreachable came out
+  // of this Mac's cache, and a cache is by definition behind — so the moment the
+  // server answers again, ask it. Runs on the transition only (the ref), so a
+  // window that was never offline never refetches for nothing.
+  const wasOffline = useRef(false);
+  useEffect(() => {
+    if (offline) {
+      wasOffline.current = true;
+      return;
+    }
+    if (!wasOffline.current) return;
+    wasOffline.current = false;
+    void refreshChats();
+    const open = activeThreadIdRef.current;
+    if (!open) return;
+    forceReloadRef.current.add(open);
+    void openChat(open);
+  }, [offline, refreshChats, openChat]);
+
   // Folder mutations return the fresh list; apply it directly.
   const onCreateFolder = useCallback((name: string, parentId: string | null) => {
     window.stem.createFolder(name, parentId).then(setChatList);
@@ -758,6 +919,70 @@ export default function App() {
   }, []);
   const onMoveChat = useCallback((threadId: string, folderId: string | null) => {
     window.stem.setChatFolder(threadId, folderId).then(setChatList);
+  }, []);
+
+  /**
+   * Auto-advance: triaging the thread you are reading moves you on to the next
+   * one waiting, so an Inbox can be emptied without a trip back to the list
+   * between every row. When nothing is left to advance to, you get a new chat —
+   * an empty Inbox should leave you ready to write, not staring at a thread you
+   * have just dealt with.
+   *
+   * Only fires when the active thread is one of the ones being triaged: archiving
+   * some other row is housekeeping, and must not yank you out of what you are
+   * reading. Only leaving the Inbox counts — un-snoozing or restoring a thread is
+   * how you go *to* it.
+   *
+   * Lives here rather than in the chat list because the triage shortcuts have to
+   * work with the inspector hidden or parked on another tab, where the list is
+   * unmounted; the list's buttons route through the same handlers.
+   */
+  const advanceAfter = useCallback(
+    (threadIds: string[]) => {
+      const active = activeThreadIdRef.current;
+      if (!active || !threadIds.includes(active)) return;
+      const going = new Set(threadIds);
+      const now = Date.now();
+      const order = displayList.chats
+        .filter((c) => placement(c, displayList.inbox, now) === 'inbox')
+        .map((c) => c.threadId);
+      const from = order.indexOf(active);
+      // The row below, as drawn — then the row above, so triaging the last thread
+      // in the list doesn't fall straight through to a new chat.
+      const next =
+        order.slice(from + 1).find((id) => !going.has(id)) ??
+        [...order.slice(0, Math.max(from, 0))].reverse().find((id) => !going.has(id));
+      if (next) void openChat(next);
+      else newConversation();
+    },
+    [displayList, openChat, newConversation]
+  );
+
+  // Inbox triage. Like the folder mutators, each returns the fresh list.
+  const onArchive = useCallback(
+    (threadIds: string[], archived: boolean) => {
+      window.stem.setInboxArchived(threadIds, archived).then(setChatList);
+      if (archived) advanceAfter(threadIds);
+    },
+    [advanceAfter]
+  );
+  const onSnooze = useCallback(
+    (threadIds: string[], until: number | null) => {
+      window.stem.snoozeChats(threadIds, until).then(setChatList);
+      if (until !== null) advanceAfter(threadIds);
+    },
+    [advanceAfter]
+  );
+  const onSetRead = useCallback((threadIds: string[], read: boolean) => {
+    window.stem.setInboxRead(threadIds, read).then(setChatList);
+  }, []);
+  const onMarkAllRead = useCallback(() => {
+    window.stem.markInboxAllRead().then(setChatList);
+  }, []);
+  const onWriteSubject = useCallback((threadId: string) => {
+    // Round-trips through a model, so this resolves in a second or two rather
+    // than immediately; the row simply renames itself when it lands.
+    window.stem.writeChatSubject(threadId).then(setChatList);
   }, []);
   const onRenameChat = useCallback(
     async (threadId: string, name: string) => {
@@ -811,6 +1036,77 @@ export default function App() {
     if (!id) return; // Nothing open (draft/empty) — no-op.
     const title = displayList.chats.find((c) => c.threadId === id)?.title ?? '';
     setPendingDelete({ threadId: id, title });
+  });
+
+  // ---- inbox triage shortcuts ----
+  // ⌘⇧A / ⌘⇧S / ⌘⇧U act on the multi-selection when the list is showing one, and
+  // on the thread you are reading otherwise — the same two targets the row
+  // buttons and the selection bar already act on. Registered here, not in the
+  // list, so they survive a hidden inspector or a parked-on-Settings panel.
+  const inboxSelection = useRef<InboxSelectionApi | null>(null);
+  const onSelectionApi = useCallback((api: InboxSelectionApi | null) => {
+    inboxSelection.current = api;
+  }, []);
+
+  const triageTargets = useCallback((): string[] => {
+    const selected = inboxSelection.current?.ids ?? [];
+    if (selected.length > 0) return selected;
+    const id = activeThreadIdRef.current;
+    return id ? [id] : [];
+  }, []);
+
+  /** Where the triaged threads sit right now — the direction each toggle reverses. */
+  const triageWhere = useCallback(
+    (threadIds: string[], want: 'inbox' | 'snoozed' | 'archived') => {
+      const now = Date.now();
+      return threadIds.every((id) => {
+        const chat = displayList.chats.find((c) => c.threadId === id);
+        return !!chat && placement(chat, displayList.inbox, now) === want;
+      });
+    },
+    [displayList]
+  );
+
+  useShortcut('archive-thread', () => {
+    const ids = triageTargets();
+    if (ids.length === 0) return;
+    // An all-archived target restores; anything else archives — the same rule the
+    // selection bar uses, and the reversible direction when the target is mixed.
+    onArchive(ids, !triageWhere(ids, 'archived'));
+    inboxSelection.current?.clear();
+  });
+
+  useShortcut('snooze-thread', () => {
+    const ids = triageTargets();
+    if (ids.length === 0) return;
+    if (triageWhere(ids, 'snoozed')) {
+      onSnooze(ids, null); // Already snoozed → the shortcut wakes them.
+      inboxSelection.current?.clear();
+      return;
+    }
+    // Anchor the picker under the row it applies to when that row is on screen;
+    // with the list hidden there is nothing to point at, so it opens up high and
+    // centred rather than at a stale coordinate.
+    const row = document.querySelector(`[data-thread-id="${CSS.escape(ids[0])}"]`);
+    const rect = row?.getBoundingClientRect();
+    setSnoozePicker({
+      ids,
+      x: rect ? rect.left + 24 : Math.round(window.innerWidth / 2) - 90,
+      y: rect ? rect.bottom : Math.round(window.innerHeight / 4)
+    });
+  });
+
+  useShortcut('toggle-read', () => {
+    const ids = triageTargets();
+    if (ids.length === 0) return;
+    // Opening a thread marks it read, so on the thread you are reading this is
+    // "mark unread and move on"; a selection with anything unread in it clears.
+    const anyUnread = ids.some((id) => {
+      const chat = displayList.chats.find((c) => c.threadId === id);
+      return !!chat && isUnread(chat, displayList.inbox);
+    });
+    onSetRead(ids, anyUnread);
+    inboxSelection.current?.clear();
   });
 
   // Roll back to (and including) a turn on the backend, drop that turn + everything
@@ -1054,6 +1350,19 @@ export default function App() {
 
   return shell(
     <>
+      {offline && (
+        // Said plainly, and said before anything else: what you are looking at
+        // is this Mac's copy, and it is not going to change until Stem can reach
+        // its server again. No Retry button — the client is already reconnecting
+        // on its own, and a button that only restarts a loop that is running is
+        // a button that teaches people to press it twice.
+        <div className="offline-banner" role="status">
+          <span className="offline-banner-msg">
+            Stem can’t reach its server — you can read what’s already here, but not send. Memory, skills and
+            search are unavailable until it’s back.
+          </span>
+        </div>
+      )}
       {authProblem && (
         <div className="auth-banner" role="alert">
           <span className="auth-banner-msg">
@@ -1065,6 +1374,27 @@ export default function App() {
           </button>
         </div>
       )}
+      {update &&
+        !updateDismissed &&
+        (update.state === 'ready' || (update.mode === 'manual' && !!update.available)) && (
+          // Good news, said once: the update is either sitting downloaded (the
+          // AppImage) or sitting on a web page (everywhere else). "Later" is a
+          // real answer — a ready build installs itself on the next quit anyway,
+          // and the row in Settings → App keeps the offer open.
+          <div className="update-banner" role="status">
+            <span className="update-banner-msg">
+              {update.state === 'ready'
+                ? `Stem ${update.available} is ready — it installs when you restart.`
+                : `Stem ${update.available} is out. Yours keeps working; update when it suits you.`}
+            </span>
+            <button className="update-banner-btn" onClick={() => void window.stem.installUpdate()}>
+              {update.state === 'ready' ? 'Restart now' : 'Get the update'}
+            </button>
+            <button className="update-banner-later" onClick={() => setUpdateDismissed(true)}>
+              Later
+            </button>
+          </div>
+        )}
       <div className={`app${showInspector ? '' : ' no-inspector'}`}>
         <main className="conversation">
           <ChatView
@@ -1098,6 +1428,8 @@ export default function App() {
           onChangeEffort={setEffort}
           onChangeSpeed={setServiceTier}
           onChangeFormat={setFormat}
+          webSearch={webSearch}
+          onToggleWebSearch={toggleWebSearch}
           reportDraft={previewActive}
           onDraftChange={setPreviewDraft}
         />
@@ -1121,6 +1453,13 @@ export default function App() {
             onRenameChat={onRenameChat}
             onDeleteChat={onDeleteChat}
             onMoveChat={onMoveChat}
+            onArchive={onArchive}
+            onSnooze={onSnooze}
+            onSetRead={onSetRead}
+            onMarkAllRead={onMarkAllRead}
+            onSelectionApi={onSelectionApi}
+            onWriteSubject={onWriteSubject}
+            inboxUnreadCount={inboxUnreadCount}
             activeRunning={cur.running}
             previewActive={previewActive}
             previewDraft={previewDraft}
@@ -1144,6 +1483,20 @@ export default function App() {
           title={pendingDelete.title}
           onConfirm={confirmDeleteThread}
           onCancel={() => setPendingDelete(null)}
+        />
+      )}
+      {snoozePicker && (
+        <SnoozeMenu
+          x={snoozePicker.x}
+          y={snoozePicker.y}
+          count={snoozePicker.ids.length}
+          autoFocus
+          onPick={(until) => {
+            onSnooze(snoozePicker.ids, until);
+            setSnoozePicker(null);
+            inboxSelection.current?.clear();
+          }}
+          onClose={() => setSnoozePicker(null)}
         />
       )}
       {taskAlert && (
@@ -1186,7 +1539,7 @@ export default function App() {
     <>
       <button
         className="tbtn"
-        title="New conversation"
+        title={`New conversation (${glyphsFor('new-conversation')})`}
         onClick={() => newConversation()}
         // Allow a new chat even while another runs in the background. Only block
         // when the visible chat is empty, or its first turn hasn't yet produced a
@@ -1208,7 +1561,7 @@ export default function App() {
       <ActivityIndicator />
       <button
         className={`tbtn${showInspector ? ' active' : ''}`}
-        title="Toggle inspector"
+        title={`Toggle inspector (${glyphsFor('toggle-inspector')})`}
         onClick={() => setShowInspector((v) => !v)}
       >
         <PanelRight size={17} />

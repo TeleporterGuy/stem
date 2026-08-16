@@ -28,7 +28,7 @@ import {
   QuickChatHandoffBarrier,
   QuickChatResetBarrier,
   RendererPushQueue
-} from '../../src/main/ui-lifecycle';
+} from '../../src/desktop/ui-lifecycle';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -293,8 +293,12 @@ describe('main-to-renderer lifecycle regressions', () => {
 
 describe('approval queue regressions', () => {
   it('keeps concurrent approvals FIFO, dedupes pushes, and removes resolutions idempotently', () => {
-    const first = { id: 1, label: 'first' };
-    const second = { id: '2', label: 'second' };
+    // Spelled out rather than inferred: the mixed id types are the point — real
+    // proposals arrive with either, and enqueueApproval dedupes on String(id) —
+    // but inference takes the first literal's `number` as the whole type and
+    // turns the second one into an error instead of the case under test.
+    const first: { id: number | string; label: string } = { id: 1, label: 'first' };
+    const second: { id: number | string; label: string } = { id: '2', label: 'second' };
     let queue = enqueueApproval([], first);
     queue = enqueueApproval(queue, second);
     queue = enqueueApproval(queue, { ...first });

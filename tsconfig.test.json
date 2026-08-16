@@ -1,0 +1,37 @@
+// The suite, typechecked. `tsconfig.json` covers `src` only, which meant every
+// "tsc clean" in this repo's history was a claim about the application and about
+// nothing that exercises it — type errors accumulated in tests for as long as the
+// runtime happened to tolerate them, and vitest never says a word about types.
+//
+// It is a second config rather than another entry in the first one's `include`
+// because the suite reaches somewhere `src` does not: web-search-latency.test.ts
+// imports pi-web-access's modules by their real `.ts` paths, which drags a
+// vendored package's source into the program to be compiled under our settings
+// rather than its own. The two relaxations below are exactly what that costs,
+// and they are scoped to this config so `src` keeps every one of them.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // pi-web-access is written as ESM with explicit extensions and imports its
+    // own modules as `./foo.ts`. Harmless here: `noEmit` is on, so nothing is
+    // being asked to resolve those paths at runtime.
+    "allowImportingTsExtensions": true,
+    // Several things the suite drives are plain `.mjs` — the MCP extension pi
+    // loads, the eval harness. Letting TS read them means their exports are
+    // inferred rather than `any`, which is the difference between checking those
+    // tests and merely compiling them. `checkJs` stays off: the modules
+    // themselves are not written to be typechecked.
+    "allowJs": true,
+    // An unused local inside that package is not a defect we can fix or should
+    // fail on. Nothing is lost by switching these off here: eslint's
+    // @typescript-eslint/no-unused-vars runs over `tests` as an error already,
+    // so unused names in OUR test code are still caught — just by the linter.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  // `src` is listed as well as `tests`, not because the tests do not reach it —
+  // they import it — but because its ambient declarations are only picked up when
+  // they are in the root set. Leave it out and `window.stem` and the `?raw`
+  // markdown imports come back as errors in the application, not in the suite.
+  "include": ["src", "tests"]
+}

@@ -4,7 +4,7 @@
 // "later evidence wins" comparison trustworthy in the first place.
 // Stateful, order-dependent (shared per-process DB) like the sibling suites.
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { recallStore as store, newestEvidenceTs } from '../../src/main/recall/store';
+import { recallStore as store, newestEvidenceTs } from '../../src/server/recall/store';
 import {
   RELATION_PROMPT_HEADER,
   SWEEP_CONFLICT_REASON,
@@ -13,11 +13,11 @@ import {
   stepRelationSweepBackfill,
   sweepFactAgainstNeighbours,
   type FactRelation
-} from '../../src/main/recall/reconcile';
-import { buildPrompt as buildConsolidationPrompt } from '../../src/main/recall/consolidate';
-import * as distill from '../../src/main/recall/distill';
-import * as retrieval from '../../src/main/recall/retrieval';
-import type { LlmClient } from '../../src/main/recall/llm';
+} from '../../src/server/recall/reconcile';
+import { buildPrompt as buildConsolidationPrompt } from '../../src/server/recall/consolidate';
+import * as distill from '../../src/server/recall/distill';
+import * as retrieval from '../../src/server/recall/retrieval';
+import type { LlmClient } from '../../src/server/recall/llm';
 
 afterAll(() => store.close());
 beforeEach(() => {
