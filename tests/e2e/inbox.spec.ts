@@ -342,3 +342,84 @@ test('⌘-click builds a selection the bar acts on in bulk', async ({ mainWindow
   await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
   await expect(row(mainWindow, 'gamma')).toBeVisible();
 });
+
+// ---- context menu ----
+// Right-click is the same menu everywhere a chat row appears. The Inbox half is a
+// guard (the hover buttons are the discoverable path, but the menu is what carries
+// Rename, Delete and Move to…); the search half is the one that regressed — result
+// rows used to be render-only, so a chat you had just found was the one chat you
+// could not act on.
+
+/** Search, retrying Enter: indexing a finished turn is async, so the first pass can miss. */
+async function search(win: Page, query: string): Promise<void> {
+  await win.getByTitle(/Search chats/).click();
+  const box = win.getByPlaceholder('Search chats…');
+  await box.fill(query);
+  await expect(async () => {
+    await box.press('Enter');
+    await expect(win.locator('.search-result')).not.toHaveCount(0, { timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+}
+
+test('right-clicking an Inbox row opens the menu, which triages it', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await newThread(mainWindow, 'beta');
+
+  await row(mainWindow, 'alpha').click({ button: 'right' });
+  const menu = mainWindow.locator('.ctx-menu');
+  await expect(menu).toBeVisible();
+
+  await menu.getByRole('button', { name: 'Archive' }).click();
+  await expect(menu).toHaveCount(0);
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
+  await expect(group(mainWindow, /Archived \(1\)/)).toBeVisible();
+});
+
+test('a search result carries the same menu as the row it stands for', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await newThread(mainWindow, 'beta');
+
+  await search(mainWindow, 'alpha');
+  await mainWindow.locator('.search-result').first().click({ button: 'right' });
+  const menu = mainWindow.locator('.ctx-menu');
+  await expect(menu).toBeVisible();
+  // The chat half of the menu, not a folder's — including the filing actions the
+  // tree offers, so a found chat can be put away without leaving the results.
+  await expect(menu.getByRole('button', { name: 'Snooze…' })).toBeVisible();
+  await expect(menu.getByText('Move to…')).toBeVisible();
+
+  await menu.getByRole('button', { name: 'Archive' }).click();
+  await expect(menu).toHaveCount(0);
+
+  // Search shows archived chats, so the result stays put; the Inbox behind it moved.
+  await mainWindow.getByPlaceholder('Search chats…').press('Escape');
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
+  await expect(row(mainWindow, 'beta')).toBeVisible();
+  await expect(group(mainWindow, /Archived \(1\)/)).toBeVisible();
+});
+
+test('renaming and deleting from a search result act on that chat', async ({ mainWindow }) => {
+  await send(mainWindow, 'alpha');
+  await newThread(mainWindow, 'beta');
+
+  await search(mainWindow, 'alpha');
+  const result = mainWindow.locator('.search-result').first();
+  await result.click({ button: 'right' });
+  await mainWindow.locator('.ctx-menu').getByRole('button', { name: 'Rename' }).click();
+  // The editor opens in the result row itself — the tree it normally opens in is
+  // not on screen — and the new name replaces the indexed one without re-searching.
+  const editor = result.locator('.chat-edit');
+  await expect(editor).toBeFocused();
+  await editor.fill('renamed');
+  await editor.press('Enter');
+  await expect(result).toContainText('renamed');
+
+  await result.click({ button: 'right' });
+  await mainWindow.locator('.ctx-menu').getByRole('button', { name: 'Delete' }).click();
+  // The row goes with the chat: results are a snapshot, so nothing else would
+  // clear a row that now opens nothing.
+  await expect(mainWindow.locator('.search-result')).toHaveCount(0);
+  await mainWindow.getByPlaceholder('Search chats…').press('Escape');
+  await expect(mainWindow.locator('.chat-row')).toHaveCount(1);
+  await expect(row(mainWindow, 'beta')).toBeVisible();
+});

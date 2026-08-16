@@ -734,8 +734,10 @@ export function ChatList(props: ChatListProps) {
   };
 
   // Flat, ranked search results replace the tree while a search is active. Rows reuse
-  // the chat-row look but carry a why-it-matched snippet and skip drag/drop + context
-  // menus (search is a jump-to affordance, not an organizing surface).
+  // the chat-row look but carry a why-it-matched snippet and skip drag/drop (there is
+  // no tree on screen to drop onto). The context menu does come along: a row you just
+  // found by searching is exactly the one you want to archive, rename or file, and
+  // making you close the search and hunt it down in the tree first is busywork.
   const renderResults = (): React.ReactNode => {
     // Show whatever we have (the instant fast results) even while the cross-language
     // pass is still refining; only fall back to a status line when there's nothing yet.
@@ -747,21 +749,39 @@ export function ChatList(props: ChatListProps) {
           : 'No matching chats.';
       return <div className="group-row search-status">{status}</div>;
     }
-    return results.map((hit) => (
-      <div
-        key={hit.threadId}
-        className={`group-row chat-row search-result${hit.threadId === activeThreadId ? ' selected' : ''}`}
-        onClick={() => onOpen(hit.threadId)}
-      >
-        <span className="row-icon chat">
-          <MessageSquare size={13} />
-        </span>
-        <span className="row-main">
-          <strong title={hit.title}>{hit.title}</strong>
-          {hit.snippet && <span className="chat-snippet">{highlightSnippet(hit.snippet)}</span>}
-        </span>
-      </div>
-    ));
+    return results.map((hit) => {
+      // The hit carries the title search indexed; the list carries the live one. Prefer
+      // the live one so a rename made from this very menu shows up without re-searching.
+      const title = data.chats.find((c) => c.threadId === hit.threadId)?.title ?? hit.title;
+      const isEditing = editing?.kind === 'chat' && editing.id === hit.threadId;
+      return (
+        <div
+          key={hit.threadId}
+          data-thread-id={hit.threadId}
+          className={`group-row chat-row search-result${hit.threadId === activeThreadId ? ' selected' : ''}`}
+          onClick={() => onOpen(hit.threadId)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setMenu({ kind: 'chat', id: hit.threadId, x: e.clientX, y: e.clientY });
+          }}
+        >
+          <span className="row-icon chat">
+            <MessageSquare size={13} />
+          </span>
+          <span className="row-main">
+            {isEditing ? (
+              editInput(editing.value, (v) => setEditing({ ...editing, value: v }), commitEdit)
+            ) : (
+              <>
+                <strong title={title}>{title}</strong>
+                {hit.snippet && <span className="chat-snippet">{highlightSnippet(hit.snippet)}</span>}
+              </>
+            )}
+          </span>
+        </div>
+      );
+    });
   };
 
   const isEmpty = data.chats.length === 0 && data.folders.length === 0;
@@ -1055,7 +1075,12 @@ export function ChatList(props: ChatListProps) {
             className="danger"
             onClick={() => {
               if (menu.kind === 'folder') props.onDeleteFolder(menu.id);
-              else props.onDeleteChat(menu.id);
+              else {
+                props.onDeleteChat(menu.id);
+                // Search results are a snapshot, not a view of `data.chats` — drop the
+                // row here too, or a deleted thread keeps a row that opens nothing.
+                setResults((prev) => prev?.filter((h) => h.threadId !== menu.id) ?? prev);
+              }
               closeMenu();
             }}
           >
