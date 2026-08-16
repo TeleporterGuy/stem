@@ -1,12 +1,14 @@
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { log } from '../server/log';
-import type {
-  AuthUiEvent,
-  BackendEventEnvelope,
-  QuickChatSettings,
-  StartTurnInput,
-  TurnAttachment
+import {
+  MCP_REQUEST_FRAME,
+  type AuthUiEvent,
+  type BackendEventEnvelope,
+  type DeviceMcpRequest,
+  type QuickChatSettings,
+  type StartTurnInput,
+  type TurnAttachment
 } from '../shared/types';
 import { uploadFile } from './file-transfer';
 import { createOfflineCache } from './offline-cache';
@@ -184,6 +186,21 @@ const SETTINGS_CHANNELS = [
   'settings:updateRetrieval'
 ];
 
+/**
+ * This machine's MCP host: whatever runs the servers pinned to this device
+ * (docs/mcp-device-pinning.md). A dependency rather than a call into a module
+ * because there is nothing to run yet — index.ts wires a stub that refuses, and
+ * step 3 replaces it with the real one without this file learning anything about
+ * stdio processes or HTTP clients.
+ *
+ * Answering is the host's job, not this file's: the reply goes back as an
+ * ordinary `mcpHost:result` RPC whenever it is ready, which may be two minutes
+ * from now. Nothing here waits.
+ */
+export interface DeviceMcpHostBinding {
+  onRequest(request: DeviceMcpRequest): void;
+}
+
 export interface ProxyDeps {
   /** Origin of the server, e.g. `http://127.0.0.1:52413`. */
   url: string;
@@ -232,6 +249,8 @@ export interface ProxyDeps {
   connection(reachable: boolean): void;
   /** Catches OAuth callbacks for a server that is not on this machine. */
   oauthCourier: OAuthCourier;
+  /** Runs the MCP servers pinned to this device. See DeviceMcpHostBinding. */
+  mcpHost: DeviceMcpHostBinding;
   /** Quick Chat settings were persisted: apply the parts that are not settings. */
   applyQuickChatSettings(patch: Partial<QuickChatSettings>, next: QuickChatSettings): void;
 }
@@ -455,6 +474,19 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     } catch {
       return;
     }
+    // A call for the MCP servers that run on THIS machine. It arrives as a
+    // control frame for two reasons that are really one: it was addressed to
+    // this device, so it carries no `id:` and must not move the bookmark — the
+    // next reconnect has to resume from the last real frame, not from a request
+    // that was never a position in the stream — and it is not on the replay ring
+    // for the same reason, so there is nothing to resume to anyway.
+    if (name === MCP_REQUEST_FRAME) {
+      const request = asMcpRequest(data);
+      // A frame we cannot read is dropped in silence: without a requestId there
+      // is nothing to answer, and the server's own timeout is what covers it.
+      if (request) deps.mcpHost.onRequest(request);
+      return;
+    }
     if (name === 'snapshot') {
       const turns = data.liveTurns;
       // Absent (a server with nothing to say) leaves the client's own view alone;
@@ -472,6 +504,27 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       log('proxy', 'the server asked for a resync');
       deps.resync();
     }
+  }
+
+  /**
+   * The frame as a request, or null when it is not one. Checked rather than
+   * cast: everything else on this stream is state the client renders, and this
+   * one ends in a process being spawned or a URL being opened on this machine,
+   * so the shape is established before it is handed anywhere.
+   */
+  function asMcpRequest(data: unknown): DeviceMcpRequest | null {
+    const frame = data as Partial<DeviceMcpRequest> | null;
+    if (!frame || typeof frame.requestId !== 'string' || !frame.requestId) return null;
+    if (typeof frame.server !== 'string' || !frame.server) return null;
+    if (frame.op !== 'tools' && frame.op !== 'call') return null;
+    if (frame.op === 'call' && (typeof frame.tool !== 'string' || !frame.tool)) return null;
+    return {
+      requestId: frame.requestId,
+      server: frame.server,
+      op: frame.op,
+      ...(frame.tool ? { tool: frame.tool } : {}),
+      ...(frame.args === undefined ? {} : { args: frame.args })
+    };
   }
 
   /**

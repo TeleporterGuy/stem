@@ -398,6 +398,21 @@ app.whenReady().then(async () => {
     // that may not share this disk, and paths stop meaning anything to it.
     remote: !server,
     oauthCourier,
+    // No host yet — step 3 of docs/mcp-device-pinning.md is the one that can
+    // actually spawn a process here. Until then the answer is a refusal sent
+    // straight back, which is deliberately the same shape the real host's
+    // "you have not approved this spec" will be: the server holds one request,
+    // the tool call fails with a sentence, and nothing waits out a timeout for
+    // a machine that was listening all along.
+    mcpHost: {
+      onRequest: (request) =>
+        void proxy
+          ?.invoke('mcpHost:result', [
+            request.requestId,
+            { ok: false, error: 'This computer cannot run MCP servers yet — its copy of Stem is too old.' }
+          ])
+          .catch((e) => log('mcp-host', 'could not answer an MCP request', { error: String(e?.message ?? e) }))
+    },
     sendToMain,
     sendToOverlay: (channel, payload) => quickChat.sendToOverlay(channel, payload),
     revealIfOwns: (threadId) => quickChat.revealIfOwns(threadId),

@@ -784,6 +784,130 @@ export interface McpLoginResult {
   error?: string;
 }
 
+// ---- Servers pinned to a device (docs/mcp-device-pinning.md) ----
+//
+// A server with a `location` runs on a paired desktop instead of on the machine
+// hosting stem-server, and everything below is what the two ends say to each
+// other about one: what a device is asked to host, what it reports back, and the
+// single call in flight between them.
+//
+// The types live here rather than beside the router because both ends need them
+// and neither owns them — the desktop reads a request off its event stream and
+// answers on a channel the server registered, so a copy on either side would be
+// a copy that can drift.
+
+/**
+ * The name of the addressed control frame that carries one call to the device
+ * hosting a server. A control frame rather than a push because it is addressed:
+ * it goes to one device's streams and never enters the replay ring, which every
+ * connected device is entitled to read (see transport/server.ts).
+ */
+export const MCP_REQUEST_FRAME = 'mcp-request';
+
+/**
+ * The transport half of an entry in mcp.json, as the machine that will actually
+ * run the server needs it. Credentials are IN it — decrypted env values, header
+ * values — because the spec is what the client connects with; it travels to
+ * exactly one device, the one the entry names, over the same authenticated
+ * stream everything else rides.
+ */
+export interface DeviceMcpSpec {
+  /** stdio: the command spawned on the hosting machine. */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  /** http: the URL opened FROM the hosting machine's own network. */
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+/** One server a device is asked to host, and the hash it is approved against. */
+export interface DeviceMcpAssignment {
+  name: string;
+  spec: DeviceMcpSpec;
+  /**
+   * The whole spec, hashed (src/shared/mcp-fingerprint.ts). Approval is per
+   * fingerprint rather than per name, which is what makes editing an already
+   * approved entry's `args` or `env` a new approval rather than a silent
+   * widening (docs/mcp-device-pinning.md, ④).
+   */
+  fingerprint: string;
+}
+
+/** One tool on a hosted server, as the catalog block renders it. */
+export interface DeviceMcpTool {
+  name: string;
+  description?: string;
+  /** Compact argument signature; the full schema is fetched on demand. */
+  signature?: string;
+}
+
+/**
+ * What one hosted server looks like from the machine running it.
+ *
+ * `unapproved` is not a failure: the spec is sitting in that machine's Manage
+ * panel waiting for someone to say yes, and saying so is what lets the assistant
+ * tell the difference between a server that is broken and one nobody has agreed
+ * to run yet.
+ */
+export interface DeviceMcpServerReport {
+  name: string;
+  status: 'ready' | 'failed' | 'unapproved';
+  /** Why it is not ready, in the words the hosting machine used. */
+  error?: string;
+  /**
+   * Which spec this report is about. The server already HAS the spec — it sent
+   * it — so the fingerprint is enough to say which one, and a stale report from
+   * before an edit is recognisable as one.
+   */
+  fingerprint?: string;
+  tools?: DeviceMcpTool[];
+}
+
+/** A client's whole account of what it is hosting — `mcpHost:announce`. */
+export interface DeviceMcpAnnouncement {
+  servers: DeviceMcpServerReport[];
+}
+
+/** One device's last announcement, as the server remembers it. */
+export interface DeviceMcpCatalogEntry {
+  deviceId: string;
+  /** ISO timestamp of the announcement, so a stale catalog can say how stale. */
+  announcedAt: string;
+  servers: DeviceMcpServerReport[];
+}
+
+/**
+ * Every device's announced catalog, kept across disconnection on purpose: an
+ * unavailable server stays listed and marked, so the assistant can say "once
+ * your Mac is awake" instead of silently lacking the capability (③).
+ */
+export interface DeviceMcpCatalog {
+  version: 1;
+  devices: Record<string, DeviceMcpCatalogEntry>;
+}
+
+/** One call, addressed to the device hosting `server`. */
+export interface DeviceMcpRequest {
+  /**
+   * Unguessable and single-use. Every server channel is also bound to ipcMain on
+   * the desktop, so a renderer can call `mcpHost:result` — this id is what keeps
+   * a forged answer from being able to affect anything but a request that device
+   * was legitimately handed.
+   */
+  requestId: string;
+  server: string;
+  op: 'tools' | 'call';
+  /** `call` only. */
+  tool?: string;
+  args?: unknown;
+}
+
+/** What the hosting machine answers with — `mcpHost:result`. */
+export type DeviceMcpResult =
+  | { ok: true; tools?: DeviceMcpTool[]; content?: unknown }
+  | { ok: false; error: string };
+
 // ---- Assistant-initiated MCP changes (the `stem-admin` self-management server) ----
 //
 // When the chat assistant calls its add/remove MCP tools, the backend gates the

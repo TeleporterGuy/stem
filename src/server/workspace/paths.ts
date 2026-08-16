@@ -81,6 +81,25 @@ export function piMcpConfigPath(): string {
 }
 
 /**
+ * Tool catalogs announced by devices hosting their own MCP servers (see
+ * server/mcp-device/). Beside mcp.json under the pi home, next to the bridge's
+ * own `mcp-catalog.json` (declared in pi/mcp-config.ts, because the bridge
+ * writes that one and this process only reads it).
+ *
+ * Two files rather than one, deliberately: the bridge owns its catalog and
+ * rewrites it whenever it reconnects, this one is rewritten on every client
+ * announcement, and teaching either to parse the other's format would couple two
+ * things whose only relationship is that the same prompt renders both.
+ *
+ * It survives restarts because that is the point — an unavailable server stays
+ * listed and marked rather than vanishing from what the assistant knows it can
+ * do (docs/mcp-device-pinning.md, ③).
+ */
+export function piMcpDeviceCatalogPath(): string {
+  return process.env.STEM_MCP_DEVICE_CATALOG ?? join(piHome(), 'mcp-device-catalog.json');
+}
+
+/**
  * The safeStorage-wrapped AES key that encrypts MCP secrets at rest (see
  * pi/secrets.ts). The env override lets unit tests use a throwaway key file.
  */

@@ -223,6 +223,31 @@ export function pushToClients(channel: string, payload: unknown): void {
 }
 
 /**
+ * Write one control frame to a single device's streams, answering with how many
+ * it reached. The one addressed thing on this socket, and the exception that
+ * proves the rule above: it never touches the replay buffer, because the frame it
+ * writes is by definition one the other devices were not entitled to (see the
+ * ring's comment in transport/server.ts).
+ *
+ * Zero reached is not an error to log and forget — it is the answer the caller
+ * acts on, and the whole reason the router can refuse a call to a sleeping
+ * machine immediately instead of holding a tool call open for two minutes.
+ */
+export function pushToDevice(deviceId: string, name: string, data: unknown): number {
+  return primary?.pushTo(deviceId, name, data) ?? 0;
+}
+
+/**
+ * Which devices are connected right now. Availability, for anything that needs
+ * to decide whether work can be sent to a particular machine — and deliberately
+ * the same fact as "can we write to it", rather than a second notion of liveness
+ * kept beside it (docs/mcp-device-pinning.md, ③).
+ */
+export function connectedDeviceIds(): Set<string> {
+  return primary?.connectedDevices() ?? new Set();
+}
+
+/**
  * Cut every event stream a device has open. Called with (not instead of) revoking
  * its record: the registry decides the next request, this decides the one already
  * in flight, and a revocation that only did the first would leave a removed

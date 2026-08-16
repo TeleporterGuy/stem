@@ -97,6 +97,9 @@ beforeAll(async () => {
     requestAttention: () => routed.push({ to: 'requestAttention', channel: '', payload: null }),
     // Nothing here signs in, so the courier only has to exist (see proxy.ts).
     oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
+    // Nor does anything here host an MCP server; the addressed round-trip that
+    // uses this has its own file (mcp-device.test.ts).
+    mcpHost: { onRequest: () => undefined },
     threadOpened: async (threadId) => {
       clientSide.push(`client:threadOpened(${threadId})`);
       if (refuseHandoff) throw refuseHandoff;
@@ -223,6 +226,7 @@ describe('when the server is somewhere else', () => {
       revealMainWindow: () => undefined,
       requestAttention: () => undefined,
       oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
+      mcpHost: { onRequest: () => undefined },
       threadOpened: async () => undefined,
       applyQuickChatSettings: () => undefined,
       resync: () => undefined,
@@ -368,6 +372,7 @@ describe('resuming a dropped stream', () => {
       revealMainWindow: () => undefined,
       requestAttention: () => undefined,
       oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
+      mcpHost: { onRequest: () => undefined },
       threadOpened: async () => undefined,
       applyQuickChatSettings: () => undefined,
       resync: () => {
@@ -524,6 +529,7 @@ describe('a server reached over TLS', () => {
     revealMainWindow: () => undefined,
     requestAttention: () => undefined,
     oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
+    mcpHost: { onRequest: () => undefined },
     threadOpened: async () => undefined,
     applyQuickChatSettings: () => undefined,
     resync: () => undefined,
