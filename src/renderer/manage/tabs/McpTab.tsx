@@ -156,6 +156,24 @@ function McpTab() {
     }
   }
 
+  /**
+   * Everything that has to catch up after mcp.json changed, in the order it has
+   * to happen: the host on THIS computer first, then the bridge.
+   *
+   * Both, always, and not because every edit touches both. A pin is invisible in
+   * the shape of an edit — adding a server pinned here, disabling one that runs
+   * here, deleting one whose child is running here are, from this function's
+   * side, an add, a toggle and a delete like any other. Asking only the bridge
+   * would mean a server pinned to this machine sat there doing nothing (its
+   * approval never offered) until the next launch, and a disabled or deleted one
+   * kept its child alive over here just as long. The host answers from state it
+   * already has, so the cost of asking when nothing changed is a function call.
+   */
+  async function applyMcpChange() {
+    setHostState(await window.stem.refreshMcpHost().catch(() => hostState));
+    await reconnect();
+  }
+
   const canAdd =
     !!name.trim() && (transport === 'http' ? !!url.trim() : !!command.trim()) && !busy;
 
@@ -223,7 +241,7 @@ function McpTab() {
       });
       setServers(list);
       closeForm();
-      await reconnect();
+      await applyMcpChange();
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     }
@@ -238,33 +256,29 @@ function McpTab() {
       delete next[serverName];
       return next;
     });
-    await reconnect();
+    await applyMcpChange();
   }
 
-  // Toggle a server on/off without removing it. The bridge only reads mcp.json on
-  // (re)start, so a reconnect is required for the change to take effect.
+  // Toggle a server on/off without removing it. Neither the bridge nor a hosting
+  // machine re-reads mcp.json on its own, so both are told — see applyMcpChange.
   async function toggleEnabled(serverName: string, enabled: boolean) {
     setError(null);
     setServers(await window.stem.setMcpServerEnabled(serverName, enabled));
-    await reconnect();
+    await applyMcpChange();
   }
 
   /**
    * Move one server to another machine, or back to the one hosting the server.
    *
-   * Three things have to catch up with the pin, and each is asked rather than
-   * assumed. The list, because the row now names a different place. The host on
-   * THIS computer, because if the new home is here nothing would start — and the
-   * approval card would not appear — until the next launch; and if it was here,
-   * its child has to stop. The bridge, which reads mcp.json only when it
-   * restarts, so routing follows on the reconnect.
+   * The list is replaced from the call's own answer, because the row now names a
+   * different place; the two things that run the server catch up in
+   * applyMcpChange, which is the same pair every other edit here needs.
    */
   async function moveTo(serverName: string, deviceId: string | null) {
     setError(null);
     try {
       setServers(await window.stem.setMcpServerLocation(serverName, deviceId));
-      setHostState(await window.stem.refreshMcpHost());
-      await reconnect();
+      await applyMcpChange();
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     }
