@@ -27,6 +27,11 @@ Maintainer notes:
 - **Fast for Grok.** The Standard/Fast speed switch now appears for Grok models too — Fast asks
   xAI to schedule your request with higher priority. Until now the switch only existed for
   ChatGPT models, which is why it seemed to vanish when you picked Grok.
+- **Web search switch in the composer.** A **Web** button now sits next to MDX and Note, so
+  turning search off for a question no longer means a trip to Settings. It stays where you leave
+  it, and it is the same switch as Settings → Chat → Web search — so you can still set it once
+  and forget it. Quick Chat has its own, set separately in Settings → Quick Chat, for anyone who
+  wants search on at the desk but off in the overlay.
 
 ### Fixed
 

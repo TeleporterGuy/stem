@@ -22,6 +22,9 @@ there:
 - More effort can use more quota. **Fast** appears only for supported models and
   increases usage.
 - Watch tool activity while Stem works.
+- **Web** turns web search on or off for the next message. It stays where you leave
+  it, and is the same switch as **Settings → Chat → Web search**. Quick Chat keeps
+  its own.
 - Web answers include cited sources.
 - The context meter shows how full the conversation is.
 

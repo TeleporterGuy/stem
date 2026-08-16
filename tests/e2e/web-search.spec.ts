@@ -126,6 +126,37 @@ test('a key edit on its own reaches the config the search tools read', async ({ 
   await expect.poll(() => writtenConfig()?.braveApiKey).toBe('brave-key-only');
 });
 
+// The composer button and the Settings checkbox are two views of one saved
+// boolean — the one the server reads when a turn starts. So the test that matters
+// is not that the button renders, but that a click on either is visible in the
+// store and in the other control without a reload.
+test('the composer Web button writes the saved switch, and Settings follows it', async ({ mainWindow }) => {
+  const webButton = mainWindow.getByRole('group', { name: 'Web search' }).getByRole('button', { name: 'Web' });
+  const savedMain = () =>
+    mainWindow.evaluate(() =>
+      (
+        window as unknown as { stem: { getSettings(): Promise<{ webSearch: { main: boolean } }> } }
+      ).stem.getSettings().then((s) => s.webSearch.main)
+    );
+
+  // A fresh profile ships with search on, and the button says so.
+  await expect(webButton).toHaveAttribute('title', /Web search on/);
+  await webButton.click();
+  await expect(webButton).toHaveAttribute('title', /Web search off/);
+  // Painted optimistically, so the store is the assertion that counts.
+  await expect.poll(savedMain).toBe(false);
+
+  // Same switch, second view: the checkbox opens already unchecked...
+  await openSettings(mainWindow, 'Chat');
+  const checkbox = mainWindow.getByRole('checkbox', { name: 'Web search' }).first();
+  await expect(checkbox).not.toBeChecked();
+  // ...and turning it back on there moves the composer button, which never
+  // re-mounted in between.
+  await checkbox.check();
+  await expect(webButton).toHaveAttribute('title', /Web search on/);
+  await expect.poll(savedMain).toBe(true);
+});
+
 test('the web-search toggle shows regardless of the selected model', async ({ mainWindow }) => {
   // The toggle rides with the model it applies to (Chat), not with the backend
   // that answers the search (Models).
