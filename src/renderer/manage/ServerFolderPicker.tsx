@@ -39,7 +39,16 @@ export function ServerFolderPicker({
       setDraft(next.path);
       listRef.current?.scrollTo(0, 0);
     } catch (e) {
-      setFailed(String((e as Error)?.message ?? e).replace(/^Error:\s*/, ''));
+      const message = String((e as Error)?.message ?? e).replace(/^Error(?: invoking remote method '[^']*')?:\s*/, '');
+      // A server from before this dialog existed doesn't answer cfolders:browse
+      // at all, and the transport's "No handler registered" is not a sentence to
+      // put in front of a person. Connecting a typed path still works — the add
+      // channel is as old as connected folders — so say exactly that.
+      setFailed(
+        /No handler registered/i.test(message)
+          ? 'This Stem’s server is an older version that can’t list its folders yet. Update the server, or type the folder’s full path above and connect it.'
+          : message
+      );
     } finally {
       setBusy(false);
     }
@@ -53,8 +62,9 @@ export function ServerFolderPicker({
   // Connectable once something is listed, even a directory that answered with an
   // error: an EACCES folder the server's *user* can't read is still one the user
   // may want connected before fixing permissions — the add path canonicalizes
-  // and stores it exactly like a typed path.
-  const path = listing?.path ?? null;
+  // and stores it exactly like a typed path. With no listing at all (a server too
+  // old to browse), the typed path is the whole interface, so it is what connects.
+  const path = listing?.path ?? (failed ? draft.trim() || null : null);
 
   return (
     <div
