@@ -1,7 +1,7 @@
 import { host } from '../host';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { PROTECTED_ROOTS_FILE } from '../pi/protocol';
+import { MCP_DEVICE_CATALOG_FILE, PROTECTED_ROOTS_FILE } from '../pi/protocol';
 
 // All app state lives under Electron's userData dir, fully isolated from the
 // user's global pi config. The backend home and the working dir we launch the
@@ -96,7 +96,7 @@ export function piMcpConfigPath(): string {
  * do (docs/mcp-device-pinning.md, ③).
  */
 export function piMcpDeviceCatalogPath(): string {
-  return process.env.STEM_MCP_DEVICE_CATALOG ?? join(piHome(), 'mcp-device-catalog.json');
+  return process.env.STEM_MCP_DEVICE_CATALOG ?? join(piHome(), MCP_DEVICE_CATALOG_FILE);
 }
 
 /**

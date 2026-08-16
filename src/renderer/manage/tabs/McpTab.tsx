@@ -415,8 +415,9 @@ function McpTab() {
           {servers.map((s) => {
             const viaUrl = s.transport === 'http';
             // A server pinned to a device is not this server's to connect: the
-            // bridge reports it 'elsewhere' and skips it, so neither the live
-            // dot nor a sign-in prompt would be telling the truth about it. The
+            // bridge routes calls to the machine it belongs to rather than
+            // opening the connection here, so the live dot and the sign-in
+            // prompt would both be describing somebody else's connection. The
             // place is what the row has to say instead.
             const elsewhere = !!s.location;
             const here = hostedHere(s);

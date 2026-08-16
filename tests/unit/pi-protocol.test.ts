@@ -3,9 +3,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   ADMIN_APPROVAL_TITLE,
+  DEVICE_MCP_BRIDGE_TITLE,
   ENV_SECRET_KEY,
   EXEC_BRIDGE_TITLE,
   INSTRUCTIONS_APPROVAL_TITLE,
+  MCP_DEVICE_CATALOG_FILE,
   MCP_OAUTH_FILE,
   NATIVE_SEARCH_GATE_FILE,
   PROTECTED_ROOTS_FILE,
@@ -49,6 +51,9 @@ describe('sentinel titles match the bridge extension', () => {
   it('skill bridge', () => {
     expect(extensionConst('SKILL_BRIDGE_TITLE')).toBe(SKILL_BRIDGE_TITLE);
   });
+  it('device MCP bridge', () => {
+    expect(extensionConst('DEVICE_MCP_BRIDGE_TITLE')).toBe(DEVICE_MCP_BRIDGE_TITLE);
+  });
 });
 
 describe('web-search tools match the bridge extension', () => {
@@ -81,6 +86,14 @@ describe('gate files referenced by the bridge extension', () => {
 
   it(`falls back to ${MCP_OAUTH_FILE} next to the config`, () => {
     expect(extensionSource).toContain(`'${MCP_OAUTH_FILE}'`);
+  });
+
+  // Read, not written: main rewrites the device catalog on every announcement and
+  // the bridge reads a pinned server's remembered tools out of it. A rename on
+  // one side alone would leave a device-located server silently tool-less, which
+  // looks exactly like a device that has never connected.
+  it(`reads ${MCP_DEVICE_CATALOG_FILE} next to the config`, () => {
+    expect(extensionConst('MCP_DEVICE_CATALOG_FILE')).toBe(MCP_DEVICE_CATALOG_FILE);
   });
 });
 

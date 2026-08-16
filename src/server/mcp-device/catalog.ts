@@ -110,6 +110,97 @@ export function normalizeAnnouncement(raw: unknown): DeviceMcpAnnouncement {
   };
 }
 
+// ---- rendering the catalog into a turn's context (③) ----
+
+/** What rendering one turn's device block needs to know, all of it per-turn. */
+export interface DeviceCatalogRenderDeps {
+  /**
+   * Whether that machine could be sent work THIS INSTANT. Asked while the block
+   * is being rendered and never remembered: "evaluated per turn, with no
+   * handshake" is the whole of ③, and a value baked in when pi started would be
+   * a claim about a laptop lid that closed an hour ago.
+   */
+  isAvailable(deviceId: string): boolean;
+  /** How to name that machine to the assistant; the id when nothing better exists. */
+  label(deviceId: string): string;
+  /** Whether this server is still one the assistant may call (pinned, enabled). */
+  include(deviceId: string, server: string): boolean;
+}
+
+export interface DeviceCatalogBlock {
+  /** `### server` sections in the bridge catalog's own shape; '' when empty. */
+  text: string;
+  /** Whether anything listed is on a machine that cannot be reached right now. */
+  anyAway: boolean;
+}
+
+/** One tool, in the same line shape the bridge's own catalog uses. */
+function toolLine(tool: DeviceMcpTool): string {
+  const tail = [tool.description, tool.signature].filter(Boolean).join(' — ');
+  return tail ? `  - ${tool.name}: ${tail}` : `  - ${tool.name}`;
+}
+
+/**
+ * What to say about a server beyond where it lives, or '' when there is nothing
+ * to add. Being on another machine is not a caveat; being unable to reach that
+ * machine is.
+ *
+ * Unreachable wins over anything the machine last reported about the server
+ * itself: that report is from before it went away, and the actionable sentence
+ * is about the computer, not the program.
+ */
+function condition(report: DeviceMcpServerReport, available: boolean): string {
+  if (!available) return ', which is NOT connected right now';
+  if (report.status === 'unapproved') return ', where nobody has approved it to run yet';
+  if (report.status === 'failed') {
+    return report.error ? `, where it is not running: ${report.error}` : ', where it is not running';
+  }
+  return '';
+}
+
+/**
+ * The device half of the per-turn tool catalog: every server the user's own
+ * machines have announced, whether or not those machines are up.
+ *
+ * A server whose machine is asleep is listed WITH its tools and marked, rather
+ * than dropped. That is decision ③ in one behaviour: the assistant that can see
+ * the capability can say "I can do that once your Mac is awake", and the one
+ * that cannot see it says "I can't do that at all" — which is false, and which
+ * the user has no way to argue with.
+ *
+ * A server with no known tools is skipped: this block exists to say what can be
+ * called, and a section with nothing under it says only that a name exists.
+ */
+export function renderDeviceCatalogBlock(
+  catalog: DeviceMcpCatalog,
+  deps: DeviceCatalogRenderDeps
+): DeviceCatalogBlock {
+  const sections: string[] = [];
+  let anyAway = false;
+  // Sorted by the name the user sees, so the block is byte-identical from turn
+  // to turn while nothing changes — the prompt cache is worth more than the
+  // insertion order of a JSON object.
+  const entries = Object.values(catalog.devices).sort((a, b) =>
+    deps.label(a.deviceId).localeCompare(deps.label(b.deviceId))
+  );
+  for (const entry of entries) {
+    const available = deps.isAvailable(entry.deviceId);
+    const place = `“${deps.label(entry.deviceId)}”`;
+    for (const report of entry.servers) {
+      if (!deps.include(entry.deviceId, report.name)) continue;
+      const tools = report.tools ?? [];
+      if (tools.length === 0) continue;
+      if (!available) anyAway = true;
+      const count = `${tools.length} tool${tools.length === 1 ? '' : 's'}`;
+      sections.push(
+        `### ${report.name} (${count}) — runs on ${place}${condition(report, available)}\n` +
+          tools.map(toolLine).join('\n')
+      );
+    }
+  }
+  return { text: sections.join('\n\n'), anyAway };
+}
+
 /** The catalog as it is on disk, or an empty one when it is missing or corrupt. */
 async function readCatalogFile(): Promise<DeviceMcpCatalog> {
   let raw: string;

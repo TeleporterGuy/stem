@@ -4,9 +4,20 @@ import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/pro
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { embedSocketPath, folderIndexDir, piHome, piMcpConfigPath, recallDbPath } from '../workspace/paths';
+import {
+  embedSocketPath,
+  folderIndexDir,
+  piHome,
+  piMcpConfigPath,
+  piMcpDeviceCatalogPath,
+  recallDbPath
+} from '../workspace/paths';
 import { RECALL_MCP_NAME, recallMcpServerPath } from '../recall/register-mcp';
 import { getEmbedEndpointToken } from '../recall/embed-endpoint';
+import { renderDeviceCatalogBlock, type DeviceCatalogBlock } from '../mcp-device/catalog';
+import { connectedDeviceIds } from '../startup/transport';
+import { readDevices } from '../transport/auth';
+import type { DeviceMcpCatalog } from '../../shared/types';
 import type { OAuthToken } from './oauth';
 import {
   ENV_MCP_OAUTH,
@@ -89,32 +100,119 @@ export function piMcpCatalogPath(): string {
 // re-parse it only when its mtime changes rather than on every turn.
 let catalogCache: { mtime: number; text: string } = { mtime: -1, text: '' };
 
-/**
- * The per-turn "Available tools" block, injected alongside the files listing. Lists
- * routed MCP servers' tools as name + 1-line description + compact signature — the
- * heavy input schemas are deferred and fetched on demand via the bridge's
- * describe_tool. Returns null when no routed servers are connected (nothing to add).
- */
-export function buildMcpCatalogContext(): string | null {
-  let text: string;
+/** The bridge's own catalog text: server-located servers, written by the extension. */
+function bridgeCatalogText(): string {
   try {
     const mtime = statSync(piMcpCatalogPath()).mtimeMs;
     if (mtime !== catalogCache.mtime) {
       const data = JSON.parse(readFileSync(piMcpCatalogPath(), 'utf8')) as { text?: string };
       catalogCache = { mtime, text: typeof data.text === 'string' ? data.text : '' };
     }
-    text = catalogCache.text;
+    return catalogCache.text;
   } catch {
-    catalogCache = { mtime: -1, text: '' };
-    return null; // missing/corrupt → nothing to inject
+    catalogCache = { mtime: -1, text: '' }; // missing/corrupt → nothing from here
+    return '';
   }
-  if (!text.trim()) return null;
+}
+
+// The device catalog, parsed and mtime-cached the same way — but ONLY the parse.
+// This file moves far more often than the bridge's (every announcement from every
+// machine rewrites it), and the one thing that must never be cached is what the
+// block is stamped with: whether each machine is reachable, which is asked fresh
+// while the block is being built (③).
+let deviceCatalogCache: { mtime: number; catalog: DeviceMcpCatalog } = {
+  mtime: -1,
+  catalog: { version: 1, devices: {} }
+};
+
+function deviceCatalog(): DeviceMcpCatalog {
+  try {
+    const mtime = statSync(piMcpDeviceCatalogPath()).mtimeMs;
+    if (mtime !== deviceCatalogCache.mtime) {
+      const parsed = JSON.parse(readFileSync(piMcpDeviceCatalogPath(), 'utf8')) as Partial<DeviceMcpCatalog>;
+      const devices = parsed?.devices && typeof parsed.devices === 'object' ? parsed.devices : {};
+      deviceCatalogCache = { mtime, catalog: { version: 1, devices } };
+    }
+    return deviceCatalogCache.catalog;
+  } catch {
+    deviceCatalogCache = { mtime: -1, catalog: { version: 1, devices: {} } };
+    return deviceCatalogCache.catalog;
+  }
+}
+
+/** Drop both catalog caches (tests that rewrite the files under one process). */
+export function forgetMcpCatalogCaches(): void {
+  catalogCache = { mtime: -1, text: '' };
+  deviceCatalogCache = { mtime: -1, catalog: { version: 1, devices: {} } };
+}
+
+/**
+ * The per-turn "Available tools" block, injected alongside the files listing. Lists
+ * routed MCP servers' tools as name + 1-line description + compact signature — the
+ * heavy input schemas are deferred and fetched on demand via the bridge's
+ * describe_tool. Returns null when there is nothing to list.
+ *
+ * Two sources, deliberately not one. The bridge writes mcp-catalog.json for the
+ * servers it connects itself; the servers pinned to the user's own machines are
+ * rendered here from what those machines announced, because only this process
+ * knows — and only at the moment it is asked — which of them is awake. Neither
+ * source parses the other: they are concatenated, and the sentence at the end
+ * covers both.
+ */
+export async function buildMcpCatalogContext(): Promise<string | null> {
+  const bridge = bridgeCatalogText().trim();
+  const device = await buildDeviceCatalogSection();
+  const text = [bridge, device.text].filter(Boolean).join('\n\n');
+  if (!text) return null;
   return (
     `Available tools (extra MCP servers, beyond your built-in file tools):\n${text}\n\n` +
     `To use any of these, call \`invoke_tool\` with the server name, the exact tool name, and an \`args\` object. ` +
     `The signatures above are compact — if a tool's arguments aren't obvious, call \`describe_tool\` first to get ` +
-    `its full input schema. Do not invent servers or tools that aren't listed here.`
+    `its full input schema. Do not invent servers or tools that aren't listed here.` +
+    (device.anyAway
+      ? ` A server marked NOT connected runs on one of the user's own machines, which is asleep or offline right now: ` +
+        `its tools are real and will work again as soon as that computer is awake with Stem running on it. ` +
+        `Say which machine that is rather than saying you cannot do the thing — calling one now fails with the same explanation.`
+      : '')
   );
+}
+
+/**
+ * The device-located section, or an empty one. Its shape and its wording live in
+ * mcp-device/catalog.ts (which owns what a catalog is); what lives here is the
+ * three per-turn facts it needs: which machines are up, what they are called,
+ * and which of the announced servers mcp.json still points at them.
+ *
+ * That last one is a filter and not a merge. A device announces what it is
+ * hosting, and the catalog keeps that across the disconnection — including,
+ * briefly, a server the user has since disabled or unpinned while the machine
+ * was away. mcp.json is the authority on what may be called, so a stale
+ * announcement never puts a tool in the prompt that invoke_tool would refuse.
+ */
+async function buildDeviceCatalogSection(): Promise<DeviceCatalogBlock> {
+  const catalog = deviceCatalog();
+  if (Object.keys(catalog.devices).length === 0) return { text: '', anyAway: false };
+  // A corrupt mcp.json throws, and every entry is unverifiable when it does —
+  // so nothing is listed. The turn still goes out; the assistant simply cannot
+  // see these servers, which is the honest state of a config nobody can read.
+  const servers = await readMcpConfig().then(
+    (config) => config.servers,
+    () => ({}) as Record<string, PiMcpServer>
+  );
+  const devices = await readDevices().catch(() => []);
+  const labels = new Map(devices.map((d) => [d.id, d.label]));
+  return renderDeviceCatalogBlock(catalog, {
+    // The same fact DeviceMcpRouter.isAvailable() answers with, from the same
+    // function, asked directly: the router reads mcp.json (this file) to find a
+    // device's servers, so importing it here to ask one question would put a
+    // cycle between the two for no additional truth.
+    isAvailable: (deviceId) => connectedDeviceIds().has(deviceId),
+    label: (deviceId) => labels.get(deviceId) ?? deviceId,
+    include: (deviceId, name) => {
+      const server = servers[name];
+      return !!server && !server.disabled && server.location?.deviceId === deviceId;
+    }
+  });
 }
 
 /**

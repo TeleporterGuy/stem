@@ -131,7 +131,7 @@ describe('a device that is unpaired afterwards', () => {
 });
 
 describe('the bridge, which is the wrong machine for a pinned server', () => {
-  it('skips it the way it skips a disabled one, and says where it went', async () => {
+  it('never opens the connection itself, and says where the server went', async () => {
     const root = await mkdtemp(join(tmpdir(), 'stem-mcp-location-'));
     try {
       const configPath = join(root, 'mcp.json');
@@ -174,7 +174,9 @@ describe('the bridge, which is the wrong machine for a pinned server', () => {
       >;
       expect(status.here.status).toBe('ready');
       // Reported, not omitted: a server missing from the status map reads as one
-      // that was never configured, and the panel has to be able to name its place.
+      // that was never configured, and the panel has to be able to name its
+      // place. Its calls DO travel there — see mcp-device-bridge.test.ts — but
+      // never from this process, which is the whole point of the pin.
       expect(status.there.status).toBe('elsewhere');
       // The point of the pin: this process never opened that LAN address, which
       // from a VPS would not resolve at all.
