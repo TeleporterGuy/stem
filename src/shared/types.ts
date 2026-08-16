@@ -567,6 +567,25 @@ export type ConnectedFolderPatch = Partial<
 >;
 
 /**
+ * One directory of the SERVER's filesystem, as the remote folder picker walks
+ * it. The native OS picker opens on the client's machine, which is the wrong
+ * disk whenever the server is elsewhere — so the picker asks the server for one
+ * level at a time and renders this.
+ */
+export interface ServerFolderListing {
+  /** Absolute path listed (resolved on the server). */
+  path: string;
+  /** Its parent, or null when `path` is the filesystem root. */
+  parent: string | null;
+  /** The server user's home directory — where browsing starts. */
+  home: string;
+  /** Sub-directories (dot-directories filtered), sorted by name. */
+  dirs: { name: string; path: string }[];
+  /** Set when `path` could not be read; `dirs` is empty and navigation stays up. */
+  error?: string;
+}
+
+/**
  * Index health for one indexed connected folder (computed from its index DB —
  * never persisted in connected-folders.json).
  */
@@ -2097,6 +2116,12 @@ export interface StemApi {
   openWorkspaceFolder(): Promise<void>;
   /** Open a native directory picker; returns chosen absolute paths ([] if canceled). */
   pickDirectory(): Promise<string[]>;
+  /**
+   * List one directory of the SERVER's filesystem (omit `path` for the server
+   * user's home). Backs the remote folder picker, where the native dialog above
+   * would browse the wrong machine.
+   */
+  browseServerFolders(path?: string): Promise<ServerFolderListing>;
 
   // Scheduled tasks. Mutations return the fresh list (like the folders APIs).
   listTasks(): Promise<ScheduledTask[]>;

@@ -119,6 +119,7 @@ const api: StemApi = {
   revealConnectedFolder: (id: string) => ipcRenderer.invoke('cfolders:reveal', id),
   openWorkspaceFolder: () => ipcRenderer.invoke('cfolders:revealWorkspace'),
   pickDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
+  browseServerFolders: (path?: string) => ipcRenderer.invoke('cfolders:browse', path),
 
   listTasks: () => ipcRenderer.invoke('tasks:list'),
   taskThreadSettings: (threadId: string) => ipcRenderer.invoke('tasks:threadSettings', threadId),

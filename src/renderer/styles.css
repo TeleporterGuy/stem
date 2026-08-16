@@ -2685,6 +2685,47 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   letter-spacing: 0.08em;
 }
 
+/* ---- Server-side folder picker (remote installs' "add connected folder") ---- */
+.folder-picker-card { width: min(480px, calc(100vw - 48px)); }
+.folder-picker-hint { margin: 0 0 10px; font-size: var(--fs-12); }
+.folder-picker-path { display: flex; align-items: center; gap: var(--sp-3); }
+.folder-picker-path .ifield {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-12);
+}
+.folder-picker-error { margin: 8px 2px 0; font-size: var(--fs-11); color: var(--danger); }
+/* Fixed height on purpose: navigating between a full folder and an empty one
+   must not bounce the action buttons under the pointer. */
+.folder-picker-list {
+  height: min(38vh, 300px);
+  overflow-y: auto;
+  margin-top: var(--sp-6);
+  border: 0.5px solid var(--hair);
+  border-radius: var(--radius);
+  padding: var(--sp-2);
+}
+.folder-picker-none { margin: 8px; font-size: var(--fs-12); }
+.folder-picker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-13);
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.folder-picker-row:hover { background: var(--sel); }
+.folder-picker-row svg { flex: none; color: var(--muted); }
+.folder-picker-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Custom-instructions textareas (Settings + approval card). */
 .ci-textarea,
 .instructions-approval-text,

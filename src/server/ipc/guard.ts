@@ -75,6 +75,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'files:remove': [a.string],
   'files:mkdir': [a.string],
   'files:rmdir': [a.string],
+  'cfolders:browse': [a.optional(a.nullish(a.string))],
   'cfolders:add': [a.stringArray],
   'cfolders:update': [a.string, a.object],
   'cfolders:remove': [a.string],

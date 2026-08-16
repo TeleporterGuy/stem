@@ -9,6 +9,7 @@ import {
   removeConnectedFolder,
   updateConnectedFolder
 } from '../workspace/connected-folders';
+import { browseServerFolders } from '../workspace/browse';
 import { getFolderIndexStatuses, seedFolderLearnMarks, syncFolderIndexes } from '../folder-index';
 import { clearScratch, listScratchUsage, UNFILED_KEY } from '../exec/scratch';
 import { recallStore } from '../recall/store';
@@ -99,6 +100,9 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
   // ---- connected folders (external folders the assistant reads in place) ----
   // Distinct `cfolders:*` namespace — `folders:*` is the chat-folder tree.
   registerServer('cfolders:list', () => listConnectedFolders());
+  // The remote picker: walks THIS machine's directories so a client whose native
+  // dialog is on the wrong computer can still choose a folder that exists here.
+  registerServer('cfolders:browse', (_e, path?: string | null) => browseServerFolders(path));
   registerServer('cfolders:add', (_e, paths: string[]) => addConnectedFolders(paths));
   registerServer('cfolders:update', async (_e, id: string, patch: ConnectedFolderPatch) => {
     const folders = await updateConnectedFolder(id, patch);
