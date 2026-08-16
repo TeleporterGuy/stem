@@ -269,7 +269,7 @@ describe('the router', () => {
     await expect(call).resolves.toEqual({ ok: false, error: expect.stringContaining('Stem stopped') });
   });
 
-  it('hands a device its own servers, skipping disabled ones and everyone else’s', async () => {
+  it('hands a device its own servers — disabled ones flagged, everyone else’s withheld', async () => {
     servers = {
       files: { command: '/usr/bin/mcp-files', env: { API_KEY: 'k' }, location: { deviceId: 'mac' } },
       'home-assistant': { url: 'http://ha.local/mcp', location: { deviceId: 'mac' }, disabled: true },
@@ -278,7 +278,17 @@ describe('the router', () => {
     };
     const assignments = await router.assignmentsFor('mac');
 
-    expect(assignments.map((a) => a.name)).toEqual(['files']);
+    // A disabled server is sent, flagged. Withholding it would look identical
+    // over there to being un-pinned, and the host prunes the approval of a
+    // server it is no longer assigned — so an off/on toggle would cost a second
+    // approval of a spec nobody edited.
+    expect(assignments.map((a) => [a.name, a.disabled ?? false])).toEqual([
+      ['files', false],
+      ['home-assistant', true]
+    ]);
+    // Another device's server and a reserved one are withheld outright.
+    expect(assignments.map((a) => a.name)).not.toContain('on-the-laptop');
+    expect(assignments.map((a) => a.name)).not.toContain('stem-recall');
     // The credentials go with the spec, to the one device the entry names.
     expect(assignments[0].spec).toEqual({ command: '/usr/bin/mcp-files', env: { API_KEY: 'k' } });
     expect(assignments[0].fingerprint).toBe(mcpSpecFingerprint(assignments[0].spec));

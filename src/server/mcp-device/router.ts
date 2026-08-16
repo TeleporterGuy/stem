@@ -56,6 +56,20 @@ import {
 const CALL_TIMEOUT_MS = 120_000;
 const LIST_TIMEOUT_MS = 30_000;
 
+/**
+ * And a schema is faster still. `describe_tool` used to answer from memory in
+ * microseconds; asking the hosting machine for the real schema put a round trip
+ * in the middle of a turn, which is worth it — the alternative was a schema
+ * rebuilt from a truncated summary — but only while it is quick.
+ *
+ * The host answers this from the tool definitions it already holds from its
+ * handshake: no process is consulted, nothing is computed. So anything past a
+ * couple of seconds does not mean busy, it means the far end is wedged, and the
+ * partial schema the fallback produces is a better answer than half a minute of
+ * a stalled turn.
+ */
+const DESCRIBE_TIMEOUT_MS = 5_000;
+
 /** One call, out on the wire and waiting to be answered or to run out of time. */
 interface Pending {
   deviceId: string;
@@ -234,17 +248,21 @@ export function createDeviceMcpRouter(deps: DeviceMcpRouterDeps): DeviceMcpRoute
       const servers = await deps.readServers();
       return Object.entries(servers)
         .filter(([, def]) => def.location?.deviceId === deviceId)
-        // Skipped exactly as the bridge skips a disabled server: the entry keeps
-        // its config and its approval, and nothing starts. Sending it and asking
-        // the client to remember not to run it would be a second place where
-        // "disabled" is decided.
-        .filter(([, def]) => !def.disabled)
+        // A disabled server IS sent, flagged, rather than withheld. Withholding
+        // it looks identical over there to being un-pinned, and the host prunes
+        // an approval it is no longer assigned — so turning a server off and on
+        // again would ask you to approve a spec you had already approved, when
+        // what `disabled` promises (setMcpServerEnabled) is that the entry keeps
+        // its config AND its approval. Nothing disabled ever starts on the far
+        // side; "disabled" is still decided here, and the flag is how that
+        // decision travels rather than a second place it gets made.
         .map(([name, def]): DeviceMcpAssignment => {
           const spec = deviceSpecFor(def);
           return {
             name,
             spec,
             fingerprint: mcpSpecFingerprint(spec),
+            ...(def.disabled ? { disabled: true } : {}),
             // Sent with the spec because it is a fact ABOUT this spec: these
             // values are in mcp.json and this machine could not read them, so the
             // fingerprint the device is being asked to approve is one nobody
@@ -299,7 +317,7 @@ export function createDeviceMcpRouter(deps: DeviceMcpRouterDeps): DeviceMcpRoute
     // A listing's timeout, not a call's: the hosting machine answers this from
     // the tool definitions it already holds from its handshake. Nothing is run.
     describeTool: (deviceId, server, tool) =>
-      dispatch(deviceId, server, 'describe', { tool }, LIST_TIMEOUT_MS),
+      dispatch(deviceId, server, 'describe', { tool }, DESCRIBE_TIMEOUT_MS),
 
     callTool: (deviceId, server, tool, args) =>
       dispatch(deviceId, server, 'call', { tool, args }, CALL_TIMEOUT_MS),

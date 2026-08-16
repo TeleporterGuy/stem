@@ -861,6 +861,15 @@ export interface DeviceMcpAssignment {
    */
   fingerprint: string;
   /**
+   * Switched off centrally. Sent rather than withheld, because "not yours any
+   * more" and "yours, but off" are different facts and only the first should
+   * cost this machine its approval: turning a server off and on again must not
+   * ask you to approve a spec you already approved (the entry keeps its config
+   * AND its approval — see setMcpServerEnabled). Nothing disabled ever starts
+   * here; a host that receives one stops it and says so.
+   */
+  disabled?: boolean;
+  /**
    * Names of `env`/`headers` values that are IN mcp.json and could not be
    * decrypted there — an import with the wrong passphrase, a rotated key. The
    * values are gone from the spec, so its fingerprint moved and the hosting
@@ -1028,7 +1037,7 @@ export interface McpHostPendingServer {
 
 /** How one server pinned to this machine is doing, right now, here. */
 export interface McpHostServerStatus {
-  status: 'starting' | 'ready' | 'failed' | 'unapproved';
+  status: 'starting' | 'ready' | 'failed' | 'unapproved' | 'disabled';
   /** Why it is not ready, in the words the failure used. */
   error?: string;
   /** How many tools it exposed, once it has connected. */

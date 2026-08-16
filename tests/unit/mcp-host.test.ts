@@ -85,7 +85,7 @@ class FakeClient implements McpClient {
 interface Harness {
   host: McpHost;
   /** What the server would answer `mcpHost:hello` with; rewrite it and refresh. */
-  assign(...assignments: { name: string; spec: DeviceMcpSpec; lostSecrets?: string[] }[]): void;
+  assign(...assignments: { name: string; spec: DeviceMcpSpec; lostSecrets?: string[]; disabled?: boolean }[]): void;
   /** Every name connect() was asked for, in order. One entry per spawn attempt. */
   readonly spawned: string[];
   readonly clients: Map<string, FakeClient>;
@@ -140,11 +140,12 @@ function harness(
   return {
     host,
     assign: (...next) => {
-      assignments = next.map(({ name, spec, lostSecrets }) => ({
+      assignments = next.map(({ name, spec, lostSecrets, disabled }) => ({
         name,
         spec,
         fingerprint: mcpSpecFingerprint(spec),
-        ...(lostSecrets ? { lostSecrets } : {})
+        ...(lostSecrets ? { lostSecrets } : {}),
+        ...(disabled ? { disabled: true } : {})
       }));
     },
     spawned,
@@ -217,6 +218,36 @@ describe('the approval gate', () => {
     // "Changed" and "new" are answered differently by somebody who knows they
     // did not edit it, so the card has to be able to tell them apart.
     expect(state.pending[0].changed).toBe(true);
+  });
+
+  it('keeps the approval of a server that was merely switched off', async () => {
+    const h = harness();
+    h.assign({ name: 'files', spec: FILES_SPEC });
+    await h.host.start();
+    await h.host.approve('files', mcpSpecFingerprint(FILES_SPEC));
+    await h.flush();
+    expect(h.host.localState().status.files.status).toBe('ready');
+
+    // Disabled centrally. The child stops — nothing may keep running over here
+    // for an entry that was switched off — but no card appears, because nobody
+    // is being asked anything: the decision was made on the server.
+    h.assign({ name: 'files', spec: FILES_SPEC, disabled: true });
+    await h.host.refresh();
+    await h.flush();
+    expect(h.host.localState().status.files).toEqual({ status: 'disabled' });
+    expect(h.host.localState().pending).toEqual([]);
+    expect(h.clients.get('files')!.alive).toBe(false);
+    // And it is not claimed as hosted, so its tools leave the injected catalog.
+    expect(h.announcements.at(-1)!.servers.map((r) => r.name)).not.toContain('files');
+
+    // Switched back on. What `disabled` promises is that the entry keeps its
+    // config AND its approval, so this must start without a second yes — the
+    // spec never changed, and being asked again would say it had.
+    h.assign({ name: 'files', spec: FILES_SPEC });
+    await h.host.refresh();
+    await h.flush();
+    expect(h.host.localState().status.files.status).toBe('ready');
+    expect(h.host.localState().pending).toEqual([]);
   });
 
   it('refuses an approval for a fingerprint that has already moved on', async () => {

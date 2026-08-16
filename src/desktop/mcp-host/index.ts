@@ -177,7 +177,16 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
 
   function announcement(): DeviceMcpAnnouncement {
     return {
-      servers: [...servers.values()].map(
+      servers: [...servers.values()]
+        // A disabled server is not announced at all. An announcement is this
+        // machine's account of what it is HOSTING, and it is hosting nothing for
+        // an entry that was switched off — the server that turned it off does
+        // not need telling, and leaving it out is what drops its tools from the
+        // injected catalog, which is where they must not appear.
+        .filter((entry): entry is Hosted & { status: DeviceMcpServerReport['status'] | 'starting' } =>
+          entry.status !== 'disabled'
+        )
+        .map(
         (entry): DeviceMcpServerReport => ({
           name: entry.name,
           // Announcements happen with nothing in flight, so 'starting' should
@@ -298,10 +307,10 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
     // back here starts it eagerly with no card — the approval outlived the
     // assignment it was given for, and mcp.json is written centrally.
     //
-    // A pinned server that is merely DISABLED is not in the answer either, so
-    // turning one off and on again asks for approval once more. That is the safe
-    // direction of the two, and the only one this side can tell apart: what
-    // arrives here is "what you may run", and a disabled entry is not in it.
+    // A pinned server that is merely DISABLED is in the answer, flagged, and so
+    // is in `wanted`: it is still assigned here, just switched off. Pruning its
+    // approval would make an off/on toggle cost a second approval of a spec that
+    // never changed, which is not what disabling promises.
     await approvals.prune(wanted).catch((e) => {
       // Never fatal to a sync: a store that cannot be written is a store that
       // still refuses everything it does not hold, which is the safe failure.
@@ -321,6 +330,23 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
 
     for (const assignment of assignments) {
       const existing = servers.get(assignment.name);
+      // Switched off centrally. Nothing runs, and — unlike an unapproved one —
+      // nothing is asked of anybody either: the decision was made on the server
+      // and there is no card to show for it. The approval stays where it is (see
+      // the prune above), so switching it back on starts it without a second yes.
+      if (assignment.disabled) {
+        if (existing) stopClient(existing);
+        servers.set(assignment.name, {
+          name: assignment.name,
+          spec: assignment.spec,
+          fingerprint: assignment.fingerprint,
+          status: 'disabled',
+          tools: [],
+          lostSecrets: assignment.lostSecrets,
+          client: null
+        });
+        continue;
+      }
       const isApproved = approved[assignment.name] === assignment.fingerprint;
       // Kept current even when nothing else moved: whether a credential can be
       // read is a fact about the OTHER machine's key, and it can change without
@@ -331,8 +357,13 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
         // Same spec as last time. Leave a working connection alone — a re-sync
         // must not cost every server a fresh handshake — and only move it when
         // the answer to "may this run" has changed since.
-        if (isApproved && existing.status === 'unapproved') void start(existing);
-        else if (!isApproved && existing.status !== 'unapproved') {
+        //
+        // 'disabled' counts as a stopped state to start FROM: an entry switched
+        // back on has the same fingerprint it had before, so nothing else here
+        // would notice, and it would sit stopped until the next launch.
+        const stopped = existing.status === 'unapproved' || existing.status === 'disabled';
+        if (isApproved && stopped) void start(existing);
+        else if (!isApproved && !stopped) {
           stopClient(existing);
           existing.status = 'unapproved';
           existing.error = undefined;

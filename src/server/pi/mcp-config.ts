@@ -694,6 +694,14 @@ export async function writeMcpConfig(config: PiMcpConfig): Promise<void> {
 /**
  * Ensure mcp.json exists with a fresh stem-recall entry (paths can change between
  * runs), preserving any user-added servers. Idempotent; called at bootstrap.
+ *
+ * The one write that does NOT go through `writeServers` in pi/mcp.ts, and so the
+ * one that tells no device its assignments moved. That is correct only because
+ * what it touches is the reserved recall entry, which is never pinned anywhere —
+ * `RESERVED_NAMES` refuses a location for it, and it reads a database that only
+ * exists on this machine. If a reserved server ever does gain a location, this
+ * becomes a silent hole and the write belongs behind the same notification as
+ * every other one.
  */
 export async function ensureMcpConfig(): Promise<void> {
   await withMcpStateMutation(async () => {

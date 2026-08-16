@@ -71,16 +71,18 @@ function describeLocation(
  * "did this change for that machine" cannot answer differently from "what is
  * that machine sent".
  *
- * Disabled entries are left out because they are not sent either: turning a
- * pinned server off IS a change to what its machine hosts, and one that has to
- * reach it, or the child keeps running over there.
+ * Disabled entries are included, carrying their state, because they are sent
+ * too — and because turning a pinned server off IS a change its machine has to
+ * hear about, or the child keeps running over there. Encoding the state rather
+ * than dropping the line is what keeps this digest a mirror of what is sent
+ * instead of a second opinion about it.
  */
 function assignmentDigests(servers: Record<string, PiMcpServer>): Map<string, string> {
   const lines = new Map<string, string[]>();
   for (const [name, def] of Object.entries(servers)) {
     const deviceId = def.location?.deviceId;
-    if (!deviceId || def.disabled) continue;
-    const line = `${name} ${mcpSpecFingerprint(deviceSpecFor(def))}`;
+    if (!deviceId) continue;
+    const line = `${name} ${mcpSpecFingerprint(deviceSpecFor(def))} ${def.disabled ? 'off' : 'on'}`;
     lines.set(deviceId, [...(lines.get(deviceId) ?? []), line]);
   }
   return new Map([...lines].map(([deviceId, list]) => [deviceId, list.sort().join('\n')]));
