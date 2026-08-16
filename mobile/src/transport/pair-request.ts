@@ -42,7 +42,11 @@ export async function redeemPairingCode(
     res = await doFetch(`${serverUrl}/pair`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ code }),
+      // `kind` tells the server what just paired. A phone says so because iOS
+      // suspends this app, and the server uses that to keep from ever offering
+      // it as a host for a device-pinned MCP server — a machine that vanishes
+      // with the screen lock is the wrong place to run one.
+      body: JSON.stringify({ code, kind: 'mobile' }),
       signal: controller.signal
     });
   } catch (e) {

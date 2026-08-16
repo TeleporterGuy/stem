@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Globe, HardDrive, Plus, Minus, ChevronRight } from 'lucide-react';
+import { Plus, Minus, ChevronRight } from 'lucide-react';
 import type {
   BackendEventEnvelope,
+  DeviceInfo,
   McpLoginUrlParams,
   McpServerStatus,
   McpServerSummary,
@@ -10,6 +11,7 @@ import type {
 } from '../../../shared/types';
 import { SkillsTab } from './SkillsTab';
 import { useRememberedTab } from '../../hooks/useRememberedTab';
+import { useRemoteServer } from '../../hooks/useRemoteServer';
 
 const SUBS = ['mcp', 'skills'] as const;
 
@@ -60,6 +62,13 @@ function McpTab() {
   const [adding, setAdding] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
+  // Where a new server should run. '' = on the machine hosting the server, which
+  // is where every server has always run and stays the default. Only meaningful
+  // when this window is talking to a server somewhere else — see `remote` below.
+  const [locationDeviceId, setLocationDeviceId] = useState('');
+  const [hosts, setHosts] = useState<DeviceInfo[]>([]);
+  const [thisDeviceId, setThisDeviceId] = useState<string | null>(null);
+  const remote = useRemoteServer();
 
   async function refresh() {
     const [list, status] = await Promise.all([
@@ -81,6 +90,19 @@ function McpTab() {
       offStatus();
     };
   }, []);
+
+  // The devices that could host a server: paired desktops only, because a phone
+  // sleeps and a server on it would be unreachable half the time. Read once, and
+  // only when there is a choice to make — a window whose server is this very
+  // machine never renders the picker, so it never asks.
+  useEffect(() => {
+    if (!remote) return;
+    void window.stem
+      .listDevices()
+      .then((snapshot) => setHosts(snapshot.devices.filter((d) => d.kind === 'desktop')))
+      .catch(() => undefined);
+    void window.stem.clientInfo().then((info) => setThisDeviceId(info.deviceId)).catch(() => undefined);
+  }, [remote]);
 
   // The OAuth authorize URL is streamed mid-login as a fallback link.
   useEffect(() => {
@@ -119,6 +141,7 @@ function McpTab() {
     setOauthClientId('');
     setOauthClientSecret('');
     setOauthScope('');
+    setLocationDeviceId('');
     setError(null);
   }
 
@@ -163,7 +186,10 @@ function McpTab() {
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
         ...(transport === 'http' && oauthClientId.trim() ? { oauthClientId: oauthClientId.trim() } : {}),
         ...(transport === 'http' && oauthClientSecret.trim() ? { oauthClientSecret: oauthClientSecret.trim() } : {}),
-        ...(transport === 'http' && oauthScope.trim() ? { oauthScope: oauthScope.trim() } : {})
+        ...(transport === 'http' && oauthScope.trim() ? { oauthScope: oauthScope.trim() } : {}),
+        // Sent only when a device was picked: an absent location is what "runs
+        // where the server runs" has always looked like on disk.
+        ...(locationDeviceId ? { location: { deviceId: locationDeviceId } } : {})
       });
       setServers(list);
       closeForm();
@@ -214,21 +240,42 @@ function McpTab() {
   }
 
   /**
-   * Resolve how a remote (http) server should present. Live connection status
-   * wins; we fall back to `authStatus` only when the app-server hasn't reported
-   * yet (e.g. the panel opened before any thread started this session).
+   * Resolve how a URL (http) server should present. Live connection status wins;
+   * we fall back to `authStatus` only when the app-server hasn't reported yet
+   * (e.g. the panel opened before any thread started this session).
    *   connected — handshook, tools available
    *   failed    — dropped at connect time (OAuth token rejected → offer re-login)
    *   pending   — still starting
-   *   needs-login — remote server with no usable credentials
+   *   needs-login — no usable credentials
    */
-  function remoteState(s: McpServerSummary): 'connected' | 'failed' | 'pending' | 'needs-login' {
+  function httpState(s: McpServerSummary): 'connected' | 'failed' | 'pending' | 'needs-login' {
     const live = statuses[s.name]?.status;
     if (live === 'ready') return 'connected';
     if (live === 'failed') return 'failed';
     if (live === 'starting') return 'pending';
     const hasCreds = s.authStatus === 'o_auth' || s.authStatus === 'bearer_token';
     return hasCreds ? 'connected' : 'needs-login';
+  }
+
+  /** The machine a server runs on, as a row names it. */
+  function placeLabel(s: McpServerSummary): string {
+    return s.location ? s.location.label : 'Server';
+  }
+
+  function placeClass(s: McpServerSummary): string {
+    // An orphaned pin is a real problem — the machine it names is gone — so it
+    // reads as one rather than sitting quietly among the ordinary places.
+    return `pill ${s.location?.orphaned ? 'danger' : 'place'}`;
+  }
+
+  function placeTitle(s: McpServerSummary): string {
+    if (s.location?.orphaned) {
+      return 'This server is pinned to a device that is no longer paired, so it cannot run anywhere.';
+    }
+    if (s.location) {
+      return `Runs on “${s.location.label}”. Stem does not route to devices yet, so it is not connected.`;
+    }
+    return 'Runs on the machine hosting your Stem server.';
   }
 
   function signInLabel(serverName: string, state: 'failed' | 'needs-login'): string {
@@ -250,8 +297,13 @@ function McpTab() {
       ) : (
         <div className="group">
           {servers.map((s) => {
-            const remote = s.transport === 'http';
-            const state = remote ? remoteState(s) : null;
+            const viaUrl = s.transport === 'http';
+            // A server pinned to a device is not this server's to connect: the
+            // bridge reports it 'elsewhere' and skips it, so neither the live
+            // dot nor a sign-in prompt would be telling the truth about it. The
+            // place is what the row has to say instead.
+            const elsewhere = !!s.location;
+            const state = viaUrl && !elsewhere ? httpState(s) : null;
             const needsLogin = state === 'failed' || state === 'needs-login';
             const error = statuses[s.name]?.error ?? undefined;
             return (
@@ -260,26 +312,23 @@ function McpTab() {
                 className={`group-row${selected === s.name ? ' selected' : ''}${s.enabled ? '' : ' disabled'}`}
                 onClick={() => setSelected(s.name)}
               >
-                <span
-                  className={`row-icon ${remote ? 'remote' : 'local'}`}
-                  title={remote ? 'Remote server' : 'Local server'}
-                  aria-label={remote ? 'Remote server' : 'Local server'}
-                >
-                  {remote ? <Globe size={14} /> : <HardDrive size={14} />}
-                </span>
                 <span className="row-main">
                   <strong>{s.name}</strong>
                   <em title={s.enabled && state === 'failed' ? error : undefined} className={s.enabled && state === 'failed' ? 'mcp-failed' : undefined}>
                     {s.enabled && state === 'failed'
                       ? 'Connection failed — sign in again.'
-                      : remote
+                      : viaUrl
                         ? s.url
                         : `${s.command} ${s.args.join(' ')}`.trim()}
                   </em>
                 </span>
+                {/* Where it runs, shown only when there is more than one place it
+                    could be. On the ordinary install the app and the server are
+                    one machine, and naming it would invent a distinction. */}
+                {remote && <span className={placeClass(s)} title={placeTitle(s)}>{placeLabel(s)}</span>}
                 {!s.enabled ? (
                   <span className="pill off">Disabled</span>
-                ) : remote && needsLogin ? (
+                ) : viaUrl && needsLogin ? (
                   <button
                     className="push"
                     onClick={(e) => {
@@ -290,7 +339,7 @@ function McpTab() {
                   >
                     {signInLabel(s.name, state)}
                   </button>
-                ) : remote ? (
+                ) : viaUrl && !elsewhere ? (
                   <span
                     className={`mcp-dot${state === 'pending' ? ' pending' : ''}`}
                     title={state === 'pending' ? 'Connecting…' : 'Connected'}
@@ -339,14 +388,41 @@ function McpTab() {
         <>
           <div className="grp-head">Add Server</div>
           <div className="formgroup">
+            {/* HOW to reach the server, not where it runs: a command to spawn or
+                a URL to open. The old Remote|Local labels named the wrong axis —
+                "Local" meant a command, which on a hosted Stem is a process in a
+                datacentre. Where it runs is the separate control below. */}
             <div className="seg-ctl">
-              <button className={transport === 'http' ? 'active' : ''} onClick={() => setTransport('http')}>
-                Remote
-              </button>
               <button className={transport === 'stdio' ? 'active' : ''} onClick={() => setTransport('stdio')}>
-                Local
+                Command
+              </button>
+              <button className={transport === 'http' ? 'active' : ''} onClick={() => setTransport('http')}>
+                URL
               </button>
             </div>
+            {remote && (
+              <div className="set-block">
+                <span className="set-sub">Runs on</span>
+                <select
+                  className="ifield"
+                  aria-label="Runs on"
+                  value={locationDeviceId}
+                  onChange={(e) => setLocationDeviceId(e.target.value)}
+                >
+                  <option value="">Server</option>
+                  {hosts.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.label}
+                      {d.id === thisDeviceId ? ' · this computer' : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="muted">
+                  Pick a computer for a server that only means anything there — its files, its
+                  applications, or a URL on its own network. Phones aren’t offered: they sleep.
+                </p>
+              </div>
+            )}
             <input ref={nameRef} className="ifield" placeholder="Name (e.g. fastmail)" value={name} onChange={(e) => setName(e.target.value)} />
             {transport === 'http' ? (
               <>
@@ -426,7 +502,7 @@ function McpTab() {
             </div>
             {transport === 'http' && (
               <p className="muted">
-                Most remote servers just need a name and URL — add it, then use “Sign in” to authorize
+                Most URL servers just need a name and URL — add it, then use “Sign in” to authorize
                 via OAuth where supported. For a static token, add an <code>Authorization: Bearer …</code>{' '}
                 header under Advanced.
               </p>

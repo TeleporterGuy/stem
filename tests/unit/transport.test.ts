@@ -478,6 +478,9 @@ describe('acquiring a credential', () => {
       // and works against the same server the desktop is already talking to.
       expect(paired.token).not.toBe(identity!.token);
       expect((await resolveDevice(paired.token))?.label).toBe('A machine far away');
+      // The desktop says what it is on the way in, which is what later makes it
+      // offerable as a host for a device-pinned MCP server.
+      expect((await resolveDevice(paired.token))?.kind).toBe('desktop');
       // …and was written down, so the next launch is a read.
       expect((await readClientIdentity())?.token).toBe(paired.token);
     } finally {

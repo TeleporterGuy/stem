@@ -1172,11 +1172,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .group-row + .group-row { border-top: 0.5px solid var(--hair); }
 .group-row.selected { background: var(--sel); }
 /* Disabled server: still listed (config + token kept) but the bridge skips it. */
-.group-row.disabled .row-icon, .group-row.disabled .row-main { opacity: 0.5; }
+.group-row.disabled .row-icon, .group-row.disabled .row-main, .group-row.disabled .pill.place { opacity: 0.5; }
 .row-icon { width: 24px; height: 24px; border-radius: var(--radius); display: flex; align-items: center; justify-content: center; color: #fff; flex: none; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25); }
-/* MCP transport icons: quiet glyphs (globe = remote, hard-drive = local) rather
-   than loud filled tiles — the shape carries the meaning, like the chat list. */
-.row-icon.remote, .row-icon.local { width: 16px; background: transparent; color: var(--muted); box-shadow: none; }
 .row-main { flex: 1; min-width: 0; }
 .row-main strong { display: block; font-size: var(--fs-13); font-weight: 500; }
 .row-main em { font-style: normal; font-size: var(--fs-11); color: var(--muted); display: block; overflow-wrap: anywhere; }
@@ -1185,6 +1182,10 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .pill.ok { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
 .pill.off { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
 .pill.danger { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
+/* Where an MCP server runs (the server itself, or a paired computer). A place is
+   not a state, so it sits quieter than the pills above — no fill, just a hairline
+   — and never competes with the live status dot beside it. */
+.pill.place { border: 0.5px solid var(--line); color: var(--muted); font-weight: 500; }
 
 /* A signed-in provider whose token has died: a clickable "reconnect" pill on its
    Settings row. Reuses the danger pill; button reset so it sits inline. */

@@ -92,14 +92,16 @@ describe('redeemPairingCode', () => {
   const ok = (body: unknown): Response =>
     ({ ok: true, status: 200, json: async () => body }) as unknown as Response;
 
-  it('posts the normalized code and keeps what comes back', async () => {
+  // `kind: 'mobile'` is part of the request, not decoration: it is what keeps the
+  // server from ever offering this phone as a host for a pinned MCP server.
+  it('posts the normalized code and what this device is, and keeps what comes back', async () => {
     const fetchMock = vi.fn(async () => ok({ ok: true, result: { deviceId: 'dev-1', token: 'secret' } }));
     const stored = await redeemPairingCode('https://stem.example.com/', 'abcd-efgh', fetchMock as unknown as typeof fetch);
     expect(stored).toEqual({ serverUrl: 'https://stem.example.com', deviceId: 'dev-1', token: 'secret' });
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://stem.example.com/pair');
     expect(init.method).toBe('POST');
-    expect(JSON.parse(String(init.body))).toEqual({ code: 'ABCDEFGH' });
+    expect(JSON.parse(String(init.body))).toEqual({ code: 'ABCDEFGH', kind: 'mobile' });
   });
 
   it('repeats the server’s own refusal, which is the only one that explains itself', async () => {

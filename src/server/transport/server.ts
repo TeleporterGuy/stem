@@ -6,6 +6,7 @@ import { connect, type AddressInfo, type Socket } from 'node:net';
 import { Transform, type Readable } from 'node:stream';
 import { log } from '../log';
 import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolicy } from './auth';
+import type { DeviceKind } from '../../shared/types';
 
 // Stem's transport: a node:http server bound to 127.0.0.1 — or to a Unix socket,
 // which is narrower still. Every client reaches the server through this file and
@@ -31,7 +32,7 @@ import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolic
 //   GET  /channels                  → what this client may invoke
 //   POST /upload?name=…  raw bytes  → {handle}, to pass where a path would go
 //   GET  /files/<rel>               → the bytes of one file in the Files folder
-//   POST /pair     {code}           → {deviceId, token}, the ONE unauthenticated one
+//   POST /pair     {code, kind?}    → {deviceId, token}, the ONE unauthenticated one
 //
 // The two file routes exist because a path is not portable. Everything else a
 // client sends fits in an RPC envelope; a file does not — an attachment must not
@@ -242,7 +243,7 @@ export interface TransportServerOptions {
    * else is a 500. Omitted entirely = no /pair route at all, which is what a
    * deployment that only ever pairs off shared disk should do.
    */
-  pair?(code: string): Promise<PairingGrant>;
+  pair?(code: string, kind: DeviceKind): Promise<PairingGrant>;
   /**
    * Take one uploaded file and answer with the handle that stands for it. `body`
    * is already capped at MAX_UPLOAD_BYTES and errors past it, so an
@@ -806,19 +807,32 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
       sendJson(res, 400, { ok: false, error: 'expected {code: string}' });
       return;
     }
-    let code: unknown;
+    let body: { code?: unknown; kind?: unknown } | null;
     try {
-      code = (JSON.parse(raw) as { code?: unknown })?.code;
+      body = JSON.parse(raw) as { code?: unknown; kind?: unknown } | null;
     } catch {
       sendJson(res, 400, { ok: false, error: 'body is not JSON' });
       return;
     }
+    const code = body?.code;
     if (typeof code !== 'string' || !code) {
       sendJson(res, 400, { ok: false, error: 'expected {code: string}' });
       return;
     }
+    // What the device says it is, so the server can later offer only desktops as
+    // MCP hosts. Optional — a client from before this existed pairs as a desktop,
+    // which is what it was — but a value that is present and not one of ours is
+    // refused rather than coerced: the same strictness the code itself gets.
+    // JSON.parse never yields undefined, so `undefined` here means the field was
+    // absent — an explicit `null` is a client saying something, and something
+    // that is not one of ours is refused rather than read as "never mind".
+    const kind = body?.kind === undefined ? 'desktop' : body.kind;
+    if (kind !== 'desktop' && kind !== 'mobile') {
+      sendJson(res, 400, { ok: false, error: 'kind must be "desktop" or "mobile"' });
+      return;
+    }
     try {
-      const grant = await opts.pair(code);
+      const grant = await opts.pair(code, kind);
       log('transport', 'paired a device', { deviceId: grant.deviceId });
       sendJson(res, 200, { ok: true, result: grant });
     } catch (e) {

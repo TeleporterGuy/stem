@@ -2,6 +2,7 @@ import { randomInt } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { hashEquals, hashToken, mintDevice, type MintedDevice } from './auth';
+import type { DeviceKind } from '../../shared/types';
 import { pairingStorePath } from '../workspace/paths';
 import {
   normalizePairingCode,
@@ -183,7 +184,7 @@ export function pendingPairings(): Promise<readonly { label: string; expiresAt: 
  * same message, since telling them apart would let an attacker probe which of
  * their guesses had ever been a real code.
  */
-export function redeemPairingCode(presented: string): Promise<MintedDevice> {
+export function redeemPairingCode(presented: string, kind: DeviceKind = 'desktop'): Promise<MintedDevice> {
   return enqueue(async () => {
     const store = await readStore();
     const lockedUntil = store.lockedUntil ? Date.parse(store.lockedUntil) : 0;
@@ -219,6 +220,9 @@ export function redeemPairingCode(presented: string): Promise<MintedDevice> {
       failures: 0,
       lockedUntil: null
     });
-    return mintDevice(matched.label);
+    // The label comes from whoever issued the code; the kind comes from the
+    // device spending it, because nobody at the server end knows what is about
+    // to be walked over to. It is a claim, not a credential — see DeviceRecord.
+    return mintDevice(matched.label, kind);
   });
 }

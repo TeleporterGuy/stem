@@ -695,8 +695,25 @@ export interface TaskNotifyPayload {
 
 // ---- MCP servers ----
 
-/** stdio = local `command` + `args`; http = remote streamable-HTTP `url`. */
+/**
+ * HOW a server is spoken to: stdio = a spawned `command` + `args`; http = a
+ * streamable-HTTP `url`. Not WHERE it runs — that is {@link McpServerLocation},
+ * a perpendicular axis, and all four combinations are meaningful.
+ */
 export type McpTransport = 'stdio' | 'http';
+
+/**
+ * Which machine a server runs on, as the panel needs to render it. Absent on a
+ * summary means the machine hosting stem-server, which is where every server has
+ * always run.
+ */
+export interface McpServerLocation {
+  deviceId: string;
+  /** The device's label, carried along so a row can name a place without a second call. */
+  label: string;
+  /** The deviceId is no longer in the registry — that device was unpaired. */
+  orphaned?: boolean;
+}
 
 export interface McpServerSummary {
   name: string;
@@ -715,6 +732,8 @@ export interface McpServerSummary {
    * from `!def.disabled`.
    */
   enabled: boolean;
+  /** Where it runs; absent = on the machine hosting the server. */
+  location?: McpServerLocation;
 }
 
 /**
@@ -751,6 +770,13 @@ export interface McpServerInput {
   oauthClientId?: string;
   oauthClientSecret?: string;
   oauthScope?: string;
+  /**
+   * Pin the server to a paired desktop instead of running it where stem-server
+   * runs. Omitted = the server's own machine, which is what every add has meant
+   * so far. The label is NOT supplied here — it is read from the registry, so a
+   * caller cannot make a row claim to be a machine it is not.
+   */
+  location?: { deviceId: string };
 }
 
 export interface McpLoginResult {
@@ -1904,7 +1930,21 @@ export interface DeviceInfo {
   createdAt: string;
   /** Last successful authentication, or null if it has never connected. */
   lastSeenAt: string | null;
+  /**
+   * What the device said it was when it paired, defaulting to `desktop` for
+   * every record written before the field existed. Surfaced because only a
+   * desktop may host an MCP server (docs/mcp-device-pinning.md, ⑦).
+   */
+  kind: DeviceKind;
 }
+
+/**
+ * A paired client's own account of what it is. Self-asserted at pairing and
+ * never verified — it decides what Stem OFFERS a device, not what it may do, so
+ * a client that lied about it would only be volunteering itself for work it is
+ * bad at. See DeviceRecord in server/transport/auth.ts.
+ */
+export type DeviceKind = 'desktop' | 'mobile';
 
 /** A pairing code that has been issued but not yet spent. */
 export interface PendingPairing {

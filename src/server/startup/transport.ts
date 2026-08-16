@@ -170,8 +170,8 @@ export async function startTransport(cfg: TransportConfig): Promise<TransportEnd
     // what makes `devices:registerPush` able to mean "this device".
     dispatch: (channel, args, caller) => dispatchLocal(channel, args, caller),
     registeredChannels: serverChannels,
-    pair: async (code) => {
-      const minted = await redeemPairingCode(code);
+    pair: async (code, kind) => {
+      const minted = await redeemPairingCode(code, kind);
       return { deviceId: minted.device.id, token: minted.token };
     },
     stageUpload,

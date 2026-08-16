@@ -1,4 +1,5 @@
-import type { McpServerInput, McpServerSummary } from '../../shared/types';
+import type { McpServerInput, McpServerLocation, McpServerSummary } from '../../shared/types';
+import { deviceKind, readDevices, type DeviceRecord } from '../transport/auth';
 import {
   readMcpConfig,
   writeMcpConfig,
@@ -16,7 +17,12 @@ import { ADMIN_MCP_NAME } from '../admin/register-mcp';
 // bridge extension (stem-mcp-extension.mjs) reads this file on (re)start; the
 // renderer calls restartRuntime() after a change so the bridge reconnects.
 
-/** Internal, Stem-owned servers hidden from the user-facing MCP list. */
+/**
+ * Internal, Stem-owned servers hidden from the user-facing MCP list. They are
+ * also the servers that always run where stem-server runs: both reach into state
+ * only that machine has (recall's database, the config the admin server edits),
+ * so nothing here ever writes them a `location`.
+ */
 const RESERVED_NAMES = new Set([RECALL_MCP_NAME, ADMIN_MCP_NAME]);
 const VALID_NAME = /^[A-Za-z0-9_.-]+$/;
 
@@ -28,9 +34,27 @@ function assertValidName(name: string): void {
   }
 }
 
+/**
+ * How a stored `location` should render, or undefined for a server that runs
+ * where stem-server runs. A deviceId that is no longer in the registry is
+ * reported as orphaned rather than dropped or silently rewritten to "here": the
+ * entry names a machine that was unpaired, and saying so is the only honest
+ * answer (docs/mcp-device-pinning.md, ⑩).
+ */
+function describeLocation(
+  location: { deviceId: string } | undefined,
+  devices: readonly DeviceRecord[]
+): McpServerLocation | undefined {
+  if (!location) return undefined;
+  const device = devices.find((d) => d.id === location.deviceId);
+  if (!device) return { deviceId: location.deviceId, label: 'Unpaired device', orphaned: true };
+  return { deviceId: device.id, label: device.label };
+}
+
 export async function listMcpServers(): Promise<McpServerSummary[]> {
   const config = await readMcpConfig();
   const oauth = await readOAuthTokens();
+  const devices = await readDevices();
   return Object.entries(config.servers)
     .filter(([name]) => !RESERVED_NAMES.has(name))
     .map(([name, def]) => {
@@ -55,9 +79,34 @@ export async function listMcpServers(): Promise<McpServerSummary[]> {
         args: Array.isArray(def.args) ? def.args : [],
         url,
         authStatus,
-        enabled: !def.disabled
+        enabled: !def.disabled,
+        ...(def.location ? { location: describeLocation(def.location, devices) } : {})
       } satisfies McpServerSummary;
     });
+}
+
+/**
+ * Validate a requested location against the device registry, returning what
+ * should go in `mcp.json` (or undefined for the server's own machine).
+ *
+ * Both refusals happen here, at the one moment a person is watching: an unknown
+ * device would write an entry that is orphaned the second it is saved, and a
+ * phone would be pinned as a host it can never usefully be — iOS suspends the
+ * app, and availability is "has an open stream" (docs/mcp-device-pinning.md, ⑦).
+ */
+async function resolveLocation(
+  requested: { deviceId: string } | undefined
+): Promise<{ deviceId: string } | undefined> {
+  const deviceId = requested?.deviceId?.trim();
+  if (!deviceId) return undefined;
+  const device = (await readDevices()).find((d) => d.id === deviceId);
+  if (!device) throw new Error('That device is not paired with this server any more.');
+  if (deviceKind(device) !== 'desktop') {
+    throw new Error(
+      `“${device.label}” is a phone, and a phone cannot host an MCP server — it goes to sleep, and the server would be unreachable whenever the screen locked.`
+    );
+  }
+  return { deviceId: device.id };
 }
 
 export async function addMcpServer(input: McpServerInput): Promise<McpServerSummary[]> {
@@ -65,6 +114,7 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
   if (!name) throw new Error('MCP server requires a name.');
   assertValidName(name);
   if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
+  const location = await resolveLocation(input.location);
 
   let next: PiMcpServer;
   if (input.transport === 'http') {
@@ -93,6 +143,7 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
     const env = input.env && Object.keys(input.env).length > 0 ? input.env : undefined;
     next = { command, args: input.args ?? [], ...(env ? { env } : {}), trusted: true };
   }
+  if (location) next = { ...next, location };
 
   await withMcpStateMutation(async () => {
     const config = await readMcpConfig();

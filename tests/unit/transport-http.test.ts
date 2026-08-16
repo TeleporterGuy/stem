@@ -25,6 +25,7 @@ import {
   startTransportServer,
   type TransportServer
 } from '../../src/server/transport/server';
+import type { DeviceKind } from '../../src/shared/types';
 
 const TOKEN = 'a'.repeat(64);
 const TOKEN_HASH = hashToken(TOKEN);
@@ -34,6 +35,8 @@ const OTHER_HASH = hashToken(OTHER_TOKEN);
 
 /** Codes the fake `pair` will honour, so /pair can be driven without the store. */
 const PAIR_CODES = new Map<string, { deviceId: string; token: string }>();
+/** What each redemption claimed to be — the route's job is to pass this on intact. */
+const pairedKinds: DeviceKind[] = [];
 
 let server: TransportServer;
 let base: string;
@@ -66,7 +69,8 @@ beforeAll(async () => {
     },
     dispatch: dispatchLocal,
     registeredChannels: serverChannels,
-    pair: async (code) => {
+    pair: async (code, kind) => {
+      pairedKinds.push(kind);
       const grant = PAIR_CODES.get(code.toUpperCase());
       if (!grant) throw Object.assign(new Error('that pairing code is not valid'), { status: 401 });
       PAIR_CODES.delete(code.toUpperCase());
@@ -483,6 +487,41 @@ describe('POST /pair', () => {
     // a page in a browser must not be able to spend a code it overheard.
     expect(res.status).toBe(403);
     expect(PAIR_CODES.has('WXYZ-WXYZ')).toBe(true);
+  });
+
+  // What the device says it is, which decides whether it is ever offered as a
+  // host for a device-pinned MCP server (docs/mcp-device-pinning.md, ⑦).
+  it('carries the kind the device claims, and reads its absence as a desktop', async () => {
+    pairedKinds.length = 0;
+    PAIR_CODES.set('MOBI-MOBI', { deviceId: 'dev-7', token: 'f'.repeat(64) });
+    PAIR_CODES.set('OLDC-LNT0', { deviceId: 'dev-6', token: '9'.repeat(64) });
+    const pair = (body: unknown) =>
+      fetch(`${base}/pair`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    expect((await pair({ code: 'MOBI-MOBI', kind: 'mobile' })).status).toBe(200);
+    // A client from before the field existed says nothing, and a desktop is the
+    // only thing it can have been — nothing else could speak this route then.
+    expect((await pair({ code: 'OLDC-LNT0' })).status).toBe(200);
+    expect(pairedKinds).toEqual(['mobile', 'desktop']);
+  });
+
+  it('refuses a kind that is not one of ours rather than coercing it', async () => {
+    pairedKinds.length = 0;
+    PAIR_CODES.set('BADK-INDX', { deviceId: 'dev-5', token: '8'.repeat(64) });
+    for (const kind of ['laptop', 42, null]) {
+      const res = await fetch(`${base}/pair`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: 'BADK-INDX', kind })
+      });
+      expect(res.status).toBe(400);
+    }
+    // The code is untouched — a malformed body must not spend one.
+    expect(pairedKinds).toEqual([]);
+    expect(PAIR_CODES.has('BADK-INDX')).toBe(true);
   });
 
   it('rejects a body that is not a code, and one that is far too big to be one', async () => {

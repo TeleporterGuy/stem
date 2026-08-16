@@ -963,6 +963,9 @@ async function connectOneServer(name, spec, oauthTokens, persistAuth) {
  * merge into the shared connection as they settle, republishing status + catalog
  * so tools become available on the next turn. Until a server settles, its status
  * is 'starting' (the Manage panel shows it as pending).
+ *
+ * Two kinds of server are never connected from here: a disabled one, and one
+ * pinned to a device — the second reports 'elsewhere' so the panel can say so.
  */
 function startConnections(servers, oauthTokens, persistAuth, publish) {
   const conn = {
@@ -978,6 +981,17 @@ function startConnections(servers, oauthTokens, persistAuth, publish) {
   const jobs = [];
   for (const [name, spec] of Object.entries(servers)) {
     if (spec.disabled) continue;
+    // Pinned to a paired device: this process is the wrong machine, and the
+    // point of the pin is that connecting from here would reach the wrong
+    // filesystem or the wrong network. Skipped like a disabled server, but
+    // reported rather than dropped — a server missing from the status map is
+    // indistinguishable from one that was never configured, and the panel has to
+    // be able to say where it is. Routing lands in a later step of
+    // docs/mcp-device-pinning.md; until then this is the whole of its behaviour.
+    if (spec.location) {
+      conn.status[name] = { status: 'elsewhere', error: null };
+      continue;
+    }
     conn.status[name] = { status: 'starting', error: null };
     const job = connectOneServer(name, spec, oauthTokens, persistAuth).then((res) => {
       if (conn.stale) {

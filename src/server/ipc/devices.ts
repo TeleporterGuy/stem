@@ -1,5 +1,5 @@
 import { registerServer, type CallerContext } from './guard';
-import { readDevices, revokeDevice, setDevicePushToken } from '../transport/auth';
+import { deviceKind, readDevices, revokeDevice, setDevicePushToken } from '../transport/auth';
 import { forgetPresence, reportPresence } from '../push/presence';
 import { createPairingCode, pendingPairings } from '../transport/pairing';
 import { dropDeviceStreams } from '../startup/transport';
@@ -105,7 +105,10 @@ async function snapshot(): Promise<DevicesSnapshot> {
         id: d.id,
         label: d.label,
         createdAt: d.createdAt,
-        lastSeenAt: d.lastSeenAt
+        lastSeenAt: d.lastSeenAt,
+        // Resolved here rather than passed through raw: every consumer wants the
+        // answer, not the absence, and the default belongs in one place.
+        kind: deviceKind(d)
       })
     ),
     pending: pending.map((p) => ({ label: p.label, expiresAt: p.expiresAt }))

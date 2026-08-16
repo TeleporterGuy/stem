@@ -42,6 +42,20 @@ export interface PiMcpServer {
   /** Stem-internal servers run without per-call confirmation. */
   trusted?: boolean;
   disabled?: boolean;
+  /**
+   * Where this server runs. Absent = the machine hosting stem-server, which is
+   * what every entry has always meant and still means — so an existing mcp.json
+   * round-trips byte for byte and nothing changes for it.
+   *
+   * The device is named (`devices.json`), never inferred from wherever you
+   * happened to be typing: what "my computer" means has to be readable from the
+   * config. Only desktops may be named — see the kind check in mcp.ts.
+   *
+   * Deliberately outside {@link mcpServerAuthIdentity}: moving a server between
+   * machines does not change WHO it authenticates as, and folding it into that
+   * hash would invalidate every stored OAuth token the moment this field lands.
+   */
+  location?: { deviceId: string };
 }
 
 export interface PiMcpConfig {
