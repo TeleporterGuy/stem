@@ -908,6 +908,72 @@ export type DeviceMcpResult =
   | { ok: true; tools?: DeviceMcpTool[]; content?: unknown }
   | { ok: false; error: string };
 
+// ---- What the MCP host on THIS machine has to say about itself ----
+//
+// The types below never go on the wire. They are the answer to
+// `mcpHost:localState`, a client-owned channel, because approval is a fact about
+// one computer: the panel in a window on your Mac is asking your Mac, and a
+// server pinned to some other device has nothing to answer with. That is also
+// what makes the panel work against a server whose client half is a phone or an
+// older build — the question was never sent anywhere.
+
+/**
+ * What approving a spec would run, with the credential VALUES left out.
+ *
+ * The spec itself carries decrypted API keys and bearer headers; it stops in the
+ * main process, where the thing that spawns lives. A card needs to show what
+ * gets executed, not what it gets executed with, so the names of the variables
+ * travel and their values do not — enough to notice `AWS_SECRET_ACCESS_KEY`
+ * appearing in something you thought only read your notes.
+ */
+export interface McpHostSpecPreview {
+  command?: string;
+  args?: string[];
+  url?: string;
+  /** Names only. */
+  envKeys?: string[];
+  /** Names only. */
+  headerKeys?: string[];
+}
+
+/** One spec pinned to this machine that nobody here has said yes to yet. */
+export interface McpHostPendingServer {
+  name: string;
+  /** The fingerprint being approved; the approval is sent back with it. */
+  fingerprint: string;
+  preview: McpHostSpecPreview;
+  /**
+   * True when this machine had approved a DIFFERENT spec under this name. The
+   * card says "changed" rather than "new", because the two are answered
+   * differently by somebody who knows they did not edit it.
+   */
+  changed: boolean;
+  /**
+   * Set when the spec looks like it can run anything, rather than exposing a
+   * bounded set of tools. ⑤ removed per-call confirmation on the argument that
+   * an MCP server's surface is fixed at approval time — for a shell-like server
+   * that argument does not hold, and the card has to say so out loud.
+   */
+  unbounded?: string;
+}
+
+/** How one server pinned to this machine is doing, right now, here. */
+export interface McpHostServerStatus {
+  status: 'starting' | 'ready' | 'failed' | 'unapproved';
+  /** Why it is not ready, in the words the failure used. */
+  error?: string;
+  /** How many tools it exposed, once it has connected. */
+  tools?: number;
+}
+
+/** Everything the panel needs about the MCP servers hosted on this computer. */
+export interface McpHostLocalState {
+  /** server name → the fingerprint this machine approved. */
+  approved: Record<string, string>;
+  pending: McpHostPendingServer[];
+  status: Record<string, McpHostServerStatus>;
+}
+
 // ---- Assistant-initiated MCP changes (the `stem-admin` self-management server) ----
 //
 // When the chat assistant calls its add/remove MCP tools, the backend gates the
@@ -2325,6 +2391,21 @@ export interface StemApi {
   onMcpChanged(listener: () => void): () => void;
   /** Live MCP connection-status updates (keyed by server name). */
   onMcpStatus(listener: (status: Record<string, McpServerStatus>) => void): () => void;
+
+  // The MCP servers pinned to THIS computer. Answered by the desktop itself, not
+  // by the server (see desktop/local/index.ts): approval is a fact about the
+  // machine a server would run on, so these five keep working whatever the
+  // machine at the other end of the wire happens to be.
+  /** What this machine hosts, what it has approved, and what is waiting. */
+  mcpHostState(): Promise<McpHostLocalState>;
+  /** Agree to run one pinned server's current spec; the fingerprint is the one shown. */
+  approveMcpHostServer(name: string, fingerprint: string): Promise<McpHostLocalState>;
+  /** Withdraw agreement to run one pinned server, stopping it. */
+  rejectMcpHostServer(name: string): Promise<McpHostLocalState>;
+  /** Connect one pinned server now and report what actually happened. */
+  testMcpHostServer(name: string): Promise<McpHostLocalState>;
+  /** Fired when a server hosted here settles, fails or is re-synced. */
+  onMcpHostChanged(listener: (state: McpHostLocalState) => void): () => void;
 
   getMemorySettings(): Promise<MemorySettings>;
   setMemoryEnabled(enabled: boolean): Promise<MemorySettings>;

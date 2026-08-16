@@ -23,6 +23,7 @@ import type {
   LocalRerankStatus,
   RemoteRetrievalHealth,
   McpAdminProposal,
+  McpHostLocalState,
   McpServerInput,
   McpServerStatus,
   MemoryModelSettings,
@@ -152,6 +153,17 @@ const api: StemApi = {
     ipcRenderer.invoke('mcp:setEnabled', name, enabled),
   loginMcpServer: (name: string) => ipcRenderer.invoke('mcp:login', name),
   restartRuntime: () => ipcRenderer.invoke('runtime:restart'),
+
+  mcpHostState: () => ipcRenderer.invoke('mcpHost:localState'),
+  approveMcpHostServer: (name: string, fingerprint: string) =>
+    ipcRenderer.invoke('mcpHost:approve', name, fingerprint),
+  rejectMcpHostServer: (name: string) => ipcRenderer.invoke('mcpHost:reject', name),
+  testMcpHostServer: (name: string) => ipcRenderer.invoke('mcpHost:test', name),
+  onMcpHostChanged: (listener: (state: McpHostLocalState) => void) => {
+    const handler = (_e: unknown, state: McpHostLocalState) => listener(state);
+    ipcRenderer.on('mcpHost:changed', handler);
+    return () => ipcRenderer.removeListener('mcpHost:changed', handler);
+  },
   onMcpAdminApproval: (listener: (proposal: McpAdminProposal) => void) => {
     const handler = (_e: unknown, proposal: McpAdminProposal) => listener(proposal);
     ipcRenderer.on('mcp:adminApproval', handler);

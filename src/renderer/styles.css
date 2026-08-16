@@ -1182,6 +1182,10 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .pill.ok { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
 .pill.off { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
 .pill.danger { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
+/* Something is waiting on the person reading it — an MCP server pinned to this
+   computer that nobody here has approved yet. Not a failure (danger) and not a
+   dormant setting (off): it is the one pill that means "your turn". */
+.pill.warn { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
 /* Where an MCP server runs (the server itself, or a paired computer). A place is
    not a state, so it sits quieter than the pills above — no fill, just a hairline
    — and never competes with the live status dot beside it. */

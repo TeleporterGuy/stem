@@ -38,6 +38,15 @@ const LOCAL_IPC_ARGS: Record<string, ArgSpec[]> = {
   'stem:exportState': [a.object],
   'settings:updateReleaseNotes': [a.object],
   'settings:updateUpdates': [a.object],
+  // The MCP host's own channels (see desktop/local/index.ts). `approve` takes
+  // the fingerprint the window drew its card from as well as the name: the whole
+  // point of ④ is that a yes is given to a spec and not to a label, and the host
+  // refuses one whose fingerprint has moved since.
+  // (`mcpHost:localState` takes no arguments, so it is absent — see the contract
+  // above.)
+  'mcpHost:approve': [a.string, a.string],
+  'mcpHost:reject': [a.string],
+  'mcpHost:test': [a.string],
   'quickchat:run': [a.object],
   'quickchat:handoff': [a.object]
 };
