@@ -19,7 +19,7 @@ import { readFile } from 'node:fs/promises';
 import { createDeviceMcpRouter, deviceMcpRouter, type DeviceMcpRouter } from '../../src/server/mcp-device/router';
 import { emptyCatalog, type DeviceMcpCatalogStore } from '../../src/server/mcp-device/catalog';
 import { canonicalMcpSpec, mcpSpecFingerprint } from '../../src/shared/mcp-fingerprint';
-import { addMcpServer } from '../../src/server/pi/mcp';
+import { addMcpServer, removeMcpServer, setMcpServerEnabled } from '../../src/server/pi/mcp';
 import { readMcpConfig, writeMcpConfig, type PiMcpServer } from '../../src/server/pi/mcp-config';
 import { secretKeyHex } from '../../src/server/pi/secrets';
 import { forgetCachedDevices, readDevices } from '../../src/server/transport/auth';
@@ -323,6 +323,8 @@ describe('a call to a device, end to end', () => {
   /** What the stub host will answer with next, and what it was asked. */
   let answer: DeviceMcpResult = { ok: true, content: 'nothing yet' };
   const asked: DeviceMcpRequest[] = [];
+  /** How many times the server told this device its assignments had moved. */
+  let assignmentNotices = 0;
 
   /**
    * Enough IpcDeps to register the MCP channels. The three under test reach the
@@ -374,6 +376,12 @@ describe('a call to a device, end to end', () => {
         onRequest: (request) => {
           asked.push(request);
           void proxy.invoke('mcpHost:result', [request.requestId, answer]);
+        },
+        // The real host re-runs its hello here. Counting is enough: what is
+        // under test is that the frame arrives at all, on a machine that made
+        // no edit and asked nobody.
+        onAssignmentsChanged: () => {
+          assignmentNotices += 1;
         }
       },
       oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
@@ -458,6 +466,39 @@ describe('a call to a device, end to end', () => {
     expect(onDisk.devices[deviceId].servers).toEqual([
       { name: 'files', status: 'ready', tools: [{ name: 'read_file' }] }
     ]);
+  });
+
+  it('tells the hosting machine when mcp.json changes under it', async () => {
+    // The case this exists for: the edit is made somewhere that is NOT the
+    // machine running the server — another window, a phone, the assistant's own
+    // add/remove — so nothing on the hosting side has any reason to look. Told
+    // at the writer, so every one of those callers is covered by construction.
+    await until(() => deviceMcpRouter().isAvailable(deviceId), 'the event stream to register');
+    const before = assignmentNotices;
+
+    await setMcpServerEnabled('files', false);
+    await until(() => assignmentNotices > before, 'the device to be told its assignments changed');
+
+    // Turning it back on is a second change to what this machine hosts, and it
+    // has to arrive too — otherwise the server stays stopped over there until
+    // the next launch.
+    const afterDisable = assignmentNotices;
+    await setMcpServerEnabled('files', true);
+    await until(() => assignmentNotices > afterDisable, 'the device to be told the server is back');
+  });
+
+  it('does not wake a machine over an edit that has nothing to do with it', async () => {
+    await until(() => deviceMcpRouter().isAvailable(deviceId), 'the event stream to register');
+    const before = assignmentNotices;
+
+    // A server that runs where stem-server runs. Nothing about it changes what
+    // any device hosts, so no device is told; the frame is addressed off the
+    // back of a diff, not off the fact that the file was written.
+    await addMcpServer({ name: 'server-side', transport: 'stdio', command: '/usr/bin/whatever' });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(assignmentNotices).toBe(before);
+
+    await removeMcpServer('server-side');
   });
 
   it('refuses a call once the client is gone, and says which machine to wake', async () => {

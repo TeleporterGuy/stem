@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { McpStdioClient } from '../../src/desktop/mcp-host/clients';
+import { resolveLoginPath } from '../../src/server/exec/executor';
 
 // The one thing about a pinned MCP server that cannot be proved with a stub: the
 // spawn itself. Everywhere else the host is tested through an injected client,
@@ -78,6 +79,29 @@ process.stdin.on('data', (chunk) => {
 });
 `;
 
+/** A server whose only tool answers with the PATH its process was given. */
+const REPORTS_PATH = `
+let buf = '';
+process.stdin.on('data', (chunk) => {
+  buf += chunk;
+  let i;
+  while ((i = buf.indexOf('\\n')) !== -1) {
+    const line = buf.slice(0, i);
+    buf = buf.slice(i + 1);
+    if (!line.trim()) continue;
+    const msg = JSON.parse(line);
+    if (msg.id === undefined) continue;
+    const result =
+      msg.method === 'tools/list'
+        ? { tools: [{ name: 'env' }] }
+        : msg.method === 'tools/call'
+          ? { content: [{ type: 'text', text: process.env.PATH || '' }] }
+          : {};
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\\n');
+  }
+});
+`;
+
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'stem-mcp-stdio-'));
 });
@@ -92,16 +116,21 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-function open(name: string, spec: { command: string; args: string[]; env?: Record<string, string> }): McpStdioClient {
+async function open(
+  name: string,
+  spec: { command: string; args: string[]; env?: Record<string, string> }
+): Promise<McpStdioClient> {
   const client = new McpStdioClient(name, spec);
   started.push(client);
-  client.start();
+  // Awaited because start() resolves the PATH a login shell would have before
+  // it spawns — see the PATH test below for why that is worth an await.
+  await client.start();
   return client;
 }
 
 describe('McpStdioClient against a real child', () => {
   it('handshakes, lists tools, and calls one with the spec env applied', async () => {
-    const client = open('echo', { ...(await server('good', GOOD)), env: { STEM_TEST_TOKEN: 'from-the-spec' } });
+    const client = await open('echo', { ...(await server('good', GOOD)), env: { STEM_TEST_TOKEN: 'from-the-spec' } });
 
     const tools = await client.handshake();
     expect(tools.map((t) => t.name)).toEqual(['echo']);
@@ -115,7 +144,7 @@ describe('McpStdioClient against a real child', () => {
   });
 
   it('fails only itself when the command does not exist', async () => {
-    const client = open('missing', { command: join(dir, 'no-such-binary'), args: [] });
+    const client = await open('missing', { command: join(dir, 'no-such-binary'), args: [] });
 
     // ENOENT arrives as an 'error' event, which is fatal to the whole process
     // when unhandled. The test that it is handled is that this rejects and the
@@ -125,7 +154,7 @@ describe('McpStdioClient against a real child', () => {
   });
 
   it('rejects what is in flight when the child dies, and refuses to be reused', async () => {
-    const client = open('flaky', await server('dies', DIES));
+    const client = await open('flaky', await server('dies', DIES));
     await client.handshake();
 
     await expect(client.callTool('boom', {})).rejects.toThrow(/flaky/);
@@ -133,6 +162,30 @@ describe('McpStdioClient against a real child', () => {
     // A dead client answering "not running" rather than throwing EPIPE out of a
     // stream write is what lets the host report it instead of crashing.
     await expect(client.callTool('boom', {})).rejects.toThrow(/not running/);
+  });
+
+  it('spawns with the PATH a login shell would have, not the one a GUI app inherits', async () => {
+    // The commonest stdio MCP server anywhere is written down as `npx …`. A
+    // double-clicked app on macOS gets PATH=/usr/bin:/bin:/usr/sbin:/sbin and
+    // nothing else, so that server is ENOENT here while working perfectly in
+    // the user's terminal — on the very machine the whole point of pinning was
+    // to run it on. It is the same question run_command answers, from the same
+    // function, so the assertion is that they agree rather than that some
+    // particular directory is present.
+    const client = await open('paths', await server('path', REPORTS_PATH));
+    await client.handshake();
+    const result = (await client.callTool('env', {})) as { content: { text: string }[] };
+    expect(result.content[0].text).toBe(await resolveLoginPath());
+
+    // And the spec still wins over everything: it is what the person approving
+    // the entry read on the card.
+    const overridden = await open('override', {
+      ...(await server('path2', REPORTS_PATH)),
+      env: { PATH: '/only/what/the/spec/said' }
+    });
+    await overridden.handshake();
+    const forced = (await overridden.callTool('env', {})) as { content: { text: string }[] };
+    expect(forced.content[0].text).toBe('/only/what/the/spec/said');
   });
 
   it('stop() is safe twice and on a client that never started', () => {

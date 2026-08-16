@@ -713,6 +713,20 @@ export interface McpServerLocation {
   label: string;
   /** The deviceId is no longer in the registry — that device was unpaired. */
   orphaned?: boolean;
+  /**
+   * What that device was called when the pin was written, kept in mcp.json
+   * beside the id. Pairing mints a NEW id, so re-pairing the same Mac — after
+   * the rollback in running-on-a-server.md, after an import, after switching to
+   * "this computer's server" and back — orphans every server pinned to it. This
+   * is what lets the orphan say which machine it meant instead of showing an id.
+   *
+   * A display fact and nothing else. Nothing routes on it, nothing matches on it
+   * to decide what may run, and it is not in the spec fingerprint: a label is
+   * typed by a person and duplicated as easily as it is chosen, and ⑩ refuses to
+   * guess which machine an orphan meant precisely because guessing wrong runs
+   * somebody's command somewhere they did not put it.
+   */
+  rememberedLabel?: string;
 }
 
 export interface McpServerSummary {
@@ -805,6 +819,20 @@ export interface McpLoginResult {
 export const MCP_REQUEST_FRAME = 'mcp-request';
 
 /**
+ * The name of the addressed control frame that tells one device its assignments
+ * changed. It carries nothing: the answer to "what do I host now" is
+ * `mcpHost:hello`, and a frame that also carried the new list would be a second
+ * copy of that answer able to disagree with it.
+ *
+ * It exists because mcp.json is written centrally and read by whichever machine
+ * runs the server. Without it, a pin edited from a phone — or by the assistant,
+ * or from a second desktop — reaches the hosting machine only at its next launch
+ * or reconnect, which means a removed server keeps its child alive over there
+ * and a re-added one keeps running the spec it was approved for last week.
+ */
+export const MCP_ASSIGNMENTS_FRAME = 'mcp-assignments';
+
+/**
  * The transport half of an entry in mcp.json, as the machine that will actually
  * run the server needs it. Credentials are IN it — decrypted env values, header
  * values — because the spec is what the client connects with; it travels to
@@ -832,6 +860,33 @@ export interface DeviceMcpAssignment {
    * widening (docs/mcp-device-pinning.md, ④).
    */
   fingerprint: string;
+  /**
+   * Names of `env`/`headers` values that are IN mcp.json and could not be
+   * decrypted there — an import with the wrong passphrase, a rotated key. The
+   * values are gone from the spec, so its fingerprint moved and the hosting
+   * machine will ask for approval again; without this the card would say the
+   * spec "changed", which is true and misleading. Nobody edited it, and
+   * approving it starts a server missing a credential.
+   *
+   * Names only, and never the values: this is the same rule McpHostSpecPreview
+   * follows, for the same reason.
+   */
+  lostSecrets?: string[];
+}
+
+/** One tool's real input schema, as the machine hosting it knows it. */
+export interface DeviceMcpToolSchema {
+  name: string;
+  description?: string;
+  /** The server's own JSON Schema, verbatim. Absent when the tool declares none. */
+  inputSchema?: unknown;
+  /**
+   * Set when this could not be fetched from the hosting machine and was rebuilt
+   * from the compact signature instead: what is missing, and why. It is rendered
+   * into the schema's own `description` so the model reads it where it reads the
+   * arguments, rather than somewhere it may not look.
+   */
+  partial?: string;
 }
 
 /** One tool on a hosted server, as the catalog block renders it. */
@@ -897,15 +952,22 @@ export interface DeviceMcpRequest {
    */
   requestId: string;
   server: string;
-  op: 'tools' | 'call';
-  /** `call` only. */
+  /**
+   * `describe` is the on-demand half of the compact catalog: the per-turn block
+   * carries names and a compact signature, and this fetches one tool's real
+   * schema from the machine that handshook with it. It is a separate op rather
+   * than a fatter `tools` because the whole point of the compact list is not
+   * paying for schemas nobody asked for.
+   */
+  op: 'tools' | 'call' | 'describe';
+  /** `call` and `describe` only. */
   tool?: string;
   args?: unknown;
 }
 
 /** What the hosting machine answers with — `mcpHost:result`. */
 export type DeviceMcpResult =
-  | { ok: true; tools?: DeviceMcpTool[]; content?: unknown }
+  | { ok: true; tools?: DeviceMcpTool[]; content?: unknown; schema?: DeviceMcpToolSchema }
   | { ok: false; error: string };
 
 // ---- What the MCP host on THIS machine has to say about itself ----
@@ -955,6 +1017,13 @@ export interface McpHostPendingServer {
    * that argument does not hold, and the card has to say so out loud.
    */
   unbounded?: string;
+  /**
+   * Names of credentials this spec carries whose values could not be read on the
+   * machine holding mcp.json. See DeviceMcpAssignment.lostSecrets — the card says
+   * a value was LOST rather than changed, because the two are answered
+   * differently and only one of them is somebody's own edit.
+   */
+  lostSecrets?: string[];
 }
 
 /** How one server pinned to this machine is doing, right now, here. */
@@ -972,6 +1041,14 @@ export interface McpHostLocalState {
   approved: Record<string, string>;
   pending: McpHostPendingServer[];
   status: Record<string, McpHostServerStatus>;
+  /**
+   * Set when the server this client is talking to is older than this build and
+   * does not answer the host channels at all. Everything else here is then
+   * empty — not because nothing is pinned here, but because there was nobody to
+   * ask — and an empty panel that says nothing is the one answer a person cannot
+   * act on.
+   */
+  unsupported?: string;
 }
 
 // ---- Assistant-initiated MCP changes (the `stem-admin` self-management server) ----

@@ -59,10 +59,12 @@ export async function runDeviceMcpBridgeOp(
 
   const router = deps.router();
   if (request.op === 'tools') return router.listTools(deviceId, server);
-  if (request.op === 'call') {
+  if (request.op === 'call' || request.op === 'describe') {
     const tool = typeof request.tool === 'string' ? request.tool : '';
     if (!tool) return { ok: false, error: `No tool was named on "${server}".` };
-    return router.callTool(deviceId, server, tool, request.args);
+    return request.op === 'describe'
+      ? router.describeTool(deviceId, server, tool)
+      : router.callTool(deviceId, server, tool, request.args);
   }
   log('mcp-device', 'the bridge asked for an operation that does not exist', { server, op: String(request.op) });
   return { ok: false, error: `Stem does not know how to "${String(request.op)}" an MCP server.` };

@@ -85,7 +85,7 @@ class FakeClient implements McpClient {
 interface Harness {
   host: McpHost;
   /** What the server would answer `mcpHost:hello` with; rewrite it and refresh. */
-  assign(...assignments: { name: string; spec: DeviceMcpSpec }[]): void;
+  assign(...assignments: { name: string; spec: DeviceMcpSpec; lostSecrets?: string[] }[]): void;
   /** Every name connect() was asked for, in order. One entry per spawn attempt. */
   readonly spawned: string[];
   readonly clients: Map<string, FakeClient>;
@@ -96,7 +96,14 @@ interface Harness {
   flush(): Promise<void>;
 }
 
-function harness(options: { approvals?: ApprovalStore; failures?: Record<string, string> } = {}): Harness {
+function harness(
+  options: {
+    approvals?: ApprovalStore;
+    failures?: Record<string, string>;
+    /** What `mcpHost:hello` throws instead of answering — an older server. */
+    helloFailure?: string;
+  } = {}
+): Harness {
   let assignments: DeviceMcpAssignment[] = [];
   const spawned: string[] = [];
   const clients = new Map<string, FakeClient>();
@@ -106,7 +113,10 @@ function harness(options: { approvals?: ApprovalStore; failures?: Record<string,
 
   const host = createMcpHost({
     invoke: async (channel, args) => {
-      if (channel === 'mcpHost:hello') return assignments;
+      if (channel === 'mcpHost:hello') {
+        if (options.helloFailure) throw new Error(options.helloFailure);
+        return assignments;
+      }
       if (channel === 'mcpHost:announce') {
         announcements.push(args[0] as DeviceMcpAnnouncement);
         return undefined;
@@ -130,7 +140,12 @@ function harness(options: { approvals?: ApprovalStore; failures?: Record<string,
   return {
     host,
     assign: (...next) => {
-      assignments = next.map(({ name, spec }) => ({ name, spec, fingerprint: mcpSpecFingerprint(spec) }));
+      assignments = next.map(({ name, spec, lostSecrets }) => ({
+        name,
+        spec,
+        fingerprint: mcpSpecFingerprint(spec),
+        ...(lostSecrets ? { lostSecrets } : {})
+      }));
     },
     spawned,
     clients,
@@ -252,6 +267,103 @@ describe('the approval gate', () => {
     const state = await h.host.test('files');
     expect(state.status.files.status).toBe('failed');
     expect(state.status.files.error).toContain('ENOENT');
+  });
+});
+
+describe('what this machine has agreed to', () => {
+  it('forgets an approval once the server is no longer pinned here', async () => {
+    const approvals = memoryApprovalStore({ files: mcpSpecFingerprint(FILES_SPEC) });
+    const h = harness({ approvals });
+    h.assign({ name: 'files', spec: FILES_SPEC });
+    await h.host.start();
+    await h.flush();
+    expect(h.spawned).toEqual(['files']);
+
+    // Un-pinned somewhere else — moved back to the server, or deleted.
+    h.assign();
+    await h.host.refresh();
+    await h.flush();
+    expect(await approvals.read()).toEqual({});
+
+    // And pinning the very same spec back here later asks again rather than
+    // starting silently: consent was given for an assignment, and the
+    // assignment is what went away. mcp.json is written centrally, so an
+    // approval that outlives its assignment is one this machine keeps honouring
+    // for a config it no longer has any part in.
+    h.assign({ name: 'files', spec: FILES_SPEC });
+    await h.host.refresh();
+    await h.flush();
+    expect(h.spawned).toEqual(['files']); // not spawned a second time
+    expect(h.host.localState().status.files).toEqual({ status: 'unapproved' });
+    expect(h.host.localState().pending.map((p) => p.name)).toEqual(['files']);
+  });
+
+  it('keeps every approval that is still assigned', async () => {
+    const approvals = memoryApprovalStore({
+      files: mcpSpecFingerprint(FILES_SPEC),
+      notes: mcpSpecFingerprint({ command: '/usr/bin/mcp-notes' })
+    });
+    const h = harness({ approvals });
+    h.assign({ name: 'files', spec: FILES_SPEC }, { name: 'notes', spec: { command: '/usr/bin/mcp-notes' } });
+    await h.host.start();
+    await h.flush();
+
+    expect(Object.keys(await approvals.read()).sort()).toEqual(['files', 'notes']);
+  });
+
+  it('keeps everything when the server cannot be asked at all', async () => {
+    // A failed hello must not read as "you host nothing": that would throw away
+    // every approval on this machine the first time the network hiccupped.
+    const approvals = memoryApprovalStore({ files: mcpSpecFingerprint(FILES_SPEC) });
+    const h = harness({ approvals, helloFailure: 'Stem’s server is unreachable: socket hang up' });
+    await h.host.start();
+    await h.flush();
+
+    expect(await approvals.read()).toEqual({ files: mcpSpecFingerprint(FILES_SPEC) });
+    expect(h.host.localState().unsupported).toBeUndefined();
+  });
+
+  it('says the server is too old rather than looking like an empty panel', async () => {
+    const h = harness({
+      helloFailure: 'Rejected local call to mcpHost:hello: no handler registered.'
+    });
+    await h.host.start();
+    await h.flush();
+
+    // Everything below is empty either way; the difference is whether anybody
+    // can tell that from "nothing is pinned to this computer".
+    expect(h.host.localState().unsupported).toMatch(/older than this copy of Stem/);
+    expect(h.host.localState().pending).toEqual([]);
+  });
+});
+
+describe('a credential that was lost rather than edited', () => {
+  it('says so on the card, naming what could not be read', async () => {
+    // The wrong-passphrase import: the value is in mcp.json and the key that
+    // opens it is gone, so it is dropped, the fingerprint moves, and this
+    // machine is asked to approve a spec nobody touched. "Changed — approve it
+    // again" is true and misleading, and approving it starts a server with no
+    // API key, which fails later in a way nobody connects back to the import.
+    const approvals = memoryApprovalStore({ files: mcpSpecFingerprint(FILES_SPEC) });
+    const h = harness({ approvals });
+    const stripped: DeviceMcpSpec = { command: FILES_SPEC.command, args: FILES_SPEC.args };
+    h.assign({ name: 'files', spec: stripped, lostSecrets: ['API_KEY'] });
+    await h.host.start();
+    await h.flush();
+
+    expect(h.spawned).toEqual([]);
+    const [pending] = h.host.localState().pending;
+    expect(pending.changed).toBe(true);
+    expect(pending.lostSecrets).toEqual(['API_KEY']);
+  });
+
+  it('says nothing when every value was readable', async () => {
+    const h = harness();
+    h.assign({ name: 'files', spec: FILES_SPEC });
+    await h.host.start();
+    await h.flush();
+
+    expect(h.host.localState().pending[0].lostSecrets).toBeUndefined();
   });
 });
 
@@ -385,6 +497,29 @@ describe('answering a request', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain('approved');
     expect(result.error).toContain('files');
+  });
+
+  it('hands back a tool’s whole schema when asked to describe it', async () => {
+    const h = await ready();
+    h.host.onRequest({ requestId: 'r6', server: 'files', op: 'describe', tool: 'read_file' });
+    await h.flush();
+
+    // The catalog that travels every turn carries `(path, encoding?)`. The real
+    // schema lives here, and only here — this process is the one that handshook
+    // with the server — so this is where describe_tool's answer has to come
+    // from. Nothing is run to produce it.
+    expect(h.results[0]).toEqual({
+      requestId: 'r6',
+      result: {
+        ok: true,
+        schema: {
+          name: 'read_file',
+          description: 'Read a file from disk. Paths are relative to the configured root.',
+          inputSchema: { properties: { path: {}, encoding: {} }, required: ['path'] }
+        }
+      }
+    });
+    expect(h.clients.get('files')!.calls).toEqual([]);
   });
 
   it('answers for a server this machine has never heard of', async () => {

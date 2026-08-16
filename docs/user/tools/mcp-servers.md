@@ -61,7 +61,16 @@ Phones are not offered as a place to run a server: they sleep, and the server wo
 unreachable half the time.
 
 A server pinned to a computer you later unpair says so and does nothing. Move it to
-another computer, pair that one again, or remove it.
+another computer, pair that one again, or remove it. Pairing a computer again gives it
+a new identity, so the same machine paired a second time is a different computer to
+Stem — the row names the computer it used to mean, and offers that name first when you
+move it.
+
+**Sign in is not available for a URL server pinned to one of your computers.** Signing
+in happens where your Stem server runs, and that machine cannot reach an address on your
+home network to do it. Use a static token instead: add an `Authorization: Bearer …`
+header to the entry under **Advanced**. That travels with the server's configuration and
+works. A URL server that runs on your Stem server signs in as it always has.
 
 ## Before you connect
 

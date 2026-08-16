@@ -6,6 +6,7 @@ import { connectedDeviceIds, pushToDevice } from '../startup/transport';
 import { mcpSpecFingerprint } from '../../shared/mcp-fingerprint';
 import { fileCatalogStore, normalizeAnnouncement, type DeviceMcpCatalogStore } from './catalog';
 import {
+  MCP_ASSIGNMENTS_FRAME,
   MCP_REQUEST_FRAME,
   type DeviceMcpAssignment,
   type DeviceMcpCatalog,
@@ -93,8 +94,17 @@ export interface DeviceMcpRouter {
   settle(deviceId: string, requestId: string, result: unknown): boolean;
   /** Ask the device hosting `server` what tools it has. */
   listTools(deviceId: string, server: string): Promise<DeviceMcpResult>;
+  /** Ask it for one tool's real input schema — the on-demand half of the catalog. */
+  describeTool(deviceId: string, server: string, tool: string): Promise<DeviceMcpResult>;
   /** Run one tool on the device hosting `server`. */
   callTool(deviceId: string, server: string, tool: string, args: unknown): Promise<DeviceMcpResult>;
+  /**
+   * Tell a device that what it is asked to host has changed, so it re-runs its
+   * hello and reconciles. Returns how many of its streams the frame reached —
+   * zero for a machine that is asleep, which needs nothing done about it: the
+   * host asks again the moment it comes back (proxy.connection → refresh).
+   */
+  assignmentsChanged(deviceId: string): number;
   /** Whether that device could be sent work this instant. */
   isAvailable(deviceId: string): boolean;
   /** Everything announced so far, for the catalog block step 4 injects. */
@@ -120,8 +130,13 @@ export interface DeviceMcpRouter {
  * is, and including it would put a field in the fingerprint that says nothing
  * about what runs. `disabled` is absent for the same kind of reason: a disabled
  * server is not sent at all (see assignmentsFor).
+ *
+ * Exported because it is also what "what is this device asked to host" is
+ * computed from when mcp.json is written (pi/mcp.ts): the two answers must be
+ * the same one, or a change that reaches the device would be decided by a
+ * second, subtly different reading of the same entry.
  */
-function specFor(def: PiMcpServer): DeviceMcpSpec {
+export function deviceSpecFor(def: PiMcpServer): DeviceMcpSpec {
   return {
     ...(def.command ? { command: def.command } : {}),
     ...(def.args?.length ? { args: [...def.args] } : {}),
@@ -225,8 +240,17 @@ export function createDeviceMcpRouter(deps: DeviceMcpRouterDeps): DeviceMcpRoute
         // "disabled" is decided.
         .filter(([, def]) => !def.disabled)
         .map(([name, def]): DeviceMcpAssignment => {
-          const spec = specFor(def);
-          return { name, spec, fingerprint: mcpSpecFingerprint(spec) };
+          const spec = deviceSpecFor(def);
+          return {
+            name,
+            spec,
+            fingerprint: mcpSpecFingerprint(spec),
+            // Sent with the spec because it is a fact ABOUT this spec: these
+            // values are in mcp.json and this machine could not read them, so the
+            // fingerprint the device is being asked to approve is one nobody
+            // typed. See DeviceMcpAssignment.lostSecrets.
+            ...(def.lostSecrets?.length ? { lostSecrets: [...def.lostSecrets] } : {})
+          };
         });
     },
 
@@ -272,8 +296,19 @@ export function createDeviceMcpRouter(deps: DeviceMcpRouterDeps): DeviceMcpRoute
 
     listTools: (deviceId, server) => dispatch(deviceId, server, 'tools', {}, LIST_TIMEOUT_MS),
 
+    // A listing's timeout, not a call's: the hosting machine answers this from
+    // the tool definitions it already holds from its handshake. Nothing is run.
+    describeTool: (deviceId, server, tool) =>
+      dispatch(deviceId, server, 'describe', { tool }, LIST_TIMEOUT_MS),
+
     callTool: (deviceId, server, tool, args) =>
       dispatch(deviceId, server, 'call', { tool, args }, CALL_TIMEOUT_MS),
+
+    assignmentsChanged(deviceId) {
+      const reached = deps.pushTo(deviceId, MCP_ASSIGNMENTS_FRAME, {});
+      log('mcp-device', 'told a device its MCP assignments changed', { deviceId, streams: reached });
+      return reached;
+    },
 
     isAvailable: (deviceId) => deps.connectedDevices().has(deviceId),
 
@@ -322,7 +357,13 @@ function asResult(raw: unknown, server: string): DeviceMcpResult {
     return {
       ok: true,
       ...(Array.isArray(ok.tools) ? { tools: ok.tools } : {}),
-      ...(ok.content === undefined ? {} : { content: ok.content })
+      ...(ok.content === undefined ? {} : { content: ok.content }),
+      // A schema is a plain object with a name on it, or it is nothing. It ends
+      // up in a prompt, so an answer shaped like anything else is dropped here
+      // rather than rendered as whatever it happened to be.
+      ...(ok.schema && typeof ok.schema === 'object' && typeof ok.schema.name === 'string'
+        ? { schema: ok.schema }
+        : {})
     };
   }
   const error = (value as { error?: unknown } | null)?.error;

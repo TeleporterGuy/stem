@@ -2,8 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { lstat, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { host } from '../host';
+import { resolveLoginPath } from '../exec/executor';
 import { passphraseKeyWrapper, passphraseProblem } from '../host/passphrase-key';
 import { log } from '../log';
 import { RECALL_MCP_NAME } from '../recall/register-mcp';
@@ -620,9 +621,10 @@ async function assess(root: string, secrets: StateImportReport['secrets']): Prom
     }
   }
 
+  const runnable = await commandProbe();
   for (const [name, server] of servers) {
     const command = server.command;
-    if (typeof command === 'string' && isAbsolute(command) && !existsSync(command)) {
+    if (typeof command === 'string' && command.trim() && !runnable(command)) {
       attention.push(
         `The tool "${name}" runs ${command}, which is not on this machine. Pair the computer it came from, then ` +
           `open Settings → Tools → MCP servers, select "${name}" and choose "Move to" that computer — Stem will run ` +
@@ -659,6 +661,43 @@ async function assess(root: string, secrets: StateImportReport['secrets']): Prom
 
   attention.push('No device is paired with this Stem yet. Run `stem-server pair` and enter the code in Settings → Server on each machine.');
   return { reauthorize, attention };
+}
+
+/**
+ * `command => whether this machine could actually run it`, with the directories
+ * resolved once.
+ *
+ * An absolute path is the easy half and was the only half for a while, which
+ * made the report quietest about the entries most likely to be broken: real
+ * configs say `npx`, `uvx`, `docker`, `bunx` — a bare name, resolved against
+ * PATH — and those are exactly the ones that do not exist inside a container.
+ * Unflagged, the first turn on the new machine fails with a bare ENOENT that
+ * nobody connects back to the move they made yesterday.
+ *
+ * Two PATHs, unioned, because two different ones are real here: the process's
+ * own (what the MCP child actually inherits) and the user's login shell (what
+ * they see in a terminal). A command present in the second but not the first is
+ * a configuration problem, not a missing program, and saying "not on this
+ * machine" about a binary they can see would be wrong in the way that teaches
+ * people to ignore the report.
+ */
+async function commandProbe(): Promise<(command: string) => boolean> {
+  const loginPath = await resolveLoginPath().catch(() => '');
+  const dirs = [...new Set([loginPath, process.env.PATH ?? ''].flatMap((p) => p.split(delimiter)))].filter(Boolean);
+  // Windows resolves a bare name through PATHEXT; elsewhere the name is the file.
+  const suffixes =
+    process.platform === 'win32'
+      ? ['', ...(process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
+      : [''];
+  return (command: string): boolean => {
+    const trimmed = command.trim();
+    if (isAbsolute(trimmed)) return existsSync(trimmed);
+    // A relative path (`./server.js`, `bin/x`) is resolved against a working
+    // directory this has no way to know, so it is left alone rather than
+    // guessed at — the same rule the URL check follows.
+    if (trimmed.includes('/') || trimmed.includes('\\')) return true;
+    return dirs.some((dir) => suffixes.some((ext) => existsSync(join(dir, trimmed + ext))));
+  };
 }
 
 /**

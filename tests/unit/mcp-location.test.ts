@@ -53,7 +53,12 @@ describe('pinning a server to a device', () => {
       location: { deviceId: device.id }
     });
 
-    expect((await readMcpConfig()).servers.files.location).toEqual({ deviceId: device.id });
+    // The label is snapshotted beside the id, so an entry orphaned by a
+    // re-pairing can still name the machine it meant.
+    expect((await readMcpConfig()).servers.files.location).toEqual({
+      deviceId: device.id,
+      label: 'Ada’s MacBook'
+    });
     // The label is read from the registry rather than taken from the caller, so
     // a row can never claim to be a machine it is not.
     const [summary] = await listMcpServers();
@@ -123,10 +128,30 @@ describe('a device that is unpaired afterwards', () => {
     await revokeDevice(device.id);
 
     const [summary] = await listMcpServers();
-    expect(summary.location).toEqual({ deviceId: device.id, label: 'Unpaired device', orphaned: true });
+    // "Unpaired device" is what it IS; the remembered name is what makes it
+    // actionable. Re-pairing the same computer mints a new id, so this is the
+    // ordinary way to arrive here, and the name is the only thing that connects
+    // the orphan to the machine somebody is looking at.
+    expect(summary.location).toEqual({
+      deviceId: device.id,
+      label: 'Unpaired device',
+      orphaned: true,
+      rememberedLabel: 'Old laptop'
+    });
     // The pin itself is untouched: repairing that device must bring the server
     // back, and only the user may decide to move or drop it.
-    expect((await readMcpConfig()).servers.stranded.location).toEqual({ deviceId: device.id });
+    expect((await readMcpConfig()).servers.stranded.location).toEqual({
+      deviceId: device.id,
+      label: 'Old laptop'
+    });
+  });
+
+  it('says nothing it does not know: a pin written before labels were stored', async () => {
+    // An entry from an earlier build has an id and no label. It must still be
+    // reported as an orphan — just without inventing a machine name for it.
+    await writeMcpConfig({ servers: { old: { command: '/bin/echo', location: { deviceId: 'gone-forever' } } } });
+    const [summary] = await listMcpServers();
+    expect(summary.location).toEqual({ deviceId: 'gone-forever', label: 'Unpaired device', orphaned: true });
   });
 });
 

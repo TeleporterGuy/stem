@@ -66,7 +66,22 @@ export interface PiMcpServer {
    * machines does not change WHO it authenticates as, and folding it into that
    * hash would invalidate every stored OAuth token the moment this field lands.
    */
-  location?: { deviceId: string };
+  location?: {
+    deviceId: string;
+    /**
+     * What that device was called when this pin was written. A snapshot, kept so
+     * an entry whose machine was re-paired (a new id for the same Mac) can say
+     * which machine it meant. Never routed on and never compared to decide what
+     * may run — see McpServerLocation.rememberedLabel for why.
+     */
+    label?: string;
+  };
+  /**
+   * Which `env`/`headers` values were in the file and could not be decrypted,
+   * filled in by {@link readMcpConfig} and stripped again on write. Derived, not
+   * stored: it is a fact about this machine's key, not about the server.
+   */
+  lostSecrets?: string[];
 }
 
 export interface PiMcpConfig {
@@ -574,6 +589,10 @@ function recallServerEntry(): PiMcpServer {
  */
 function encryptServerSecrets(server: PiMcpServer): PiMcpServer {
   const out = { ...server };
+  // Derived on read and never persisted: a config that had been read and written
+  // back would otherwise grow a field describing a decryption failure that may
+  // not even be true of the next machine to open it.
+  delete out.lostSecrets;
   if (out.headers) {
     out.headers = Object.fromEntries(Object.entries(out.headers).map(([k, v]) => [k, encryptSecretValue(v)]));
   }
@@ -584,24 +603,51 @@ function encryptServerSecrets(server: PiMcpServer): PiMcpServer {
   return out;
 }
 
-function decryptRecord(record: Record<string, string>): Record<string, string> {
+/**
+ * Decrypt a map of secret values, reporting which of them did not survive.
+ *
+ * A value that no longer decrypts is dropped rather than passed on as
+ * ciphertext, which is right — but dropping it SILENTLY is what makes a lost
+ * credential indistinguishable from a deleted one. Downstream the difference is
+ * a whole sentence: the machine hosting the server sees a spec whose fingerprint
+ * moved and says it "changed — approve it again", which reads as somebody's
+ * edit, when what actually happened is that the key that opened this value is
+ * gone (an import with the wrong passphrase is the usual way) and approving it
+ * starts a server without its API key.
+ */
+function decryptRecord(record: Record<string, string>): { values: Record<string, string>; lost: string[] } {
   const entries: Array<[string, string]> = [];
+  const lost: string[] = [];
   for (const [k, v] of Object.entries(record)) {
     const plain = decryptSecretValue(v);
     if (plain !== null) entries.push([k, plain]);
+    else lost.push(k);
   }
-  return Object.fromEntries(entries);
+  return { values: Object.fromEntries(entries), lost };
 }
 
 function decryptServerSecrets(server: PiMcpServer): PiMcpServer {
   const out = { ...server };
-  if (out.headers) out.headers = decryptRecord(out.headers);
-  if (out.env) out.env = decryptRecord(out.env);
+  const lost: string[] = [];
+  if (out.headers) {
+    const decrypted = decryptRecord(out.headers);
+    out.headers = decrypted.values;
+    lost.push(...decrypted.lost);
+  }
+  if (out.env) {
+    const decrypted = decryptRecord(out.env);
+    out.env = decrypted.values;
+    lost.push(...decrypted.lost);
+  }
   if (out.oauthClientSecret) {
     const plain = decryptSecretValue(out.oauthClientSecret);
     if (plain === null) delete out.oauthClientSecret;
     else out.oauthClientSecret = plain;
   }
+  // Absent rather than empty when nothing was lost, so the ordinary case adds no
+  // field to a config that gets compared, hashed and written back.
+  if (lost.length > 0) out.lostSecrets = lost.sort();
+  else delete out.lostSecrets;
   return out;
 }
 

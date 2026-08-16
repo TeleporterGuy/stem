@@ -49,6 +49,8 @@ interface Hosted {
   status: McpHostServerStatus['status'];
   error?: string;
   tools: McpToolDefinition[];
+  /** Credential names the config's own machine could not read (see the card). */
+  lostSecrets?: string[];
   /** The live connection, or null when there is nothing running. */
   client: McpClient | null;
 }
@@ -75,6 +77,12 @@ export interface McpHost {
   refresh(): Promise<void>;
   /** Answer one addressed request. Never throws; always replies. */
   onRequest(request: DeviceMcpRequest): void;
+  /**
+   * The server says what this machine is asked to host has changed. Fire and
+   * forget: whoever wrote mcp.json is not waiting on this, and the reconcile is
+   * the same one a launch does.
+   */
+  onAssignmentsChanged(): void;
   /** Everything the panel needs about the servers hosted here. */
   localState(): McpHostLocalState;
   /** Agree to run `name`'s current spec, and start it. */
@@ -99,6 +107,13 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
   const connecting = new Set<Promise<void>>();
   let announceQueued = false;
   let closed = false;
+  /**
+   * Why this machine cannot be told what it hosts, when the reason is the server
+   * being older than this build rather than anything about a server. Null the
+   * rest of the time, including when the server is simply unreachable — that one
+   * fixes itself and the panel has a banner for it already.
+   */
+  let unsupported: string | null = null;
 
   // ---- state ----
 
@@ -120,10 +135,11 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
         // "Changed" and "new" are answered differently by somebody who knows
         // they did not edit it, so the card must be able to tell them apart.
         changed: !!approved[entry.name] && approved[entry.name] !== entry.fingerprint,
-        ...(unbounded ? { unbounded } : {})
+        ...(unbounded ? { unbounded } : {}),
+        ...(entry.lostSecrets?.length ? { lostSecrets: [...entry.lostSecrets] } : {})
       });
     }
-    return { approved: { ...approved }, pending, status };
+    return { approved: { ...approved }, pending, status, ...(unsupported ? { unsupported } : {}) };
   }
 
   /** Tell the window, and tell the server. Called after every state change. */
@@ -201,7 +217,7 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
         // a kernel will take) or asynchronously (ENOENT, which arrives as an
         // 'error' event the client turns into a rejection). Both are this
         // server failing, and neither is Stem failing.
-        client.start();
+        await client.start();
         tools = await client.handshake();
       } catch (e) {
         failure = errorText(e);
@@ -251,21 +267,49 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
    * which covers both halves of ④ at once: a server that was never approved,
    * and one whose `args` or `env` were edited since it was.
    */
-  async function sync(): Promise<void> {
+  async function reconcile(): Promise<void> {
     if (closed) return;
     let assignments: DeviceMcpAssignment[];
     try {
       const answer = await deps.invoke('mcpHost:hello', []);
       assignments = Array.isArray(answer) ? (answer as DeviceMcpAssignment[]) : [];
+      unsupported = null;
     } catch (e) {
       // An unreachable server, or one too old to know the channel. Neither is a
       // reason to tear down servers that are running perfectly well here.
-      log('mcp-host', 'could not ask the server what this machine hosts', { error: errorText(e) });
+      const error = errorText(e);
+      // Told apart because only one of them is permanent. A server that cannot
+      // be reached comes back; a server that has never heard of this channel
+      // will not start answering it, and the panel would otherwise just be
+      // empty — which reads as "nothing is pinned to this computer".
+      unsupported = missingHandler(error, 'mcpHost:hello')
+        ? 'The Stem server this app is connected to is older than this copy of Stem and knows nothing about servers pinned to a computer. Update the server (or its container) and this panel will work again.'
+        : null;
+      log('mcp-host', 'could not ask the server what this machine hosts', { error });
+      deps.changed?.(localState());
       return;
     }
     approved = await approvals.read();
 
     const wanted = new Set(assignments.map((a) => a.name));
+    // The moment this machine learns what it hosts is the only moment it can
+    // know what it does NOT host any more, so it is where the approval store is
+    // pruned. Without this, un-pinning a server and later pinning the same spec
+    // back here starts it eagerly with no card — the approval outlived the
+    // assignment it was given for, and mcp.json is written centrally.
+    //
+    // A pinned server that is merely DISABLED is not in the answer either, so
+    // turning one off and on again asks for approval once more. That is the safe
+    // direction of the two, and the only one this side can tell apart: what
+    // arrives here is "what you may run", and a disabled entry is not in it.
+    await approvals.prune(wanted).catch((e) => {
+      // Never fatal to a sync: a store that cannot be written is a store that
+      // still refuses everything it does not hold, which is the safe failure.
+      log('mcp-host', 'could not prune stale MCP approvals', { error: errorText(e) });
+    });
+    for (const name of Object.keys(approved)) {
+      if (!wanted.has(name)) delete approved[name];
+    }
     for (const [name, entry] of servers) {
       if (wanted.has(name)) continue;
       // Un-pinned, disabled or deleted on the server. Stop it here rather than
@@ -278,6 +322,11 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
     for (const assignment of assignments) {
       const existing = servers.get(assignment.name);
       const isApproved = approved[assignment.name] === assignment.fingerprint;
+      // Kept current even when nothing else moved: whether a credential can be
+      // read is a fact about the OTHER machine's key, and it can change without
+      // anything in the spec changing (a passphrase supplied late, a key
+      // restored).
+      if (existing) existing.lostSecrets = assignment.lostSecrets;
       if (existing && existing.fingerprint === assignment.fingerprint) {
         // Same spec as last time. Leave a working connection alone — a re-sync
         // must not cost every server a fresh handshake — and only move it when
@@ -304,12 +353,30 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
         fingerprint: assignment.fingerprint,
         status: 'unapproved',
         tools: [],
+        lostSecrets: assignment.lostSecrets,
         client: null
       };
       servers.set(entry.name, entry);
       if (isApproved) void start(entry);
     }
     publish();
+  }
+
+  /**
+   * One reconcile at a time, in the order they were asked for.
+   *
+   * There are now four things that ask — launch, a reconnection, the panel, and
+   * the server saying mcp.json moved — and two of them can land in the same
+   * tick. Two hellos in flight can answer out of order, and the loser writing
+   * last would leave this machine running the previous config with nothing left
+   * to correct it. Queued rather than coalesced: each caller's promise resolves
+   * after ITS own reconcile, which is what `test()` and the panel are awaiting.
+   */
+  let tail: Promise<void> = Promise.resolve();
+  function sync(): Promise<void> {
+    const next = tail.then(reconcile, reconcile);
+    tail = next.catch(() => undefined);
+    return next;
   }
 
   // ---- answering one call ----
@@ -347,6 +414,20 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
 
     const tool = entry.tools.find((t) => t.name === request.tool);
     if (!tool) return { ok: false, error: `“${request.server}” has no tool “${request.tool}”.` };
+    // The full schema, straight off the handshake, exactly as the server wrote
+    // it: types, enums, per-argument descriptions. It is held here and nowhere
+    // else — the catalog that travels every turn carries a compact signature, on
+    // purpose — so this is the one place the real thing can come from.
+    if (request.op === 'describe') {
+      return {
+        ok: true,
+        schema: {
+          name: tool.name,
+          ...(tool.description ? { description: tool.description } : {}),
+          ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {})
+        }
+      };
+    }
     try {
       const result = await entry.client.callTool(tool.name, request.args ?? {});
       // MCP content arrays pass through as they are; anything else is wrapped,
@@ -383,6 +464,10 @@ export function createMcpHost(deps: McpHostDeps): McpHost {
     start: sync,
     refresh: sync,
     onRequest,
+    // The server told us mcp.json moved under us. Same reconcile as a launch,
+    // and it is fire-and-forget on purpose: this arrives on the event stream,
+    // which has nothing to hand a rejection to.
+    onAssignmentsChanged: () => void sync(),
     localState,
 
     async approve(name, fingerprint) {
@@ -559,7 +644,16 @@ function oneLine(description: string | undefined): string {
   return s.length > 120 ? `${s.slice(0, 117)}…` : s;
 }
 
-/** Compact "(req, opt?)" signature from a JSON-Schema object, required first. */
+/**
+ * Compact "(req, opt?)" signature from a JSON-Schema object, required first.
+ *
+ * Truncated at eight arguments with a "…", which is a summary and not a loss:
+ * the real schema for any tool, all of its arguments included, is one
+ * `describe_tool` away and comes from this process's own handshake (see the
+ * `describe` op in answer()). What must never happen is the other end treating
+ * this string as the whole truth — see schemaFromSignature in the bridge
+ * extension, which says out loud that a rebuilt schema is partial.
+ */
 function compactSignature(schema: McpToolDefinition['inputSchema']): string {
   const properties = schema?.properties;
   if (!properties || typeof properties !== 'object') return '()';
@@ -569,6 +663,20 @@ function compactSignature(schema: McpToolDefinition['inputSchema']): string {
   const ordered = [...keys.filter((k) => required.has(k)), ...keys.filter((k) => !required.has(k)).map((k) => `${k}?`)];
   const shown = ordered.slice(0, 8);
   return `(${shown.join(', ')}${ordered.length > shown.length ? ', …' : ''})`;
+}
+
+/**
+ * Whether a failure is "that server has never heard of this channel".
+ *
+ * Both halves of the refusal are matched — the guard's wording and the channel
+ * name — so an unrelated error that happens to contain the phrase cannot be
+ * reported as a version mismatch. The guard's sentence is
+ * `Rejected local call to X: no handler registered.` (src/server/ipc/guard.ts);
+ * a client's own IPC layer words it differently, which is why only the two
+ * stable parts are looked for.
+ */
+function missingHandler(error: string, channel: string): boolean {
+  return error.includes(channel) && /no handler registered/i.test(error);
 }
 
 /** An error as a sentence, whatever it actually was. */

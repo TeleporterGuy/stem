@@ -126,4 +126,30 @@ export function bindServerChannels(
   for (const channel of channels) {
     bind(channel, ipcArgSpecs(channel), (args) => invoke(channel, args));
   }
+  // Channels this build knows and the server may not. Bound AFTER the real ones,
+  // so a server that does answer them wins; what is left is a window that can
+  // still press the button, and gets a sentence instead of Electron's own "No
+  // handler registered for 'mcp:setLocation'", which reads as a crash and names
+  // nothing anybody can act on.
+  for (const [channel, refusal] of Object.entries(NEEDS_A_NEWER_SERVER)) {
+    if (channels.includes(channel)) continue;
+    log('ipc', 'the server does not answer this channel', { channel });
+    bind(channel, ipcArgSpecs(channel), () => {
+      throw new Error(refusal);
+    });
+  }
 }
+
+/**
+ * What to say when the server is older than this client.
+ *
+ * A desktop updates itself (or is updated by a package manager) while the server
+ * it talks to is a container somebody has to pull, so client-newer-than-server is
+ * the ordinary skew and not an exotic one. Only channels a WINDOW can reach
+ * belong here: the host's own channels are called by the main process, which has
+ * somewhere better to put the same news (see McpHostLocalState.unsupported).
+ */
+const NEEDS_A_NEWER_SERVER: Record<string, string> = {
+  'mcp:setLocation':
+    'This Stem server is older than this copy of Stem and cannot pin an MCP server to a computer. Update the server (or its container) and try again.'
+};

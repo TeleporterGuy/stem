@@ -50,9 +50,20 @@ four combinations are meaningful, and no UI that merges them stays honest.
 Derived, and not separately decided:
 
 - Credentials travel with the spec. `env` stays in `mcp.json`, encrypted with the server
-  key, and goes down with the spec at connect time. For a device-located HTTP server with
-  OAuth nothing changes either: the browser leg already runs on the client
-  (`desktop/oauth-courier.ts`) and the token lands in the server's `mcp-oauth.json`.
+  key, and goes down with the spec at connect time.
+- **A device-located HTTP server cannot use OAuth, and this is not a gap to fill later.**
+  An earlier draft of this section claimed "nothing changes either" because the browser
+  leg already runs on the client (`desktop/oauth-courier.ts`). The browser leg is not the
+  part that decides: discovery, dynamic client registration and the token exchange are
+  HTTP requests to the MCP server's own address, made by the machine running
+  `stem-server` — which for `http://homeassistant.local` has no route to it at all. That
+  is the same fact this whole document exists for, pointing the other way. So
+  `DeviceMcpSpec` has no token field, `specFor()` sends url + headers only, and the panel
+  says why **Sign in** is not offered on such a row rather than omitting the button in
+  silence. A static `Authorization:` header travels with the spec and works today; that
+  is the supported answer. Making OAuth work would mean running discovery and
+  registration ON the device and sending the resulting token up, which is a different
+  feature with its own security argument to make.
 - Reserved servers (`stem-recall`, the admin server) are always server-located.
 - The model's interface does not change. `invoke_tool` / `describe_tool` are unchanged;
   a pinned server is just another routed server to it.
@@ -100,6 +111,13 @@ carries the device **label** too, so the panel can render a place without a seco
 are desktops. `DeviceRecord` gains an optional `kind: 'desktop' | 'mobile'`, supplied at
 pairing by the client and defaulting to `'desktop'` for records written before this
 change. The parser already tolerates unknown fields; no `devices.json` version bump.
+
+`kind` is **self-declared by the client when it spends its pairing code**, so ⑦ is
+enforced against a claim and not against a fact: a phone that said `desktop` would be
+offered as a host. That is acceptable and not a hole — the check exists to stop somebody
+pinning a server to a machine that will be asleep half the time, not to stop an attacker,
+and a device that lies here can only volunteer itself for work it will be bad at, on a
+server it is already authenticated to. It is worth knowing when reading the check.
 
 **Sentinel (`src/server/pi/protocol.ts` + its hand-written twin in the extension)**
 

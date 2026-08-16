@@ -2,6 +2,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { log } from '../server/log';
 import {
+  MCP_ASSIGNMENTS_FRAME,
   MCP_REQUEST_FRAME,
   type AuthUiEvent,
   type BackendEventEnvelope,
@@ -199,6 +200,12 @@ const SETTINGS_CHANNELS = [
  */
 export interface DeviceMcpHostBinding {
   onRequest(request: DeviceMcpRequest): void;
+  /**
+   * What this machine is asked to host changed on the server. Carries nothing —
+   * the host asks for the new list itself — so there is no payload here to be
+   * wrong about.
+   */
+  onAssignmentsChanged(): void;
 }
 
 export interface ProxyDeps {
@@ -485,6 +492,14 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       // A frame we cannot read is dropped in silence: without a requestId there
       // is nothing to answer, and the server's own timeout is what covers it.
       if (request) deps.mcpHost.onRequest(request);
+      return;
+    }
+    // mcp.json changed in a way that changes what THIS machine runs — and it was
+    // changed somewhere else: another window, a phone, the assistant. Addressed
+    // and off the ring for the same reason a request is; nothing to parse,
+    // because the host goes and asks.
+    if (name === MCP_ASSIGNMENTS_FRAME) {
+      deps.mcpHost.onAssignmentsChanged();
       return;
     }
     if (name === 'snapshot') {

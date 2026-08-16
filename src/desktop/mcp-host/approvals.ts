@@ -40,6 +40,17 @@ export interface ApprovalStore {
   approve(name: string, fingerprint: string): Promise<void>;
   /** Forget any approval for `name`. */
   reject(name: string): Promise<void>;
+  /**
+   * Drop every approval whose server is not in `keep` — the set this machine has
+   * just been told it hosts.
+   *
+   * Without it this file only ever grows, and what it accumulates is consent:
+   * un-pin a server and pin the same spec back a month later and it starts with
+   * no card, because a yes given for an assignment outlived the assignment. The
+   * caller is the one moment that knows the whole set (see sync()), so this
+   * takes the set rather than a name.
+   */
+  prune(keep: ReadonlySet<string>): Promise<void>;
 }
 
 export function mcpApprovalsPath(): string {
@@ -117,7 +128,20 @@ export function fileApprovalStore(): ApprovalStore {
         // than being answered once and disappearing.
         delete approved[name];
         log('mcp-host', 'withdrew approval for an MCP server', { name });
-      })
+      }),
+    prune: async (keep) => {
+      // Read first so the ordinary sync — where nothing is stale, which is every
+      // sync but a handful — does not rewrite the file. The check is repeated
+      // inside the update, which is the one that runs serialized.
+      const current = (await readApprovalsFile()).approved ?? {};
+      if (Object.keys(current).every((name) => keep.has(name))) return;
+      await update((approved) => {
+        const stale = Object.keys(approved).filter((name) => !keep.has(name));
+        if (stale.length === 0) return;
+        for (const name of stale) delete approved[name];
+        log('mcp-host', 'forgot approvals for MCP servers this machine no longer hosts', { names: stale });
+      });
+    }
   };
 }
 
@@ -132,6 +156,12 @@ export function memoryApprovalStore(initial: Record<string, string> = {}): Appro
     },
     reject: (name) => {
       delete approved[name];
+      return Promise.resolve();
+    },
+    prune: (keep) => {
+      for (const name of Object.keys(approved)) {
+        if (!keep.has(name)) delete approved[name];
+      }
       return Promise.resolve();
     }
   };

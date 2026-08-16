@@ -86,7 +86,9 @@ describe('moving a server to another machine', () => {
 
     expect(list[0].location).toEqual({ deviceId: device.id, label: 'Ada’s MacBook' });
     const moved = (await readMcpConfig()).servers.lan;
-    expect(moved.location).toEqual({ deviceId: device.id });
+    // The id, plus the label it had at this moment — a snapshot, so an entry
+    // orphaned by a later re-pairing can still name the machine it meant.
+    expect(moved.location).toEqual({ deviceId: device.id, label: 'Ada’s MacBook' });
     expect(moved.url).toBe('http://homeassistant.local:8123/mcp');
     // The header still decrypts, i.e. the entry was edited rather than rewritten
     // from the summary the panel holds — which has no headers in it at all.
@@ -146,7 +148,7 @@ describe('moving a server to another machine', () => {
     await addMcpServer(await withStoredLocation(proposed));
 
     const after = (await readMcpConfig()).servers.files;
-    expect(after.location).toEqual({ deviceId: device.id });
+    expect(after.location).toEqual({ deviceId: device.id, label: device.label });
     expect(after.args).toEqual(['--v2']);
     // A caller that DID name a place still decides: the panel's Add form with
     // "Runs on: Server" picked has said something, and it is not this.
@@ -248,8 +250,15 @@ describe('unpairing a device, through the channel that does it', () => {
     expect((await deviceMcpRouter().catalog()).devices[device.id]).toBeUndefined();
     // The user's configuration does not. Re-pairing that computer, moving the
     // server, or removing it are all decisions only they get to make.
-    expect((await readMcpConfig()).servers.files.location).toEqual({ deviceId: device.id });
+    expect((await readMcpConfig()).servers.files.location).toEqual({ deviceId: device.id, label: device.label });
     const [summary] = await listMcpServers();
-    expect(summary.location).toEqual({ deviceId: device.id, label: 'Unpaired device', orphaned: true });
+    // Orphaned, and able to say which computer it was — the machine is very
+    // probably still on the desk, wearing a new device id after a re-pairing.
+    expect(summary.location).toEqual({
+      deviceId: device.id,
+      label: 'Unpaired device',
+      orphaned: true,
+      rememberedLabel: device.label
+    });
   });
 });

@@ -601,28 +601,45 @@ function makeDeviceCatalogGate(catalogPath) {
 }
 
 /**
- * A JSON-Schema rebuilt from the compact signature a device announced.
+ * A JSON-Schema rebuilt from the compact signature a device announced, for the
+ * case where the real one cannot be fetched — the machine is asleep, or the
+ * server on it is not running.
  *
- * The device sends `(path, limit?)` rather than the whole input schema, on the
- * same bargain the bridge's own catalog makes: a few servers' worth of schemas
- * is tens of thousands of tokens in every prompt. describe_tool still has to
- * answer with something, and an empty object schema would read as "this tool
- * takes no arguments" — a lie that costs a turn. Argument names and which of
- * them are required is what we actually know, so that is what this returns, with
- * the schema's own description saying where the rest of it is.
+ * This is a FALLBACK and says so. The device announces `(path, limit?)` rather
+ * than whole input schemas, on the same bargain the bridge's own catalog makes:
+ * a few servers' worth of schemas is tens of thousands of tokens in every
+ * prompt. When the machine is up, describe_tool asks it for the real schema and
+ * this is never used. When it is not, argument names and which of them are
+ * required is genuinely all anyone here knows — and an empty object schema would
+ * read as "this tool takes no arguments", a lie that costs a turn.
+ *
+ * `why` is written into the schema's own description, where the model reads the
+ * arguments, rather than somewhere beside it that it may not look at.
  */
-function schemaFromSignature(signature) {
+function schemaFromSignature(signature, why) {
+  const inner = typeof signature === 'string' ? signature.replace(/^\(|\)$/g, '') : '';
+  const parts = inner.split(',').map((raw) => raw.trim());
+  // The trailing "…" marks a signature the announcing device truncated at eight
+  // arguments. Everything past the eighth is simply not here, and a schema that
+  // did not say so would be read as a complete one that forbids them.
+  const truncated = parts.includes('…');
   const schema = {
     type: 'object',
     properties: {},
     required: [],
+    // Not `false`: what is listed is known to be incomplete, and an argument
+    // this does not name may still be the right one to pass.
+    additionalProperties: true,
     description:
-      'Argument names only — the full JSON schema stays on the computer that hosts this server. Types are not known here.'
+      `PARTIAL SCHEMA — ${why} ` +
+      'Only the argument names the hosting computer last announced are known: no types, no per-argument descriptions, no ' +
+      'allowed values.' +
+      (truncated
+        ? ' The announced list was cut short, so this tool has further arguments beyond the ones named here.'
+        : '') +
+      ' Ask again once that computer is connected to get the real schema.'
   };
-  const inner = typeof signature === 'string' ? signature.replace(/^\(|\)$/g, '') : '';
-  for (const raw of inner.split(',')) {
-    const arg = raw.trim();
-    // The trailing "…" marks a signature the device truncated at eight arguments.
+  for (const arg of parts) {
     if (!arg || arg === '…') continue;
     const optional = arg.endsWith('?');
     const name = optional ? arg.slice(0, -1) : arg;
@@ -636,11 +653,31 @@ function schemaFromSignature(signature) {
  * What the panel should show under a device-located server, or null when there
  * is nothing to say. A server that simply lives on another machine is not in an
  * error state, so the healthy case is silence — the row already names the place.
+ *
+ * A MISSING report is not the healthy case, and used to be reported as one: a
+ * pin whose machine was unpaired, or one that has never once connected, showed
+ * up in mcp-status.json as `elsewhere` with no error at all. Anything reading
+ * the status rather than the panel — which knows about orphans separately — then
+ * saw a server that cannot run and looks fine. It names the machine as well as
+ * the server (⑤) using the label stored beside the pin, since that is the whole
+ * of what somebody needs to act on it.
  */
-function deviceReportError(report) {
-  if (!report || report.status === 'ready') return null;
+function deviceReportError(report, place) {
+  if (!report) {
+    return (
+      `${place} has never told Stem it is running this server. Either it has not been connected since the server was ` +
+      'pinned there, or it is no longer paired with this Stem — Settings → Tools → MCP servers says which.'
+    );
+  }
+  if (report.status === 'ready') return null;
   if (report.status === 'unapproved') return 'Waiting for approval on the computer that runs it.';
   return report.error || 'It is not running on the computer that hosts it.';
+}
+
+/** How a pinned server's machine should be named, from what mcp.json remembers. */
+function devicePlace(location) {
+  const label = location && typeof location.label === 'string' ? location.label.trim() : '';
+  return label ? `“${label}”` : 'The computer this server is pinned to';
 }
 
 /**
@@ -656,7 +693,14 @@ function deviceToolDefinitions(tools) {
     .map((tool) => ({
       name: tool.name,
       description: typeof tool.description === 'string' ? tool.description : '',
-      inputSchema: schemaFromSignature(tool.signature)
+      // Kept alongside so describe_tool can rebuild the fallback schema with the
+      // actual reason the real one could not be fetched, rather than this
+      // stand-in written before anybody tried.
+      signature: tool.signature,
+      inputSchema: schemaFromSignature(
+        tool.signature,
+        'the computer that hosts this server has not been asked for the real one.'
+      )
     }));
 }
 
@@ -760,6 +804,28 @@ class McpDeviceClient {
     // stands: those tools are real, and saying so is the whole of ③.
     this.lastError = res.noChannel ? null : res.error || null;
     return this.tools;
+  }
+
+  /**
+   * One tool's REAL input schema, fetched from the machine that handshook with
+   * the server, or `{ partial }` saying why it could not be.
+   *
+   * This is the on-demand half of the compact catalog, and the reason the
+   * compact half is allowed to be compact. The per-turn block carries names and
+   * a signature truncated at eight arguments; that is a summary, and a summary
+   * is only honest if the full thing can be had when it matters. Rebuilding a
+   * schema out of the summary instead — no types, no enums, no ninth argument —
+   * is how a model ends up calling a tool wrongly and being told nothing about
+   * why.
+   */
+  async describe(toolName) {
+    const res = await this.request({ op: 'describe', server: this.name, tool: toolName });
+    if (res.ok && res.schema) return res.schema;
+    return {
+      partial: res.noChannel
+        ? 'Stem is not in a turn, so the computer that hosts this server could not be asked for the real schema.'
+        : res.error || `The computer that hosts "${this.name}" could not be asked for the real schema.`
+    };
   }
 
   /**
@@ -1113,11 +1179,29 @@ function registerRouterTools(pi, clients, protectedRoots) {
       const entry = clients.get(server);
       const def = entry && entry.tools.find((t) => t.name === toolName);
       if (!def) return errText(`No such tool "${toolName}" on server "${server}".`);
-      const text = JSON.stringify(
-        { server, name: def.name, description: def.description || '', inputSchema: def.inputSchema || { type: 'object' } },
-        null,
-        2
-      );
+      let description = def.description || '';
+      let inputSchema = def.inputSchema || { type: 'object' };
+      // A server that runs on one of the user's own machines holds its tools'
+      // real schemas over there, and this tool is exactly the moment to go and
+      // get one: describe_tool is the escape hatch the compact catalog is
+      // predicated on, so answering it from the compact catalog would be
+      // circular. Everything else already has the real schema in hand.
+      if (entry.client && typeof entry.client.describe === 'function') {
+        const answer = await entry.client.describe(def.name);
+        if (answer && answer.inputSchema) {
+          inputSchema = answer.inputSchema;
+          if (answer.description) description = answer.description;
+        } else {
+          // Unreachable. Fall back to what the machine last announced and say
+          // in the schema itself that this is partial and why, rather than
+          // handing over a confident-looking object with every property empty.
+          inputSchema = schemaFromSignature(
+            def.signature,
+            (answer && answer.partial) || `The computer that hosts "${server}" could not be asked for the real schema.`
+          );
+        }
+      }
+      const text = JSON.stringify({ server, name: def.name, description, inputSchema }, null, 2);
       return { content: [{ type: 'text', text }], details: {} };
     }
   });
@@ -1253,12 +1337,14 @@ function startConnections(servers, oauthTokens, persistAuth, publish, deviceRepo
           return client.tools;
         }
       });
+      const place = devicePlace(spec.location);
       const deviceStatus = () => ({
         status: 'elsewhere',
         // What the machine itself last said, unless a live attempt just found
         // something more recent to say. 'elsewhere' is not a failure — it is
-        // where the server is — so a healthy one carries no error at all.
-        error: client.lastError || deviceReportError(deviceReport(spec.location.deviceId, name))
+        // where the server is — so a healthy one carries no error at all; a
+        // machine that has never reported this server is a different matter.
+        error: client.lastError || deviceReportError(deviceReport(spec.location.deviceId, name), place)
       });
       conn.status[name] = deviceStatus();
       // Still handshaked, in the background and never awaited: at startup there

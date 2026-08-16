@@ -357,6 +357,92 @@ describe('one call, from the bridge extension to the machine that hosts it', () 
     expect(sent).toHaveLength(0); // refused before anything went on the wire
   });
 
+  // The argument names a device announces are a SUMMARY: one line per tool, cut
+  // off after eight arguments. describe_tool is what makes that summary honest —
+  // it is the on-demand escape hatch the compact catalog is predicated on — so
+  // it has to answer with the schema the server actually declared, not with the
+  // summary reflected back with every property empty.
+  describe('describe_tool on a pinned server', () => {
+    /** A tool with twelve arguments: more than a compact signature can carry. */
+    const TWELVE = 'abcdefghijkl'.split('');
+    const REAL_SCHEMA = {
+      type: 'object',
+      properties: Object.fromEntries(
+        TWELVE.map((k) => [k, { type: 'string', description: `the ${k} argument`, enum: [`${k}1`, `${k}2`] }])
+      ),
+      required: ['a']
+    };
+
+    beforeEach(async () => {
+      // What the machine announced: names only, truncated at eight with a "…".
+      await writeFile(
+        join(root, 'mcp-device-catalog.json'),
+        JSON.stringify({
+          version: 1,
+          devices: {
+            mac: {
+              deviceId: 'mac',
+              announcedAt: '2026-08-16T09:00:00.000Z',
+              servers: [
+                {
+                  name: 'files',
+                  status: 'ready',
+                  tools: [{ name: 'wide', description: 'Takes a lot.', signature: '(a, b?, c?, d?, e?, f?, g?, h?, …)' }]
+                }
+              ]
+            }
+          }
+        })
+      );
+      answer = (request) =>
+        request.op === 'describe'
+          ? { ok: true, schema: { name: 'wide', description: 'Takes a lot.', inputSchema: REAL_SCHEMA } }
+          : { ok: true, tools: [{ name: 'wide', description: 'Takes a lot.', signature: '(a, b?, c?, d?, e?, f?, g?, h?, …)' }] };
+    });
+
+    it('answers with the server’s real schema, arguments past the eighth included', async () => {
+      const tools = await startBridge();
+      const described = textOf(await tools.get('describe_tool')!.execute('id', { server: 'files', tool: 'wide' }));
+
+      const parsed = JSON.parse(described) as { inputSchema: typeof REAL_SCHEMA };
+      // Every argument, with its type, its description and its allowed values —
+      // none of which survives a round trip through a compact signature. The
+      // ninth through twelfth are the ones that used to be unreachable
+      // ENTIRELY: the signature truncates at eight and the parser dropped the
+      // "…", so no amount of asking could ever have revealed them.
+      expect(Object.keys(parsed.inputSchema.properties)).toEqual(TWELVE);
+      expect(parsed.inputSchema.properties.l).toEqual({
+        type: 'string',
+        description: 'the l argument',
+        enum: ['l1', 'l2']
+      });
+      expect(parsed.inputSchema.required).toEqual(['a']);
+      expect(sent.map((s) => s.data.op)).toContain('describe');
+    });
+
+    it('says it is partial, and why, when that computer cannot be asked', async () => {
+      connected.delete('mac');
+      const tools = await startBridge();
+      const described = textOf(await tools.get('describe_tool')!.execute('id', { server: 'files', tool: 'wide' }));
+      const parsed = JSON.parse(described) as {
+        inputSchema: { description: string; properties: Record<string, unknown>; additionalProperties: boolean };
+      };
+
+      // What is known is still offered — the eight names the machine announced —
+      // but the schema says out loud that it is a fallback, that types are not
+      // known, and that there are further arguments it cannot name. A confident
+      // empty-property schema here is what makes a model call a tool wrongly and
+      // have no idea why.
+      expect(Object.keys(parsed.inputSchema.properties)).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+      expect(parsed.inputSchema.description).toContain('PARTIAL SCHEMA');
+      expect(parsed.inputSchema.description).toContain('further arguments');
+      // And it names the machine to wake, because that is the actionable half.
+      expect(parsed.inputSchema.description).toContain('Ada’s MacBook');
+      // A schema that is known to be incomplete must not forbid what it omits.
+      expect(parsed.inputSchema.additionalProperties).toBe(true);
+    });
+  });
+
   it('keeps the device server out of the bridge’s own catalog file', async () => {
     await startBridge();
     const catalog = JSON.parse(await readFile(join(root, 'mcp-catalog.json'), 'utf8')) as { text: string };
@@ -366,9 +452,35 @@ describe('one call, from the bridge extension to the machine that hosts it', () 
 
     const status = JSON.parse(await readFile(join(root, 'mcp-status.json'), 'utf8')) as Record<
       string,
-      { status: string }
+      { status: string; error: string | null }
     >;
     expect(status.files.status).toBe('elsewhere');
+    // Elsewhere and healthy: the machine announced it as ready, so there is
+    // nothing to say beyond where it is.
+    expect(status.files.error).toBeNull();
+  });
+
+  it('does not report an unrunnable pinned server as healthy', async () => {
+    // No announcement from that machine, ever — because it was unpaired, or
+    // because it has not connected since the pin was made. Either way nothing
+    // is running this server, and `status: elsewhere, error: null` is what a
+    // working one looks like. Anything reading the status file rather than the
+    // panel (which knows about orphans separately) saw exactly that.
+    await rm(join(root, 'mcp-device-catalog.json'), { force: true });
+    servers = {
+      files: { command: '/usr/bin/mcp-files', trusted: true, location: { deviceId: 'mac', label: 'Ada’s MacBook' } }
+    };
+    await writeFile(process.env.STEM_MCP_CONFIG!, JSON.stringify({ servers }));
+
+    await startBridge();
+    const status = JSON.parse(await readFile(join(root, 'mcp-status.json'), 'utf8')) as Record<
+      string,
+      { status: string; error: string | null }
+    >;
+    // Names the machine as well as the server (⑤), out of the label stored
+    // beside the pin — the id would be true and useless.
+    expect(status.files.error).toContain('Ada’s MacBook');
+    expect(status.files.error).toContain('no longer paired');
   });
 
   it('takes the device from mcp.json, never from the payload the extension sent', async () => {

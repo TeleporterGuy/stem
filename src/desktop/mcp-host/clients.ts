@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { execEnv, resolveLoginPath } from '../../server/exec/executor';
 import type { DeviceMcpSpec } from '../../shared/types';
 
 // Two minimal MCP clients: a stdio one that spawns a child here, and a
@@ -45,7 +46,13 @@ export interface McpToolDefinition {
   name: string;
   title?: string;
   description?: string;
-  inputSchema?: { properties?: Record<string, unknown>; required?: string[] };
+  /**
+   * The server's own JSON Schema, kept whole. `properties`/`required` are named
+   * because the compact signature is built from them; everything else — types,
+   * enums, per-argument descriptions, `$defs` — passes through untouched,
+   * because that is what `describe_tool` hands back when it is asked.
+   */
+  inputSchema?: { properties?: Record<string, unknown>; required?: string[]; [key: string]: unknown };
 }
 
 /**
@@ -56,8 +63,14 @@ export interface McpToolDefinition {
 export interface McpClient {
   /** False once the connection is known to be gone; never reused when false. */
   readonly alive: boolean;
-  /** Open the transport. May throw — the caller turns that into a failed server. */
-  start(): void;
+  /**
+   * Open the transport. May throw — the caller turns that into a failed server.
+   *
+   * Allowed to be asynchronous because the stdio client has one thing to find
+   * out before it can spawn: the PATH a shell on this machine would have. The
+   * caller awaits it, so a client whose start is synchronous is unaffected.
+   */
+  start(): void | Promise<void>;
   /** initialize + tools/list. The tools it resolves with are the server's own. */
   handshake(): Promise<McpToolDefinition[]>;
   callTool(name: string, args: unknown): Promise<unknown>;
@@ -85,13 +98,26 @@ export class McpStdioClient implements McpClient {
     private readonly spec: DeviceMcpSpec
   ) {}
 
-  start(): void {
+  async start(): Promise<void> {
     if (!this.spec.command?.trim()) throw new Error(`${this.name} has no command to run.`);
+    // The PATH a login shell on this machine would have, not the one a GUI app
+    // was launched with. On macOS a double-clicked app gets
+    // /usr/bin:/bin:/usr/sbin:/sbin and nothing else, so `npx` — which is how
+    // most stdio MCP servers are written down, and the form anybody copies out
+    // of a README — is ENOENT here while working perfectly in their terminal.
+    // The whole point of pinning a server to a machine is that it runs there;
+    // failing to find the commonest command on it fails that outright.
+    //
+    // resolveLoginPath/execEnv are run_command's, deliberately reused rather
+    // than re-derived: this is the same question ("what environment does a
+    // program the user asked for get on this computer") and a second answer to
+    // it would drift. execEnv also drops Stem's own STEM_*/PI_* variables and
+    // fixes up PATH's casing on Windows, both of which apply here too.
+    const env = execEnv(await resolveLoginPath());
     this.proc = spawn(this.spec.command, this.spec.args ?? [], {
-      // The spawned server inherits this machine's environment and then the
-      // spec's own on top, which is what makes a stdio server pinned here mean
-      // anything: it finds this user's PATH, this user's home, this user's files.
-      env: { ...process.env, ...(this.spec.env ?? {}) },
+      // The spec's own env wins over everything: it is what the person
+      // approving this entry read on the card.
+      env: { ...env, ...(this.spec.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe']
     });
     this.alive = true;

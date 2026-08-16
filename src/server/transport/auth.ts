@@ -87,7 +87,10 @@ export interface DeviceRecord {
    *
    * Self-asserted, and that is fine: a device claiming to be a desktop can only
    * volunteer itself for work it will be bad at, on a server it is already
-   * authenticated to.
+   * authenticated to. Worth saying plainly, though, because it decides how much
+   * the check in pi/mcp.ts is worth: ⑦ is enforced against what a client SAID
+   * when it spent its pairing code, not against what it is. Nothing verifies it,
+   * and nothing can.
    */
   kind?: DeviceKind;
 }

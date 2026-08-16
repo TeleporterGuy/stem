@@ -8,8 +8,11 @@ import {
   mcpServerAuthIdentity,
   oauthTokenMatchesServer,
   withMcpStateMutation,
+  type PiMcpConfig,
   type PiMcpServer
 } from './mcp-config';
+import { deviceMcpRouter, deviceSpecFor } from '../mcp-device/router';
+import { mcpSpecFingerprint } from '../../shared/mcp-fingerprint';
 import { RECALL_MCP_NAME } from '../recall/register-mcp';
 import { ADMIN_MCP_NAME } from '../admin/register-mcp';
 
@@ -42,13 +45,89 @@ function assertValidName(name: string): void {
  * answer (docs/mcp-device-pinning.md, ⑩).
  */
 function describeLocation(
-  location: { deviceId: string } | undefined,
+  location: PiMcpServer['location'],
   devices: readonly DeviceRecord[]
 ): McpServerLocation | undefined {
   if (!location) return undefined;
   const device = devices.find((d) => d.id === location.deviceId);
-  if (!device) return { deviceId: location.deviceId, label: 'Unpaired device', orphaned: true };
+  if (!device) {
+    return {
+      deviceId: location.deviceId,
+      label: 'Unpaired device',
+      orphaned: true,
+      // The name that machine had when the pin was made, when we have it. This
+      // is what turns "Unpaired device" into "was Ada's MacBook" — the single
+      // most useful thing to know here, because the commonest way to arrive at
+      // this state is re-pairing the very same computer.
+      ...(location.label ? { rememberedLabel: location.label } : {})
+    };
+  }
   return { deviceId: device.id, label: device.label };
+}
+
+/**
+ * What each device is currently asked to host, as one comparable string per
+ * device — the same reading of mcp.json that `assignmentsFor` does, so that
+ * "did this change for that machine" cannot answer differently from "what is
+ * that machine sent".
+ *
+ * Disabled entries are left out because they are not sent either: turning a
+ * pinned server off IS a change to what its machine hosts, and one that has to
+ * reach it, or the child keeps running over there.
+ */
+function assignmentDigests(servers: Record<string, PiMcpServer>): Map<string, string> {
+  const lines = new Map<string, string[]>();
+  for (const [name, def] of Object.entries(servers)) {
+    const deviceId = def.location?.deviceId;
+    if (!deviceId || def.disabled) continue;
+    const line = `${name} ${mcpSpecFingerprint(deviceSpecFor(def))}`;
+    lines.set(deviceId, [...(lines.get(deviceId) ?? []), line]);
+  }
+  return new Map([...lines].map(([deviceId, list]) => [deviceId, list.sort().join('\n')]));
+}
+
+/**
+ * Make one change to mcp.json and tell the machines it changed things for.
+ *
+ * EVERY mutation goes through here, which is the point. mcp.json is written
+ * centrally and read by whichever computer runs the server, and the two are
+ * routinely not the same computer — the panel's own edits, the assistant's
+ * `add_mcp_server`, a pin changed from a phone or a second desktop all land in
+ * the same file and none of them is on the machine that would have to act. A
+ * device that is not told keeps a removed server's child alive and keeps running
+ * the spec it approved before the args were edited, until its next launch.
+ *
+ * The renderer's applyMcpChange() is not enough and cannot be made enough: it
+ * refreshes the host in the window that made the edit, which is exactly the one
+ * machine that is NOT usually the host. This is at the writer, so it holds for
+ * every caller including the ones that have no window at all.
+ *
+ * Which machines are told is decided by diffing the assignments themselves,
+ * before and after, inside the same lock the write takes: an edit to a
+ * server-located entry wakes nobody, and an edit that moves a server from one
+ * machine to another tells both — the one that must stop it and the one that
+ * must be offered it.
+ */
+async function writeServers(
+  mutate: (config: PiMcpConfig) => Promise<void> | void
+): Promise<McpServerSummary[]> {
+  let before = new Map<string, string>();
+  let after = new Map<string, string>();
+  await withMcpStateMutation(async () => {
+    const config = await readMcpConfig();
+    before = assignmentDigests(config.servers);
+    await mutate(config);
+    after = assignmentDigests(config.servers);
+    await writeMcpConfig(config);
+  });
+  // After the lock, never inside it: a push writes to sockets, and the device it
+  // reaches answers by calling back in for its assignments — which would want
+  // the very lock this is standing in.
+  for (const deviceId of new Set([...before.keys(), ...after.keys()])) {
+    if (before.get(deviceId) === after.get(deviceId)) continue;
+    deviceMcpRouter().assignmentsChanged(deviceId);
+  }
+  return listMcpServers();
 }
 
 export async function listMcpServers(): Promise<McpServerSummary[]> {
@@ -96,7 +175,7 @@ export async function listMcpServers(): Promise<McpServerSummary[]> {
  */
 async function resolveLocation(
   requested: { deviceId: string } | undefined
-): Promise<{ deviceId: string } | undefined> {
+): Promise<PiMcpServer['location']> {
   const deviceId = requested?.deviceId?.trim();
   if (!deviceId) return undefined;
   const device = (await readDevices()).find((d) => d.id === deviceId);
@@ -106,7 +185,12 @@ async function resolveLocation(
       `“${device.label}” is a phone, and a phone cannot host an MCP server — it goes to sleep, and the server would be unreachable whenever the screen locked.`
     );
   }
-  return { deviceId: device.id };
+  // The label is read from the registry here and never taken from the caller,
+  // for the same reason the id is validated here: a caller that could supply it
+  // could make a row claim to be a machine it is not. Written alongside the id
+  // so that an entry orphaned by a re-pairing can still name the computer it
+  // meant — a display fact, never a routing one.
+  return { deviceId: device.id, label: device.label };
 }
 
 export async function addMcpServer(input: McpServerInput): Promise<McpServerSummary[]> {
@@ -145,8 +229,7 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
   }
   if (location) next = { ...next, location };
 
-  await withMcpStateMutation(async () => {
-    const config = await readMcpConfig();
+  return writeServers(async (config) => {
     const previous = config.servers[name];
     const identityChanged = !previous || mcpServerAuthIdentity(previous) !== mcpServerAuthIdentity(next);
     // Revoke the name-keyed credential before exposing a new identity. If the
@@ -154,9 +237,7 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
     // again; the secret can never become attached to the new URL.
     if (identityChanged) await deleteOAuthToken(name);
     config.servers[name] = next;
-    await writeMcpConfig(config);
   });
-  return listMcpServers();
 }
 
 /**
@@ -187,8 +268,7 @@ export async function setMcpServerLocation(
   // meets when adding — an unpaired device, a phone — are the ones they meet
   // when moving, in the same words.
   const location = await resolveLocation(deviceId ? { deviceId } : undefined);
-  await withMcpStateMutation(async () => {
-    const config = await readMcpConfig();
+  return writeServers((config) => {
     const def = config.servers[name];
     if (!def) throw new Error(`No MCP server named "${name}".`);
     // Deleted rather than written as undefined/null: absent is what "runs where
@@ -196,9 +276,7 @@ export async function setMcpServerLocation(
     // has to be byte-identical to one that was never pinned.
     if (location) def.location = location;
     else delete def.location;
-    await writeMcpConfig(config);
   });
-  return listMcpServers();
 }
 
 /**
@@ -230,26 +308,20 @@ export async function withStoredLocation(input: McpServerInput): Promise<McpServ
  */
 export async function setMcpServerEnabled(name: string, enabled: boolean): Promise<McpServerSummary[]> {
   if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
-  await withMcpStateMutation(async () => {
-    const config = await readMcpConfig();
+  return writeServers((config) => {
     const def = config.servers[name];
     if (!def) throw new Error(`No MCP server named "${name}".`);
     if (enabled) delete def.disabled;
     else def.disabled = true;
-    await writeMcpConfig(config);
   });
-  return listMcpServers();
 }
 
 export async function removeMcpServer(name: string): Promise<McpServerSummary[]> {
   if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
-  await withMcpStateMutation(async () => {
-    const config = await readMcpConfig();
+  return writeServers(async (config) => {
     if (!config.servers[name]) throw new Error(`No MCP server named "${name}".`);
     // Delete the credential first for the same fail-safe ordering as replacement.
     await deleteOAuthToken(name);
     delete config.servers[name];
-    await writeMcpConfig(config);
   });
-  return listMcpServers();
 }

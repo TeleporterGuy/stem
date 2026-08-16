@@ -19,6 +19,22 @@ import { useRemoteServer } from '../../hooks/useRemoteServer';
 
 const SUBS = ['mcp', 'skills'] as const;
 
+/**
+ * Why a URL server pinned to one of your computers has no Sign in button.
+ *
+ * Not an oversight and not a shortcut. OAuth discovery and dynamic client
+ * registration are HTTP calls to the server's own address, and sign-in runs on
+ * the machine holding your Stem server — which, for `http://homeassistant.local`,
+ * has no route to it at all. The half that could work (the browser leg) is not
+ * the half that decides. A static token in an `Authorization:` header travels
+ * with the spec and works today, so that is what the row offers instead of a
+ * button that would fail in a way nobody could read.
+ */
+const NO_OAUTH_ELSEWHERE =
+  'Signing in with OAuth is not available for a server pinned to one of your computers: the sign-in runs where your ' +
+  'Stem server runs, and it cannot reach an address on your home network. Use a static token instead — add an ' +
+  '“Authorization: Bearer …” header to the entry.';
+
 // Combined panel: MCP servers and Skills live under the same icon as two sub-tabs.
 export function McpSkillsTab({ models }: { models: ModelSummary[] }) {
   const [sub, setSub] = useRememberedTab('stem.tools.sub', SUBS, 'mcp');
@@ -91,8 +107,15 @@ function McpTab() {
 
   useEffect(() => {
     refresh();
-    // The assistant can add/remove servers itself; refresh the list when it does.
-    const offChanged = window.stem.onMcpChanged(() => refresh());
+    // The assistant can add/remove servers itself; refresh the list when it does
+    // — and so can this computer's own host, because what it was asked to run
+    // may be exactly what changed. The server tells the hosting machine on its
+    // own (see writeServers in server/pi/mcp.ts); this is the open panel
+    // catching up, which is a different question with a different answer.
+    const offChanged = window.stem.onMcpChanged(() => {
+      void refresh();
+      void window.stem.refreshMcpHost().then(setHostState).catch(() => undefined);
+    });
     // Live connection-status updates (e.g. a server goes ready/failed).
     const offStatus = window.stem.onMcpStatus((s) => setStatuses(s));
     return () => {
@@ -168,6 +191,15 @@ function McpTab() {
    * approval never offered) until the next launch, and a disabled or deleted one
    * kept its child alive over here just as long. The host answers from state it
    * already has, so the cost of asking when nothing changed is a function call.
+   *
+   * It covers this window and only this window, which is why it is not the
+   * mechanism. The machine that runs a pinned server is usually NOT the one
+   * whose panel is open — that is the entire point of pinning — and an edit can
+   * arrive from a phone, a second desktop, or the assistant, none of which are
+   * here. Telling the hosting machine is done at the writer instead
+   * (writeServers in src/server/pi/mcp.ts); this stays because it makes the
+   * window that made the edit correct immediately rather than a round-trip
+   * later, and because the bridge still has to be restarted from somewhere.
    */
   async function applyMcpChange() {
     setHostState(await window.stem.refreshMcpHost().catch(() => hostState));
@@ -284,14 +316,27 @@ function McpTab() {
     }
   }
 
-  /** *Move to <device>*, for each machine that is not already this server's home. */
+  /**
+   * *Move to <device>*, for each machine that is not already this server's home.
+   *
+   * A machine whose name matches the one the pin remembered comes first and says
+   * so. Pairing mints a new device id, so re-pairing the same Mac — the rollback
+   * in running-on-a-server.md, an import, switching to this computer's server
+   * and back — orphans everything pinned to it, and the fix is almost always
+   * "the computer with the same name". It is offered, not applied: ⑩ refuses to
+   * repoint a pin without somebody saying so, and a label is not evidence.
+   */
   function moveButtons(s: McpServerSummary) {
+    const remembered = s.location?.rememberedLabel;
     return hosts
       .filter((d) => d.id !== s.location?.deviceId)
+      .slice()
+      .sort((a, b) => Number(b.label === remembered) - Number(a.label === remembered))
       .map((d) => (
         <button key={d.id} className="link-btn" onClick={() => moveTo(s.name, d.id)} disabled={!!busy}>
           Move to {d.label}
           {d.id === thisDeviceId ? ' (this computer)' : ''}
+          {remembered && d.label === remembered && d.id !== thisDeviceId ? ' (the same name as before)' : ''}
         </button>
       ));
   }
@@ -347,7 +392,8 @@ function McpTab() {
 
   function placeTitle(s: McpServerSummary): string {
     if (s.location?.orphaned) {
-      return 'This server is pinned to a device that is no longer paired, so it cannot run anywhere.';
+      const was = s.location.rememberedLabel ? ` It was pinned to “${s.location.rememberedLabel}”.` : '';
+      return `This server is pinned to a device that is no longer paired, so it cannot run anywhere.${was}`;
     }
     if (hostedHere(s)) return 'Runs on this computer.';
     if (s.location) {
@@ -400,6 +446,23 @@ function McpTab() {
     const keys = [...(preview.envKeys ?? []), ...(preview.headerKeys ?? [])];
     if (keys.length === 0) return null;
     return `Carries ${keys.join(', ')} — Stem passes the values through without showing them here.`;
+  }
+
+  /** The card's headline: a new spec, an edited one, or one that lost a secret. */
+  function pendingHeading(p: McpHostPendingServer): string {
+    if (p.lostSecrets?.length) return `${p.name} lost a saved credential`;
+    return p.changed ? `${p.name} changed — approve it again` : `Approve ${p.name} to run here`;
+  }
+
+  /** What to say when a credential could not be read, or null when all were. */
+  function lostLine(p: McpHostPendingServer): string | null {
+    const keys = p.lostSecrets ?? [];
+    if (keys.length === 0) return null;
+    return (
+      `Stem could not read the saved value of ${keys.join(', ')} on the computer holding the configuration — ` +
+      'it was lost, not changed (usually an import opened with a different passphrase). That is why this is being ' +
+      'asked again. Approving starts the server without it; set the value again in Settings → Tools first if it needs one.'
+    );
   }
 
   /** A hosted server's state, in the words the card under the list uses. */
@@ -458,6 +521,11 @@ function McpTab() {
   // pinned entry, which has its place and is that machine's business.
   const selectedServer = servers.find((s) => s.name === selected) ?? null;
   const movable = remote && hosts.length > 0 && selectedServer && !selectedServer.location ? selectedServer : null;
+  // The pill in the row is what somebody notices; this is where the sentence
+  // fits. Both, because the pill alone is a tooltip and a tooltip is not an
+  // explanation on a machine with no mouse hovering over it.
+  const signInLimited =
+    selectedServer && selectedServer.location && selectedServer.transport === 'http' ? selectedServer : null;
 
   return (
     <div>
@@ -522,6 +590,14 @@ function McpTab() {
                   <span className="pill off">Disabled</span>
                 ) : here ? (
                   hostBadge(s)
+                ) : /* A URL server pinned to a computer cannot be signed in to, and
+                      saying nothing at all in the place the Sign in button would
+                      be is worse than the limitation: the affordance is missing
+                      and nothing says why. See NO_OAUTH_ELSEWHERE. */
+                viaUrl && elsewhere ? (
+                  <span className="pill off" title={NO_OAUTH_ELSEWHERE}>
+                    Header auth only
+                  </span>
                 ) : viaUrl && needsLogin ? (
                   <button
                     className="push"
@@ -580,11 +656,18 @@ function McpTab() {
           <div className="formgroup">
             {orphans.map((s, i) => (
               <div key={s.name} className={`set-block${i === 0 ? '' : ' fg-divider'}`}>
-                <span className="set-sub">{s.name}</span>
+                <span className="set-sub">
+                  {s.name}
+                  {s.location?.rememberedLabel ? ` — was “${s.location.rememberedLabel}”` : ''}
+                </span>
                 <p className="muted">
                   It is pinned to a computer that is no longer paired with this Stem, so it runs nowhere and
                   the assistant cannot use its tools. Nothing was deleted — pair that computer again, move the
                   server to another one, or select it above and remove it with −.
+                  {s.location?.rememberedLabel
+                    ? ' Pairing a computer again gives it a new identity, so the same machine under the same name is a' +
+                      ' different device to Stem: if you have just re-paired it, it is the one named below.'
+                    : ''}
                 </p>
                 <div className="memory-view-actions">
                   {moveButtons(s)}
@@ -621,24 +704,46 @@ function McpTab() {
         </>
       )}
 
+      {signInLimited && (
+        <>
+          <div className="grp-head">Signing in to {signInLimited.name}</div>
+          <div className="formgroup">
+            <div className="set-block">
+              <p className="muted">{NO_OAUTH_ELSEWHERE}</p>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* The server is older than this app and does not know what a pinned
+          server is. Said here because the alternative is a panel that looks
+          exactly like one with nothing pinned to this computer. */}
+      {hostState.unsupported && <p className="error">{hostState.unsupported}</p>}
+
       {/* One card per spec this computer has been asked to run and has not
           agreed to. It waits here rather than interrupting at launch (⑥): a
           modal on startup would be answered by whoever wanted it to go away. */}
       {hostState.pending.map((p) => (
         <div key={p.name}>
-          <div className="grp-head">
-            {p.changed ? `${p.name} changed — approve it again` : `Approve ${p.name} to run here`}
-          </div>
+          <div className="grp-head">{pendingHeading(p)}</div>
           <div className="formgroup">
             <div className="set-block">
               <span className="set-sub">This computer would run</span>
               <code>{previewLine(p.preview)}</code>
               {credentialLine(p.preview) && <p className="muted">{credentialLine(p.preview)}</p>}
-              <p className="muted">
-                {p.changed
-                  ? 'Its command, arguments or credentials are not the ones you approved. Stem stopped it and will not start it again until you say so.'
-                  : 'Stem never starts a server on your own computer without being asked, even when the entry was added elsewhere.'}
-              </p>
+              {/* A lost credential and an edited one both move the fingerprint,
+                  and only one of them is somebody's doing. Saying "changed" to
+                  the second is true and useless: nobody changed it, and
+                  approving anyway starts a server without its key. */}
+              {lostLine(p) ? (
+                <p className="error">{lostLine(p)}</p>
+              ) : (
+                <p className="muted">
+                  {p.changed
+                    ? 'Its command, arguments or credentials are not the ones you approved. Stem stopped it and will not start it again until you say so.'
+                    : 'Stem never starts a server on your own computer without being asked, even when the entry was added elsewhere.'}
+                </p>
+              )}
               {/* The one thing the plan insists is visible rather than
                   documented: after this click there are no further questions,
                   so what the click authorizes has to be readable here. */}

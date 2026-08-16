@@ -403,6 +403,35 @@ describe('what the import tells you to go and fix', () => {
     // rather than as something to redo.
     expect(report.reauthorize.join('\n')).toMatch(/anthropic/);
   });
+
+  it('names a bare command this machine cannot resolve, not only an absolute one', async () => {
+    const from = scratch();
+    useStateRoot(from);
+    populate(from);
+    writeFileSync(
+      join(from, 'pi-home', 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          // What real configs actually say. Checking only absolute paths left
+          // the report silent about exactly the entries most likely to die in a
+          // container — they fail at the first turn with a bare ENOENT nobody
+          // connects back to the move.
+          notes: { command: 'definitely-not-installed-anywhere', args: ['--stdio'] },
+          // A command every machine running this test has, since it is the one
+          // running it: present, so silent.
+          runner: { command: process.execPath, args: ['server.js'] }
+        }
+      })
+    );
+    const archive = join(scratch(), 'bare.tar');
+    await exportState({ out: archive, passphrase: PASSPHRASE });
+
+    const to = scratch();
+    useStateRoot(to);
+    const attention = (await importState({ archive, passphrase: PASSPHRASE })).attention.join('\n');
+    expect(attention).toContain('definitely-not-installed-anywhere');
+    expect(attention).not.toContain('"runner"');
+  });
 });
 
 /** One AES-256-GCM value under `keyHex`, in the on-disk format, for the test above. */
