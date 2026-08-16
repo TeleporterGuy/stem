@@ -71,6 +71,10 @@ stem-server pair --label "Vlado's MacBook"
 gives you a code. Enter it in **Settings → Server** on each machine you want to connect,
 along with the new address.
 
+Once a machine is paired, a tool that only works there — a command it has, or a URL on
+its own network — can be moved to it: **Settings → Tools → MCP servers**, select the
+server, **Move to** that computer. See [MCP servers](tools/mcp-servers.md).
+
 To pass the passphrase without typing it — in a script, or inside a container — put it
 in a file and name it:
 

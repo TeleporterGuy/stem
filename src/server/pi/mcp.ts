@@ -160,6 +160,69 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
 }
 
 /**
+ * Move a server to another machine, or back to the one hosting stem-server —
+ * the *Move to <device>* the panel offers on a server-located entry and on an
+ * orphaned one (docs/mcp-device-pinning.md, ⑩).
+ *
+ * Shaped like setMcpServerEnabled rather than like addMcpServer, and for the
+ * same reason: it edits ONE field of an entry that already exists. A move built
+ * out of what the panel can see would be a different server — `listMcpServers`
+ * returns no `env` and no headers, so re-adding from the row would drop every
+ * credential the entry had.
+ *
+ * Two things it deliberately does not do. It does not touch the OAuth token:
+ * `location` is outside {@link mcpServerAuthIdentity} on purpose (see
+ * mcp-config.ts), so moving a server does not change who it authenticates as and
+ * the stored token is still that server's. And it cannot carry an approval to
+ * the new machine — approvals live on the computer that would run the command
+ * (src/desktop/mcp-host/approvals.ts), so the target meets the card and decides
+ * there. Nothing on this side can spend that decision for it.
+ */
+export async function setMcpServerLocation(
+  name: string,
+  deviceId: string | null
+): Promise<McpServerSummary[]> {
+  if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
+  // Validated before the mutation is taken, so the same two refusals a person
+  // meets when adding — an unpaired device, a phone — are the ones they meet
+  // when moving, in the same words.
+  const location = await resolveLocation(deviceId ? { deviceId } : undefined);
+  await withMcpStateMutation(async () => {
+    const config = await readMcpConfig();
+    const def = config.servers[name];
+    if (!def) throw new Error(`No MCP server named "${name}".`);
+    // Deleted rather than written as undefined/null: absent is what "runs where
+    // stem-server runs" has always looked like on disk, and an entry moved back
+    // has to be byte-identical to one that was never pinned.
+    if (location) def.location = location;
+    else delete def.location;
+    await writeMcpConfig(config);
+  });
+  return listMcpServers();
+}
+
+/**
+ * `input` carrying the pin the stored entry already has, when the caller named
+ * no location of its own.
+ *
+ * For the assistant's `add_mcp_server`, which is the one caller that CANNOT name
+ * one: there is no `location` in its schema (deliberately — where a server runs
+ * is a decision a person makes at a panel, not one a tool call makes). An add
+ * replaces the whole entry, so without this, re-adding a server that runs on
+ * your Mac would move it back to the machine hosting stem-server — silently, in
+ * the middle of a change the user approved for an entirely different reason,
+ * which is precisely what ⑩ says must never happen.
+ *
+ * Not folded into addMcpServer: a person adding the same name from the panel
+ * with "Runs on: Server" picked has said where it goes, and that answer must win.
+ */
+export async function withStoredLocation(input: McpServerInput): Promise<McpServerInput> {
+  if (input.location) return input;
+  const existing = (await readMcpConfig()).servers[input.name.trim()];
+  return existing?.location ? { ...input, location: { ...existing.location } } : input;
+}
+
+/**
  * Toggle a server on/off without removing it. A disabled server stays in
  * `mcp.json` (and keeps its OAuth token) but the bridge skips connecting it
  * (`stem-mcp-extension.mjs`: `if (spec.disabled) continue;`). Re-enabling deletes

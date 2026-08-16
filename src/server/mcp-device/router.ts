@@ -68,8 +68,12 @@ export interface DeviceMcpRouterDeps {
   pushTo(deviceId: string, name: string, data: unknown): number;
   /** Which devices have a stream open right now — the availability signal (③). */
   connectedDevices(): Set<string>;
-  /** How to name a device in a refusal (⑤); falls back to the id it was given. */
-  deviceLabel(deviceId: string): Promise<string>;
+  /**
+   * How to name a device in a refusal (⑤), or null when no device with that id
+   * is paired any more. The two answers are two different sentences: one machine
+   * is asleep, the other was unpaired and is never coming back on its own.
+   */
+  deviceLabel(deviceId: string): Promise<string | null>;
   /** Every entry in mcp.json, decrypted — where a device's assignments come from. */
   readServers(): Promise<Record<string, PiMcpServer>>;
   /** Where announcements are remembered across a disconnection. */
@@ -95,6 +99,15 @@ export interface DeviceMcpRouter {
   isAvailable(deviceId: string): boolean;
   /** Everything announced so far, for the catalog block step 4 injects. */
   catalog(): Promise<DeviceMcpCatalog>;
+  /**
+   * Drop everything a device announced, because it is not paired any more.
+   *
+   * The pin in `mcp.json` is NOT touched — that is ⑩, and the panel is where a
+   * person decides what becomes of it. What goes is the claim made to the model:
+   * the catalog is what tells the assistant a tool exists, and a tool on a
+   * machine this Stem can no longer be reached by is not a capability it has.
+   */
+  forget(deviceId: string): Promise<void>;
   /** Fail everything in flight (shutdown, tests) so nothing waits on a dead server. */
   close(): void;
 }
@@ -141,6 +154,17 @@ export function createDeviceMcpRouter(deps: DeviceMcpRouterDeps): DeviceMcpRoute
    */
   async function refusal(deviceId: string, server: string): Promise<string> {
     const label = await deps.deviceLabel(deviceId);
+    // An orphaned pin (⑩): the machine it names was unpaired, so this is not a
+    // computer that will be awake later. Saying "it will work once your Mac is
+    // on" here would be advice that never comes true, and the entry would look
+    // broken forever with nothing to do about it.
+    if (!label) {
+      return (
+        `The MCP server "${server}" is pinned to a computer that is no longer paired with this Stem, so there is ` +
+        `nowhere to run it. Pair that computer again, or open Settings → Tools → MCP servers and move "${server}" to ` +
+        'another one.'
+      );
+    }
     return (
       `The MCP server "${server}" runs on ${label}, and that computer is not connected to Stem right now. ` +
       `Its tools will work again as soon as ${label} is awake and Stem is running on it.`
@@ -255,6 +279,26 @@ export function createDeviceMcpRouter(deps: DeviceMcpRouterDeps): DeviceMcpRoute
 
     catalog: () => deps.catalog.read(),
 
+    async forget(deviceId) {
+      // Anything in flight to that machine is answered now rather than left to
+      // time out: its streams were cut with the same revocation, so the two
+      // minutes a call would otherwise wait are two minutes of nothing.
+      for (const [requestId, held] of pending) {
+        if (held.deviceId !== deviceId) continue;
+        pending.delete(requestId);
+        clearTimeout(held.timer);
+        held.settle({
+          ok: false,
+          error: `The computer running "${held.server}" was unpaired from this Stem while the tool was running.`
+        });
+      }
+      const catalog = await deps.catalog.read();
+      if (!catalog.devices[deviceId]) return;
+      delete catalog.devices[deviceId];
+      await deps.catalog.write(catalog);
+      log('mcp-device', 'forgot what an unpaired device was hosting', { deviceId });
+    },
+
     close() {
       for (const [, held] of pending) {
         clearTimeout(held.timer);
@@ -305,11 +349,17 @@ export function deviceMcpRouter(): DeviceMcpRouter {
     pushTo: pushToDevice,
     connectedDevices: connectedDeviceIds,
     deviceLabel: async (deviceId) => {
-      const device = (await readDevices().catch(() => [])).find((d) => d.id === deviceId);
-      // Quoted so a label with a space in it reads as one thing, and falling back
-      // to the raw id rather than "a device" — an id is at least something the
-      // user can look up in Settings → Devices.
-      return device ? `“${device.label}”` : `the device ${deviceId}`;
+      const devices = await readDevices().catch(() => null);
+      // A registry that could not be read is not evidence that the device is
+      // gone, so it falls back to the id rather than to the "no longer paired"
+      // sentence — an id is at least something the user can look up in
+      // Settings → Server → Devices.
+      if (!devices) return `the device ${deviceId}`;
+      const device = devices.find((d) => d.id === deviceId);
+      // Quoted so a label with a space in it reads as one thing. Null for a
+      // device that is not in the registry — see refusal(), which has a whole
+      // different thing to say about a pin whose machine was unpaired.
+      return device ? `“${device.label}”` : null;
     },
     readServers: async () => (await readMcpConfig()).servers,
     catalog: fileCatalogStore()

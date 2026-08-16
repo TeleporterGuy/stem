@@ -15,6 +15,13 @@ export function registerMcpIpc(deps: IpcDeps): void {
   registerServer('mcp:setEnabled', (_e, name: string, enabled: boolean) =>
     piMcp.setMcpServerEnabled(name, enabled)
   );
+  // Move one server to another machine (or back to this one). Null means the
+  // machine hosting stem-server — the panel's *Move to <device>* and its inverse
+  // are the same write, so there is one place that decides what a location may
+  // be (docs/mcp-device-pinning.md, ⑩).
+  registerServer('mcp:setLocation', (_e, name: string, deviceId: string | null) =>
+    piMcp.setMcpServerLocation(name, deviceId)
+  );
   registerServer('mcp:login', (_e, name: string) => deps.runtime().mcpLogin(name));
   registerServer('mcp:adminDecision', async (_e, id: ApprovalId, accept: boolean) => {
     await deps.runtime().resolveAdminApproval(
@@ -24,7 +31,11 @@ export function registerMcpIpc(deps: IpcDeps): void {
         ? async (proposal) => {
             if (proposal.action === 'add') {
               if (!proposal.input) throw new Error('The MCP add proposal is missing its server definition.');
-              await piMcp.addMcpServer(proposal.input);
+              // An add replaces the whole entry, and the assistant's tool has no
+              // way to say where a server runs — so a re-add of one pinned to a
+              // device would quietly move it back here. Keep the pin; see
+              // withStoredLocation.
+              await piMcp.addMcpServer(await piMcp.withStoredLocation(proposal.input));
               return;
             }
             if (!proposal.name) throw new Error('The MCP remove proposal is missing its server name.');

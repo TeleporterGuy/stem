@@ -74,7 +74,7 @@ Ask Stem to check something every morning and it becomes a **scheduled task**: a
 
 ## Extend it
 
-- **MCP servers** — connect local or remote Model Context Protocol servers (with sign-in for remote ones) to give Stem new tools.
+- **MCP servers** — connect Model Context Protocol servers by command or URL (with sign-in where the service supports it) to give Stem new tools. Running Stem on a server? Pin the ones that only mean anything on your own computer to that computer, and use them from anywhere.
 - **Skills** — self-improving, app-scoped procedures Stem writes and refines for itself; a curator keeps them tidy.
 - **Connected folders** — let Stem read folders like an Obsidian vault *in place*, read-only by default, with per-folder write and memorize toggles.
 - **Custom instructions** — standing directives for how Stem should behave, with a separate layer just for Quick Chat. Stem can even propose edits to its own instructions — applied only with your approval.

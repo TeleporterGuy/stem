@@ -174,6 +174,16 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
   );
   handleLocal('mcpHost:reject', (_e, name: string): Promise<McpHostLocalState> => deps.mcpHost.reject(name));
   handleLocal('mcpHost:test', (_e, name: string): Promise<McpHostLocalState> => deps.mcpHost.test(name));
+  // Ask the server again which servers are ours. The panel calls this the moment
+  // it moves one: the pin lives on the server, so a server moved ONTO this
+  // machine would otherwise sit unstarted (and its approval card unshown) until
+  // the next launch, and one moved OFF would keep its child running here.
+  // Everything else that changes an assignment already re-asks by itself — a
+  // launch, a reconnection — this is the case where the change was made here.
+  handleLocal('mcpHost:refresh', async (): Promise<McpHostLocalState> => {
+    await deps.mcpHost.refresh();
+    return deps.mcpHost.localState();
+  });
 
   handleLocal('dialog:openFiles', () =>
     dialog

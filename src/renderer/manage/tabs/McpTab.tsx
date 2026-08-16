@@ -101,17 +101,23 @@ function McpTab() {
     };
   }, []);
 
+  // Servers pinned to a device that is no longer paired. They cannot run
+  // anywhere, and they are the one case below that a window with a LOCAL server
+  // still has to be able to fix — an orphan outlives the move that made it.
+  const orphans = servers.filter((s) => s.location?.orphaned);
+  const anyOrphan = orphans.length > 0;
+
   // The devices that could host a server: paired desktops only, because a phone
   // sleeps and a server on it would be unreachable half the time. Read only when
-  // there is a choice to make — a window whose server is this very machine never
-  // renders the picker, so it never asks.
+  // there is a choice to make — a window whose server is this very machine and
+  // holds no orphan never renders a picker, so it never asks.
   useEffect(() => {
-    if (!remote) return;
+    if (!remote && !anyOrphan) return;
     void window.stem
       .listDevices()
       .then((snapshot) => setHosts(snapshot.devices.filter((d) => d.kind === 'desktop')))
       .catch(() => undefined);
-  }, [remote]);
+  }, [remote, anyOrphan]);
 
   // Which device this window is, asked unconditionally: a server can be pinned
   // to this machine on an install that has never been remote (an import, or a
@@ -241,6 +247,39 @@ function McpTab() {
     setError(null);
     setServers(await window.stem.setMcpServerEnabled(serverName, enabled));
     await reconnect();
+  }
+
+  /**
+   * Move one server to another machine, or back to the one hosting the server.
+   *
+   * Three things have to catch up with the pin, and each is asked rather than
+   * assumed. The list, because the row now names a different place. The host on
+   * THIS computer, because if the new home is here nothing would start — and the
+   * approval card would not appear — until the next launch; and if it was here,
+   * its child has to stop. The bridge, which reads mcp.json only when it
+   * restarts, so routing follows on the reconnect.
+   */
+  async function moveTo(serverName: string, deviceId: string | null) {
+    setError(null);
+    try {
+      setServers(await window.stem.setMcpServerLocation(serverName, deviceId));
+      setHostState(await window.stem.refreshMcpHost());
+      await reconnect();
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    }
+  }
+
+  /** *Move to <device>*, for each machine that is not already this server's home. */
+  function moveButtons(s: McpServerSummary) {
+    return hosts
+      .filter((d) => d.id !== s.location?.deviceId)
+      .map((d) => (
+        <button key={d.id} className="link-btn" onClick={() => moveTo(s.name, d.id)} disabled={!!busy}>
+          Move to {d.label}
+          {d.id === thisDeviceId ? ' (this computer)' : ''}
+        </button>
+      ));
   }
 
   async function signIn(serverName: string) {
@@ -399,6 +438,13 @@ function McpTab() {
     return state === 'failed' ? 'Reconnect' : 'Sign in';
   }
 
+  // The selected row, when it is a server-located entry there is somewhere to
+  // move it to. Not offered on this-computer installs (⑨: one machine, so a
+  // choice would imply a distinction that does not exist) and not on an already
+  // pinned entry, which has its place and is that machine's business.
+  const selectedServer = servers.find((s) => s.name === selected) ?? null;
+  const movable = remote && hosts.length > 0 && selectedServer && !selectedServer.location ? selectedServer : null;
+
   return (
     <div>
       <div className="grp-head">MCP Servers</div>
@@ -449,10 +495,15 @@ function McpTab() {
                           : `${s.command} ${s.args.join(' ')}`.trim()}
                   </em>
                 </span>
-                {/* Where it runs, shown only when there is more than one place it
+                {/* Where it runs, shown when there is more than one place it
                     could be. On the ordinary install the app and the server are
-                    one machine, and naming it would invent a distinction. */}
-                {remote && <span className={placeClass(s)} title={placeTitle(s)}>{placeLabel(s)}</span>}
+                    one machine, and naming it would invent a distinction — but
+                    an entry that names a machine says so wherever it is seen,
+                    because a pin that outlived the move to a local server is
+                    exactly the one somebody needs to be told about. */}
+                {(remote || s.location) && (
+                  <span className={placeClass(s)} title={placeTitle(s)}>{placeLabel(s)}</span>
+                )}
                 {!s.enabled ? (
                   <span className="pill off">Disabled</span>
                 ) : here ? (
@@ -504,6 +555,57 @@ function McpTab() {
           <Minus size={15} />
         </button>
       </div>
+
+      {/* An entry whose machine was unpaired (⑩). It was not deleted and it was
+          not quietly repointed at the server, so this is where somebody decides
+          which of those should happen — and it says what is wrong first, because
+          "Unpaired device" in a pill is a symptom and not a sentence. */}
+      {orphans.length > 0 && (
+        <>
+          <div className="grp-head">Pinned to a computer that is gone</div>
+          <div className="formgroup">
+            {orphans.map((s, i) => (
+              <div key={s.name} className={`set-block${i === 0 ? '' : ' fg-divider'}`}>
+                <span className="set-sub">{s.name}</span>
+                <p className="muted">
+                  It is pinned to a computer that is no longer paired with this Stem, so it runs nowhere and
+                  the assistant cannot use its tools. Nothing was deleted — pair that computer again, move the
+                  server to another one, or select it above and remove it with −.
+                </p>
+                <div className="memory-view-actions">
+                  {moveButtons(s)}
+                  <button className="link-btn" onClick={() => moveTo(s.name, null)} disabled={!!busy}>
+                    {remote ? 'Run on the server instead' : 'Run on this computer instead'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* The everyday half of ⑩: an entry that works where it is, but whose work
+          is on one of your own machines — its files, its applications, a URL its
+          network can reach and the server's cannot. Offered on the selected row
+          so the list stays a list. */}
+      {movable && (
+        <>
+          <div className="grp-head">Move {movable.name}</div>
+          <div className="formgroup">
+            <div className="set-block">
+              <p className="muted">
+                It runs on the machine hosting your Stem server. Move it to one of your own computers and it
+                runs there instead — reaching that computer’s files, its applications and its network.
+              </p>
+              <div className="memory-view-actions">{moveButtons(movable)}</div>
+              <p className="muted">
+                Whoever is at that computer approves it there before it starts. An approval belongs to the
+                machine that gave it, so moving a server never carries one across.
+              </p>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* One card per spec this computer has been asked to run and has not
           agreed to. It waits here rather than interrupting at launch (⑥): a

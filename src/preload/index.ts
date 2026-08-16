@@ -151,6 +151,8 @@ const api: StemApi = {
   removeMcpServer: (name: string) => ipcRenderer.invoke('mcp:remove', name),
   setMcpServerEnabled: (name: string, enabled: boolean) =>
     ipcRenderer.invoke('mcp:setEnabled', name, enabled),
+  setMcpServerLocation: (name: string, deviceId: string | null) =>
+    ipcRenderer.invoke('mcp:setLocation', name, deviceId),
   loginMcpServer: (name: string) => ipcRenderer.invoke('mcp:login', name),
   restartRuntime: () => ipcRenderer.invoke('runtime:restart'),
 
@@ -159,6 +161,7 @@ const api: StemApi = {
     ipcRenderer.invoke('mcpHost:approve', name, fingerprint),
   rejectMcpHostServer: (name: string) => ipcRenderer.invoke('mcpHost:reject', name),
   testMcpHostServer: (name: string) => ipcRenderer.invoke('mcpHost:test', name),
+  refreshMcpHost: () => ipcRenderer.invoke('mcpHost:refresh'),
   onMcpHostChanged: (listener: (state: McpHostLocalState) => void) => {
     const handler = (_e: unknown, state: McpHostLocalState) => listener(state);
     ipcRenderer.on('mcpHost:changed', handler);

@@ -2379,6 +2379,13 @@ export interface StemApi {
   removeMcpServer(name: string): Promise<McpServerSummary[]>;
   /** Enable/disable a server without removing it (preserves config + OAuth token). */
   setMcpServerEnabled(name: string, enabled: boolean): Promise<McpServerSummary[]>;
+  /**
+   * Move one server to a paired desktop, or back to the machine hosting the
+   * server with `null`. Only the location changes: the command, the credentials
+   * and the OAuth token stay exactly as they were, and the machine it moves TO
+   * still approves it there before anything runs.
+   */
+  setMcpServerLocation(name: string, deviceId: string | null): Promise<McpServerSummary[]>;
   loginMcpServer(name: string): Promise<McpLoginResult>;
   restartRuntime(): Promise<RuntimeStatus>;
   /** Assistant proposed an MCP change; fired so the UI can show a confirm card. */
@@ -2394,7 +2401,7 @@ export interface StemApi {
 
   // The MCP servers pinned to THIS computer. Answered by the desktop itself, not
   // by the server (see desktop/local/index.ts): approval is a fact about the
-  // machine a server would run on, so these five keep working whatever the
+  // machine a server would run on, so these six keep working whatever the
   // machine at the other end of the wire happens to be.
   /** What this machine hosts, what it has approved, and what is waiting. */
   mcpHostState(): Promise<McpHostLocalState>;
@@ -2404,6 +2411,8 @@ export interface StemApi {
   rejectMcpHostServer(name: string): Promise<McpHostLocalState>;
   /** Connect one pinned server now and report what actually happened. */
   testMcpHostServer(name: string): Promise<McpHostLocalState>;
+  /** Re-ask the server which servers are pinned here — after moving one. */
+  refreshMcpHost(): Promise<McpHostLocalState>;
   /** Fired when a server hosted here settles, fails or is re-synced. */
   onMcpHostChanged(listener: (state: McpHostLocalState) => void): () => void;
 

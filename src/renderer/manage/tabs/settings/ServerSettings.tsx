@@ -335,9 +335,25 @@ function DevicesSection() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // What is pinned to each device (docs/mcp-device-pinning.md). Read once, for
+  // one sentence: withdrawing a device is where its MCP servers become orphans,
+  // and finding that out in another tab afterwards is finding out too late.
+  const [pinned, setPinned] = useState<Record<string, string[]>>({});
+
   useEffect(() => {
     void window.stem.listDevices().then(setSnapshot).catch(() => undefined);
     void window.stem.clientInfo().then(setMe).catch(() => undefined);
+    void window.stem
+      .listMcpServers()
+      .then((servers) => {
+        const byDevice: Record<string, string[]> = {};
+        for (const s of servers) {
+          if (!s.location || s.location.orphaned) continue;
+          (byDevice[s.location.deviceId] ??= []).push(s.name);
+        }
+        setPinned(byDevice);
+      })
+      .catch(() => undefined);
   }, []);
 
   /**
@@ -409,6 +425,15 @@ function DevicesSection() {
               </span>
               {confirming === d.id ? (
                 <span>
+                  {/* Said before the click, not after: the servers are kept and
+                      marked rather than deleted, but they stop working until
+                      somebody moves them, and that is a fact about this click. */}
+                  {pinned[d.id]?.length ? (
+                    <em className="muted">
+                      {pinned[d.id].join(', ')} {pinned[d.id].length === 1 ? 'runs' : 'run'} here and will stop —
+                      Tools → MCP servers is where you move {pinned[d.id].length === 1 ? 'it' : 'them'}.{' '}
+                    </em>
+                  ) : null}
                   <button className="link-btn" onClick={() => void revoke(d.id)} disabled={busy}>
                     Confirm
                   </button>

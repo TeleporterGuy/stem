@@ -37,7 +37,7 @@ export interface PiMcpServer {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-  /** remote transport (HTTP/OAuth) — recognized but not yet connected by the bridge */
+  /** HTTP transport (Streamable HTTP, with a static header or OAuth) */
   url?: string;
   headers?: Record<string, string>;
   /**

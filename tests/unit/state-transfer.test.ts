@@ -364,7 +364,16 @@ describe('what the import tells you to go and fix', () => {
     populate(from);
     writeFileSync(
       join(from, 'pi-home', 'mcp.json'),
-      JSON.stringify({ servers: { weather: { command: '/opt/somewhere-else/bin/uvx', args: ['weather-mcp'] } } })
+      JSON.stringify({
+        servers: {
+          weather: { command: '/opt/somewhere-else/bin/uvx', args: ['weather-mcp'] },
+          // The other device-shaped kind: a URL only the old machine's network
+          // resolves. A datacentre has no route to it and never will.
+          'home-assistant': { url: 'http://homeassistant.local:8123/mcp' },
+          // And one that is nobody's problem: a public endpoint works from here.
+          fastmail: { url: 'https://api.fastmail.com/mcp' }
+        }
+      })
     );
     writeFileSync(
       join(from, 'connected-folders.json'),
@@ -378,7 +387,16 @@ describe('what the import tells you to go and fix', () => {
     const report = await importState({ archive, passphrase: PASSPHRASE });
     const attention = report.attention.join('\n');
     expect(attention).toContain('/opt/somewhere-else/bin/uvx');
+    expect(attention).toContain('homeassistant.local');
     expect(attention).toContain('Personal Obsidian');
+    // A public URL is not device-shaped and must not be flagged: a report that
+    // lists everything is one nobody reads to the end.
+    expect(attention).not.toContain('fastmail');
+    // Both MCP entries now have an answer rather than only a diagnosis — pin
+    // them to the computer they came from once it is paired (decision ⑩). And
+    // neither was repointed here: at import time there is no device to name.
+    expect(attention).toMatch(/Move to/);
+    expect(report.attention.filter((line) => /Move to/.test(line))).toHaveLength(2);
     // Pairing is always the next step: nothing can reach this server yet.
     expect(attention).toMatch(/stem-server pair/);
     // Provider sign-ins are not machine-bound, so they are reported as carried

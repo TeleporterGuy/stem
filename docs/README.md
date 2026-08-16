@@ -10,7 +10,7 @@ Pick the feature you see in Stem.
 | └ [Facts](user/memory/facts.md) | Durable details: preferences, people, projects |
 | └ [Recall](user/memory/recall.md) | Find relevant parts of past conversations |
 | [Tools](user/tools/README.md) | Give Stem more capabilities |
-| └ [MCP servers](user/tools/mcp-servers.md) | Connect services and local tools |
+| └ [MCP servers](user/tools/mcp-servers.md) | Connect services and tools, on this Stem or on your own computer |
 | └ [Skills](user/tools/skills.md) | Reuse procedures that work |
 | [Connected folders](user/connected-folders.md) | Use folders where they already live |
 | [Scheduled tasks](user/scheduled-tasks.md) | Run a prompt later or repeatedly |
