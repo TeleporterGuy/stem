@@ -380,14 +380,32 @@ function McpTab() {
   }
 
   /** The machine a server runs on, as a row names it. */
-  function placeLabel(s: McpServerSummary): string {
-    return s.location ? s.location.label : 'Server';
+  /**
+   * The place, as its own line under the address — and only for a server that
+   * is NOT where servers ordinarily are.
+   *
+   * It used to be a pill sitting beside the name, and it was wrong twice over.
+   * A pill saying "Server" appeared on nearly every row, which is a label for
+   * the default and therefore no information at all; and both it and the long
+   * ones ("Vlado's MacBook") took their width out of the only column that
+   * carries anything — in a 300px panel that broke names across three lines and
+   * chopped commands mid-word. Naming just the exception costs one quiet line on
+   * the few rows that are exceptional and gives every other row its width back.
+   */
+  function placeLabel(s: McpServerSummary): string | null {
+    if (!s.location) return null;
+    if (s.location.orphaned) {
+      return s.location.rememberedLabel
+        ? `Pinned to ${s.location.rememberedLabel}, which is no longer paired`
+        : 'Pinned to a computer that is no longer paired';
+    }
+    return hostedHere(s) ? 'Runs on this computer' : `Runs on ${s.location.label}`;
   }
 
   function placeClass(s: McpServerSummary): string {
     // An orphaned pin is a real problem — the machine it names is gone — so it
     // reads as one rather than sitting quietly among the ordinary places.
-    return `pill ${s.location?.orphaned ? 'danger' : 'place'}`;
+    return `row-place${s.location?.orphaned ? ' orphaned' : ''}`;
   }
 
   function placeTitle(s: McpServerSummary): string {
@@ -539,7 +557,7 @@ function McpTab() {
           </div>
         </div>
       ) : (
-        <div className="group">
+        <div className="group mcp-list">
           {servers.map((s) => {
             const viaUrl = s.transport === 'http';
             // A server pinned to a device is not this server's to connect: the
@@ -556,6 +574,7 @@ function McpTab() {
             // The bridge's status map has nothing to say about it: it never
             // tried to connect it, and never will.
             const hereFailed = here && hostState.status[s.name]?.status === 'failed';
+            const detail = viaUrl ? s.url : `${s.command} ${s.args.join(' ')}`.trim();
             return (
               <div
                 key={s.name}
@@ -563,29 +582,29 @@ function McpTab() {
                 onClick={() => setSelected(s.name)}
               >
                 <span className="row-main">
-                  <strong>{s.name}</strong>
+                  <strong title={s.name}>{s.name}</strong>
                   <em
-                    title={s.enabled && state === 'failed' ? error : undefined}
+                    // The address is clamped to two lines, so the whole of it
+                    // lives here — an npx invocation with four flags is longer
+                    // than any panel and is still the thing you came to read.
+                    title={s.enabled && state === 'failed' ? error : detail}
                     className={s.enabled && (state === 'failed' || hereFailed) ? 'mcp-failed' : undefined}
                   >
                     {s.enabled && hereFailed
                       ? (hostState.status[s.name]?.error ?? 'It did not start on this computer.')
                       : s.enabled && state === 'failed'
                         ? 'Connection failed — sign in again.'
-                        : viaUrl
-                          ? s.url
-                          : `${s.command} ${s.args.join(' ')}`.trim()}
+                        : detail}
                   </em>
+                  {/* Where it runs — a line of its own, and only when that is
+                      not the machine hosting the server. An entry that names a
+                      computer says so wherever it is seen, including on a local
+                      install, because a pin that outlived the move back is
+                      exactly the one somebody needs to be told about. */}
+                  {s.location && (
+                    <span className={placeClass(s)} title={placeTitle(s)}>{placeLabel(s)}</span>
+                  )}
                 </span>
-                {/* Where it runs, shown when there is more than one place it
-                    could be. On the ordinary install the app and the server are
-                    one machine, and naming it would invent a distinction — but
-                    an entry that names a machine says so wherever it is seen,
-                    because a pin that outlived the move to a local server is
-                    exactly the one somebody needs to be told about. */}
-                {(remote || s.location) && (
-                  <span className={placeClass(s)} title={placeTitle(s)}>{placeLabel(s)}</span>
-                )}
                 {!s.enabled ? (
                   <span className="pill off">Disabled</span>
                 ) : here ? (

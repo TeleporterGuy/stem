@@ -1172,7 +1172,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .group-row + .group-row { border-top: 0.5px solid var(--hair); }
 .group-row.selected { background: var(--sel); }
 /* Disabled server: still listed (config + token kept) but the bridge skips it. */
-.group-row.disabled .row-icon, .group-row.disabled .row-main, .group-row.disabled .pill.place { opacity: 0.5; }
+.group-row.disabled .row-icon, .group-row.disabled .row-main { opacity: 0.5; }
 .row-icon { width: 24px; height: 24px; border-radius: var(--radius); display: flex; align-items: center; justify-content: center; color: #fff; flex: none; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25); }
 .row-main { flex: 1; min-width: 0; }
 .row-main strong { display: block; font-size: var(--fs-13); font-weight: 500; }
@@ -1186,10 +1186,26 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
    computer that nobody here has approved yet. Not a failure (danger) and not a
    dormant setting (off): it is the one pill that means "your turn". */
 .pill.warn { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
-/* Where an MCP server runs (the server itself, or a paired computer). A place is
-   not a state, so it sits quieter than the pills above — no fill, just a hairline
-   — and never competes with the live status dot beside it. */
-.pill.place { border: 0.5px solid var(--line); color: var(--muted); font-weight: 500; }
+/* Where an MCP server runs, when that is not the machine hosting the server.
+   A line under the address rather than a pill beside the name: a place is not a
+   state, and it must not take its width out of the only column with anything in
+   it. This panel can be 300px wide and an MCP row already carries a name, a URL
+   or a command, a state and a switch — a pill here broke names across three
+   lines and chopped commands mid-word. */
+.row-place { display: block; font-size: var(--fs-10); color: var(--muted); margin-top: 2px; }
+.row-place.orphaned { color: var(--danger); }
+
+/* And the text column gets the space that frees up. The name stays on one line;
+   the address is clamped to two, with the whole of it on the element's title,
+   because an npx invocation with four flags is longer than any panel will ever
+   be and wrapping all of it turns a list of servers into a wall. */
+.mcp-list .row-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-list .row-main em {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
 
 /* A signed-in provider whose token has died: a clickable "reconnect" pill on its
    Settings row. Reuses the danger pill; button reset so it sits inline. */
