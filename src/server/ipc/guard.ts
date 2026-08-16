@@ -75,6 +75,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'files:remove': [a.string],
   'files:mkdir': [a.string],
   'files:rmdir': [a.string],
+  'cfolders:browse': [a.optional(a.nullish(a.string))],
   'cfolders:add': [a.stringArray],
   'cfolders:update': [a.string, a.object],
   'cfolders:remove': [a.string],
@@ -87,8 +88,23 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'mcp:add': [a.object],
   'mcp:remove': [a.string],
   'mcp:setEnabled': [a.string, a.boolean],
+  // The device id, or null for "the machine hosting stem-server". Whether that
+  // id names a paired desktop is decided in pi/mcp.ts, where the registry is.
+  'mcp:setLocation': [a.string, a.nullish(a.string)],
   'mcp:login': [a.string],
   'mcp:adminDecision': [a.id, a.boolean],
+  // The MCP host channels. No device id on any of them: the caller IS the
+  // device, the transport already knows which one, and taking it as an argument
+  // would let one paired machine claim another's servers, credentials and
+  // answers. ('mcpHost:hello' takes no arguments at all, so it is absent.)
+  //
+  // The shapes below are as far as a structural check goes — an announcement is
+  // a tree of names and descriptions that ends up in a prompt, and a result is
+  // whatever an MCP server returned. Both are bounded and reshaped where they
+  // land (see mcp-device/catalog.ts and the router's asResult), because that is
+  // where there is enough context to say what they may contain.
+  'mcpHost:announce': [a.object],
+  'mcpHost:result': [a.string, a.object],
   'instructions:resolveApproval': [a.id, a.boolean, a.oneOf(['main', 'quickChat']), a.string],
   'skills:resolveApproval': [a.id, a.boolean, a.nullish(a.object)],
   'skills:reset': [a.boolean, a.oneOf(['off', 'ask', 'auto'])],

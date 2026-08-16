@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sparkles, SquarePen, PanelRight, Globe, NotebookPen, Check } from 'lucide-react';
-import type {
-  ModelSummary,
-  WebSearchSettings,
-  QuickChatSettings,
-  TurnAttachment
-} from '../../shared/types';
+import type { ModelSummary, QuickChatSettings, TurnAttachment } from '../../shared/types';
 import { ChatView } from '../chat/ChatView';
 import { EFFORT_LABELS } from '../modelLabels';
 import { McpApprovalCard } from '../manage/McpApprovalCard';
@@ -26,6 +21,7 @@ import {
   type SessionCore
 } from '../session/turns';
 import { useThreadStates } from '../session/store';
+import { useWebSearch } from '../webSearch';
 
 // The overlay only ever shows one conversation, so its slice lives under a single
 // fixed key in the shared session store (the real thread id is tracked separately
@@ -45,11 +41,8 @@ export function QuickChat() {
   const [serviceTier, setServiceTier] = useState<string | null>(null);
   const [format, setFormat] = useState<'md' | 'mdx'>('mdx');
   // Web search, toggled independently per context — Quick Chat owns the
-  // `quickChat` flag (surfaced here since it can pick a different model than main).
-  const [webSearch, setWebSearch] = useState<Pick<WebSearchSettings, 'main' | 'quickChat'>>({
-    main: true,
-    quickChat: true
-  });
+  // `quickChat` flag, so it can be left off here while main keeps it on.
+  const { enabled: searchOn, toggle: toggleWebSearch, reload: reloadWebSearch } = useWebSearch('quickChat');
 
   // One conversation's state, owned by the shared session core. Store reads are
   // synchronous, which is what main's handoff barrier relies on.
@@ -133,18 +126,7 @@ export function QuickChat() {
       .listModels()
       .then(setModels)
       .catch(() => {});
-    window.stem
-      .getSettings()
-      .then((s) => setWebSearch(s.webSearch))
-      .catch(() => {});
   }, []);
-
-  function toggleWebSearch(enabled: boolean) {
-    window.stem
-      .updateWebSearch({ quickChat: enabled })
-      .then((s) => setWebSearch(s.webSearch))
-      .catch(() => {});
-  }
 
   // Seed model/effort/speed from the saved Quick Chat defaults (default model
   // falls back to the backend's default when unset).
@@ -179,9 +161,13 @@ export function QuickChat() {
   useEffect(() => {
     return window.stem.onQuickChatFocus(({ reset }) => {
       if (reset) resetSession();
+      // The overlay window is only hidden between summons, so a Quick Chat web
+      // search change made over in Settings has to be picked up here — the usual
+      // `focus` event doesn't fire on show.
+      reloadWebSearch();
       requestAnimationFrame(() => inputRef.current?.focus());
     });
-  }, [resetSession]);
+  }, [resetSession, reloadWebSearch]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -449,17 +435,22 @@ export function QuickChat() {
   const fastTier = selectedModel?.serviceTiers.find((t) => t.id === 'priority');
   const hasFast = selectedModel ? !!fastTier : true;
 
-  // Web-search toggle for Quick Chat turns. Search is served by the vendored
+  // Web-search toggle for the compact bar. Search is served by the vendored
   // pi-web-access extension rather than the provider, so unlike before there is no
   // model for which this control has to hide itself — it renders unconditionally.
-  const searchOn = webSearch.quickChat;
-  const searchToggle = (key: string) => (
-    <div className="seg-ctl compact" role="group" aria-label="Web search" key={key}>
+  // The expanded panel doesn't repeat it here: there it is one of the composer's
+  // controls, next to Note, exactly as in the main window.
+  const searchToggle = (
+    <div className="seg-ctl compact" role="group" aria-label="Web search">
       <button
         type="button"
         className={searchOn ? 'active' : ''}
         onClick={() => toggleWebSearch(!searchOn)}
-        title={`Web search ${searchOn ? 'on' : 'off'}`}
+        title={
+          searchOn
+            ? 'Web search on — Stem may search the live web, with citations'
+            : 'Web search off — Stem answers from what it already knows'
+        }
       >
         <Globe size={13} /> Web
       </button>
@@ -473,7 +464,6 @@ export function QuickChat() {
         <div className="qc-card qc-panel">
           <div className="qc-head">
             <Sparkles className="qc-mark" size={18} />
-            {searchToggle('head')}
             <span className="qc-spacer" />
             <button className="qc-act" title="New thread" onClick={() => void newThread()} disabled={resetting}>
               <SquarePen size={15} />
@@ -514,6 +504,8 @@ export function QuickChat() {
             onChangeEffort={setEffort}
             onChangeSpeed={setServiceTier}
             onChangeFormat={setFormat}
+            webSearch={searchOn}
+            onToggleWebSearch={toggleWebSearch}
             onNoteSaved={() => window.stem.hideQuickChat()}
           />
         </div>
@@ -586,7 +578,7 @@ export function QuickChat() {
               </button>
             </div>
           )}
-          {searchToggle('foot')}
+          {searchToggle}
           <div className="seg-ctl compact" role="group" aria-label="Memory note">
             <button
               type="button"

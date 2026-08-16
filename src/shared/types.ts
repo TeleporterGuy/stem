@@ -567,6 +567,25 @@ export type ConnectedFolderPatch = Partial<
 >;
 
 /**
+ * One directory of the SERVER's filesystem, as the remote folder picker walks
+ * it. The native OS picker opens on the client's machine, which is the wrong
+ * disk whenever the server is elsewhere — so the picker asks the server for one
+ * level at a time and renders this.
+ */
+export interface ServerFolderListing {
+  /** Absolute path listed (resolved on the server). */
+  path: string;
+  /** Its parent, or null when `path` is the filesystem root. */
+  parent: string | null;
+  /** The server user's home directory — where browsing starts. */
+  home: string;
+  /** Sub-directories (dot-directories filtered), sorted by name. */
+  dirs: { name: string; path: string }[];
+  /** Set when `path` could not be read; `dirs` is empty and navigation stays up. */
+  error?: string;
+}
+
+/**
  * Index health for one indexed connected folder (computed from its index DB —
  * never persisted in connected-folders.json).
  */
@@ -676,8 +695,39 @@ export interface TaskNotifyPayload {
 
 // ---- MCP servers ----
 
-/** stdio = local `command` + `args`; http = remote streamable-HTTP `url`. */
+/**
+ * HOW a server is spoken to: stdio = a spawned `command` + `args`; http = a
+ * streamable-HTTP `url`. Not WHERE it runs — that is {@link McpServerLocation},
+ * a perpendicular axis, and all four combinations are meaningful.
+ */
 export type McpTransport = 'stdio' | 'http';
+
+/**
+ * Which machine a server runs on, as the panel needs to render it. Absent on a
+ * summary means the machine hosting stem-server, which is where every server has
+ * always run.
+ */
+export interface McpServerLocation {
+  deviceId: string;
+  /** The device's label, carried along so a row can name a place without a second call. */
+  label: string;
+  /** The deviceId is no longer in the registry — that device was unpaired. */
+  orphaned?: boolean;
+  /**
+   * What that device was called when the pin was written, kept in mcp.json
+   * beside the id. Pairing mints a NEW id, so re-pairing the same Mac — after
+   * the rollback in running-on-a-server.md, after an import, after switching to
+   * "this computer's server" and back — orphans every server pinned to it. This
+   * is what lets the orphan say which machine it meant instead of showing an id.
+   *
+   * A display fact and nothing else. Nothing routes on it, nothing matches on it
+   * to decide what may run, and it is not in the spec fingerprint: a label is
+   * typed by a person and duplicated as easily as it is chosen, and ⑩ refuses to
+   * guess which machine an orphan meant precisely because guessing wrong runs
+   * somebody's command somewhere they did not put it.
+   */
+  rememberedLabel?: string;
+}
 
 export interface McpServerSummary {
   name: string;
@@ -696,6 +746,8 @@ export interface McpServerSummary {
    * from `!def.disabled`.
    */
   enabled: boolean;
+  /** Where it runs; absent = on the machine hosting the server. */
+  location?: McpServerLocation;
 }
 
 /**
@@ -732,11 +784,280 @@ export interface McpServerInput {
   oauthClientId?: string;
   oauthClientSecret?: string;
   oauthScope?: string;
+  /**
+   * Pin the server to a paired desktop instead of running it where stem-server
+   * runs. Omitted = the server's own machine, which is what every add has meant
+   * so far. The label is NOT supplied here — it is read from the registry, so a
+   * caller cannot make a row claim to be a machine it is not.
+   */
+  location?: { deviceId: string };
 }
 
 export interface McpLoginResult {
   ok: boolean;
   error?: string;
+}
+
+// ---- Servers pinned to a device (docs/mcp-device-pinning.md) ----
+//
+// A server with a `location` runs on a paired desktop instead of on the machine
+// hosting stem-server, and everything below is what the two ends say to each
+// other about one: what a device is asked to host, what it reports back, and the
+// single call in flight between them.
+//
+// The types live here rather than beside the router because both ends need them
+// and neither owns them — the desktop reads a request off its event stream and
+// answers on a channel the server registered, so a copy on either side would be
+// a copy that can drift.
+
+/**
+ * The name of the addressed control frame that carries one call to the device
+ * hosting a server. A control frame rather than a push because it is addressed:
+ * it goes to one device's streams and never enters the replay ring, which every
+ * connected device is entitled to read (see transport/server.ts).
+ */
+export const MCP_REQUEST_FRAME = 'mcp-request';
+
+/**
+ * The name of the addressed control frame that tells one device its assignments
+ * changed. It carries nothing: the answer to "what do I host now" is
+ * `mcpHost:hello`, and a frame that also carried the new list would be a second
+ * copy of that answer able to disagree with it.
+ *
+ * It exists because mcp.json is written centrally and read by whichever machine
+ * runs the server. Without it, a pin edited from a phone — or by the assistant,
+ * or from a second desktop — reaches the hosting machine only at its next launch
+ * or reconnect, which means a removed server keeps its child alive over there
+ * and a re-added one keeps running the spec it was approved for last week.
+ */
+export const MCP_ASSIGNMENTS_FRAME = 'mcp-assignments';
+
+/**
+ * The transport half of an entry in mcp.json, as the machine that will actually
+ * run the server needs it. Credentials are IN it — decrypted env values, header
+ * values — because the spec is what the client connects with; it travels to
+ * exactly one device, the one the entry names, over the same authenticated
+ * stream everything else rides.
+ */
+export interface DeviceMcpSpec {
+  /** stdio: the command spawned on the hosting machine. */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  /** http: the URL opened FROM the hosting machine's own network. */
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+/** One server a device is asked to host, and the hash it is approved against. */
+export interface DeviceMcpAssignment {
+  name: string;
+  spec: DeviceMcpSpec;
+  /**
+   * The whole spec, hashed (src/shared/mcp-fingerprint.ts). Approval is per
+   * fingerprint rather than per name, which is what makes editing an already
+   * approved entry's `args` or `env` a new approval rather than a silent
+   * widening (docs/mcp-device-pinning.md, ④).
+   */
+  fingerprint: string;
+  /**
+   * Switched off centrally. Sent rather than withheld, because "not yours any
+   * more" and "yours, but off" are different facts and only the first should
+   * cost this machine its approval: turning a server off and on again must not
+   * ask you to approve a spec you already approved (the entry keeps its config
+   * AND its approval — see setMcpServerEnabled). Nothing disabled ever starts
+   * here; a host that receives one stops it and says so.
+   */
+  disabled?: boolean;
+  /**
+   * Names of `env`/`headers` values that are IN mcp.json and could not be
+   * decrypted there — an import with the wrong passphrase, a rotated key. The
+   * values are gone from the spec, so its fingerprint moved and the hosting
+   * machine will ask for approval again; without this the card would say the
+   * spec "changed", which is true and misleading. Nobody edited it, and
+   * approving it starts a server missing a credential.
+   *
+   * Names only, and never the values: this is the same rule McpHostSpecPreview
+   * follows, for the same reason.
+   */
+  lostSecrets?: string[];
+}
+
+/** One tool's real input schema, as the machine hosting it knows it. */
+export interface DeviceMcpToolSchema {
+  name: string;
+  description?: string;
+  /** The server's own JSON Schema, verbatim. Absent when the tool declares none. */
+  inputSchema?: unknown;
+  /**
+   * Set when this could not be fetched from the hosting machine and was rebuilt
+   * from the compact signature instead: what is missing, and why. It is rendered
+   * into the schema's own `description` so the model reads it where it reads the
+   * arguments, rather than somewhere it may not look.
+   */
+  partial?: string;
+}
+
+/** One tool on a hosted server, as the catalog block renders it. */
+export interface DeviceMcpTool {
+  name: string;
+  description?: string;
+  /** Compact argument signature; the full schema is fetched on demand. */
+  signature?: string;
+}
+
+/**
+ * What one hosted server looks like from the machine running it.
+ *
+ * `unapproved` is not a failure: the spec is sitting in that machine's Manage
+ * panel waiting for someone to say yes, and saying so is what lets the assistant
+ * tell the difference between a server that is broken and one nobody has agreed
+ * to run yet.
+ */
+export interface DeviceMcpServerReport {
+  name: string;
+  status: 'ready' | 'failed' | 'unapproved';
+  /** Why it is not ready, in the words the hosting machine used. */
+  error?: string;
+  /**
+   * Which spec this report is about. The server already HAS the spec — it sent
+   * it — so the fingerprint is enough to say which one, and a stale report from
+   * before an edit is recognisable as one.
+   */
+  fingerprint?: string;
+  tools?: DeviceMcpTool[];
+}
+
+/** A client's whole account of what it is hosting — `mcpHost:announce`. */
+export interface DeviceMcpAnnouncement {
+  servers: DeviceMcpServerReport[];
+}
+
+/** One device's last announcement, as the server remembers it. */
+export interface DeviceMcpCatalogEntry {
+  deviceId: string;
+  /** ISO timestamp of the announcement, so a stale catalog can say how stale. */
+  announcedAt: string;
+  servers: DeviceMcpServerReport[];
+}
+
+/**
+ * Every device's announced catalog, kept across disconnection on purpose: an
+ * unavailable server stays listed and marked, so the assistant can say "once
+ * your Mac is awake" instead of silently lacking the capability (③).
+ */
+export interface DeviceMcpCatalog {
+  version: 1;
+  devices: Record<string, DeviceMcpCatalogEntry>;
+}
+
+/** One call, addressed to the device hosting `server`. */
+export interface DeviceMcpRequest {
+  /**
+   * Unguessable and single-use. Every server channel is also bound to ipcMain on
+   * the desktop, so a renderer can call `mcpHost:result` — this id is what keeps
+   * a forged answer from being able to affect anything but a request that device
+   * was legitimately handed.
+   */
+  requestId: string;
+  server: string;
+  /**
+   * `describe` is the on-demand half of the compact catalog: the per-turn block
+   * carries names and a compact signature, and this fetches one tool's real
+   * schema from the machine that handshook with it. It is a separate op rather
+   * than a fatter `tools` because the whole point of the compact list is not
+   * paying for schemas nobody asked for.
+   */
+  op: 'tools' | 'call' | 'describe';
+  /** `call` and `describe` only. */
+  tool?: string;
+  args?: unknown;
+}
+
+/** What the hosting machine answers with — `mcpHost:result`. */
+export type DeviceMcpResult =
+  | { ok: true; tools?: DeviceMcpTool[]; content?: unknown; schema?: DeviceMcpToolSchema }
+  | { ok: false; error: string };
+
+// ---- What the MCP host on THIS machine has to say about itself ----
+//
+// The types below never go on the wire. They are the answer to
+// `mcpHost:localState`, a client-owned channel, because approval is a fact about
+// one computer: the panel in a window on your Mac is asking your Mac, and a
+// server pinned to some other device has nothing to answer with. That is also
+// what makes the panel work against a server whose client half is a phone or an
+// older build — the question was never sent anywhere.
+
+/**
+ * What approving a spec would run, with the credential VALUES left out.
+ *
+ * The spec itself carries decrypted API keys and bearer headers; it stops in the
+ * main process, where the thing that spawns lives. A card needs to show what
+ * gets executed, not what it gets executed with, so the names of the variables
+ * travel and their values do not — enough to notice `AWS_SECRET_ACCESS_KEY`
+ * appearing in something you thought only read your notes.
+ */
+export interface McpHostSpecPreview {
+  command?: string;
+  args?: string[];
+  url?: string;
+  /** Names only. */
+  envKeys?: string[];
+  /** Names only. */
+  headerKeys?: string[];
+}
+
+/** One spec pinned to this machine that nobody here has said yes to yet. */
+export interface McpHostPendingServer {
+  name: string;
+  /** The fingerprint being approved; the approval is sent back with it. */
+  fingerprint: string;
+  preview: McpHostSpecPreview;
+  /**
+   * True when this machine had approved a DIFFERENT spec under this name. The
+   * card says "changed" rather than "new", because the two are answered
+   * differently by somebody who knows they did not edit it.
+   */
+  changed: boolean;
+  /**
+   * Set when the spec looks like it can run anything, rather than exposing a
+   * bounded set of tools. ⑤ removed per-call confirmation on the argument that
+   * an MCP server's surface is fixed at approval time — for a shell-like server
+   * that argument does not hold, and the card has to say so out loud.
+   */
+  unbounded?: string;
+  /**
+   * Names of credentials this spec carries whose values could not be read on the
+   * machine holding mcp.json. See DeviceMcpAssignment.lostSecrets — the card says
+   * a value was LOST rather than changed, because the two are answered
+   * differently and only one of them is somebody's own edit.
+   */
+  lostSecrets?: string[];
+}
+
+/** How one server pinned to this machine is doing, right now, here. */
+export interface McpHostServerStatus {
+  status: 'starting' | 'ready' | 'failed' | 'unapproved' | 'disabled';
+  /** Why it is not ready, in the words the failure used. */
+  error?: string;
+  /** How many tools it exposed, once it has connected. */
+  tools?: number;
+}
+
+/** Everything the panel needs about the MCP servers hosted on this computer. */
+export interface McpHostLocalState {
+  /** server name → the fingerprint this machine approved. */
+  approved: Record<string, string>;
+  pending: McpHostPendingServer[];
+  status: Record<string, McpHostServerStatus>;
+  /**
+   * Set when the server this client is talking to is older than this build and
+   * does not answer the host channels at all. Everything else here is then
+   * empty — not because nothing is pinned here, but because there was nobody to
+   * ask — and an empty panel that says nothing is the one answer a person cannot
+   * act on.
+   */
+  unsupported?: string;
 }
 
 // ---- Assistant-initiated MCP changes (the `stem-admin` self-management server) ----
@@ -984,8 +1305,10 @@ export interface FactEvidence {
   role: 'user' | 'assistant' | null;
   timestamp: number;
   excerpt: string;
-  /** 'folder_doc' = an indexed connected-folder file (folderId/relPath set). */
-  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'legacy' | 'folder_doc' | 'segment_context';
+  /** 'folder_doc' = an indexed connected-folder file (folderId/relPath set).
+   *  'assistant_claim_web' = an assistant message from a turn that used web tools,
+   *  i.e. the excerpt may restate untrusted public-web content. */
+  origin: 'explicit_user' | 'user_message' | 'assistant_claim' | 'assistant_claim_web' | 'legacy' | 'folder_doc' | 'segment_context';
   /** Connected-folder id, for 'folder_doc' evidence. */
   folderId?: string | null;
   /** Folder-relative file path, for 'folder_doc' evidence. */
@@ -1900,7 +2223,21 @@ export interface DeviceInfo {
   createdAt: string;
   /** Last successful authentication, or null if it has never connected. */
   lastSeenAt: string | null;
+  /**
+   * What the device said it was when it paired, defaulting to `desktop` for
+   * every record written before the field existed. Surfaced because only a
+   * desktop may host an MCP server (docs/mcp-device-pinning.md, ⑦).
+   */
+  kind: DeviceKind;
 }
+
+/**
+ * A paired client's own account of what it is. Self-asserted at pairing and
+ * never verified — it decides what Stem OFFERS a device, not what it may do, so
+ * a client that lied about it would only be volunteering itself for work it is
+ * bad at. See DeviceRecord in server/transport/auth.ts.
+ */
+export type DeviceKind = 'desktop' | 'mobile';
 
 /** A pairing code that has been issued but not yet spent. */
 export interface PendingPairing {
@@ -2112,6 +2449,12 @@ export interface StemApi {
   openWorkspaceFolder(): Promise<void>;
   /** Open a native directory picker; returns chosen absolute paths ([] if canceled). */
   pickDirectory(): Promise<string[]>;
+  /**
+   * List one directory of the SERVER's filesystem (omit `path` for the server
+   * user's home). Backs the remote folder picker, where the native dialog above
+   * would browse the wrong machine.
+   */
+  browseServerFolders(path?: string): Promise<ServerFolderListing>;
 
   // Scheduled tasks. Mutations return the fresh list (like the folders APIs).
   listTasks(): Promise<ScheduledTask[]>;
@@ -2139,6 +2482,13 @@ export interface StemApi {
   removeMcpServer(name: string): Promise<McpServerSummary[]>;
   /** Enable/disable a server without removing it (preserves config + OAuth token). */
   setMcpServerEnabled(name: string, enabled: boolean): Promise<McpServerSummary[]>;
+  /**
+   * Move one server to a paired desktop, or back to the machine hosting the
+   * server with `null`. Only the location changes: the command, the credentials
+   * and the OAuth token stay exactly as they were, and the machine it moves TO
+   * still approves it there before anything runs.
+   */
+  setMcpServerLocation(name: string, deviceId: string | null): Promise<McpServerSummary[]>;
   loginMcpServer(name: string): Promise<McpLoginResult>;
   restartRuntime(): Promise<RuntimeStatus>;
   /** Assistant proposed an MCP change; fired so the UI can show a confirm card. */
@@ -2151,6 +2501,23 @@ export interface StemApi {
   onMcpChanged(listener: () => void): () => void;
   /** Live MCP connection-status updates (keyed by server name). */
   onMcpStatus(listener: (status: Record<string, McpServerStatus>) => void): () => void;
+
+  // The MCP servers pinned to THIS computer. Answered by the desktop itself, not
+  // by the server (see desktop/local/index.ts): approval is a fact about the
+  // machine a server would run on, so these six keep working whatever the
+  // machine at the other end of the wire happens to be.
+  /** What this machine hosts, what it has approved, and what is waiting. */
+  mcpHostState(): Promise<McpHostLocalState>;
+  /** Agree to run one pinned server's current spec; the fingerprint is the one shown. */
+  approveMcpHostServer(name: string, fingerprint: string): Promise<McpHostLocalState>;
+  /** Withdraw agreement to run one pinned server, stopping it. */
+  rejectMcpHostServer(name: string): Promise<McpHostLocalState>;
+  /** Connect one pinned server now and report what actually happened. */
+  testMcpHostServer(name: string): Promise<McpHostLocalState>;
+  /** Re-ask the server which servers are pinned here — after moving one. */
+  refreshMcpHost(): Promise<McpHostLocalState>;
+  /** Fired when a server hosted here settles, fails or is re-synced. */
+  onMcpHostChanged(listener: (state: McpHostLocalState) => void): () => void;
 
   getMemorySettings(): Promise<MemorySettings>;
   setMemoryEnabled(enabled: boolean): Promise<MemorySettings>;

@@ -4,9 +4,20 @@ import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/pro
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { embedSocketPath, folderIndexDir, piHome, piMcpConfigPath, recallDbPath } from '../workspace/paths';
+import {
+  embedSocketPath,
+  folderIndexDir,
+  piHome,
+  piMcpConfigPath,
+  piMcpDeviceCatalogPath,
+  recallDbPath
+} from '../workspace/paths';
 import { RECALL_MCP_NAME, recallMcpServerPath } from '../recall/register-mcp';
 import { getEmbedEndpointToken } from '../recall/embed-endpoint';
+import { renderDeviceCatalogBlock, type DeviceCatalogBlock } from '../mcp-device/catalog';
+import { connectedDeviceIds } from '../startup/transport';
+import { readDevices } from '../transport/auth';
+import type { DeviceMcpCatalog } from '../../shared/types';
 import type { OAuthToken } from './oauth';
 import {
   ENV_MCP_OAUTH,
@@ -26,7 +37,7 @@ export interface PiMcpServer {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-  /** remote transport (HTTP/OAuth) — recognized but not yet connected by the bridge */
+  /** HTTP transport (Streamable HTTP, with a static header or OAuth) */
   url?: string;
   headers?: Record<string, string>;
   /**
@@ -42,6 +53,35 @@ export interface PiMcpServer {
   /** Stem-internal servers run without per-call confirmation. */
   trusted?: boolean;
   disabled?: boolean;
+  /**
+   * Where this server runs. Absent = the machine hosting stem-server, which is
+   * what every entry has always meant and still means — so an existing mcp.json
+   * round-trips byte for byte and nothing changes for it.
+   *
+   * The device is named (`devices.json`), never inferred from wherever you
+   * happened to be typing: what "my computer" means has to be readable from the
+   * config. Only desktops may be named — see the kind check in mcp.ts.
+   *
+   * Deliberately outside {@link mcpServerAuthIdentity}: moving a server between
+   * machines does not change WHO it authenticates as, and folding it into that
+   * hash would invalidate every stored OAuth token the moment this field lands.
+   */
+  location?: {
+    deviceId: string;
+    /**
+     * What that device was called when this pin was written. A snapshot, kept so
+     * an entry whose machine was re-paired (a new id for the same Mac) can say
+     * which machine it meant. Never routed on and never compared to decide what
+     * may run — see McpServerLocation.rememberedLabel for why.
+     */
+    label?: string;
+  };
+  /**
+   * Which `env`/`headers` values were in the file and could not be decrypted,
+   * filled in by {@link readMcpConfig} and stripped again on write. Derived, not
+   * stored: it is a fact about this machine's key, not about the server.
+   */
+  lostSecrets?: string[];
 }
 
 export interface PiMcpConfig {
@@ -75,32 +115,119 @@ export function piMcpCatalogPath(): string {
 // re-parse it only when its mtime changes rather than on every turn.
 let catalogCache: { mtime: number; text: string } = { mtime: -1, text: '' };
 
-/**
- * The per-turn "Available tools" block, injected alongside the files listing. Lists
- * routed MCP servers' tools as name + 1-line description + compact signature — the
- * heavy input schemas are deferred and fetched on demand via the bridge's
- * describe_tool. Returns null when no routed servers are connected (nothing to add).
- */
-export function buildMcpCatalogContext(): string | null {
-  let text: string;
+/** The bridge's own catalog text: server-located servers, written by the extension. */
+function bridgeCatalogText(): string {
   try {
     const mtime = statSync(piMcpCatalogPath()).mtimeMs;
     if (mtime !== catalogCache.mtime) {
       const data = JSON.parse(readFileSync(piMcpCatalogPath(), 'utf8')) as { text?: string };
       catalogCache = { mtime, text: typeof data.text === 'string' ? data.text : '' };
     }
-    text = catalogCache.text;
+    return catalogCache.text;
   } catch {
-    catalogCache = { mtime: -1, text: '' };
-    return null; // missing/corrupt → nothing to inject
+    catalogCache = { mtime: -1, text: '' }; // missing/corrupt → nothing from here
+    return '';
   }
-  if (!text.trim()) return null;
+}
+
+// The device catalog, parsed and mtime-cached the same way — but ONLY the parse.
+// This file moves far more often than the bridge's (every announcement from every
+// machine rewrites it), and the one thing that must never be cached is what the
+// block is stamped with: whether each machine is reachable, which is asked fresh
+// while the block is being built (③).
+let deviceCatalogCache: { mtime: number; catalog: DeviceMcpCatalog } = {
+  mtime: -1,
+  catalog: { version: 1, devices: {} }
+};
+
+function deviceCatalog(): DeviceMcpCatalog {
+  try {
+    const mtime = statSync(piMcpDeviceCatalogPath()).mtimeMs;
+    if (mtime !== deviceCatalogCache.mtime) {
+      const parsed = JSON.parse(readFileSync(piMcpDeviceCatalogPath(), 'utf8')) as Partial<DeviceMcpCatalog>;
+      const devices = parsed?.devices && typeof parsed.devices === 'object' ? parsed.devices : {};
+      deviceCatalogCache = { mtime, catalog: { version: 1, devices } };
+    }
+    return deviceCatalogCache.catalog;
+  } catch {
+    deviceCatalogCache = { mtime: -1, catalog: { version: 1, devices: {} } };
+    return deviceCatalogCache.catalog;
+  }
+}
+
+/** Drop both catalog caches (tests that rewrite the files under one process). */
+export function forgetMcpCatalogCaches(): void {
+  catalogCache = { mtime: -1, text: '' };
+  deviceCatalogCache = { mtime: -1, catalog: { version: 1, devices: {} } };
+}
+
+/**
+ * The per-turn "Available tools" block, injected alongside the files listing. Lists
+ * routed MCP servers' tools as name + 1-line description + compact signature — the
+ * heavy input schemas are deferred and fetched on demand via the bridge's
+ * describe_tool. Returns null when there is nothing to list.
+ *
+ * Two sources, deliberately not one. The bridge writes mcp-catalog.json for the
+ * servers it connects itself; the servers pinned to the user's own machines are
+ * rendered here from what those machines announced, because only this process
+ * knows — and only at the moment it is asked — which of them is awake. Neither
+ * source parses the other: they are concatenated, and the sentence at the end
+ * covers both.
+ */
+export async function buildMcpCatalogContext(): Promise<string | null> {
+  const bridge = bridgeCatalogText().trim();
+  const device = await buildDeviceCatalogSection();
+  const text = [bridge, device.text].filter(Boolean).join('\n\n');
+  if (!text) return null;
   return (
     `Available tools (extra MCP servers, beyond your built-in file tools):\n${text}\n\n` +
     `To use any of these, call \`invoke_tool\` with the server name, the exact tool name, and an \`args\` object. ` +
     `The signatures above are compact — if a tool's arguments aren't obvious, call \`describe_tool\` first to get ` +
-    `its full input schema. Do not invent servers or tools that aren't listed here.`
+    `its full input schema. Do not invent servers or tools that aren't listed here.` +
+    (device.anyAway
+      ? ` A server marked NOT connected runs on one of the user's own machines, which is asleep or offline right now: ` +
+        `its tools are real and will work again as soon as that computer is awake with Stem running on it. ` +
+        `Say which machine that is rather than saying you cannot do the thing — calling one now fails with the same explanation.`
+      : '')
   );
+}
+
+/**
+ * The device-located section, or an empty one. Its shape and its wording live in
+ * mcp-device/catalog.ts (which owns what a catalog is); what lives here is the
+ * three per-turn facts it needs: which machines are up, what they are called,
+ * and which of the announced servers mcp.json still points at them.
+ *
+ * That last one is a filter and not a merge. A device announces what it is
+ * hosting, and the catalog keeps that across the disconnection — including,
+ * briefly, a server the user has since disabled or unpinned while the machine
+ * was away. mcp.json is the authority on what may be called, so a stale
+ * announcement never puts a tool in the prompt that invoke_tool would refuse.
+ */
+async function buildDeviceCatalogSection(): Promise<DeviceCatalogBlock> {
+  const catalog = deviceCatalog();
+  if (Object.keys(catalog.devices).length === 0) return { text: '', anyAway: false };
+  // A corrupt mcp.json throws, and every entry is unverifiable when it does —
+  // so nothing is listed. The turn still goes out; the assistant simply cannot
+  // see these servers, which is the honest state of a config nobody can read.
+  const servers = await readMcpConfig().then(
+    (config) => config.servers,
+    () => ({}) as Record<string, PiMcpServer>
+  );
+  const devices = await readDevices().catch(() => []);
+  const labels = new Map(devices.map((d) => [d.id, d.label]));
+  return renderDeviceCatalogBlock(catalog, {
+    // The same fact DeviceMcpRouter.isAvailable() answers with, from the same
+    // function, asked directly: the router reads mcp.json (this file) to find a
+    // device's servers, so importing it here to ask one question would put a
+    // cycle between the two for no additional truth.
+    isAvailable: (deviceId) => connectedDeviceIds().has(deviceId),
+    label: (deviceId) => labels.get(deviceId) ?? deviceId,
+    include: (deviceId, name) => {
+      const server = servers[name];
+      return !!server && !server.disabled && server.location?.deviceId === deviceId;
+    }
+  });
 }
 
 /**
@@ -462,6 +589,10 @@ function recallServerEntry(): PiMcpServer {
  */
 function encryptServerSecrets(server: PiMcpServer): PiMcpServer {
   const out = { ...server };
+  // Derived on read and never persisted: a config that had been read and written
+  // back would otherwise grow a field describing a decryption failure that may
+  // not even be true of the next machine to open it.
+  delete out.lostSecrets;
   if (out.headers) {
     out.headers = Object.fromEntries(Object.entries(out.headers).map(([k, v]) => [k, encryptSecretValue(v)]));
   }
@@ -472,24 +603,51 @@ function encryptServerSecrets(server: PiMcpServer): PiMcpServer {
   return out;
 }
 
-function decryptRecord(record: Record<string, string>): Record<string, string> {
+/**
+ * Decrypt a map of secret values, reporting which of them did not survive.
+ *
+ * A value that no longer decrypts is dropped rather than passed on as
+ * ciphertext, which is right — but dropping it SILENTLY is what makes a lost
+ * credential indistinguishable from a deleted one. Downstream the difference is
+ * a whole sentence: the machine hosting the server sees a spec whose fingerprint
+ * moved and says it "changed — approve it again", which reads as somebody's
+ * edit, when what actually happened is that the key that opened this value is
+ * gone (an import with the wrong passphrase is the usual way) and approving it
+ * starts a server without its API key.
+ */
+function decryptRecord(record: Record<string, string>): { values: Record<string, string>; lost: string[] } {
   const entries: Array<[string, string]> = [];
+  const lost: string[] = [];
   for (const [k, v] of Object.entries(record)) {
     const plain = decryptSecretValue(v);
     if (plain !== null) entries.push([k, plain]);
+    else lost.push(k);
   }
-  return Object.fromEntries(entries);
+  return { values: Object.fromEntries(entries), lost };
 }
 
 function decryptServerSecrets(server: PiMcpServer): PiMcpServer {
   const out = { ...server };
-  if (out.headers) out.headers = decryptRecord(out.headers);
-  if (out.env) out.env = decryptRecord(out.env);
+  const lost: string[] = [];
+  if (out.headers) {
+    const decrypted = decryptRecord(out.headers);
+    out.headers = decrypted.values;
+    lost.push(...decrypted.lost);
+  }
+  if (out.env) {
+    const decrypted = decryptRecord(out.env);
+    out.env = decrypted.values;
+    lost.push(...decrypted.lost);
+  }
   if (out.oauthClientSecret) {
     const plain = decryptSecretValue(out.oauthClientSecret);
     if (plain === null) delete out.oauthClientSecret;
     else out.oauthClientSecret = plain;
   }
+  // Absent rather than empty when nothing was lost, so the ordinary case adds no
+  // field to a config that gets compared, hashed and written back.
+  if (lost.length > 0) out.lostSecrets = lost.sort();
+  else delete out.lostSecrets;
   return out;
 }
 
@@ -536,6 +694,14 @@ export async function writeMcpConfig(config: PiMcpConfig): Promise<void> {
 /**
  * Ensure mcp.json exists with a fresh stem-recall entry (paths can change between
  * runs), preserving any user-added servers. Idempotent; called at bootstrap.
+ *
+ * The one write that does NOT go through `writeServers` in pi/mcp.ts, and so the
+ * one that tells no device its assignments moved. That is correct only because
+ * what it touches is the reserved recall entry, which is never pinned anywhere —
+ * `RESERVED_NAMES` refuses a location for it, and it reads a database that only
+ * exists on this machine. If a reserved server ever does gain a location, this
+ * becomes a silent hole and the write belongs behind the same notification as
+ * every other one.
  */
 export async function ensureMcpConfig(): Promise<void> {
   await withMcpStateMutation(async () => {

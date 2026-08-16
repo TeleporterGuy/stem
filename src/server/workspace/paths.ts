@@ -1,7 +1,7 @@
 import { host } from '../host';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { PROTECTED_ROOTS_FILE } from '../pi/protocol';
+import { MCP_DEVICE_CATALOG_FILE, PROTECTED_ROOTS_FILE } from '../pi/protocol';
 
 // All app state lives under Electron's userData dir, fully isolated from the
 // user's global pi config. The backend home and the working dir we launch the
@@ -78,6 +78,25 @@ export function piSessionsDir(): string {
 /** The pi-mcp-adapter config (mcp.json) under the pi home; the config.toml analog. */
 export function piMcpConfigPath(): string {
   return process.env.STEM_PI_MCP_CONFIG ?? join(piHome(), 'mcp.json');
+}
+
+/**
+ * Tool catalogs announced by devices hosting their own MCP servers (see
+ * server/mcp-device/). Beside mcp.json under the pi home, next to the bridge's
+ * own `mcp-catalog.json` (declared in pi/mcp-config.ts, because the bridge
+ * writes that one and this process only reads it).
+ *
+ * Two files rather than one, deliberately: the bridge owns its catalog and
+ * rewrites it whenever it reconnects, this one is rewritten on every client
+ * announcement, and teaching either to parse the other's format would couple two
+ * things whose only relationship is that the same prompt renders both.
+ *
+ * It survives restarts because that is the point — an unavailable server stays
+ * listed and marked rather than vanishing from what the assistant knows it can
+ * do (docs/mcp-device-pinning.md, ③).
+ */
+export function piMcpDeviceCatalogPath(): string {
+  return process.env.STEM_MCP_DEVICE_CATALOG ?? join(piHome(), MCP_DEVICE_CATALOG_FILE);
 }
 
 /**

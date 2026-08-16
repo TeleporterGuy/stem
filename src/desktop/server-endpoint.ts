@@ -100,7 +100,10 @@ export async function pairWithServer(
     res = await fetch(`${url}/pair`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ code }),
+      // `kind` is what this client is, and every client that runs this file is a
+      // desktop app on somebody's computer — which is what makes it eligible to
+      // host a pinned MCP server later (docs/mcp-device-pinning.md).
+      body: JSON.stringify({ code, kind: 'desktop' }),
       signal: AbortSignal.timeout(30_000)
     });
   } catch (e) {

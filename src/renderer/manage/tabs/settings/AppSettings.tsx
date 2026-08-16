@@ -16,6 +16,7 @@ import { ReleaseNotesModal } from '../../../ReleaseNotesModal';
 import { InfoTip } from '../../../ui/InfoTip';
 import { ModelPicker } from '../../../ui/ModelPicker';
 import { EFFORT_LABELS } from '../../../modelLabels';
+import { broadcastWebSearch } from '../../../webSearch';
 import { ShortcutRecorder } from './shortcut';
 
 // Inactivity presets for starting a fresh Quick Chat thread on re-summon.
@@ -175,6 +176,19 @@ function QuickChatSection({ models }: { models: ModelSummary[] }) {
   // Per-field debounce so typing doesn't spam the atomic settings writer.
   const ciQuickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // The Quick Chat overlay carries the same switch on its own bar — a different
+  // window, so no in-window event reaches here. Re-read the flags whenever this
+  // window comes forward, which is the first moment the stale box could be seen.
+  useEffect(() => {
+    const reload = () =>
+      void window.stem
+        .getSettings()
+        .then((s) => setWs(s.webSearch))
+        .catch(() => undefined);
+    window.addEventListener('focus', reload);
+    return () => window.removeEventListener('focus', reload);
+  }, []);
+
   useEffect(() => {
     void window.stem.getSettings().then((s) => {
       setQc(s.quickChat);
@@ -206,7 +220,10 @@ function QuickChatSection({ models }: { models: ModelSummary[] }) {
 
   function updateWebSearch(patch: Partial<WebSearchSettings>) {
     setWs((cur) => ({ ...cur, ...patch })); // optimistic; reconcile below
-    window.stem.updateWebSearch(patch).then((s) => setWs(s.webSearch));
+    window.stem.updateWebSearch(patch).then((s) => {
+      setWs(s.webSearch);
+      broadcastWebSearch(s.webSearch);
+    });
   }
 
   function saveCiQuick(value: string) {

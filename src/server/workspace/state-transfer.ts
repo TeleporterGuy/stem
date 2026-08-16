@@ -2,8 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { lstat, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { host } from '../host';
+import { resolveLoginPath } from '../exec/executor';
 import { passphraseKeyWrapper, passphraseProblem } from '../host/passphrase-key';
 import { log } from '../log';
 import { RECALL_MCP_NAME } from '../recall/register-mcp';
@@ -540,9 +541,15 @@ async function readManifest(archive: string): Promise<ExportManifest> {
  *    signed-out. So whether these survive is decided entirely by whether the key
  *    file opened, which is what makes the passphrase load-bearing rather than
  *    ceremonial.
- *  - A local (stdio) MCP server runs a command by absolute path. A path from a
- *    Mac is not a path on a Linux server, and no amount of credential handling
- *    fixes that — it needs a person.
+ *  - An MCP server can be device-shaped in two ways, and both survive the move as
+ *    an entry that cannot work: a command by absolute path (a path from a Mac is
+ *    not a path on a Linux server) and a URL on the old machine's own network (a
+ *    VPS has no route to 192.168.x.x and never will). Both have an answer now —
+ *    pin the entry to that computer once it is paired, see
+ *    docs/mcp-device-pinning.md — and neither is applied here. Decision ⑩ is that
+ *    they stay server-located and are flagged: at import time no device is paired
+ *    yet, so re-pointing one would mean guessing which machine was meant, in the
+ *    one moment nobody is watching to correct the guess.
  *  - Connected folders are absolute paths to folders that live outside Stem.
  *    Their indexes travelled; the folders themselves could not.
  */
@@ -614,11 +621,25 @@ async function assess(root: string, secrets: StateImportReport['secrets']): Prom
     }
   }
 
+  const runnable = await commandProbe();
   for (const [name, server] of servers) {
     const command = server.command;
-    if (typeof command !== 'string' || !isAbsolute(command)) continue;
-    if (!existsSync(command)) {
-      attention.push(`The tool "${name}" runs ${command}, which is not on this machine. Point it at the right command or remove it.`);
+    if (typeof command === 'string' && command.trim() && !runnable(command)) {
+      attention.push(
+        `The tool "${name}" runs ${command}, which is not on this machine. Pair the computer it came from, then ` +
+          `open Settings → Tools → MCP servers, select "${name}" and choose "Move to" that computer — Stem will run ` +
+          'it there and its tools work from anywhere, including your phone. Or point it at a command that exists ' +
+          'here, or remove it.'
+      );
+      continue;
+    }
+    const url = typeof server.url === 'string' ? server.url : '';
+    if (url && isPrivateAddress(url)) {
+      attention.push(
+        `The tool "${name}" is at ${url}, which is an address on the network the old computer was on — this machine ` +
+          `has no route to it. Pair a computer that can reach it, then select "${name}" in Settings → Tools → MCP ` +
+          'servers and choose "Move to" that computer; Stem will open the URL from there.'
+      );
     }
   }
 
@@ -640,6 +661,79 @@ async function assess(root: string, secrets: StateImportReport['secrets']): Prom
 
   attention.push('No device is paired with this Stem yet. Run `stem-server pair` and enter the code in Settings → Server on each machine.');
   return { reauthorize, attention };
+}
+
+/**
+ * `command => whether this machine could actually run it`, with the directories
+ * resolved once.
+ *
+ * An absolute path is the easy half and was the only half for a while, which
+ * made the report quietest about the entries most likely to be broken: real
+ * configs say `npx`, `uvx`, `docker`, `bunx` — a bare name, resolved against
+ * PATH — and those are exactly the ones that do not exist inside a container.
+ * Unflagged, the first turn on the new machine fails with a bare ENOENT that
+ * nobody connects back to the move they made yesterday.
+ *
+ * Two PATHs, unioned, because two different ones are real here: the process's
+ * own (what the MCP child actually inherits) and the user's login shell (what
+ * they see in a terminal). A command present in the second but not the first is
+ * a configuration problem, not a missing program, and saying "not on this
+ * machine" about a binary they can see would be wrong in the way that teaches
+ * people to ignore the report.
+ */
+async function commandProbe(): Promise<(command: string) => boolean> {
+  const loginPath = await resolveLoginPath().catch(() => '');
+  const dirs = [...new Set([loginPath, process.env.PATH ?? ''].flatMap((p) => p.split(delimiter)))].filter(Boolean);
+  // Windows resolves a bare name through PATHEXT; elsewhere the name is the file.
+  const suffixes =
+    process.platform === 'win32'
+      ? ['', ...(process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
+      : [''];
+  return (command: string): boolean => {
+    const trimmed = command.trim();
+    if (isAbsolute(trimmed)) return existsSync(trimmed);
+    // A relative path (`./server.js`, `bin/x`) is resolved against a working
+    // directory this has no way to know, so it is left alone rather than
+    // guessed at — the same rule the URL check follows.
+    if (trimmed.includes('/') || trimmed.includes('\\')) return true;
+    return dirs.some((dir) => suffixes.some((ext) => existsSync(join(dir, trimmed + ext))));
+  };
+}
+
+/**
+ * Whether a URL names a machine only the computer this archive came from could
+ * reach: its own loopback, an mDNS name, a bare hostname that only one LAN
+ * resolves, or a private address. Home Assistant, a NAS, a router, a dev server.
+ *
+ * A server in a datacentre has no route to any of these, so an entry like this
+ * is device-shaped in exactly the way a missing command is, and the report says
+ * so rather than letting it fail on the first turn with a connection timeout
+ * nobody connects back to the move.
+ *
+ * Anything unparseable is left alone: a URL this cannot read is one it has
+ * nothing true to say about.
+ */
+function isPrivateAddress(raw: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(raw).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  } catch {
+    return false;
+  }
+  if (hostname === 'localhost' || hostname === '::1') return true;
+  if (hostname.endsWith('.local') || hostname.endsWith('.localhost') || hostname.endsWith('.home.arpa')) return true;
+  // A single label — `nas`, `raspberrypi` — resolves on one network's DNS and
+  // nowhere else. (An IPv6 literal has colons and is handled below by not
+  // matching the v4 shape.)
+  if (!hostname.includes('.') && !hostname.includes(':')) return true;
+  const parts = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!parts) return false;
+  const [first, second] = [Number(parts[1]), Number(parts[2])];
+  if (first === 127 || first === 10) return true; // loopback, RFC1918 /8
+  if (first === 192 && second === 168) return true; // RFC1918 /16
+  if (first === 172 && second >= 16 && second <= 31) return true; // RFC1918 /12
+  if (first === 169 && second === 254) return true; // link-local
+  return false;
 }
 
 /** Whether any field of an MCP server entry is one of our ciphertexts. */

@@ -27,9 +27,18 @@ Maintainer notes:
 - **Fast for Grok.** The Standard/Fast speed switch now appears for Grok models too — Fast asks
   xAI to schedule your request with higher priority. Until now the switch only existed for
   ChatGPT models, which is why it seemed to vanish when you picked Grok.
+- **Web search switch in the composer.** A **Web** button now sits next to MDX and Note, so
+  turning search off for a question no longer means a trip to Settings. It stays where you leave
+  it, and it is the same switch as Settings → Chat → Web search — so you can still set it once
+  and forget it. Quick Chat has its own, set separately in Settings → Quick Chat, for anyone who
+  wants search on at the desk but off in the overlay.
 
 ### Fixed
 
+- **Right-click works on search results.** A chat you found by searching can now be archived,
+  snoozed, renamed, filed or deleted straight from the result row, like any other row in the list.
+  Until now the menu simply didn't open there, so the one chat you had just gone looking for was
+  the one chat you had to close the search and hunt down in the tree to act on.
 - **MCP tools no longer pose as web searches.** Any tool with "search" in its name — Home
   Assistant lookups included — used to appear in the activity feed as "Searched the web" with a
   globe icon, even though no web search happened. Tool calls are now labeled by what they

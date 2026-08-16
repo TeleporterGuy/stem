@@ -72,6 +72,7 @@ import {
   writeServiceTierGate
 } from './mcp-config';
 import { authorizeMcp } from './oauth';
+import { runDeviceMcpBridgeOp } from '../mcp-device/pi-bridge';
 import { providerIsSpawnable, syncModelsConfig } from './models-config';
 import {
   buildWebSearchContext,
@@ -114,6 +115,7 @@ import { ForegroundSessionGate } from './session-gate';
 import { secretKeyHex } from './secrets';
 import {
   ADMIN_APPROVAL_TITLE,
+  DEVICE_MCP_BRIDGE_TITLE,
   ENV_MCP_CONFIG,
   ENV_MCP_OAUTH,
   ENV_SECRET_KEY,
@@ -668,7 +670,14 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   async startTurn(input: StartTurnInput): Promise<StartTurnResult> {
-    const memory = await captureMemoryFromUserInput(input.input);
+    // The explicit-remember fast path is for text the user TYPED. A scheduled
+    // run's prompt re-enters here too, and schedule_task needs no approval — so
+    // without this gate a model-authored task prompt saying "Remember that …"
+    // would mint an explicit, confidence-1, consolidation-protected fact with
+    // supersede authority. Scheduled input never gets the user's word treatment.
+    const memory = input.scheduled
+      ? { captured: false, shouldAcknowledge: false, factId: undefined, path: undefined }
+      : await captureMemoryFromUserInput(input.input);
     if (memory.shouldAcknowledge) {
       if (memory.factId != null) {
         // Reconciliation is deliberately off the acknowledgement path: the fact is
@@ -765,12 +774,19 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         void setNaming(threadId, { step: 0, since: 0 }).catch(() => undefined);
       }
 
-      if (isRecallEnabled()) {
+      if (isRecallEnabled() && !input.scheduled) {
         // Deferred, not captured: at prompt time the turn's memorize:false
         // verdict is unknowable (the taint is only set once the assistant reads
         // a private folder). The message is flushed by flushPendingUserCapture
         // on the first unsuppressed capture event, or at settleTurn — so a
         // suppressed turn's prompt never touches the recall DB at all.
+        //
+        // A scheduled run's prompt is excluded on purpose: it would land in the
+        // messages table as role 'user', and the distiller treats cited user
+        // messages as the user's own words (0.9 confidence, supersede
+        // authority). Task prompts can be model-authored without approval, so
+        // they must never impersonate the user in recall. The run's assistant
+        // reply is still captured normally.
         turn.pendingUserCapture = { text: input.input, cwd: this.options.workspaceRoot };
       }
       return { threadId, turnId };
@@ -891,6 +907,17 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    */
   isCaptureSuppressed(threadId: string): boolean {
     return this.currentTurn?.threadId === threadId && this.currentTurn.memoryTainted === true;
+  }
+
+  /**
+   * True when the active turn called a web-access tool, so its assistant reply
+   * may restate untrusted public-web content. Read at the same point as
+   * isCaptureSuppressed (the `item/completed` agentMessage precedes agent_end),
+   * and recorded as the `web` flag on captured messages rather than suppressing
+   * them — see TurnContext.webTainted.
+   */
+  isWebTainted(threadId: string): boolean {
+    return this.currentTurn?.threadId === threadId && this.currentTurn.webTainted === true;
   }
 
   /**
@@ -1697,6 +1724,34 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   /**
+   * Handle a device-located MCP server's ctx.ui.input round-trip (sentinel
+   * DEVICE_MCP_BRIDGE_TITLE). The placeholder is a JSON { op, server, tool?,
+   * args? } payload; which machine that server belongs to is looked up in
+   * mcp.json rather than read from the payload, and the DeviceMcpRouter owns
+   * everything after that — the frame, the correlation id, the timeout and the
+   * sentence a sleeping machine is refused with.
+   *
+   * Like the skill bridge, the answer can be minutes away (a tool call runs a
+   * real program on somebody else's computer), so it answers the process that
+   * ASKED rather than whatever `this.proc` is by then: a restart in that window
+   * leaves an elicitation table that knows nothing about this id.
+   */
+  private handleDeviceMcpBridgeRequest(id: string, payload: string | undefined): void {
+    const requestProcess = this.proc;
+    const respond = (value: unknown): void => {
+      if (this.proc !== requestProcess) return;
+      requestProcess?.send({ type: 'extension_ui_response', id, value: JSON.stringify(value) });
+    };
+    void (async () => {
+      try {
+        respond(await runDeviceMcpBridgeOp(payload));
+      } catch (e) {
+        respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    })();
+  }
+
+  /**
    * Handle a scheduled-task tool's ctx.ui.input round-trip (sentinel TASK_BRIDGE_TITLE).
    * The placeholder is a JSON op payload; we run it against the wired TaskBridge using
    * the CURRENT turn's threadId (the only authoritative source — the extension can't
@@ -2021,6 +2076,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // the held elicitation is answered when the command settles.
       if (ev.method === 'input' && ev.title === EXEC_BRIDGE_TITLE) {
         this.handleExecBridgeRequest(id, ev.placeholder as string | undefined);
+        return;
+      }
+      // An MCP server that runs on one of the user's own devices: the call
+      // leaves this machine entirely (transport → that device's MCP host) and
+      // the elicitation is held open until it comes back or times out.
+      if (ev.method === 'input' && ev.title === DEVICE_MCP_BRIDGE_TITLE) {
+        this.handleDeviceMcpBridgeRequest(id, ev.placeholder as string | undefined);
         return;
       }
       // The manage_skill round-trip: the contract validator, the Off/Ask/Auto
@@ -2741,7 +2803,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     if (connected) blocks.push(connected);
     // Cheap names+signatures catalog of routed MCP tools (schemas fetched on demand
     // via describe_tool). Keeps the prompt floor flat as more servers are added.
-    const catalog = buildMcpCatalogContext();
+    const catalog = await buildMcpCatalogContext();
     if (catalog) blocks.push(catalog);
     // Right after the catalog, and gated the same way as the tools themselves: the
     // MCP list can run to hundreds of entries (browser automation among them), and

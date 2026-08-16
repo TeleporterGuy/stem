@@ -15,12 +15,14 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:f
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import {
+  deviceKind,
   forgetCachedDevices,
   hashToken,
   mintDevice,
   readDevices,
   resolveDevice,
-  revokeDevice
+  revokeDevice,
+  setDevicePushToken
 } from '../../src/server/transport/auth';
 import { devicesStorePath } from '../../src/server/workspace/paths';
 
@@ -130,6 +132,45 @@ describe('records written by an earlier release', () => {
       { id: 'd1', tokenHash: hashToken(token), role: 'desktop', label: 'This machine', createdAt: '', lastSeenAt: null }
     ]);
     expect((await resolveDevice(token))?.role).toBe('device');
+  });
+});
+
+// What a device says it is when it pairs. It decides what Stem OFFERS it — only
+// a desktop is offered as a host for a pinned MCP server — so the load-bearing
+// case is the record that predates the question and has to be read as a desktop.
+describe('what a device says it is', () => {
+  it('records the kind the caller minted with, and defaults to desktop', async () => {
+    const desk = await mintDevice('Desk');
+    const phone = await mintDevice('Phone', 'mobile');
+
+    expect(deviceKind(desk.device)).toBe('desktop');
+    expect(deviceKind(phone.device)).toBe('mobile');
+    // A minted record KNOWS, so it says so on disk; absence is reserved for the
+    // records written before the field existed.
+    const stored = JSON.parse(readFileSync(devicesPath, 'utf8')).devices as { kind?: string }[];
+    expect(stored.map((d) => d.kind)).toEqual(['desktop', 'mobile']);
+  });
+
+  it('reads a record from before the field as a desktop', async () => {
+    writeRegistry([
+      { id: 'd1', tokenHash: hashToken('a'.repeat(64)), role: 'device', label: 'Old', createdAt: '', lastSeenAt: null }
+    ]);
+    const [device] = await readDevices();
+    // Absent stays absent — the file must round-trip to the bytes it arrived as —
+    // and only the reader applies the default.
+    expect(device.kind).toBeUndefined();
+    expect(deviceKind(device)).toBe('desktop');
+  });
+
+  it('keeps the kind when a push token is dropped', async () => {
+    const { device } = await mintDevice('Phone', 'mobile');
+    await setDevicePushToken(device.id, 'f'.repeat(64));
+    await setDevicePushToken(device.id, null);
+    const [stored] = await readDevices();
+    // withoutPushToken rebuilds the record field by field, so a forgotten field
+    // here would silently promote a phone to a host Stem would offer.
+    expect(stored.apnsToken).toBeUndefined();
+    expect(deviceKind(stored)).toBe('mobile');
   });
 });
 

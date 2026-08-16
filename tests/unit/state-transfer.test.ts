@@ -364,7 +364,16 @@ describe('what the import tells you to go and fix', () => {
     populate(from);
     writeFileSync(
       join(from, 'pi-home', 'mcp.json'),
-      JSON.stringify({ servers: { weather: { command: '/opt/somewhere-else/bin/uvx', args: ['weather-mcp'] } } })
+      JSON.stringify({
+        servers: {
+          weather: { command: '/opt/somewhere-else/bin/uvx', args: ['weather-mcp'] },
+          // The other device-shaped kind: a URL only the old machine's network
+          // resolves. A datacentre has no route to it and never will.
+          'home-assistant': { url: 'http://homeassistant.local:8123/mcp' },
+          // And one that is nobody's problem: a public endpoint works from here.
+          fastmail: { url: 'https://api.fastmail.com/mcp' }
+        }
+      })
     );
     writeFileSync(
       join(from, 'connected-folders.json'),
@@ -378,12 +387,50 @@ describe('what the import tells you to go and fix', () => {
     const report = await importState({ archive, passphrase: PASSPHRASE });
     const attention = report.attention.join('\n');
     expect(attention).toContain('/opt/somewhere-else/bin/uvx');
+    expect(attention).toContain('homeassistant.local');
     expect(attention).toContain('Personal Obsidian');
+    // A public URL is not device-shaped and must not be flagged: a report that
+    // lists everything is one nobody reads to the end.
+    expect(attention).not.toContain('fastmail');
+    // Both MCP entries now have an answer rather than only a diagnosis — pin
+    // them to the computer they came from once it is paired (decision ⑩). And
+    // neither was repointed here: at import time there is no device to name.
+    expect(attention).toMatch(/Move to/);
+    expect(report.attention.filter((line) => /Move to/.test(line))).toHaveLength(2);
     // Pairing is always the next step: nothing can reach this server yet.
     expect(attention).toMatch(/stem-server pair/);
     // Provider sign-ins are not machine-bound, so they are reported as carried
     // rather than as something to redo.
     expect(report.reauthorize.join('\n')).toMatch(/anthropic/);
+  });
+
+  it('names a bare command this machine cannot resolve, not only an absolute one', async () => {
+    const from = scratch();
+    useStateRoot(from);
+    populate(from);
+    writeFileSync(
+      join(from, 'pi-home', 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          // What real configs actually say. Checking only absolute paths left
+          // the report silent about exactly the entries most likely to die in a
+          // container — they fail at the first turn with a bare ENOENT nobody
+          // connects back to the move.
+          notes: { command: 'definitely-not-installed-anywhere', args: ['--stdio'] },
+          // A command every machine running this test has, since it is the one
+          // running it: present, so silent.
+          runner: { command: process.execPath, args: ['server.js'] }
+        }
+      })
+    );
+    const archive = join(scratch(), 'bare.tar');
+    await exportState({ out: archive, passphrase: PASSPHRASE });
+
+    const to = scratch();
+    useStateRoot(to);
+    const attention = (await importState({ archive, passphrase: PASSPHRASE })).attention.join('\n');
+    expect(attention).toContain('definitely-not-installed-anywhere');
+    expect(attention).not.toContain('"runner"');
   });
 });
 

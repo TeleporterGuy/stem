@@ -510,6 +510,21 @@ const FACT_STATUS_LABEL: Record<FactStatus, string> = {
 };
 
 /**
+ * Evidence-origin wording for the expanded provenance rows. The store names are
+ * fine for most origins, but 'assistant_claim_web' has to SAY what it means —
+ * it marks evidence that may restate untrusted web content, which is exactly
+ * what the user needs to see before confirming such a fact.
+ */
+const EVIDENCE_ORIGIN_LABEL: Record<string, string> = {
+  explicit_user: 'you asked to remember',
+  user_message: 'your message',
+  assistant_claim: 'assistant claim',
+  assistant_claim_web: 'assistant claim (turn used the web — unverified)',
+  segment_context: 'surrounding conversation',
+  legacy: 'legacy'
+};
+
+/**
  * [newer, older] — the same ordering `resolveMemoryConflict` applies in the store,
  * id as the tiebreak. "Keep newer" is unusable unless the card shows which is which.
  */
@@ -822,7 +837,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
                       {details[f.id]!.evidence.map((e) => (
                         <blockquote key={e.id}>
                           {new Date(e.timestamp * 1000).toLocaleDateString()} ·{' '}
-                          {e.origin === 'folder_doc' ? `file ${e.relPath ?? '(unknown)'}` : e.origin}: {e.excerpt}
+                          {e.origin === 'folder_doc' ? `file ${e.relPath ?? '(unknown)'}` : EVIDENCE_ORIGIN_LABEL[e.origin] ?? e.origin}: {e.excerpt}
                         </blockquote>
                       ))}
                     </div>

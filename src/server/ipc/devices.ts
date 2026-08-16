@@ -1,8 +1,9 @@
 import { registerServer, type CallerContext } from './guard';
-import { readDevices, revokeDevice, setDevicePushToken } from '../transport/auth';
+import { deviceKind, readDevices, revokeDevice, setDevicePushToken } from '../transport/auth';
 import { forgetPresence, reportPresence } from '../push/presence';
 import { createPairingCode, pendingPairings } from '../transport/pairing';
 import { dropDeviceStreams } from '../startup/transport';
+import { deviceMcpRouter } from '../mcp-device/router';
 import { log } from '../log';
 import type { DeviceInfo, DevicesSnapshot, PairingCodeInfo } from '../../shared/types';
 
@@ -43,6 +44,14 @@ export function registerDevicesIpc(): void {
     // desktop revoked while "recently active" would otherwise go on suppressing
     // everyone's notifications until the window ran out.
     if (removed) forgetPresence(id);
+    // What that machine said it was hosting goes too. The PIN does not — an MCP
+    // server pinned to a device that was unpaired stays in mcp.json, shows as
+    // orphaned in the panel and waits for a person (docs/mcp-device-pinning.md,
+    // ⑩) — but the catalog is a different thing: it is what the assistant is
+    // told it can do, and tools on a machine that can no longer reach this Stem
+    // are not capabilities it has. Leaving them there would put a promise in
+    // every prompt that every call would then refuse.
+    if (removed) await deviceMcpRouter().forget(id);
     if (removed) log('devices', 'revoked a device', { id, streamsDropped: dropped });
     return snapshot();
   });
@@ -105,7 +114,10 @@ async function snapshot(): Promise<DevicesSnapshot> {
         id: d.id,
         label: d.label,
         createdAt: d.createdAt,
-        lastSeenAt: d.lastSeenAt
+        lastSeenAt: d.lastSeenAt,
+        // Resolved here rather than passed through raw: every consumer wants the
+        // answer, not the absence, and the default belongs in one place.
+        kind: deviceKind(d)
       })
     ),
     pending: pending.map((p) => ({ label: p.label, expiresAt: p.expiresAt }))

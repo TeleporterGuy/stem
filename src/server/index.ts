@@ -28,6 +28,7 @@ import { setActivityEmitter } from './activity';
 import { foldTurnEvent, liveTurnCount, noteTurnStart } from './live-turns';
 import { pushApprovalRequest, pushTurnFinished, type ApprovalPushKind } from './push';
 import { closeApns } from './push/apns';
+import { closeDeviceMcpRouter } from './mcp-device/router';
 import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
 import { ensureUsageTracking } from './skills/usage';
@@ -793,7 +794,9 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
         // The user message is held back until the turn's suppression verdict is
         // knowable; flushing it here keeps its row id below its reply's.
         if (threadId) runtime!.flushPendingUserCapture(threadId);
-        captureFromEvent(event); // tap assistant replies into Stem Recall (all threads)
+        // Assistant replies from a web-using turn are captured flagged `web`, so
+        // distillation never treats restated page content as trusted provenance.
+        captureFromEvent(event, { web: !!threadId && runtime!.isWebTainted(threadId) });
       }
       if (event.method === 'turn/completed') {
         scheduleDistill();
@@ -852,6 +855,11 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       embedManager?.dispose();
       scanManager?.dispose();
       closeFolderIndexes();
+      // Before the transport goes: every held MCP call is waiting on a control
+      // frame's answer coming back over a socket that is about to be destroyed,
+      // and failing them with a sentence beats each one waiting out two minutes
+      // for a reply that can no longer arrive.
+      closeDeviceMcpRouter();
       // Destroys any open SSE stream before closing the listener — without that,
       // close() waits for a connection that by design never ends.
       void closeTransport();

@@ -12,6 +12,7 @@ import type { LlmClient } from '../recall/llm';
 import { recallStore } from '../recall/store';
 import { log } from '../log';
 import * as activity from '../activity';
+import { summarizeFactTexts } from '../recall/audit';
 import { embedMissingDocVectors } from './embed';
 import { learnFolderBatch } from './learn';
 import { scanFolder } from './scan';
@@ -226,11 +227,16 @@ export async function learnAllIndexedFolders(opts: {
   let handle: activity.ActivityHandle | null = null;
   let docsLearned = 0;
   let factsWritten = 0;
+  // Same audit rule as the distill pass (see recall-tasks.ts): an unattended
+  // write into durable memory names what it wrote, not just how much.
+  const learnFrom = Math.floor(Date.now() / 1000);
   const closeEntry = (): void => {
     if (!handle) return;
     activity.end(handle, {
       worked: factsWritten > 0,
-      detail: `${factsWritten} fact${factsWritten === 1 ? '' : 's'} from ${docsLearned} document${docsLearned === 1 ? '' : 's'}`
+      detail: factsWritten > 0
+        ? `${factsWritten} fact${factsWritten === 1 ? '' : 's'} from ${docsLearned} document${docsLearned === 1 ? '' : 's'}: ${summarizeFactTexts(recallStore.getFactsCreatedSince(learnFrom, 'folder:%'), factsWritten)}`
+        : `0 facts from ${docsLearned} document${docsLearned === 1 ? '' : 's'}`
     });
     handle = null;
   };

@@ -137,7 +137,9 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
           role: m.role,
           timestamp: m.ts,
           excerpt: m.text,
-          origin: directUser && m.role === 'user' ? 'user_message' : 'assistant_claim'
+          origin: directUser && m.role === 'user'
+            ? 'user_message'
+            : m.role === 'assistant' && m.web ? 'assistant_claim_web' : 'assistant_claim'
         }))
       });
       if (factId == null) continue;

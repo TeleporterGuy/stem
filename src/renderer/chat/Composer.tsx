@@ -6,7 +6,7 @@ import {
   useRef,
   useState
 } from 'react';
-import { Square, ArrowUp, Paperclip, File, X, Check, NotebookPen } from 'lucide-react';
+import { Square, ArrowUp, Paperclip, File, X, Check, NotebookPen, Globe } from 'lucide-react';
 import type {
   ChatMessage,
   EscapeAction,
@@ -77,6 +77,9 @@ interface ComposerProps {
   onChangeEffort: (effort: string) => void;
   onChangeSpeed: (serviceTier: string | null) => void;
   onChangeFormat: (format: 'md' | 'mdx') => void;
+  /** Web search for this surface — its saved position, which the next turn uses. */
+  webSearch: boolean;
+  onToggleWebSearch: (next: boolean) => void;
   reportDraft: boolean;
   /** The thread `/learn` saves from. Null in an unsent draft and absent in Quick
    *  Chat; either way the draft takes the normal send path. */
@@ -108,6 +111,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   onChangeEffort,
   onChangeSpeed,
   onChangeFormat,
+  webSearch,
+  onToggleWebSearch,
   reportDraft,
   threadId,
   onDraftChange,
@@ -384,6 +389,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             title={withKey('Plain Markdown only', 'toggle-format')}
           >
             MD
+          </button>
+        </div>
+        {/* Not disabled while a turn runs, unlike effort/speed/format: those three
+            describe the turn in flight, this one only decides the next one — and
+            it is the same saved switch Settings shows, so a click has to land. */}
+        <div className="seg-ctl compact" role="group" aria-label="Web search">
+          <button
+            type="button"
+            className={webSearch ? 'active' : ''}
+            onClick={() => onToggleWebSearch(!webSearch)}
+            title={
+              webSearch
+                ? 'Web search on — Stem may search the live web, with citations'
+                : 'Web search off — Stem answers from what it already knows'
+            }
+          >
+            <Globe size={13} /> Web
           </button>
         </div>
         <div className="seg-ctl compact" role="group" aria-label="Memory note">

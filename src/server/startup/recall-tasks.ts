@@ -8,6 +8,7 @@ import { processPendingRelationChecks, relationSweepBackfillDone, stepRelationSw
 import { MAX_ADJUDICATE_ATTEMPTS, adjudicateOpenConflicts } from '../recall/adjudicate';
 import { consolidateFacts } from '../recall/consolidate';
 import { getMemoryRebuildStatus, runMemoryRebuildStep } from '../recall/rebuild';
+import { summarizeFactTexts } from '../recall/audit';
 import { recallStore } from '../recall/store';
 import { curateSkills } from '../skills/curate';
 import { applyAutomaticTransitions } from '../skills/lifecycle';
@@ -111,9 +112,17 @@ export function initRecallTasks(deps: {
         // Each sub-pass is its own activity row: they have separate watermarks and
         // fail independently, so "memory maintenance, 42 s" would hide which one
         // actually did (or failed to do) the work.
+        //
+        // The detail NAMES the facts written (not just a count): distillation is
+        // an unattended write into durable memory, and the activity feed is the
+        // only place the user learns it happened at all — a bare "Learned 2
+        // facts" is unauditable without opening the Facts tab.
+        const distillFrom = Math.floor(Date.now() / 1000);
         await activity.track('memory.distill', 'Distilling facts', () => distillNewMessages(recallLlm), (n) => ({
           worked: n > 0,
-          detail: `Learned ${n} fact${n === 1 ? '' : 's'}`
+          detail: n > 0
+            ? `Learned ${n} fact${n === 1 ? '' : 's'}: ${summarizeFactTexts(recallStore.getFactsCreatedSince(distillFrom, 'distilled'), n)}`
+            : 'Learned 0 facts'
         }));
         // Rolling thread summaries (Level 1.5): revise the summaries of the
         // just-active threads from the same new messages. Own watermark, so a

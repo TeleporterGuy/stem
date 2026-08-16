@@ -6,6 +6,7 @@ import { connect, type AddressInfo, type Socket } from 'node:net';
 import { Transform, type Readable } from 'node:stream';
 import { log } from '../log';
 import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolicy } from './auth';
+import type { DeviceKind } from '../../shared/types';
 
 // Stem's transport: a node:http server bound to 127.0.0.1 — or to a Unix socket,
 // which is narrower still. Every client reaches the server through this file and
@@ -31,7 +32,7 @@ import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolic
 //   GET  /channels                  → what this client may invoke
 //   POST /upload?name=…  raw bytes  → {handle}, to pass where a path would go
 //   GET  /files/<rel>               → the bytes of one file in the Files folder
-//   POST /pair     {code}           → {deviceId, token}, the ONE unauthenticated one
+//   POST /pair     {code, kind?}    → {deviceId, token}, the ONE unauthenticated one
 //
 // The two file routes exist because a path is not portable. Everything else a
 // client sends fits in an RPC envelope; a file does not — an attachment must not
@@ -242,7 +243,7 @@ export interface TransportServerOptions {
    * else is a 500. Omitted entirely = no /pair route at all, which is what a
    * deployment that only ever pairs off shared disk should do.
    */
-  pair?(code: string): Promise<PairingGrant>;
+  pair?(code: string, kind: DeviceKind): Promise<PairingGrant>;
   /**
    * Take one uploaded file and answer with the handle that stands for it. `body`
    * is already capped at MAX_UPLOAD_BYTES and errors past it, so an
@@ -313,6 +314,23 @@ export interface TransportServer {
   readonly epoch: string;
   /** Fan an event out to every connected client, and remember it for replay. */
   push(event: PushEvent): void;
+  /**
+   * Write one control frame to the streams of a single device, returning how
+   * many it reached. Nothing enters the replay buffer — see the invariant on the
+   * ring, which this deliberately does not touch.
+   *
+   * Zero is a meaningful answer, not a failure to report later: it means that
+   * device has nothing open right now, and the caller can say so immediately
+   * instead of waiting out a timeout for an answer that was never coming.
+   */
+  pushTo(deviceId: string, name: string, data: unknown): number;
+  /**
+   * Which devices have at least one stream open. THE availability signal for
+   * anything addressed at a device (docs/mcp-device-pinning.md, ③): the channel
+   * that would carry the work is the same channel that decides whether it can be
+   * carried, so "looks reachable but has nowhere to send work" cannot happen.
+   */
+  connectedDevices(): Set<string>;
   /** Connected SSE clients — diagnostics and tests. */
   clientCount(): number;
   /** How many frames the replay buffer is currently holding — tests, diagnostics. */
@@ -469,10 +487,10 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
    *
    * It is a GLOBAL ring holding frames that were sent to EVERY client, which is
    * the only reason replaying it to a device that was not connected at the time
-   * is safe. There is no device-scoped push in this transport — `push()` has no
-   * parameter that could express one, and the one producer above it broadcasts
-   * (see startup/transport.ts) — so a frame in here is by construction a frame
-   * every authenticated device was already entitled to.
+   * is safe. `push()` — the one thing that writes here — has no parameter that
+   * could aim a frame at somebody, and the one producer above it broadcasts (see
+   * startup/transport.ts), so a frame in here is by construction a frame every
+   * authenticated device was already entitled to.
    *
    * Phase 4 added an out-of-band per-device path (server/push/apns.ts wakes one
    * phone through Apple's network), and it deliberately does NOT touch this. An
@@ -480,10 +498,19 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
    * and carries no state to replay: it is a tap on the shoulder saying "look at
    * Stem", holding an id to deep-link to and a short label, never a message. SSE
    * is still the sole state channel, and a client that missed or ignored a push
-   * loses nothing — it re-reads this stream and is whole again. The invariant is
-   * therefore unchanged and this buffer needs no per-device knowledge; what would
-   * break it is a push aimed at one device *through here*, and there is still no
-   * way to express one.
+   * loses nothing — it re-reads this stream and is whole again.
+   *
+   * `pushTo()` is the second per-device path and the first one that goes out over
+   * THIS socket, so it is the one to be careful about. It writes a control frame
+   * to one device's streams and stops there: no `remember()`, no id, no position
+   * in the stream. That is not an optimization, it is the invariant — a call
+   * addressed to the machine hosting an MCP server carries that server's
+   * arguments, and every other paired device would be entitled to read it out of
+   * this buffer on its next reconnect. An addressed frame is also not something
+   * to replay after the fact: it is a request with a caller waiting on a timeout,
+   * and a copy delivered minutes later to whoever happens to reconnect answers
+   * nobody. The rule to keep: whatever gains a `deviceId` parameter does not
+   * write here, and this buffer therefore never needs per-device knowledge.
    *
    * Cost when nothing ever disconnects — which is every embedded install on a
    * good day — is the memory alone: the text stored here is the SAME string the
@@ -495,6 +522,28 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
   let ringBytes = 0;
   /** The highest id ever pushed, which survives the frames themselves ageing out. */
   let lastPushedId = 0;
+
+  /**
+   * Write to one client, reaping it if the socket has already gone. A response
+   * can be destroyed between its 'close' event and a write; writing to it would
+   * throw ERR_STREAM_DESTROYED into the event emitter.
+   *
+   * The return value is what makes an addressed frame able to answer "nobody was
+   * there" — a broadcast does not care, a request aimed at one device does.
+   */
+  function writeToClient(client: { res: ServerResponse; deviceId: string }, text: string): boolean {
+    if (client.res.writableEnded || client.res.destroyed) {
+      clients.delete(client);
+      return false;
+    }
+    try {
+      client.res.write(text);
+      return true;
+    } catch {
+      clients.delete(client);
+      return false;
+    }
+  }
 
   /** Keep one frame, then evict from the front until both bounds hold again. */
   function remember(id: number, text: string): void {
@@ -806,19 +855,32 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
       sendJson(res, 400, { ok: false, error: 'expected {code: string}' });
       return;
     }
-    let code: unknown;
+    let body: { code?: unknown; kind?: unknown } | null;
     try {
-      code = (JSON.parse(raw) as { code?: unknown })?.code;
+      body = JSON.parse(raw) as { code?: unknown; kind?: unknown } | null;
     } catch {
       sendJson(res, 400, { ok: false, error: 'body is not JSON' });
       return;
     }
+    const code = body?.code;
     if (typeof code !== 'string' || !code) {
       sendJson(res, 400, { ok: false, error: 'expected {code: string}' });
       return;
     }
+    // What the device says it is, so the server can later offer only desktops as
+    // MCP hosts. Optional — a client from before this existed pairs as a desktop,
+    // which is what it was — but a value that is present and not one of ours is
+    // refused rather than coerced: the same strictness the code itself gets.
+    // JSON.parse never yields undefined, so `undefined` here means the field was
+    // absent — an explicit `null` is a client saying something, and something
+    // that is not one of ours is refused rather than read as "never mind".
+    const kind = body?.kind === undefined ? 'desktop' : body.kind;
+    if (kind !== 'desktop' && kind !== 'mobile') {
+      sendJson(res, 400, { ok: false, error: 'kind must be "desktop" or "mobile"' });
+      return;
+    }
     try {
-      const grant = await opts.pair(code);
+      const grant = await opts.pair(code, kind);
       log('transport', 'paired a device', { deviceId: grant.deviceId });
       sendJson(res, 200, { ok: true, result: grant });
     } catch (e) {
@@ -910,17 +972,7 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
   const boundPort = socketPath ? 0 : ((server.address() as AddressInfo | null)?.port ?? opts.port);
 
   const keepalive = setInterval(() => {
-    for (const client of clients) {
-      if (client.res.writableEnded || client.res.destroyed) {
-        clients.delete(client);
-        continue;
-      }
-      try {
-        client.res.write(': keepalive\n\n');
-      } catch {
-        clients.delete(client);
-      }
-    }
+    for (const client of clients) writeToClient(client, ': keepalive\n\n');
   }, SSE_KEEPALIVE_MS);
   // Never hold the process open for a heartbeat.
   keepalive.unref?.();
@@ -942,19 +994,39 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
       const text = sseFrame(epoch, event);
       if (event.id > lastPushedId) lastPushedId = event.id;
       remember(event.id, text);
+      for (const client of clients) writeToClient(client, text);
+    },
+    pushTo(deviceId, name, data) {
+      // A control frame, which is what makes this structurally unmistakable for a
+      // broadcast at the other end: a data frame carries no `event:` line, so a
+      // reader cannot take an addressed frame for a `{channel, payload}` push
+      // however odd its contents. And no `id:` — this is not a position in the
+      // stream, so a client that acts on one must still resume from the last real
+      // frame it saw.
+      //
+      // Nothing is remembered. See the ring's comment above: an addressed frame
+      // is precisely the frame every other device was NOT entitled to.
+      const text = controlFrame(name, data);
+      let reached = 0;
       for (const client of clients) {
-        // A response can be destroyed between its 'close' event and this loop;
-        // writing to it would throw ERR_STREAM_DESTROYED into the event emitter.
+        if (client.deviceId !== deviceId) continue;
+        if (writeToClient(client, text)) reached++;
+      }
+      return reached;
+    },
+    connectedDevices() {
+      const ids = new Set<string>();
+      for (const client of clients) {
+        // Not merely `clients.size > 0` per device: a stream whose socket died
+        // between its 'close' event and this call would otherwise report a
+        // machine as available and send work to a socket nobody is reading.
         if (client.res.writableEnded || client.res.destroyed) {
           clients.delete(client);
           continue;
         }
-        try {
-          client.res.write(text);
-        } catch {
-          clients.delete(client);
-        }
+        ids.add(client.deviceId);
       }
+      return ids;
     },
     dropDevice(deviceId) {
       let dropped = 0;

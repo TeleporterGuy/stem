@@ -127,6 +127,9 @@ interface ChatViewProps {
   onChangeEffort: (effort: string) => void;
   onChangeSpeed: (serviceTier: string | null) => void;
   onChangeFormat: (format: 'md' | 'mdx') => void;
+  /** Web search for this surface (main or Quick Chat), and its switch. */
+  webSearch: boolean;
+  onToggleWebSearch: (next: boolean) => void;
   /** When true, mirror the live draft upward so the Memory tab can preview which
    *  facts it would inject. Off by default; the normal compose path is unaffected. */
   reportDraft?: boolean;
@@ -311,6 +314,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   onChangeEffort,
   onChangeSpeed,
   onChangeFormat,
+  webSearch,
+  onToggleWebSearch,
   reportDraft = false,
   onDraftChange,
   onNoteSaved
@@ -688,6 +693,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
         onChangeEffort={onChangeEffort}
         onChangeSpeed={onChangeSpeed}
         onChangeFormat={onChangeFormat}
+        webSearch={webSearch}
+        onToggleWebSearch={onToggleWebSearch}
         reportDraft={reportDraft}
         onDraftChange={onDraftChange}
         onNoteSaved={onNoteSaved}

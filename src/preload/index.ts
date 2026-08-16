@@ -23,6 +23,7 @@ import type {
   LocalRerankStatus,
   RemoteRetrievalHealth,
   McpAdminProposal,
+  McpHostLocalState,
   McpServerInput,
   McpServerStatus,
   MemoryModelSettings,
@@ -119,6 +120,7 @@ const api: StemApi = {
   revealConnectedFolder: (id: string) => ipcRenderer.invoke('cfolders:reveal', id),
   openWorkspaceFolder: () => ipcRenderer.invoke('cfolders:revealWorkspace'),
   pickDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
+  browseServerFolders: (path?: string) => ipcRenderer.invoke('cfolders:browse', path),
 
   listTasks: () => ipcRenderer.invoke('tasks:list'),
   taskThreadSettings: (threadId: string) => ipcRenderer.invoke('tasks:threadSettings', threadId),
@@ -149,8 +151,22 @@ const api: StemApi = {
   removeMcpServer: (name: string) => ipcRenderer.invoke('mcp:remove', name),
   setMcpServerEnabled: (name: string, enabled: boolean) =>
     ipcRenderer.invoke('mcp:setEnabled', name, enabled),
+  setMcpServerLocation: (name: string, deviceId: string | null) =>
+    ipcRenderer.invoke('mcp:setLocation', name, deviceId),
   loginMcpServer: (name: string) => ipcRenderer.invoke('mcp:login', name),
   restartRuntime: () => ipcRenderer.invoke('runtime:restart'),
+
+  mcpHostState: () => ipcRenderer.invoke('mcpHost:localState'),
+  approveMcpHostServer: (name: string, fingerprint: string) =>
+    ipcRenderer.invoke('mcpHost:approve', name, fingerprint),
+  rejectMcpHostServer: (name: string) => ipcRenderer.invoke('mcpHost:reject', name),
+  testMcpHostServer: (name: string) => ipcRenderer.invoke('mcpHost:test', name),
+  refreshMcpHost: () => ipcRenderer.invoke('mcpHost:refresh'),
+  onMcpHostChanged: (listener: (state: McpHostLocalState) => void) => {
+    const handler = (_e: unknown, state: McpHostLocalState) => listener(state);
+    ipcRenderer.on('mcpHost:changed', handler);
+    return () => ipcRenderer.removeListener('mcpHost:changed', handler);
+  },
   onMcpAdminApproval: (listener: (proposal: McpAdminProposal) => void) => {
     const handler = (_e: unknown, proposal: McpAdminProposal) => listener(proposal);
     ipcRenderer.on('mcp:adminApproval', handler);

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { addMcpServer, removeMcpServer } from '../../src/server/pi/mcp';
 import { persistBridgeOAuthToken } from '../../src/server/pi/stem-mcp-extension.mjs';
 import {
@@ -15,6 +15,7 @@ import {
   writeMcpConfig
 } from '../../src/server/pi/mcp-config';
 import { secretKeyHex } from '../../src/server/pi/secrets';
+import { SECRET_VALUE_PREFIX } from '../../src/server/pi/protocol';
 import { piMcpConfigPath } from '../../src/server/workspace/paths';
 
 beforeEach(() => {
@@ -27,6 +28,55 @@ beforeEach(() => {
   rmSync(`${piMcpOAuthPath()}.lock.reaper`, { force: true });
   rmSync(`${piMcpConfigPath()}.state.lock`, { force: true });
   rmSync(`${piMcpConfigPath()}.state.lock.reaper`, { force: true });
+});
+
+describe('a credential that no longer decrypts', () => {
+  /** An envelope written under some other machine's key: right shape, wrong key. */
+  const UNREADABLE = `${SECRET_VALUE_PREFIX}${Buffer.from('not-really-a-ciphertext').toString('base64')}`;
+
+  it('is reported as lost rather than silently vanishing', async () => {
+    writeFileSync(
+      piMcpConfigPath(),
+      JSON.stringify({
+        servers: {
+          files: { command: '/usr/bin/mcp-files', env: { API_KEY: UNREADABLE, REGION: 'eu' } }
+        }
+      })
+    );
+
+    const server = (await readMcpConfig()).servers.files;
+    // Dropped, because sending ciphertext upstream as an API key is worse than
+    // sending nothing — but named, because the difference between "you deleted
+    // this" and "this machine can no longer read it" is the whole sentence the
+    // computer hosting the server shows before it asks for approval again.
+    expect(server.env).toEqual({ REGION: 'eu' });
+    expect(server.lostSecrets).toEqual(['API_KEY']);
+  });
+
+  it('is a fact about this machine’s key, so it is never written back to the file', async () => {
+    writeFileSync(
+      piMcpConfigPath(),
+      JSON.stringify({ servers: { files: { command: '/usr/bin/mcp-files', env: { API_KEY: UNREADABLE } } } })
+    );
+
+    // A read-modify-write of an unrelated entry must not persist a note about a
+    // decryption failure that may not even be true of the next machine to open
+    // this file.
+    await addMcpServer({ name: 'other', transport: 'stdio', command: '/bin/echo' });
+    expect(readFileSync(piMcpConfigPath(), 'utf8')).not.toContain('lostSecrets');
+  });
+
+  it('says nothing at all when everything decrypts', async () => {
+    await addMcpServer({
+      name: 'files',
+      transport: 'stdio',
+      command: '/usr/bin/mcp-files',
+      env: { API_KEY: 'readable' }
+    });
+    const server = (await readMcpConfig()).servers.files;
+    expect(server.env).toEqual({ API_KEY: 'readable' });
+    expect(server.lostSecrets).toBeUndefined();
+  });
 });
 
 describe('MCP configuration mutations', () => {

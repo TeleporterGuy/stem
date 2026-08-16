@@ -1174,9 +1174,6 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 /* Disabled server: still listed (config + token kept) but the bridge skips it. */
 .group-row.disabled .row-icon, .group-row.disabled .row-main { opacity: 0.5; }
 .row-icon { width: 24px; height: 24px; border-radius: var(--radius); display: flex; align-items: center; justify-content: center; color: #fff; flex: none; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25); }
-/* MCP transport icons: quiet glyphs (globe = remote, hard-drive = local) rather
-   than loud filled tiles — the shape carries the meaning, like the chat list. */
-.row-icon.remote, .row-icon.local { width: 16px; background: transparent; color: var(--muted); box-shadow: none; }
 .row-main { flex: 1; min-width: 0; }
 .row-main strong { display: block; font-size: var(--fs-13); font-weight: 500; }
 .row-main em { font-style: normal; font-size: var(--fs-11); color: var(--muted); display: block; overflow-wrap: anywhere; }
@@ -1185,6 +1182,30 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .pill.ok { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
 .pill.off { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
 .pill.danger { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
+/* Something is waiting on the person reading it — an MCP server pinned to this
+   computer that nobody here has approved yet. Not a failure (danger) and not a
+   dormant setting (off): it is the one pill that means "your turn". */
+.pill.warn { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+/* Where an MCP server runs, when that is not the machine hosting the server.
+   A line under the address rather than a pill beside the name: a place is not a
+   state, and it must not take its width out of the only column with anything in
+   it. This panel can be 300px wide and an MCP row already carries a name, a URL
+   or a command, a state and a switch — a pill here broke names across three
+   lines and chopped commands mid-word. */
+.row-place { display: block; font-size: var(--fs-10); color: var(--muted); margin-top: 2px; }
+.row-place.orphaned { color: var(--danger); }
+
+/* And the text column gets the space that frees up. The name stays on one line;
+   the address is clamped to two, with the whole of it on the element's title,
+   because an npx invocation with four flags is longer than any panel will ever
+   be and wrapping all of it turns a list of servers into a wall. */
+.mcp-list .row-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-list .row-main em {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
 
 /* A signed-in provider whose token has died: a clickable "reconnect" pill on its
    Settings row. Reuses the danger pill; button reset so it sits inline. */
@@ -2684,6 +2705,47 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
   font-size: var(--fs-16);
   letter-spacing: 0.08em;
 }
+
+/* ---- Server-side folder picker (remote installs' "add connected folder") ---- */
+.folder-picker-card { width: min(480px, calc(100vw - 48px)); }
+.folder-picker-hint { margin: 0 0 10px; font-size: var(--fs-12); }
+.folder-picker-path { display: flex; align-items: center; gap: var(--sp-3); }
+.folder-picker-path .ifield {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-12);
+}
+.folder-picker-error { margin: 8px 2px 0; font-size: var(--fs-11); color: var(--danger); }
+/* Fixed height on purpose: navigating between a full folder and an empty one
+   must not bounce the action buttons under the pointer. */
+.folder-picker-list {
+  height: min(38vh, 300px);
+  overflow-y: auto;
+  margin-top: var(--sp-6);
+  border: 0.5px solid var(--hair);
+  border-radius: var(--radius);
+  padding: var(--sp-2);
+}
+.folder-picker-none { margin: 8px; font-size: var(--fs-12); }
+.folder-picker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-13);
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.folder-picker-row:hover { background: var(--sel); }
+.folder-picker-row svg { flex: none; color: var(--muted); }
+.folder-picker-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Custom-instructions textareas (Settings + approval card). */
 .ci-textarea,

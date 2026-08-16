@@ -11,10 +11,12 @@ import { downloadFile } from '../file-transfer';
 import { markReleaseNotesRead, releaseNotesSnapshot } from '../release-notes';
 import { pairWithServer, useBuiltInServer, type ServerCredentials } from '../server-endpoint';
 import { updateClientReleaseNotes, updateClientUpdates, withClientSettings } from '../settings';
+import type { McpHost } from '../mcp-host';
 import type { Updates } from '../updates';
 import type {
   AppSettings,
   ClientInfo,
+  McpHostLocalState,
   ReleaseNotesSettings,
   StateExportReport,
   UpdatesSettings
@@ -50,6 +52,14 @@ import type {
 // which is a place that does exist here. It goes over the socket in both
 // deployments rather than shortcutting a local copy — one path, tested by
 // everybody who presses the button.
+//
+// The mcpHost:* family joins them for the sharpest version of the same reason.
+// Whether a spec may spawn a process on this computer is a decision made on this
+// computer and recorded here (src/desktop/mcp-host/approvals.ts); a channel that
+// asked the server for it would be asking the machine holding the spec whether
+// the spec is allowed, which is the question ④ exists to move. It also means the
+// panel keeps working when the machine hosting a server is a phone or a build
+// too old to know these channels: the answer for THIS machine never left it.
 
 export interface LocalIpcDeps {
   /** Picker parent. Null only if the main window was closed mid-flight. */
@@ -64,6 +74,8 @@ export interface LocalIpcDeps {
   settings(): Promise<AppSettings>;
   /** The updater for the build installed HERE (see desktop/updates.ts). */
   updates: Updates;
+  /** The MCP servers pinned to this machine (see desktop/mcp-host/). */
+  mcpHost: McpHost;
 }
 
 /**
@@ -149,6 +161,29 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
       return withClientSettings(await deps.settings());
     }
   );
+
+  // The MCP servers pinned to this machine. All three of the acting channels
+  // answer with the fresh state, so a window that approves something re-renders
+  // from the reply instead of asking again — and the host pushes the same shape
+  // on `mcpHost:changed` when a server settles on its own.
+  handleLocal('mcpHost:localState', () => deps.mcpHost.localState());
+  handleLocal(
+    'mcpHost:approve',
+    (_e, name: string, fingerprint: string): Promise<McpHostLocalState> =>
+      deps.mcpHost.approve(name, fingerprint)
+  );
+  handleLocal('mcpHost:reject', (_e, name: string): Promise<McpHostLocalState> => deps.mcpHost.reject(name));
+  handleLocal('mcpHost:test', (_e, name: string): Promise<McpHostLocalState> => deps.mcpHost.test(name));
+  // Ask the server again which servers are ours. The panel calls this the moment
+  // it moves one: the pin lives on the server, so a server moved ONTO this
+  // machine would otherwise sit unstarted (and its approval card unshown) until
+  // the next launch, and one moved OFF would keep its child running here.
+  // Everything else that changes an assignment already re-asks by itself — a
+  // launch, a reconnection — this is the case where the change was made here.
+  handleLocal('mcpHost:refresh', async (): Promise<McpHostLocalState> => {
+    await deps.mcpHost.refresh();
+    return deps.mcpHost.localState();
+  });
 
   handleLocal('dialog:openFiles', () =>
     dialog

@@ -534,6 +534,315 @@ export class McpHttpClient {
   }
 }
 
+// ---- A server that runs on one of the user's own devices ----
+//
+// Sentinel title for the ctx.ui.input round-trip PiRuntime intercepts (it never
+// shows UI for this title). Hand-written twin of DEVICE_MCP_BRIDGE_TITLE in
+// pi/protocol.ts, drift-guarded by tests/unit/pi-protocol.test.ts.
+const DEVICE_MCP_BRIDGE_TITLE = 'stem-device-mcp-bridge';
+
+// What each device announced it is hosting. Main rewrites this file on every
+// announcement; we only ever read it. Twin of MCP_DEVICE_CATALOG_FILE.
+const MCP_DEVICE_CATALOG_FILE = 'mcp-device-catalog.json';
+
+/**
+ * The pi context most recently handed to one of our event handlers.
+ *
+ * A device-located server's every operation is a ctx.ui.input round-trip, but
+ * there is no ctx where they are needed: connections are built before any turn
+ * exists, and registerRouterTools calls `client.callTool(name, args)` without
+ * passing one — deliberately, since the router must not have to know that one of
+ * its clients is special. So the bridge latches the ctx pi gives its hooks. It is
+ * the same RPC channel whichever handler holds it, and the elicitation is
+ * answered by id rather than by whoever raised it, so any live ctx will do.
+ *
+ * Module scope, like sharedConn and for the same reason: a client built during
+ * one session keeps working after pi rebuilds the session runtime.
+ */
+let liveCtx = null;
+
+/** Remember a ctx that can actually raise a dialog (RPC/TUI mode, not print). */
+function latchCtx(_event, ctx) {
+  if (ctx && ctx.ui && typeof ctx.ui.input === 'function') liveCtx = ctx;
+}
+
+/** Test seam: forget the latched context between focused bridge tests. */
+export function setLiveCtxForTests(ctx) {
+  liveCtx = ctx;
+}
+
+/**
+ * Returns `report(deviceId, server)` reading one server's last announcement out
+ * of mcp-device-catalog.json, mtime-cached like the other sibling-file gates.
+ *
+ * This is what makes a pinned server usable while the machine that hosts it is
+ * asleep: the tool list came from the device the last time it was up, main keeps
+ * it across the disconnection (③), and the bridge reads it back rather than
+ * asking anyone. A file that was never written means "that device has never told
+ * us anything", which is not an error — it is a device that has not connected
+ * since the pin was made.
+ */
+function makeDeviceCatalogGate(catalogPath) {
+  let cache = { mtime: -1, devices: {} };
+  return (deviceId, server) => {
+    try {
+      const mtime = statSync(catalogPath).mtimeMs;
+      if (mtime !== cache.mtime) {
+        const data = JSON.parse(readFileSync(catalogPath, 'utf8'));
+        cache = { mtime, devices: data && typeof data.devices === 'object' && data.devices ? data.devices : {} };
+      }
+    } catch {
+      cache = { mtime: -1, devices: {} };
+    }
+    const entry = cache.devices[deviceId];
+    const servers = entry && Array.isArray(entry.servers) ? entry.servers : [];
+    return servers.find((s) => s && s.name === server) || null;
+  };
+}
+
+/**
+ * A JSON-Schema rebuilt from the compact signature a device announced, for the
+ * case where the real one cannot be fetched — the machine is asleep, or the
+ * server on it is not running.
+ *
+ * This is a FALLBACK and says so. The device announces `(path, limit?)` rather
+ * than whole input schemas, on the same bargain the bridge's own catalog makes:
+ * a few servers' worth of schemas is tens of thousands of tokens in every
+ * prompt. When the machine is up, describe_tool asks it for the real schema and
+ * this is never used. When it is not, argument names and which of them are
+ * required is genuinely all anyone here knows — and an empty object schema would
+ * read as "this tool takes no arguments", a lie that costs a turn.
+ *
+ * `why` is written into the schema's own description, where the model reads the
+ * arguments, rather than somewhere beside it that it may not look at.
+ */
+function schemaFromSignature(signature, why) {
+  const inner = typeof signature === 'string' ? signature.replace(/^\(|\)$/g, '') : '';
+  const parts = inner.split(',').map((raw) => raw.trim());
+  // The trailing "…" marks a signature the announcing device truncated at eight
+  // arguments. Everything past the eighth is simply not here, and a schema that
+  // did not say so would be read as a complete one that forbids them.
+  const truncated = parts.includes('…');
+  const schema = {
+    type: 'object',
+    properties: {},
+    required: [],
+    // Not `false`: what is listed is known to be incomplete, and an argument
+    // this does not name may still be the right one to pass.
+    additionalProperties: true,
+    description:
+      `PARTIAL SCHEMA — ${why} ` +
+      'Only the argument names the hosting computer last announced are known: no types, no per-argument descriptions, no ' +
+      'allowed values.' +
+      (truncated
+        ? ' The announced list was cut short, so this tool has further arguments beyond the ones named here.'
+        : '') +
+      ' Ask again once that computer is connected to get the real schema.'
+  };
+  for (const arg of parts) {
+    if (!arg || arg === '…') continue;
+    const optional = arg.endsWith('?');
+    const name = optional ? arg.slice(0, -1) : arg;
+    schema.properties[name] = {};
+    if (!optional) schema.required.push(name);
+  }
+  return schema;
+}
+
+/**
+ * What the panel should show under a device-located server, or null when there
+ * is nothing to say. A server that simply lives on another machine is not in an
+ * error state, so the healthy case is silence — the row already names the place.
+ *
+ * A MISSING report is not the healthy case, and used to be reported as one: a
+ * pin whose machine was unpaired, or one that has never once connected, showed
+ * up in mcp-status.json as `elsewhere` with no error at all. Anything reading
+ * the status rather than the panel — which knows about orphans separately — then
+ * saw a server that cannot run and looks fine. It names the machine as well as
+ * the server (⑤) using the label stored beside the pin, since that is the whole
+ * of what somebody needs to act on it.
+ */
+function deviceReportError(report, place) {
+  if (!report) {
+    return (
+      `${place} has never told Stem it is running this server. Either it has not been connected since the server was ` +
+      'pinned there, or it is no longer paired with this Stem — Settings → Tools → MCP servers says which.'
+    );
+  }
+  if (report.status === 'ready') return null;
+  if (report.status === 'unapproved') return 'Waiting for approval on the computer that runs it.';
+  return report.error || 'It is not running on the computer that hosts it.';
+}
+
+/** How a pinned server's machine should be named, from what mcp.json remembers. */
+function devicePlace(location) {
+  const label = location && typeof location.label === 'string' ? location.label.trim() : '';
+  return label ? `“${label}”` : 'The computer this server is pinned to';
+}
+
+/**
+ * Announced tools as the router's clients map expects tool definitions.
+ *
+ * Anything without a usable name is dropped rather than carried: this list comes
+ * off another machine, and one malformed entry must not be able to throw where
+ * the throw would land — inside a connection nobody is awaiting.
+ */
+function deviceToolDefinitions(tools) {
+  return (Array.isArray(tools) ? tools : [])
+    .filter((t) => t && typeof t.name === 'string' && t.name)
+    .map((tool) => ({
+      name: tool.name,
+      description: typeof tool.description === 'string' ? tool.description : '',
+      // Kept alongside so describe_tool can rebuild the fallback schema with the
+      // actual reason the real one could not be fetched, rather than this
+      // stand-in written before anybody tried.
+      signature: tool.signature,
+      inputSchema: schemaFromSignature(
+        tool.signature,
+        'the computer that hosts this server has not been asked for the real one.'
+      )
+    }));
+}
+
+/**
+ * A client for a server that runs on one of the user's devices. Same
+ * start()/handshake()/callTool()/stop() surface as the stdio and HTTP clients,
+ * so it goes into the same clients map and invoke_tool/describe_tool need to
+ * know nothing about it — but every operation is a round-trip through
+ * PiRuntime, which resolves the device from mcp.json and hands the op to the
+ * DeviceMcpRouter (timeouts, correlation ids and the refusal text all live
+ * there).
+ *
+ * Two properties are deliberate and load-bearing:
+ *
+ *  - handshake() never throws. A failed handshake drops a server from the
+ *    clients map, and invoke_tool would then answer "no such server" — the
+ *    assistant would lose the capability entirely the moment somebody closed
+ *    their laptop, which is the exact failure ③ exists to prevent. So it
+ *    returns whatever tools it can get, live or remembered, and the server
+ *    stays connected as far as the router is concerned. The CALL is what fails,
+ *    in a sentence naming the machine to wake.
+ *  - `alive` stays true. The connection cache tears everything down and
+ *    reconnects when any client reports alive:false, and there is no local
+ *    resource here whose death would mean anything: whether the far end is up is
+ *    a per-call question, asked per call.
+ */
+class McpDeviceClient {
+  constructor(name, spec, remembered) {
+    this.name = name;
+    this.spec = spec;
+    /** () => the device's last report for this server, or null. */
+    this.remembered = remembered;
+    /** Tools from a live listing; null until one succeeds. */
+    this.liveTools = null;
+    /** Why the last operation could not be served, in the far end's words. */
+    this.lastError = null;
+    this.alive = true;
+  }
+
+  /**
+   * What this server offers, as fresh as anyone here can know.
+   *
+   * A getter rather than a field because the remembered catalog is rewritten
+   * whenever the device announces, and pi keeps this connection for the life of
+   * the process: with a snapshot, a machine that came online after pi started
+   * would have its new tools advertised in the injected catalog (main renders
+   * that from the same file) and rejected by invoke_tool, which checks this list.
+   */
+  get tools() {
+    if (this.liveTools) return this.liveTools;
+    const report = this.remembered();
+    return deviceToolDefinitions(report && report.tools);
+  }
+
+  start() {
+    this.alive = true;
+  }
+
+  /** Nothing to tear down; present for parity with the other two clients. */
+  stop() {
+    this.alive = false;
+  }
+
+  /** One op through PiRuntime. Returns a `{ ok }` result; never throws. */
+  async request(payload) {
+    const ctx = liveCtx;
+    if (!ctx || !ctx.ui || typeof ctx.ui.input !== 'function') {
+      // Ordinary at startup: connections are built before the first turn, so
+      // there is no dialog channel yet. `noChannel` marks it as our own timing
+      // rather than anything the far end did, so it never reaches the panel as
+      // if it were a fault of the machine hosting the server.
+      return {
+        ok: false,
+        noChannel: true,
+        error: 'Stem is not in a turn, so this server cannot be reached right now.'
+      };
+    }
+    let raw;
+    try {
+      raw = await ctx.ui.input(DEVICE_MCP_BRIDGE_TITLE, JSON.stringify(payload));
+    } catch (e) {
+      return { ok: false, error: `Stem could not reach the computer that hosts "${this.name}": ${(e && e.message) || e}` };
+    }
+    if (typeof raw !== 'string') return { ok: false, error: 'No response from Stem.' };
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : { ok: false, error: 'Malformed response from Stem.' };
+    } catch {
+      return { ok: false, error: 'Malformed response from Stem.' };
+    }
+  }
+
+  async handshake() {
+    const res = await this.request({ op: 'tools', server: this.name });
+    if (res.ok && Array.isArray(res.tools)) {
+      this.liveTools = deviceToolDefinitions(res.tools);
+      this.lastError = null;
+      return this.liveTools;
+    }
+    // Unreachable, asleep, or not yet approved over there. The remembered list
+    // stands: those tools are real, and saying so is the whole of ③.
+    this.lastError = res.noChannel ? null : res.error || null;
+    return this.tools;
+  }
+
+  /**
+   * One tool's REAL input schema, fetched from the machine that handshook with
+   * the server, or `{ partial }` saying why it could not be.
+   *
+   * This is the on-demand half of the compact catalog, and the reason the
+   * compact half is allowed to be compact. The per-turn block carries names and
+   * a signature truncated at eight arguments; that is a summary, and a summary
+   * is only honest if the full thing can be had when it matters. Rebuilding a
+   * schema out of the summary instead — no types, no enums, no ninth argument —
+   * is how a model ends up calling a tool wrongly and being told nothing about
+   * why.
+   */
+  async describe(toolName) {
+    const res = await this.request({ op: 'describe', server: this.name, tool: toolName });
+    if (res.ok && res.schema) return res.schema;
+    return {
+      partial: res.noChannel
+        ? 'Stem is not in a turn, so the computer that hosts this server could not be asked for the real schema.'
+        : res.error || `The computer that hosts "${this.name}" could not be asked for the real schema.`
+    };
+  }
+
+  /**
+   * Run one tool over there. The result comes back in MCP's own shape
+   * (`{ content: [...] }`) so registerRouterTools hands it to the model exactly
+   * as it hands a local server's, and a refusal is thrown as an Error because
+   * that is how the other two clients fail: pi turns a thrown tool error into
+   * the tool's result, so the sentence — which names the server AND the machine
+   * to wake — is what the model reads.
+   */
+  async callTool(name, args) {
+    const res = await this.request({ op: 'call', server: this.name, tool: name, args: args ?? {} });
+    if (!res.ok) throw new Error(res.error || `"${this.name}" could not be reached.`);
+    return { content: Array.isArray(res.content) ? res.content : [{ type: 'text', text: JSON.stringify(res.content ?? null) }] };
+  }
+}
+
 /** Pull the JSON-RPC reply for `id` out of an SSE body (one or more data: frames). */
 function parseSseResult(text, id) {
   for (const frame of text.split(/\n\n+/)) {
@@ -870,11 +1179,29 @@ function registerRouterTools(pi, clients, protectedRoots) {
       const entry = clients.get(server);
       const def = entry && entry.tools.find((t) => t.name === toolName);
       if (!def) return errText(`No such tool "${toolName}" on server "${server}".`);
-      const text = JSON.stringify(
-        { server, name: def.name, description: def.description || '', inputSchema: def.inputSchema || { type: 'object' } },
-        null,
-        2
-      );
+      let description = def.description || '';
+      let inputSchema = def.inputSchema || { type: 'object' };
+      // A server that runs on one of the user's own machines holds its tools'
+      // real schemas over there, and this tool is exactly the moment to go and
+      // get one: describe_tool is the escape hatch the compact catalog is
+      // predicated on, so answering it from the compact catalog would be
+      // circular. Everything else already has the real schema in hand.
+      if (entry.client && typeof entry.client.describe === 'function') {
+        const answer = await entry.client.describe(def.name);
+        if (answer && answer.inputSchema) {
+          inputSchema = answer.inputSchema;
+          if (answer.description) description = answer.description;
+        } else {
+          // Unreachable. Fall back to what the machine last announced and say
+          // in the schema itself that this is partial and why, rather than
+          // handing over a confident-looking object with every property empty.
+          inputSchema = schemaFromSignature(
+            def.signature,
+            (answer && answer.partial) || `The computer that hosts "${server}" could not be asked for the real schema.`
+          );
+        }
+      }
+      const text = JSON.stringify({ server, name: def.name, description, inputSchema }, null, 2);
       return { content: [{ type: 'text', text }], details: {} };
     }
   });
@@ -905,10 +1232,19 @@ function compactSig(schema) {
   return `(${shown.join(', ')}${more})`;
 }
 
-/** Names+signatures catalog text for the routed servers (the cheap per-turn list). */
+/**
+ * Names+signatures catalog text for the routed servers (the cheap per-turn list).
+ *
+ * Server-located servers ONLY. A device-located server is in the same clients map
+ * — that is what makes invoke_tool work on it — but its block is rendered by the
+ * main process instead, from the catalog the device announced, so that every turn
+ * can stamp it with whether that machine is reachable right this second (③).
+ * Rendering it here as well would put a second, staler copy in the same prompt.
+ */
 function buildCatalogText(clients) {
   const sections = [];
-  for (const [name, { tools }] of clients) {
+  for (const [name, { spec, tools }] of clients) {
+    if (spec && spec.location) continue;
     const lines = tools.map((t) => {
       const desc = oneLine(t.description);
       const sig = compactSig(t.inputSchema);
@@ -963,8 +1299,13 @@ async function connectOneServer(name, spec, oauthTokens, persistAuth) {
  * merge into the shared connection as they settle, republishing status + catalog
  * so tools become available on the next turn. Until a server settles, its status
  * is 'starting' (the Manage panel shows it as pending).
+ *
+ * A disabled server is never connected from here. Neither is one pinned to a
+ * device — but that one still gets a client (McpDeviceClient), because "not
+ * connected from here" is about the socket, not about whether the assistant can
+ * use it: its calls travel to the machine it belongs to.
  */
-function startConnections(servers, oauthTokens, persistAuth, publish) {
+function startConnections(servers, oauthTokens, persistAuth, publish, deviceReport) {
   const conn = {
     key: JSON.stringify(servers),
     clients: new Map(), // name -> { client, spec, tools } (routed via meta-tools)
@@ -978,6 +1319,53 @@ function startConnections(servers, oauthTokens, persistAuth, publish) {
   const jobs = [];
   for (const [name, spec] of Object.entries(servers)) {
     if (spec.disabled) continue;
+    // Pinned to a paired device: this process must not open the connection —
+    // from a VPS that would reach the wrong filesystem or a LAN address that
+    // does not resolve — but it does route to it. The client goes into the map
+    // SYNCHRONOUSLY, before any handshake, so the server is never briefly
+    // missing from it: a gap there is a turn in which invoke_tool answers "no
+    // such server" and the assistant concludes it cannot do the thing at all.
+    if (spec.location) {
+      const client = new McpDeviceClient(name, spec, () => deviceReport(spec.location.deviceId, name));
+      client.start();
+      // A getter, so the entry follows the client's view of its own tools (see
+      // McpDeviceClient#tools) instead of freezing the list at connect time.
+      conn.clients.set(name, {
+        client,
+        spec,
+        get tools() {
+          return client.tools;
+        }
+      });
+      const place = devicePlace(spec.location);
+      const deviceStatus = () => ({
+        status: 'elsewhere',
+        // What the machine itself last said, unless a live attempt just found
+        // something more recent to say. 'elsewhere' is not a failure — it is
+        // where the server is — so a healthy one carries no error at all; a
+        // machine that has never reported this server is a different matter.
+        error: client.lastError || deviceReportError(deviceReport(spec.location.deviceId, name), place)
+      });
+      conn.status[name] = deviceStatus();
+      // Still handshaked, in the background and never awaited: at startup there
+      // is no dialog channel yet and this resolves immediately with the
+      // remembered tools, but a connection rebuilt mid-session gets a live list.
+      jobs.push(
+        client
+          .handshake()
+          .then(() => {
+            if (conn.stale) return;
+            conn.status[name] = deviceStatus();
+            publish(conn);
+          })
+          .catch(() => {
+            // handshake() is written not to throw; if it ever does, the server
+            // keeps its remembered tools rather than the whole connection set
+            // settling as a rejection.
+          })
+      );
+      continue;
+    }
     conn.status[name] = { status: 'starting', error: null };
     const job = connectOneServer(name, spec, oauthTokens, persistAuth).then((res) => {
       if (conn.stale) {
@@ -1060,6 +1448,11 @@ export default async function stemMcpBridge(pi) {
   } catch {
     // none yet
   }
+  // What the user's own devices announced they are hosting. Read-only here and
+  // mtime-cached: main rewrites it on every announcement, and a server pinned to
+  // a machine that is currently asleep gets its tool list from this file.
+  const deviceReport = makeDeviceCatalogGate(join(dirname(cfgPath), MCP_DEVICE_CATALOG_FILE));
+
   const persistAuth = async (name, spec, auth, expectedAuth) => {
     try {
       return await persistBridgeOAuthToken(
@@ -1111,7 +1504,7 @@ export default async function stemMcpBridge(pi) {
         }
       }
     }
-    sharedConn = startConnections(servers, oauthTokens, persistAuth, publish);
+    sharedConn = startConnections(servers, oauthTokens, persistAuth, publish, deviceReport);
     publish(sharedConn); // 'starting' placeholders + cleared catalog, visible immediately
   }
   // Recall's native tools are needed from the very first turn, and its handshake is
@@ -1167,6 +1560,14 @@ export default async function stemMcpBridge(pi) {
   if (typeof pi.on === 'function') {
     const webSearchEnabled = makeNativeSearchGate(join(dirname(cfgPath), 'native-search.json'));
     const serviceTier = makeServiceTierGate(join(dirname(cfgPath), 'service-tier.json'));
+
+    // Keep hold of a context that can raise a dialog. A server pinned to a
+    // device reaches its machine through ctx.ui.input, and the code that needs
+    // to — a client in the router's map — is never handed one (see liveCtx).
+    // Both hooks, because session_start does not fire for a session that was
+    // already live when this factory re-ran.
+    pi.on('session_start', latchCtx);
+    pi.on('turn_start', latchCtx);
 
     // Turn ON pi's read-only browse tools grep/find/ls — they're registered but
     // INACTIVE by default, and the assistant needs them to explore connected folders

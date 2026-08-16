@@ -18,6 +18,7 @@ import { log } from '../server/log';
 import { resolveProfileOverride } from '../server/workspace/paths';
 import { bindServerChannels } from './ipc-bridge';
 import { registerLocalIpc } from './local';
+import { createMcpHost, type McpHost } from './mcp-host';
 import { createOAuthCourier, type OAuthCourier } from './oauth-courier';
 import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, requestAttention } from './platform';
 import { createPresenceHeartbeat, type PresenceHeartbeat } from './presence';
@@ -316,6 +317,7 @@ let server: ServerHandle | null = null;
 let proxy: ServerProxy | null = null;
 let oauthCourier: OAuthCourier | null = null;
 let presence: PresenceHeartbeat | null = null;
+let mcpHost: McpHost | null = null;
 
 /**
  * Whether the server is answering, as last reported by the proxy. Kept here
@@ -392,12 +394,23 @@ app.whenReady().then(async () => {
     openExternal: openExternalUrl
   });
 
+  // The MCP servers pinned to THIS machine (docs/mcp-device-pinning.md). It
+  // talks to the server through the proxy, and the proxy hands it every
+  // addressed request off the event stream — so each is constructed with a
+  // late-bound reference to the other, which is why `invoke` is a closure and
+  // not the proxy itself.
+  mcpHost = createMcpHost({
+    invoke: (channel, args) => proxy!.invoke(channel, args),
+    changed: (state) => sendToMain('mcpHost:changed', state)
+  });
+
   proxy = createServerProxy({
     ...endpoint,
     // The one `if` above decides this too: a server we did not start is a server
     // that may not share this disk, and paths stop meaning anything to it.
     remote: !server,
     oauthCourier,
+    mcpHost,
     sendToMain,
     sendToOverlay: (channel, payload) => quickChat.sendToOverlay(channel, payload),
     revealIfOwns: (threadId) => quickChat.revealIfOwns(threadId),
@@ -419,6 +432,10 @@ app.whenReady().then(async () => {
       serverReachable = reachable;
       sendToMain('client:connectionChanged', reachable);
       quickChat.sendToOverlay('client:connectionChanged', reachable);
+      // A server that went away and came back may have gained, lost or edited a
+      // server pinned here while we could not hear about it. Asking again is
+      // cheap — a spec that has not moved keeps the connection it already has.
+      if (reachable) void mcpHost?.refresh();
     }
   });
   // Subscribe before any window exists, so nothing the server pushes during
@@ -434,7 +451,8 @@ app.whenReady().then(async () => {
     reachable: () => serverReachable,
     credentials: () => endpoint,
     settings: () => proxy!.invoke('settings:get', []) as Promise<AppSettings>,
-    updates
+    updates,
+    mcpHost
   });
   quickChat.registerIpc();
   ipcMain.on('renderer:ready', (event) => {
@@ -467,6 +485,12 @@ app.whenReady().then(async () => {
   // something an authenticated client should be able to trigger).
   mainWindow?.webContents.once('did-finish-load', () => {
     void server?.prewarm();
+    // The same bargain, for the MCP servers pinned to this machine: everything
+    // already approved here connects now rather than on first use (⑥), and it
+    // waits for the first paint for the same reason the prewarm does — these are
+    // child processes too. Unapproved specs start nothing and raise nothing;
+    // they wait in the Manage panel.
+    void mcpHost?.start();
   });
 
   quickChat.start(settings.quickChat);
@@ -518,6 +542,10 @@ app.on('before-quit', (event) => {
   presence?.close();
   proxy?.close();
   oauthCourier?.close();
+  // Before the early return below: an MCP server pinned here is a child of THIS
+  // process whether or not Stem also runs the server, and quitting without
+  // killing it leaves somebody's filesystem server running with no parent.
+  mcpHost?.close();
   // Nothing to drain when the server is somebody else's process.
   if (!server) return;
   event.preventDefault();

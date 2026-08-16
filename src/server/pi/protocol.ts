@@ -54,6 +54,16 @@ export const TASK_BRIDGE_TITLE = 'stem-task-bridge';
 export const EXEC_BRIDGE_TITLE = 'stem-exec-bridge';
 
 /**
+ * Device-located MCP round-trip (`input`): `{ op: 'tools' | 'call', server, tool?,
+ * args? }` rides in `placeholder`. PiRuntime resolves which device the server
+ * belongs to from mcp.json — never from the payload — and hands the op to the
+ * DeviceMcpRouter, which owns the correlation id, the timeouts and the refusal
+ * text. Like the exec bridge the answer can be minutes away: the far end is a
+ * program running on somebody else's computer.
+ */
+export const DEVICE_MCP_BRIDGE_TITLE = 'stem-device-mcp-bridge';
+
+/**
  * manage_skill tool round-trip (`input`): the write payload rides in
  * `placeholder`; PiRuntime routes it to the main-process SkillBridge, which owns
  * the contract validator, the Off/Ask/Auto policy, and the approval card. The
@@ -76,6 +86,14 @@ export const SERVICE_TIER_GATE_FILE = 'service-tier.json';
 export const PROTECTED_ROOTS_FILE = 'protected-roots.json';
 /** OAuth tokens for remote MCP servers, keyed by server name. */
 export const MCP_OAUTH_FILE = 'mcp-oauth.json';
+/**
+ * What each paired device says it is hosting (server/mcp-device/catalog.ts).
+ * Main writes it on every announcement; the bridge READS it, which is how a
+ * server pinned to a sleeping machine still knows which tools it offers — the
+ * whole of ③. Declared here rather than only in workspace/paths.ts because the
+ * bridge, which cannot import that module either, opens the same file by name.
+ */
+export const MCP_DEVICE_CATALOG_FILE = 'mcp-device-catalog.json';
 /** Touched by the bridge on any skill write so main reloads at turn end. */
 export const SKILLS_REV_FILE = '.skills-rev';
 

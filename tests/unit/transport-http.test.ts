@@ -13,7 +13,7 @@ import { request as httpRequest } from 'node:http';
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { ipcMain } from '../electron-stub';
 import { registerServer } from '../../src/server/ipc';
 import { dispatchLocal, serverChannels } from '../../src/server/ipc/guard';
@@ -25,6 +25,7 @@ import {
   startTransportServer,
   type TransportServer
 } from '../../src/server/transport/server';
+import type { DeviceKind } from '../../src/shared/types';
 
 const TOKEN = 'a'.repeat(64);
 const TOKEN_HASH = hashToken(TOKEN);
@@ -34,6 +35,8 @@ const OTHER_HASH = hashToken(OTHER_TOKEN);
 
 /** Codes the fake `pair` will honour, so /pair can be driven without the store. */
 const PAIR_CODES = new Map<string, { deviceId: string; token: string }>();
+/** What each redemption claimed to be — the route's job is to pass this on intact. */
+const pairedKinds: DeviceKind[] = [];
 
 let server: TransportServer;
 let base: string;
@@ -66,7 +69,8 @@ beforeAll(async () => {
     },
     dispatch: dispatchLocal,
     registeredChannels: serverChannels,
-    pair: async (code) => {
+    pair: async (code, kind) => {
+      pairedKinds.push(kind);
       const grant = PAIR_CODES.get(code.toUpperCase());
       if (!grant) throw Object.assign(new Error('that pairing code is not valid'), { status: 401 });
       PAIR_CODES.delete(code.toUpperCase());
@@ -485,6 +489,41 @@ describe('POST /pair', () => {
     expect(PAIR_CODES.has('WXYZ-WXYZ')).toBe(true);
   });
 
+  // What the device says it is, which decides whether it is ever offered as a
+  // host for a device-pinned MCP server (docs/mcp-device-pinning.md, ⑦).
+  it('carries the kind the device claims, and reads its absence as a desktop', async () => {
+    pairedKinds.length = 0;
+    PAIR_CODES.set('MOBI-MOBI', { deviceId: 'dev-7', token: 'f'.repeat(64) });
+    PAIR_CODES.set('OLDC-LNT0', { deviceId: 'dev-6', token: '9'.repeat(64) });
+    const pair = (body: unknown) =>
+      fetch(`${base}/pair`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    expect((await pair({ code: 'MOBI-MOBI', kind: 'mobile' })).status).toBe(200);
+    // A client from before the field existed says nothing, and a desktop is the
+    // only thing it can have been — nothing else could speak this route then.
+    expect((await pair({ code: 'OLDC-LNT0' })).status).toBe(200);
+    expect(pairedKinds).toEqual(['mobile', 'desktop']);
+  });
+
+  it('refuses a kind that is not one of ours rather than coercing it', async () => {
+    pairedKinds.length = 0;
+    PAIR_CODES.set('BADK-INDX', { deviceId: 'dev-5', token: '8'.repeat(64) });
+    for (const kind of ['laptop', 42, null]) {
+      const res = await fetch(`${base}/pair`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: 'BADK-INDX', kind })
+      });
+      expect(res.status).toBe(400);
+    }
+    // The code is untouched — a malformed body must not spend one.
+    expect(pairedKinds).toEqual([]);
+    expect(PAIR_CODES.has('BADK-INDX')).toBe(true);
+  });
+
   it('rejects a body that is not a code, and one that is far too big to be one', async () => {
     for (const body of ['{', JSON.stringify({}), JSON.stringify({ code: 42 })]) {
       const res = await raw('/pair', { 'content-type': 'application/json' }, body);
@@ -516,7 +555,15 @@ interface Frame {
 interface Block {
   id: string | null;
   event: string | null;
-  data: { channel?: string; payload?: unknown; liveTurns?: unknown; head?: unknown };
+  data: {
+    channel?: string;
+    payload?: unknown;
+    liveTurns?: unknown;
+    head?: unknown;
+    /** An addressed frame's payload (see the pushTo tests). */
+    requestId?: string;
+    server?: string;
+  };
 }
 
 /**
@@ -650,6 +697,101 @@ describe('GET /events', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(() => server.push({ id: 4, channel: 'backend:event', payload: { method: 'turn/completed' } })).not.toThrow();
     expect(server.clientCount()).toBe(0);
+  });
+});
+
+// A frame written to ONE device's streams (docs/mcp-device-pinning.md, ⑧). The
+// two properties worth having in a test are the two that make it safe: it goes
+// only where it is addressed, and it never lands in the replay buffer, which
+// every authenticated device may read back on its next reconnect.
+describe('pushTo — an addressed control frame', () => {
+  /**
+   * Streams opened by these tests, torn down between them. Cancelling a reader
+   * is not enough: the server learns a stream is gone from its socket's 'close',
+   * which arrives whenever it arrives — and every assertion here is about which
+   * devices the server believes are connected.
+   */
+  let open: AbortController[] = [];
+
+  async function openStream(token: string): Promise<Response> {
+    const controller = new AbortController();
+    open.push(controller);
+    const res = await fetch(`${base}/events`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: controller.signal
+    });
+    expect(res.status).toBe(200);
+    return res;
+  }
+
+  afterEach(async () => {
+    for (const controller of open) controller.abort();
+    open = [];
+    for (let i = 0; i < 200 && server.clientCount() > 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(server.clientCount()).toBe(0);
+  });
+
+  it('reaches only that device, and does not become a frame anyone can replay', async () => {
+    // Two streams for the same device — a desktop with the app and the overlay,
+    // or one mid-reconnect — so "how many did it reach" is not trivially one.
+    const mineA = await openStream(TOKEN);
+    const mineB = await openStream(TOKEN);
+    const theirs = await openStream(OTHER_TOKEN);
+    expect(server.clientCount()).toBe(3);
+
+    const bufferedBefore = server.bufferedFrames();
+    const addressed = Promise.all([collectBlocks(mineA, 1), collectBlocks(mineB, 1)]);
+    // The other device collects one block too — and the assertion is that the one
+    // it gets is the BROADCAST below, not this. Pushing the broadcast second is
+    // what makes that a proof rather than a guess about timing: had the addressed
+    // frame gone to everybody, it would be the first block on that stream.
+    const bystander = collectBlocks(theirs, 1);
+
+    expect(server.pushTo('dev-1', 'mcp-request', { requestId: 'r-1', server: 'files', op: 'tools' })).toBe(2);
+    // THE invariant. An addressed frame carries one device's tool arguments, and
+    // the ring is replayed wholesale to whoever reconnects with an old bookmark.
+    expect(server.bufferedFrames()).toBe(bufferedBefore);
+
+    server.push({ id: 11, channel: 'mcp:status', payload: { servers: [] } });
+    // ...and the same counter does move for an ordinary push, so the assertion
+    // above is about pushTo rather than about a buffer that never fills.
+    expect(server.bufferedFrames()).toBe(bufferedBefore + 1);
+
+    for (const blocks of await addressed) {
+      expect(blocks).toHaveLength(1);
+      // Named with SSE's own `event:` field, which is what makes it impossible
+      // for a client to take it for a push — and carrying no `id:`, because it
+      // is not a position in the stream to resume from.
+      expect(blocks[0].event).toBe('mcp-request');
+      expect(blocks[0].id).toBeNull();
+      expect(blocks[0].data).toEqual({ requestId: 'r-1', server: 'files', op: 'tools' });
+    }
+    const other = await bystander;
+    expect(other).toHaveLength(1);
+    expect(other[0].event).toBeNull();
+    expect(other[0].data.channel).toBe('mcp:status');
+  });
+
+  it('answers zero for a device with nothing open, rather than pretending it landed', async () => {
+    // The whole reason the count comes back: a caller that knows nobody was
+    // there can refuse immediately instead of holding a tool call open for two
+    // minutes waiting on an answer that was never coming.
+    expect(server.pushTo('dev-1', 'mcp-request', { requestId: 'r-2' })).toBe(0);
+    expect(server.pushTo('nobody-by-that-name', 'mcp-request', { requestId: 'r-3' })).toBe(0);
+  });
+
+  it('reports which devices are connected, and forgets one as its stream goes', async () => {
+    expect(server.connectedDevices()).toEqual(new Set());
+    await openStream(OTHER_TOKEN);
+    // Availability and deliverability are deliberately the same fact: this is
+    // the set of devices a pushTo would reach, read off the same clients.
+    expect(server.connectedDevices()).toEqual(new Set(['dev-2']));
+
+    for (const controller of open) controller.abort();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(server.connectedDevices()).toEqual(new Set());
   });
 });
 

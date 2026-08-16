@@ -112,7 +112,9 @@ No `--key-file`: inside the container the passphrase is already at
 
 It prints what landed and what needs you — a tool whose command does not exist on Linux,
 a connected folder that is not on this machine, anything that will ask to be signed in
-again. Read that list; it is the only time it is shown.
+again. Read that list; it is the only time it is shown. Nothing is repointed for you: the
+tools it names are dealt with in step 7, once your Mac is paired and there is a machine to
+name.
 
 If it refuses because the state root already has something in it, that is deliberate —
 unpacking on top would merge two Stems. Empty the directory named in the message and run
@@ -153,7 +155,24 @@ In Stem on your Mac: **Settings → Server**, enter
 Press **Connect**, then restart Stem. Stem connects to its server when it starts, so the
 change takes effect on the next launch — the pane says so.
 
-## 7. Check it
+## 7. Pin the tools that only work on your Mac
+
+Two kinds of MCP server stopped working in the move, and step 4 listed them: one that
+runs a command your Mac has and this server does not, and one whose URL is on your home
+network, which the server has no route to. Now that your Mac is paired, both have
+somewhere to run. If step 4 named none of them, there is nothing to do here.
+
+In Stem on your Mac: **Settings → Tools → MCP servers**. Select the server and choose
+**Move to** your Mac. Stem asks you to approve it there before it starts anything — a
+server named in a config somewhere else never runs a command on your own computer
+unasked.
+
+From then on it runs on your Mac and the rest of Stem uses it as it always did,
+including from your phone, whenever your Mac is awake with Stem running. When it is
+asleep, the tools are still listed and Stem says which machine is away rather than
+pretending the tools are gone.
+
+## 8. Check it
 
 Open Stem after the restart and confirm all four:
 
@@ -166,7 +185,7 @@ Connected tools may ask to be signed in again if their access had expired — th
 ordinary. If *every* tool is signed out, the passphrase in `stem_key` is not the one the
 archive was exported under; see the last section.
 
-## 8. Keep the old one, for now
+## 9. Keep the old one, for now
 
 **Do not delete the Stem on your Mac.** Its state root is your rollback:
 

@@ -7,6 +7,7 @@ import type {
 } from '../../../shared/types';
 import { resolveMemoryModel } from '../../../shared/modelRoles';
 import { useRemoteServer } from '../../hooks/useRemoteServer';
+import { ServerFolderPicker } from '../ServerFolderPicker';
 import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { FilesTab } from './FilesTab';
@@ -151,8 +152,11 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // A connected folder is a path on the SERVER's disk. When that isn't this
   // machine, revealing it here would open whatever happens to sit at the same
-  // path locally — so the buttons that do it are not offered at all.
+  // path locally — so the buttons that do it are not offered at all. Adding is
+  // the same fact in the other direction: the native picker browses THIS disk,
+  // so a remote server gets the server-side picker dialog instead.
   const remote = useRemoteServer();
+  const [picking, setPicking] = useState(false);
   // What "Memory default" on a folder's model picker actually means today: the
   // memory model if one is set, else whatever the backend defaults to. Read here
   // rather than passed in, because Sources knows nothing about Memory's settings.
@@ -189,17 +193,35 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
     return () => clearInterval(timer);
   }, [folders, refreshStatus]);
 
+  async function connect(paths: string[]) {
+    if (!paths.length) return;
+    const before = new Set(folders.map((x) => x.id));
+    const next = await window.stem.addConnectedFolders(paths);
+    setFolders(next);
+    // A just-connected folder is about to be configured — open its card.
+    setExpanded((s) => new Set([...s, ...next.filter((x) => !before.has(x.id)).map((x) => x.id)]));
+  }
+
   async function add() {
+    // The native dialog picks from THIS machine's disk — the right disk only
+    // when the server shares it. Remote, the server-side picker takes over.
+    if (remote) {
+      setPicking(true);
+      return;
+    }
     setBusy(true);
     try {
-      const paths = await window.stem.pickDirectory();
-      if (paths.length) {
-        const before = new Set(folders.map((x) => x.id));
-        const next = await window.stem.addConnectedFolders(paths);
-        setFolders(next);
-        // A just-connected folder is about to be configured — open its card.
-        setExpanded((s) => new Set([...s, ...next.filter((x) => !before.has(x.id)).map((x) => x.id)]));
-      }
+      await connect(await window.stem.pickDirectory());
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function connectPicked(path: string) {
+    setPicking(false);
+    setBusy(true);
+    try {
+      await connect([path]);
     } finally {
       setBusy(false);
     }
@@ -263,6 +285,9 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
 
   return (
     <div>
+      {picking && (
+        <ServerFolderPicker onConnect={(path) => void connectPicked(path)} onClose={() => setPicking(false)} />
+      )}
       <div className="grp-head cfolders-head">
         Connected folders
         <span className="grp-head-actions">

@@ -10,6 +10,7 @@ import type {
 } from '../../../../shared/types';
 import { InfoTip } from '../../../ui/InfoTip';
 import { ModelPicker } from '../../../ui/ModelPicker';
+import { broadcastWebSearch, useWebSearchSync } from '../../../webSearch';
 import type { ModelTabProps } from '../shared';
 
 /** How long a chat's scratch folder survives being ignored. null = never sweep. */
@@ -85,9 +86,16 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
     }
   }, []);
 
+  // The composer's Web button is the same switch, one component away in this same
+  // window: tell it after the write, and follow it when it is the one clicked.
+  useWebSearchSync((flags) => setWs((cur) => ({ ...cur, ...flags })));
+
   function updateWebSearch(patch: Partial<WebSearchSettings>) {
     setWs((cur) => ({ ...cur, ...patch })); // optimistic; reconcile below
-    window.stem.updateWebSearch(patch).then((s) => setWs(s.webSearch));
+    window.stem.updateWebSearch(patch).then((s) => {
+      setWs(s.webSearch);
+      broadcastWebSearch(s.webSearch);
+    });
   }
 
   function updateChats(patch: Partial<ChatsSettings>) {

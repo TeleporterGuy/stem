@@ -34,6 +34,7 @@ import { ActivityIndicator } from './ui/ActivityIndicator';
 import { TaskAlertModal } from './TaskAlertModal';
 import { ReleaseNotesModal } from './ReleaseNotesModal';
 import { DropOverlay } from './files/DropOverlay';
+import { useWebSearch } from './webSearch';
 import { useAutoHideScroll } from './hooks/useAutoHideScroll';
 import { useOffline } from './hooks/useServerReachable';
 import { useShallowStable } from './hooks/useShallowStable';
@@ -251,6 +252,10 @@ export default function App() {
   const [format, setFormat] = useState<'md' | 'mdx'>(
     () => (localStorage.getItem('stem.format') === 'md' ? 'md' : 'mdx')
   );
+  // Web search for main-window turns. Unlike the pickers above this one lives in
+  // settings rather than localStorage — it is the same switch Settings → Chat
+  // shows, and the server reads it when the turn starts.
+  const { enabled: webSearch, toggle: toggleWebSearch } = useWebSearch('main');
   const selectedModel = models.find((m) => m.id === modelId) ?? null;
   // Ref mirrors so the (mount-only) backend-event handler can resolve the failed
   // turn's provider from the latest models/selection without a stale closure.
@@ -1423,6 +1428,8 @@ export default function App() {
           onChangeEffort={setEffort}
           onChangeSpeed={setServiceTier}
           onChangeFormat={setFormat}
+          webSearch={webSearch}
+          onToggleWebSearch={toggleWebSearch}
           reportDraft={previewActive}
           onDraftChange={setPreviewDraft}
         />

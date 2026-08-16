@@ -3,6 +3,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { devicesStorePath } from '../workspace/paths';
+import type { DeviceKind } from '../../shared/types';
 
 // Who is allowed to talk to the transport. Two independent gates, because the
 // transport is the surface a public deployment puts on the internet:
@@ -70,6 +71,33 @@ export interface DeviceRecord {
   apnsToken?: string;
   /** Which push network `apnsToken` belongs to. Only iOS has one today. */
   platform?: 'ios';
+  /**
+   * What the device says it is, given when it spends its pairing code. Absent
+   * for every record written before the field existed, and {@link deviceKind}
+   * reads that absence as `desktop` — the honest default, since the only client
+   * that could have written such a record is a desktop one (the phone shipped
+   * later). devices.json therefore stays version 2 and an old file round-trips
+   * unchanged.
+   *
+   * `role` is what a device may DO and there is only one value; this is what it
+   * IS, and it is used to decide what Stem offers it. Only a desktop is offered
+   * as a host for a pinned MCP server, because availability is "has an open
+   * stream" and iOS suspends the app — a phone would flicker in and out of
+   * availability with the screen lock (docs/mcp-device-pinning.md, ⑦).
+   *
+   * Self-asserted, and that is fine: a device claiming to be a desktop can only
+   * volunteer itself for work it will be bad at, on a server it is already
+   * authenticated to. Worth saying plainly, though, because it decides how much
+   * the check in pi/mcp.ts is worth: ⑦ is enforced against what a client SAID
+   * when it spent its pairing code, not against what it is. Nothing verifies it,
+   * and nothing can.
+   */
+  kind?: DeviceKind;
+}
+
+/** What a record claims to be, with the pre-field default applied. */
+export function deviceKind(device: DeviceRecord): DeviceKind {
+  return device.kind ?? 'desktop';
 }
 
 /** A freshly minted device, and the one moment its token is knowable. */
@@ -167,7 +195,11 @@ function parseDevices(raw: string): DeviceRecord[] | null {
         // the ordinary case, and the field is absent rather than empty so an old
         // file and a new one round-trip to the same JSON.
         ...(typeof record.apnsToken === 'string' && record.apnsToken ? { apnsToken: record.apnsToken } : {}),
-        ...(record.platform === 'ios' ? { platform: 'ios' as const } : {})
+        ...(record.platform === 'ios' ? { platform: 'ios' as const } : {}),
+        // Carried through rather than defaulted here, for the same reason as
+        // apnsToken: a record from before the field existed must round-trip to
+        // the bytes it arrived as. Read it through deviceKind(), never directly.
+        ...(record.kind === 'desktop' || record.kind === 'mobile' ? { kind: record.kind } : {})
       }
     ];
   });
@@ -201,7 +233,7 @@ export function readDevices(): Promise<readonly DeviceRecord[]> {
  * (src/desktop/client-store.ts) or deliver it over the pairing response; there is
  * no second chance, by design.
  */
-export function mintDevice(label: string): Promise<MintedDevice> {
+export function mintDevice(label: string, kind: DeviceKind = 'desktop'): Promise<MintedDevice> {
   return enqueue(async () => {
     const devices = await loadDevices();
     const token = randomBytes(TOKEN_BYTES).toString('hex');
@@ -211,7 +243,11 @@ export function mintDevice(label: string): Promise<MintedDevice> {
       role: 'device',
       label: label.trim() || 'Unnamed device',
       createdAt: new Date().toISOString(),
-      lastSeenAt: null
+      lastSeenAt: null,
+      // Written out even for the default, because a record minted from here
+      // KNOWS what it is — absence is reserved for records that predate the
+      // question and can only be guessed at.
+      kind
     };
     await writeDevices([...devices, device]);
     return { device, token };
@@ -251,7 +287,11 @@ function withoutPushToken(d: DeviceRecord): DeviceRecord {
     role: d.role,
     label: d.label,
     createdAt: d.createdAt,
-    lastSeenAt: d.lastSeenAt
+    lastSeenAt: d.lastSeenAt,
+    // Rebuilt field by field, so anything that is not a push field has to be
+    // listed here or dropping a token would quietly demote a phone to a desktop
+    // — and desktops are what get offered as MCP hosts.
+    ...(d.kind ? { kind: d.kind } : {})
   };
 }
 

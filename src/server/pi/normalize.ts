@@ -70,6 +70,14 @@ export interface TurnContext {
   privateRoots?: string[];
   memoryTainted?: boolean;
   /**
+   * The turn called a web-access tool (web_search, fetch_content, …), so its
+   * assistant reply may restate untrusted public-web content. Unlike
+   * memoryTainted this does NOT suppress capture — the reply is still recorded,
+   * but flagged `web` in the episodic store so distillation treats claims
+   * grounded only in it as web-derived, never as the user's own words.
+   */
+  webTainted?: boolean;
+  /**
    * The user's message, held back from Recall until the turn's memorize:false
    * verdict is knowable (the taint is set when the assistant reads a private
    * folder — after the prompt). Flushed on the first unsuppressed capture event
@@ -503,6 +511,10 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       );
       if (!ctx.activity.some((a) => a.id === item.id)) ctx.activity.push(item);
       if (!ctx.activityStartedAt.has(item.id)) ctx.activityStartedAt.set(item.id, Date.now());
+      // Any web-access tool call taints the turn's capture as web-derived (see
+      // TurnContext.webTainted) — set at start, not end, so even a failed fetch
+      // that still returned partial content can never dodge the flag.
+      if (WEB_ACCESS_TOOLS.has((item.name ?? '').toLowerCase())) ctx.webTainted = true;
       // The entry is recorded even when the turn is over its retention budget, so
       // the tool COUNT stays honest for the authoring gate; only the payload is
       // dropped.
@@ -548,6 +560,7 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       // come back inside the pi-web-access tool result, as inline markdown links
       // plus a trailing "**Sources:**" list, and are parsed out of its text.
       if (entry.status === 'ok' && isWebSearchTool(entry.name)) {
+        ctx.webTainted = true;
         for (const source of extractSources(resultText(result))) {
           if (!ctx.sources.some((s) => s.url === source.url)) ctx.sources.push(source);
         }

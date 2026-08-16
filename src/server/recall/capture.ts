@@ -46,8 +46,10 @@ function maybeEnforceEpisodicLimit(): void {
   }
 }
 
-/** Live tap for assistant replies: record the authoritative completed agentMessage. */
-export function captureFromEvent(envelope: BackendEventEnvelope): void {
+/** Live tap for assistant replies: record the authoritative completed agentMessage.
+ *  `opts.web` marks the row as coming from a turn that used web tools — see
+ *  RecordMessageInput.web for what downstream does with it. */
+export function captureFromEvent(envelope: BackendEventEnvelope, opts: { web?: boolean } = {}): void {
   if (envelope.method !== 'item/completed') return;
   const params = envelope.params as ItemEventParams | undefined;
   const item = params?.item;
@@ -55,7 +57,7 @@ export function captureFromEvent(envelope: BackendEventEnvelope): void {
   const text = agentMessageText(item);
   if (!text.trim()) return;
   try {
-    recordMessage({ threadId: params.threadId, turnId: params.turnId, role: 'assistant', text });
+    recordMessage({ threadId: params.threadId, turnId: params.turnId, role: 'assistant', text, web: opts.web ?? false });
     maybeEnforceEpisodicLimit();
   } catch {
     // Capture must never break the chat.
