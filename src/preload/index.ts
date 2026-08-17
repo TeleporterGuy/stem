@@ -91,6 +91,7 @@ const api: StemApi = {
 
   listSkills: () => ipcRenderer.invoke('skills:list'),
   setSkillEnabled: (slug: string, enabled: boolean) => ipcRenderer.invoke('skills:setEnabled', slug, enabled),
+  removeSkill: (slug: string) => ipcRenderer.invoke('skills:remove', slug),
   curateSkills: () => ipcRenderer.invoke('skills:curate'),
   learnFromLastTurn: (threadId: string, focus?: string) => ipcRenderer.invoke('skills:learn', threadId, focus),
   skillsResetStatus: () => ipcRenderer.invoke('skills:resetStatus'),
@@ -167,6 +168,8 @@ const api: StemApi = {
     ipcRenderer.on('mcpHost:changed', handler);
     return () => ipcRenderer.removeListener('mcpHost:changed', handler);
   },
+  execHostState: () => ipcRenderer.invoke('execHost:localState'),
+  setExecHostEnabled: (enabled: boolean) => ipcRenderer.invoke('execHost:setEnabled', enabled),
   onMcpAdminApproval: (listener: (proposal: McpAdminProposal) => void) => {
     const handler = (_e: unknown, proposal: McpAdminProposal) => listener(proposal);
     ipcRenderer.on('mcp:adminApproval', handler);

@@ -12,6 +12,7 @@ import { markReleaseNotesRead, releaseNotesSnapshot } from '../release-notes';
 import { pairWithServer, useBuiltInServer, type ServerCredentials } from '../server-endpoint';
 import { updateClientReleaseNotes, updateClientUpdates, withClientSettings } from '../settings';
 import type { McpHost } from '../mcp-host';
+import type { ExecHost, ExecHostLocalState } from '../exec-host';
 import type { Updates } from '../updates';
 import type {
   AppSettings,
@@ -76,6 +77,8 @@ export interface LocalIpcDeps {
   updates: Updates;
   /** The MCP servers pinned to this machine (see desktop/mcp-host/). */
   mcpHost: McpHost;
+  /** Whether this machine accepts commands from its server (see desktop/exec-host/). */
+  execHost: ExecHost;
 }
 
 /**
@@ -184,6 +187,16 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
     await deps.mcpHost.refresh();
     return deps.mcpHost.localState();
   });
+
+  // Whether THIS computer accepts commands from its Stem server. Client-owned
+  // for the sharpest version of the mcpHost reason above: the switch is the
+  // consent, so the channel that flips it must not exist anywhere but on the
+  // machine consenting. The server only ever hears the announcement.
+  handleLocal('execHost:localState', (): Promise<ExecHostLocalState> => deps.execHost.localState());
+  handleLocal(
+    'execHost:setEnabled',
+    (_e, enabled: boolean): Promise<ExecHostLocalState> => deps.execHost.setEnabled(enabled)
+  );
 
   handleLocal('dialog:openFiles', () =>
     dialog

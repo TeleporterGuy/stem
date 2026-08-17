@@ -13,6 +13,9 @@ import type { StemHost, WorkerTransport } from '../server/host';
 /** The overrides the Electron host improves on. Installed once, before anything else. */
 export function electronHost(): Partial<StemHost> {
   return {
+    // A window means somebody is sitting at this machine: Stem is running on
+    // their own computer, not on a server they connect to.
+    kind: () => 'desktop',
     // Electron's own userData — so an existing install keeps reading exactly the
     // directory it always has. The headless default reimplements this layout, so
     // the two agree; this override exists to respect `--user-data-dir` and the

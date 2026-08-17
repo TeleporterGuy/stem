@@ -19,6 +19,7 @@ import { resolveProfileOverride } from '../server/workspace/paths';
 import { bindServerChannels } from './ipc-bridge';
 import { registerLocalIpc } from './local';
 import { createMcpHost, type McpHost } from './mcp-host';
+import { createExecHost, type ExecHost } from './exec-host';
 import { createOAuthCourier, type OAuthCourier } from './oauth-courier';
 import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, requestAttention } from './platform';
 import { createPresenceHeartbeat, type PresenceHeartbeat } from './presence';
@@ -318,6 +319,7 @@ let proxy: ServerProxy | null = null;
 let oauthCourier: OAuthCourier | null = null;
 let presence: PresenceHeartbeat | null = null;
 let mcpHost: McpHost | null = null;
+let execHost: ExecHost | null = null;
 
 /**
  * Whether the server is answering, as last reported by the proxy. Kept here
@@ -404,6 +406,14 @@ app.whenReady().then(async () => {
     changed: (state) => sendToMain('mcpHost:changed', state)
   });
 
+  // The commands the server addresses to THIS machine (run_command's `device`
+  // target). Same late-bound relationship with the proxy as the MCP host's, and
+  // the same off-by-default posture: until the switch in Settings is flipped on
+  // this computer, every request is refused here whatever the server believes.
+  execHost = createExecHost({
+    invoke: (channel, args) => proxy!.invoke(channel, args)
+  });
+
   proxy = createServerProxy({
     ...endpoint,
     // The one `if` above decides this too: a server we did not start is a server
@@ -411,6 +421,7 @@ app.whenReady().then(async () => {
     remote: !server,
     oauthCourier,
     mcpHost,
+    execHost,
     sendToMain,
     sendToOverlay: (channel, payload) => quickChat.sendToOverlay(channel, payload),
     revealIfOwns: (threadId) => quickChat.revealIfOwns(threadId),
@@ -436,6 +447,9 @@ app.whenReady().then(async () => {
       // server pinned here while we could not hear about it. Asking again is
       // cheap — a spec that has not moved keeps the connection it already has.
       if (reachable) void mcpHost?.refresh();
+      // Re-announce whether this machine runs commands: the server may have
+      // restarted and an announcement is the only way it learns.
+      if (reachable) void execHost?.refresh();
     }
   });
   // Subscribe before any window exists, so nothing the server pushes during
@@ -452,7 +466,8 @@ app.whenReady().then(async () => {
     credentials: () => endpoint,
     settings: () => proxy!.invoke('settings:get', []) as Promise<AppSettings>,
     updates,
-    mcpHost
+    mcpHost,
+    execHost
   });
   quickChat.registerIpc();
   ipcMain.on('renderer:ready', (event) => {
@@ -491,6 +506,7 @@ app.whenReady().then(async () => {
     // child processes too. Unapproved specs start nothing and raise nothing;
     // they wait in the Manage panel.
     void mcpHost?.start();
+    void execHost?.start();
   });
 
   quickChat.start(settings.quickChat);

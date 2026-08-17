@@ -29,6 +29,7 @@ import { foldTurnEvent, liveTurnCount, noteTurnStart } from './live-turns';
 import { pushApprovalRequest, pushTurnFinished, type ApprovalPushKind } from './push';
 import { closeApns } from './push/apns';
 import { closeDeviceMcpRouter } from './mcp-device/router';
+import { closeExecDeviceRouter } from './exec-device/router';
 import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
 import { ensureUsageTracking } from './skills/usage';
@@ -860,6 +861,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       // and failing them with a sentence beats each one waiting out two minutes
       // for a reply that can no longer arrive.
       closeDeviceMcpRouter();
+      // And every held device command, for the same reason.
+      closeExecDeviceRouter();
       // Destroys any open SSE stream before closing the listener — without that,
       // close() waits for a connection that by design never ends.
       void closeTransport();

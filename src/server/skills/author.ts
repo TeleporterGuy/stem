@@ -56,6 +56,17 @@ export interface AuthorInput {
   libraryIndex?: { slug: string; description: string }[];
   /** Free-text steer from `/learn <focus>` — what the user wants captured. */
   focus?: string;
+  /**
+   * Which machine this turn ran on, in a sentence (`whereSkillsRun()` in
+   * workspace/bootstrap.ts). Passed in rather than read here so this module stays
+   * free of the host shim and the eval can build fixtures for either world.
+   *
+   * The author needs it because a skill is followed somewhere else later. Stem's
+   * own library moved from a Mac to a server intact, and every procedure in it
+   * that quietly assumed the Mac — its installed programs, its home network, its
+   * IP address — became a set of steps that fail with no explanation.
+   */
+  machine?: string;
 }
 
 /**
@@ -156,6 +167,9 @@ function renderTraceEntry(entry: TraceEntry, index: number): string {
 export function renderEvidence(input: AuthorInput): string {
   const parts: string[] = [];
   if (input.focus?.trim()) parts.push(`What the user asked to be captured:\n${input.focus.trim()}`);
+  // Ahead of the evidence, because it colours how every line of it reads — but
+  // behind the /learn focus, which is the user talking and still leads.
+  if (input.machine?.trim()) parts.push(`Where this turn ran:\n${input.machine.trim()}`);
   if (input.userText.trim()) parts.push(`The user's message:\n${input.userText.trim()}`);
   parts.push(
     input.trace.length > 0

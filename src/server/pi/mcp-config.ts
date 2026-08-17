@@ -15,6 +15,7 @@ import {
 import { RECALL_MCP_NAME, recallMcpServerPath } from '../recall/register-mcp';
 import { getEmbedEndpointToken } from '../recall/embed-endpoint';
 import { renderDeviceCatalogBlock, type DeviceCatalogBlock } from '../mcp-device/catalog';
+import { execDeviceRouter } from '../exec-device/router';
 import { connectedDeviceIds } from '../startup/transport';
 import { readDevices } from '../transport/auth';
 import type { DeviceMcpCatalog } from '../../shared/types';
@@ -177,18 +178,47 @@ export function forgetMcpCatalogCaches(): void {
 export async function buildMcpCatalogContext(): Promise<string | null> {
   const bridge = bridgeCatalogText().trim();
   const device = await buildDeviceCatalogSection();
+  const exec = await buildExecHostSection();
   const text = [bridge, device.text].filter(Boolean).join('\n\n');
-  if (!text) return null;
+  const mcpBlock = text
+    ? `Available tools (extra MCP servers, beyond your built-in file tools):\n${text}\n\n` +
+      `To use any of these, call \`invoke_tool\` with the server name, the exact tool name, and an \`args\` object. ` +
+      `The signatures above are compact — if a tool's arguments aren't obvious, call \`describe_tool\` first to get ` +
+      `its full input schema. Do not invent servers or tools that aren't listed here.` +
+      (device.anyAway
+        ? ` A server marked NOT connected runs on one of the user's own machines, which is asleep or offline right now: ` +
+          `its tools are real and will work again as soon as that computer is awake with Stem running on it. ` +
+          `Say which machine that is rather than saying you cannot do the thing — calling one now fails with the same explanation.`
+        : '')
+    : '';
+  const parts = [mcpBlock, exec].filter(Boolean);
+  if (!parts.length) return null;
+  return parts.join('\n\n');
+}
+
+/**
+ * The one per-turn sentence about run_command's `device` targets, or empty when
+ * no computer has ever said it runs commands (the common case — then the tool
+ * parameter's own description is the only mention, and there is nothing to
+ * name). Asked fresh each turn for the same reason the device catalog is: only
+ * this moment knows which of those machines is awake.
+ */
+async function buildExecHostSection(): Promise<string> {
+  const hosts = Object.values(await execDeviceRouter().hosts()).filter((h) => h.enabled);
+  if (!hosts.length) return '';
+  const devices = await readDevices().catch(() => []);
+  const labels = new Map(devices.map((d) => [d.id, d.label]));
+  const connected = connectedDeviceIds();
+  const listed = hosts
+    // A host whose device was unpaired keeps nothing: it cannot be targeted,
+    // and naming it would promise a computer that every call would refuse.
+    .filter((h) => labels.has(h.deviceId))
+    .map((h) => `“${labels.get(h.deviceId)}”${connected.has(h.deviceId) ? '' : ' (NOT connected right now)'}`);
+  if (!listed.length) return '';
   return (
-    `Available tools (extra MCP servers, beyond your built-in file tools):\n${text}\n\n` +
-    `To use any of these, call \`invoke_tool\` with the server name, the exact tool name, and an \`args\` object. ` +
-    `The signatures above are compact — if a tool's arguments aren't obvious, call \`describe_tool\` first to get ` +
-    `its full input schema. Do not invent servers or tools that aren't listed here.` +
-    (device.anyAway
-      ? ` A server marked NOT connected runs on one of the user's own machines, which is asleep or offline right now: ` +
-        `its tools are real and will work again as soon as that computer is awake with Stem running on it. ` +
-        `Say which machine that is rather than saying you cannot do the thing — calling one now fails with the same explanation.`
-      : '')
+    `Computers that accept run_command's \`device\` target: ${listed.join(', ')}. ` +
+    `A computer marked NOT connected will run commands again once it is awake with Stem running — say which ` +
+    `machine that is rather than saying you cannot do the thing.`
   );
 }
 

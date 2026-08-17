@@ -24,12 +24,19 @@ import { readMcpConfig, writeMcpConfig, type PiMcpServer } from '../../src/serve
 import { secretKeyHex } from '../../src/server/pi/secrets';
 import { forgetCachedDevices, readDevices } from '../../src/server/transport/auth';
 import { registerMcpIpc } from '../../src/server/ipc/mcp';
+import { registerDevicesIpc } from '../../src/server/ipc/devices';
+import { closeExecDeviceRouter, execDeviceRouter } from '../../src/server/exec-device/router';
 import type { IpcDeps } from '../../src/server/ipc/deps';
 import { closeTransport, startTransport } from '../../src/server/startup/transport';
 import { createServerProxy, type ServerProxy } from '../../src/desktop/proxy';
 import { clientCredentials } from '../../src/desktop/server-endpoint';
 import { readClientIdentity } from '../../src/desktop/client-store';
-import { devicesStorePath, piMcpConfigPath, piMcpDeviceCatalogPath } from '../../src/server/workspace/paths';
+import {
+  devicesStorePath,
+  execDeviceHostsPath,
+  piMcpConfigPath,
+  piMcpDeviceCatalogPath
+} from '../../src/server/workspace/paths';
 import type {
   DeviceMcpCatalog,
   DeviceMcpRequest,
@@ -333,6 +340,7 @@ describe('a call to a device, end to end', () => {
   /** What the stub host will answer with next, and what it was asked. */
   let answer: DeviceMcpResult = { ok: true, content: 'nothing yet' };
   const asked: DeviceMcpRequest[] = [];
+  const execAsked: { requestId: string; command: string; threadId: string; cwd?: string }[] = [];
   /** How many times the server told this device its assignments had moved. */
   let assignmentNotices = 0;
 
@@ -362,11 +370,15 @@ describe('a call to a device, end to end', () => {
     process.env.STEM_SECRET_KEY = secretKeyHex()!;
     rmSync(piMcpConfigPath(), { force: true });
     rmSync(piMcpDeviceCatalogPath(), { force: true });
+    rmSync(execDeviceHostsPath(), { force: true });
     await readDevices().catch(() => undefined);
     rmSync(devicesStorePath(), { force: true });
     forgetCachedDevices();
 
     registerMcpIpc(ipcDeps);
+    // The exec host channels live with the devices IPC; registering them here is
+    // what lets the second half of this suite run commands over the same wire.
+    registerDevicesIpc();
     const endpoint = await startTransport({ devUrl: null });
     if (!endpoint.url) throw new Error('the transport published no URL to talk to');
     serverUrl = endpoint.url;
@@ -392,6 +404,14 @@ describe('a call to a device, end to end', () => {
         // no edit and asked nobody.
         onAssignmentsChanged: () => {
           assignmentNotices += 1;
+        }
+      },
+      // The exec twin of the seam above: answers on the channel the real exec
+      // host will, through the same RPC, with the spawn itself left out.
+      execHost: {
+        onRequest: (request) => {
+          execAsked.push(request);
+          void proxy.invoke('execHost:result', [request.requestId, { ok: true, text: `ran: ${request.command}` }]);
         }
       },
       oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
@@ -421,6 +441,7 @@ describe('a call to a device, end to end', () => {
 
   afterAll(async () => {
     proxy?.close();
+    closeExecDeviceRouter();
     await closeTransport();
   });
 
@@ -509,6 +530,26 @@ describe('a call to a device, end to end', () => {
     expect(assignmentNotices).toBe(before);
 
     await removeMcpServer('server-side');
+  });
+
+  it('learns whether a device runs commands from its announcement, and shows it in the list', async () => {
+    await proxy.invoke('execHost:announce', [{ enabled: true, platform: 'darwin' }]);
+    expect(await execDeviceRouter().hostFor(deviceId)).toMatchObject({ enabled: true, platform: 'darwin' });
+    const snapshot = (await proxy.invoke('devices:list', [])) as { devices: { id: string; runsCommands?: boolean }[] };
+    expect(snapshot.devices.find((d) => d.id === deviceId)?.runsCommands).toBe(true);
+  });
+
+  it('runs a command over the same rails: addressed frame out, RPC result back', async () => {
+    await until(() => execDeviceRouter().isAvailable(deviceId), 'the event stream to register');
+    const result = await execDeviceRouter().run(deviceId, {
+      threadId: 'chat-1',
+      command: 'echo hello',
+      cwd: '/Users/ada/Downloads',
+      timeoutMs: 5_000
+    });
+    expect(execAsked).toHaveLength(1);
+    expect(execAsked[0]).toMatchObject({ command: 'echo hello', threadId: 'chat-1', cwd: '/Users/ada/Downloads' });
+    expect(result).toEqual({ ok: true, text: 'ran: echo hello' });
   });
 
   it('refuses a call once the client is gone, and says which machine to wake', async () => {

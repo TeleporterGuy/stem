@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import type {
   ChatsSettings,
   CustomInstructionsSettings,
+  DeviceInfo,
   ExecSettings,
   ScratchUsageRow,
   WebSearchSettings,
@@ -11,6 +12,7 @@ import type {
 import { InfoTip } from '../../../ui/InfoTip';
 import { ModelPicker } from '../../../ui/ModelPicker';
 import { broadcastWebSearch, useWebSearchSync } from '../../../webSearch';
+import { useRemoteServer } from '../../../hooks/useRemoteServer';
 import type { ModelTabProps } from '../shared';
 
 /** How long a chat's scratch folder survives being ignored. null = never sweep. */
@@ -66,6 +68,14 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
   // walk on the server, so the block says "Measuring…" rather than "0 folders".
   const [scratch, setScratch] = useState<ScratchUsageRow[] | null>(null);
   const [confirmClear, setConfirmClear] = useState<string | null>(null);
+  // Whether THIS computer accepts commands from the server — a client-local
+  // fact, asked of this machine and only shown when there is a server elsewhere
+  // to accept commands from.
+  const remote = useRemoteServer();
+  const [execHostEnabled, setExecHostEnabled] = useState<boolean | null>(null);
+  // Labels for the per-device allowlist groups. Devices that were unpaired keep
+  // their entries readable (and deletable) under the raw id.
+  const [devices, setDevices] = useState<DeviceInfo[]>([]);
   // Per-field debounce so typing doesn't spam the atomic settings writer.
   const ciMainTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bashPathTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -84,6 +94,11 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
     if (window.stem.platform === 'win32') {
       void window.stem.detectGitBash().then(setDetectedBash).catch(() => setDetectedBash(null));
     }
+    void window.stem.execHostState().then((s) => setExecHostEnabled(s.enabled)).catch(() => undefined);
+    void window.stem
+      .listDevices()
+      .then((snap) => setDevices(snap.devices))
+      .catch(() => undefined);
   }, []);
 
   // The composer's Web button is the same switch, one component away in this same
@@ -420,6 +435,40 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
                     ))}
                   </div>
                 )}
+                {/* Prefixes approved for a specific computer, one group per
+                    machine. Grown only by the approval card — a prefix trusted
+                    on your Mac says nothing about the next machine, so there is
+                    no add field here. */}
+                {Object.entries(exec.deviceAllowlists).map(([deviceId, prefixes]) =>
+                  prefixes.length === 0 ? null : (
+                    <div key={deviceId} className="set-block">
+                      <span className="set-sub">
+                        On {devices.find((d) => d.id === deviceId)?.label ?? `an unpaired computer (${deviceId})`}
+                      </span>
+                      <div className="exec-allowlist">
+                        {prefixes.map((prefix) => (
+                          <span key={prefix} className="pill">
+                            {prefix}
+                            <button
+                              title={`Remove "${prefix}"`}
+                              aria-label={`Remove "${prefix}" from this computer's allowlist`}
+                              onClick={() =>
+                                updateExec({
+                                  deviceAllowlists: {
+                                    ...exec.deviceAllowlists,
+                                    [deviceId]: prefixes.filter((p) => p !== prefix)
+                                  }
+                                })
+                              }
+                            >
+                              <X size={11} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                )}
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
@@ -506,6 +555,40 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
               </div>
             </div>
           </>
+        )}
+
+        {/* THIS computer's consent to run commands the server sends it. Only
+            offered when the server is elsewhere — on a local install the switch
+            above already governs the only machine there is. The state is
+            client-local (see desktop/exec-host/store.ts) and never on the
+            wire, which is why this block does not read `exec`. */}
+        {remote && execHostEnabled !== null && (
+          <div className="set-row">
+            <span className="set-label">
+              <strong>Run commands on this computer</strong>
+              <em>
+                Let your Stem server run commands here — for the things only this machine has{' '}
+                <InfoTip label="What switching this on means">
+                  With this on, the assistant can target this computer by name and commands run
+                  here after the same approval policy as everywhere else — but nothing on this
+                  machine is pre-approved: every command prefix is judged or asks you until you
+                  choose "Always allow" for it. Switching this off stops new commands
+                  immediately. Leave it off if this Stem server isn't yours alone.
+                </InfoTip>
+              </em>
+            </span>
+            <button
+              className={`switch${execHostEnabled ? ' on' : ''}`}
+              role="switch"
+              aria-checked={execHostEnabled}
+              aria-label="Run commands on this computer"
+              onClick={() =>
+                void window.stem
+                  .setExecHostEnabled(!execHostEnabled)
+                  .then((s) => setExecHostEnabled(s.enabled))
+              }
+            />
+          </div>
         )}
       </div>
     </div>

@@ -1,11 +1,13 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import type { HostShell } from '../../shared/types';
 import { hostShellFromPlatform } from './host-shell';
 
 // Spawns approved run_command commands. Runs in main (the privileged process).
-// On macOS/Linux: `/bin/zsh -c` with the user's LOGIN-shell PATH — a GUI app's
-// environment lacks Homebrew/npm bin dirs, so without this `agent-browser` & co.
-// would be "command not found" even when installed.
+// On macOS/Linux: the host shell (see unixShell) `-c`, with the user's
+// LOGIN-shell PATH — a GUI app's environment lacks Homebrew/npm bin dirs, so
+// without this `agent-browser` & co. would be "command not found" even when
+// installed.
 // On Windows: `cmd.exe /d /s /c` by default (no AutoRun; avoids a broken
 // PowerShell profile.ps1). Opt-in Git Bash is `bash.exe --noprofile --norc -c`
 // (same idea: skip .bashrc). PATH comes from the process environment, plus
@@ -39,6 +41,46 @@ export interface ShellInvocation {
 }
 
 /**
+ * Unix shells STEM will run commands under, best first, and whether each one
+ * understands `-l` (a login shell, which is how the PATH probe below picks up
+ * Homebrew/nvm). dash — which IS `/bin/sh` on Debian — does not, and passing it
+ * `-lc` fails the probe rather than the command.
+ */
+const UNIX_SHELLS: readonly { path: string; login: boolean }[] = [
+  { path: '/bin/zsh', login: true },
+  { path: '/bin/bash', login: true },
+  { path: '/usr/bin/bash', login: true },
+  { path: '/bin/sh', login: false }
+];
+
+let resolvedShell: (typeof UNIX_SHELLS)[number] | undefined;
+
+/**
+ * The shell run_command uses on macOS/Linux, resolved once.
+ *
+ * zsh stays first: it is macOS's default, and it is the shell the allowlist, the
+ * command parser and the judge prompt were all written against. But it is not a
+ * given — a Linux server has bash and dash and usually no zsh at all, and the
+ * Docker image is `node:24-bookworm-slim`, which has neither. Hardcoding
+ * `/bin/zsh` meant that on a server deployment EVERY command died with
+ * `spawn /bin/zsh ENOENT`, including the ones the assistant runs to work out why
+ * something else is broken. Falling back keeps `run_command` a real tool
+ * wherever Stem's server happens to run.
+ *
+ * The last entry is `/bin/sh`, which a Unix has by definition, so the fallback
+ * cannot itself run out — and if even that is missing, spawning it produces the
+ * same ENOENT as before rather than a silent no-op.
+ */
+export function unixShell(): { path: string; login: boolean } {
+  return (resolvedShell ??= UNIX_SHELLS.find((s) => existsSync(s.path)) ?? UNIX_SHELLS[UNIX_SHELLS.length - 1]);
+}
+
+/** Test seam: forget the resolved shell so a test can re-probe. */
+export function resetShellCacheForTests(): void {
+  resolvedShell = undefined;
+}
+
+/**
  * Build the argv used to run one user command. Pure so Mac CI can assert the
  * Windows shape without needing cmd.exe or bash.exe.
  */
@@ -66,7 +108,7 @@ export function shellInvocation(
     const comspec = process.env.ComSpec || 'cmd.exe';
     return { command: comspec, args: ['/d', '/s', '/c', `"${command}"`], detached: false, verbatimArguments: true };
   }
-  return { command: '/bin/zsh', args: ['-c', command], detached: true, verbatimArguments: false };
+  return { command: unixShell().path, args: ['-c', command], detached: true, verbatimArguments: false };
 }
 
 const loginPathCache = new Map<NodeJS.Platform, Promise<string>>();
@@ -78,9 +120,10 @@ export function resetLoginPathCacheForTests(): void {
 
 /**
  * Resolve the PATH exec children should use once and cache it.
- * Unix: login-shell zsh (`-lc`) so Homebrew/npm bins are visible.
+ * Unix: the host shell as a login shell (`-lc`) so Homebrew/npm bins are
+ * visible — or a plain `-c` where the shell has no login mode (dash).
  * Windows: process Path/PATH (GUI apps already inherit the user environment;
- * there is no zsh to probe). Falls back to an empty string if unset.
+ * there is no shell to probe). Falls back to an empty string if unset.
  *
  * Cached per platform, not globally: one cache would hand a caller passing
  * 'win32' whatever the first caller resolved, which makes the parameter a seam
@@ -89,7 +132,7 @@ export function resetLoginPathCacheForTests(): void {
 export function resolveLoginPath(platform: NodeJS.Platform = process.platform): Promise<string> {
   const cached = loginPathCache.get(platform);
   if (cached) return cached;
-  const promise = platform === 'win32' ? Promise.resolve(windowsPath()) : probeZshLoginPath();
+  const promise = platform === 'win32' ? Promise.resolve(windowsPath()) : probeShellLoginPath();
   loginPathCache.set(platform, promise);
   return promise;
 }
@@ -98,11 +141,12 @@ function windowsPath(): string {
   return process.env.Path || process.env.PATH || '';
 }
 
-function probeZshLoginPath(): Promise<string> {
+function probeShellLoginPath(): Promise<string> {
   return new Promise<string>((resolve) => {
     const fallback = (): void => resolve(process.env.PATH ?? '');
     try {
-      const probe = spawn('/bin/zsh', ['-lc', 'printf %s "$PATH"'], {
+      const shell = unixShell();
+      const probe = spawn(shell.path, [shell.login ? '-lc' : '-c', 'printf %s "$PATH"'], {
         stdio: ['ignore', 'pipe', 'ignore']
       });
       let out = '';

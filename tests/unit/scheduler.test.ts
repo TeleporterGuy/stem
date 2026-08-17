@@ -262,6 +262,33 @@ describe('TaskScheduler.runNow + management', () => {
     scheduler.stop();
   });
 
+  // A run that dies before its turn ever starts — the chat cannot be opened, the
+  // backend will not spawn — used to leave "failed" in the Tasks tab and not one
+  // word anywhere else, because the throw was caught and dropped. That is how a
+  // migrated server ran every scheduled task into the ground for days unnoticed.
+  it('keeps why a run failed, and drops it once one succeeds', async () => {
+    const runtime = new FakeRuntime();
+    let refuse = true;
+    const baseStart = runtime.startTurn.bind(runtime);
+    runtime.startTurn = async (input: StartTurnInput) => {
+      if (refuse) throw new Error('Stored session working directory does not exist: /Users/someone/workspace');
+      return baseStart(input);
+    };
+    const { scheduler } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+
+    scheduler.runNow(res.task.id);
+    await until(async () => (await storedStatus()) === 'failed', 'the failure to be recorded');
+    expect((await readTasks())[0].lastError).toMatch(/working directory does not exist/);
+
+    refuse = false;
+    scheduler.runNow(res.task.id);
+    await until(async () => (await storedStatus()) === 'ok', 'the good run to be recorded');
+    expect((await readTasks())[0].lastError).toBeUndefined();
+    scheduler.stop();
+  });
+
   it('disables a task whose thread no longer exists instead of running it', async () => {
     const runtime = new FakeRuntime();
     runtime.threadIds.clear(); // t1 is gone

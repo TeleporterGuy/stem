@@ -47,6 +47,8 @@ const LOCAL_IPC_ARGS: Record<string, ArgSpec[]> = {
   'mcpHost:approve': [a.string, a.string],
   'mcpHost:reject': [a.string],
   'mcpHost:test': [a.string],
+  // The exec host's switch ('execHost:localState' takes no arguments).
+  'execHost:setEnabled': [a.boolean],
   'quickchat:run': [a.object],
   'quickchat:handoff': [a.object]
 };

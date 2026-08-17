@@ -8,18 +8,19 @@ import {
   MAX_TIMEOUT_MS,
   OUTPUT_CAP_BYTES,
   resetLoginPathCacheForTests,
+  resetShellCacheForTests,
   resolveLoginPath,
   runCommand,
-  shellInvocation
+  shellInvocation,
+  unixShell
 } from '../../src/server/exec/executor';
 
 // The run_command spawn layer: real shell children with output caps, timeouts,
 // and process-tree kills. Spawn tests are gated on the host shell being present
-// (zsh on Unix; cmd.exe on Windows).
+// (some POSIX shell on Unix — /bin/sh always is; cmd.exe on Windows).
 
-const hasZsh = existsSync('/bin/zsh');
 const isWin = process.platform === 'win32';
-const canSpawn = isWin || hasZsh;
+const canSpawn = isWin || existsSync(unixShell().path);
 
 describe('clampTimeout', () => {
   it('defaults, clamps, and floors', () => {
@@ -31,14 +32,33 @@ describe('clampTimeout', () => {
   });
 });
 
+describe('unixShell', () => {
+  afterEach(() => resetShellCacheForTests());
+
+  it('picks a shell that exists, preferring zsh', () => {
+    const shell = unixShell();
+    expect(existsSync(shell.path)).toBe(true);
+    if (existsSync('/bin/zsh')) expect(shell.path).toBe('/bin/zsh');
+    // Only a shell with a login mode may be probed with -lc; dash (/bin/sh) has none.
+    expect(shell.login).toBe(shell.path.endsWith('zsh') || shell.path.endsWith('bash'));
+  });
+
+  it('is resolved once and reused', () => {
+    expect(unixShell()).toBe(unixShell());
+  });
+});
+
 describe('shellInvocation', () => {
-  it('uses zsh -c on Unix platforms', () => {
-    expect(shellInvocation('echo hi', 'zsh')).toEqual({
-      command: '/bin/zsh',
+  it('uses the host shell with -c on Unix platforms', () => {
+    // Never a hardcoded /bin/zsh: a Linux server (the Docker image included) has
+    // no zsh, and every command there died with `spawn /bin/zsh ENOENT`.
+    const expected = {
+      command: unixShell().path,
       args: ['-c', 'echo hi'],
       detached: true,
       verbatimArguments: false
-    });
+    };
+    expect(shellInvocation('echo hi', 'zsh')).toEqual(expected);
   });
 
   it('uses cmd.exe /d /s /c on cmd (no AutoRun)', () => {

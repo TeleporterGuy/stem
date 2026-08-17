@@ -297,3 +297,147 @@ describe('ExecService working directory', () => {
     expect(approvals).toHaveLength(0);
   });
 });
+
+describe('ExecService device targeting', () => {
+  let approvals: ExecApprovalRequest[];
+  let decision: 'allowOnce' | 'alwaysAllow' | 'deny';
+  let judgeCalls: string[];
+  let settings: AppSettings;
+  let patches: Array<Record<string, unknown>>;
+  let service: ExecService;
+  let ran: Array<{ deviceId: string; command: string; cwd?: string; threadId: string }>;
+  let hostEntry: { deviceId: string; announcedAt: string; enabled: boolean; platform: 'darwin' } | null;
+  let available: boolean;
+
+  beforeEach(() => {
+    settings = baseSettings();
+    (settings.exec as unknown as { deviceAllowlists: Record<string, string[]> }).deviceAllowlists = {};
+    approvals = [];
+    decision = 'deny';
+    judgeCalls = [];
+    patches = [];
+    ran = [];
+    available = true;
+    hostEntry = { deviceId: 'mac-1', announcedAt: new Date().toISOString(), enabled: true, platform: 'darwin' };
+    const runtime = {
+      listModels: async () => [model('anthropic/claude-opus-4', 'anthropic', true)],
+      complete: async (prompt: string) => {
+        judgeCalls.push(prompt);
+        return 'unsure';
+      }
+    } as unknown as ChatBackend;
+    service = new ExecService({
+      runtime: () => runtime,
+      readSettings: async () => settings,
+      updateExecSettings: async (patch) => {
+        patches.push(patch as Record<string, unknown>);
+        Object.assign(settings.exec, patch);
+        return settings as never;
+      },
+      emitApprovalRequest: (request) => {
+        approvals.push(request);
+        queueMicrotask(() => service.resolveApproval(request.id, decision));
+      },
+      emitApprovalResolved: () => undefined,
+      resolveDevice: async (nameOrId) =>
+        nameOrId === "Vlado's MacBook" || nameOrId === 'mac-1'
+          ? { ok: true, deviceId: 'mac-1', label: "Vlado's MacBook" }
+          : { ok: false, error: `No paired computer is called “${nameOrId}”.` },
+      deviceRouter: () => ({
+        announce: async () => undefined,
+        hosts: async () => (hostEntry ? { 'mac-1': hostEntry } : {}),
+        hostFor: async (id: string) => (id === 'mac-1' ? hostEntry : null),
+        isAvailable: () => available,
+        run: async (deviceId: string, req: { command: string; cwd?: string; threadId: string }) => {
+          ran.push({ deviceId, command: req.command, cwd: req.cwd, threadId: req.threadId });
+          return { ok: true as const, text: 'Exit code: 0\n\nstdout:\nhi\n\nstderr:\n(no output)' };
+        },
+        settle: () => false,
+        abortThread: () => undefined,
+        forget: async () => undefined,
+        close: () => undefined
+      }) as never
+    });
+  });
+
+  const request = (over: Record<string, unknown> = {}) =>
+    service.handleExecRequest({
+      command: 'ls -la',
+      device: "Vlado's MacBook",
+      threadId: 'chat-a',
+      isScheduled: false,
+      ...over
+    } as never);
+
+  it('zero trust: even a built-in-safe command is judged on a remote machine', async () => {
+    decision = 'allowOnce';
+    const result = await request();
+    expect(result.ok).toBe(true);
+    // Locally `ls -la` is tier 1; on the device it went to the judge (who said
+    // unsure) and then to a card.
+    expect(judgeCalls).toHaveLength(1);
+    // The judge prompt names the machine that will run it, not this one.
+    expect(judgeCalls[0]).toContain("Vlado's MacBook");
+    expect(judgeCalls[0]).toContain('under zsh');
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({ deviceId: 'mac-1', deviceLabel: "Vlado's MacBook" });
+    expect(ran).toHaveLength(1);
+    expect(ran[0]).toMatchObject({ deviceId: 'mac-1', command: 'ls -la' });
+  });
+
+  it("always allow learns into the device's own bucket, not the shared allowlist", async () => {
+    decision = 'alwaysAllow';
+    await request();
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toEqual({ deviceAllowlists: { 'mac-1': ['ls'] } });
+    // And from then on the same command is tier 1 for that device only.
+    judgeCalls = [];
+    approvals = [];
+    const again = await request();
+    expect(again.ok).toBe(true);
+    expect(judgeCalls).toHaveLength(0);
+    expect(approvals).toHaveLength(0);
+  });
+
+  it('refuses when the computer has not switched commands on, naming the switch', async () => {
+    hostEntry = { ...hostEntry!, enabled: false };
+    const result = await request();
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toContain('does not accept commands');
+    expect(judgeCalls).toHaveLength(0);
+    expect(ran).toHaveLength(0);
+  });
+
+  it('refuses a sleeping computer immediately, naming it', async () => {
+    available = false;
+    const result = await request();
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toContain("“Vlado's MacBook” is not connected");
+    expect(ran).toHaveLength(0);
+  });
+
+  it('refuses an unknown device with the resolver’s own sentence', async () => {
+    const result = await request({ device: 'Basement PC' });
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toContain('Basement PC');
+  });
+
+  it('scheduled runs still never get a card', async () => {
+    const result = await request({ isScheduled: true });
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toContain('scheduled');
+    expect(approvals).toHaveLength(0);
+    expect(ran).toHaveLength(0);
+  });
+
+  it('a device-allowlisted command dispatches without judge or card, and carries cwd', async () => {
+    (settings.exec as unknown as { deviceAllowlists: Record<string, string[]> }).deviceAllowlists = {
+      'mac-1': ['yt-dlp']
+    };
+    const result = await request({ command: 'yt-dlp https://x.test', cwd: '/Users/vlado/Downloads' });
+    expect(result.ok).toBe(true);
+    expect(judgeCalls).toHaveLength(0);
+    expect(approvals).toHaveLength(0);
+    expect(ran[0]).toMatchObject({ command: 'yt-dlp https://x.test', cwd: '/Users/vlado/Downloads' });
+  });
+});

@@ -61,7 +61,7 @@ export function ExecApprovalCard() {
           <span className="row-icon">
             <Terminal size={15} />
           </span>
-          <strong>Run this command?</strong>
+          <strong>{request.deviceLabel ? `Run this command on “${request.deviceLabel}”?` : 'Run this command?'}</strong>
         </div>
 
         <p className="muted">
@@ -72,6 +72,15 @@ export function ExecApprovalCard() {
         <pre className="exec-approval-command">{request.command}</pre>
         <p className="muted">
           in <code>{request.cwd}</code>
+          {/* Where it runs is as much what is being approved as what runs, and
+              "always allow" scopes to that machine — say both plainly. */}
+          {request.deviceLabel ? (
+            <>
+              {' '}
+              — on <strong>{request.deviceLabel}</strong>, not on the machine Stem runs on. “Always
+              allow” trusts these prefixes on that computer only.
+            </>
+          ) : null}
         </p>
 
         {error && <p className="error">{error}</p>}

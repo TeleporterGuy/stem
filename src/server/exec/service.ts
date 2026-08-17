@@ -16,8 +16,10 @@ import { log } from '../log';
 import { ensureThreadScratch } from './scratch';
 import { clampTimeout, execEnv, resolveLoginPath, runCommand } from './executor';
 import { gitBashPathEnv, resolveHostShell } from './git-bash';
-import { buildJudgePrompt, classify, parseJudgeVerdict, resolveJudgeModel } from './policy';
+import { hostShellFromPlatform } from './host-shell';
+import { buildJudgePrompt, classify, deviceShellLabel, parseJudgeVerdict, resolveJudgeModel } from './policy';
 import { scanProtected } from './protected';
+import { execDeviceRouter, resolveExecTarget } from '../exec-device/router';
 
 // Orchestrates one run_command request end to end: settings gate → cwd resolve →
 // protected-roots guard → tiered policy (allowlist / LLM judge / approval card) →
@@ -60,6 +62,9 @@ export interface ExecServiceDeps {
   emitApprovalRequest: (request: ExecApprovalRequest) => void;
   /** Tell the renderer(s) a pending approval was answered or expired. */
   emitApprovalResolved: (id: string) => void;
+  /** Injection seams for tests; default to the wired exec-device router. */
+  deviceRouter?: () => import('../exec-device/router').ExecDeviceRouter;
+  resolveDevice?: typeof resolveExecTarget;
 }
 
 interface PendingApproval {
@@ -95,6 +100,11 @@ export class ExecService implements ExecBridge {
       return { ok: false, error: 'Command execution is disabled in Settings → Chat → Command execution.' };
     }
     const shell = resolveHostShell(settings);
+
+    // A command aimed at a paired computer takes its own path: same tiers, but
+    // classified against that machine's platform and its own allowlist, and
+    // executed over the wire instead of here.
+    if (req.device?.trim()) return this.handleDeviceExec(command, req.device.trim(), req, all);
 
     // Resolve + validate the working directory. The default is this CHAT's own
     // scratch folder (see exec/scratch.ts); an explicit relative cwd is resolved
@@ -170,6 +180,7 @@ export class ExecService implements ExecBridge {
     for (const exec of this.running) {
       if (exec.threadId === threadId) exec.controller.abort();
     }
+    this.router().abortThread(threadId);
   }
 
   settleAll(): void {
@@ -183,6 +194,133 @@ export class ExecService implements ExecBridge {
   }
 
   // ---- internals ----
+
+  private router(): import('../exec-device/router').ExecDeviceRouter {
+    return (this.deps.deviceRouter ?? execDeviceRouter)();
+  }
+
+  /**
+   * The device-targeted path. The tiers are the same three, with two deliberate
+   * differences (both user decisions): the static built-ins do not apply — a
+   * remote machine's tier 1 is exactly its own learned allowlist, which starts
+   * empty — and "Always allow" learns into that device's bucket, never the
+   * shared one. What is absent is absent for a reason, not forgotten: scratch
+   * and cwd resolution happen on the device (only it can stat its own disk),
+   * and the protected-roots scan guards server-side connected folders, of which
+   * the target machine has none.
+   */
+  private async handleDeviceExec(
+    command: string,
+    device: string,
+    req: ExecRequest,
+    all: ServerSettings
+  ): Promise<ExecBridgeResult> {
+    const settings = all.exec;
+    const target = await (this.deps.resolveDevice ?? resolveExecTarget)(device);
+    if (!target.ok) return { ok: false, error: target.error };
+    const label = `“${target.label}”`;
+    const host = await this.router().hostFor(target.deviceId);
+    if (!host?.enabled) {
+      return {
+        ok: false,
+        error:
+          `${label} does not accept commands from this Stem. Only its owner can change that, in ` +
+          `Settings → Chat → Command execution ON that computer — tell them so rather than retrying.`
+      };
+    }
+    if (!this.router().isAvailable(target.deviceId)) {
+      return {
+        ok: false,
+        error:
+          `${label} is not connected to Stem right now. The command will work as soon as that computer ` +
+          'is awake with Stem running on it.'
+      };
+    }
+    // Absolute paths only: the default is the device's own per-chat scratch
+    // folder, and a relative path would resolve against a folder this machine
+    // cannot see. The device stats it; refusing a bad one is its answer.
+    const cwd = req.cwd?.trim() || undefined;
+    const cwdLabel = cwd ?? `this chat's scratch folder on ${label}`;
+    const dispatch = (): Promise<ExecBridgeResult> => this.runOnDevice(command, cwd, req, target.deviceId);
+
+    if (settings.approvalMode === 'yolo') return dispatch();
+
+    const cls = classify(
+      command,
+      { allowlist: (settings.deviceAllowlists ?? {})[target.deviceId] ?? [] },
+      host.platform,
+      { includeBuiltins: false }
+    );
+    if (cls.tier !== 'run') {
+      let judgeVerdict: 'unsafe' | 'unsure' | 'failed' | null = null;
+      let judgeReason: string | undefined;
+      if (settings.approvalMode === 'assisted') {
+        const verdict = await this.judge(
+          command,
+          cwdLabel,
+          settings,
+          all.defaults,
+          req.userText,
+          req.currentModel,
+          host.platform,
+          deviceShellLabel(host.platform, label)
+        );
+        if (verdict.verdict === 'safe') return dispatch();
+        judgeVerdict = verdict.verdict;
+        judgeReason = verdict.reason;
+      }
+      if (req.isScheduled) {
+        return {
+          ok: false,
+          error:
+            `The command "${command}" requires user approval, which is not available in scheduled/autonomous ` +
+            'runs. Use a simpler command that clears the approval policy, or leave this step for an interactive chat.'
+        };
+      }
+      const decision = await this.requestApproval({
+        threadId: req.threadId ?? '',
+        command,
+        cwd: cwdLabel,
+        prefixes: cls.prefixes,
+        judgeVerdict,
+        judgeReason,
+        deviceId: target.deviceId,
+        deviceLabel: target.label
+      });
+      if (decision === 'deny') {
+        return { ok: false, error: 'The user declined to run this command.' };
+      }
+      if (decision === 'alwaysAllow' && cls.prefixes.length) {
+        // Into THIS device's bucket. Read fresh, like the local path: another
+        // card may have written the settings while this one was open.
+        const cur = (await this.deps.readSettings()).exec.deviceAllowlists ?? {};
+        const existing = cur[target.deviceId] ?? [];
+        const merged = {
+          ...cur,
+          [target.deviceId]: [...existing, ...cls.prefixes.filter((p) => !existing.includes(p))]
+        };
+        await this.deps.updateExecSettings({ deviceAllowlists: merged }).catch(() => undefined);
+      }
+    }
+    return dispatch();
+  }
+
+  private async runOnDevice(
+    command: string,
+    cwd: string | undefined,
+    req: ExecRequest,
+    deviceId: string
+  ): Promise<ExecBridgeResult> {
+    // No concurrency slot: MAX_CONCURRENT guards THIS machine's shells, and a
+    // command running on another computer occupies nothing here but a promise.
+    const result = await this.router().run(deviceId, {
+      threadId: req.threadId ?? '',
+      command,
+      ...(cwd ? { cwd } : {}),
+      timeoutMs: clampTimeout(req.timeoutMs)
+    });
+    return result.ok ? { ok: true, text: result.text } : { ok: false, error: result.error };
+  }
 
   private async listModelsCached(): Promise<ModelSummary[]> {
     if (this.modelsCache && Date.now() - this.modelsCache.at < MODELS_CACHE_TTL_MS) {
@@ -198,9 +336,12 @@ export class ExecService implements ExecBridge {
     cwd: string,
     settings: ExecSettings,
     defaults: DefaultsSettings,
-    userText: string | undefined,
-    currentModel: string | null | undefined,
-    shell: HostShell
+    userText?: string,
+    currentModel?: string | null,
+    shell: HostShell | NodeJS.Platform = hostShellFromPlatform(),
+    // Set for a device-targeted command: the judge must reason about the shell
+    // that will actually run it, on the machine it will actually run on.
+    shellLabel?: string
   ): Promise<{ verdict: 'safe' | 'unsafe' | 'unsure' | 'failed'; reason?: string }> {
     try {
       const runtime = this.deps.runtime();
@@ -210,7 +351,7 @@ export class ExecService implements ExecBridge {
       // and complete() then uses its own default, which is the best available
       // answer anyway.
       const model = resolveJudgeModel(settings, defaults, models, currentModel ?? null);
-      const reply = await runtime.complete(buildJudgePrompt(command, cwd, userText, shell), {
+      const reply = await runtime.complete(buildJudgePrompt(command, cwd, userText, shell, shellLabel), {
         model,
         // The judge sits between you and every command you run, so it feels the
         // effort setting more than any other role does — its own if it has been

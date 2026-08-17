@@ -8,7 +8,9 @@ import {
   resolveHostShell,
   wellKnownGitBashCandidates
 } from '../../src/server/exec/git-bash';
-import { hostShellAgentHint, hostShellFromPlatform, hostShellLabel } from '../../src/server/exec/host-shell';
+import { unixShell } from '../../src/server/exec/executor';
+import { hostShellAgentHint, hostShellFromPlatform } from '../../src/server/exec/host-shell';
+import { hostShellLabel } from '../../src/server/exec/policy';
 
 const BASH = 'C:\\Program Files\\Git\\bin\\bash.exe';
 const GIT = 'C:\\Program Files\\Git\\cmd\\git.exe';
@@ -115,7 +117,7 @@ describe('hostShellLabel / hint', () => {
     expect(hostShellLabel('cmd')).not.toContain('Git Bash');
     expect(hostShellLabel('git-bash')).toContain('Git Bash');
     expect(hostShellLabel('git-bash')).not.toContain('cmd.exe');
-    expect(hostShellLabel('zsh')).toContain('zsh');
+    expect(hostShellLabel('zsh')).toContain(unixShell().path.split('/').pop());
   });
 
   it('hints only on Windows shells (zsh is already in the tool description)', () => {

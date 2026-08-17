@@ -61,6 +61,18 @@ export interface NodeSpawn {
 }
 
 export interface StemHost {
+  /**
+   * What is hosting the server: the desktop app on somebody's own computer, or
+   * a headless `stem-server` (a VPS, a container, a home box).
+   *
+   * The one thing this is for is telling the assistant the truth about where it
+   * is. Its shell, its files and every unpinned MCP server run HERE, which on a
+   * server deployment is not the machine the person is typing on — and an
+   * assistant that assumes otherwise sends them looking for a `uvx` on the wrong
+   * computer. Everything else about the two hosts is a capability difference and
+   * belongs in one of the methods below, not in a branch on this.
+   */
+  kind(): 'desktop' | 'server';
   /** Root of every Stem-owned store. Electron's `app.getPath('userData')`. */
   stateRoot(): string;
   /** Container the alternate-profile dirs live beside. Electron's `app.getPath('appData')`. */
@@ -188,6 +200,7 @@ export function headlessHost(): StemHost {
   const appRoot = process.env.STEM_APP_ROOT || process.cwd();
 
   return {
+    kind: () => 'server',
     stateRoot: defaultStateRoot,
     appDataRoot: defaultAppDataRoot,
     appRoot: () => appRoot,

@@ -731,8 +731,8 @@ describe('scheduled-run model restore', () => {
     };
   };
 
-  async function scheduledRuntime(extraLines: object[] = []): Promise<{ runtime: PiRuntime; internal: Internal; requests: Array<Record<string, unknown>> }> {
-    const { runtime, sessions } = await tempRuntime();
+  async function scheduledRuntime(extraLines: object[] = []): Promise<{ runtime: PiRuntime; internal: Internal; requests: Array<Record<string, unknown>>; workspace: string }> {
+    const { runtime, sessions, workspace } = await tempRuntime();
     const session = join(sessions, 'sched.jsonl');
     await writeFile(session, [...sessionLines, ...extraLines].map((l) => JSON.stringify(l)).join('\n'));
     const internal = runtime as unknown as Internal;
@@ -753,7 +753,7 @@ describe('scheduled-run model restore', () => {
         return { success: true };
       }
     };
-    return { runtime, internal, requests };
+    return { runtime, internal, requests, workspace };
   }
 
   it('resolves the last explicitly chosen model/effort, ignoring assistant-message models', async () => {
@@ -807,6 +807,56 @@ describe('scheduled-run model restore', () => {
     const { runtime, requests } = await scheduledRuntime();
     await runtime.startTurn({ input: 'hello', threadId: 'sched-1', model: 'openai-codex/gpt-5.6-terra' });
     expect(requests.find((r) => r.type === 'set_model')).toMatchObject({ modelId: 'gpt-5.6-terra' });
+  });
+
+  // Chats that moved machines record the folder they ran in on the OLD one, and
+  // pi refuses to resume a session whose folder is gone — so after a
+  // `stem-server import` every carried-over chat listed fine and failed the
+  // moment anything opened it. Every scheduled run on the server died that way
+  // for days, with `failed` in the Tasks tab and not one line in the log.
+  it('points a chat from another machine at this workspace before resuming it', async () => {
+    const { runtime, internal, requests, workspace } = await scheduledRuntime();
+    const file = internal.sessionFiles.get('sched-1')!;
+    await writeFile(
+      file,
+      [
+        { type: 'session', id: 'sched-1', cwd: '/Users/someone/Library/Application Support/Stem/workspace' },
+        { type: 'message', id: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }
+      ]
+        .map((l) => JSON.stringify(l))
+        .join('\n')
+    );
+
+    await runtime.startTurn({
+      input: 'check the news',
+      threadId: 'sched-1',
+      scheduled: { at: '2026-07-24T06:00:00.000Z', taskId: 'task-1' }
+    });
+
+    const lines = (await readFile(file, 'utf8')).split('\n');
+    expect(JSON.parse(lines[0]!)).toMatchObject({ type: 'session', id: 'sched-1', cwd: workspace });
+    // Repaired, then resumed — and the conversation under the header untouched.
+    expect(JSON.parse(lines[1]!)).toMatchObject({ message: { role: 'user' } });
+    expect(requests.map((r) => r.type)).toContain('switch_session');
+  });
+
+  it('leaves a chat that already points here exactly as it is', async () => {
+    const { runtime, internal, workspace } = await scheduledRuntime();
+    const file = internal.sessionFiles.get('sched-1')!;
+    await writeFile(
+      file,
+      [
+        { type: 'session', id: 'sched-1', cwd: workspace },
+        { type: 'message', id: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }
+      ]
+        .map((l) => JSON.stringify(l))
+        .join('\n')
+    );
+    const before = await readFile(file, 'utf8');
+
+    await runtime.startTurn({ input: 'hello', threadId: 'sched-1' });
+
+    expect(await readFile(file, 'utf8')).toBe(before);
   });
 
   it('never lets a scheduled prompt write memory as the user', async () => {

@@ -13,13 +13,6 @@ export function isCmdShell(shell: HostShell): boolean {
   return shell === 'cmd';
 }
 
-/** How to describe the host shell to the judge — one shell, the one that will run. */
-export function hostShellLabel(shell: HostShell = hostShellFromPlatform()): string {
-  if (shell === 'cmd') return 'a Windows machine, under cmd.exe';
-  if (shell === 'git-bash') return 'a Windows machine, under Git Bash';
-  return "the user's machine, under zsh";
-}
-
 /**
  * Per-turn hint so the model writes commands for the one shell that will run.
  * Empty on zsh: the run_command tool description already covers that.

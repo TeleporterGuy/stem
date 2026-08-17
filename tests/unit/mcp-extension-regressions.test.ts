@@ -266,6 +266,52 @@ describe('non-blocking MCP connect', () => {
 });
 
 describe('assistant MCP administration', () => {
+  it('says which machine each server runs on, so a failure is diagnosed on the right one', async () => {
+    // The listing used to give the command and nothing else, and an assistant
+    // reading it had no way to know that a `spawn uvx ENOENT` was the SERVER
+    // missing uvx rather than the laptop in front of the user.
+    const root = await mkdtemp(join(tmpdir(), 'stem-mcp-list-'));
+    cleanup.push(root);
+    const configPath = join(root, 'mcp.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        servers: {
+          grafana: { command: 'uvx', args: ['mcp-grafana'], trusted: true, disabled: true },
+          notes: {
+            command: 'npx',
+            args: ['-y', 'notes-mcp'],
+            trusted: true,
+            disabled: true,
+            location: { deviceId: 'dev-1', label: "Vlado's MacBook" }
+          }
+        }
+      })
+    );
+    process.env.STEM_MCP_CONFIG = configPath;
+
+    type RegisteredTool = {
+      name?: string;
+      execute?: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }> }>;
+    };
+    const registered: RegisteredTool[] = [];
+    await stemMcpBridge({
+      registerTool: (tool: RegisteredTool) => registered.push(tool),
+      on: () => {},
+      getActiveTools: () => [] as string[],
+      setActiveTools: () => {}
+    });
+    const list = registered.find((tool) => tool.name === 'list_mcp_servers');
+    const text = String((await list!.execute!('list-1', {})).content[0]?.text);
+
+    expect(text).toContain('- grafana (stdio): uvx mcp-grafana — runs where Stem itself runs');
+    expect(text).toContain("- notes (stdio): npx -y notes-mcp — runs on the user's computer “Vlado's MacBook”");
+    // Switched off is the other reason a server "does not work" with no error.
+    expect(text).toContain('switched off in Settings');
+    // And the rule that makes the placement actionable travels with the list.
+    expect(text).toContain('must exist there');
+  });
+
   it('leaves config mutation to the main process after approval', async () => {
     const root = await mkdtemp(join(tmpdir(), 'stem-mcp-admin-'));
     cleanup.push(root);

@@ -1,7 +1,16 @@
 import type { ExecSettings, HostShell } from '../../shared/types';
-import { hostShellFromPlatform, hostShellLabel, isCmdShell } from './host-shell';
+import { unixShell } from './executor';
+import { hostShellFromPlatform, isCmdShell } from './host-shell';
 
-export { hostShellFromPlatform, hostShellLabel };
+export { hostShellFromPlatform };
+
+/** Local HostShell, or a device's Node platform (win32 → cmd, anything else → POSIX). */
+type ShellArg = HostShell | NodeJS.Platform;
+
+function toHostShell(shell: ShellArg = hostShellFromPlatform()): HostShell {
+  if (shell === 'cmd' || shell === 'git-bash' || shell === 'zsh') return shell;
+  return hostShellFromPlatform(shell);
+}
 
 // The run_command auto-approve policy, kept pure so it is unit-testable:
 //
@@ -210,23 +219,60 @@ export interface Classification {
   hasShellMeta: boolean;
 }
 
-/** Decide whether a command may auto-run (tier 1) or must be judged. */
+/**
+ * Decide whether a command may auto-run (tier 1) or must be judged.
+ *
+ * `includeBuiltins: false` is the remote-target posture: a command aimed at a
+ * paired computer starts from zero trust, so its tier 1 is exactly that
+ * device's own learned allowlist (passed as `settings.allowlist`) and none of
+ * the static lists — even `ls` is judged there until its owner says otherwise.
+ */
 export function classify(
   command: string,
   settings: Pick<ExecSettings, 'allowlist'>,
-  shell: HostShell = hostShellFromPlatform()
+  shell: ShellArg = hostShellFromPlatform(),
+  opts: { includeBuiltins?: boolean } = {}
 ): Classification {
-  const parsed = parseCommand(command, shell);
+  const host = toHostShell(shell);
+  const parsed = parseCommand(command, host);
   if (parsed.hasShellMeta || !parsed.segments.length) {
     return { tier: 'judge', prefixes: [], hasShellMeta: parsed.hasShellMeta };
   }
   const user = new Set(settings.allowlist);
-  const allowed = staticAllowlist(shell);
+  // includeBuiltins: false is the remote-target posture — that machine's tier 1
+  // is only its learned allowlist, never ls/dir/git status from this host.
+  const allowed = opts.includeBuiltins === false ? new Set<string>() : staticAllowlist(host);
   const uncovered = parsed.segments.filter(
     (seg) => !seg.candidates.some((c) => allowed.has(c) || user.has(c))
   );
   const prefixes = [...new Set(uncovered.map((seg) => seg.prefix).filter(Boolean))];
   return { tier: uncovered.length ? 'judge' : 'run', prefixes, hasShellMeta: false };
+}
+
+/**
+ * How to describe the host shell to the judge — one shell, the one that will run.
+ *
+ * "The machine Stem runs on" rather than "the user's machine": with the server
+ * on a VPS those are different computers, and the judge is being asked about the
+ * first one.
+ */
+export function hostShellLabel(shell: ShellArg = hostShellFromPlatform()): string {
+  const host = toHostShell(shell);
+  if (host === 'cmd') return 'a Windows machine, under cmd.exe';
+  if (host === 'git-bash') return 'a Windows machine, under Git Bash';
+  const name = unixShell().path.split('/').pop() || 'sh';
+  return `the machine Stem runs on, under ${name}`;
+}
+
+/**
+ * The same sentence for a command aimed at a paired computer. The shell is named
+ * from the target's platform rather than probed — the server cannot look at that
+ * machine's /bin — and macOS's default has been zsh since Catalina, which is
+ * also the shell the client's executor prefers.
+ */
+export function deviceShellLabel(platform: 'darwin' | 'linux' | 'win32', label: string): string {
+  if (platform === 'win32') return `the user's own Windows computer ${label}, under cmd.exe`;
+  return `the user's own computer ${label}, under ${platform === 'darwin' ? 'zsh' : 'its default shell'}`;
 }
 
 /**
@@ -242,12 +288,13 @@ export function buildJudgePrompt(
   command: string,
   cwd: string,
   userIntent?: string,
-  shell: HostShell = hostShellFromPlatform()
+  shell: ShellArg = hostShellFromPlatform(),
+  shellLabel?: string
 ): string {
   const intent = (userIntent ?? '').trim().slice(0, 800);
   return [
     `An AI assistant working on a request from its user wants to run a shell command on`,
-    `${hostShellLabel(shell)}. Classify whether the`,
+    `${shellLabel ?? hostShellLabel(shell)}. Classify whether the`,
     'command is safe to run without asking the user first. Reply with exactly one word',
     '— safe, unsafe, or unsure — optionally followed on the same line by a very short reason.',
     '',

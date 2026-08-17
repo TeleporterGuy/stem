@@ -2,10 +2,12 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { log } from '../server/log';
 import {
+  EXEC_REQUEST_FRAME,
   MCP_ASSIGNMENTS_FRAME,
   MCP_REQUEST_FRAME,
   type AuthUiEvent,
   type BackendEventEnvelope,
+  type DeviceExecRequest,
   type DeviceMcpRequest,
   type QuickChatSettings,
   type StartTurnInput,
@@ -208,6 +210,16 @@ export interface DeviceMcpHostBinding {
   onAssignmentsChanged(): void;
 }
 
+/**
+ * This machine's exec host: whatever runs the commands the server addresses to
+ * this device (run_command's `device` target). Same seam, same reasons as
+ * DeviceMcpHostBinding above — the reply goes back as an ordinary
+ * `execHost:result` RPC whenever it is ready, and nothing here waits.
+ */
+export interface DeviceExecHostBinding {
+  onRequest(request: DeviceExecRequest): void;
+}
+
 export interface ProxyDeps {
   /** Origin of the server, e.g. `http://127.0.0.1:52413`. */
   url: string;
@@ -258,6 +270,8 @@ export interface ProxyDeps {
   oauthCourier: OAuthCourier;
   /** Runs the MCP servers pinned to this device. See DeviceMcpHostBinding. */
   mcpHost: DeviceMcpHostBinding;
+  /** Runs the commands addressed to this device. See DeviceExecHostBinding. */
+  execHost: DeviceExecHostBinding;
   /** Quick Chat settings were persisted: apply the parts that are not settings. */
   applyQuickChatSettings(patch: Partial<QuickChatSettings>, next: QuickChatSettings): void;
 }
@@ -502,6 +516,15 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       deps.mcpHost.onAssignmentsChanged();
       return;
     }
+    // A command for THIS machine. Addressed and off the ring exactly as an MCP
+    // request is; a frame we cannot read is dropped in silence for the same
+    // reason — without a requestId there is nothing to answer, and the server's
+    // own timeout covers it.
+    if (name === EXEC_REQUEST_FRAME) {
+      const request = asExecRequest(data);
+      if (request) deps.execHost.onRequest(request);
+      return;
+    }
     if (name === 'snapshot') {
       const turns = data.liveTurns;
       // Absent (a server with nothing to say) leaves the client's own view alone;
@@ -527,6 +550,20 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
    * one ends in a process being spawned or a URL being opened on this machine,
    * so the shape is established before it is handed anywhere.
    */
+  function asExecRequest(data: unknown): DeviceExecRequest | null {
+    const frame = data as Partial<DeviceExecRequest> | null;
+    if (!frame || typeof frame.requestId !== 'string' || !frame.requestId) return null;
+    if (typeof frame.command !== 'string' || !frame.command) return null;
+    if (typeof frame.timeoutMs !== 'number' || !Number.isFinite(frame.timeoutMs)) return null;
+    return {
+      requestId: frame.requestId,
+      threadId: typeof frame.threadId === 'string' ? frame.threadId : '',
+      command: frame.command,
+      timeoutMs: frame.timeoutMs,
+      ...(typeof frame.cwd === 'string' && frame.cwd ? { cwd: frame.cwd } : {})
+    };
+  }
+
   function asMcpRequest(data: unknown): DeviceMcpRequest | null {
     const frame = data as Partial<DeviceMcpRequest> | null;
     if (!frame || typeof frame.requestId !== 'string' || !frame.requestId) return null;

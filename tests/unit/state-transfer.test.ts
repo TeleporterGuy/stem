@@ -434,6 +434,35 @@ describe('what the import tells you to go and fix', () => {
   });
 });
 
+describe('chats that came from another machine', () => {
+  // The bug this pins cost every scheduled run on the server, silently, for
+  // days: pi stores the folder a chat ran in and REFUSES to resume one whose
+  // folder is gone, so every chat that moved over was listable and unopenable.
+  // Nothing caught it because nothing had ever resumed an imported chat.
+  it('are pointed at this machine\'s workspace, so they can be opened at all', async () => {
+    const from = scratch();
+    useStateRoot(from);
+    populate(from);
+    const oldWorkspace = '/Users/someone/Library/Application Support/Stem/workspace';
+    writeFileSync(
+      join(from, 'pi-home', 'sessions', 'thread-1', 'turns.jsonl'),
+      `${JSON.stringify({ type: 'session', version: 3, id: 'thread-1', cwd: oldWorkspace })}\n` +
+        `${JSON.stringify({ type: 'message', message: { role: 'user' } })}\n`
+    );
+    const archive = join(scratch(), 'move.tar');
+    await exportState({ out: archive, passphrase: PASSPHRASE });
+
+    const to = scratch();
+    useStateRoot(to);
+    await importState({ archive, passphrase: PASSPHRASE });
+
+    const lines = readFileSync(join(to, 'pi-home', 'sessions', 'thread-1', 'turns.jsonl'), 'utf8').split('\n');
+    expect(JSON.parse(lines[0]!)).toMatchObject({ type: 'session', id: 'thread-1', cwd: join(to, 'workspace') });
+    // The header is corrected; the conversation under it is untouched.
+    expect(JSON.parse(lines[1]!)).toMatchObject({ type: 'message', message: { role: 'user' } });
+  });
+});
+
 /** One AES-256-GCM value under `keyHex`, in the on-disk format, for the test above. */
 function encryptedSample(keyHex: string): string {
   const iv = randomBytes(12);
