@@ -1,4 +1,5 @@
 import type { ExecSettings } from '../../shared/types';
+import { unixShell } from './executor';
 
 // The run_command auto-approve policy, kept pure so it is unit-testable:
 //
@@ -223,9 +224,17 @@ export function classify(
   return { tier: uncovered.length ? 'judge' : 'run', prefixes, hasShellMeta: false };
 }
 
-/** How to describe the host shell to the judge — one shell, the one that will run. */
+/**
+ * How to describe the host shell to the judge — one shell, the one that will run.
+ *
+ * "The machine Stem runs on" rather than "the user's machine": with the server
+ * on a VPS those are different computers, and the judge is being asked about the
+ * first one.
+ */
 export function hostShellLabel(platform: NodeJS.Platform = process.platform): string {
-  return platform === 'win32' ? 'a Windows machine, under cmd.exe' : "the user's machine, under zsh";
+  if (platform === 'win32') return 'a Windows machine, under cmd.exe';
+  const shell = unixShell().path.split('/').pop() || 'sh';
+  return `the machine Stem runs on, under ${shell}`;
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   parseJudgeVerdict,
   resolveJudgeModel
 } from '../../src/server/exec/policy';
+import { unixShell } from '../../src/server/exec/executor';
 import type { ModelSummary } from '../../src/shared/types';
 
 // The run_command auto-approve policy: quote-aware segment parsing, conservative
@@ -231,9 +232,10 @@ describe('buildJudgePrompt', () => {
     const win = buildJudgePrompt('del /q x', 'C:\\work', undefined, 'win32');
     expect(win).toContain('cmd.exe');
     expect(win).not.toContain('zsh');
-    const mac = buildJudgePrompt('rm -rf build', '/tmp/work', undefined, 'darwin');
-    expect(mac).toContain('zsh');
-    expect(mac).not.toContain('cmd.exe');
+    const posix = buildJudgePrompt('rm -rf build', '/tmp/work', undefined, 'darwin');
+    // The shell that will actually run it — zsh on a Mac, whatever a server has.
+    expect(posix).toContain(unixShell().path.split('/').pop());
+    expect(posix).not.toContain('cmd.exe');
   });
 
   it("embeds the user's request when available, and says so when not", () => {
