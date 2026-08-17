@@ -100,6 +100,16 @@ export function piMcpDeviceCatalogPath(): string {
 }
 
 /**
+ * Which paired computers said they run commands (server/exec-device/router.ts).
+ * Survives restarts for the same reason the MCP device catalog does: the
+ * assistant should be able to say "your Mac runs commands but is asleep" without
+ * waiting for that Mac to reconnect and say so again.
+ */
+export function execDeviceHostsPath(): string {
+  return process.env.STEM_EXEC_DEVICE_HOSTS ?? join(piHome(), 'exec-device-hosts.json');
+}
+
+/**
  * The safeStorage-wrapped AES key that encrypts MCP secrets at rest (see
  * pi/secrets.ts). The env override lets unit tests use a throwaway key file.
  */

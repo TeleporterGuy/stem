@@ -205,18 +205,26 @@ export interface Classification {
   hasShellMeta: boolean;
 }
 
-/** Decide whether a command may auto-run (tier 1) or must be judged. */
+/**
+ * Decide whether a command may auto-run (tier 1) or must be judged.
+ *
+ * `includeBuiltins: false` is the remote-target posture: a command aimed at a
+ * paired computer starts from zero trust, so its tier 1 is exactly that
+ * device's own learned allowlist (passed as `settings.allowlist`) and none of
+ * the static lists — even `ls` is judged there until its owner says otherwise.
+ */
 export function classify(
   command: string,
   settings: Pick<ExecSettings, 'allowlist'>,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  opts: { includeBuiltins?: boolean } = {}
 ): Classification {
   const parsed = parseCommand(command, platform);
   if (parsed.hasShellMeta || !parsed.segments.length) {
     return { tier: 'judge', prefixes: [], hasShellMeta: parsed.hasShellMeta };
   }
   const user = new Set(settings.allowlist);
-  const allowed = staticAllowlist(platform);
+  const allowed = opts.includeBuiltins === false ? new Set<string>() : staticAllowlist(platform);
   const uncovered = parsed.segments.filter(
     (seg) => !seg.candidates.some((c) => allowed.has(c) || user.has(c))
   );
@@ -238,6 +246,17 @@ export function hostShellLabel(platform: NodeJS.Platform = process.platform): st
 }
 
 /**
+ * The same sentence for a command aimed at a paired computer. The shell is named
+ * from the target's platform rather than probed — the server cannot look at that
+ * machine's /bin — and macOS's default has been zsh since Catalina, which is
+ * also the shell the client's executor prefers.
+ */
+export function deviceShellLabel(platform: 'darwin' | 'linux' | 'win32', label: string): string {
+  if (platform === 'win32') return `the user's own Windows computer ${label}, under cmd.exe`;
+  return `the user's own computer ${label}, under ${platform === 'darwin' ? 'zsh' : 'its default shell'}`;
+}
+
+/**
  * The one-shot classification prompt for the safety judge. Safety is judged
  * relative to the user's request when it is available — a download the user
  * asked for is expected; the same download out of nowhere is not.
@@ -250,12 +269,13 @@ export function buildJudgePrompt(
   command: string,
   cwd: string,
   userIntent?: string,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  shellLabel?: string
 ): string {
   const intent = (userIntent ?? '').trim().slice(0, 800);
   return [
     `An AI assistant working on a request from its user wants to run a shell command on`,
-    `${hostShellLabel(platform)}. Classify whether the`,
+    `${shellLabel ?? hostShellLabel(platform)}. Classify whether the`,
     'command is safe to run without asking the user first. Reply with exactly one word',
     '— safe, unsafe, or unsure — optionally followed on the same line by a very short reason.',
     '',

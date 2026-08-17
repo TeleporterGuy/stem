@@ -979,6 +979,73 @@ export type DeviceMcpResult =
   | { ok: true; tools?: DeviceMcpTool[]; content?: unknown; schema?: DeviceMcpToolSchema }
   | { ok: false; error: string };
 
+// ---- Commands run on a paired computer (run_command's `device` target) ----
+//
+// The same rails as the pinned-MCP types above — an addressed control frame out,
+// an ordinary RPC back — carrying one shell command instead of one tool call.
+// The POLICY (allowlist / judge / approval card) runs on the server before any
+// of this is sent; the machine at the far end holds the one decision the server
+// must never make for it: whether it accepts commands at all, a client-local
+// switch that is off until its owner turns it on there.
+
+/**
+ * The addressed control frame that carries one command to the device that will
+ * run it. Addressed like MCP_REQUEST_FRAME and for the same reasons: one
+ * device's streams only, never the replay ring.
+ */
+export const EXEC_REQUEST_FRAME = 'exec-request';
+
+/** One command, addressed to the device that will run it. */
+export interface DeviceExecRequest {
+  /** Unguessable and single-use — same defence as {@link DeviceMcpRequest.requestId}. */
+  requestId: string;
+  /** The chat the command belongs to; the device keys its scratch folder off it. */
+  threadId: string;
+  command: string;
+  /**
+   * Optional working directory ON THE TARGET machine. Absolute paths only —
+   * the default (absent) is the target's own per-chat scratch folder, and a
+   * relative path would resolve against a folder the server cannot see.
+   */
+  cwd?: string;
+  /** Already clamped by the server to the same [1s, 300s] the local path uses. */
+  timeoutMs: number;
+}
+
+/**
+ * What the device answers with — `execHost:result`. `text` carries the same
+ * exit-code/stdout/stderr block the local executor produces, built on the
+ * device, so the model reads one format wherever a command ran.
+ */
+export type DeviceExecResult = { ok: true; text: string } | { ok: false; error: string };
+
+/**
+ * A device's account of whether it runs commands — `execHost:announce`, sent on
+ * connect and whenever the switch is flipped. `platform` travels with it because
+ * the server's policy (tier-1 grammar, the judge's shell name) is decided
+ * against the platform of the machine that will run the command, and the device
+ * is the authority on what it is.
+ */
+export interface DeviceExecAnnouncement {
+  enabled: boolean;
+  platform: 'darwin' | 'linux' | 'win32';
+}
+
+/** One device's last exec announcement, as the server remembers it. */
+export interface DeviceExecHostEntry extends DeviceExecAnnouncement {
+  deviceId: string;
+  announcedAt: string;
+}
+
+/**
+ * The exec host's account of THIS machine — the answer to `execHost:localState`,
+ * a client-owned channel that never goes on the wire (same rule as
+ * McpHostLocalState below).
+ */
+export interface ExecHostLocalState {
+  enabled: boolean;
+}
+
 // ---- What the MCP host on THIS machine has to say about itself ----
 //
 // The types below never go on the wire. They are the answer to
@@ -1192,6 +1259,15 @@ export interface ExecApprovalRequest {
    * in the same lowercase-fragment shape. The underlying error goes to the log.
    */
   judgeReason?: string;
+  /**
+   * Set when the command targets a paired computer instead of the machine Stem
+   * runs on. The card must say so — approving a command is approving WHERE it
+   * runs as much as what runs — and "Always allow" learns into that device's own
+   * allowlist rather than the shared one.
+   */
+  deviceId?: string;
+  /** The device's label at the moment the card was raised, for the card text. */
+  deviceLabel?: string;
 }
 
 /** The user's answer to an exec approval card. */
@@ -1778,6 +1854,15 @@ export interface ExecSettings {
   /** User-approved command prefixes (e.g. "git push", "npm") that auto-run as tier 1. */
   allowlist: string[];
   /**
+   * Learned prefixes per TARGET device, for commands that run on a paired
+   * computer (`run_command`'s `device`). Kept apart from `allowlist` on purpose:
+   * trust in a prefix is granted per machine, and a remote target gets no static
+   * built-ins either — its tier 1 is exactly its own entries here, which start
+   * empty. Keyed by device id; entries for unpaired devices are inert (the
+   * device can no longer be targeted) and are cleaned up when edited.
+   */
+  deviceAllowlists: Record<string, string[]>;
+  /**
    * Days a chat's scratch folder survives without being touched before the sweep
    * removes it; null = never. Idle counts from the NEWER of the folder's newest
    * file and the chat's last message. See server/exec/scratch.ts.
@@ -2212,6 +2297,12 @@ export interface DeviceInfo {
    * desktop may host an MCP server (docs/mcp-device-pinning.md, ⑦).
    */
   kind: DeviceKind;
+  /**
+   * Whether this computer said it runs commands (`execHost:announce`). Absent
+   * for a device that never announced — an older build, or a phone. Surfaced so
+   * the Devices list can say which machines accept commands.
+   */
+  runsCommands?: boolean;
 }
 
 /**
@@ -2501,6 +2592,15 @@ export interface StemApi {
   refreshMcpHost(): Promise<McpHostLocalState>;
   /** Fired when a server hosted here settles, fails or is re-synced. */
   onMcpHostChanged(listener: (state: McpHostLocalState) => void): () => void;
+
+  // Whether THIS computer accepts commands from its Stem server (run_command's
+  // `device` target). Client-owned for the same reason the mcpHost family is,
+  // sharpened: the switch IS the consent, so the channel that flips it exists
+  // only on the machine consenting. The server just hears the announcement.
+  /** Whether this computer accepts commands. */
+  execHostState(): Promise<ExecHostLocalState>;
+  /** Flip the switch, persist it here, and tell the server. */
+  setExecHostEnabled(enabled: boolean): Promise<ExecHostLocalState>;
 
   getMemorySettings(): Promise<MemorySettings>;
   setMemoryEnabled(enabled: boolean): Promise<MemorySettings>;

@@ -1693,7 +1693,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       try {
         const bridge = this.execBridge;
         if (!bridge) return respond({ ok: false, error: 'Command execution is unavailable.' });
-        const req = JSON.parse(payload ?? '{}') as { command?: string; cwd?: string; timeout_ms?: number };
+        const req = JSON.parse(payload ?? '{}') as {
+          command?: string;
+          cwd?: string;
+          timeout_ms?: number;
+          device?: string;
+        };
         // Mirror can be null after a session switch if the turn did not re-apply a
         // model; fall back to pi's live state so the judge stays on a signed-in provider.
         let currentModel = this.currentModel;
@@ -1709,6 +1714,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           command: req.command ?? '',
           cwd: typeof req.cwd === 'string' && req.cwd.trim() ? req.cwd : undefined,
           timeoutMs: typeof req.timeout_ms === 'number' ? req.timeout_ms : undefined,
+          device: typeof req.device === 'string' && req.device.trim() ? req.device : undefined,
           threadId: turn?.threadId ?? null,
           isScheduled: turn?.isScheduled === true,
           userText: turn?.userText,

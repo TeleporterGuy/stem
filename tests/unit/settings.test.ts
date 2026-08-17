@@ -547,8 +547,20 @@ describe('exec settings', () => {
       judgeModel: null,
       judgeEffort: null,
       allowlist: [],
+      deviceAllowlists: {},
       scratchTtlDays: 30
     });
+  });
+
+  it('launders the per-device allowlists like the shared one, and drops empty or malformed buckets', async () => {
+    await updateExecSettings({
+      deviceAllowlists: {
+        'mac-1': ['  yt-dlp ', 'yt-dlp', '', 'x'.repeat(300)],
+        'gone-1': [],
+        'bad-1': 'not-a-list'
+      } as never
+    });
+    expect((await readSettings()).exec.deviceAllowlists).toEqual({ 'mac-1': ['yt-dlp'] });
   });
 
   it('keeps "Never" for scratch, and refuses a TTL that would sweep everything now', async () => {

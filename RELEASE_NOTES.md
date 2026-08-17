@@ -52,6 +52,13 @@ Maintainer notes:
   which machine is missing the program, instead of assuming everything runs on the computer in
   front of you. It can list your MCP servers with where each one runs; moving one between
   machines is still yours to do.
+- **Commands on your own computer.** With Stem on a server, ask from your phone and the
+  assistant can run a command on your Mac — "download this video on my Mac" now means your
+  Mac, not the server. Nothing changes until you allow it: each computer has its own **Run
+  commands on this computer** switch (Settings → Chat → Command execution, on that machine),
+  off until you turn it on there. Commands then face the same approvals as always, except
+  stricter — nothing is pre-approved on a computer, and an "Always allow" you grant applies
+  to that computer alone. Every approval card says which machine it is for.
 
 ### Fixed
 

@@ -4,6 +4,7 @@ import { forgetPresence, reportPresence } from '../push/presence';
 import { createPairingCode, pendingPairings } from '../transport/pairing';
 import { dropDeviceStreams } from '../startup/transport';
 import { deviceMcpRouter } from '../mcp-device/router';
+import { execDeviceRouter } from '../exec-device/router';
 import { log } from '../log';
 import type { DeviceInfo, DevicesSnapshot, PairingCodeInfo } from '../../shared/types';
 
@@ -52,6 +53,10 @@ export function registerDevicesIpc(): void {
     // are not capabilities it has. Leaving them there would put a promise in
     // every prompt that every call would then refuse.
     if (removed) await deviceMcpRouter().forget(id);
+    // Same reasoning for what it said about running commands: an unpaired
+    // machine is not a place commands can go, and its in-flight ones are
+    // answered now rather than left to time out against cut streams.
+    if (removed) await execDeviceRouter().forget(id);
     if (removed) log('devices', 'revoked a device', { id, streamsDropped: dropped });
     return snapshot();
   });
@@ -104,10 +109,32 @@ export function registerDevicesIpc(): void {
     'devices:createPairingCode',
     (_e, label: string): Promise<PairingCodeInfo> => createPairingCode(label)
   );
+  // The two channels a machine that runs commands speaks on. Device-scoped in
+  // the same narrow sense as the mcpHost channels beside them: the caller IS
+  // the device, the transport resolved that from the bearer token, and a device
+  // id in the arguments would let one paired machine claim another's answers.
+  registerServer('execHost:announce', (caller: CallerContext, report: unknown): Promise<void> => {
+    if (!caller) {
+      throw new Error('execHost:announce needs a paired device — it answers for the CALLER’s machine.');
+    }
+    return execDeviceRouter().announce(caller.deviceId, report);
+  });
+  // One held command's answer. An unknown id is not an error — it already timed
+  // out, was already answered, or never existed; the boolean is for the log.
+  registerServer('execHost:result', (caller: CallerContext, requestId: string, result: unknown): void => {
+    if (!caller) {
+      throw new Error('execHost:result needs a paired device — it answers for the CALLER’s machine.');
+    }
+    execDeviceRouter().settle(caller.deviceId, requestId, result);
+  });
 }
 
 async function snapshot(): Promise<DevicesSnapshot> {
-  const [devices, pending] = await Promise.all([readDevices(), pendingPairings()]);
+  const [devices, pending, execHosts] = await Promise.all([
+    readDevices(),
+    pendingPairings(),
+    execDeviceRouter().hosts()
+  ]);
   return {
     devices: devices.map(
       (d): DeviceInfo => ({
@@ -117,7 +144,11 @@ async function snapshot(): Promise<DevicesSnapshot> {
         lastSeenAt: d.lastSeenAt,
         // Resolved here rather than passed through raw: every consumer wants the
         // answer, not the absence, and the default belongs in one place.
-        kind: deviceKind(d)
+        kind: deviceKind(d),
+        // Only when it said yes: "announced enabled: false" and "never
+        // announced" are the same fact to the list — this machine does not run
+        // commands — and neither earns a tag.
+        ...(execHosts[d.id]?.enabled ? { runsCommands: true } : {})
       })
     ),
     pending: pending.map((p) => ({ label: p.label, expiresAt: p.expiresAt }))

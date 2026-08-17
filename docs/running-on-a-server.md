@@ -150,9 +150,13 @@ need installing at all. In order of least effort:
   four that is part of your deployment rather than its state — the one to use for
   anything the server should never be found without.
 
-The other way to get at a tool is not to install it here at all: a tool that only means
-something on your own computer — its files, its apps, its network — belongs in an MCP
-server pinned to that computer, which step 7 sets up.
+The other way to get at a tool is not to install it here at all: a job that only means
+something on your own computer — its files, its apps, its network — belongs on that
+computer. An MCP server pinned to it (step 7) covers tools; for shell commands, the
+assistant can target a paired computer directly once that computer allows it — the
+switch is **Run commands on this computer** in Settings → Chat → Command execution,
+on the machine itself, and [Settings](user/settings.md) describes the approvals that
+still apply.
 
 ## 4. Unpack your Stem into it
 

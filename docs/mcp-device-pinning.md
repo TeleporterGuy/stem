@@ -260,3 +260,26 @@ One concrete requirement follows: **the approval card must say so when the serve
 approved does not itself have a bounded surface.** Approving something like a shell MCP
 server is a one-time click that authorizes unbounded execution, and that has to be legible
 on the card rather than buried here.
+
+## Appendix: run_command on a device rides the same rails
+
+Commands gained their own device target after this shipped: `run_command`'s `device`
+parameter, carried by an `exec-request` control frame (`server/exec-device/router.ts`,
+`desktop/exec-host/`) with the same addressed delivery, the same single-use 128-bit
+correlation id, and the same "an open stream is availability" answer as the MCP path.
+Where its decisions differ from the ones above, they differ on purpose:
+
+- **⑤ inverts.** MCP calls skip per-call confirmation because a server's tool surface is
+  bounded at approval time; a command string is exactly the unbounded surface that
+  argument excludes. So the exec path keeps run_command's full tiered policy — judged and
+  carded per command, against the target's platform and the target device's own learned
+  allowlist, with the static built-ins deliberately not extended there (zero trust:
+  a fresh machine's tier 1 is empty).
+- **④ holds, as a switch instead of a fingerprint.** There is no spec to approve, so the
+  client-local consent is one bit: "Run commands on this computer", off by default,
+  stored beside `mcp-approvals.json` and flipped only by a client-owned channel. A
+  compromised server can put anything on the wire and starts nothing on a machine whose
+  owner never opted in — and the machine re-reads its own switch on every request.
+- **⑦ and ⑩ carry over unchanged**: desktops only, and unpairing fails in-flight
+  commands, forgets the device's announcement, and leaves its learned allowlist inert in
+  settings until edited.

@@ -105,6 +105,11 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   // where there is enough context to say what they may contain.
   'mcpHost:announce': [a.object],
   'mcpHost:result': [a.string, a.object],
+  // The exec host channels follow the mcpHost rule exactly: no device id, the
+  // caller is the device. The announcement and result are reshaped where they
+  // land (exec-device/router.ts asAnnouncement/asResult).
+  'execHost:announce': [a.object],
+  'execHost:result': [a.string, a.object],
   'instructions:resolveApproval': [a.id, a.boolean, a.oneOf(['main', 'quickChat']), a.string],
   'skills:resolveApproval': [a.id, a.boolean, a.nullish(a.object)],
   'skills:reset': [a.boolean, a.oneOf(['off', 'ask', 'auto'])],
