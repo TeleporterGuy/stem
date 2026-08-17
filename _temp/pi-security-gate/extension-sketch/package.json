@@ -1,6 +1,0 @@
-{
-  "name": "security-gate",
-  "private": true,
-  "type": "module",
-  "description": "Stem-style allowlist + LLM judge + approval for Pi bash tool calls"
-}
