@@ -23,10 +23,10 @@ playwright-report/
 # Local embedding model weights downloaded by scripts/embed-smoke.mjs
 .embed-smoke-cache/
 
-# ONNX weights copied next to the clone for machines that cannot reach Hugging Face.
-# The README stays; the binaries are too large for GitHub (see vendor/embed-models/README.md).
-vendor/embed-models/**
-!vendor/embed-models/README.md
+# Unpacked ONNX generated from the committed gzip packs (see vendor/embed-models/README.md).
+vendor/embed-models/**/*.onnx
+vendor/embed-models/**/*.onnx_data
+vendor/embed-models/**/*.tmp
 
 # External folders connected for in-place reading (separate repos)
 .external/

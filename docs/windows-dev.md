@@ -152,13 +152,12 @@ Or avoid pipes with `(...)` / property access when that is enough
 8. Connect a folder read-only, then ask Stem to `cat` / `type` a file inside it. Expect
    the read-only refusal, not the file.
 9. Check that `%APPDATA%\Stem\` appears and survives a restart.
-10. Memory / search: first launch downloads ~700 MB from Hugging Face into
-    `%APPDATA%\Stem\embed-models`. If that host is blocked, copy a cache from a
-    machine that already has one into `vendor/embed-models/` (see that folder's
-    README) or into `%APPDATA%\Stem\embed-models`, then restart — Stem will not
-    call the Hub when the weights are already on disk. Named-pipe errors in the
-    log (`embed-endpoint`) only affect MCP hybrid search; FTS-only fallback is
-    safe but weaker.
+10. Memory / search: the default embedder is shipped as gzip parts under
+    `vendor/embed-models/` and unpacked into `%APPDATA%\Stem\embed-models` on
+    first launch (no Hugging Face). The reranker still downloads from the Hub
+    when it can; if that host is blocked, ranking falls back to embeddings
+    alone. Named-pipe errors in the log (`embed-endpoint`) only affect MCP
+    hybrid search; FTS-only fallback is safe but weaker.
 11. Settings → Chat → Command execution → Windows shell should already be Git Bash
     when `bash.exe` was found. Ask Stem to run `ls`. Switch to Command Prompt and
     `dir` if you want the cmd parser.

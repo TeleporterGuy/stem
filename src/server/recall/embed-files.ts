@@ -1,5 +1,17 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  copyFileSync,
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  unlinkSync
+} from 'node:fs';
+import { dirname, join, relative } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createGunzip } from 'node:zlib';
 import type { LocalEmbedModelSpec } from './embed-catalog';
 
 // Helpers for finding ONNX weights on disk and deciding whether the worker
@@ -59,4 +71,96 @@ export function pathAppearsInMessage(message: string, filePath: string): boolean
   const forward = filePath.replaceAll('\\', '/');
   const back = filePath.replaceAll('/', '\\');
   return message.includes(forward) || message.includes(back);
+}
+
+/** Keep each git object under GitHub's 50 MB warning (hard cap is 100 MB). */
+export const PACK_PART_BYTES = 45 * 1024 * 1024;
+
+const GZ_PART = /\.gz\.(\d{2})$/;
+
+function walkFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, ent.name);
+    if (ent.isDirectory()) out.push(...walkFiles(p));
+    else if (ent.isFile()) out.push(p);
+  }
+  return out;
+}
+
+function packedOnnxGroups(bundledDir: string): Map<string, string[]> {
+  const groups = new Map<string, string[]>();
+  for (const abs of walkFiles(bundledDir)) {
+    const rel = relative(bundledDir, abs);
+    if (rel === 'README.md') continue;
+    const part = GZ_PART.exec(rel);
+    if (part) {
+      const base = rel.slice(0, -part[0].length); // strip .gz.00
+      const list = groups.get(base) ?? [];
+      list.push(abs);
+      groups.set(base, list);
+      continue;
+    }
+    if (rel.endsWith('.gz')) {
+      const base = rel.slice(0, -3);
+      const list = groups.get(base) ?? [];
+      list.push(abs);
+      groups.set(base, list);
+    }
+  }
+  for (const [, parts] of groups) {
+    parts.sort((a, b) => a.localeCompare(b));
+  }
+  return groups;
+}
+
+/**
+ * Copy vendor sidecars (tokenizer, config) and gunzip packed ONNX weights into
+ * the userData cache. No-op when the cache already has the unpacked file.
+ * Packed layout: `model_quantized.onnx.gz` or split `…gz.00`, `…gz.01`, …
+ */
+export async function unpackBundledEmbedModels(bundledDir: string, cacheDir: string): Promise<number> {
+  if (!existsSync(bundledDir)) return 0;
+  let unpacked = 0;
+
+  for (const abs of walkFiles(bundledDir)) {
+    const rel = relative(bundledDir, abs);
+    if (rel === 'README.md' || rel.endsWith('.gz') || GZ_PART.test(rel)) continue;
+    const dest = join(cacheDir, rel);
+    if (existsSync(dest)) continue;
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(abs, dest);
+    unpacked += 1;
+  }
+
+  for (const [relBase, parts] of packedOnnxGroups(bundledDir)) {
+    const dest = join(cacheDir, relBase);
+    if (existsSync(dest)) continue;
+    mkdirSync(dirname(dest), { recursive: true });
+    const tmp = `${dest}.tmp`;
+    try {
+      await pipeline(
+        Readable.from(
+          (async function* () {
+            for (const part of parts) {
+              for await (const chunk of createReadStream(part)) yield chunk;
+            }
+          })()
+        ),
+        createGunzip(),
+        createWriteStream(tmp)
+      );
+      renameSync(tmp, dest);
+      unpacked += 1;
+    } catch (err) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // leftover tmp is harmless; next launch retries
+      }
+      throw err;
+    }
+  }
+  return unpacked;
 }

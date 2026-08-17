@@ -1,8 +1,15 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { hubAccessForLoad, pathAppearsInMessage, weightsFile, weightsPresent } from '../../src/server/recall/embed-files';
+import {
+  hubAccessForLoad,
+  pathAppearsInMessage,
+  unpackBundledEmbedModels,
+  weightsFile,
+  weightsPresent
+} from '../../src/server/recall/embed-files';
 
 const REPO = 'Xenova/multilingual-e5-small';
 
@@ -53,5 +60,31 @@ describe('embed local files', () => {
     expect(pathAppearsInMessage(unixish, win)).toBe(true);
     expect(pathAppearsInMessage('Protobuf parsing failed: ' + win, win)).toBe(true);
     expect(pathAppearsInMessage('other model', win)).toBe(false);
+  });
+
+  it('unpacks a gzipped ONNX and copies tokenizer sidecars into the cache', async () => {
+    const bundled = mkdtempSync(join(tmpdir(), 'stem-embed-pack-'));
+    const cache = mkdtempSync(join(tmpdir(), 'stem-embed-out-'));
+    const onnxDir = join(bundled, REPO, 'onnx');
+    mkdirSync(onnxDir, { recursive: true });
+    writeFileSync(join(bundled, REPO, 'config.json'), '{"ok":true}');
+    const raw = Buffer.from('onnx-bytes');
+    writeFileSync(join(onnxDir, 'model_quantized.onnx.gz'), gzipSync(raw));
+    expect(await unpackBundledEmbedModels(bundled, cache)).toBe(2);
+    expect(readFileSync(join(cache, REPO, 'config.json'), 'utf8')).toBe('{"ok":true}');
+    expect(readFileSync(join(cache, REPO, 'onnx', 'model_quantized.onnx'))).toEqual(raw);
+    expect(await unpackBundledEmbedModels(bundled, cache)).toBe(0);
+  });
+
+  it('reassembles split gzip parts under GitHub\'s 50 MB warning size', async () => {
+    const bundled = mkdtempSync(join(tmpdir(), 'stem-embed-parts-'));
+    const cache = mkdtempSync(join(tmpdir(), 'stem-embed-out-'));
+    const onnxDir = join(bundled, REPO, 'onnx');
+    mkdirSync(onnxDir, { recursive: true });
+    const gz = gzipSync(Buffer.from('split-onnx'));
+    writeFileSync(join(onnxDir, 'model_quantized.onnx.gz.00'), gz.subarray(0, 4));
+    writeFileSync(join(onnxDir, 'model_quantized.onnx.gz.01'), gz.subarray(4));
+    expect(await unpackBundledEmbedModels(bundled, cache)).toBe(1);
+    expect(readFileSync(join(cache, REPO, 'onnx', 'model_quantized.onnx')).toString()).toBe('split-onnx');
   });
 });

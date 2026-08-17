@@ -8,6 +8,7 @@ import { getEmbeddingsClient, setRetrievalClients } from '../recall/retrieval';
 import { startEmbedEndpoint } from '../recall/embed-endpoint';
 import { createHttpEmbeddingsClient, type EmbeddingsClient } from '../recall/embeddings';
 import { createHttpRerankClient } from '../recall/rerank';
+import { unpackBundledEmbedModels } from '../recall/embed-files';
 import { EMBED_CATALOG, localModelCacheKey } from '../recall/embed-catalog';
 import { createEmbedWorkerManager, type EmbedWorkerManager } from '../recall/embed-manager';
 import { createEmbeddingsRouter, createLocalEmbeddingsClient } from '../recall/embed-local';
@@ -232,14 +233,20 @@ export function initRetrieval(deps: {
   // enough facts to matter. The delay only yields the window/backend startup
   // burst — keep it short, or the Manage panel shows a misleading idle state
   // ("not downloaded yet") on every restart until the kick lands. Skipped under
-  // E2E: hermetic runs must not hit the network.
+  // E2E: hermetic runs must not hit the network. Unpack repo-shipped gzip packs
+  // first so a machine that cannot reach Hugging Face still has local weights.
   if (!deps.e2e) {
+    const unpacked = unpackBundledEmbedModels(bundledEmbedModelsDir(), embedModelsDir()).catch((err) => {
+      console.warn(`[embed-models] unpack failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
     setTimeout(() => {
-      void getEmbedSettings().then((e) => {
-        if (e.mode === 'local') embedManager.ensure(EMBED_CATALOG[e.localModel]);
-      });
-      void getRerankSettings().then((r) => {
-        if (r.mode === 'local') embedManager.ensureRerank(RERANK_CATALOG[r.localModel]);
+      void unpacked.then(() => {
+        void getEmbedSettings().then((e) => {
+          if (e.mode === 'local') embedManager.ensure(EMBED_CATALOG[e.localModel]);
+        });
+        void getRerankSettings().then((r) => {
+          if (r.mode === 'local') embedManager.ensureRerank(RERANK_CATALOG[r.localModel]);
+        });
       });
     }, 1_500);
   }
