@@ -21,6 +21,12 @@ Maintainer notes:
   assistant. This replaces keyword matching that padded chats with unrelated, occasionally
   sensitive, memories. Expect a few well-chosen facts per chat and often none at all; the model
   can be switched off in Manage → Memory.
+- **Skills say which computer they need.** A procedure that only works on one machine — a
+  program only your Mac has, a site that turns a server away — now gets written down that way,
+  with the reason and the way in, instead of as steps that quietly assume whichever computer
+  Stem happened to be on that day. This matters after moving Stem to a server: your skills come
+  across intact and are then followed somewhere else entirely. Skills already saved are
+  unchanged; this applies to ones written from now on.
 
 ### Added
 
@@ -59,6 +65,10 @@ Maintainer notes:
   off until you turn it on there. Commands then face the same approvals as always, except
   stricter — nothing is pre-approved on a computer, and an "Always allow" you grant applies
   to that computer alone. Every approval card says which machine it is for.
+
+- **Delete a skill from the app.** Tools → Skills has a delete button on every row, with a
+  confirmation. Until now the switch could only silence a skill: the file stayed, and with Stem
+  on a server it sat in a folder on the server that nobody could reach.
 
 ### Fixed
 

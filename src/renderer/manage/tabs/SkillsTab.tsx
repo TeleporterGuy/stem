@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Wand2 } from 'lucide-react';
+import { Trash2, Wand2 } from 'lucide-react';
 import type {
   DefaultsSettings,
   ModelSummary,
@@ -27,6 +27,11 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
   // null => skills work follows the model you chat with (see Settings → Models).
   const [skillsModel, setSkillsModel] = useState<string | null>(null);
   const [mode, setMode] = useState<SkillsMode>('ask');
+  // The slug whose delete is waiting to be confirmed, and the last delete that
+  // failed. Deleting is the one action here that cannot be taken back — the
+  // switch beside it is the reversible one — so it asks first, in the row.
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   // What "Same as main" resolves to — the model you chat with.
   const [defaults, setDefaults] = useState<DefaultsSettings>({
     model: null,
@@ -64,6 +69,19 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
 
   async function toggle(slug: string, enabled: boolean) {
     setSkills(await window.stem.setSkillEnabled(slug, enabled));
+  }
+
+  async function remove(slug: string) {
+    setRemoveError(null);
+    try {
+      setSkills(await window.stem.removeSkill(slug));
+    } catch (error) {
+      // The skills folder is on the server, so this can fail for reasons nobody
+      // in front of the app can see — say so rather than leaving the row sitting
+      // there looking ignored.
+      setRemoveError(error instanceof Error ? error.message : 'Could not delete that skill.');
+    }
+    setConfirming(null);
   }
 
   function tidy() {
@@ -145,7 +163,31 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
                   </span>
                 </strong>
                 <em>{s.description}</em>
+                {confirming === s.slug && (
+                  <span className="memory-reset-confirm">
+                    <span className="muted">
+                      Delete this skill for good? Switching it off instead keeps it.
+                    </span>
+                    <button className="link-btn danger" onClick={() => remove(s.slug)}>
+                      Delete
+                    </button>
+                    <button className="link-btn" onClick={() => setConfirming(null)}>
+                      Cancel
+                    </button>
+                  </span>
+                )}
               </span>
+              <button
+                className="icon-action sm"
+                onClick={() => {
+                  setRemoveError(null);
+                  setConfirming(confirming === s.slug ? null : s.slug);
+                }}
+                title="Delete skill"
+                aria-label={`Delete ${s.name}`}
+              >
+                <Trash2 size={14} />
+              </button>
               <button
                 className={`switch${s.enabled ? ' on' : ''}`}
                 role="switch"
@@ -157,6 +199,7 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
           ))}
         </div>
       )}
+      {removeError && <p className="error">{removeError}</p>}
 
       <div className="grp-head grp-head-row">
         Saving skills

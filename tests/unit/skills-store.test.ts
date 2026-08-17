@@ -150,6 +150,16 @@ describe('removeSkill', () => {
     expect(readUsage().skills['brew-coffee']).toBeUndefined();
   });
 
+  it('deletes a hand-written skill when the caller is not the model', () => {
+    writeUserSkill('brew-coffee');
+    // What the Skills tab's delete button relies on. The guard above is the
+    // MODEL's — a person deleting their own file is the whole point of the
+    // button, and on a server install this panel is their only way to that
+    // folder. Adding `requireAgentAuthored` to the IPC handler would break it.
+    expect(removeSkill('brew-coffee')).toMatchObject({ ok: true, slug: 'brew-coffee' });
+    expect(existsSync(join(skillsDir, 'brew-coffee'))).toBe(false);
+  });
+
   it('republishes the ignore file so a freed slug stops being hidden', () => {
     saveSkill(draft(), { origin: 'assistant' });
     writeFileSync(join(skillsDir, 'brew-coffee', '.disabled'), 'x', 'utf8');

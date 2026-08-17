@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setHost } from '../../src/server/host';
-import { stemAssistantInstructions } from '../../src/server/workspace/bootstrap';
+import { stemAssistantInstructions, whereSkillsRun } from '../../src/server/workspace/bootstrap';
 
 // The system prompt has to tell the assistant which computer it is on, because
 // it has no other way of finding out — and it was telling everybody the same
@@ -47,6 +47,19 @@ describe('stemAssistantInstructions', () => {
     const prompt = stemAssistantInstructions();
     expect(prompt).toContain('spawn uvx ENOENT');
     expect(prompt).toContain('Move to');
+  });
+
+  // The skill author has no system prompt of its own — it sees a serialized trace
+  // and nothing else — so the same fact has to travel to it separately. A library
+  // written on a Mac and then moved to a server is the case this exists for.
+  it('tells the skill author which machine the turn ran on, in both worlds', () => {
+    asHost('desktop');
+    expect(whereSkillsRun()).toMatch(/on the user's own computer/);
+    asHost('server');
+    const server = whereSkillsRun();
+    expect(server).toMatch(/NOT on the computer they are typing on/);
+    // And the way in that exists when the procedure needs their own machine.
+    expect(server).toContain('`device`');
   });
 
   it('tells the server assistant the ladder for a missing program', () => {

@@ -2464,6 +2464,13 @@ export interface StemApi {
   listSkills(): Promise<SkillSummary[]>;
   setSkillEnabled(slug: string, enabled: boolean): Promise<SkillSummary[]>;
   /**
+   * Delete one skill's folder for good. Rejects if it isn't there. Unlike the
+   * model's own retire path this covers skills the user wrote by hand — on a
+   * server install the folder lives on the server, so nobody can reach it with a
+   * file manager.
+   */
+  removeSkill(slug: string): Promise<SkillSummary[]>;
+  /**
    * `/learn [focus]` — save a skill from the turn that just finished on this
    * thread. Bypasses the automatic gate (the user asked), but still respects the
    * mode: on `ask` the approval card appears as usual.

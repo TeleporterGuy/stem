@@ -15,6 +15,7 @@ import { clearScratch, listScratchUsage, UNFILED_KEY } from '../exec/scratch';
 import { recallStore } from '../recall/store';
 import { skillsRunOf, updateSkillsSettings } from '../workspace/settings';
 import { resetSkills, skillsResetStatus } from '../skills/reset';
+import { removeSkill } from '../skills/store';
 import { learnFromLastTurn } from '../startup/skills';
 import { curateSkills } from '../skills/curate';
 import { applyAutomaticTransitions } from '../skills/lifecycle';
@@ -43,6 +44,18 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     // without this the switch stayed cosmetic until the next backend restart.
     await deps.runtime().requestSkillReload();
     return skills;
+  });
+  // Deleting one skill, as opposed to the all-or-nothing `skills:reset`. There is
+  // deliberately no `requireAgentAuthored` here: that guard belongs to the model's
+  // own tool (it may retire what it wrote, never the user's files), and applying it
+  // to the person clicking the button gets it exactly backwards. On a server
+  // install the skills folder is not on their machine, so this panel is the only
+  // way they have to remove anything at all.
+  registerServer('skills:remove', async (_e, slug: string) => {
+    const res = removeSkill(slug);
+    if (!res.ok) throw new Error(res.error);
+    await deps.runtime().requestSkillReload();
+    return listSkills();
   });
   registerServer(
     'skills:resolveApproval',

@@ -3,6 +3,7 @@ import type { LlmClient } from '../recall/llm';
 import type { SkillsMode } from '../../shared/types';
 import { authorSkill, type AuthorCandidate, type AuthorOutcome } from './author';
 import { listSkillRecords, readSkillRecord } from './store';
+import { whereSkillsRun } from '../workspace/bootstrap';
 
 // The end-of-turn pass: after a turn that did real work, decide whether it left
 // behind a procedure worth keeping.
@@ -138,7 +139,8 @@ export async function authorForTurn(
     trace: turn.trace,
     userText: turn.userText,
     assistantText: turn.assistantText,
-    focus: opts.focus
+    focus: opts.focus,
+    machine: whereSkillsRun()
   };
   if (opts.existing) return authorSkill(llm, { ...evidence, existing: opts.existing });
 

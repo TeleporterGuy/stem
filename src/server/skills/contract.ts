@@ -199,6 +199,8 @@ One or two lines naming the situation, and the situations that look similar but 
 ## Steps
 Numbered, imperative, concrete. Name the exact tool and the exact arguments that worked — real URLs, real flags, real file paths. Include the dead ends worth avoiding and say why they failed. Do not narrate what happened in a conversation; write what to do next time.
 
+If the procedure only works on one machine, say which and why, in its own line before the steps. A skill outlives the machine it was written on: the user may move Stem to a server, and steps that quietly assumed their own computer — a program only it has, an address on their home network, a site that treats a home connection differently from a datacenter — then fail with nothing to explain them. Name the way in that worked (\`run_command\` with its \`device\` parameter, an MCP server pinned to that computer), not just the machine's nickname. A procedure that runs anywhere needs no such line: this is for the ones that do not.
+
 ## Verification
 How to tell it worked — the specific output, file, or state to check for. Not "confirm success".
 

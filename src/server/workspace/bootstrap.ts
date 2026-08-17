@@ -153,6 +153,24 @@ A program the server lacks is often still one command away, so try these before 
 }
 
 /**
+ * The same fact in one paragraph, for whatever is writing a skill down.
+ *
+ * A skill outlives the machine it was written on: the library travels with
+ * `stem-server export` and is followed, unchanged, wherever it lands. The author
+ * runs on a serialized trace with no system prompt of its own, so without this it
+ * writes every procedure as though there had only ever been one machine — and the
+ * step that worked on a Mac ("yt-dlp <url>") is then followed on a server that
+ * cannot reach the same sites, the same network, or the same files.
+ */
+export function whereSkillsRun(): string {
+  const os = osName();
+  if (host().kind() === 'desktop') {
+    return `Stem is running on the user's own computer (${os}) — every command in this turn ran there, as that user, with their files and their network.`;
+  }
+  return `Stem is running on a server the user owns (${os}), NOT on the computer they are typing on. Every command in this turn ran on that server: it has what a server has installed, it cannot reach their home network or their own files, and some sites treat it differently than they treat a home connection. Anything that has to happen on their own computer goes through \`run_command\`'s \`device\` parameter or an MCP server pinned to that computer.`;
+}
+
+/**
  * The system prompt, built at spawn: the static instructions with the deployment
  * section spliced in before the output-format rules.
  */

@@ -71,6 +71,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'backend:interruptTurn': [a.string],
   'backend:createThread': [a.optional(a.nullish(a.string))],
   'skills:setEnabled': [a.string, a.boolean],
+  'skills:remove': [a.string],
   'files:add': [a.stringArray, a.optional(a.nullish(a.string))],
   'files:remove': [a.string],
   'files:mkdir': [a.string],
