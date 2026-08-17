@@ -48,4 +48,18 @@ describe('stemAssistantInstructions', () => {
     expect(prompt).toContain('spawn uvx ENOENT');
     expect(prompt).toContain('Move to');
   });
+
+  it('tells the server assistant the ladder for a missing program', () => {
+    asHost('server');
+    const prompt = stemAssistantInstructions();
+    // Run-on-demand first, then a persistent install, then apt with its caveat.
+    expect(prompt).toContain('uvx <tool>');
+    expect(prompt).toContain('npx -y <package>');
+    expect(prompt).toContain('uv tool install');
+    expect(prompt).toMatch(/apt install goes with it/);
+    expect(prompt).toContain('Dockerfile.local');
+    // None of that applies to a desktop install, where PATH is the user's own.
+    asHost('desktop');
+    expect(stemAssistantInstructions()).not.toContain('uv tool install');
+  });
 });

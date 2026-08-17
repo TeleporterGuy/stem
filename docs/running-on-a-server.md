@@ -122,18 +122,33 @@ MCP server started by a command — so the image carries what they reach for:
 What is deliberately missing: browsers and Playwright (~400 MB for something Stem does
 not require), an SSH client, and compilers.
 
-To add your own tool, put it in a file next to `docker-compose.yml`:
+That short list goes further than it looks, because most of what is "missing" does not
+need installing at all. In order of least effort:
 
-```dockerfile
-# Dockerfile.local
-FROM stem-server:local
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
-  && rm -rf /var/lib/apt/lists/*
-```
+- **Anything on PyPI or npm already runs.** `uvx yt-dlp <url>` or `npx -y <package>`
+  fetches the tool and runs it in one step; the download lands in the cache volume, so
+  it is only slow the first time and survives upgrades. The assistant is told to try
+  this before declaring a program missing, so "download this video" just works.
+- **A tool worth keeping goes on the PATH.** `uv tool install <tool>` installs into a
+  bin directory inside the same volume, so it outlives upgrades too. A static binary
+  dropped into it works the same way — ffmpeg publishes static builds, and
+  `/var/lib/stem/cache/bin/ffmpeg` is a real ffmpeg that no rebuild removes.
+- **`apt-get install` works, but is temporary.** The container runs as root, so the
+  assistant can install a system package when you approve the command — and the next
+  upgrade replaces the container and takes the install with it. Fine for trying
+  something out; the assistant is told to warn you it is temporary.
+- **What earns its place goes in a file**, next to `docker-compose.yml`:
 
-then point the `stem` service's `build.dockerfile` at it, or install into the running
-container while you try something out (`docker compose exec stem apt-get …`) and put it
-in the file once it earns its place — an `exec` install is gone at the next upgrade.
+  ```dockerfile
+  # Dockerfile.local
+  FROM stem-server:local
+  RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+  ```
+
+  then point the `stem` service's `build.dockerfile` at it. This is the only one of the
+  four that is part of your deployment rather than its state — the one to use for
+  anything the server should never be found without.
 
 The other way to get at a tool is not to install it here at all: a tool that only means
 something on your own computer — its files, its apps, its network — belongs in an MCP
@@ -278,9 +293,11 @@ docker compose build
 docker compose up -d
 ```
 
-Nothing touches the state root, the model cache, what `uvx`/`npx` downloaded, or Caddy's
-certificates: they are a bind mount and named volumes, and rebuilding an image does not
-go near them. Take the backup
+Nothing touches the state root, the model cache, what `uvx`/`npx` downloaded, tools
+installed with `uv tool install`, or Caddy's certificates: they are a bind mount and
+named volumes, and rebuilding an image does not go near them. What *is* lost is anything
+installed with `apt-get` into the running container — that lived in the container's own
+filesystem, which is exactly what an upgrade replaces. Take the backup
 anyway — it costs a minute and it is the only thing that makes going back possible.
 
 To go back, check out the previous commit and run the same two commands.
@@ -323,5 +340,6 @@ docker compose up -d
 ```
 
 **You want to start over.** `docker compose down -v` removes the containers, the socket
-volume, the model cache, the `uvx`/`npx` download cache and Caddy's certificates — but not the state root, which is a
-bind mount on the host and is only ever removed by you.
+volume, the model cache, the `uvx`/`npx` download cache with any tools installed into it,
+and Caddy's certificates — but not the state root, which is a bind mount on the host and
+is only ever removed by you.

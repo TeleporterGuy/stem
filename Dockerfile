@@ -151,20 +151,36 @@ COPY package.json RELEASE_NOTES.md ./
 # default that both the headless key wrapper and `stem-server import` look for,
 # and setting it would only add a way for the two to be told different things.
 #
-# The three cache variables move what `uvx`/`npx` download — the package, and for
+# The cache variables move what `uvx`/`npx` download — the package, and for
 # uv a whole managed CPython (~30 MB) — off HOME and under one directory the
 # compose file keeps in a volume. Otherwise every `docker compose up -d` after an
 # upgrade starts a fresh container with an empty cache, and the first call to
 # every stdio MCP server re-downloads its world before it answers anything. Not
 # in the state root: it is a cache, and backups of the state root are meant to
 # stay small.
+#
+# cache/bin is the one part of that volume that is more than a cache: it is a
+# writable bin directory that OUTLIVES the container. `uv tool install <tool>`
+# puts its entry points there (UV_TOOL_BIN_DIR), and a static binary dropped in
+# by hand — ffmpeg has official static builds — is picked up the same way. This
+# is what makes "the assistant installed a tool" survive an upgrade, which an
+# `apt-get install` into the container's own filesystem never does. Still
+# disposable in the volume's sense: delete the volume and one `uv tool install`
+# puts a tool back.
 ENV STEM_STATE_DIR=/var/lib/stem/state \
     STEM_EMBED_MODELS_DIR=/var/lib/stem/models \
     STEM_SERVER_SOCKET=/run/stem/stem.sock \
     UV_CACHE_DIR=/var/lib/stem/cache/uv \
     UV_PYTHON_INSTALL_DIR=/var/lib/stem/cache/uv-python \
+    UV_TOOL_DIR=/var/lib/stem/cache/uv-tools \
+    UV_TOOL_BIN_DIR=/var/lib/stem/cache/bin \
     npm_config_cache=/var/lib/stem/cache/npm
-RUN mkdir -p /var/lib/stem/state /var/lib/stem/models /var/lib/stem/cache /run/stem
+# Its own ENV line so ${PATH} is the base image's, already resolved. This is the
+# process-env PATH, which is what MCP stdio spawns inherit directly; run_command
+# goes through a zsh login shell, which keeps an inherited PATH (Debian's zsh
+# startup files do not reset it — its /etc/profile, which would, is bash's).
+ENV PATH=/var/lib/stem/cache/bin:${PATH}
+RUN mkdir -p /var/lib/stem/state /var/lib/stem/models /var/lib/stem/cache/bin /run/stem
 
 # Root, and said out loud. The state root is a bind mount from the host, so the
 # container's uid is the uid that owns the operator's files: running as a

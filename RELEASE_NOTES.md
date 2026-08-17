@@ -43,8 +43,11 @@ Maintainer notes:
   with nothing on it: no `uvx` or `npx` to start an MCP server with, no `git`, no `rg`,
   not even `curl` — so commands the assistant considers routine failed on sight. The
   image now carries those, keeps what they download between upgrades, and reads your
-  scheduled tasks in your own timezone (set `TZ` in `.env`). Adding a tool of your own is
-  a few lines; [Running on a server](docs/running-on-a-server.md) shows where.
+  scheduled tasks in your own timezone (set `TZ` in `.env`). A program the image lacks is
+  usually still no obstacle: the assistant knows to run anything from PyPI or npm on
+  demand (`uvx yt-dlp` and the like), and a tool it installs for keeps lands in a folder
+  that survives upgrades. Adding a system package of your own is a few lines;
+  [Running on a server](docs/running-on-a-server.md) shows the whole ladder.
 - **The assistant knows which computer it is on.** Ask it why a tool is failing and it now says
   which machine is missing the program, instead of assuming everything runs on the computer in
   front of you. It can list your MCP servers with where each one runs; moving one between

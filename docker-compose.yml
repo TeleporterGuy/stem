@@ -70,8 +70,11 @@ services:
       # What `uvx` and `npx` download in order to run a tool: the packages behind
       # your stdio MCP servers, and uv's own CPython. Kept in a volume so an
       # upgrade — which replaces the container — does not make every MCP server
-      # re-download its world on the first call after it. Disposable by
-      # definition: delete it and the next call fetches everything again.
+      # re-download its world on the first call after it. Its bin/ is on the
+      # PATH, so a tool installed for keeps (`uv tool install`, a static binary)
+      # also survives upgrades — unlike an `apt-get install` into the container.
+      # Disposable all the same: delete the volume and the next call fetches
+      # everything again, and an installed tool is one `uv tool install` away.
       - stem-cache:/var/lib/stem/cache
       # The socket lives here, and caddy mounts the same volume.
       - stem-socket:/run/stem
