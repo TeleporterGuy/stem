@@ -34,6 +34,11 @@ services:
       # Node's own heap ceiling. Recall's embedding worker is a separate process;
       # this is the main one, which holds the chat store and the SSE ring.
       NODE_OPTIONS: ${STEM_NODE_OPTIONS:---max-old-space-size=1024}
+      # The clock the assistant and your scheduled tasks reason in. A container
+      # is UTC unless told otherwise, and a task set for "every weekday at 9"
+      # would run at 9 UTC — the wrong hour for most of the world, silently. Set
+      # TZ in .env to your own zone (e.g. Europe/Bratislava).
+      TZ: ${TZ:-UTC}
       # Push notifications to the iOS app. Empty on a deployment that has no
       # phone, which switches the feature off entirely (src/server/push/apns.ts)
       # — passing them through costs nothing and keeps the .env the one place
@@ -62,6 +67,12 @@ services:
       # Not in the state root either (it would default there), so a backup of the
       # bind mount above stays small — the same call export/import already made.
       - stem-models:/var/lib/stem/models
+      # What `uvx` and `npx` download in order to run a tool: the packages behind
+      # your stdio MCP servers, and uv's own CPython. Kept in a volume so an
+      # upgrade — which replaces the container — does not make every MCP server
+      # re-download its world on the first call after it. Disposable by
+      # definition: delete it and the next call fetches everything again.
+      - stem-cache:/var/lib/stem/cache
       # The socket lives here, and caddy mounts the same volume.
       - stem-socket:/run/stem
     secrets:
@@ -104,6 +115,7 @@ secrets:
 
 volumes:
   stem-models:
+  stem-cache:
   stem-socket:
   caddy-data:
   caddy-config:

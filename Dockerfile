@@ -27,6 +27,10 @@
 # saving would be ~50 MB against a base that is already carrying model runtimes.
 
 ARG NODE_IMAGE=node:24-bookworm-slim
+# uv/uvx, the way half the MCP world is launched — see the runtime stage. Pinned
+# and overridable (`docker compose build --build-arg UV_IMAGE=…`); the binaries
+# are static musl builds, so the tag's own base does not matter here.
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.5
 
 # ---- stage 1: the bundle -----------------------------------------------------
 #
@@ -81,16 +85,48 @@ RUN npm ci --omit=dev --no-audit --no-fund --ignore-scripts \
   && npx --yes patch-package@8.0.1
 
 # ---- stage 3: what actually ships --------------------------------------------
+FROM ${UV_IMAGE} AS uv
+
 FROM ${NODE_IMAGE} AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
-# tar and ca-certificates: the first is not used by `stem-server export` (it
-# writes its own archives) but is what an operator reaches for to look inside
-# one, and a container you cannot inspect from is a container you cannot debug.
+# The toolbox. `node:24-bookworm-slim` is node, npm/npx, bash and tar — and
+# nothing else: no git, no curl, not even `rg`. That is the right base and the
+# wrong contents for this particular container, because two things run arbitrary
+# programs in it:
+#
+#   run_command   the assistant's shell. Stem's own tier-1 allowlist (exec/
+#                 policy.ts) auto-runs `rg`, `git status`/`log`/`diff`/`show`,
+#                 `file` and the coreutils — on a machine missing them, "safe
+#                 enough to run without asking" means "fails without asking".
+#   MCP servers   a stdio server is a command line. `uvx …` and `npx …` are what
+#                 nearly every published one is distributed as, and a missing
+#                 `uvx` is exactly how this was found: on a server, every Grafana
+#                 MCP start died with `spawn uvx ENOENT`.
+#
+# So: the allowlist's programs, the two package runners, and the handful of
+# things a person shells out for (curl, jq, unzip, less, ps). python3 is here
+# because a Python script is still the most common thing anybody is asked to run,
+# even though uv fetches its own interpreter for `uvx` (see the cache dirs below).
+#
+# zsh is deliberate rather than cosmetic: it is what macOS runs, what the command
+# parser and the safety judge are written against, and having it means a command
+# behaves the same on the server as it did on the laptop. Without it Stem falls
+# back to bash, which works — that fallback is what makes this a preference.
+#
+# Deliberately NOT here: browsers/Playwright (~400 MB for a capability nothing in
+# Stem requires), openssh-client (it would have no keys), and compilers. Adding
+# your own is a `docker compose build` away — docs/running-on-a-server.md says how.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates tar \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates curl file git jq less procps python3 ripgrep tar unzip zsh \
   && rm -rf /var/lib/apt/lists/*
+
+# uv + uvx as their own binaries, copied from the image Astral publishes them in
+# rather than installed with pip (there is no pip here, and a curl|sh into a
+# layer is neither pinned nor reproducible).
+COPY --from=uv /uv /uvx /usr/local/bin/
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
@@ -101,6 +137,7 @@ COPY package.json RELEASE_NOTES.md ./
 #
 #   /var/lib/stem/state   the state root — bind-mounted from the host, backed up
 #   /var/lib/stem/models  ~1.4 GB of embedding weights — a named volume, NOT here
+#   /var/lib/stem/cache   what uv and npx download to run a tool — a named volume
 #   /run/stem/stem.sock   the only way in, shared with Caddy
 #   /run/secrets/stem_key the passphrase, a Compose secret, never in this image
 #
@@ -113,10 +150,21 @@ COPY package.json RELEASE_NOTES.md ./
 # STEM_KEY_FILE is deliberately NOT set: /run/secrets/stem_key is already the
 # default that both the headless key wrapper and `stem-server import` look for,
 # and setting it would only add a way for the two to be told different things.
+#
+# The three cache variables move what `uvx`/`npx` download — the package, and for
+# uv a whole managed CPython (~30 MB) — off HOME and under one directory the
+# compose file keeps in a volume. Otherwise every `docker compose up -d` after an
+# upgrade starts a fresh container with an empty cache, and the first call to
+# every stdio MCP server re-downloads its world before it answers anything. Not
+# in the state root: it is a cache, and backups of the state root are meant to
+# stay small.
 ENV STEM_STATE_DIR=/var/lib/stem/state \
     STEM_EMBED_MODELS_DIR=/var/lib/stem/models \
-    STEM_SERVER_SOCKET=/run/stem/stem.sock
-RUN mkdir -p /var/lib/stem/state /var/lib/stem/models /run/stem
+    STEM_SERVER_SOCKET=/run/stem/stem.sock \
+    UV_CACHE_DIR=/var/lib/stem/cache/uv \
+    UV_PYTHON_INSTALL_DIR=/var/lib/stem/cache/uv-python \
+    npm_config_cache=/var/lib/stem/cache/npm
+RUN mkdir -p /var/lib/stem/state /var/lib/stem/models /var/lib/stem/cache /run/stem
 
 # Root, and said out loud. The state root is a bind mount from the host, so the
 # container's uid is the uid that owns the operator's files: running as a

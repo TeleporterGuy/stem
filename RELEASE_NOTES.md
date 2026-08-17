@@ -39,6 +39,12 @@ Maintainer notes:
   answers from your phone. Tools → MCP servers lists your servers under the machine that runs
   each one, and asks you to approve a server the first time it is set to run on the computer
   you are at.
+- **The server image comes with tools.** Running Stem on a server used to mean a machine
+  with nothing on it: no `uvx` or `npx` to start an MCP server with, no `git`, no `rg`,
+  not even `curl` — so commands the assistant considers routine failed on sight. The
+  image now carries those, keeps what they download between upgrades, and reads your
+  scheduled tasks in your own timezone (set `TZ` in `.env`). Adding a tool of your own is
+  a few lines; [Running on a server](docs/running-on-a-server.md) shows where.
 - **The assistant knows which computer it is on.** Ask it why a tool is failing and it now says
   which machine is missing the program, instead of assuming everything runs on the computer in
   front of you. It can list your MCP servers with where each one runs; moving one between

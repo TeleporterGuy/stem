@@ -31,8 +31,9 @@ What you end up with:
   but the certificate needs it.
 - **Docker Engine and the Compose plugin** on the server
   ([install guide](https://docs.docker.com/engine/install/)).
-- **2 GB of RAM and ~10 GB of disk**, comfortably. The image is around 1.5 GB and the
-  embedding models add ~1.4 GB the first time memory search runs.
+- **2 GB of RAM and ~10 GB of disk**, comfortably. The image is around 1.3 GB, the
+  embedding models add ~1.4 GB the first time memory search runs, and what your MCP
+  servers download to start adds a few hundred MB more over time.
 - A copy of this repository on the server, and Stem still installed on your Mac.
 
 Everything below assumes you are `root` in a checkout at `/opt/stem`. Adjust as you like;
@@ -62,11 +63,16 @@ cd /opt/stem
 cp deploy/env.example .env
 ```
 
-Edit `.env`. The only line that must change is the hostname:
+Edit `.env`. Two lines matter:
 
 ```
 STEM_HOSTNAME=stem.example.com
+TZ=Europe/Bratislava
 ```
+
+The hostname must already resolve to this server. `TZ` is the clock your scheduled
+tasks are read in — a container is UTC unless told otherwise, and "every weekday at
+9" is a different hour in each.
 
 Then write the passphrase into the file Docker will mount as a secret:
 
@@ -99,6 +105,39 @@ first time and almost nothing after that.
 On an arm server (Hetzner CAX, Ampere, a Raspberry Pi) add `STEM_PLATFORM=linux/arm64` to
 `.env` first. The default is `linux/amd64`, because a VPS is x86_64 unless it says
 otherwise.
+
+### What is in the image
+
+Two things run arbitrary programs on this machine — the assistant's shell, and every
+MCP server started by a command — so the image carries what they reach for:
+
+- **`uvx` and `npx`**, which is how nearly every published MCP server is distributed.
+  `uvx` fetches its own Python, so nothing has to be installed for it first.
+- **`git`, `rg`, `curl`, `jq`, `file`, `less`, `ps`, `unzip`, `python3`**, and the
+  coreutils the base already had. The first few are not garnish: Stem's own list of
+  commands that may run without asking includes `rg` and `git status`, and on a machine
+  without them "safe enough to run unasked" would mean "fails unasked".
+- **`zsh`**, so a command behaves here the way it did on your Mac.
+
+What is deliberately missing: browsers and Playwright (~400 MB for something Stem does
+not require), an SSH client, and compilers.
+
+To add your own tool, put it in a file next to `docker-compose.yml`:
+
+```dockerfile
+# Dockerfile.local
+FROM stem-server:local
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+  && rm -rf /var/lib/apt/lists/*
+```
+
+then point the `stem` service's `build.dockerfile` at it, or install into the running
+container while you try something out (`docker compose exec stem apt-get …`) and put it
+in the file once it earns its place — an `exec` install is gone at the next upgrade.
+
+The other way to get at a tool is not to install it here at all: a tool that only means
+something on your own computer — its files, its apps, its network — belongs in an MCP
+server pinned to that computer, which step 7 sets up.
 
 ## 4. Unpack your Stem into it
 
@@ -239,8 +278,9 @@ docker compose build
 docker compose up -d
 ```
 
-Nothing touches the state root, the model cache or Caddy's certificates: they are a bind
-mount and named volumes, and rebuilding an image does not go near them. Take the backup
+Nothing touches the state root, the model cache, what `uvx`/`npx` downloaded, or Caddy's
+certificates: they are a bind mount and named volumes, and rebuilding an image does not
+go near them. Take the backup
 anyway — it costs a minute and it is the only thing that makes going back possible.
 
 To go back, check out the previous commit and run the same two commands.
@@ -283,5 +323,5 @@ docker compose up -d
 ```
 
 **You want to start over.** `docker compose down -v` removes the containers, the socket
-volume, the model cache and Caddy's certificates — but not the state root, which is a
+volume, the model cache, the `uvx`/`npx` download cache and Caddy's certificates — but not the state root, which is a
 bind mount on the host and is only ever removed by you.
