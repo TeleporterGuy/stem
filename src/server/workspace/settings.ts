@@ -96,6 +96,7 @@ const DEFAULTS: ServerSettings = {
     judgeModel: null,
     judgeEffort: null,
     allowlist: [],
+    deviceAllowlists: {},
     scratchTtlDays: DEFAULT_SCRATCH_TTL_DAYS
   },
   // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
@@ -329,6 +330,28 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
           .filter((p) => p && p.length <= 200)
       )
     ].slice(0, 200),
+    // The per-device buckets get the same laundering as the shared list, per
+    // bucket, and the same caps — a device id key that is not a string array is
+    // dropped whole rather than half-read.
+    deviceAllowlists: Object.fromEntries(
+      Object.entries(
+        rawExec.deviceAllowlists && typeof rawExec.deviceAllowlists === 'object' ? rawExec.deviceAllowlists : {}
+      )
+        .filter(([, list]) => Array.isArray(list))
+        .map(([deviceId, list]) => [
+          deviceId,
+          [
+            ...new Set(
+              (list as unknown[])
+                .filter((p): p is string => typeof p === 'string')
+                .map((p) => p.trim())
+                .filter((p) => p && p.length <= 200)
+            )
+          ].slice(0, 200)
+        ])
+        .filter(([, list]) => (list as string[]).length > 0)
+        .slice(0, 50)
+    ),
     // null is a real choice here ("Never"), so only an absent/nonsensical value
     // takes the default — a 0 or a negative would otherwise read as "sweep
     // everything immediately", which is the one answer nobody picked.

@@ -8,10 +8,11 @@ import type {
   TaskSchedule
 } from '../../shared/types';
 import { isContextOverflowError } from '../backend/overflow';
+import { log } from '../log';
 import { noteTurnStart } from '../live-turns';
 import { toMs } from '../../shared/inbox';
 import { isValidCron, nextAfter } from './cron';
-import { readTasks, saveTasks, titleFromPrompt } from '../workspace/tasks';
+import { clipError, readTasks, saveTasks, titleFromPrompt } from '../workspace/tasks';
 import * as activity from '../activity';
 
 // The main-process scheduler. Holds tasks in memory, keeps ONE timer armed for the
@@ -341,6 +342,22 @@ export class TaskScheduler {
     );
   }
 
+  /**
+   * Keep why a run failed, on the task and in the log, and drop it the moment one
+   * succeeds. A run that fails before its turn ever starts — the chat could not be
+   * opened, the backend would not spawn — used to leave "failed" in the Tasks tab
+   * and NOTHING anywhere else: the error was caught and dropped here. That is how
+   * every scheduled run on a freshly migrated server could die for days unnoticed.
+   */
+  private recordOutcome(task: ScheduledTask, error: string | null): void {
+    if (!error) {
+      delete task.lastError;
+      return;
+    }
+    task.lastError = clipError(error);
+    log('tasks', 'a scheduled run failed', { task: task.title, error: task.lastError });
+  }
+
   /** Poll until the user goes idle (bounded so a task is never starved forever). */
   private async waitForUserIdle(): Promise<void> {
     const isActive = this.opts.isUserActive;
@@ -446,11 +463,14 @@ export class TaskScheduler {
           }
         }
         task.lastStatus = settle.status;
+        this.recordOutcome(task, settle.status === 'failed' ? settle.error ?? 'The run did not finish.' : null);
       } else {
         task.lastStatus = 'ok';
+        this.recordOutcome(task, null);
       }
-    } catch {
+    } catch (error) {
       task.lastStatus = 'failed';
+      this.recordOutcome(task, error instanceof Error ? error.message : String(error));
     } finally {
       this.activeRun = null;
       // A preempted run is requeued below rather than finished, so it earns
@@ -477,6 +497,7 @@ export class TaskScheduler {
       // Out of retries — record the firing as failed and fall through to the
       // normal bookkeeping (lastRunAt, once-task cleanup, persist).
       task.lastStatus = 'failed';
+      this.recordOutcome(task, `Yielded to you ${MAX_REQUEUES} times and ran out of retries; it goes again on its next schedule.`);
     } else {
       this.requeueCounts.delete(id);
     }

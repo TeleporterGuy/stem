@@ -45,6 +45,12 @@ Turn **Run commands** off to disable shell commands. With **Assisted**, the sele
 safety-check model receives the command and working folder. A cloud model processes
 that text on its provider.
 
+Commands run on the machine Stem itself runs on: your own computer normally, or your
+server if you [moved Stem to one](../running-on-a-server.md) — so they see the programs
+installed there, not the ones on the computer you happen to be typing on. On macOS and
+Linux they run under `zsh`, or `bash`/`sh` on a machine without it; on Windows under
+`cmd.exe`.
+
 - **Manual**: known-safe and always-allowed commands run; everything else asks first.
 - **Assisted**: an AI safety check passes routine commands and asks about uncertain
   ones. A convenience, not a security boundary.
@@ -55,6 +61,26 @@ On an approval card, **Always allow** saves a command prefix for future turns.
 Keep prefixes narrow; `git status` grants less access than `git`.
 
 <!-- TODO(screenshot): Command approval card with Allow once, Always allow, and Deny. -->
+
+### Commands on your own computer
+
+With Stem on a server, the assistant can also run a command on one of your own
+paired computers — "download this video on my Mac" — but only after that computer
+says yes: **Run commands on this computer**, at the bottom of this section *on that
+machine*, is off until you switch it on there, and there is no way to switch it on
+from anywhere else. Withdrawing consent is the same switch; commands stop
+immediately.
+
+Once a computer accepts commands, they face the same approval policy as everywhere
+else, with one deliberate difference: nothing is pre-approved there. Even commands
+Stem considers routine ask (or pass the safety check) until you choose **Always
+allow** — and an Always allow given for that computer trusts the prefix on that
+computer only. The per-machine lists appear under the shared one and are edited the
+same way. The approval card always names the machine a command would run on.
+
+What runs there stays there: the command's output lands on that computer (in a
+per-chat scratch folder unless the assistant names a folder like Downloads), and
+your Files place stays with the server.
 
 ### Scratch files
 

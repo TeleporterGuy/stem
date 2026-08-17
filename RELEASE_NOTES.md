@@ -21,6 +21,12 @@ Maintainer notes:
   assistant. This replaces keyword matching that padded chats with unrelated, occasionally
   sensitive, memories. Expect a few well-chosen facts per chat and often none at all; the model
   can be switched off in Manage → Memory.
+- **Skills say which computer they need.** A procedure that only works on one machine — a
+  program only your Mac has, a site that turns a server away — now gets written down that way,
+  with the reason and the way in, instead of as steps that quietly assume whichever computer
+  Stem happened to be on that day. This matters after moving Stem to a server: your skills come
+  across intact and are then followed somewhere else entirely. Skills already saved are
+  unchanged; this applies to ones written from now on.
 
 ### Added
 
@@ -33,8 +39,50 @@ Maintainer notes:
   and forget it. Quick Chat has its own, set separately in Settings → Quick Chat, for anyone who
   wants search on at the desk but off in the overlay.
 
+- **MCP servers can run on the computer that has the tools.** With Stem on a server, a tool that
+  only means something on your own Mac — a command it has installed, a URL on your home network —
+  can be pinned to that Mac and runs there, while everything else still runs on the server and
+  answers from your phone. Tools → MCP servers lists your servers under the machine that runs
+  each one, and asks you to approve a server the first time it is set to run on the computer
+  you are at.
+- **The server image comes with tools.** Running Stem on a server used to mean a machine
+  with nothing on it: no `uvx` or `npx` to start an MCP server with, no `git`, no `rg`,
+  not even `curl` — so commands the assistant considers routine failed on sight. The
+  image now carries those, keeps what they download between upgrades, and reads your
+  scheduled tasks in your own timezone (set `TZ` in `.env`). A program the image lacks is
+  usually still no obstacle: the assistant knows to run anything from PyPI or npm on
+  demand (`uvx yt-dlp` and the like), and a tool it installs for keeps lands in a folder
+  that survives upgrades. Adding a system package of your own is a few lines;
+  [Running on a server](docs/running-on-a-server.md) shows the whole ladder.
+- **The assistant knows which computer it is on.** Ask it why a tool is failing and it now says
+  which machine is missing the program, instead of assuming everything runs on the computer in
+  front of you. It can list your MCP servers with where each one runs; moving one between
+  machines is still yours to do.
+- **Commands on your own computer.** With Stem on a server, ask from your phone and the
+  assistant can run a command on your Mac — "download this video on my Mac" now means your
+  Mac, not the server. Nothing changes until you allow it: each computer has its own **Run
+  commands on this computer** switch (Settings → Chat → Command execution, on that machine),
+  off until you turn it on there. Commands then face the same approvals as always, except
+  stricter — nothing is pre-approved on a computer, and an "Always allow" you grant applies
+  to that computer alone. Every approval card says which machine it is for.
+
+- **Delete a skill from the app.** Tools → Skills has a delete button on every row, with a
+  confirmation. Until now the switch could only silence a skill: the file stayed, and with Stem
+  on a server it sat in a folder on the server that nobody could reach.
+
 ### Fixed
 
+- **Chats you moved to a server can be opened again.** After moving Stem to a server, every chat
+  that came over listed normally and failed the moment anything opened it: the backend records
+  the folder a chat ran in, and that folder was on the Mac the export came from. Scheduled tasks
+  were where it showed — a watch task in one of those chats just said "failed" every morning, and
+  said it nowhere else. Moved chats are now pointed at the new machine's own workspace, both
+  during the move and on any chat that already came across, and a run that fails now says why in
+  the Tasks tab and the log.
+- **Commands work when Stem runs on a server.** Every shell command the assistant tried on a
+  server install failed instantly with `spawn /bin/zsh ENOENT`, because Stem asked for a shell
+  that Linux servers do not have — including the commands it runs to work out why something
+  else is broken. It now uses the shell the machine actually has.
 - **Right-click works on search results.** A chat you found by searching can now be archived,
   snoozed, renamed, filed or deleted straight from the result row, like any other row in the list.
   Until now the menu simply didn't open there, so the one chat you had just gone looking for was

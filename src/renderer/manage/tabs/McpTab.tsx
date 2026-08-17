@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plus, Minus, ChevronRight } from 'lucide-react';
+import { Plus, Minus, ChevronRight, Info } from 'lucide-react';
 import type {
   BackendEventEnvelope,
   DeviceInfo,
@@ -95,6 +95,10 @@ function McpTab() {
   // whose other clients are phones, which host nothing and are never asked to.
   const [hostState, setHostState] = useState<McpHostLocalState>({ approved: {}, pending: [], status: {} });
   const [testing, setTesting] = useState<string | null>(null);
+  // Which explanations are open. A panel section should be the thing you came to
+  // do — here, two or three buttons — and the reasoning behind it is worth one
+  // click, not three paragraphs above the buttons every time you pass through.
+  const [explaining, setExplaining] = useState<Record<string, boolean>>({});
 
   async function refresh() {
     const [list, status] = await Promise.all([
@@ -128,19 +132,22 @@ function McpTab() {
   // anywhere, and they are the one case below that a window with a LOCAL server
   // still has to be able to fix — an orphan outlives the move that made it.
   const orphans = servers.filter((s) => s.location?.orphaned);
-  const anyOrphan = orphans.length > 0;
+  // Any pin at all, sound or broken. A local install can hold one — an import,
+  // or a pin that outlived the move back — and its owner must be able to undo it
+  // without standing up a server again, so the device list is worth asking for.
+  const anyPinned = servers.some((s) => s.location);
 
   // The devices that could host a server: paired desktops only, because a phone
   // sleeps and a server on it would be unreachable half the time. Read only when
   // there is a choice to make — a window whose server is this very machine and
-  // holds no orphan never renders a picker, so it never asks.
+  // holds nothing pinned never renders a picker, so it never asks.
   useEffect(() => {
-    if (!remote && !anyOrphan) return;
+    if (!remote && !anyPinned) return;
     void window.stem
       .listDevices()
       .then((snapshot) => setHosts(snapshot.devices.filter((d) => d.kind === 'desktop')))
       .catch(() => undefined);
-  }, [remote, anyOrphan]);
+  }, [remote, anyPinned]);
 
   // Which device this window is, asked unconditionally: a server can be pinned
   // to this machine on an install that has never been remote (an import, or a
@@ -362,62 +369,116 @@ function McpTab() {
   }
 
   /**
-   * Resolve how a URL (http) server should present. Live connection status wins;
-   * we fall back to `authStatus` only when the app-server hasn't reported yet
-   * (e.g. the panel opened before any thread started this session).
-   *   connected — handshook, tools available
-   *   failed    — dropped at connect time (OAuth token rejected → offer re-login)
-   *   pending   — still starting
-   *   needs-login — no usable credentials
-   */
-  function httpState(s: McpServerSummary): 'connected' | 'failed' | 'pending' | 'needs-login' {
-    const live = statuses[s.name]?.status;
-    if (live === 'ready') return 'connected';
-    if (live === 'failed') return 'failed';
-    if (live === 'starting') return 'pending';
-    const hasCreds = s.authStatus === 'o_auth' || s.authStatus === 'bearer_token';
-    return hasCreds ? 'connected' : 'needs-login';
-  }
-
-  /** The machine a server runs on, as a row names it. */
-  /**
-   * The place, as its own line under the address — and only for a server that
-   * is NOT where servers ordinarily are.
+   * How one server is doing — ONE ladder for every row, which is the point of it.
    *
-   * It used to be a pill sitting beside the name, and it was wrong twice over.
-   * A pill saying "Server" appeared on nearly every row, which is a label for
-   * the default and therefore no information at all; and both it and the long
-   * ones ("Vlado's MacBook") took their width out of the only column that
-   * carries anything — in a 300px panel that broke names across three lines and
-   * chopped commands mid-word. Naming just the exception costs one quiet line on
-   * the few rows that are exceptional and gives every other row its width back.
+   * A server pinned to a computer is the same kind of thing as one the Stem
+   * server connects itself; the only difference between them is which machine
+   * opens the connection. Giving the two different vocabularies — a dot here, a
+   * pill there, and for a local command nothing at all — made that look like a
+   * difference in kind, which it is not.
+   *
+   * The SOURCES differ, because they have to. This machine knows its own servers
+   * first-hand; the bridge reports the ones it connects itself; and a server on
+   * another of your computers is known second-hand, as `elsewhere` — carrying a
+   * sentence when that machine has something wrong to report and none when it
+   * has not. What comes out is the same handful of words either way.
    */
-  function placeLabel(s: McpServerSummary): string | null {
-    if (!s.location) return null;
-    if (s.location.orphaned) {
-      return s.location.rememberedLabel
-        ? `Pinned to ${s.location.rememberedLabel}, which is no longer paired`
-        : 'Pinned to a computer that is no longer paired';
+  function serverState(
+    s: McpServerSummary
+  ): 'connected' | 'pending' | 'failed' | 'needs-login' | 'needs-approval' | 'unknown' {
+    if (!s.enabled) return 'unknown';
+    const live = statuses[s.name]?.status;
+    if (hostedHere(s)) {
+      const mine = hostState.status[s.name]?.status;
+      if (mine === 'unapproved') return 'needs-approval';
+      if (mine === 'ready') return 'connected';
+      if (mine === 'starting') return 'pending';
+      return mine === 'failed' ? 'failed' : 'unknown';
     }
-    return hostedHere(s) ? 'Runs on this computer' : `Runs on ${s.location.label}`;
-  }
-
-  function placeClass(s: McpServerSummary): string {
-    // An orphaned pin is a real problem — the machine it names is gone — so it
-    // reads as one rather than sitting quietly among the ordinary places.
-    return `row-place${s.location?.orphaned ? ' orphaned' : ''}`;
-  }
-
-  function placeTitle(s: McpServerSummary): string {
-    if (s.location?.orphaned) {
-      const was = s.location.rememberedLabel ? ` It was pinned to “${s.location.rememberedLabel}”.` : '';
-      return `This server is pinned to a device that is no longer paired, so it cannot run anywhere.${was}`;
-    }
-    if (hostedHere(s)) return 'Runs on this computer.';
     if (s.location) {
-      return `Runs on “${s.location.label}”, and that computer decides whether it runs — there is nothing to approve or test from here.`;
+      if (live !== 'elsewhere') return 'unknown';
+      return statuses[s.name]?.error ? 'failed' : 'connected';
     }
-    return 'Runs on the machine hosting your Stem server.';
+    if (live === 'ready') return 'connected';
+    if (live === 'starting') return 'pending';
+    // A URL server that dropped is nearly always a token that expired, so it is
+    // offered the way a signed-out one is: as something to press, not to read.
+    if (live === 'failed') return s.transport === 'http' ? 'needs-login' : 'failed';
+    if (s.transport === 'http') {
+      // Nothing reported yet — the panel can open before any thread has started
+      // this session. Credentials on disk are the best guess available.
+      return s.authStatus === 'o_auth' || s.authStatus === 'bearer_token' ? 'connected' : 'needs-login';
+    }
+    return 'unknown';
+  }
+
+  /** What the dot says on hover — the one place a state names its machine. */
+  function stateTitle(s: McpServerSummary, state: ReturnType<typeof serverState>): string {
+    const where = hostedHere(s) ? 'this computer' : s.location ? s.location.label : 'your Stem server';
+    const reported = statuses[s.name]?.error ?? hostState.status[s.name]?.error;
+    if (state === 'failed') return reported ?? `It is not running on ${where}.`;
+    if (state === 'pending') return `Starting on ${where}…`;
+    return `Running on ${where}.`;
+  }
+
+  /**
+   * The list, cut into one section per machine.
+   *
+   * Where a server runs stopped being something written on its row and became
+   * WHERE THE ROW SITS. Every version that put the place on the row bought its
+   * visibility with width or a third line — a pill beside the name broke a
+   * 300px panel's names across three lines, and a line under the address was so
+   * quiet it read as a footnote to the command. A section header costs the row
+   * neither, and it answers a question the flat list could not answer at all:
+   * what does this machine run? It is also the honest shape of the thing —
+   * these servers really do belong to machines, and a machine can be asleep,
+   * unpaired or gone as a whole.
+   *
+   * Headers appear only when there is more than one place to name. With nothing
+   * pinned anywhere the list has one section, and a header that appears once
+   * distinguishes nothing, so it says "MCP servers" and stops.
+   */
+  function placeGroups(): { key: string; head: string; items: McpServerSummary[] }[] {
+    if (!anyPinned) return [{ key: 'all', head: 'MCP servers', items: servers }];
+
+    const groups: { key: string; head: string; items: McpServerSummary[] }[] = [];
+    const add = (key: string, head: string, items: McpServerSummary[]) => {
+      if (items.length > 0) groups.push({ key, head, items });
+    };
+    const unpinned = servers.filter((s) => !s.location);
+    const here = servers.filter((s) => hostedHere(s));
+
+    // On a local install the machine hosting the server IS this computer, so an
+    // unpinned server and one pinned here are the same answer to "where does it
+    // run" — two sections with identical headers would be a distinction only the
+    // config file cares about.
+    if (remote) {
+      add('server', 'On your Stem server', unpinned);
+      add('here', 'On this computer', here);
+    } else {
+      add('here', 'On this computer', [...unpinned, ...here]);
+    }
+
+    // One section per other machine, by device rather than by label: two paired
+    // computers may honestly share a name, and merging them would claim a server
+    // runs somewhere it does not.
+    const others = new Map<string, { key: string; head: string; items: McpServerSummary[] }>();
+    for (const s of servers) {
+      if (!s.location || s.location.orphaned || hostedHere(s)) continue;
+      const group = others.get(s.location.deviceId) ?? {
+        key: `dev-${s.location.deviceId}`,
+        head: `On ${s.location.label}`,
+        items: []
+      };
+      group.items.push(s);
+      others.set(s.location.deviceId, group);
+    }
+    groups.push(...[...others.values()].sort((a, b) => a.head.localeCompare(b.head)));
+
+    // Last, and named for the consequence rather than the cause: what matters
+    // about a pin to an unpaired computer is that the server runs nowhere.
+    add('orphan', 'Nowhere — that computer is gone', orphans);
+    return groups;
   }
 
   /**
@@ -431,26 +492,20 @@ function McpTab() {
     return !!thisDeviceId && s.location?.deviceId === thisDeviceId;
   }
 
-  /** How a server running here is doing, as the row's pill or dot. */
-  function hostBadge(s: McpServerSummary) {
-    const state = hostState.status[s.name]?.status;
-    if (state === 'unapproved') {
-      return (
-        <span className="pill warn" title="This computer has not agreed to run it yet.">
-          Needs approval
-        </span>
-      );
-    }
-    if (state === 'ready') {
-      return <span className="mcp-dot" title="Running on this computer" aria-label="Running" />;
-    }
-    if (state === 'starting') {
-      return <span className="mcp-dot pending" title="Starting…" aria-label="Starting" />;
-    }
-    // 'failed', or nothing reported yet on a launch where the server has not
-    // been asked. The error text is in the row's own line; a second copy in a
-    // pill would just be shorter and less useful.
-    return state === 'failed' ? <span className="pill danger">Failed</span> : null;
+  /** The ⓘ that opens a section's explanation, and stays pressed while it is open. */
+  function explainToggle(key: string) {
+    const open = !!explaining[key];
+    return (
+      <button
+        className={`icon-btn explain${open ? ' on' : ''}`}
+        aria-expanded={open}
+        aria-label={open ? 'Hide explanation' : 'What does this mean?'}
+        title={open ? 'Hide explanation' : 'What does this mean?'}
+        onClick={() => setExplaining((prev) => ({ ...prev, [key]: !prev[key] }))}
+      >
+        <Info size={13} />
+      </button>
+    );
   }
 
   /** What a spec would actually run, in one line. */
@@ -528,129 +583,281 @@ function McpTab() {
     }
   }
 
-  function signInLabel(serverName: string, state: 'failed' | 'needs-login'): string {
+  /**
+   * "Reconnect" when a token that worked has stopped working, "Sign in" when
+   * there has never been one. Read from the live status rather than passed in,
+   * now that both arrive at the button as the same state: they are the same
+   * act, and the word is only there to say whether you have done it before.
+   */
+  function signInLabel(serverName: string): string {
     if (loginName === serverName) return 'Waiting…';
-    return state === 'failed' ? 'Reconnect' : 'Sign in';
+    return statuses[serverName]?.status === 'failed' ? 'Reconnect' : 'Sign in';
   }
 
-  // The selected row, when it is a server-located entry there is somewhere to
-  // move it to. Not offered on this-computer installs (⑨: one machine, so a
-  // choice would imply a distinction that does not exist) and not on an already
-  // pinned entry, which has its place and is that machine's business.
-  const selectedServer = servers.find((s) => s.name === selected) ?? null;
-  const movable = remote && hosts.length > 0 && selectedServer && !selectedServer.location ? selectedServer : null;
-  // The pill in the row is what somebody notices; this is where the sentence
-  // fits. Both, because the pill alone is a tooltip and a tooltip is not an
-  // explanation on a machine with no mouse hovering over it.
-  const signInLimited =
-    selectedServer && selectedServer.location && selectedServer.transport === 'http' ? selectedServer : null;
+  /**
+   * The approval this computer owes a server pinned to it (⑥), inline under its
+   * row. It used to be a card at the bottom of the panel that the row pointed at
+   * from a distance — and the pointing is exactly what broke: the jump landed
+   * silently, and even fixed it asked somebody to read a row here and answer a
+   * question there. A question belongs under the thing it is about.
+   *
+   * It is shown without being asked for, unlike everything else in a row's
+   * detail. This one is not information about a server, it is a server waiting
+   * on a person, and a call to action that only appears once you click the right
+   * row is one most people never see.
+   */
+  function approvalCard(p: McpHostPendingServer) {
+    return (
+      <>
+        <span className="set-sub">{pendingHeading(p)}</span>
+        <code>{previewLine(p.preview)}</code>
+        {credentialLine(p.preview) && <p className="muted">{credentialLine(p.preview)}</p>}
+        {/* A lost credential and an edited one both move the fingerprint, and
+            only one of them is somebody's doing. Saying "changed" to the second
+            is true and useless: nobody changed it, and approving anyway starts a
+            server without its key. */}
+        {lostLine(p) && <p className="error">{lostLine(p)}</p>}
+        {!lostLine(p) && p.changed && (
+          <p className="muted">
+            Its command, arguments or credentials are not the ones you approved. Stem stopped it and will not
+            start it again until you say so.
+          </p>
+        )}
+        {/* The one thing the plan insists is visible rather than documented:
+            after this click there are no further questions, so what the click
+            authorizes has to be readable here. Why it is being asked at all,
+            when nothing is wrong, is the part that goes behind the ⓘ — this
+            strip sits in the middle of a list and cannot be an essay. */}
+        <p className="muted">
+          Once approved, Stem starts it and uses its tools whenever the assistant asks — including on a scheduled
+          run — without asking again.
+          {!p.changed && !lostLine(p) && explainToggle(`why-${p.name}`)}
+        </p>
+        {explaining[`why-${p.name}`] && (
+          <p className="muted">
+            Stem never starts a server on your own computer without being asked, even when the entry was added
+            elsewhere — from your phone, from another computer, or by the assistant.
+          </p>
+        )}
+        {p.unbounded && <p className="error">{p.unbounded}</p>}
+        <div className="memory-view-actions">
+          <button className="link-btn" onClick={() => approveHosted(p)}>
+            Approve and start
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  /**
+   * Everything there is to do to one server, under that server.
+   *
+   * These were five sections stacked below the list — approve, on this computer,
+   * move, signing in, pinned to a computer that is gone — each repeating a name
+   * from the list and each about exactly one row. With the list grouped by
+   * machine they also started repeating its headers. One detail strip under the
+   * selected row says the same things in the one place where you do not have to
+   * carry a name down the panel to use them.
+   */
+  function rowDetail(s: McpServerSummary) {
+    const pending =
+      hostedHere(s) && hostState.status[s.name]?.status === 'unapproved'
+        ? hostState.pending.find((p) => p.name === s.name)
+        : undefined;
+    if (pending) {
+      return <div className="row-detail approval">{approvalCard(pending)}</div>;
+    }
+    if (selected !== s.name) return null;
+
+    // Moving is offered wherever there is somewhere else to go, an orphan
+    // included — a pin you cannot undo from the panel that made it is a trap,
+    // and the machine list is only fetched when there is a choice to make.
+    const elsewhere = moveButtons(s);
+    const canUnpin = !!s.location && (remote || !s.location.orphaned || hosts.length > 0);
+    const bits: React.ReactNode[] = [];
+
+    if (s.location?.orphaned) {
+      bits.push(
+        <p className="muted" key="orphan">
+          It runs nowhere: the computer it is pinned to is no longer paired.
+          {explainToggle(`orphan-${s.name}`)}
+        </p>
+      );
+      if (explaining[`orphan-${s.name}`]) {
+        bits.push(
+          <p className="muted" key="orphan-why">
+            Nothing was deleted — pair that computer again, move it to another one, or remove it with −.
+            {s.location.rememberedLabel
+              ? ' Pairing a computer again gives it a new identity, so the same machine under the same name is a' +
+                ' different device to Stem: if you have just re-paired it, it is the one offered below.'
+              : ''}
+          </p>
+        );
+      }
+    } else if (hostedHere(s)) {
+      bits.push(
+        <p className="muted" key="state">
+          {hostStateLine(hostState.status[s.name])}
+        </p>
+      );
+      bits.push(
+        <div className="memory-view-actions" key="host-actions">
+          <button className="link-btn" onClick={() => testHosted(s.name)} disabled={testing === s.name}>
+            {testing === s.name ? 'Connecting…' : 'Test connection'}
+          </button>
+          {hostState.approved[s.name] && (
+            <button className="link-btn danger" onClick={() => rejectHosted(s.name)}>
+              Stop trusting
+            </button>
+          )}
+        </div>
+      );
+    } else if (s.location) {
+      // Another of your computers owns it. This window has nothing true to say
+      // about whether it is approved or running there — only where to send it.
+      bits.push(
+        <p className="muted" key="elsewhere">
+          {`“${s.location.label}” runs it and decides whether it runs: there is nothing to approve or test from here.`}
+        </p>
+      );
+    }
+
+    // OAuth cannot run for a pinned URL server, and the sentence has to be
+    // somewhere a person without a mouse can read it (⑤).
+    if (s.location && s.transport === 'http' && !s.location.orphaned) {
+      bits.push(
+        <p className="muted" key="oauth">
+          Static token only
+          {explainToggle(`oauth-${s.name}`)}
+        </p>
+      );
+      if (explaining[`oauth-${s.name}`]) {
+        bits.push(
+          <p className="muted" key="oauth-why">
+            {NO_OAUTH_ELSEWHERE}
+          </p>
+        );
+      }
+    }
+
+    if (elsewhere.length > 0 || canUnpin) {
+      bits.push(
+        <div className="memory-view-actions" key="move">
+          {elsewhere}
+          {canUnpin && (
+            <button className="link-btn" onClick={() => moveTo(s.name, null)} disabled={!!busy}>
+              {remote ? 'Run on the server instead' : 'Run on this computer instead'}
+            </button>
+          )}
+          {explainToggle(`move-${s.name}`)}
+        </div>
+      );
+      if (explaining[`move-${s.name}`]) {
+        bits.push(
+          <p className="muted" key="move-why">
+            A server runs on one machine and reaches that machine’s files, its applications and its network.
+            Whoever is at that computer approves it there before it starts — an approval belongs to the machine
+            that gave it, so a move never carries one across.
+          </p>
+        );
+      }
+    }
+
+    if (bits.length === 0) return null;
+    return <div className="row-detail selected">{bits}</div>;
+  }
+
+  const groups = placeGroups();
 
   return (
     <div>
-      <div className="grp-head">MCP Servers</div>
       {servers.length === 0 ? (
-        <div className="group">
-          <div className="group-row">
-            <span className="row-main">
-              <em>No servers yet. Add one with the + button.</em>
-            </span>
+        <>
+          <div className="grp-head">MCP servers</div>
+          <div className="group">
+            <div className="group-row">
+              <span className="row-main">
+                <em>No servers yet. Add one with the + button.</em>
+              </span>
+            </div>
           </div>
-        </div>
+        </>
       ) : (
-        <div className="group mcp-list">
-          {servers.map((s) => {
-            const viaUrl = s.transport === 'http';
-            // A server pinned to a device is not this server's to connect: the
-            // bridge routes calls to the machine it belongs to rather than
-            // opening the connection here, so the live dot and the sign-in
-            // prompt would both be describing somebody else's connection. The
-            // place is what the row has to say instead.
-            const elsewhere = !!s.location;
-            const here = hostedHere(s);
-            const state = viaUrl && !elsewhere ? httpState(s) : null;
-            const needsLogin = state === 'failed' || state === 'needs-login';
-            const error = statuses[s.name]?.error ?? undefined;
-            // A server running here reports its own failure, in its own words.
-            // The bridge's status map has nothing to say about it: it never
-            // tried to connect it, and never will.
-            const hereFailed = here && hostState.status[s.name]?.status === 'failed';
-            const detail = viaUrl ? s.url : `${s.command} ${s.args.join(' ')}`.trim();
-            return (
-              <div
-                key={s.name}
-                className={`group-row${selected === s.name ? ' selected' : ''}${s.enabled ? '' : ' disabled'}`}
-                onClick={() => setSelected(s.name)}
-              >
-                <span className="row-main">
-                  <strong title={s.name}>{s.name}</strong>
-                  <em
-                    // The address is clamped to two lines, so the whole of it
-                    // lives here — an npx invocation with four flags is longer
-                    // than any panel and is still the thing you came to read.
-                    title={s.enabled && state === 'failed' ? error : detail}
-                    className={s.enabled && (state === 'failed' || hereFailed) ? 'mcp-failed' : undefined}
-                  >
-                    {s.enabled && hereFailed
-                      ? (hostState.status[s.name]?.error ?? 'It did not start on this computer.')
-                      : s.enabled && state === 'failed'
-                        ? 'Connection failed — sign in again.'
-                        : detail}
-                  </em>
-                  {/* Where it runs — a line of its own, and only when that is
-                      not the machine hosting the server. An entry that names a
-                      computer says so wherever it is seen, including on a local
-                      install, because a pin that outlived the move back is
-                      exactly the one somebody needs to be told about. */}
-                  {s.location && (
-                    <span className={placeClass(s)} title={placeTitle(s)}>{placeLabel(s)}</span>
-                  )}
-                </span>
-                {!s.enabled ? (
-                  <span className="pill off">Disabled</span>
-                ) : here ? (
-                  hostBadge(s)
-                ) : /* A URL server pinned to a computer cannot be signed in to, and
-                      saying nothing at all in the place the Sign in button would
-                      be is worse than the limitation: the affordance is missing
-                      and nothing says why. See NO_OAUTH_ELSEWHERE. */
-                viaUrl && elsewhere ? (
-                  <span className="pill off" title={NO_OAUTH_ELSEWHERE}>
-                    Header auth only
-                  </span>
-                ) : viaUrl && needsLogin ? (
-                  <button
-                    className="push"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      signIn(s.name);
-                    }}
-                    disabled={!!loginName || !!busy}
-                  >
-                    {signInLabel(s.name, state)}
-                  </button>
-                ) : viaUrl && !elsewhere ? (
-                  <span
-                    className={`mcp-dot${state === 'pending' ? ' pending' : ''}`}
-                    title={state === 'pending' ? 'Connecting…' : 'Connected'}
-                    aria-label={state === 'pending' ? 'Connecting' : 'Connected'}
-                  />
-                ) : null}
-                <button
-                  className={`switch${s.enabled ? ' on' : ''}`}
-                  role="switch"
-                  aria-checked={s.enabled}
-                  aria-label={`${s.name} enabled`}
-                  title={s.enabled ? 'Disable server' : 'Enable server'}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleEnabled(s.name, !s.enabled);
-                  }}
-                  disabled={!!busy || !!loginName}
-                />
-              </div>
-            );
-          })}
-        </div>
+        groups.map((group) => (
+          <div key={group.key}>
+            <div className="grp-head">{group.head}</div>
+            <div className="group mcp-list">
+              {group.items.map((s) => {
+                const viaUrl = s.transport === 'http';
+                const state = serverState(s);
+                const detail = viaUrl ? s.url : `${s.command} ${s.args.join(' ')}`.trim();
+                return (
+                  <div key={s.name} className="row-block">
+                    <div
+                      className={`group-row${selected === s.name ? ' selected' : ''}${s.enabled ? '' : ' disabled'}`}
+                      onClick={() => setSelected(selected === s.name ? null : s.name)}
+                    >
+                      <span className="row-main">
+                        <strong title={s.name}>{s.name}</strong>
+                        {/* The address, clamped to two lines with the whole of it
+                            on the title — an npx invocation with four flags is
+                            longer than any panel and is still the thing you came
+                            to read. A failure takes the line instead, in the
+                            words of whichever machine reported it. */}
+                        <em
+                          title={state === 'failed' ? stateTitle(s, state) : detail}
+                          className={state === 'failed' ? 'mcp-failed' : undefined}
+                        >
+                          {state === 'failed' ? stateTitle(s, state) : detail}
+                        </em>
+                      </span>
+                      {/* One slot, one vocabulary. A dot when the row is being
+                          told something, a Sign in button when this machine is
+                          being asked for something, and nothing at all when
+                          there is nothing true to say. An unapproved server has
+                          no button here either: its question is open under the
+                          row, which is a better answer than a button pointing at
+                          one. */}
+                      {state === 'needs-login' ? (
+                        <button
+                          className="push"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            signIn(s.name);
+                          }}
+                          disabled={!!loginName || !!busy}
+                        >
+                          {signInLabel(s.name)}
+                        </button>
+                      ) : state === 'connected' || state === 'pending' || state === 'failed' ? (
+                        <span
+                          className={`mcp-dot${state === 'pending' ? ' pending' : ''}${state === 'failed' ? ' failed' : ''}`}
+                          title={stateTitle(s, state)}
+                          aria-label={
+                            state === 'failed' ? 'Not running' : state === 'pending' ? 'Starting' : 'Running'
+                          }
+                        />
+                      ) : null}
+                      <button
+                        className={`switch${s.enabled ? ' on' : ''}`}
+                        role="switch"
+                        aria-checked={s.enabled}
+                        aria-label={`${s.name} enabled`}
+                        title={s.enabled ? 'Disable server' : 'Enable server'}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleEnabled(s.name, !s.enabled);
+                        }}
+                        disabled={!!busy || !!loginName}
+                      />
+                    </div>
+                    {rowDetail(s)}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))
       )}
       <div className="gutter">
         <button title="Add server" onClick={() => (adding ? nameRef.current?.focus() : setAdding(true))}>
@@ -665,154 +872,10 @@ function McpTab() {
         </button>
       </div>
 
-      {/* An entry whose machine was unpaired (⑩). It was not deleted and it was
-          not quietly repointed at the server, so this is where somebody decides
-          which of those should happen — and it says what is wrong first, because
-          "Unpaired device" in a pill is a symptom and not a sentence. */}
-      {orphans.length > 0 && (
-        <>
-          <div className="grp-head">Pinned to a computer that is gone</div>
-          <div className="formgroup">
-            {orphans.map((s, i) => (
-              <div key={s.name} className={`set-block${i === 0 ? '' : ' fg-divider'}`}>
-                <span className="set-sub">
-                  {s.name}
-                  {s.location?.rememberedLabel ? ` — was “${s.location.rememberedLabel}”` : ''}
-                </span>
-                <p className="muted">
-                  It is pinned to a computer that is no longer paired with this Stem, so it runs nowhere and
-                  the assistant cannot use its tools. Nothing was deleted — pair that computer again, move the
-                  server to another one, or select it above and remove it with −.
-                  {s.location?.rememberedLabel
-                    ? ' Pairing a computer again gives it a new identity, so the same machine under the same name is a' +
-                      ' different device to Stem: if you have just re-paired it, it is the one named below.'
-                    : ''}
-                </p>
-                <div className="memory-view-actions">
-                  {moveButtons(s)}
-                  <button className="link-btn" onClick={() => moveTo(s.name, null)} disabled={!!busy}>
-                    {remote ? 'Run on the server instead' : 'Run on this computer instead'}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {/* The everyday half of ⑩: an entry that works where it is, but whose work
-          is on one of your own machines — its files, its applications, a URL its
-          network can reach and the server's cannot. Offered on the selected row
-          so the list stays a list. */}
-      {movable && (
-        <>
-          <div className="grp-head">Move {movable.name}</div>
-          <div className="formgroup">
-            <div className="set-block">
-              <p className="muted">
-                It runs on the machine hosting your Stem server. Move it to one of your own computers and it
-                runs there instead — reaching that computer’s files, its applications and its network.
-              </p>
-              <div className="memory-view-actions">{moveButtons(movable)}</div>
-              <p className="muted">
-                Whoever is at that computer approves it there before it starts. An approval belongs to the
-                machine that gave it, so moving a server never carries one across.
-              </p>
-            </div>
-          </div>
-        </>
-      )}
-
-      {signInLimited && (
-        <>
-          <div className="grp-head">Signing in to {signInLimited.name}</div>
-          <div className="formgroup">
-            <div className="set-block">
-              <p className="muted">{NO_OAUTH_ELSEWHERE}</p>
-            </div>
-          </div>
-        </>
-      )}
-
       {/* The server is older than this app and does not know what a pinned
           server is. Said here because the alternative is a panel that looks
           exactly like one with nothing pinned to this computer. */}
       {hostState.unsupported && <p className="error">{hostState.unsupported}</p>}
-
-      {/* One card per spec this computer has been asked to run and has not
-          agreed to. It waits here rather than interrupting at launch (⑥): a
-          modal on startup would be answered by whoever wanted it to go away. */}
-      {hostState.pending.map((p) => (
-        <div key={p.name}>
-          <div className="grp-head">{pendingHeading(p)}</div>
-          <div className="formgroup">
-            <div className="set-block">
-              <span className="set-sub">This computer would run</span>
-              <code>{previewLine(p.preview)}</code>
-              {credentialLine(p.preview) && <p className="muted">{credentialLine(p.preview)}</p>}
-              {/* A lost credential and an edited one both move the fingerprint,
-                  and only one of them is somebody's doing. Saying "changed" to
-                  the second is true and useless: nobody changed it, and
-                  approving anyway starts a server without its key. */}
-              {lostLine(p) ? (
-                <p className="error">{lostLine(p)}</p>
-              ) : (
-                <p className="muted">
-                  {p.changed
-                    ? 'Its command, arguments or credentials are not the ones you approved. Stem stopped it and will not start it again until you say so.'
-                    : 'Stem never starts a server on your own computer without being asked, even when the entry was added elsewhere.'}
-                </p>
-              )}
-              {/* The one thing the plan insists is visible rather than
-                  documented: after this click there are no further questions,
-                  so what the click authorizes has to be readable here. */}
-              <p className="muted">
-                Once approved, Stem starts it and uses its tools whenever the assistant asks — including on a
-                scheduled run — without asking again.
-              </p>
-              {p.unbounded && <p className="error">{p.unbounded}</p>}
-              <div className="memory-view-actions">
-                <button className="link-btn" onClick={() => approveHosted(p)}>
-                  Approve and start
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ))}
-
-      {/* Everything already running (or trying to) on this machine. Servers
-          pinned to another device are absent by construction: this window would
-          be guessing about them. */}
-      {servers.some((s) => hostedHere(s) && hostState.status[s.name]?.status !== 'unapproved') && (
-        <>
-          <div className="grp-head">On this computer</div>
-          <div className="formgroup">
-            {servers
-              .filter((s) => hostedHere(s) && hostState.status[s.name]?.status !== 'unapproved')
-              .map((s, i) => (
-                <div key={s.name} className={`set-block${i === 0 ? '' : ' fg-divider'}`}>
-                  <span className="set-sub">{s.name}</span>
-                  <p className="muted">{hostStateLine(hostState.status[s.name])}</p>
-                  <div className="memory-view-actions">
-                    <button
-                      className="link-btn"
-                      onClick={() => testHosted(s.name)}
-                      disabled={testing === s.name}
-                    >
-                      {testing === s.name ? 'Connecting…' : 'Test connection'}
-                    </button>
-                    {hostState.approved[s.name] && (
-                      <button className="link-btn danger" onClick={() => rejectHosted(s.name)}>
-                        Stop trusting
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-          </div>
-        </>
-      )}
 
       {loginName && loginUrl?.name === loginName && (
         <p className="muted">

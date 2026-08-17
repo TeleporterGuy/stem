@@ -44,7 +44,7 @@ four combinations are meaningful, and no UI that merges them stays honest.
 | ⑥ | **Eager start when the client launches** — parity with how a local Stem has always behaved (`main.ts:252` prewarms pi, which connects everything). But the approval card is **not** eager: an unapproved spec quietly waits in the Manage panel instead of ambushing you at startup. |
 | ⑦ | **Only desktops are offered as hosts.** Not because a phone cannot spawn a process, but because iOS suspends the app and our whole availability signal is "has an open stream" — a phone would flicker between available and unavailable with the screen lock. |
 | ⑧ | Delivery rides an **addressed control frame on the existing SSE stream**, written only to that device's streams and never entering the replay ring; the result comes back as an ordinary `POST /rpc`. The channel that carries the call is the same channel that decides availability, so "looks reachable but has nowhere to send work" cannot happen. |
-| ⑨ | UI: two truthfully-named controls (*Runs on* + *Command \| URL*), the **place** in each row instead of a globe/plug icon, and the location control **hidden entirely** when Stem is running on this computer — there is one machine, and offering a choice would imply a distinction that does not exist. |
+| ⑨ | UI: two truthfully-named controls (*Runs on* + *Command \| URL*), and the location control **hidden entirely** when Stem is running on this computer — there is one machine, and offering a choice would imply a distinction that does not exist. The **place is a section header, not anything on the row** — see the note below; and everything you can *do* to one server is a strip under that server's row rather than a section below the list. |
 | ⑩ | On the move to a server, existing entries **stay server-located and are flagged**; the fix is a one-click *Move to <device>*. Same on unpairing: an orphaned entry is marked, never silently deleted or silently repointed. |
 
 Derived, and not separately decided:
@@ -64,6 +64,28 @@ Derived, and not separately decided:
   is the supported answer. Making OAuth work would mean running discovery and
   registration ON the device and sending the resulting token up, which is a different
   feature with its own security argument to make.
+- **The place is a section header, and it took three tries to get there.** A pill beside
+  the name broke a 300px panel's names across three lines and chopped commands mid-word;
+  a quiet grey line under the address gave the width back but read as a footnote to the
+  command rather than as an answer. Both were paying for visibility out of the row's only
+  useful column. Grouping the list by machine (`placeGroups()` in `McpTab.tsx`) costs the
+  row neither width nor height, and answers a question a flat list could not answer at
+  all — *what does this machine run?* Headers appear only when something is pinned
+  somewhere: one header over one list distinguishes nothing.
+- **The assistant is told where things run, because it cannot see it.** The location axis
+  is invisible to the one participant who does most of the diagnosing: asked why a pinned
+  server was failing, the assistant read a listing that gave the command and nothing else,
+  and answered about the wrong computer. So `list_mcp_servers` names the machine per server
+  (and whether it is switched off), the system prompt gains a computed **Where you are
+  running** section driven by `StemHost.kind()`, and `run_command`'s description stops
+  saying "the user's machine". None of it grants a new power — the assistant still cannot
+  move a server between machines, which is ④ holding: approval is local and a person's.
+- **Everything you can do to a server is under that server.** Approve, test, stop
+  trusting, move, and the OAuth limitation were five sections stacked below the list, each
+  repeating a name from it and each about exactly one row. They are one strip under the
+  selected row instead. The approval strip is the exception that opens unasked — it is not
+  information about a server but a server waiting on a person, and ⑥ only says it must not
+  ambush you at startup, not that it should be hard to find.
 - Reserved servers (`stem-recall`, the admin server) are always server-located.
 - The model's interface does not change. `invoke_tool` / `describe_tool` are unchanged;
   a pinned server is just another routed server to it.
@@ -238,3 +260,26 @@ One concrete requirement follows: **the approval card must say so when the serve
 approved does not itself have a bounded surface.** Approving something like a shell MCP
 server is a one-time click that authorizes unbounded execution, and that has to be legible
 on the card rather than buried here.
+
+## Appendix: run_command on a device rides the same rails
+
+Commands gained their own device target after this shipped: `run_command`'s `device`
+parameter, carried by an `exec-request` control frame (`server/exec-device/router.ts`,
+`desktop/exec-host/`) with the same addressed delivery, the same single-use 128-bit
+correlation id, and the same "an open stream is availability" answer as the MCP path.
+Where its decisions differ from the ones above, they differ on purpose:
+
+- **⑤ inverts.** MCP calls skip per-call confirmation because a server's tool surface is
+  bounded at approval time; a command string is exactly the unbounded surface that
+  argument excludes. So the exec path keeps run_command's full tiered policy — judged and
+  carded per command, against the target's platform and the target device's own learned
+  allowlist, with the static built-ins deliberately not extended there (zero trust:
+  a fresh machine's tier 1 is empty).
+- **④ holds, as a switch instead of a fingerprint.** There is no spec to approve, so the
+  client-local consent is one bit: "Run commands on this computer", off by default,
+  stored beside `mcp-approvals.json` and flipped only by a client-owned channel. A
+  compromised server can put anything on the wire and starts nothing on a machine whose
+  owner never opted in — and the machine re-reads its own switch on every request.
+- **⑦ and ⑩ carry over unchanged**: desktops only, and unpairing fails in-flight
+  commands, forgets the device's announcement, and leaves its learned allowlist inert in
+  settings until edited.

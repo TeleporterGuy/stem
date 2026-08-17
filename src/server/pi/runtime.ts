@@ -41,7 +41,7 @@ import {
 import { stripCiteMarkers } from '../../shared/citations';
 import { log } from '../log';
 import { isContextOverflowError } from '../backend/overflow';
-import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bootstrap';
+import { PLAIN_MD_DIRECTIVE, stemAssistantInstructions } from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
 import { previewText } from '../chats/preview';
 import { autoTitle, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
@@ -85,6 +85,7 @@ import { formatSkillsBlock, selectSkills, type SkillUsageStat } from '../skills/
 import { listSkillRecords } from '../skills/store';
 import { gradeSkillUse } from '../skills/grade';
 import { resolvePi, type PiInvocation } from './locate';
+import { repairMissingSessionCwd } from './session-cwd';
 import { PiProcess, stderrReason, type PiEvent } from './rpc';
 import {
   completeInternalCwd,
@@ -1430,6 +1431,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       this.currentThinking = null;
       this.activeThreadId = null;
       await writeFile(file, lines.slice(0, idx).join('\n') + '\n');
+      await repairMissingSessionCwd(file, this.options.workspaceRoot);
       const switched = await this.proc!.request({ type: 'switch_session', sessionPath: file });
       if (!switched.success) throw new Error(switched.error ?? `pi could not reload chat "${threadId}" after editing.`);
       // Both RPCs above swap the active session's model/thinking out from under us.
@@ -1693,7 +1695,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       try {
         const bridge = this.execBridge;
         if (!bridge) return respond({ ok: false, error: 'Command execution is unavailable.' });
-        const req = JSON.parse(payload ?? '{}') as { command?: string; cwd?: string; timeout_ms?: number };
+        const req = JSON.parse(payload ?? '{}') as {
+          command?: string;
+          cwd?: string;
+          timeout_ms?: number;
+          device?: string;
+        };
         // Mirror can be null after a session switch if the turn did not re-apply a
         // model; fall back to pi's live state so the judge stays on a signed-in provider.
         let currentModel = this.currentModel;
@@ -1709,6 +1716,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           command: req.command ?? '',
           cwd: typeof req.cwd === 'string' && req.cwd.trim() ? req.cwd : undefined,
           timeoutMs: typeof req.timeout_ms === 'number' ? req.timeout_ms : undefined,
+          device: typeof req.device === 'string' && req.device.trim() ? req.device : undefined,
           threadId: turn?.threadId ?? null,
           isScheduled: turn?.isScheduled === true,
           userText: turn?.userText,
@@ -1993,7 +2001,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         '--model',
         modelId,
         '--append-system-prompt',
-        STEM_ASSISTANT_INSTRUCTIONS
+        // Built per spawn: it names the machine the assistant is running on.
+        stemAssistantInstructions()
       ]
     });
     this.proc = proc;
@@ -2530,6 +2539,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const id = await this.newSession();
       return id;
     }
+    await repairMissingSessionCwd(file, this.options.workspaceRoot);
     const switched = await this.proc!.request({ type: 'switch_session', sessionPath: file });
     if (!switched.success) throw new Error(switched.error ?? `pi could not switch to chat "${threadId}".`);
     // The switch does NOT restore the session's persisted model/thinking: pi only

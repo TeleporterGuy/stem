@@ -100,6 +100,19 @@ describe('renderEvidence', () => {
   it('leads with the user\'s focus when /learn supplied one', () => {
     expect(renderEvidence(input({ focus: 'how to get captions' }))).toMatch(/^What the user asked to be captured/);
   });
+
+  it('names the machine the turn ran on, ahead of the evidence', () => {
+    // Without this the author writes every procedure as though there were only
+    // ever one machine, and a step that worked on the user's Mac is followed on
+    // a server that cannot reach the same files, network, or sites.
+    const text = renderEvidence(input({ machine: 'Stem is running on a server the user owns (Linux).' }));
+    expect(text).toContain('Where this turn ran:\nStem is running on a server');
+    expect(text.indexOf('Where this turn ran')).toBeLessThan(text.indexOf('What the assistant did'));
+  });
+
+  it('says nothing about machines when the caller did not say', () => {
+    expect(renderEvidence(input())).not.toContain('Where this turn ran');
+  });
 });
 
 describe('authorSkill', () => {

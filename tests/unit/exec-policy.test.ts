@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   buildJudgePrompt,
   classify,
+  deviceShellLabel,
   parseCommand,
   parseJudgeVerdict,
   resolveJudgeModel
 } from '../../src/server/exec/policy';
+import { unixShell } from '../../src/server/exec/executor';
 import type { ModelSummary } from '../../src/shared/types';
 
 // The run_command auto-approve policy: quote-aware segment parsing, conservative
@@ -197,6 +199,44 @@ describe('classify', () => {
   });
 });
 
+describe('classify for a device target (zero trust)', () => {
+  // Decision from the plan interview: a remote machine's tier 1 is exactly its
+  // own learned allowlist, which starts empty — no static built-ins, so even
+  // `ls` is judged there until its owner says otherwise.
+  it('does not extend the static allowlists to a remote machine', () => {
+    expect(classify('ls -la', { allowlist: [] }, 'darwin', { includeBuiltins: false }).tier).toBe('judge');
+    expect(classify('git status', { allowlist: [] }, 'darwin', { includeBuiltins: false }).tier).toBe('judge');
+  });
+
+  it("trusts exactly the device's own learned prefixes", () => {
+    const device = { allowlist: ['yt-dlp'] };
+    expect(classify('yt-dlp https://x.test', device, 'darwin', { includeBuiltins: false }).tier).toBe('run');
+    expect(classify('ls', device, 'darwin', { includeBuiltins: false }).tier).toBe('judge');
+  });
+
+  it('still parses with the TARGET platform grammar', () => {
+    // `'a & whoami'` is protected under zsh and a smuggled command under cmd —
+    // the grammar must be the target's, not the server's.
+    const cmd = "cat 'a & whoami & rem '";
+    expect(classify(cmd, { allowlist: ['cat'] }, 'darwin', { includeBuiltins: false }).tier).toBe('run');
+    expect(classify(cmd, { allowlist: ['cat'] }, 'win32', { includeBuiltins: false }).tier).toBe('judge');
+  });
+});
+
+describe('deviceShellLabel', () => {
+  it('names the machine and its shell for the judge', () => {
+    expect(deviceShellLabel('darwin', '“Vlado’s MacBook”')).toBe(
+      'the user\'s own computer “Vlado’s MacBook”, under zsh'
+    );
+    expect(deviceShellLabel('win32', '“Office PC”')).toContain('cmd.exe');
+  });
+
+  it('rides into the judge prompt as the one shell described', () => {
+    const prompt = buildJudgePrompt('rm x', 'somewhere', undefined, 'darwin', deviceShellLabel('darwin', '“Mac”'));
+    expect(prompt).toContain('the user\'s own computer “Mac”, under zsh');
+  });
+});
+
 describe('parseJudgeVerdict', () => {
   it('parses the three verdicts (unsafe before its safe substring)', () => {
     expect(parseJudgeVerdict('safe').verdict).toBe('safe');
@@ -231,9 +271,10 @@ describe('buildJudgePrompt', () => {
     const win = buildJudgePrompt('del /q x', 'C:\\work', undefined, 'win32');
     expect(win).toContain('cmd.exe');
     expect(win).not.toContain('zsh');
-    const mac = buildJudgePrompt('rm -rf build', '/tmp/work', undefined, 'darwin');
-    expect(mac).toContain('zsh');
-    expect(mac).not.toContain('cmd.exe');
+    const posix = buildJudgePrompt('rm -rf build', '/tmp/work', undefined, 'darwin');
+    // The shell that will actually run it — zsh on a Mac, whatever a server has.
+    expect(posix).toContain(unixShell().path.split('/').pop());
+    expect(posix).not.toContain('cmd.exe');
   });
 
   it("embeds the user's request when available, and says so when not", () => {

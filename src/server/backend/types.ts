@@ -32,6 +32,13 @@ export interface ExecRequest {
   command: string;
   cwd?: string;
   timeoutMs?: number;
+  /**
+   * The paired computer the command should run on — a device label or id, as
+   * the assistant heard it. Absent = the machine Stem runs on. Resolution,
+   * policy and routing all happen in the ExecService; the tool passes the name
+   * through verbatim.
+   */
+  device?: string;
   /** The originating conversation (null when no turn is live — shouldn't happen in practice). */
   threadId: string | null;
   /** True for autonomous scheduled runs — manual approvals are rejected there. */

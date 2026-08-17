@@ -9,6 +9,7 @@ import { passphraseKeyWrapper, passphraseProblem } from '../host/passphrase-key'
 import { log } from '../log';
 import { RECALL_MCP_NAME } from '../recall/register-mcp';
 import { SECRET_ENVELOPE_KEY, SECRET_VALUE_PREFIX } from '../pi/protocol';
+import { adoptSessionCwds } from '../pi/session-cwd';
 import { archivePath, extractTar, readTarMember, writeTar, type TarInput } from './tar';
 import type { SecretsState, StateExportReport, TransferGroup } from '../../shared/types';
 import {
@@ -786,6 +787,15 @@ export async function importState(options: { archive: string; passphrase: string
       secrets = 'wrong-passphrase';
     }
   }
+
+  // Every chat in the archive still records the folder it ran in on the machine
+  // that wrote it, and pi refuses to resume a chat whose folder is not there. On
+  // this machine that folder is ours and it is here, so point them at it now,
+  // while the move is the thing happening — otherwise the first thing to open an
+  // old chat fails, and the first thing to open one is usually a scheduled run
+  // with nobody watching. (PiRuntime repairs a stray one on resume as well, for
+  // state that came over before this pass existed.)
+  await adoptSessionCwds(join(root, 'pi-home', 'sessions'), join(root, 'workspace'));
 
   const assessment = await assess(root, secrets);
 

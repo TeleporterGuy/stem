@@ -462,6 +462,18 @@ try {
   // JSON file and a file is bytes with a mode on them.
   mkdirSync(join(stateDir, 'workspace', 'files'), { recursive: true });
   writeFileSync(join(stateDir, 'workspace', 'files', 'carried.txt'), 'this should survive the move\n');
+  // And a chat, written the way pi writes one: its first line records the folder
+  // the session ran in. pi REFUSES to resume a session whose folder is gone, so
+  // an import that carries this path through verbatim produces a Stem whose old
+  // chats list perfectly and cannot be opened — which is exactly what happened,
+  // and what killed every scheduled run on the server for days without a word in
+  // any log. The check is on the other side of the move.
+  mkdirSync(join(stateDir, 'pi-home', 'sessions'), { recursive: true });
+  writeFileSync(
+    join(stateDir, 'pi-home', 'sessions', 'moved.jsonl'),
+    `${JSON.stringify({ type: 'session', version: 3, id: 'moved-chat', cwd: join(stateDir, 'workspace') })}\n` +
+      `${JSON.stringify({ type: 'message', id: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } })}\n`
+  );
 
   // -- and a signed-in tool, which is the thing that travels badly --
   //
@@ -555,6 +567,19 @@ if (existsSync(archive)) {
     '  the Files folder did',
     readFileSync(join(secondState, 'workspace', 'files', 'carried.txt'), 'utf8').trim() === 'this should survive the move'
   );
+  // The chat came over pointing at THIS state root's workspace, not the one it
+  // was written in. pi will not resume a session whose recorded folder is gone,
+  // so a chat that keeps the old path is a chat nobody can open again.
+  {
+    const moved = readFileSync(join(secondState, 'pi-home', 'sessions', 'moved.jsonl'), 'utf8').split('\n');
+    const header = JSON.parse(moved[0]);
+    check(
+      '  a chat from the old machine points at this workspace',
+      header.cwd === join(secondState, 'workspace'),
+      header.cwd
+    );
+    check('  and the conversation under it is untouched', JSON.parse(moved[1]).message.role === 'user');
+  }
 
   // The database the first server was writing to while the snapshot was taken.
   // A torn copy opens and answers nothing; this asks it for the same number of

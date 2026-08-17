@@ -93,6 +93,7 @@ function renderTraceEntry(entry, index) {
 function renderEvidence(input) {
   const parts = [];
   if (input.focus?.trim()) parts.push(`What the user asked to be captured:\n${input.focus.trim()}`);
+  if (input.machine?.trim()) parts.push(`Where this turn ran:\n${input.machine.trim()}`);
   if (input.userText.trim()) parts.push(`The user's message:\n${input.userText.trim()}`);
   parts.push(
     input.trace.length > 0

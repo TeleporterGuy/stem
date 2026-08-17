@@ -4,6 +4,7 @@ import { TIPS, eligibleTips, tipAt, type TipContext } from '../../src/renderer/c
 const ctx = (over: Partial<TipContext> = {}): TipContext => ({
   format: 'mdx',
   bound: true,
+  remote: true,
   ...over
 });
 
@@ -11,7 +12,16 @@ const ids = (c: TipContext) => eligibleTips(c).map((t) => t.id);
 
 describe('eligibleTips', () => {
   it('offers the whole deck when every capability is present', () => {
-    expect(ids(ctx())).toEqual(TIPS.map((t) => t.id));
+    // Minus the one tip that is the OTHER half of a where-things-run pair; the
+    // deck can never show both, since only one of them is true on a given install.
+    expect(ids(ctx())).toEqual(TIPS.map((t) => t.id).filter((id) => id !== 'mcp-on-a-server'));
+  });
+
+  it('tells the truth about where tools run, one way or the other', () => {
+    expect(ids(ctx({ remote: true }))).toContain('mcp-elsewhere');
+    expect(ids(ctx({ remote: true }))).not.toContain('mcp-on-a-server');
+    expect(ids(ctx({ remote: false }))).toContain('mcp-on-a-server');
+    expect(ids(ctx({ remote: false }))).not.toContain('mcp-elsewhere');
   });
 
   it('drops the tips that need a bound shortcut (Quick Chat)', () => {

@@ -18,6 +18,8 @@ export interface TipContext {
   format: 'md' | 'mdx';
   /** Shortcuts are live in this window — false in Quick Chat, which has no provider. */
   bound: boolean;
+  /** Stem's server is on another machine, so "which computer runs it" is a real question here. */
+  remote: boolean;
 }
 
 export interface Tip {
@@ -74,6 +76,24 @@ export const TIPS: Tip[] = [
   {
     id: 'mcp-servers',
     text: 'MCP servers under Tools give Stem real actions in your other apps: mail, calendar, issues, dashboards.'
+  },
+  {
+    id: 'mcp-elsewhere',
+    text: 'A tool that only works on your own computer can still run there while Stem lives on a server — Tools says where each runs.',
+    // Only a real choice once there is more than one machine; on an ordinary
+    // install the tip below is the truthful version of the same capability.
+    when: (c) => c.remote
+  },
+  {
+    id: 'mcp-on-a-server',
+    text: 'Stem can move to a server and answer from your phone, with the tools that need your own computer still running on it.',
+    when: (c) => !c.remote
+  },
+  {
+    id: 'commands-on-this-computer',
+    text: 'The assistant can run commands on this computer too, once Settings → Chat → Command execution allows it here.',
+    // The switch it points at only exists when the server is elsewhere.
+    when: (c) => c.remote
   },
   {
     id: 'quick-chat',

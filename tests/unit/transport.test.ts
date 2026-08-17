@@ -100,6 +100,7 @@ beforeAll(async () => {
     // Nor does anything here host an MCP server; the addressed round-trip that
     // uses this has its own file (mcp-device.test.ts).
     mcpHost: { onRequest: () => undefined, onAssignmentsChanged: () => undefined },
+    execHost: { onRequest: () => undefined },
     threadOpened: async (threadId) => {
       clientSide.push(`client:threadOpened(${threadId})`);
       if (refuseHandoff) throw refuseHandoff;
@@ -227,6 +228,7 @@ describe('when the server is somewhere else', () => {
       requestAttention: () => undefined,
       oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
       mcpHost: { onRequest: () => undefined, onAssignmentsChanged: () => undefined },
+    execHost: { onRequest: () => undefined },
       threadOpened: async () => undefined,
       applyQuickChatSettings: () => undefined,
       resync: () => undefined,
@@ -373,6 +375,7 @@ describe('resuming a dropped stream', () => {
       requestAttention: () => undefined,
       oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
       mcpHost: { onRequest: () => undefined, onAssignmentsChanged: () => undefined },
+    execHost: { onRequest: () => undefined },
       threadOpened: async () => undefined,
       applyQuickChatSettings: () => undefined,
       resync: () => {
@@ -530,6 +533,7 @@ describe('a server reached over TLS', () => {
     requestAttention: () => undefined,
     oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
     mcpHost: { onRequest: () => undefined, onAssignmentsChanged: () => undefined },
+    execHost: { onRequest: () => undefined },
     threadOpened: async () => undefined,
     applyQuickChatSettings: () => undefined,
     resync: () => undefined,

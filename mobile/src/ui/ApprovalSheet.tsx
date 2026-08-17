@@ -88,6 +88,11 @@ function ApprovalBody({ item, theme }: { item: PendingApproval; theme: Theme }):
           <Field theme={theme} label="in">
             {item.request.cwd}
           </Field>
+          {item.request.deviceLabel ? (
+            <Field theme={theme} label="runs on">
+              {item.request.deviceLabel}
+            </Field>
+          ) : null}
           {item.request.judgeReason ? (
             <Field theme={theme} label="why you're being asked">
               {item.request.judgeReason}
