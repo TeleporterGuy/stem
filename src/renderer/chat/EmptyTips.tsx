@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Lightbulb, RotateCw } from 'lucide-react';
 import { Kbd, useShortcutsBound } from '../shortcuts';
+import { useRemoteServer } from '../hooks/useRemoteServer';
 import { eligibleTips, tipAt } from './tips';
 
 // Where in the deck to open. Persisted so the rotation keeps advancing across
@@ -20,6 +21,10 @@ function readSeq(): number {
 /** One rotating tip under the new-chat starter cards. See ./tips for the deck. */
 export function EmptyTips({ format }: { format: 'md' | 'mdx' }) {
   const bound = useShortcutsBound();
+  // Which of the two "where your tools run" tips is the true one here. It lands
+  // a frame late on a remote client (see the hook), which at worst shows the
+  // local wording once on a screen that is about to re-render anyway.
+  const remote = useRemoteServer();
   // Mounted with the empty state only, so the deck steps once per *new chat*
   // rather than once per chat opened.
   const [seq, setSeq] = useState(() => readSeq() + 1);
@@ -32,7 +37,7 @@ export function EmptyTips({ format }: { format: 'md' | 'mdx' }) {
     }
   }, [seq]);
 
-  const ctx = { format, bound };
+  const ctx = { format, bound, remote };
   const tip = tipAt(seq, ctx);
   if (!tip) return null;
 

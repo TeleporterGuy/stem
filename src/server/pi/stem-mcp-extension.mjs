@@ -1786,7 +1786,7 @@ function registerAdminTools(pi, cfgPath) {
     name: 'list_mcp_servers',
     label: 'List MCP servers',
     description:
-      "List the MCP servers currently configured for this assistant (excluding Stem's internal servers). Use this to see what is already set up before adding or removing one.",
+      "List the MCP servers currently configured for this assistant (excluding Stem's internal servers), including WHICH MACHINE each one runs on and whether it is switched off. Use this to see what is already set up before adding or removing one, and whenever a server is failing — where it runs decides which machine has to have its command installed and be able to reach its URL.",
     parameters: { type: 'object', properties: {} },
     async execute() {
       let servers;
@@ -1797,10 +1797,27 @@ function registerAdminTools(pi, cfgPath) {
       }
       const lines = Object.entries(servers)
         .filter(([n]) => !ADMIN_RESERVED.has(n))
-        .map(([n, def]) =>
-          def.url ? `- ${n} (http): ${def.url}` : `- ${n} (stdio): ${def.command} ${(def.args || []).join(' ')}`.trim()
-        );
-      const text = lines.length ? `Configured MCP servers:\n${lines.join('\n')}` : 'No MCP servers are configured yet.';
+        .map(([n, def]) => {
+          const how = def.url
+            ? `(http): ${def.url}`
+            : `(stdio): ${`${def.command || ''} ${(def.args || []).join(' ')}`.trim()}`;
+          const label = def.location && typeof def.location.label === 'string' ? def.location.label.trim() : '';
+          const where = def.location
+            ? `runs on the user's computer ${label ? `“${label}”` : '(the one it is pinned to)'}`
+            : 'runs where Stem itself runs';
+          return `- ${n} ${how} — ${where}${def.disabled ? ', switched off in Settings' : ''}`;
+        });
+      // The placement rules travel with the list, not in a doc page the model may
+      // not read: a server failing on the wrong machine is the one question this
+      // tool exists to answer, and the answer is useless without them.
+      const footer =
+        'A server with no pin runs on the same machine you do, so its command must exist there and its URL must be ' +
+        'reachable from there. A pinned one runs on that computer of the user\'s instead, and its tools work whenever ' +
+        'that computer is awake with Stem running. Only the user can move a server between machines — Settings → Tools ' +
+        '→ MCP servers, select it, Move to — and add_mcp_server always adds one that runs where you do.';
+      const text = lines.length
+        ? `Configured MCP servers:\n${lines.join('\n')}\n\n${footer}`
+        : `No MCP servers are configured yet.\n\n${footer}`;
       return { content: [{ type: 'text', text }], details: {} };
     }
   });
@@ -2011,8 +2028,10 @@ function registerExecTool(pi) {
     name: 'run_command',
     label: 'Run command',
     description:
-      'Run a shell command on the user\'s machine. On macOS/Linux Stem uses zsh with the login-shell PATH ' +
-      '(Homebrew/npm CLIs like `agent-browser` work). On Windows Stem uses cmd.exe (/d /s /c — no AutoRun); ' +
+      'Run a shell command on the machine Stem itself runs on — the user\'s own computer for an ordinary install, ' +
+      'their server when Stem runs on one (your instructions say which, under "Where you are running"). ' +
+      'On macOS/Linux Stem uses the host shell (zsh where there is one, otherwise bash or sh) with the login-shell ' +
+      'PATH (Homebrew/npm CLIs like `agent-browser` work). On Windows Stem uses cmd.exe (/d /s /c — no AutoRun); ' +
       'if you need PowerShell, invoke it explicitly as `powershell.exe -NoProfile -ExecutionPolicy Bypass ' +
       '-Command "..."` so a broken profile.ps1 cannot block the run. A bare `|` is a cmd pipe (it splits ' +
       'before PowerShell) — put PowerShell pipelines inside `-Command "..."` (or use `(...)` / property ' +

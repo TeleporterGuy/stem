@@ -45,6 +45,12 @@ Turn **Run commands** off to disable shell commands. With **Assisted**, the sele
 safety-check model receives the command and working folder. A cloud model processes
 that text on its provider.
 
+Commands run on the machine Stem itself runs on: your own computer normally, or your
+server if you [moved Stem to one](../running-on-a-server.md) — so they see the programs
+installed there, not the ones on the computer you happen to be typing on. On macOS and
+Linux they run under `zsh`, or `bash`/`sh` on a machine without it; on Windows under
+`cmd.exe`.
+
 - **Manual**: known-safe and always-allowed commands run; everything else asks first.
 - **Assisted**: an AI safety check passes routine commands and asks about uncertain
   ones. A convenience, not a security boundary.

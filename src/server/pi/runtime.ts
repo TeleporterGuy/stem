@@ -41,7 +41,7 @@ import {
 import { stripCiteMarkers } from '../../shared/citations';
 import { log } from '../log';
 import { isContextOverflowError } from '../backend/overflow';
-import { PLAIN_MD_DIRECTIVE, STEM_ASSISTANT_INSTRUCTIONS } from '../workspace/bootstrap';
+import { PLAIN_MD_DIRECTIVE, stemAssistantInstructions } from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
 import { previewText } from '../chats/preview';
 import { autoTitle, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
@@ -1993,7 +1993,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         '--model',
         modelId,
         '--append-system-prompt',
-        STEM_ASSISTANT_INSTRUCTIONS
+        // Built per spawn: it names the machine the assistant is running on.
+        stemAssistantInstructions()
       ]
     });
     this.proc = proc;

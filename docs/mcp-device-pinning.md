@@ -72,6 +72,14 @@ Derived, and not separately decided:
   row neither width nor height, and answers a question a flat list could not answer at
   all — *what does this machine run?* Headers appear only when something is pinned
   somewhere: one header over one list distinguishes nothing.
+- **The assistant is told where things run, because it cannot see it.** The location axis
+  is invisible to the one participant who does most of the diagnosing: asked why a pinned
+  server was failing, the assistant read a listing that gave the command and nothing else,
+  and answered about the wrong computer. So `list_mcp_servers` names the machine per server
+  (and whether it is switched off), the system prompt gains a computed **Where you are
+  running** section driven by `StemHost.kind()`, and `run_command`'s description stops
+  saying "the user's machine". None of it grants a new power — the assistant still cannot
+  move a server between machines, which is ④ holding: approval is local and a person's.
 - **Everything you can do to a server is under that server.** Approve, test, stop
   trusting, move, and the OAuth limitation were five sections stacked below the list, each
   repeating a name from it and each about exactly one row. They are one strip under the

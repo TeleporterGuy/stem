@@ -33,8 +33,23 @@ Maintainer notes:
   and forget it. Quick Chat has its own, set separately in Settings → Quick Chat, for anyone who
   wants search on at the desk but off in the overlay.
 
+- **MCP servers can run on the computer that has the tools.** With Stem on a server, a tool that
+  only means something on your own Mac — a command it has installed, a URL on your home network —
+  can be pinned to that Mac and runs there, while everything else still runs on the server and
+  answers from your phone. Tools → MCP servers lists your servers under the machine that runs
+  each one, and asks you to approve a server the first time it is set to run on the computer
+  you are at.
+- **The assistant knows which computer it is on.** Ask it why a tool is failing and it now says
+  which machine is missing the program, instead of assuming everything runs on the computer in
+  front of you. It can list your MCP servers with where each one runs; moving one between
+  machines is still yours to do.
+
 ### Fixed
 
+- **Commands work when Stem runs on a server.** Every shell command the assistant tried on a
+  server install failed instantly with `spawn /bin/zsh ENOENT`, because Stem asked for a shell
+  that Linux servers do not have — including the commands it runs to work out why something
+  else is broken. It now uses the shell the machine actually has.
 - **Right-click works on search results.** A chat you found by searching can now be archived,
   snoozed, renamed, filed or deleted straight from the result row, like any other row in the list.
   Until now the menu simply didn't open there, so the one chat you had just gone looking for was

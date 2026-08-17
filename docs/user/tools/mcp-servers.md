@@ -41,14 +41,17 @@ Linux without a keyring, they use an owner-only plaintext file.
 2. Enter its trusted command and arguments.
 3. Add required environment variables under **Advanced**, then select **Add Server**.
 
-That command runs wherever your Stem runs. Check its publisher, source, requested
-folders, and exact package version first.
+That command runs wherever your Stem runs, and starts only if the command exists on
+that machine — see [Where a server runs](#where-a-server-runs). Check its publisher,
+source, requested folders, and exact package version first.
 
 ## Where a server runs
 
-**Command** and **URL** say how Stem talks to a server, not where it runs. If Stem
-runs on the computer you are sitting at, there is only one machine and nothing to
-choose.
+**Command** and **URL** say how Stem talks to a server, not where it runs. A server
+runs on the machine Stem itself runs on unless you pin it to one of your computers,
+and that machine is the one that has to have its command installed and be able to
+reach its URL. If Stem runs on the computer you are sitting at, there is only one
+machine and nothing to choose.
 
 If Stem runs on a server elsewhere, **Runs on** appears when you add one, and the list
 splits into a section per machine — *On your Stem server*, *On this computer*, and one
@@ -61,6 +64,10 @@ with Stem running.
 
 Selecting a server opens everything you can do to it under its own row — how it is
 doing, **Test connection**, **Stop trusting**, and where else it could run.
+
+You can also just ask the assistant. It can list your servers and say where each one
+runs, which is usually the fastest way to find out why one of them is failing — but
+moving a server between machines is yours to do, not something it can do for you.
 
 Phones are not offered as a place to run a server: they sleep, and the server would be
 unreachable half the time.
@@ -95,3 +102,9 @@ server and use **−** to remove both.
 
 **Connection failed** can mean expired sign-in, a bad or unreachable URL, or a server
 error. Inspect the error, then reconnect or verify the URL and network.
+
+**Failed to start: spawn … ENOENT** names a command the machine that runs the server
+does not have — `spawn uvx ENOENT` means no `uvx` there. Install it on that machine,
+or move the server to a computer that already has it. When Stem runs on a server, that
+machine is the server, not the computer you are reading this on: a tool installed on
+your Mac is not installed for Stem.
