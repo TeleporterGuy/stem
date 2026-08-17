@@ -1203,14 +1203,45 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
    computer that nobody here has approved yet. Not a failure (danger) and not a
    dormant setting (off): it is the one pill that means "your turn". */
 .pill.warn { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
-/* Where an MCP server runs, when that is not the machine hosting the server.
-   A line under the address rather than a pill beside the name: a place is not a
-   state, and it must not take its width out of the only column with anything in
-   it. This panel can be 300px wide and an MCP row already carries a name, a URL
-   or a command, a state and a switch — a pill here broke names across three
-   lines and chopped commands mid-word. */
-.row-place { display: block; font-size: var(--fs-10); color: var(--muted); margin-top: 2px; }
-.row-place.orphaned { color: var(--danger); }
+/* Where an MCP server runs is a SECTION HEADER, not anything on the row — see
+   placeGroups() in McpTab.tsx. Both attempts to write it on the row bought their
+   visibility out of the row's only useful column: a pill beside the name broke a
+   300px panel's names across three lines, and the quiet line under the address
+   that replaced it read as a footnote to the command rather than an answer.
+
+   Everything there is to DO to one server lives under it, in a strip that the
+   row's own background continues into. Five sections below the list said these
+   things before — approve, on this computer, move, signing in, pinned to a
+   computer that is gone — each repeating a name from the list, each about one
+   row, and after grouping, each repeating a header too. */
+.row-detail {
+  padding: 0 12px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  font-size: var(--fs-12);
+}
+.row-detail.selected { background: var(--sel); }
+/* A question waiting on a person, so it carries the one colour that means "your
+   turn" — and it is open whether or not its row is selected, because a call to
+   action you have to find is one most people never see. */
+.row-detail.approval { background: color-mix(in srgb, var(--warn) 22%, transparent); padding-top: 9px; }
+.row-detail p { margin: 0; }
+/* The strip's headline — the question itself, so it is read before the four
+   paragraphs explaining what answering it means. */
+.row-detail .set-sub { margin: 0; color: var(--ink); font-weight: 600; }
+.row-detail code {
+  display: block;
+  font-size: var(--fs-11);
+  background: var(--inline-bg);
+  border-radius: var(--radius-sm);
+  padding: 5px 7px;
+  overflow-wrap: anywhere;
+}
+.row-detail .memory-view-actions { flex-wrap: wrap; }
+/* A row and its strip are one block, so the hairline between servers is drawn
+   between blocks — .group-row + .group-row cannot see past a strip. */
+.mcp-list .row-block + .row-block { border-top: 0.5px solid var(--hair); }
 
 /* And the text column gets the space that frees up. The name stays on one line;
    the address is clamped to two, with the whole of it on the element's title,
@@ -1855,14 +1886,6 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 /* add-server form: bezeled fields, segmented selector, default button */
 .formgroup { background: var(--surface); border: 0.5px solid var(--line); border-radius: var(--radius-md); padding: 11px; display: flex; flex-direction: column; gap: var(--sp-4); }
 .formgroup .set-block.fg-divider { padding-top: 9px; border-top: 0.5px solid var(--line); }
-/* Where a jump landed. Long enough to be seen after a smooth scroll, and gone
-   before it becomes decoration. */
-.formgroup.flash { animation: stem-flash 1.6s ease-out; }
-@keyframes stem-flash {
-  0%, 45% { border-color: var(--accent); box-shadow: var(--shadow-focus); }
-  100% { border-color: var(--line); box-shadow: none; }
-}
-@media (prefers-reduced-motion: reduce) { .formgroup.flash { animation-duration: 0.01s; border-color: var(--accent); } }
 
 /* Endpoint connection test: a ghost icon button + an inline coloured status. */
 .retrieval-test { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); }
