@@ -155,7 +155,8 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
     bashPathTimer.current = setTimeout(() => {
       const trimmed = value.trim();
       if (!trimmed) {
-        updateExec({ windowsShell: 'cmd', gitBashPath: null });
+        // Empty path keeps Git Bash selected; spawn auto-detects or falls back to cmd.
+        updateExec({ gitBashPath: null });
         return;
       }
       updateExec({
@@ -334,10 +335,11 @@ export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) 
                 <span className="set-sub">
                   Windows shell{' '}
                   <InfoTip label="About the Windows shell">
-                    Commands run in Command Prompt (cmd.exe) by default. Git Bash is optional: Stem
-                    looks for bash.exe on disk (no PowerShell). If it is not in a usual place, paste
-                    the path. Switching shells changes which commands auto-run (dir vs ls) and how
-                    quotes work.
+                    Commands run in Git Bash when bash.exe is on disk, and fall back to Command
+                    Prompt (cmd.exe) if it is not. Stem looks for Git for Windows in the usual
+                    places (no PowerShell). If it is installed somewhere unusual, paste the path.
+                    Switching shells changes which commands auto-run (dir vs ls) and how quotes
+                    work.
                   </InfoTip>
                 </span>
                 <div className="seg-ctl">

@@ -34,7 +34,8 @@
     "eval:skills": "node scripts/skill-author-eval.mjs",
     "eval:skill-retrieval": "node scripts/skill-retrieval-eval.mjs",
     "fixtures:skills": "node scripts/skill-fixtures.mjs",
-    "gen:shortcuts-doc": "node scripts/gen-shortcuts-doc.mjs"
+    "gen:shortcuts-doc": "node scripts/gen-shortcuts-doc.mjs",
+    "vendor:embed-models": "node scripts/vendor-embed-models.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.82.0",

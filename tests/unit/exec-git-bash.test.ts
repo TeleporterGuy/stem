@@ -5,6 +5,7 @@ import {
   detectGitBashFromDisk,
   gitBashPathEnv,
   isUsableGitBashPath,
+  resolveGitBashExecutable,
   resolveHostShell,
   wellKnownGitBashCandidates
 } from '../../src/server/exec/git-bash';
@@ -97,17 +98,25 @@ describe('gitBashPathEnv', () => {
 });
 
 describe('resolveHostShell', () => {
-  it('is zsh off Windows, cmd on Windows by default', () => {
+  it('is zsh off Windows, cmd on Windows when Settings asked for cmd', () => {
     expect(resolveHostShell({ windowsShell: 'cmd', gitBashPath: null }, 'darwin')).toBe('zsh');
     expect(resolveHostShell({ windowsShell: 'cmd', gitBashPath: null }, 'win32')).toBe('cmd');
   });
 
-  it('uses Git Bash only when opted in and bash.exe exists', () => {
+  it('uses Git Bash when opted in and bash.exe exists at the saved path', () => {
     const exists = (p: string) => p === BASH;
     expect(resolveHostShell({ windowsShell: 'git-bash', gitBashPath: BASH }, 'win32', exists)).toBe('git-bash');
-    expect(resolveHostShell({ windowsShell: 'git-bash', gitBashPath: BASH }, 'win32', () => false)).toBe('cmd');
-    expect(resolveHostShell({ windowsShell: 'git-bash', gitBashPath: null }, 'win32', exists)).toBe('cmd');
     expect(resolveHostShell({ windowsShell: 'git-bash', gitBashPath: BASH }, 'darwin', exists)).toBe('zsh');
+  });
+
+  it('falls back to cmd when Git Bash is selected but bash.exe is not on disk', () => {
+    expect(resolveHostShell({ windowsShell: 'git-bash', gitBashPath: BASH }, 'win32', () => false)).toBe('cmd');
+  });
+
+  it('auto-detects bash.exe when git-bash is selected with no saved path', () => {
+    const exists = (p: string) => p === BASH;
+    expect(resolveHostShell({ windowsShell: 'git-bash', gitBashPath: null }, 'win32', exists)).toBe('git-bash');
+    expect(resolveGitBashExecutable({ gitBashPath: null }, exists)).toBe(BASH);
   });
 });
 

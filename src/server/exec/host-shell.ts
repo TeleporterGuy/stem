@@ -1,8 +1,9 @@
 import type { HostShell } from '../../shared/types';
 
 /**
- * Default host shell from the OS: Windows is cmd.exe until Settings opts into
- * Git Bash. Callers that have ExecSettings should use resolveHostShell instead.
+ * Default host shell from the OS when there are no ExecSettings (tests, a
+ * remote device's platform). Windows is cmd.exe here; the real Windows default
+ * in Settings is Git Bash, applied through resolveHostShell.
  */
 export function hostShellFromPlatform(platform: NodeJS.Platform = process.platform): HostShell {
   return platform === 'win32' ? 'cmd' : 'zsh';

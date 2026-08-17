@@ -15,7 +15,7 @@ import { resolveRoleEffort } from '../../shared/modelRoles';
 import { log } from '../log';
 import { ensureThreadScratch } from './scratch';
 import { clampTimeout, execEnv, resolveLoginPath, runCommand } from './executor';
-import { gitBashPathEnv, resolveHostShell } from './git-bash';
+import { gitBashPathEnv, resolveGitBashExecutable, resolveHostShell } from './git-bash';
 import { hostShellFromPlatform } from './host-shell';
 import { buildJudgePrompt, classify, deviceShellLabel, parseJudgeVerdict, resolveJudgeModel } from './policy';
 import { scanProtected } from './protected';
@@ -400,11 +400,10 @@ export class ExecService implements ExecBridge {
     this.running.add(entry);
     try {
       const shell = resolveHostShell(settings);
+      const gitBashPath = shell === 'git-bash' ? resolveGitBashExecutable(settings) : settings.gitBashPath;
       const loginPath = await resolveLoginPath();
       const pathForChild =
-        shell === 'git-bash' && settings.gitBashPath
-          ? gitBashPathEnv(settings.gitBashPath, loginPath)
-          : loginPath;
+        shell === 'git-bash' && gitBashPath ? gitBashPathEnv(gitBashPath, loginPath) : loginPath;
       const outcome = await runCommand({
         command,
         cwd,
@@ -412,7 +411,7 @@ export class ExecService implements ExecBridge {
         env: execEnv(pathForChild),
         signal: controller.signal,
         shell,
-        gitBashPath: settings.gitBashPath
+        gitBashPath
       });
       if (controller.signal.aborted && !outcome.timedOut) {
         return { ok: false, error: 'The command was cancelled.' };

@@ -77,6 +77,8 @@ const STABLE_UPTIME_MS = 60_000;
 export function createEmbedWorkerManager(deps: {
   spawn: () => WorkerTransport;
   cacheDir: () => string;
+  /** Repo-shipped ONNX weights (vendor/embed-models). Optional so tests can omit it. */
+  bundledDir?: () => string;
   embedTimeoutMs?: number;
   rerankTimeoutMs?: number;
 }): EmbedWorkerManager {
@@ -277,8 +279,9 @@ export function createEmbedWorkerManager(deps: {
         if (rerankSpec) setRerankStatus({ model: rerankSpec.id, state: 'error', error });
       }
     });
-    if (spec) t.send({ type: 'load', spec, cacheDir: deps.cacheDir() });
-    if (rerankSpec) t.send({ type: 'load-rerank', spec: rerankSpec, cacheDir: deps.cacheDir() });
+    if (spec) t.send({ type: 'load', spec, cacheDir: deps.cacheDir(), bundledDir: deps.bundledDir?.() ?? null });
+    if (rerankSpec)
+      t.send({ type: 'load-rerank', spec: rerankSpec, cacheDir: deps.cacheDir(), bundledDir: deps.bundledDir?.() ?? null });
   }
 
   function stop(): void {
@@ -316,7 +319,7 @@ export function createEmbedWorkerManager(deps: {
       if (transport && !spec) {
         spec = target;
         setStatus({ model: target.id, state: 'loading' });
-        transport.send({ type: 'load', spec: target, cacheDir: deps.cacheDir() });
+        transport.send({ type: 'load', spec: target, cacheDir: deps.cacheDir(), bundledDir: deps.bundledDir?.() ?? null });
         return;
       }
       if (transport) stop();
@@ -363,7 +366,7 @@ export function createEmbedWorkerManager(deps: {
       if (transport) {
         rerankSpec = target;
         setRerankStatus({ model: target.id, state: 'loading' });
-        transport.send({ type: 'load-rerank', spec: target, cacheDir: deps.cacheDir() });
+        transport.send({ type: 'load-rerank', spec: target, cacheDir: deps.cacheDir(), bundledDir: deps.bundledDir?.() ?? null });
         return;
       }
       rerankSpec = target;

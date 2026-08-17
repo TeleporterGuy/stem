@@ -81,25 +81,29 @@ node node_modules\electron\install.js
 
 ## Shell Stem uses for `run_command`
 
-On Windows, approved commands run in **Command Prompt** by default:
+On Windows, approved commands run in **Git Bash** when Git for Windows is
+installed, and fall back to **Command Prompt** otherwise:
 
-`cmd.exe /d /s /c "<command>"`
-
-- `/d` disables AutoRun (registry hooks that behave like a login profile).
-- Stem does **not** load PowerShell’s `profile.ps1` for the default path.
-- The command is wrapped in quotes and spawned with `windowsVerbatimArguments` so
-  inner `"` (e.g. PowerShell `-Command "..."`) are not turned into `\"`.
-
-**Git Bash** is optional. Settings → Chat → Command execution has a Windows shell
-picker. Stem looks for `bash.exe` on disk (usual Git for Windows paths, then PATH)
-without running PowerShell. If Git is installed somewhere unusual, paste the path
-to `bash.exe`. When Git Bash is on, commands run as:
+Git Bash (when `bash.exe` is on disk):
 
 `bash.exe --noprofile --norc -c "<command>"`
 
 `--noprofile --norc` skips `.bashrc` / `/etc/profile` (the same idea as cmd `/d`).
 Git’s `usr\bin` is prepended to PATH so `ls` / `cat` / `grep` work. The safety
 parser then follows **bash** quoting, not cmd’s — `ls` auto-runs, `dir` does not.
+
+Stem looks for `bash.exe` on disk (usual Git for Windows paths, then PATH)
+without running PowerShell. If Git is installed somewhere unusual, paste the
+path to `bash.exe` under Settings → Chat → Command execution.
+
+Command Prompt fallback (no Git Bash, or you pick it in Settings):
+
+`cmd.exe /d /s /c "<command>"`
+
+- `/d` disables AutoRun (registry hooks that behave like a login profile).
+- Stem does **not** load PowerShell’s `profile.ps1` for this path.
+- The command is wrapped in quotes and spawned with `windowsVerbatimArguments` so
+  inner `"` (e.g. PowerShell `-Command "..."`) are not turned into `\"`.
 
 ### What auto-runs, and what doesn’t (cmd.exe)
 
@@ -138,18 +142,23 @@ Or avoid pipes with `(...)` / property access when that is enough
 1. `node -v` ≥ 24 and `npm -v` with portable Node on PATH.
 2. `npm install` → `npm run preflight` → `npm run dev` opens Stem.
 3. Complete onboarding / chat with a provider.
-4. Ask Stem to run `echo hello`, `dir`, or `git status` — expect a normal result
-   (or an approval card), not a spawn/`zsh` error.
+4. Ask Stem to run `echo hello`, `ls`, or `git status` — expect a normal result
+   (or an approval card), not a spawn/`zsh` error. Without Git Bash, `dir` is the
+   Command Prompt equivalent.
 5. Confirm a broken `profile.ps1` did not fire for those default commands.
 6. Optional: have Stem run the `-NoProfile` PowerShell one-liner above.
-7. Assisted mode: ask for `type 'a & whoami & rem '`. It must show an approval
-   card, never run — cmd would split that into three commands.
-8. Connect a folder read-only, then ask Stem to `type` a file inside it. Expect
+7. Assisted mode: ask for `cat 'a & whoami'` (Git Bash) or `type 'a & whoami & rem '`
+   (cmd). It must show an approval card, never run.
+8. Connect a folder read-only, then ask Stem to `cat` / `type` a file inside it. Expect
    the read-only refusal, not the file.
 9. Check that `%APPDATA%\Stem\` appears and survives a restart.
-10. Memory / search: if hybrid embeddings fail, check the main log for
-    `embed-endpoint` / named-pipe errors (FTS-only fallback is safe but weaker).
-11. Optional Git Bash: Settings → Chat → Command execution → Windows shell →
-    Git Bash (path auto-filled if Git for Windows is installed). Ask Stem to run
-    `ls` — POSIX commands should work. `cat 'a & whoami'` must not run `whoami`
-    as a second command (bash honours the quotes).
+10. Memory / search: first launch downloads ~700 MB from Hugging Face into
+    `%APPDATA%\Stem\embed-models`. If that host is blocked, copy a cache from a
+    machine that already has one into `vendor/embed-models/` (see that folder's
+    README) or into `%APPDATA%\Stem\embed-models`, then restart — Stem will not
+    call the Hub when the weights are already on disk. Named-pipe errors in the
+    log (`embed-endpoint`) only affect MCP hybrid search; FTS-only fallback is
+    safe but weaker.
+11. Settings → Chat → Command execution → Windows shell should already be Git Bash
+    when `bash.exe` was found. Ask Stem to run `ls`. Switch to Command Prompt and
+    `dir` if you want the cmd parser.

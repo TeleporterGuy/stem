@@ -1,8 +1,9 @@
-import { existsSync, rmSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { applyPrefixes } from './embed-catalog';
 import type { LocalEmbedModelSpec } from './embed-catalog';
 import type { LocalRerankModelSpec } from './rerank-catalog';
+import { hubAccessForLoad, pathAppearsInMessage } from './embed-files';
 import type { EmbedKind } from './embeddings';
 import type { RerankResult } from './rerank';
 import type { LocalEmbedStatus, LocalRerankStatus } from '../../shared/types';
@@ -15,9 +16,9 @@ import type { LocalEmbedStatus, LocalRerankStatus } from '../../shared/types';
 // This file must stay free of Electron imports beyond the ambient parentPort.
 
 export type WorkerInMessage =
-  | { type: 'load'; spec: LocalEmbedModelSpec; cacheDir: string }
+  | { type: 'load'; spec: LocalEmbedModelSpec; cacheDir: string; bundledDir?: string | null }
   | { type: 'embed'; id: number; texts: string[]; kind: EmbedKind }
-  | { type: 'load-rerank'; spec: LocalRerankModelSpec; cacheDir: string }
+  | { type: 'load-rerank'; spec: LocalRerankModelSpec; cacheDir: string; bundledDir?: string | null }
   | { type: 'rerank'; id: number; query: string; docs: string[]; topN: number }
   | { type: 'dispose' };
 
@@ -117,11 +118,6 @@ function postRerankStatus(status: Omit<LocalRerankStatus, 'model'>): void {
   post({ type: 'rerank-status', status: { model: rerankSpec.id, ...status } });
 }
 
-/** The weights filename transformers.js resolves for each catalog dtype. */
-function weightsFile(dtype: LocalEmbedModelSpec['dtype']): string {
-  return dtype === 'q8' ? 'model_quantized.onnx' : dtype === 'q4' ? 'model_q4.onnx' : 'model.onnx';
-}
-
 /**
  * transformers.js progress events → one throttled status callback. Files
  * download in parallel and each reports independently, so per-file
@@ -169,18 +165,32 @@ function progressAggregator(
  * own healthy cache over it would throw away good bytes.
  */
 function purgeIfCorrupt(message: string, repo: string, cacheDir: string): boolean {
-  if (!/protobuf parsing failed/i.test(message) || !message.includes(join(cacheDir, repo))) return false;
+  if (!/protobuf parsing failed/i.test(message) || !pathAppearsInMessage(message, join(cacheDir, repo))) return false;
   rmSync(join(cacheDir, repo), { recursive: true, force: true });
   return true;
 }
 
-async function load(nextSpec: LocalEmbedModelSpec, cacheDir: string): Promise<void> {
+function applyHubAccess(
+  env: { cacheDir: string; localModelPath?: string; allowRemoteModels?: boolean },
+  cacheDir: string,
+  bundledDir: string | null | undefined,
+  repo: string,
+  dtype: LocalEmbedModelSpec['dtype']
+): boolean {
+  env.cacheDir = cacheDir;
+  const access = hubAccessForLoad({ cacheDir, bundledDir, repo, dtype });
+  if (access.localModelPath) env.localModelPath = access.localModelPath;
+  env.allowRemoteModels = access.allowRemoteModels;
+  // True when bytes are already on disk (cache or vendor) — progress events are reads, not a download.
+  return !access.allowRemoteModels;
+}
+
+async function load(nextSpec: LocalEmbedModelSpec, cacheDir: string, bundledDir?: string | null): Promise<void> {
   spec = nextSpec;
   postStatus({ state: 'loading' });
   try {
     const { pipeline, env } = await import('@huggingface/transformers');
-    env.cacheDir = cacheDir;
-    const cached = existsSync(join(cacheDir, nextSpec.repo, 'onnx', weightsFile(nextSpec.dtype)));
+    const cached = applyHubAccess(env, cacheDir, bundledDir, nextSpec.repo, nextSpec.dtype);
     const pipe = (await pipeline('feature-extraction', nextSpec.repo, {
       dtype: nextSpec.dtype,
       progress_callback: progressAggregator(cached, postStatus)
@@ -203,7 +213,7 @@ async function load(nextSpec: LocalEmbedModelSpec, cacheDir: string): Promise<vo
   }
 }
 
-async function loadRerank(nextSpec: LocalRerankModelSpec, cacheDir: string): Promise<void> {
+async function loadRerank(nextSpec: LocalRerankModelSpec, cacheDir: string, bundledDir?: string | null): Promise<void> {
   // Replacing an already-loaded reranker (model switch): release the old ONNX
   // session first so two cross-encoders never sit in memory at once.
   const old = reranker;
@@ -219,8 +229,7 @@ async function loadRerank(nextSpec: LocalRerankModelSpec, cacheDir: string): Pro
     const { AutoTokenizer, AutoModelForSequenceClassification, AutoModelForCausalLM, env } = await import(
       '@huggingface/transformers'
     );
-    env.cacheDir = cacheDir;
-    const cached = existsSync(join(cacheDir, nextSpec.repo, 'onnx', weightsFile(nextSpec.dtype)));
+    const cached = applyHubAccess(env, cacheDir, bundledDir, nextSpec.repo, nextSpec.dtype);
     const onProgress = progressAggregator(cached, postRerankStatus);
     const tokenizer = (await AutoTokenizer.from_pretrained(nextSpec.repo, {
       progress_callback: onProgress
@@ -364,9 +373,10 @@ let loadChain: Promise<void> = Promise.resolve();
 
 port.on('message', (e: { data: WorkerInMessage }) => {
   const msg = e.data;
-  if (msg.type === 'load') loadChain = loadChain.then(() => load(msg.spec, msg.cacheDir));
+  if (msg.type === 'load') loadChain = loadChain.then(() => load(msg.spec, msg.cacheDir, msg.bundledDir));
   else if (msg.type === 'embed') void embed(msg.id, msg.texts, msg.kind);
-  else if (msg.type === 'load-rerank') loadChain = loadChain.then(() => loadRerank(msg.spec, msg.cacheDir));
+  else if (msg.type === 'load-rerank')
+    loadChain = loadChain.then(() => loadRerank(msg.spec, msg.cacheDir, msg.bundledDir));
   else if (msg.type === 'rerank') void rerank(msg.id, msg.query, msg.docs, msg.topN);
   else if (msg.type === 'dispose') void dispose();
 });

@@ -43,7 +43,7 @@ function fakeWorker(): FakeWorker {
   return w;
 }
 
-function manager(opts: { embedTimeoutMs?: number; rerankTimeoutMs?: number } = {}) {
+function manager(opts: { embedTimeoutMs?: number; rerankTimeoutMs?: number; bundledDir?: string } = {}) {
   const workers: FakeWorker[] = [];
   const mgr = createEmbedWorkerManager({
     spawn: () => {
@@ -52,7 +52,9 @@ function manager(opts: { embedTimeoutMs?: number; rerankTimeoutMs?: number } = {
       return w;
     },
     cacheDir: () => '/tmp/models',
-    ...opts
+    bundledDir: opts.bundledDir ? () => opts.bundledDir! : undefined,
+    embedTimeoutMs: opts.embedTimeoutMs,
+    rerankTimeoutMs: opts.rerankTimeoutMs
   });
   return { mgr, workers };
 }
@@ -73,9 +75,19 @@ describe('embed worker manager', () => {
     expect(workers).toHaveLength(0);
     mgr.ensure(SPEC);
     expect(workers).toHaveLength(1);
-    expect(workers[0].sent[0]).toMatchObject({ type: 'load', cacheDir: '/tmp/models' });
+    expect(workers[0].sent[0]).toMatchObject({ type: 'load', cacheDir: '/tmp/models', bundledDir: null });
     mgr.ensure(SPEC); // idempotent while the same model is up
     expect(workers).toHaveLength(1);
+  });
+
+  it('forwards the vendor models dir on load so the worker can stay offline', () => {
+    const { mgr, workers } = manager({ bundledDir: '/repo/vendor/embed-models' });
+    mgr.ensure(SPEC);
+    expect(workers[0].sent[0]).toMatchObject({
+      type: 'load',
+      cacheDir: '/tmp/models',
+      bundledDir: '/repo/vendor/embed-models'
+    });
   });
 
   it('queues embeds while loading and flushes them on ready', async () => {

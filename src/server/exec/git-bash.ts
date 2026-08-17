@@ -190,8 +190,22 @@ export function gitBashPathEnv(bashPath: string, windowsPath: string): string {
 }
 
 /**
- * The shell run_command will actually spawn. Git Bash only when the user opted
- * in AND bash.exe is still on disk; otherwise cmd.exe (the Windows default).
+ * bash.exe Stem will spawn: the saved path if it is still on disk, else a
+ * well-known Git for Windows install. Null means fall back to cmd.exe.
+ */
+export function resolveGitBashExecutable(
+  settings: Pick<ExecSettings, 'gitBashPath'>,
+  exists: (p: string) => boolean = existsSync,
+  env: NodeJS.ProcessEnv = process.env
+): string | null {
+  if (isUsableGitBashPath(settings.gitBashPath, exists)) return settings.gitBashPath!.trim();
+  return detectGitBashFromDisk({ exists, env });
+}
+
+/**
+ * The shell run_command will actually spawn. Git Bash when the user wants it
+ * (the Windows default) AND bash.exe is on disk — saved path or auto-detected.
+ * Otherwise cmd.exe.
  */
 export function resolveHostShell(
   settings: Pick<ExecSettings, 'windowsShell' | 'gitBashPath'>,
@@ -199,7 +213,7 @@ export function resolveHostShell(
   exists: (p: string) => boolean = existsSync
 ): HostShell {
   if (platform !== 'win32') return 'zsh';
-  if (settings.windowsShell === 'git-bash' && isUsableGitBashPath(settings.gitBashPath, exists)) {
+  if (settings.windowsShell === 'git-bash' && resolveGitBashExecutable(settings, exists)) {
     return 'git-bash';
   }
   return 'cmd';

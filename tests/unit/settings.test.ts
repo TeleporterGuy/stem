@@ -549,7 +549,7 @@ describe('exec settings', () => {
       allowlist: [],
       deviceAllowlists: {},
       scratchTtlDays: 30,
-      windowsShell: 'cmd',
+      windowsShell: 'git-bash',
       gitBashPath: null
     });
   });
@@ -603,11 +603,13 @@ describe('exec settings', () => {
     expect((await readSettings()).exec.approvalMode).toBe('manual');
   });
 
-  it('defaults windowsShell to cmd and coerces garbage / git-bash-without-path', async () => {
+  it('defaults windowsShell to git-bash and keeps it without a saved path', async () => {
     writeFileSync(path, JSON.stringify({ exec: { windowsShell: 'powershell', gitBashPath: 7 } }));
-    expect((await readSettings()).exec.windowsShell).toBe('cmd');
+    expect((await readSettings()).exec.windowsShell).toBe('git-bash');
     expect((await readSettings()).exec.gitBashPath).toBeNull();
     writeFileSync(path, JSON.stringify({ exec: { windowsShell: 'git-bash' } }));
+    expect((await readSettings()).exec.windowsShell).toBe('git-bash');
+    writeFileSync(path, JSON.stringify({ exec: { windowsShell: 'cmd' } }));
     expect((await readSettings()).exec.windowsShell).toBe('cmd');
     const next = await updateExecSettings({
       windowsShell: 'git-bash',

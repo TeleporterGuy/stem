@@ -1885,8 +1885,8 @@ export interface ExecSettings {
    */
   scratchTtlDays: number | null;
   /**
-   * Windows host shell. Default `cmd` (cmd.exe). `git-bash` is opt-in and only
-   * used when {@link gitBashPath} points at an existing bash.exe.
+   * Windows host shell. Default `git-bash` when bash.exe is on disk; otherwise
+   * Stem falls back to cmd.exe at spawn time. `cmd` is an explicit choice.
    */
   windowsShell: WindowsShell;
   /** Absolute path to Git for Windows `bash.exe`. Ignored unless windowsShell is git-bash. */

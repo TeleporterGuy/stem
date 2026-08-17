@@ -274,6 +274,15 @@ export function embedModelsDir(): string {
 }
 
 /**
+ * ONNX weights shipped next to the clone (`vendor/embed-models`), so a machine
+ * that cannot reach Hugging Face still loads the local embedder. Empty until
+ * someone copies a cache in — see vendor/embed-models/README.md.
+ */
+export function bundledEmbedModelsDir(): string {
+  return process.env.STEM_BUNDLED_EMBED_MODELS_DIR ?? join(host().appRoot(), 'vendor', 'embed-models');
+}
+
+/**
  * Stem-owned app settings (e.g. the global Quick Chat shortcut + its defaults).
  * Held in the main process because some of it — the global accelerator — can
  * only be registered from main, not the renderer.

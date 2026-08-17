@@ -98,7 +98,8 @@ const DEFAULTS: ServerSettings = {
     allowlist: [],
     deviceAllowlists: {},
     scratchTtlDays: DEFAULT_SCRATCH_TTL_DAYS,
-    windowsShell: 'cmd',
+    // Prefer Git Bash on Windows (auto-detect bash.exe; cmd.exe if Git is missing).
+    windowsShell: 'git-bash',
     gitBashPath: null
   },
   // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
@@ -367,13 +368,14 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
       typeof rawExec.gitBashPath === 'string' && rawExec.gitBashPath.trim()
         ? rawExec.gitBashPath.trim().slice(0, 500)
         : null,
-    // git-bash without a path is cmd — resolveHostShell also falls back if the file is gone.
+    // git-bash without a saved path still means "prefer Git Bash": spawn-time
+    // resolveHostShell auto-detects bash.exe and falls back to cmd if missing.
     windowsShell:
-      rawExec.windowsShell === 'git-bash' &&
-      typeof rawExec.gitBashPath === 'string' &&
-      rawExec.gitBashPath.trim()
-        ? 'git-bash'
-        : 'cmd'
+      rawExec.windowsShell === 'cmd'
+        ? 'cmd'
+        : rawExec.windowsShell === 'git-bash'
+          ? 'git-bash'
+          : DEFAULTS.exec.windowsShell
   };
   const rawRet = (parsed?.retrieval ?? {}) as Partial<RetrievalSettings>;
   const retrieval: RetrievalSettings = {

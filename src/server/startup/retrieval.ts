@@ -1,6 +1,6 @@
 import { host } from '../host';
 import { readSettings } from '../workspace/settings';
-import { embedModelsDir, embedSocketPath, recallDbPath } from '../workspace/paths';
+import { embedModelsDir, bundledEmbedModelsDir, embedSocketPath, recallDbPath } from '../workspace/paths';
 
 import { embedNewMessages } from '../recall/embed-episodic';
 import { scanAllIndexedFolders } from '../folder-index';
@@ -105,7 +105,11 @@ export function initRetrieval(deps: {
   /** Push on a client channel — the model download/load status streams. */
   emit: (channel: string, payload: unknown) => void;
 }): RetrievalRuntime {
-  const embedManager = createEmbedWorkerManager({ spawn: spawnEmbedWorker, cacheDir: embedModelsDir });
+  const embedManager = createEmbedWorkerManager({
+    spawn: spawnEmbedWorker,
+    cacheDir: embedModelsDir,
+    bundledDir: bundledEmbedModelsDir
+  });
   // Recall's O(N) cosine scans and episodic VACUUMs run in their own utility
   // process so they never block the main event loop; everything degrades to the
   // in-process implementations if the worker is unavailable (see recall/scan.ts).
