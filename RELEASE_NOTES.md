@@ -62,6 +62,13 @@ Maintainer notes:
 
 ### Fixed
 
+- **Chats you moved to a server can be opened again.** After moving Stem to a server, every chat
+  that came over listed normally and failed the moment anything opened it: the backend records
+  the folder a chat ran in, and that folder was on the Mac the export came from. Scheduled tasks
+  were where it showed — a watch task in one of those chats just said "failed" every morning, and
+  said it nowhere else. Moved chats are now pointed at the new machine's own workspace, both
+  during the move and on any chat that already came across, and a run that fails now says why in
+  the Tasks tab and the log.
 - **Commands work when Stem runs on a server.** Every shell command the assistant tried on a
   server install failed instantly with `spawn /bin/zsh ENOENT`, because Stem asked for a shell
   that Linux servers do not have — including the commands it runs to work out why something

@@ -656,6 +656,12 @@ export interface ScheduledTask {
   nextRunAt?: string | null;
   /** Outcome of the most recent run. */
   lastStatus?: 'ok' | 'failed' | 'running';
+  /**
+   * Why the most recent run failed, cleared by the next run that doesn't. A row
+   * that says only "failed" is a row nobody can act on: the reason lived in the
+   * log at best, and for a whole class of failures not even there.
+   */
+  lastError?: string;
   /** Short human label derived from the prompt, for the list + chat badge. */
   title: string;
 }

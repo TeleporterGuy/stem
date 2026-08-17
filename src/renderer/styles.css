@@ -2627,6 +2627,8 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 .row-main strong.task-title.expanded { -webkit-line-clamp: unset; }
 .task-meta { font-size: var(--fs-11); padding-left: 2px; }
 .task-running { color: var(--accent); }
+/* Hover carries the reason the run failed, so the mark has to invite the hover. */
+.task-failed { color: var(--warn); cursor: help; }
 
 /* Clock badge on a chat row that owns a scheduled task. */
 .chat-sched-badge { flex: none; display: inline-flex; align-items: center; color: var(--muted); margin-left: 6px; }

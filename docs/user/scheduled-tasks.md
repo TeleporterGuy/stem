@@ -45,6 +45,8 @@ Future runs and their answers return to that same conversation.
 Open **Scheduled tasks**, then:
 
 - **Next** is the useful date. The `cron` line is Stem’s stored repeat pattern.
+- A run marked **(failed)** carries the reason: hover it. The same line is in the log
+  (`stem.log` in Stem’s state folder), which is where to look if the row is gone.
 - Click the task text to show the full instruction.
 - **Open chat** to inspect its history or change its model.
 - **Run now** to test it without changing the next scheduled time.

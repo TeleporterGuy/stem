@@ -149,7 +149,13 @@ export function TasksTab({
                     {t.lastRunAt && (
                       <span>
                         {' · '}Last: {formatWhen(t.lastRunAt)}
-                        {t.lastStatus === 'failed' ? ' (failed)' : ''}
+                        {t.lastStatus === 'failed' && (
+                          // The reason, not just the verdict: a row that says
+                          // only "failed" leaves you nowhere to start.
+                          <span className="task-failed" title={t.lastError ?? 'The run did not finish.'}>
+                            {' (failed)'}
+                          </span>
+                        )}
                       </span>
                     )}
                   </>

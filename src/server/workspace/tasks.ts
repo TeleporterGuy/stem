@@ -19,6 +19,16 @@ export function titleFromPrompt(prompt: string): string {
   return line.length > 60 ? `${line.slice(0, 57)}…` : line || 'Scheduled task';
 }
 
+/**
+ * A failure reason, cut to something a row can carry: flattened to one line and
+ * capped. Backend errors arrive as whole stacks and provider JSON bodies, and
+ * this file is rewritten after every run — the cause is at the front of them.
+ */
+export function clipError(detail: string): string {
+  const line = detail.split('\n').map((l) => l.trim()).filter(Boolean).join(' ');
+  return line.length > 300 ? `${line.slice(0, 297)}…` : line;
+}
+
 function coerceSchedule(raw: unknown): TaskSchedule | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as { kind?: unknown; expr?: unknown; at?: unknown };
@@ -47,7 +57,8 @@ function coerce(raw: unknown): ScheduledTask | null {
     ...(typeof r.nextRunAt === 'string' || r.nextRunAt === null ? { nextRunAt: r.nextRunAt } : {}),
     ...(r.lastStatus === 'ok' || r.lastStatus === 'failed' || r.lastStatus === 'running'
       ? { lastStatus: r.lastStatus }
-      : {})
+      : {}),
+    ...(typeof r.lastError === 'string' && r.lastError ? { lastError: clipError(r.lastError) } : {})
   };
 }
 

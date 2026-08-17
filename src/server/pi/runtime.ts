@@ -85,6 +85,7 @@ import { formatSkillsBlock, selectSkills, type SkillUsageStat } from '../skills/
 import { listSkillRecords } from '../skills/store';
 import { gradeSkillUse } from '../skills/grade';
 import { resolvePi, type PiInvocation } from './locate';
+import { repairMissingSessionCwd } from './session-cwd';
 import { PiProcess, stderrReason, type PiEvent } from './rpc';
 import {
   completeInternalCwd,
@@ -1430,6 +1431,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       this.currentThinking = null;
       this.activeThreadId = null;
       await writeFile(file, lines.slice(0, idx).join('\n') + '\n');
+      await repairMissingSessionCwd(file, this.options.workspaceRoot);
       const switched = await this.proc!.request({ type: 'switch_session', sessionPath: file });
       if (!switched.success) throw new Error(switched.error ?? `pi could not reload chat "${threadId}" after editing.`);
       // Both RPCs above swap the active session's model/thinking out from under us.
@@ -2537,6 +2539,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const id = await this.newSession();
       return id;
     }
+    await repairMissingSessionCwd(file, this.options.workspaceRoot);
     const switched = await this.proc!.request({ type: 'switch_session', sessionPath: file });
     if (!switched.success) throw new Error(switched.error ?? `pi could not switch to chat "${threadId}".`);
     // The switch does NOT restore the session's persisted model/thinking: pi only
