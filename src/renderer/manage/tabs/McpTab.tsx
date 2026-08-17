@@ -99,6 +99,11 @@ function McpTab() {
   // do — here, two or three buttons — and the reasoning behind it is worth one
   // click, not three paragraphs above the buttons every time you pass through.
   const [explaining, setExplaining] = useState<Record<string, boolean>>({});
+  // Which approval card the row's "Approve…" just jumped to. The card can be a
+  // long way down a panel that already has several sections, so landing on it
+  // silently reads as "the button did nothing" — which is exactly how the first
+  // version of this was reported. The class clears itself.
+  const [flashPending, setFlashPending] = useState<string | null>(null);
 
   async function refresh() {
     const [list, status] = await Promise.all([
@@ -527,6 +532,20 @@ function McpTab() {
     return status.error ?? 'It stopped, and did not say why.';
   }
 
+  /**
+   * Take somebody to the approval card for `name` and make it obvious they
+   * arrived. The row's button deliberately does NOT approve: what the click
+   * authorizes is a command line, its credentials and possibly an unbounded
+   * shell, and that is on the card and nowhere else. A one-tap "Approve" beside
+   * the name would be a yes to a question that was never shown.
+   */
+  function revealPending(name: string) {
+    const card = document.getElementById(`mcp-pending-${name}`);
+    card?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setFlashPending(name);
+    window.setTimeout(() => setFlashPending((cur) => (cur === name ? null : cur)), 1600);
+  }
+
   async function approveHosted(pending: McpHostPendingServer) {
     setError(null);
     try {
@@ -640,7 +659,7 @@ function McpTab() {
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelected(s.name);
-                      document.getElementById(`mcp-pending-${s.name}`)?.scrollIntoView({ block: 'nearest' });
+                      revealPending(s.name);
                     }}
                   >
                     Approve…
@@ -784,9 +803,9 @@ function McpTab() {
           agreed to. It waits here rather than interrupting at launch (⑥): a
           modal on startup would be answered by whoever wanted it to go away. */}
       {hostState.pending.map((p) => (
-        <div key={p.name}>
+        <div key={p.name} id={`mcp-pending-${p.name}`}>
           <div className="grp-head">{pendingHeading(p)}</div>
-          <div className="formgroup">
+          <div className={`formgroup${flashPending === p.name ? ' flash' : ''}`}>
             <div className="set-block">
               <span className="set-sub">This computer would run</span>
               <code>{previewLine(p.preview)}</code>

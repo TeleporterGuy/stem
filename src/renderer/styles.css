@@ -1855,6 +1855,14 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 /* add-server form: bezeled fields, segmented selector, default button */
 .formgroup { background: var(--surface); border: 0.5px solid var(--line); border-radius: var(--radius-md); padding: 11px; display: flex; flex-direction: column; gap: var(--sp-4); }
 .formgroup .set-block.fg-divider { padding-top: 9px; border-top: 0.5px solid var(--line); }
+/* Where a jump landed. Long enough to be seen after a smooth scroll, and gone
+   before it becomes decoration. */
+.formgroup.flash { animation: stem-flash 1.6s ease-out; }
+@keyframes stem-flash {
+  0%, 45% { border-color: var(--accent); box-shadow: var(--shadow-focus); }
+  100% { border-color: var(--line); box-shadow: none; }
+}
+@media (prefers-reduced-motion: reduce) { .formgroup.flash { animation-duration: 0.01s; border-color: var(--accent); } }
 
 /* Endpoint connection test: a ghost icon button + an inline coloured status. */
 .retrieval-test { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); }
