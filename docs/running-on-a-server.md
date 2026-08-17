@@ -163,9 +163,10 @@ network, which the server has no route to. Now that your Mac is paired, both hav
 somewhere to run. If step 4 named none of them, there is nothing to do here.
 
 In Stem on your Mac: **Settings → Tools → MCP servers**. Select the server and choose
-**Move to** your Mac. Stem asks you to approve it there before it starts anything — a
-server named in a config somewhere else never runs a command on your own computer
-unasked.
+**Move to** your Mac. It moves into the **On this computer** section, and Stem asks you
+to approve it there before it starts anything — a server named in a config somewhere
+else never runs a command on your own computer unasked. The question opens under the
+server's own row; **Approve and start** answers it.
 
 From then on it runs on your Mac and the rest of Stem uses it as it always did,
 including from your phone, whenever your Mac is awake with Stem running. When it is

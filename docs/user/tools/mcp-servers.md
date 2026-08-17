@@ -50,21 +50,26 @@ folders, and exact package version first.
 runs on the computer you are sitting at, there is only one machine and nothing to
 choose.
 
-If Stem runs on a server elsewhere, **Runs on** appears when you add one, and each row
-names its place. Pick one of your own computers for a server that only means anything
-there — its files, its applications, or a URL on its own network. To move a server that
-is already there, select it and choose **Move to** that computer. It starts only after
-you approve it on that machine, and its tools then work from anywhere, including your
-phone, whenever that computer is awake with Stem running.
+If Stem runs on a server elsewhere, **Runs on** appears when you add one, and the list
+splits into a section per machine — *On your Stem server*, *On this computer*, and one
+for each of your other computers. Pick one of your own computers for a server that only
+means anything there: its files, its applications, or a URL on its own network. To move
+a server, select it and choose **Move to** that computer, or **Run on the server
+instead** to bring it back. It starts only after you approve it on that machine, and its
+tools then work from anywhere, including your phone, whenever that computer is awake
+with Stem running.
+
+Selecting a server opens everything you can do to it under its own row — how it is
+doing, **Test connection**, **Stop trusting**, and where else it could run.
 
 Phones are not offered as a place to run a server: they sleep, and the server would be
 unreachable half the time.
 
-A server pinned to a computer you later unpair says so and does nothing. Move it to
-another computer, pair that one again, or remove it. Pairing a computer again gives it
-a new identity, so the same machine paired a second time is a different computer to
-Stem — the row names the computer it used to mean, and offers that name first when you
-move it.
+A server pinned to a computer you later unpair moves to a section called **Nowhere —
+that computer is gone**, and does nothing until you fix it. Move it to another computer,
+pair that one again, or remove it. Pairing a computer again gives it a new identity, so
+the same machine paired a second time is a different computer to Stem — the row
+remembers the computer it used to mean, and offers that name first when you move it.
 
 **Sign in is not available for a URL server pinned to one of your computers.** Signing
 in happens where your Stem server runs, and that machine cannot reach an address on your
