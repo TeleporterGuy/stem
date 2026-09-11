@@ -794,12 +794,24 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     };
   }
 
+  /**
+   * Every op the server may send, as a table rather than an `||` chain, because
+   * the chain is what went wrong once: `describe` was added to the type and the
+   * host, and this check — the only place a frame is read before the host sees
+   * it — kept refusing it, silently, so every describe_tool on a device-hosted
+   * server waited out the server's timeout for an answer that was never asked
+   * for. A Record keyed on the union fails to compile the next time an op is
+   * added here and forgotten there.
+   */
+  const MCP_REQUEST_OPS: Record<DeviceMcpRequest['op'], true> = { tools: true, call: true, describe: true };
+
   function asMcpRequest(data: unknown): DeviceMcpRequest | null {
     const frame = data as Partial<DeviceMcpRequest> | null;
     if (!frame || typeof frame.requestId !== 'string' || !frame.requestId) return null;
     if (typeof frame.server !== 'string' || !frame.server) return null;
-    if (frame.op !== 'tools' && frame.op !== 'call') return null;
-    if (frame.op === 'call' && (typeof frame.tool !== 'string' || !frame.tool)) return null;
+    if (typeof frame.op !== 'string' || !(frame.op in MCP_REQUEST_OPS)) return null;
+    // `describe` names a tool exactly as `call` does; only a listing has none.
+    if (frame.op !== 'tools' && (typeof frame.tool !== 'string' || !frame.tool)) return null;
     return {
       requestId: frame.requestId,
       server: frame.server,

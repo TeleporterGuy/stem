@@ -229,12 +229,15 @@ export function createDeviceMcpRouter(deps: DeviceMcpRouterDeps): DeviceMcpRoute
         // nothing, or it would resolve a promise that has already been settled.
         pending.delete(requestId);
         log('mcp-device', 'an MCP request timed out', { deviceId, server, op });
+        const seconds = Math.round(timeoutMs / 1000);
         resolve({
           ok: false,
           error:
             op === 'call'
-              ? `The tool did not finish within ${Math.round(timeoutMs / 1000)}s on the computer running "${server}".`
-              : `"${server}" did not list its tools within ${Math.round(timeoutMs / 1000)}s.`
+              ? `The tool did not finish within ${seconds}s on the computer running "${server}".`
+              : op === 'describe'
+                ? `The computer running "${server}" did not answer with the schema of "${extra.tool}" within ${seconds}s.`
+                : `"${server}" did not list its tools within ${seconds}s.`
         });
       }, timeoutMs);
       // Never hold the process open for a call somebody may have walked away from.

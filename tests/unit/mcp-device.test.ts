@@ -27,7 +27,7 @@ import { registerMcpIpc } from '../../src/server/ipc/mcp';
 import { registerDevicesIpc } from '../../src/server/ipc/devices';
 import { closeExecDeviceRouter, execDeviceRouter } from '../../src/server/exec-device/router';
 import type { IpcDeps } from '../../src/server/ipc/deps';
-import { closeTransport, startTransport } from '../../src/server/startup/transport';
+import { closeTransport, pushToDevice, startTransport } from '../../src/server/startup/transport';
 import { createServerProxy, type ServerProxy } from '../../src/desktop/proxy';
 import { clientCredentials } from '../../src/desktop/server-endpoint';
 import { readClientIdentity } from '../../src/desktop/client-store';
@@ -37,11 +37,12 @@ import {
   piMcpConfigPath,
   piMcpDeviceCatalogPath
 } from '../../src/server/workspace/paths';
-import type {
-  DeviceMcpCatalog,
-  DeviceMcpRequest,
-  DeviceMcpResult,
-  DeviceMcpSpec
+import {
+  MCP_REQUEST_FRAME,
+  type DeviceMcpCatalog,
+  type DeviceMcpRequest,
+  type DeviceMcpResult,
+  type DeviceMcpSpec
 } from '../../src/shared/types';
 
 describe('the spec fingerprint', () => {
@@ -485,6 +486,57 @@ describe('a call to a device, end to end', () => {
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatchObject({ server: 'files', op: 'call', tool: 'read_file' });
     expect(result).toEqual({ ok: true, content: 'the contents of notes.md' });
+  });
+
+  it('carries a describe over the same rails, so describe_tool gets the real schema', async () => {
+    // The regression this pins: the host answered `describe` from day one, but
+    // the proxy's frame check — the one place a request is read before the host
+    // sees it — only knew `tools` and `call`. Every describe was dropped there
+    // in silence, the server waited out its 5s, and describe_tool fell back to
+    // a schema rebuilt from the compact signature: argument names, no types, no
+    // docs. Nothing in the bridge or host suites crosses that check; this does.
+    answer = {
+      ok: true,
+      schema: {
+        name: 'timeline',
+        description: 'Operate on the current timeline.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['get_current', 'set_current'], description: 'What to do.' },
+            params: { type: 'object' }
+          },
+          required: ['action']
+        }
+      }
+    };
+    await until(() => deviceMcpRouter().isAvailable(deviceId), 'the event stream to register');
+    const before = asked.length;
+
+    const result = await deviceMcpRouter().describeTool(deviceId, 'files', 'timeline');
+
+    // Asked, not timed out: the frame reached the host with its op and tool intact.
+    expect(asked.slice(before)).toHaveLength(1);
+    expect(asked[before]).toMatchObject({ server: 'files', op: 'describe', tool: 'timeline' });
+    expect(asked[before].args).toBeUndefined();
+    expect(result).toEqual(answer);
+  });
+
+  it('drops an addressed frame it cannot answer, and only that one', async () => {
+    // A frame with no requestId has nothing to be answered under, and one whose
+    // op this build does not know must not reach the host as something else.
+    // Either lands on the host as nothing at all — the next real request still
+    // goes through, which is what a host that choked on the bad frame would fail.
+    await until(() => deviceMcpRouter().isAvailable(deviceId), 'the event stream to register');
+    const before = asked.length;
+    pushToDevice(deviceId, MCP_REQUEST_FRAME, { server: 'files', op: 'describe', tool: 'timeline' });
+    pushToDevice(deviceId, MCP_REQUEST_FRAME, { requestId: 'x', server: 'files', op: 'sudo', tool: 'timeline' });
+    pushToDevice(deviceId, MCP_REQUEST_FRAME, { requestId: 'y', server: 'files', op: 'describe' });
+
+    answer = { ok: true, tools: [] };
+    const result = await deviceMcpRouter().listTools(deviceId, 'files');
+    expect(result).toEqual({ ok: true, tools: [] });
+    expect(asked.slice(before).map((r) => r.op)).toEqual(['tools']);
   });
 
   it('stores an announcement where the catalog block will read it', async () => {
