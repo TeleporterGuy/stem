@@ -118,6 +118,34 @@ describe('the cap', () => {
   });
 });
 
+describe('the v2 migration', () => {
+  it('drops automatic notes from a v1 file on first read, keeps deliberate and user ones, and rewrites the file as v2', async () => {
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'verifier.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        notes: [
+          { id: 'a', title: 'auto', body: 'paraphrased advice', at: 1, source: 'reflection' },
+          { id: 'b', title: 'tool', body: 'saved on purpose', at: 2, source: 'tool' },
+          { id: 'c', title: 'mine', body: 'the user wrote it', at: 3, source: 'user' }
+        ]
+      })
+    );
+    expect((await listPersonaNotes('verifier')).map((n) => n.id)).toEqual(['c', 'b']);
+    const onDisk = JSON.parse(readFileSync(path, 'utf8'));
+    expect(onDisk.version).toBe(2);
+    expect(onDisk.notes.map((n: { id: string }) => n.id)).toEqual(['b', 'c']);
+  });
+
+  it('a v2 file keeps its automatic notes: the purge is one-off', async () => {
+    await savePersonaNote('verifier', { body: 'learned after the upgrade' }, 'reflection');
+    expect(await listPersonaNotes('verifier')).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(dir, 'verifier.json'), 'utf8')).version).toBe(2);
+  });
+});
+
 describe('corrupt files', () => {
   it('reads degrade to no notes; writes refuse to clobber the unreadable file', async () => {
     mkdirSync(dir, { recursive: true });

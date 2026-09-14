@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Persona, PersonaNote } from '../../shared/types';
 import { degrade } from '../degrade';
+import { log } from '../log';
 import { personaMemoryDir } from './paths';
 
 // A persona's private memory: durable lessons from its past work (procedures,
@@ -40,8 +41,17 @@ export const MAX_NOTE_TITLE = 120;
 /** A note is a lesson, not a document. */
 export const MAX_NOTE_BODY = 4000;
 
+// File versions. 1: the original store. 2: written by the stricter reflection
+// (2026-09-14). A v1 file's auto-learned notes are dropped on first read and
+// the file rewritten as v2 — the old pass filled stores with paraphrased
+// advice and re-learned lessons, and keeping them would only have the new
+// consolidation pass spend a model call to reach the same result. Notes the
+// persona saved deliberately (tool) or the user wrote survive; they were the
+// good ones. One-off: a v2 file is never purged again.
+const NOTES_FILE_VERSION = 2;
+
 interface NotesFile {
-  version: 1;
+  version: typeof NOTES_FILE_VERSION;
   notes: PersonaNote[];
   /** Epoch ms of the last consolidation pass (mail/consolidate.ts); absent = never. */
   consolidatedAt?: number;
@@ -82,9 +92,12 @@ function coerceNote(raw: unknown): PersonaNote | null {
   };
 }
 
-function coerce(parsed: unknown): NotesFile {
+/** The store plus whether reading it migrated something the file should now record. */
+function coerce(parsed: unknown): { store: NotesFile; migrated: boolean } {
   const raw = (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, unknown>;
-  const notes: PersonaNote[] = [];
+  const version = typeof raw.version === 'number' ? raw.version : 1;
+  const purgeAutomatic = version < 2;
+  let notes: PersonaNote[] = [];
   const seen = new Set<string>();
   for (const entry of Array.isArray(raw.notes) ? raw.notes : []) {
     const note = coerceNote(entry);
@@ -92,9 +105,13 @@ function coerce(parsed: unknown): NotesFile {
     seen.add(note.id);
     notes.push(note);
   }
+  if (purgeAutomatic) notes = notes.filter((n) => n.source !== 'reflection');
   const consolidatedAt =
     typeof raw.consolidatedAt === 'number' && Number.isFinite(raw.consolidatedAt) ? raw.consolidatedAt : undefined;
-  return { version: 1, notes, ...(consolidatedAt ? { consolidatedAt } : {}) };
+  return {
+    store: { version: NOTES_FILE_VERSION, notes, ...(consolidatedAt ? { consolidatedAt } : {}) },
+    migrated: purgeAutomatic
+  };
 }
 
 /** A missing title is the body's first line, trimmed to fit the index. */
@@ -129,15 +146,25 @@ async function readNotesFile(personaId: string): Promise<NotesFile | null> {
   // Outside the try: a bad persona id is the caller's error and must reject
   // loudly, not degrade into "no notes".
   const path = notesPath(personaId);
+  let parsed: unknown;
   try {
-    return coerce(JSON.parse(await readFile(path, 'utf8')));
+    parsed = JSON.parse(await readFile(path, 'utf8'));
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { version: 1, notes: [] };
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { version: NOTES_FILE_VERSION, notes: [] };
     // quiet: null is the "corrupt/unreadable" signal — every caller degrades
     // or throws with its own scope (reads answer no notes, mutators refuse to
     // write over the file so a fixable file stays fixable).
     return null;
   }
+  const { store, migrated } = coerce(parsed);
+  // A version migration is persisted on read (as personas.json does), so the
+  // purge happens once, on the first read after the upgrade, and the file on
+  // disk shows what the server sees. Callers hold the write chain already.
+  if (migrated) {
+    log('persona-memory', 'migrated a notes file: automatic notes cleared', { personaId, kept: store.notes.length });
+    await writeNotesFile(personaId, store);
+  }
+  return store;
 }
 
 async function writeNotesFile(personaId: string, store: NotesFile): Promise<void> {
