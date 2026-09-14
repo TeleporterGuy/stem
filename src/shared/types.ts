@@ -2642,13 +2642,14 @@ export interface ChatsSettings {
  * - `alert` — raise and focus the main window, nudge at the OS level, and show the
  *             alert modal. The default: what watch-style tasks were built for.
  * - `nudge` — no window raise, no modal; just the OS-level nudge (dock bounce /
- *             taskbar flash) over the unread row the run leaves in the Inbox.
- * - `inbox` — nothing interrupts. The run's chat simply goes bold in the Inbox,
- *             the way any other new message would.
+ *             taskbar flash) over the unread mail the run leaves in the Inbox.
+ * - `inbox` — nothing interrupts. The run's mail simply sits unread in the
+ *             Inbox, the way any other new mail would.
  *
- * The run counts as having found something in all three: the notify is what keeps
- * its turn out of {@link noteSilentRun}, so the chat lifts out of the archive and
- * the row goes unread whatever the user chose here. Only the interruption differs.
+ * The run counts as having found something in all three, and the mail carries it
+ * whatever the user chose here. Only the interruption differs. The chat the run
+ * wrote into never moves or goes bold for it — the scheduler absorbs every run's
+ * turn through `noteSilentRun`, notified or not.
  */
 export type TaskNotifyMode = 'alert' | 'nudge' | 'inbox';
 

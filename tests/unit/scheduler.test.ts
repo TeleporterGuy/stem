@@ -599,7 +599,7 @@ describe('silent runs', () => {
     scheduler.stop();
   });
 
-  it('stays quiet about a run that raised an alert', async () => {
+  it('absorbs the write of a run that raised an alert too — the mail carries it, the chat row stays put', async () => {
     const runtime = new NotifyingRuntime();
     const { scheduler, silent } = makeScheduler(runtime);
     runtime.scheduler = scheduler;
@@ -607,7 +607,8 @@ describe('silent runs', () => {
     if (!res.ok) throw new Error('create failed');
     scheduler.runNow(res.task.id);
     await until(async () => (await storedStatus()) === 'ok', 'the run to be recorded');
-    expect(silent).toEqual([]);
+    expect(silent).toHaveLength(1);
+    expect(silent[0].threadId).toBe('t1');
     scheduler.stop();
   });
 

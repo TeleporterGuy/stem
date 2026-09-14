@@ -40,7 +40,9 @@ export interface SchedulerOptions {
   /** Abort an in-flight turn (wired to runtime.interruptTurn) for preemption. */
   interrupt?: (turnId: string, reason?: string) => Promise<void>;
   /**
-   * A run settled without calling `notify_user`: it found nothing worth raising.
+   * A run settled and its turn's writes should not count as activity in the
+   * chats tree: whatever it found went out as mail, and a run that found
+   * nothing has nothing to show.
    * `before` and `at` bracket the run in the thread's own mtime terms, so the host
    * can keep the turn's mtime bump from reading as activity in the Inbox.
    */
@@ -95,7 +97,11 @@ interface ActiveRun {
   threadId: string;
   turnId: string | null;
   preempted: boolean;
-  /** The run called `notify_user` — i.e. it found something worth surfacing. */
+  /**
+   * The run called `notify_user` — i.e. it found something worth surfacing, and
+   * a mail now carries it. Decides whether the run's reply joins that mail; it
+   * does not decide whether the chat row moves (no scheduled run moves it).
+   */
   notified: boolean;
 }
 
@@ -137,10 +143,10 @@ export class TaskScheduler {
 
   /**
    * The in-flight run just raised a `notify_user` alert (routed here by the task
-   * bridge). That's the run's own declaration that it found something, and the
-   * only reason a run gets to disturb the Inbox — see the silent-run handling in
-   * runTask. Scoped to the running task's thread so an interactive turn that
-   * calls the tool can't speak for it.
+   * bridge). That's the run's own declaration that it found something: its reply
+   * joins the mail the alert opened once the run settles (see runTask). Scoped to
+   * the running task's thread so an interactive turn that calls the tool can't
+   * speak for it.
    */
   noteNotify(threadId: string): void {
     if (this.activeRun?.threadId === threadId) this.activeRun.notified = true;
@@ -734,13 +740,15 @@ export class TaskScheduler {
       this.requeueCounts.delete(id);
     }
 
-    // The run is over and it never called notify_user, so as far as the user is
-    // concerned nothing happened — but the turn appended to the thread and moved
-    // its mtime, which is exactly what the Inbox treats as new activity. Tell the
-    // host so it can absorb the bump; otherwise every silent poll drags the thread
-    // back out of the archive and marks it unread. (A preempted-out-of-retries run
-    // reaches here too, and it produced nothing either.)
-    if (!run.notified && before.updatedAt != null && this.opts.onSilentRun) {
+    // The run is over. Whatever it found went out as mail (a notify_user opened
+    // one, and the reply joined it above); a run that found nothing sent none.
+    // Either way the turn appended to the thread and moved its mtime, which is
+    // exactly what the chats tree reads as "a new message here" — it would drag
+    // the chat to the top, bold, for a turn nobody took. Tell the host so it can
+    // absorb the bump. A notified run is not exempt: the mail is its surfacing,
+    // and the chat behind it stays where the user's last message left it. (A
+    // preempted-out-of-retries run reaches here too, and it produced nothing.)
+    if (before.updatedAt != null && this.opts.onSilentRun) {
       // Re-read the mtime rather than trusting the clock alone — the turn's own
       // writes are what we're covering, and they are the freshest thing on disk.
       const after = await this.findThread(task.threadId);

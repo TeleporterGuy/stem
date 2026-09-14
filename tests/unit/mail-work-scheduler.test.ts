@@ -115,7 +115,10 @@ describe('scheduled mail work integration', () => {
     );
     if (status === 'failed') expect(run.error).toBe('Connection lost after verification');
     expect(runtime.listenerCount('event')).toBe(0);
-    expect(silent).not.toHaveBeenCalled();
+    // The notify's mail is the surfacing; the chat the run wrote into is absorbed
+    // like any other run's, so it neither jumps to the top nor goes bold.
+    expect(silent).toHaveBeenCalledTimes(1);
+    expect(silent).toHaveBeenCalledWith('scheduled-thread', expect.any(Number), expect.any(Number));
     // The final text block is the run's reply: it joins the mail the notify
     // opened — but only for a clean settle. A failed run's partial text stays
     // in Work as progress, never dressed up as the result.

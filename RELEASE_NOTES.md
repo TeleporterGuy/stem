@@ -23,6 +23,12 @@ Maintainer notes:
   itself stays yours: it shows in the fact's details under Manage → Memory and is never sent
   to the assistant again. Desktop only for now.
 
+### Fixed
+
+- **Scheduled runs no longer move their chat.** A task that found something and sent you mail
+  still dragged the chat it ran in to the top of the Chats list, bold, as if you had a new
+  message there. The mail is the message; the chat now stays where your last message left it.
+
 ## 0.5.2 — 2026-09-09
 
 ### Added

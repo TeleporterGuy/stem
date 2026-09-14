@@ -79,10 +79,11 @@ export function initTaskScheduler(deps: {
     ...(deps.attachTaskResult
       ? { onResult: (args: { itemId: string; result: string }) => deps.attachTaskResult!({ itemId: args.itemId, result: args.result }) }
       : {}),
-    // A run that found nothing still wrote a turn, which bumps the thread's
-    // mtime — the read-state signal the CHATS TREE bolds rows by. (The Inbox is
-    // mail now and never sees the thread; this absorber only keeps a quiet
-    // watch task's chat row from going bold for a turn nobody took.)
+    // Every scheduled run writes a turn, which bumps the thread's mtime — the
+    // signal the CHATS TREE sorts and bolds rows by. What a run found reaches
+    // the user as mail (see notify below), so its chat row has no news to show:
+    // this absorber keeps it where the user's last message left it, neither on
+    // top nor bold, whether the run notified or came back empty.
     onSilentRun: (threadId, before, at) => {
       void noteSilentRun(threadId, before, at)
         .then(() => deps.emit('chats:changed', undefined))
@@ -111,11 +112,11 @@ export function initTaskScheduler(deps: {
     // native OS notifications were judged not prominent enough for watch-style tasks.
     // `nudge` keeps only the OS nudge, `inbox` interrupts not at all.
     //
-    // What every mode keeps is the Inbox: the noteNotify below is the run's
-    // declaration that it found something, so its turn stays out of onSilentRun and
-    // the chat surfaces as an unread row on its own. That is the whole of `inbox`
-    // mode — there is nothing extra to emit, because a written turn is already the
-    // signal the Inbox reads.
+    // What every mode keeps is the mail: the noteNotify below is the run's
+    // declaration that it found something, so its reply joins the mail this
+    // delivers once the run settles. That is the whole of `inbox` mode — there is
+    // nothing extra to emit. The chat the run wrote into does not move or go bold
+    // in any mode (onSilentRun above absorbs the turn's write for every run).
     notify: async ({ title, message }, threadId) => {
       scheduler.noteNotify(threadId);
       // The Inbox half, in every mode: a scheduled run's notify_user is a mail
