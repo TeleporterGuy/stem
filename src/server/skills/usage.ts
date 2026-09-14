@@ -31,6 +31,15 @@ export interface SkillUsageEntry {
   used?: number;
   /** Unix seconds of the last observation; the decay anchor for the usage rate. */
   lastGradedAt?: number;
+  /**
+   * Turns in which the model reported a loaded step of this skill as wrong
+   * (grade.ts `reportedSkillIssues`). The only outcome signal in the ledger that
+   * is the model's own verdict rather than a tool-overlap proxy. A reported turn
+   * never counts as `used`, so the ranking rate already carries it; the count and
+   * the last reason are for the Manage panel, the curator, and repair routing.
+   */
+  failed?: number;
+  lastFailure?: { at: string; reason: string };
 }
 
 export interface SkillsUsage {
@@ -80,7 +89,7 @@ function readUsageOrNull(): SkillsUsage | null {
     const skills: Record<string, SkillUsageEntry> = {};
     for (const [slug, entry] of Object.entries(data.skills ?? {})) {
       if (!entry || typeof entry !== 'object') continue;
-      const { count, lastUsedAt, injected, used, lastGradedAt } = entry as Partial<SkillUsageEntry>;
+      const { count, lastUsedAt, injected, used, lastGradedAt, failed, lastFailure } = entry as Partial<SkillUsageEntry>;
       const counted = typeof count === 'number' && Number.isInteger(count) && count > 0 && typeof lastUsedAt === 'string';
       const graded = typeof injected === 'number' && injected > 0;
       // An entry that has only ever been injected is still worth keeping — that is
@@ -92,7 +101,11 @@ function readUsageOrNull(): SkillsUsage | null {
         lastUsedAt: counted ? (lastUsedAt as string) : '',
         ...(typeof injected === 'number' && injected >= 0 ? { injected } : {}),
         ...(typeof used === 'number' && used >= 0 ? { used } : {}),
-        ...(typeof lastGradedAt === 'number' && lastGradedAt > 0 ? { lastGradedAt } : {})
+        ...(typeof lastGradedAt === 'number' && lastGradedAt > 0 ? { lastGradedAt } : {}),
+        ...(typeof failed === 'number' && failed > 0 ? { failed } : {}),
+        ...(lastFailure && typeof lastFailure.at === 'string' && typeof lastFailure.reason === 'string'
+          ? { lastFailure: { at: lastFailure.at, reason: lastFailure.reason } }
+          : {})
       };
     }
     return { trackingSince: data.trackingSince, skills };
@@ -187,19 +200,33 @@ export function recordInjections(slugs: string[]): number {
  * the anchor on a miss, a demoted skill's penalty would decay back to neutral on
  * the strength of nothing having happened.
  */
-export function recordGrades(injected: string[], used: string[], at: Date = new Date()): void {
+export function recordGrades(
+  injected: string[],
+  used: string[],
+  at: Date = new Date(),
+  failed: { slug: string; reason: string }[] = []
+): void {
   const real = injected.filter(isSkillSlug);
   if (real.length === 0) return;
   const usage = readUsageOrNull();
   if (!usage) return;
-  const hit = new Set(used);
+  const failures = new Map(failed.map((f) => [f.slug, f.reason]));
+  // A turn the model reported as wrong is not a turn that followed the skill,
+  // whatever the tool overlap says — the caller normally strips these already,
+  // but the ledger must not depend on it.
+  const hit = new Set(used.filter((slug) => !failures.has(slug)));
   const seconds = Math.floor(at.getTime() / 1000);
+  const iso = at.toISOString();
   for (const slug of real) {
     const entry = usage.skills[slug] ?? { count: 0, lastUsedAt: '' };
+    const reason = failures.get(slug);
     usage.skills[slug] = {
       ...entry,
       used: (entry.used ?? 0) + (hit.has(slug) ? 1 : 0),
-      lastGradedAt: seconds
+      lastGradedAt: seconds,
+      ...(reason !== undefined
+        ? { failed: (entry.failed ?? 0) + 1, lastFailure: { at: iso, reason } }
+        : {})
     };
   }
   writeUsage(usage);
@@ -220,13 +247,17 @@ export function mergeUsage(winner: string, losers: string[]): void {
   let injected = win?.injected ?? 0;
   let used = win?.used ?? 0;
   let lastGradedAt = win?.lastGradedAt ?? 0;
+  let failed = win?.failed ?? 0;
+  let lastFailure = win?.lastFailure;
   for (const slug of tracked) {
     const entry = usage.skills[slug];
     count += entry.count;
     injected += entry.injected ?? 0;
     used += entry.used ?? 0;
+    failed += entry.failed ?? 0;
     if (entry.lastUsedAt > lastUsedAt) lastUsedAt = entry.lastUsedAt;
     if ((entry.lastGradedAt ?? 0) > lastGradedAt) lastGradedAt = entry.lastGradedAt ?? 0;
+    if (entry.lastFailure && (!lastFailure || entry.lastFailure.at > lastFailure.at)) lastFailure = entry.lastFailure;
     delete usage.skills[slug];
   }
   usage.skills[winner] = {
@@ -234,7 +265,9 @@ export function mergeUsage(winner: string, losers: string[]): void {
     lastUsedAt,
     ...(injected ? { injected } : {}),
     ...(used ? { used } : {}),
-    ...(lastGradedAt ? { lastGradedAt } : {})
+    ...(lastGradedAt ? { lastGradedAt } : {}),
+    ...(failed ? { failed } : {}),
+    ...(lastFailure ? { lastFailure } : {})
   };
   writeUsage(usage);
 }

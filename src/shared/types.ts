@@ -660,6 +660,10 @@ export interface SkillSummary {
   useCount?: number;
   /** ISO timestamp of the most recent use. */
   lastUsedAt?: string;
+  /** Turns in which the assistant reported one of this skill's steps as wrong. */
+  failCount?: number;
+  /** The most recent such report. */
+  lastFailure?: { at: string; reason: string };
 }
 
 // ---- Files (the persistent drop-place the assistant can read) ----

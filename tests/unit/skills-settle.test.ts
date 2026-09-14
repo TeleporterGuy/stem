@@ -11,7 +11,7 @@ import { join } from 'node:path';
 const skillsDir = join(tmpdir(), `stem-skills-settle-${process.pid}`);
 process.env.STEM_SKILLS_DIR = skillsDir;
 
-import { SKILL_GATE_MIN_TOOL_CALLS, decideSettle, settleSkills } from '../../src/server/skills/settle';
+import { SKILL_GATE_MIN_TOOL_CALLS, decideSettle, routeReported, settleSkills } from '../../src/server/skills/settle';
 import type { SettledTurnTrace, TraceEntry } from '../../src/server/pi/normalize';
 import type { LlmClient } from '../../src/server/recall/llm';
 
@@ -38,6 +38,7 @@ function turn(over: Partial<SettledTurnTrace> = {}): SettledTurnTrace {
     trace: trace(SKILL_GATE_MIN_TOOL_CALLS),
     skillsInjected: [],
     skillsGradedUsed: [],
+    skillsReported: [],
     memoryTainted: false,
     isScheduled: false,
     ...over
@@ -140,6 +141,52 @@ describe('routing', () => {
     expect(decision).toMatchObject({ existing: { name: 'second-skill' } });
   });
 
+  it('routes a reported failure to that skill, with the reason, ahead of grading', () => {
+    // The model said a loaded step was wrong. That is its own verdict, naming the
+    // skill — stronger than tool overlap, which can credit a skill the model then
+    // found wrong. Both signals present: the report wins.
+    writeSkill('extract-video-captions');
+    writeSkill('other-skill');
+    const decision = decideSettle(
+      turn({
+        skillsGradedUsed: ['other-skill'],
+        skillsReported: [{ slug: 'extract-video-captions', reason: 'the transcript button moved' }]
+      }),
+      'auto'
+    );
+    expect(decision).toMatchObject({
+      fire: true,
+      existing: { name: 'extract-video-captions' },
+      issue: 'the transcript button moved'
+    });
+  });
+
+  it('fires on a reported failure below the tool gate', () => {
+    // The gate keeps the author off turns where nothing happened. A skill that
+    // misled the model is something that happened, however few tools it took.
+    writeSkill('extract-video-captions');
+    const decision = decideSettle(
+      turn({ trace: trace(1), skillsReported: [{ slug: 'extract-video-captions', reason: 'step 1 is stale' }] }),
+      'auto'
+    );
+    expect(decision).toMatchObject({ fire: true, existing: { name: 'extract-video-captions' } });
+    // But never past the reasons that are about restraint rather than cost.
+    expect(
+      decideSettle(
+        turn({ trace: trace(1), memoryTainted: true, skillsReported: [{ slug: 'extract-video-captions', reason: 'x' }] }),
+        'auto'
+      )
+    ).toEqual({ fire: false, reason: 'tainted' });
+  });
+
+  it('ignores a report about a skill that is gone from disk', () => {
+    expect(routeReported({ skillsReported: [{ slug: 'deleted-since', reason: 'x' }] })).toBeUndefined();
+    expect(decideSettle(turn({ trace: trace(1), skillsReported: [{ slug: 'deleted-since', reason: 'x' }] }), 'auto')).toEqual({
+      fire: false,
+      reason: 'below-gate'
+    });
+  });
+
   it('never routes on injection alone', () => {
     // The signal that matters is affirmative. Injection is the top-2 of a cosine
     // ranking against the user's message — on 2026-08-11 both inlined skills were
@@ -200,6 +247,19 @@ describe('settleSkills', () => {
     // library to browse and no second shot to pay for.
     expect(llm.prompts[0]).not.toContain('Every skill in the library');
     expect(llm.prompts).toHaveLength(1);
+  });
+
+  it('tells the author what the model reported as wrong', async () => {
+    writeSkill('extract-video-captions');
+    const llm = scriptedLlm(['{"skill":null,"reason":"fine"}']);
+    await settleSkills(
+      turn({ skillsReported: [{ slug: 'extract-video-captions', reason: 'the transcript button moved' }] }),
+      'auto',
+      llm
+    );
+    expect(llm.prompts).toHaveLength(1);
+    expect(llm.prompts[0]).toContain('The skill this turn used');
+    expect(llm.prompts[0]).toContain('What the assistant reported as wrong with it this turn:\nthe transcript button moved');
   });
 
   it('shows the whole library on the create path', async () => {

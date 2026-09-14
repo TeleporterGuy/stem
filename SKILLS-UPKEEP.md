@@ -469,3 +469,36 @@ Stem, this repo:
 - `SKILLS-REBUILD.md` — the authoring/retrieval design this one extends.
 - Commit `fb1b193` — "Tidy up" now reports its counts and appears in background
   activity; a prerequisite for trusting anything measured below.
+
+## Addendum 2026-09-14 — the deviation report is read back
+
+Every mechanism above grades a skill by proxy: tool overlap for use, a clock for
+retirement. The one outcome signal that costs nothing was already being produced
+and thrown away. `formatSkillsBlock` tells the model to *say so plainly* when a
+loaded step is wrong, so a bad auto-saved skill becomes visible to the user, and
+the rebuild record says that report "is also what routes the skill into
+patch-on-use." It never did — nothing parsed the reply.
+
+Now the block asks for that sentence on its own line, `Skill issue [<name>]:
+<why>`, and `reportedSkillIssues` (grade.ts) reads it off `assistantText` at
+settle. Only inlined slugs are accepted, so a name-only or invented skill cannot
+be reported. What a report does:
+
+- **Grading.** A reported skill is removed from the graded-used set before
+  `recordGrades`, so the ranking rate sees the turn as injected-not-used. The
+  rate formula is unchanged; a failure is a miss the model vouched for.
+- **Ledger.** `failed` and `lastFailure {at, reason}` on the usage entry, summed
+  through merges like the other counters. The Manage panel shows "reported wrong
+  N×" with the last reason as a tooltip; the curator prompt sees the same line,
+  the one piece of usage data that is evidence about content.
+- **Routing.** `routeReported` (settle.ts) patches the reported skill ahead of
+  the graded-used route and below the tool-call gate — a skill that misled the
+  model is something that happened, however few tools it took. Restraint reasons
+  (`tainted`, `scheduled`, `mode-off`) still win. The reason reaches
+  `authorSkill` as `issue`, so the patch is told what was wrong instead of
+  inferring it from the trace. `/learn` resolves through the same helper.
+
+Not done: a second model call to judge outcome, and the counterfactual ("would
+the turn have been shorter without the skill"), which cannot be known from one
+run. `scripts/skill-author-eval.mjs` is where a with/without replay would live if
+the shipped mechanism needs validating against real replies.

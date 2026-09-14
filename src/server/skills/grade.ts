@@ -1,4 +1,5 @@
 import type { TraceEntry } from '../pi/normalize';
+import { SKILL_ISSUE_MARKER } from './inject';
 
 // Did the turn actually follow the skills it was given?
 //
@@ -122,4 +123,48 @@ export function gradeSkillUse(skills: { slug: string; body: string }[], trace: T
     }
   }
   return used;
+}
+
+/** One reported failure of a loaded skill: which one, and what the model said was wrong. */
+export interface SkillIssue {
+  slug: string;
+  reason: string;
+}
+
+/** Longest reason kept; the rest of the sentence is in the chat for the user. */
+export const SKILL_ISSUE_REASON_MAX = 240;
+
+/**
+ * The failures the model REPORTED this turn, parsed off its reply.
+ *
+ * This is the one outcome signal that costs nothing: the per-turn block already
+ * tells the model to say so when a loaded step is wrong, because a bad auto-saved
+ * skill has to become visible to the user. Until now nobody read that sentence
+ * back. The block asks for it on a line starting with `SKILL_ISSUE_MARKER
+ * [<name>]:`, and this reads exactly that line — so unlike `gradeSkillUse`, which
+ * infers use from tool overlap, this is the model's own verdict on the skill.
+ *
+ * Only skills whose bodies were inlined this turn can be reported: a name-only
+ * entry was never given its steps, so it cannot have been wrong, and a slug that
+ * matches nothing inlined is a hallucinated or forged name and is dropped. One
+ * issue per skill — a reply that reports two wrong steps of one skill collapses
+ * to the first, since routing patches the whole skill either way.
+ */
+export function reportedSkillIssues(assistantText: string, inlined: { slug: string }[]): SkillIssue[] {
+  if (!assistantText || inlined.length === 0) return [];
+  const known = new Map(inlined.map((s) => [s.slug.toLowerCase(), s.slug]));
+  const seen = new Set<string>();
+  const issues: SkillIssue[] = [];
+  const marker = SKILL_ISSUE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // The name may come back backticked, and the model may be tempted to add bold
+  // around the whole line; both are tolerated so the signal survives formatting.
+  const re = new RegExp(`^[\\s*_>-]*${marker}\\s*\\[\\s*\`?([a-z0-9][a-z0-9-]*)\`?\\s*\\]\\s*:\\s*(.*)$`, 'gim');
+  for (const match of assistantText.matchAll(re)) {
+    const slug = known.get(match[1].toLowerCase());
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    const reason = match[2].replace(/^[*_`\s]+|[*_`\s]+$/g, '').trim().slice(0, SKILL_ISSUE_REASON_MAX);
+    issues.push({ slug, reason });
+  }
+  return issues;
 }

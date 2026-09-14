@@ -7,7 +7,7 @@
 // never promised. The case that matters most is the one it is FOR: a skill
 // injected turn after turn that never coincides with anything of its own.
 import { describe, expect, it } from 'vitest';
-import { GENERIC_TOOLS, gradeSkillUse, toolsNamedIn } from '../../src/server/skills/grade';
+import { GENERIC_TOOLS, gradeSkillUse, reportedSkillIssues, toolsNamedIn } from '../../src/server/skills/grade';
 import type { TraceEntry } from '../../src/server/pi/normalize';
 
 const CAPTIONS = `## When to use
@@ -158,5 +158,42 @@ describe('gradeSkillUse', () => {
     expect(gradeSkillUse([{ slug: 'extract-video-captions', body: CAPTIONS }], captions)).toEqual([
       'extract-video-captions'
     ]);
+  });
+});
+
+describe('reportedSkillIssues', () => {
+  const inlined = [{ slug: 'extract-video-captions' }, { slug: 'other-skill' }];
+
+  it('reads the marker line the block asks for, and nothing else', () => {
+    const reply = [
+      'I tried the saved procedure first.',
+      'Skill issue [extract-video-captions]: step 2 says "Show transcript" but the button is now under "…more".',
+      'So I opened the menu instead and the transcript loaded.'
+    ].join('\n');
+    expect(reportedSkillIssues(reply, inlined)).toEqual([
+      {
+        slug: 'extract-video-captions',
+        reason: 'step 2 says "Show transcript" but the button is now under "…more".'
+      }
+    ]);
+  });
+
+  it('tolerates markdown around the marker', () => {
+    // A list bullet, bold, and a backticked name are the forms a chat model
+    // reaches for; the signal has to survive all of them.
+    const reply = '- **Skill issue [`Extract-Video-Captions`]:** the URL form changed.**';
+    expect(reportedSkillIssues(reply, inlined)).toEqual([{ slug: 'extract-video-captions', reason: 'the URL form changed.' }]);
+  });
+
+  it('drops a report about a skill that was not inlined', () => {
+    // Name-only skills were never given their steps, so they cannot have been
+    // wrong; and a slug that matches nothing is a hallucinated or forged name.
+    expect(reportedSkillIssues('Skill issue [book-restaurant-table]: nope', inlined)).toEqual([]);
+    expect(reportedSkillIssues('Skill issue [extract-video-captions]: x', [])).toEqual([]);
+  });
+
+  it('keeps one report per skill and reads the plain sentence as no report', () => {
+    const reply = 'Skill issue [other-skill]: first\nSkill issue [other-skill]: second\nThe saved skill was wrong about the flag.';
+    expect(reportedSkillIssues(reply, inlined)).toEqual([{ slug: 'other-skill', reason: 'first' }]);
   });
 });

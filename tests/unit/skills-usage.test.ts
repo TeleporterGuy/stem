@@ -176,6 +176,23 @@ describe('recordGrades', () => {
     expect(readUsage().skills.ignored?.lastGradedAt).toBe(seconds);
   });
 
+  it('records a reported failure and never counts that turn as a use', () => {
+    // The model said a step was wrong. The ranking rate already sees that as
+    // injected-not-used; the count and the reason are what the Manage panel, the
+    // curator, and repair routing read.
+    writeSkill('wrong');
+    recordInjections(['wrong']);
+    const at = new Date('2026-07-01T10:00:00.000Z');
+    // Passed in `used` too — tool overlap credited it — and must not survive.
+    recordGrades(['wrong'], ['wrong'], at, [{ slug: 'wrong', reason: 'step 2 opens the wrong page' }]);
+    const entry = readUsage().skills.wrong;
+    expect(entry?.used).toBe(0);
+    expect(entry?.failed).toBe(1);
+    expect(entry?.lastFailure).toEqual({ at: at.toISOString(), reason: 'step 2 opens the wrong page' });
+    // Survives a read-back, and the panel shows it.
+    expect(JSON.parse(readFileSync(usageFile, 'utf8')).skills.wrong.failed).toBe(1);
+  });
+
   it('accumulates across turns', () => {
     writeSkill('brew-coffee');
     recordInjections(['brew-coffee']);

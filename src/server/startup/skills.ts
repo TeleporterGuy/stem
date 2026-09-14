@@ -1,5 +1,5 @@
 import { SkillBridge } from '../skills/bridge';
-import { authorForTurn, firstExistingSkill, settleSkills } from '../skills/settle';
+import { authorForTurn, firstExistingSkill, routeReported, settleSkills } from '../skills/settle';
 import { readSettings, skillsRunFor } from '../workspace/settings';
 import { log } from '../log';
 import type { PiRuntime } from '../pi/runtime';
@@ -143,8 +143,9 @@ export async function learnFromLastTurn(threadId: string, focus?: string): Promi
   // the turn was graded as following, and otherwise let the author read the
   // library and name its own target (settle.ts owns both halves — `/learn` reading
   // the routing field its own way is how the dead field survived here longest).
-  const existing = firstExistingSkill(turn.skillsGradedUsed);
-  const author = await authorForTurn(turn, llm, { existing, focus });
+  const reported = routeReported(turn);
+  const existing = reported?.existing ?? firstExistingSkill(turn.skillsGradedUsed);
+  const author = await authorForTurn(turn, llm, { existing, issue: reported?.issue, focus });
   if (!author.ok) {
     return {
       ok: false,

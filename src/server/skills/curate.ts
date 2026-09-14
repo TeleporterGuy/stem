@@ -66,6 +66,9 @@ interface AgentSkill {
   useCount: number;
   /** ISO timestamp of the most recent recorded use. */
   lastUsedAt?: string;
+  /** Turns in which the assistant reported a step as wrong, and the last reason. */
+  failCount: number;
+  lastFailure?: { at: string; reason: string };
 }
 
 interface CurateOps {
@@ -164,7 +167,9 @@ function loadAgentSkills(usage: SkillsUsage): AgentSkill[] {
       created: fm.created ?? new Date().toISOString(),
       body: stripFront(raw),
       useCount: usage.skills[slug]?.count ?? 0,
-      lastUsedAt: usage.skills[slug]?.lastUsedAt
+      lastUsedAt: usage.skills[slug]?.lastUsedAt,
+      failCount: usage.skills[slug]?.failed ?? 0,
+      lastFailure: usage.skills[slug]?.lastFailure
     });
   }
   return out;
@@ -184,7 +189,13 @@ function buildPrompt(skills: AgentSkill[], trackingSince: string): string {
       const usage = s.useCount
         ? `used ${s.useCount}×, last ${isoDay(s.lastUsedAt ?? '')}`
         : 'never used since tracking began';
-      return `## [${s.slug}] ${s.name}\n${s.description}\nCreated ${isoDay(s.created)} · ${usage}\n\n${s.body}`;
+      // A reported failure is the assistant's own verdict on the body, which is
+      // the one thing here that IS evidence about content — worth the merge
+      // judge knowing which of two overlapping write-ups has been found wrong.
+      const failures = s.failCount
+        ? ` · reported wrong ${s.failCount}×${s.lastFailure ? `, last: ${s.lastFailure.reason}` : ''}`
+        : '';
+      return `## [${s.slug}] ${s.name}\n${s.description}\nCreated ${isoDay(s.created)} · ${usage}${failures}\n\n${s.body}`;
     })
     .join('\n\n---\n\n');
   return `${INSTRUCTIONS}\n\n${header}\n\nSkills:\n\n${blocks}`;

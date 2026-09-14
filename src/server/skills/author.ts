@@ -57,6 +57,13 @@ export interface AuthorInput {
   /** Free-text steer from `/learn <focus>` — what the user wants captured. */
   focus?: string;
   /**
+   * Patch path only: what the assistant reported as wrong with `existing` in
+   * its reply this turn (the `Skill issue [...]:` line the skills block asks
+   * for). The author is not left to infer the defect from the trace when the
+   * model has already named it.
+   */
+  issue?: string;
+  /**
    * Which machine this turn ran on, in a sentence (`whereSkillsRun()` in
    * workspace/bootstrap.ts). Passed in rather than read here so this module stays
    * free of the host shim and the eval can build fixtures for either world.
@@ -182,6 +189,7 @@ export function renderEvidence(input: AuthorInput): string {
     parts.push(
       `${heading}:\nname: ${input.existing.name}\ndescription: ${input.existing.description}\n\n${input.existing.body}`
     );
+    if (input.issue?.trim()) parts.push(`What the assistant reported as wrong with it this turn:\n${input.issue.trim()}`);
   }
   // The library, when the author is being asked to choose. Bodies first: those
   // are the ones it can judge properly, and a name-and-description line is a

@@ -5,6 +5,7 @@ import { stripCiteMarkers } from '../../shared/citations';
 import { WEB_ACCESS_TOOL_NAMES } from '../../shared/activity';
 import { SECRET_ENVELOPE_KEY, toolArgsOf } from './protocol';
 import type { InlinedSkill } from '../skills/inject';
+import type { SkillIssue } from '../skills/grade';
 import { extractSources } from './web-search';
 
 // Translate pi's RPC event stream into Stem's canonical backend events (the
@@ -116,6 +117,14 @@ export interface TurnContext {
    */
   skillsGradedUsed?: string[];
   /**
+   * Loaded skills the model itself REPORTED as wrong this turn, with its reason
+   * (grade.ts `reportedSkillIssues`). Written beside `skillsGradedUsed` at
+   * settle. Stronger than grading: it is the model's verdict, not a proxy, and it
+   * is the one place the "say so when a step is wrong" instruction in the skills
+   * block is read back rather than left on the user's screen.
+   */
+  skillsReported?: SkillIssue[];
+  /**
    * True for an autonomous scheduled-task run. Set by PiRuntime.startTurn from the
    * scheduler's input marker; the exec bridge uses it to reject commands that would
    * need a manual approval nobody is present to give.
@@ -209,8 +218,10 @@ export interface SettledTurnTrace {
    * exists", but nothing here is evidence the turn followed any of them.
    */
   skillsInjected: string[];
-  /** The graded subset of the above — the only affirmative use signal, and what routes patch-vs-create. */
+  /** The graded subset of the above — the affirmative use signal, and what routes patch-vs-create absent a report. */
   skillsGradedUsed: string[];
+  /** Skills the model reported as wrong this turn; routes the patch ahead of grading. */
+  skillsReported: SkillIssue[];
   /** The turn read inside a memorize:false folder: never author from it. */
   memoryTainted: boolean;
   isScheduled: boolean;
@@ -226,6 +237,7 @@ export function snapshotTurnTrace(turn: TurnContext, endedAt: number): SettledTu
     trace: turn.trace,
     skillsInjected: (turn.skillsInjected ?? []).map((s) => s.slug),
     skillsGradedUsed: [...(turn.skillsGradedUsed ?? [])],
+    skillsReported: (turn.skillsReported ?? []).map((i) => ({ ...i })),
     memoryTainted: turn.memoryTainted === true,
     isScheduled: turn.isScheduled === true
   };

@@ -92,7 +92,7 @@ import { piMcpConfigPath, skillsRoot } from '../workspace/paths';
 import { readUsage, recordGrades, recordInjections, recordUses } from '../skills/usage';
 import { formatSkillsBlock, selectSkills, type SkillUsageStat } from '../skills/inject';
 import { listSkillRecords } from '../skills/store';
-import { gradeSkillUse } from '../skills/grade';
+import { gradeSkillUse, reportedSkillIssues } from '../skills/grade';
 import { resolvePi, type PiInvocation } from './locate';
 import { repairMissingSessionCwd } from './session-cwd';
 import { PiProcess, stderrReason, type PiEvent } from './rpc';
@@ -3256,16 +3256,24 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // pendingSkillReload, since pi ignores non-skill files.
     const injected = turn.skillsInjected ?? [];
     if (injected.length > 0) {
-      const used = gradeSkillUse(injected, turn.trace);
-      // The same verdict routes authoring: `snapshotTurnTrace` runs a few lines
-      // down and reads this off the turn, so the settle pass gets the graded set
-      // without a second pass over the trace. It must be assigned to `turn`
+      // The model's own verdict first: a skill it reported as wrong is not one
+      // it followed, whatever the tool overlap says, so it comes out of the
+      // graded set before that set is recorded or routed on.
+      const reported = reportedSkillIssues(turn.assistantText, injected);
+      const failedSlugs = new Set(reported.map((i) => i.slug));
+      const used = gradeSkillUse(injected, turn.trace).filter((slug) => !failedSlugs.has(slug));
+      // The same verdicts route authoring: `snapshotTurnTrace` runs a few lines
+      // down and reads these off the turn, so the settle pass gets the graded set
+      // without a second pass over the trace. They must be assigned to `turn`
       // itself — the object handed to the snapshot — or the routing goes back to
       // being permanently empty, which is the bug this replaced.
       turn.skillsGradedUsed = used;
+      turn.skillsReported = reported;
       recordGrades(
         injected.map((s) => s.slug),
-        used
+        used,
+        new Date(),
+        reported
       );
       // `recordUses` still drives the human-facing "used N×" line in the Manage
       // panel, which predates the loop and means the same thing to a reader.

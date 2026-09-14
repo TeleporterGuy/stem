@@ -73,7 +73,9 @@ export async function listSkills(): Promise<SkillSummary[]> {
         updatedAt: fm.updated,
         // Explicit 0 (not undefined) so the UI can say "never used" plainly.
         useCount: usage.skills[slug]?.count ?? 0,
-        lastUsedAt: usage.skills[slug]?.lastUsedAt
+        lastUsedAt: usage.skills[slug]?.lastUsedAt,
+        failCount: usage.skills[slug]?.failed ?? 0,
+        lastFailure: usage.skills[slug]?.lastFailure
       });
     } catch (error) {
       // No SKILL.md — not a skill directory; skip. A SKILL.md that is there and

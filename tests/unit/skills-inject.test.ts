@@ -452,6 +452,8 @@ describe('formatSkillsBlock', () => {
     expect(block).toMatch(/instructions to follow/i);
     expect(block).toMatch(/say so plainly in your reply/i);
     expect(block).toMatch(/never silently skip/i);
+    // And the machine-readable form of that report, spelled the way grade.ts reads it.
+    expect(block).toContain('`Skill issue [<skill name>]:`');
   });
 
   it('labels an auto-saved skill as unreviewed', () => {

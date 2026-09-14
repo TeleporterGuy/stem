@@ -33,7 +33,7 @@ export const SKILL_GATE_MIN_TOOL_CALLS = 5;
 
 export type SettleDecision =
   | { fire: false; reason: 'below-gate' | 'tainted' | 'scheduled' | 'mode-off' }
-  | { fire: true; existing?: { name: string; description: string; body: string } };
+  | { fire: true; existing?: { name: string; description: string; body: string }; issue?: string };
 
 /**
  * Should this turn be offered to the author, and as a create or a patch?
@@ -49,6 +49,16 @@ export function decideSettle(turn: SettledTurnTrace, mode: SkillsMode): SettleDe
   if (mode === 'off') return { fire: false, reason: 'mode-off' };
   if (turn.memoryTainted) return { fire: false, reason: 'tainted' };
   if (turn.isScheduled) return { fire: false, reason: 'scheduled' };
+
+  // The model REPORTED a loaded skill as wrong. That is the strongest routing
+  // signal there is — its own verdict, naming the skill — and it is worth a
+  // patch regardless of how many tools the turn called: the gate exists to keep
+  // the author off turns where nothing happened, and a skill that misled the
+  // model is something that happened. It also outranks grading below, because a
+  // turn can overlap a skill's tools and still have found its steps wrong.
+  const reported = routeReported(turn);
+  if (reported) return { fire: true, ...reported };
+
   if (turn.trace.length < SKILL_GATE_MIN_TOOL_CALLS) return { fire: false, reason: 'below-gate' };
 
   // The turn showed evidence of FOLLOWING a skill: improve that one rather than
@@ -67,6 +77,21 @@ export function decideSettle(turn: SettledTurnTrace, mode: SkillsMode): SettleDe
   // shown the library instead and picks its own target (see `authorForTurn`).
   const existing = firstExistingSkill(turn.skillsGradedUsed);
   return existing ? { fire: true, existing } : { fire: true };
+}
+
+/**
+ * The patch target a turn's own report names, with the reason, or undefined when
+ * nothing was reported or the reported skill is gone. Shared by the end-of-turn
+ * pass and `/learn` so a report resolves the same way on both surfaces.
+ */
+export function routeReported(
+  turn: Pick<SettledTurnTrace, 'skillsReported'>
+): { existing: { name: string; description: string; body: string }; issue: string } | undefined {
+  for (const issue of turn.skillsReported ?? []) {
+    const existing = firstExistingSkill([issue.slug]);
+    if (existing) return { existing, issue: issue.reason };
+  }
+  return undefined;
 }
 
 /**
@@ -133,13 +158,14 @@ function libraryForAuthor(injectedSlugs: string[]): {
 export async function authorForTurn(
   turn: SettledTurnTrace,
   llm: LlmClient,
-  opts: { existing?: { name: string; description: string; body: string }; focus?: string } = {}
+  opts: { existing?: { name: string; description: string; body: string }; issue?: string; focus?: string } = {}
 ): Promise<AuthorOutcome> {
   const evidence = {
     trace: turn.trace,
     userText: turn.userText,
     assistantText: turn.assistantText,
     focus: opts.focus,
+    issue: opts.issue,
     machine: whereSkillsRun()
   };
   if (opts.existing) return authorSkill(llm, { ...evidence, existing: opts.existing });
@@ -191,6 +217,6 @@ export async function settleSkills(
 ): Promise<SettleOutcome> {
   const decision = decideSettle(turn, mode);
   if (!decision.fire) return { decision };
-  const author = await authorForTurn(turn, llm, { existing: decision.existing, focus: opts.focus });
+  const author = await authorForTurn(turn, llm, { existing: decision.existing, issue: decision.issue, focus: opts.focus });
   return { decision, author };
 }

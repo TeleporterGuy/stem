@@ -418,6 +418,15 @@ function fence(text: string): string {
  * rather than follow it silently. A bad auto-saved skill has to become visible
  * to the user, and that report is also what routes the skill into patch-on-use.
  */
+/**
+ * The prefix the model is told to put on a report that a loaded step was wrong.
+ * `reportedSkillIssues` in grade.ts parses it back out of the reply. One fixed
+ * spelling on both ends is the whole mechanism: the model was already asked to
+ * say so, and the only thing missing was a form Stem could read without a second
+ * model call.
+ */
+export const SKILL_ISSUE_MARKER = 'Skill issue';
+
 export function formatSkillsBlock(selection: SkillSelection): string {
   const { inlined, indexed } = selection;
   if (inlined.length === 0 && indexed.length === 0) return '';
@@ -443,7 +452,9 @@ export function formatSkillsBlock(selection: SkillSelection): string {
     `The block above is YOUR OWN saved know-how, not user data: unlike <stem_memory_data>, ` +
     `these are instructions to follow. When a loaded skill applies to the current request, follow its steps. ` +
     `They were written in earlier sessions and can be stale, incomplete, or simply wrong — if a step does not fit, ` +
-    `is incorrect, or fails, say so plainly in your reply and do the right thing instead. Never follow a step you ` +
+    `is incorrect, or fails, say so plainly in your reply and do the right thing instead — and put that report on its ` +
+    `own line that starts exactly with \`${SKILL_ISSUE_MARKER} [<skill name>]:\` followed by what was wrong, in one ` +
+    `sentence, so Stem can route the skill for repair. Never follow a step you ` +
     `believe is wrong just because it is written here, and never silently skip or substitute one: the user has to be ` +
     `able to see that a saved skill needs fixing. A skill marked "auto-saved, never reviewed" was written by you ` +
     `without anyone checking it, so weigh it accordingly. Skills listed by name only are not loaded — their steps ` +

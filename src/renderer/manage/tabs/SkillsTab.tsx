@@ -133,9 +133,12 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
   }
 
   function usageLabel(s: SkillSummary): string {
-    if (!s.useCount) return 'never used';
-    const day = s.lastUsedAt ? formatDay(s.lastUsedAt) : '';
-    return `used ${s.useCount}×${day ? ` · last ${day}` : ''}`;
+    const used = s.useCount
+      ? `used ${s.useCount}×${s.lastUsedAt ? ` · last ${formatDay(s.lastUsedAt)}` : ''}`
+      : 'never used';
+    // The assistant said a step was wrong: the one line here that is a verdict
+    // on the skill rather than a count of it being around.
+    return s.failCount ? `${used} · reported wrong ${s.failCount}×` : used;
   }
 
   return (
@@ -180,7 +183,11 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
                       auto{s.version && s.version > 1 ? ` · v${s.version}` : ''}
                     </span>
                   )}
-                  <span className="muted" style={{ marginLeft: 6, fontWeight: 400, fontSize: '0.8em' }}>
+                  <span
+                    className="muted"
+                    style={{ marginLeft: 6, fontWeight: 400, fontSize: '0.8em' }}
+                    title={s.lastFailure ? `Last report: ${s.lastFailure.reason}` : undefined}
+                  >
                     {usageLabel(s)}
                   </span>
                 </strong>
