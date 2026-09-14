@@ -48,41 +48,21 @@ import type { SourceRef, WebSearchSettings } from '../../shared/types';
 
 const PACKAGE = 'pi-web-access';
 
-/**
- * Which model backs the OpenAI search backend — a FALLBACK path, not the default
- * one. That backend answers a query by running a whole separate inference (it posts
- * to the Responses endpoint and lets the provider's hosted web_search run inside
- * that call), which is 4-12s and a subscription's quota to do what an index lookup
- * does in under a second. So the patched `auto` chain reaches it only when every
- * real search engine is unavailable or erroring — see the ordering rule in
- * tests/unit/web-search-latency.test.ts — and it is reachable directly only if the
- * user explicitly picks `openai` in settings.
+/*
+ * The OpenAI search backend's model is NOT pinned. pi-web-access picks it from pi's
+ * registry for whichever OpenAI credential it finds (`pickSearchModel` in
+ * openai-search.ts), and the config's `openaiSearchModel` is a verbatim override
+ * with no fallback: a rotated-out id fails every search rather than degrading.
  *
- * Pinned because the package otherwise picks for itself: `pickSearchModel` in
- * openai-search.ts sorts the registry's OpenAI models and prefers a "terra" id, then
- * the newest bare mainline id. Adding a model to the signed-in account would then
- * silently re-point every search at it: no setting changed, no code changed,
- * searches just get slower or dearer.
- *
- * Since 0.18.0 the pin is upstream (`openaiSearchModel`), and it is a hard override
- * rather than a preference — the registry is consulted only for the credential, and
- * this id is sent verbatim. So unlike the patched version this replaced, a rotated-
- * out id does NOT degrade to the package's own choice; it fails the request. Re-check
- * this constant when OpenAI retires a model.
- *
- * `mini` on measurement, not on reputation — same request, same hosted tool, 3
- * queries x 2 reps: gpt-5.4-mini 4.2s median, gpt-5.6-luna 6.4s (and a 28s tail
- * where it took three search rounds), gpt-5.4 6.3s, and mini is the cheapest of the
- * three per token. What this model is asked to do is "run the query, quote what came
- * back"; the reasoning the bigger ids charge for happens in the chat model
- * afterwards, on the results.
- *
- * Measured WORSE, not worth retrying: `reasoning.effort: low` (8-12s — a smaller
- * thinking budget makes the hosted model take MORE search rounds, and rounds are the
- * unit of cost), and instructing it to search exactly once (no effect; it already
- * does). Re-run `npm run test:perf` if you change it.
+ * Stem used to pin `gpt-5.4-mini` here — measured fastest and cheapest against the
+ * API endpoint. A ChatGPT (Codex OAuth) login goes to the Codex endpoint instead,
+ * which on 2026-09-09 stopped accepting that id ("not supported when using Codex
+ * with a ChatGPT account"), and the pin took every web search on that account
+ * down with it for five days. The registry's own choice is a model the account
+ * can actually run, and it follows the account when OpenAI rotates ids; the couple
+ * of seconds a bigger id may cost per search is the fallback path's problem, not
+ * the default one's (see the ordering rule in tests/unit/web-search-latency.test.ts).
  */
-export const OPENAI_SEARCH_MODEL = 'gpt-5.4-mini';
 
 /** The version this integration was written against (mirrors TESTED_PI_VERSION). */
 export const TESTED_WEB_ACCESS_VERSION = '0.18.0';
@@ -250,8 +230,7 @@ export async function writeWebSearchConfig(settings: WebSearchSettings): Promise
     // over RPC and renders its own activity rows. It does check `ctx.hasUI`, but
     // relying on that inference would put a stray localhost server one upstream
     // refactor away, so pin it explicitly.
-    workflow: 'none',
-    openaiSearchModel: OPENAI_SEARCH_MODEL
+    workflow: 'none'
   };
   if (settings.provider && settings.provider !== 'auto') file.provider = settings.provider;
   for (const [name, value] of Object.entries(settings.credentials ?? {})) {

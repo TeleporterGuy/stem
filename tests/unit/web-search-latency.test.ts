@@ -315,22 +315,21 @@ describe('auto never pays for an inference it does not need', () => {
   });
 });
 
-describe('the search model is pinned, not discovered', () => {
-  // pi-web-access resolves the OpenAI backend by walking AUTH_MODEL_CANDIDATES and
-  // taking the first id present in pi's registry. Signing into an account that has
-  // a newer flagship therefore re-points every search at it — slower and dearer,
-  // with no setting touched and nothing logged. Worse, it is invisible: the model
-  // doing your searches is not the model in the picker.
-  it('writes the pinned model into the file the extension reads', async () => {
+describe('the search model is discovered, not pinned', () => {
+  // `openaiSearchModel` in web-search.json is a verbatim override with no fallback.
+  // Stem once pinned gpt-5.4-mini there; the Codex endpoint (ChatGPT logins) stopped
+  // accepting it on 2026-09-09 and every search on that account failed for days.
+  // Leaving the field out lets pi-web-access pick a model the signed-in credential
+  // can run, from pi's registry.
+  it('writes no model override into the file the extension reads', async () => {
     const home = mkdtempSync(join(tmpdir(), 'stem-websearch-perf-'));
     vi.doMock('../../src/server/workspace/paths', () => ({ piHome: () => home }));
-    const { writeWebSearchConfig, webSearchConfigPath, OPENAI_SEARCH_MODEL } = await import(
-      '../../src/server/pi/web-search'
-    );
+    const { writeWebSearchConfig, webSearchConfigPath } = await import('../../src/server/pi/web-search');
     try {
       await writeWebSearchConfig({ main: true, quickChat: true, provider: 'auto', credentials: {} });
       const file = JSON.parse(readFileSync(webSearchConfigPath(), 'utf8')) as Record<string, unknown>;
-      expect(file.openaiSearchModel).toBe(OPENAI_SEARCH_MODEL);
+      expect(file).not.toHaveProperty('openaiSearchModel');
+      expect(file.workflow).toBe('none');
     } finally {
       rmSync(home, { recursive: true, force: true });
       vi.doUnmock('../../src/server/workspace/paths');
