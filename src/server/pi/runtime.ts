@@ -1242,7 +1242,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             // Mirrors buildMessage's recall gate: a recall-off persona (or a
             // private chat) gets neither the injected block nor the search
             // tools that would reproduce it on demand.
-            recall: input.persona?.recall !== false && !isPrivate
+            recall: input.persona?.recall !== false && !isPrivate,
+            // A code persona is a relay: the harness does the work AND the
+            // verification, so the persona's own read/grep/run_command/MCP
+            // tools are off for the turn (codeRelayRefusal in the extension).
+            relay: !!turn.personaHarness
           },
           w.gateDir
         ).catch(

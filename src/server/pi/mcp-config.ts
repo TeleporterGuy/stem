@@ -344,7 +344,7 @@ export function piTurnContextPath(gateDir?: string): string {
 }
 
 export async function writeTurnContextGate(
-  ctx: { mail: boolean; scheduled: boolean; coding: boolean; recall: boolean },
+  ctx: { mail: boolean; scheduled: boolean; coding: boolean; recall: boolean; relay: boolean },
   gateDir?: string
 ): Promise<void> {
   await mkdir(gateDir ?? piHome(), { recursive: true });
@@ -358,7 +358,15 @@ export async function writeTurnContextGate(
     // assembler already withholds the injected recall block for such a turn;
     // without this gate the model could simply call search_facts and get the
     // same material back, so the bridge refuses those tools too.
-    JSON.stringify({ mail: ctx.mail, scheduled: ctx.scheduled, coding: ctx.coding, recall: ctx.recall }, null, 2),
+    // `relay`: the turn belongs to a code persona, which is a hands-off relay
+    // to its coding agent — every tool except coding_agent and the reply
+    // channels is refused, so the persona cannot re-verify or redo the agent's
+    // work. Defaults to false when absent (an older main), unlike `coding`.
+    JSON.stringify(
+      { mail: ctx.mail, scheduled: ctx.scheduled, coding: ctx.coding, recall: ctx.recall, relay: ctx.relay },
+      null,
+      2
+    ),
     'utf8'
   );
 }

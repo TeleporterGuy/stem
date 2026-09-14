@@ -1913,6 +1913,10 @@ export default async function stemMcpBridge(pi) {
     // Escape hatch that stays: run_command reaches other paths through the
     // tiered approval policy, where the user can see and refuse it.
     pi.on('tool_call', (event) => {
+      // A code persona's turn: everything but the relay tools is refused,
+      // before the filesystem rules even look (see codeRelayRefusal).
+      const relayRefusal = event ? codeRelayRefusal(event.toolName, turnContextGate()) : null;
+      if (relayRefusal) return { block: true, reason: relayRefusal };
       const kind = event ? FS_TOOL_KIND[event.toolName] : undefined;
       if (!kind) return undefined;
       const p = event.input && typeof event.input.path === 'string' ? event.input.path : null;
@@ -2003,13 +2007,36 @@ export function makeTurnContextGate(path) {
         mail: parsed.mail === true,
         scheduled: parsed.scheduled === true,
         coding: parsed.coding !== false,
-        recall: parsed.recall !== false
+        recall: parsed.recall !== false,
+        relay: parsed.relay === true
       };
     } catch {
-      return { mail: false, scheduled: false, coding: true, recall: true };
+      return { mail: false, scheduled: false, coding: true, recall: true, relay: false };
     }
   };
 }
+
+/**
+ * Refusal for any tool a code persona calls that is not part of relaying to
+ * its coding agent (turn-context gate `relay: true`), else null. The harness
+ * already does the programming and the verification — with its own skills and
+ * MCP servers — so the persona's job is to pass the brief in and the answer
+ * out. Left with read/grep/run_command/invoke_tool it re-verified the agent's
+ * diff, re-prompted it with "critical self-review" follow-ups, and once
+ * committed the change itself; every one of those is what this closes.
+ */
+export function codeRelayRefusal(toolName, turnCtx) {
+  if (!turnCtx || turnCtx.relay !== true) return null;
+  if (CODE_RELAY_TOOLS.has(toolName)) return null;
+  return CODE_RELAY_REFUSAL;
+}
+
+const CODE_RELAY_TOOLS = new Set(['coding_agent', 'send_mail', 'notify_user']);
+
+const CODE_RELAY_REFUSAL =
+  'This is a code persona: it relays to its coding agent and does not work, inspect or verify on its own. ' +
+  'Only coding_agent, send_mail and notify_user are available this turn. Do not retry this tool — put ' +
+  "whatever you wanted to check or do into the coding_agent prompt, or hand the agent's reply on as-is.";
 
 const INSTRUCTIONS_MAIL_REFUSAL =
   'This turn is a mail delivery — an approval card would sit unanswered, so the change was not proposed. Do not ' +
@@ -2679,18 +2706,21 @@ function registerHarnessTools(pi, turnContext) {
     name: 'coding_agent',
     label: 'Coding agent',
     description:
-      'Delegate coding work to the external coding agent this persona is pinned to (Claude Code, OpenCode, …), ' +
-      'a full coding harness with its own tools, running on the computer and in the folder the persona\'s ' +
-      'setup names. Only code personas — those with a coding setup pinned in the persona editor — have ' +
-      'this tool; the agent, computer and folder are fixed by the pin and cannot be chosen per call. ' +
-      'BLOCKING: one call is ONE exchange with the agent — your prompt goes in, the call returns when the ' +
-      'agent ends its turn, which can take many minutes for real coding work. Do not poll; there is nothing ' +
-      'to poll. The session persists per chat + agent + working folder, so calling again continues the SAME ' +
-      'conversation: use follow-up calls to steer it, answer its questions, or ask for the next step ' +
-      '(`fresh_session: true` starts over). ' +
-      'The agent\'s reply comes back as this tool\'s result. When it asks a question, answer it yourself in a ' +
-      'follow-up call if the conversation already gives you the answer; otherwise relay the question to the ' +
-      'user and call again with their answer. ' +
+      'Hand the task to the external coding agent this persona is pinned to (Claude Code, OpenCode, …), ' +
+      'a full coding harness with its own tools, skills and MCP servers, running on the computer and in the ' +
+      "folder the persona's setup names. Only code personas — those with a coding setup pinned in the persona " +
+      'editor — have this tool; the agent, computer and folder are fixed by the pin and cannot be chosen per call. ' +
+      'The agent does the work AND the verification; you are a relay. Pass the brief in, return its reply ' +
+      'as-is — do not inspect, re-check, review or redo what it did, and do not send it follow-up rounds of ' +
+      'your own (no "verify", "self-review", "check again" prompts). ' +
+      'BLOCKING: one call is ONE exchange — your prompt goes in, the call returns when the agent ends its turn, ' +
+      'which can take many minutes. Do not poll; there is nothing to poll. The session persists per chat + ' +
+      'agent + working folder, so a later call continues the SAME conversation: call again only to deliver ' +
+      "new input from the conversation — the sender's next message, or their answer to a question the agent " +
+      'asked (`fresh_session: true` starts over). ' +
+      "The agent's reply comes back as this tool's result. When it asks a question, answer it in a follow-up " +
+      'call only if the conversation already gives the answer; otherwise relay the question as your ' +
+      'reply and call again when the answer arrives. ' +
       'Risky actions (commands, publishes) may pause on an approval card for the user — that time counts ' +
       'against nobody; just let the call run. ' +
       'The agent works in the pinned folder; `cwd` may only name that folder or one inside it. Do not use ' +

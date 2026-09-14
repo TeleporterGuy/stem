@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import stemMcpBridge, {
+  codeRelayRefusal,
   bridgeOAuthTokenForServer,
   capToolContent,
   findProtectedPath,
@@ -559,14 +560,85 @@ describe('recall search tools in a recall-off turn', () => {
     cleanup.push(root);
     const gate = makeTurnContextGate(join(root, 'turn-context.json'));
     // No file yet: a live chat with recall.
-    expect(gate()).toEqual({ mail: false, scheduled: false, coding: true, recall: true });
+    expect(gate()).toEqual({ mail: false, scheduled: false, coding: true, recall: true, relay: false });
     // What main writes for a Critic delivery.
-    await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: false }, root);
+    await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: false, relay: false }, root);
     expect(gate().recall).toBe(false);
     expect(recallToolRefusal('stem-recall', 'search_facts', gate())).not.toBeNull();
     // An older main's file, written before the field existed.
     await writeFile(join(root, 'turn-context.json'), JSON.stringify({ mail: false, scheduled: false, coding: true }));
     expect(gate().recall).toBe(true);
+  });
+});
+
+describe('code personas are hands-off relays', () => {
+  // The harness does the programming AND the verification (its own skills and
+  // MCP servers). Left with its own tools the code persona's wrapper model
+  // re-verified diffs with run_command, read the mirror, re-prompted the agent
+  // with "self-review" rounds and once committed by itself — so a `relay` turn
+  // refuses every tool but the relay set.
+  const cleanup: string[] = [];
+  afterEach(async () => {
+    for (const p of cleanup.splice(0)) await rm(p, { recursive: true, force: true });
+  });
+
+  it('refuses everything but coding_agent and the reply channels in a relay turn', () => {
+    const relay = { mail: true, scheduled: false, coding: true, recall: true, relay: true };
+    for (const tool of ['read', 'grep', 'find', 'ls', 'write', 'edit', 'run_command', 'invoke_tool', 'find_tools', 'search_facts', 'schedule_task']) {
+      expect(codeRelayRefusal(tool, relay)).toMatch(/code persona/);
+    }
+    for (const tool of ['coding_agent', 'send_mail', 'notify_user']) expect(codeRelayRefusal(tool, relay)).toBeNull();
+    // An ordinary persona, or a gate written by an older main, is untouched.
+    expect(codeRelayRefusal('read', { ...relay, relay: false })).toBeNull();
+    expect(codeRelayRefusal('read', null)).toBeNull();
+  });
+
+  it('reads relay from the gate main writes and defaults to off when the field is missing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'stem-relay-gate-'));
+    cleanup.push(root);
+    const gate = makeTurnContextGate(join(root, 'turn-context.json'));
+    await writeTurnContextGate({ mail: true, scheduled: false, coding: true, recall: true, relay: true }, root);
+    expect(gate().relay).toBe(true);
+    await writeFile(join(root, 'turn-context.json'), JSON.stringify({ mail: false, scheduled: false, coding: true }));
+    expect(gate().relay).toBe(false);
+  });
+
+  it('the tool_call hook blocks run_command and the file tools for a relay turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'stem-relay-hook-'));
+    cleanup.push(root);
+    const configPath = join(root, 'mcp.json');
+    await writeFile(configPath, JSON.stringify({ servers: {} }));
+    await writeFile(join(root, 'protected-roots.json'), JSON.stringify({ roots: [], read: [], write: [] }));
+    // The gate file lives next to mcp.json (the extension's default gate dir).
+    process.env.STEM_MCP_CONFIG = configPath;
+    {
+      const handlers: Array<(event: unknown) => { block?: boolean; reason?: string } | undefined> = [];
+      const fakePi = {
+        registerTool: (_tool: unknown) => {},
+        on: (name: string, handler: (...args: unknown[]) => unknown) => {
+          if (name === 'tool_call') handlers.push(handler as (typeof handlers)[number]);
+        },
+        getActiveTools: () => [] as string[],
+        setActiveTools: (_tools: string[]) => {}
+      };
+      await stemMcpBridge(fakePi);
+      await mcpConnectionsSettledForTests();
+      const verdict = (toolName: string) => {
+        for (const h of handlers) {
+          const res = h({ toolName, input: {} });
+          if (res && res.block) return res;
+        }
+        return undefined;
+      };
+      await writeTurnContextGate({ mail: true, scheduled: false, coding: true, recall: true, relay: true }, root);
+      expect(verdict('run_command')?.reason).toMatch(/code persona/);
+      expect(verdict('read')?.reason).toMatch(/code persona/);
+      expect(verdict('invoke_tool')?.reason).toMatch(/code persona/);
+      expect(verdict('coding_agent')).toBeUndefined();
+      expect(verdict('send_mail')).toBeUndefined();
+      await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: true, relay: false }, root);
+      expect(verdict('run_command')).toBeUndefined();
+    }
   });
 });
 
