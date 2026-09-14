@@ -1,5 +1,7 @@
 import { createAgentRegistry } from 'acpx/runtime';
+import type { ChatBackend } from '../backend/types';
 import { registerServer } from './guard';
+import { consolidatePersonaMemory } from '../mail/consolidate';
 import { deletePersona, listPersonas, savePersona } from '../workspace/personas';
 import {
   deletePersonaNote,
@@ -15,7 +17,7 @@ import { readSettings } from '../workspace/settings';
  * wherever a mail turn starts, so an edit applies to the very next delivery.
  * Mutators return the fresh list, the same contract the folder APIs use.
  */
-export function registerPersonasIpc(): void {
+export function registerPersonasIpc(deps: { runtime: () => ChatBackend }): void {
   registerServer('personas:list', () => listPersonas());
   // Change announcements (`personas:changed`) come from the store itself —
   // every write path fires them, this IPC and the mail bridge's save_persona
@@ -39,6 +41,13 @@ export function registerPersonasIpc(): void {
   registerServer('personas:notes:delete', async (_e, personaId: string, noteId: string) => {
     await deletePersonaNote(personaId, noteId);
     return listPersonaNotes(personaId);
+  });
+  // The editor's "Tidy up" button: the same consolidation pass the reflection
+  // trigger runs (mail/consolidate.ts), on demand. Never rejects; the outcome
+  // says what changed (or why nothing did) and the fresh list comes with it.
+  registerServer('personas:notes:consolidate', async (_e, personaId: string) => {
+    const outcome = await consolidatePersonaMemory(deps.runtime(), personaId);
+    return { outcome, notes: await listPersonaNotes(personaId) };
   });
   // The names the persona editor's coding-agent picker offers: acpx's built-in
   // registry plus any custom entries from harness settings. Names only — a

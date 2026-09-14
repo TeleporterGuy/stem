@@ -359,6 +359,8 @@ const api: StemApi = {
     ipcRenderer.invoke('personas:notes:save', personaId, note),
   deletePersonaNote: (personaId: string, noteId: string) =>
     ipcRenderer.invoke('personas:notes:delete', personaId, noteId),
+  consolidatePersonaNotes: (personaId: string) =>
+    ipcRenderer.invoke('personas:notes:consolidate', personaId),
 
   listMail: () => ipcRenderer.invoke('mail:list'),
   getMailWork: (conversationId: string) => ipcRenderer.invoke('mail:work', conversationId),

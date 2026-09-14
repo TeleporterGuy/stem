@@ -53,7 +53,7 @@ function summaryLabel(
   if (p.createdBy) {
     parts.push(`created by ${personas.find((x) => x.id === p.createdBy)?.name ?? p.createdBy}`);
   }
-  if (p.memory === false) parts.push('no private memory');
+  if (p.memory === false && !p.harness) parts.push('no private memory');
   if (p.recall === false) parts.push('no recall');
   if (p.clients) parts.push('open to chats');
   return parts.join(' · ');
@@ -110,6 +110,8 @@ function PersonaNotes({ personaId }: { personaId: string }) {
   const [editing, setEditing] = useState<{ id: string; title: string; body: string } | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tidying, setTidying] = useState(false);
+  const [tidied, setTidied] = useState<string | null>(null);
 
   useEffect(() => {
     let stale = false;
@@ -151,6 +153,24 @@ function PersonaNotes({ personaId }: { personaId: string }) {
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   }
 
+  function tidy() {
+    setTidying(true);
+    setTidied(null);
+    window.stem
+      .consolidatePersonaNotes(personaId)
+      .then(({ outcome, notes: list }) => {
+        setNotes(list);
+        setError(null);
+        setTidied(
+          outcome.ok
+            ? `Tidied: ${outcome.before} → ${outcome.after} notes (${outcome.rewritten} merged or rewritten, ${outcome.dropped} dropped).`
+            : `Nothing changed: ${outcome.reason ?? 'no reason given'}.`
+        );
+      })
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setTidying(false));
+  }
+
   return (
     <div className="persona-notes">
       <div className="grp-head">
@@ -158,9 +178,16 @@ function PersonaNotes({ personaId }: { personaId: string }) {
         <InfoTip label="About persona memory">
           Lessons this persona keeps from its past work. It learns automatically after each mail
           it handles and can save notes itself; everything here is injected as its note index on
-          every delivery.
+          every delivery. Tidy up asks the memory model to merge overlapping notes and drop the
+          ones that are advice rather than knowledge; it also runs by itself every dozen lessons.
         </InfoTip>
+        {(notes?.length ?? 0) >= 3 && (
+          <button className="link-btn" onClick={tidy} disabled={tidying}>
+            {tidying ? 'Tidying…' : 'Tidy up'}
+          </button>
+        )}
       </div>
+      {tidied && <p className="muted">{tidied}</p>}
       {error && <p className="task-failed">{error}</p>}
       {notes?.map((n) =>
         editing?.id === n.id ? (
@@ -643,16 +670,17 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
                   <label className="persona-cap">
                     <input
                       type="checkbox"
-                      checked={p.memory !== false}
+                      checked={p.memory !== false && !p.harness}
                       onChange={(e) => setDraft({ ...p, memory: e.target.checked ? undefined : false })}
-                      disabled={!!p.createdBy}
+                      disabled={!!p.createdBy || !!p.harness}
                     />
                     <span>
                       Keeps private memory{' '}
                       <InfoTip label="About private memory">
                         Expertise notes this persona saves from its work and reads on every mail.
                         Turn it off for personas whose value is a fresh outside view (the built-in
-                        Critic ships without one).
+                        Critic ships without one). A code persona keeps none: it only relays to
+                        its coding agent, which carries its own memory.
                       </InfoTip>
                     </span>
                   </label>
@@ -731,7 +759,9 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
                   {/* Only SAVED personas with a store: agent-created helpers and
                       memory-off personas keep none, and a never-saved draft has no
                       id on the server yet. */}
-                  {saved && !p.createdBy && p.memory !== false && <PersonaNotes personaId={p.id} />}
+                  {saved && !p.createdBy && p.memory !== false && !p.harness && (
+                    <PersonaNotes personaId={p.id} />
+                  )}
                 </div>
               )}
             </div>

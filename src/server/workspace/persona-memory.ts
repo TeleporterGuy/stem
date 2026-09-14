@@ -22,12 +22,15 @@ import { personaMemoryDir } from './paths';
 // absent" rule savePersonaFor applies to flags and pins — and a persona whose
 // memory flag is switched off (the built-in Critic, or the editor toggle)
 // keeps none either: no store at all, not a hidden one, because a store the
-// persona writes but never reads is pure confusion. Every write path checks
-// personaOwnsMemory; the store dies with delete_persona.
+// persona writes but never reads is pure confusion. A code persona (harness
+// pin) keeps none for the same reason from the other side: its wrapper is a
+// relay that may only call coding_agent, so it could never read or write a
+// note, and the coding agent it relays to carries its own memory. Every write
+// path checks personaOwnsMemory; the store dies with delete_persona.
 
 /** Whether this persona keeps a private memory (see module doc). */
-export function personaOwnsMemory(persona: Pick<Persona, 'createdBy' | 'memory'>): boolean {
-  return !persona.createdBy && persona.memory !== false;
+export function personaOwnsMemory(persona: Pick<Persona, 'createdBy' | 'memory' | 'harness'>): boolean {
+  return !persona.createdBy && persona.memory !== false && !persona.harness;
 }
 
 /** Hard cap per persona — the index is injected wholesale, so it must stay small. */
@@ -40,6 +43,14 @@ export const MAX_NOTE_BODY = 4000;
 interface NotesFile {
   version: 1;
   notes: PersonaNote[];
+  /** Epoch ms of the last consolidation pass (mail/consolidate.ts); absent = never. */
+  consolidatedAt?: number;
+}
+
+/** A persona's store as the consolidation pass reads it: every note plus when it was last tidied. */
+export interface PersonaMemorySnapshot {
+  notes: PersonaNote[];
+  consolidatedAt: number;
 }
 
 /**
@@ -81,7 +92,9 @@ function coerce(parsed: unknown): NotesFile {
     seen.add(note.id);
     notes.push(note);
   }
-  return { version: 1, notes };
+  const consolidatedAt =
+    typeof raw.consolidatedAt === 'number' && Number.isFinite(raw.consolidatedAt) ? raw.consolidatedAt : undefined;
+  return { version: 1, notes, ...(consolidatedAt ? { consolidatedAt } : {}) };
 }
 
 /** A missing title is the body's first line, trimmed to fit the index. */
@@ -228,6 +241,62 @@ export function deletePersonaNote(personaId: string, noteId: string): Promise<vo
     if (kept.length === store.notes.length) return;
     store.notes = kept;
     await writeNotesFile(personaId, store);
+  });
+}
+
+/** The store as-is (file order), for the consolidation pass. Empty when unreadable. */
+export function readPersonaMemory(personaId: string): Promise<PersonaMemorySnapshot> {
+  return enqueue(async () => {
+    const store = await readNotesFile(personaId);
+    if (!store) {
+      degrade('persona-memory', 'listed no notes from an unreadable store', personaId);
+      return { notes: [], consolidatedAt: 0 };
+    }
+    return { notes: [...store.notes], consolidatedAt: store.consolidatedAt ?? 0 };
+  });
+}
+
+/** One consolidation outcome: which notes go, which merged/rewritten ones replace them. */
+export interface ConsolidationPlan {
+  /** Ids to remove (merged into an `add` entry, or judged noise). Unknown ids are ignored. */
+  drop: string[];
+  /** Replacement notes; `tool` when any merged source was deliberate, else `reflection`. */
+  add: { title?: string; body: string; source: PersonaNote['source'] }[];
+}
+
+/**
+ * Apply a consolidation plan and stamp the store. Notes written while the
+ * plan was being computed are untouched — the plan only names ids it read, and
+ * an id it never saw is not in `drop` — so a reflection landing mid-pass is
+ * kept, not silently lost. Returns the store after the write.
+ */
+export function applyConsolidation(personaId: string, plan: ConsolidationPlan): Promise<PersonaNote[]> {
+  return enqueue(async () => {
+    const store = await readNotesFile(personaId);
+    if (!store) {
+      degrade('persona-memory', 'refused to write notes over a file it could not read', personaId);
+      throw new Error('This persona’s notes file is unreadable; refusing to overwrite it.');
+    }
+    const drop = new Set(plan.drop);
+    store.notes = store.notes.filter((n) => !drop.has(n.id));
+    const taken = new Set(store.notes.map((n) => n.id));
+    const now = Date.now();
+    for (const entry of plan.add) {
+      const body = entry.body.trim().slice(0, MAX_NOTE_BODY);
+      if (!body) continue;
+      const id = mintNoteId(taken);
+      taken.add(id);
+      store.notes.push({
+        id,
+        title: (entry.title?.trim() || titleFromBody(body)).slice(0, MAX_NOTE_TITLE),
+        body,
+        at: now,
+        source: entry.source
+      });
+    }
+    store.consolidatedAt = now;
+    await writeNotesFile(personaId, store);
+    return [...store.notes];
   });
 }
 

@@ -2202,6 +2202,16 @@ export interface PersonaNote {
   source: 'reflection' | 'tool' | 'user';
 }
 
+/** What one consolidation pass did to a persona's memory (see server/mail/consolidate.ts). */
+export interface PersonaNotesConsolidation {
+  ok: boolean;
+  reason?: string;
+  before: number;
+  after: number;
+  dropped: number;
+  rewritten: number;
+}
+
 // ---- Mail (the email-like Inbox: conversations between the user and personas) ----
 //
 // Mail is the one primitive: the user's compose, a persona's reply, and (in a
@@ -3803,6 +3813,12 @@ export interface StemApi {
   ): Promise<PersonaNote[]>;
   /** Delete one memory note. Returns the fresh list. */
   deletePersonaNote(personaId: string, noteId: string): Promise<PersonaNote[]>;
+  /**
+   * Run the memory-model consolidation pass over a persona's notes now (merge
+   * overlaps, drop advice). Never rejects: `outcome.ok` false means nothing
+   * changed and `reason` says why.
+   */
+  consolidatePersonaNotes(personaId: string): Promise<{ outcome: PersonaNotesConsolidation; notes: PersonaNote[] }>;
 
   // Mail. Mutations return the fresh MailListResult, like the inbox mutators.
   listMail(): Promise<MailListResult>;

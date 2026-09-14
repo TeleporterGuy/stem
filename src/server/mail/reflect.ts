@@ -7,14 +7,25 @@ import {
   MAX_NOTE_BODY,
   MAX_NOTE_TITLE,
   personaOwnsMemory,
+  readPersonaMemory,
   savePersonaNote
 } from '../workspace/persona-memory';
+import { consolidatePersonaMemory, shouldConsolidate } from './consolidate';
 
 // The end-of-turn reflection pass: after a persona's delivery turn settles ok,
 // one cheap completion asks "what here would help you next time?" and writes
 // 0–3 short notes into the persona's memory (workspace/persona-memory.ts).
 // Automatic so the store actually fills — an explicit remember_note alone
 // leaves memories chronically empty — and bounded so it doesn't silt up.
+//
+// The bar is deliberately high and the prompt biased to "nothing": the first
+// two weeks of stores on the server showed the pass filling its 3-note quota
+// on most turns with paraphrases of the role prompt and the task's own advice
+// ("report findings with confidence levels"), re-learning the same PostgreSQL
+// lesson a week later in new words, and never once answering []. Titles alone
+// were not enough for the model to recognise what it already knew, so it now
+// reads the existing notes' bodies, and every N reflection writes the store is
+// handed to the consolidation pass (consolidate.ts) to merge and prune.
 //
 // Fire-and-forget by contract: the delivery's reply mail has already been
 // routed when this runs, so nothing here may delay or fail a conversation.
@@ -25,6 +36,10 @@ import {
 const MIN_REFLECTABLE_CHARS = 400;
 /** How much transcript the reflection prompt reads, per side. */
 const MAX_TRANSCRIPT_CHARS = 12_000;
+/** How much of each existing note the prompt shows, so the model can recognise a repeat. */
+const MAX_KNOWN_NOTE_CHARS = 280;
+/** How many existing notes the prompt shows in full; older ones by title only. */
+const MAX_KNOWN_NOTES_FULL = 60;
 const REFLECT_TIMEOUT_MS = 60_000;
 const MAX_NOTES_PER_TURN = 3;
 
@@ -57,29 +72,38 @@ async function turnReply(runtime: ChatBackend, threadId: string): Promise<string
     .join('\n\n');
 }
 
+/** One existing note as the prompt shows it: title plus a clipped body, one line each. */
+function knownNoteLine(note: { title: string; body: string }, full: boolean): string {
+  if (!full) return `- ${note.title}`;
+  const body = note.body.replace(/\s+/g, ' ').trim();
+  return `- ${note.title}: ${body.length > MAX_KNOWN_NOTE_CHARS ? `${body.slice(0, MAX_KNOWN_NOTE_CHARS)}…` : body}`;
+}
+
 function reflectionPrompt(args: {
   personaName: string;
   personaPrompt: string;
-  existingTitles: string[];
+  /** Newest first, as listPersonaNotes answers. */
+  existing: { title: string; body: string }[];
   assignment: string;
   reply: string;
 }): string {
-  const known = args.existingTitles.length
-    ? `It already keeps these notes (titles) — do not repeat what they cover:\n${args.existingTitles
-        .map((t) => `- ${t}`)
+  const known = args.existing.length
+    ? `It already keeps these notes — do not repeat what they cover, in any wording:\n${args.existing
+        .map((n, i) => knownNoteLine(n, i < MAX_KNOWN_NOTES_FULL))
         .join('\n')}`
     : 'Its memory is currently empty.';
   return `A persona named "${args.personaName}" just finished one work turn. Its role: ${
     args.personaPrompt.trim() || '(no role prompt)'
   }
 
-Extract at most ${MAX_NOTES_PER_TURN} DURABLE work lessons this persona should remember for future tasks: procedures that worked, gotchas hit, stable facts about the tools/domain/codebase it works in. A good note is reusable on a DIFFERENT future task.
+Decide whether this turn taught the persona anything worth keeping. The bar: a specific, checkable thing a colleague doing a DIFFERENT task next month would thank it for knowing — a command or setting that worked, a failure mode and its cause, a stable fact about a tool, codebase, system or domain, a procedure that is not obvious from documentation. Most turns teach nothing that clears this bar; answering [] is the normal outcome, not a failure.
 
-Do NOT extract:
+Never extract:
+- general good practice, methodology or advice ("verify assumptions", "report with confidence levels", "structure the email around risks") — however well the turn illustrated it,
+- restatements or elaborations of the persona's role prompt,
+- the task's own answer, conclusions or recommendations; ticket numbers, names, dates, prices and other one-off details,
 - facts about the user or their life (a separate memory owns those),
-- one-off task details with no reuse value (ticket numbers, this task's answer),
-- restatements of the persona's role prompt,
-- anything already covered by the existing notes listed below.
+- anything already covered by the existing notes below, even partially or in other words — extend a note in your head and if the extension is small, skip it.
 
 ${known}
 
@@ -95,7 +119,7 @@ What the persona replied:
 ${clip(args.reply, MAX_TRANSCRIPT_CHARS)}
 """
 
-Answer with ONLY a JSON array (no prose, no code fence): [] when nothing qualifies, else up to ${MAX_NOTES_PER_TURN} objects {"title": "<one line, <=${MAX_NOTE_TITLE} chars>", "body": "<the lesson, <=${MAX_NOTE_BODY} chars>"}.`;
+Answer with ONLY a JSON array (no prose, no code fence): [] when nothing clears the bar (expected most of the time), else at most ${MAX_NOTES_PER_TURN} objects {"title": "<one line, <=${MAX_NOTE_TITLE} chars>", "body": "<the lesson, concrete, <=${MAX_NOTE_BODY} chars>"}. One good note beats three vague ones.`;
 }
 
 /** Parse the model's reply defensively: the first JSON array wins, junk is dropped. */
@@ -141,14 +165,20 @@ export async function reflectOnDelivery(runtime: ChatBackend, args: ReflectArgs)
     const prompt = reflectionPrompt({
       personaName: persona.name,
       personaPrompt: persona.prompt,
-      existingTitles: existing.map((n) => n.title),
+      existing,
       assignment: args.assignment,
       reply
     });
     const run = await memoryRunOf((s) => s.memory.model);
     const raw = await runtime.complete(prompt, { ...run, timeoutMs: REFLECT_TIMEOUT_MS });
-    for (const note of parseReflection(raw)) {
+    const notes = parseReflection(raw);
+    for (const note of notes) {
       await savePersonaNote(persona.id, note, 'reflection');
+    }
+    // Every so many reflection writes, tidy the store: merge what got learned
+    // twice, drop what turned out to be advice. Same fire-and-forget contract.
+    if (notes.length && shouldConsolidate(await readPersonaMemory(persona.id))) {
+      await consolidatePersonaMemory(runtime, persona.id);
     }
   } catch (error) {
     // A failed reflection costs only an unlearned lesson — worth a log line, not

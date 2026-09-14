@@ -369,7 +369,7 @@ function registerIpc(): void {
   registerMcpIpc(deps);
   registerMemoryIpc(deps);
   registerChatsIpc(deps);
-  registerPersonasIpc();
+  registerPersonasIpc({ runtime: () => runtime! });
   // Fired by the store on every registry write — editor saves and the mail
   // bridge's save_persona/delete_persona alike — so every connected client's
   // persona list (the composer's To: field included) stays current.

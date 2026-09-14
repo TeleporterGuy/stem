@@ -40,6 +40,11 @@ describe('ownership', () => {
     expect(personaOwnsMemory({ createdBy: undefined, memory: true })).toBe(true);
     expect(personaOwnsMemory({ createdBy: undefined, memory: undefined })).toBe(true);
   });
+
+  it('a code persona (harness pin) keeps no memory: its wrapper is a relay and the agent has its own', () => {
+    expect(personaOwnsMemory({ createdBy: undefined, harness: { agent: 'claude', cwd: '/repo' } })).toBe(false);
+    expect(personaOwnsMemory({ createdBy: undefined, memory: true, harness: { agent: 'claude', cwd: '/repo' } })).toBe(false);
+  });
 });
 
 describe('notes CRUD', () => {

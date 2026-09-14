@@ -9,12 +9,11 @@ import { savePersonaNote } from '../../src/server/workspace/persona-memory';
 const base: Persona = { id: 'p-turn', name: 'Turn', prompt: 'You are Turn.' };
 
 describe('personaTurnFields', () => {
-  it('carries the pins, the harness, the recall flag and a (possibly empty) notes index for a memory-owning persona', async () => {
+  it('carries the pins, the recall flag and a (possibly empty) notes index for a memory-owning persona', async () => {
     const fields = await personaTurnFields({
       ...base,
       model: 'prov/m',
       effort: 'high',
-      harness: { agent: 'claude', cwd: '/repo' },
       recall: false
     });
     expect(fields.model).toBe('prov/m');
@@ -22,9 +21,17 @@ describe('personaTurnFields', () => {
     expect(fields.persona).toEqual({
       id: 'p-turn',
       prompt: 'You are Turn.',
-      harness: { agent: 'claude', cwd: '/repo' },
       notes: [],
       recall: false
+    });
+  });
+
+  it('carries the harness pin and no notes index for a code persona: a relay reads no notes', async () => {
+    const fields = await personaTurnFields({ ...base, harness: { agent: 'claude', cwd: '/repo' } });
+    expect(fields.persona).toEqual({
+      id: 'p-turn',
+      prompt: 'You are Turn.',
+      harness: { agent: 'claude', cwd: '/repo' }
     });
   });
 

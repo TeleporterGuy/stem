@@ -93,8 +93,10 @@ describe('reflectOnDelivery', () => {
     const prompts: string[] = [];
     const runtime = fakeRuntime({ prompts });
     await reflectOnDelivery(runtime, { personaId: 'verifier', assignment, threadId: 't1' });
-    expect(prompts[0]).toContain('- Known already');
+    expect(prompts[0]).toContain('- Known already: x');
     expect(prompts[0]).toContain('do not repeat what they cover');
+    // Titles alone let the model re-learn a lesson in new words; it reads the bodies.
+    expect(prompts[0]).toContain('answering [] is the normal outcome');
   });
 
   it('never reflects for an agent-created helper or a persona that no longer exists', async () => {
@@ -129,6 +131,26 @@ describe('reflectOnDelivery', () => {
       reflectOnDelivery(failing, { personaId: 'verifier', assignment, threadId: 't1' })
     ).resolves.toBeUndefined();
     expect(await listPersonaNotes('verifier')).toEqual([]);
+  });
+
+  it('hands the store to the consolidation pass once enough reflection notes piled up', async () => {
+    for (let i = 0; i < 11; i++) {
+      await savePersonaNote('verifier', { title: `lesson ${i}`, body: `body ${i}` }, 'reflection');
+    }
+    const prompts: string[] = [];
+    // First completion is the reflection (writes the 12th note); the second is
+    // the consolidation, which keeps only the note it names.
+    const runtime = fakeRuntime({ prompts, completions: ['[{"title":"twelfth","body":"the twelfth lesson"}]'] });
+    (runtime as { complete: (p: string) => Promise<string> }).complete = async (prompt: string) => {
+      prompts.push(prompt);
+      if (prompts.length === 1) return '[{"title":"twelfth","body":"the twelfth lesson"}]';
+      const keep = (await listPersonaNotes('verifier')).find((n) => n.title === 'twelfth')!;
+      return JSON.stringify([{ from: [keep.id] }]);
+    };
+    await reflectOnDelivery(runtime, { personaId: 'verifier', assignment, threadId: 't1' });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('Tidy its memory');
+    expect((await listPersonaNotes('verifier')).map((n) => n.title)).toEqual(['twelfth']);
   });
 
   it('a persona saved through the editor reflects like a built-in', async () => {
