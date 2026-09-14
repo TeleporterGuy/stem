@@ -2288,6 +2288,14 @@ export interface MailItem {
    */
   attachments?: MessageAttachment[];
   /**
+   * Code personas only: what the coding agent itself replied during the turn
+   * that produced this item, verbatim, one entry per coding_agent exchange —
+   * next to the persona's own (relayed) answer in `body`, so the user can
+   * check the relay against the source. Shown collapsed; never fed back to
+   * any model. Absent when the turn made no coding_agent call.
+   */
+  agentReplies?: string[];
+  /**
    * The system version in force when this item was appended — for a persona's
    * reply, the code that produced it. Absent on items predating the stamp.
    */

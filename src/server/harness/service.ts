@@ -126,9 +126,29 @@ export class HarnessService implements HarnessBridge {
   private readonly deps: HarnessServiceDeps;
   private readonly pending = new Map<string, PendingApproval>();
   private readonly running = new Map<string, RunningTurn>();
+  /**
+   * The agent's own reply text per thread, one entry per settled coding_agent
+   * exchange, waiting for the mail router to take it when the persona's reply
+   * mail lands (MailItem.agentReplies). In memory: a restart loses at most the
+   * current turn's, whose mail is redelivered anyway.
+   */
+  private readonly agentReplies = new Map<string, string[]>();
 
   constructor(deps: HarnessServiceDeps) {
     this.deps = deps;
+  }
+
+  /** Take (and clear) the agent replies collected for a thread so far. */
+  takeAgentReplies(threadId: string): string[] {
+    const replies = this.agentReplies.get(threadId) ?? [];
+    this.agentReplies.delete(threadId);
+    return replies;
+  }
+
+  private noteAgentReply(threadId: string, text: string): void {
+    const list = this.agentReplies.get(threadId) ?? [];
+    list.push(text);
+    this.agentReplies.set(threadId, list);
   }
 
   async handleHarnessRequest(req: HarnessRequest): Promise<HarnessBridgeResult> {
@@ -332,6 +352,13 @@ export class HarnessService implements HarnessBridge {
         ...(!result.ok ? { error: result.error } : {}),
         ...(status === 'cancelled' && running.cancelReason ? { cancelReason: running.cancelReason } : {})
       });
+      // The mail item keeps the agent's words, not the footer with the stats
+      // and the continue-hint — those are for the persona; a failure or a stop
+      // has no words of the agent's, so its notice stands in.
+      this.noteAgentReply(
+        req.threadId,
+        status === 'ok' ? summary.text.trim() || '(the agent ended its turn without a reply)' : text
+      );
       return status === 'failed' ? { ok: false, error: text } : { ok: true, text };
     } catch (error) {
       // quiet: the failed tool result below reports the error; Work retains its partial activity.

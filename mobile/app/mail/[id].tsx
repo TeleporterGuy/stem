@@ -9,6 +9,7 @@ import { partitionMailWork } from '../../src/mail/work';
 import { createMailReadTracker } from '../../src/mail/reads';
 import { mailName, statusLabel } from '../../src/mail/list';
 import { chooseSnooze, confirmMailDelete, mailAction } from '../../src/mail/actions';
+import { AgentReplies } from '../../src/mail/AgentReplies';
 import { AgentMarkdown } from '../../src/ui/AgentMarkdown';
 import { DraftComposer } from '../../src/ui/DraftComposer';
 import { useTheme } from '../../src/ui/theme';
@@ -181,6 +182,9 @@ export default function MailConversation() {
                     <View style={{ borderTopWidth: 1, borderTopColor: theme.line, paddingTop: 12 }}>
                       <AgentMarkdown text={item.result} theme={theme} />
                     </View>
+                  )}
+                  {item.agentReplies && item.agentReplies.length > 0 && (
+                    <AgentReplies replies={item.agentReplies} theme={theme} />
                   )}
                   {item.attachments?.map((a, index) =>
                     a.kind === 'image' && a.dataUrl ? (

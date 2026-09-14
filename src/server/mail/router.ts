@@ -185,6 +185,13 @@ export interface MailRouterOptions {
    * coding_agent reports the problem itself. Absent in tests that don't care.
    */
   codingDevice?: (deviceRef: string) => Promise<{ deviceId: string; label: string; online: boolean } | null>;
+  /**
+   * Take the coding agent's own replies collected on a persona's hidden thread
+   * since the last take (HarnessService.takeAgentReplies). A code persona's
+   * reply mail carries them as `agentReplies`, so the user sees the relay and
+   * its source side by side. Absent in tests that don't care.
+   */
+  agentReplies?: (threadId: string) => string[];
 }
 
 /**
@@ -608,6 +615,7 @@ export class MailRouter {
         from: ctx.personaId,
         to: finalTo,
         body,
+        ...this.agentRepliesField(conversation.sessions[ctx.personaId]),
         guard: {
           exchangeCap: await this.exchangeCap(),
           ...(caller?.sendBudget !== undefined ? { senderBudget: caller.sendBudget } : {}),
@@ -1302,6 +1310,9 @@ export class MailRouter {
     epoch: number,
     sourceItemId: string
   ): Promise<void> {
+    // Taken once, up front: the cap-spent fallback below appends a second time
+    // after the first append threw, and the replies must ride whichever lands.
+    const agentReplies = await this.agentRepliesFor(conversationId, personaId);
     if (initiator !== 'user') {
       const { conversations } = await readMail();
       const conversation = conversations.find((c) => c.id === conversationId);
@@ -1317,6 +1328,7 @@ export class MailRouter {
             from: personaId,
             to: [initiator],
             body: reply,
+            ...agentReplies,
             guard: { exchangeCap: cap, budgetExempt: true }
           });
         } catch (error) {
@@ -1324,7 +1336,7 @@ export class MailRouter {
           // append: fall through to the cap-spent path below.
           if (!(error instanceof CapError)) throw error;
           this.settleCappedBranch(conversationId, join, personaId);
-          await this.appendReply(conversationId, personaId, reply, 'awaiting-user', epoch);
+          await this.appendReply(conversationId, personaId, reply, 'awaiting-user', epoch, agentReplies);
           return;
         }
         if (join) {
@@ -1347,10 +1359,23 @@ export class MailRouter {
       }
       // Cap spent: the reply lands on the user instead of looping on.
       this.settleCappedBranch(conversationId, join, personaId);
-      await this.appendReply(conversationId, personaId, reply, 'awaiting-user', epoch);
+      await this.appendReply(conversationId, personaId, reply, 'awaiting-user', epoch, agentReplies);
       return;
     }
-    await this.appendReply(conversationId, personaId, reply, 'idle', epoch);
+    await this.appendReply(conversationId, personaId, reply, 'idle', epoch, agentReplies);
+  }
+
+  /** The `agentReplies` field for a persona's item, or nothing when the turn made no coding_agent call. */
+  private agentRepliesField(threadId: string | undefined): { agentReplies?: string[] } {
+    if (!threadId || !this.opts.agentReplies) return {};
+    const replies = this.opts.agentReplies(threadId);
+    return replies.length ? { agentReplies: replies } : {};
+  }
+
+  private async agentRepliesFor(conversationId: string, personaId: string): Promise<{ agentReplies?: string[] }> {
+    if (!this.opts.agentReplies) return {};
+    const { conversations } = await readMail();
+    return this.agentRepliesField(conversations.find((c) => c.id === conversationId)?.sessions[personaId]);
   }
 
   /** A branch whose reply was forced to the user by the cap must still settle. */
@@ -1368,9 +1393,13 @@ export class MailRouter {
     personaId: string,
     body: string,
     drainStatus: DrainStatus,
-    epoch: number
+    epoch: number,
+    agentReplies?: { agentReplies?: string[] }
   ): Promise<void> {
-    await appendMailItem({ conversationId, from: personaId, to: ['user'], body, staleIfUserSentAfter: epoch });
+    // A failure notice (no agentReplies passed) still carries what the agent
+    // said before things went wrong — that is often the only clue.
+    const replies = agentReplies ?? (await this.agentRepliesFor(conversationId, personaId));
+    await appendMailItem({ conversationId, from: personaId, to: ['user'], body, ...replies, staleIfUserSentAfter: epoch });
     // The worse status is sticky for the wave: a failure already recorded must
     // not be papered over by a later hop landing cleanly.
     const current = this.drainStatus.get(conversationId) ?? 'idle';

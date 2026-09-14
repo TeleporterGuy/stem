@@ -295,6 +295,42 @@ describe('mail router', () => {
     expect(mail.conversations[0].status).toBe('failed');
   });
 
+  it("a code persona's reply mail carries the coding agent's own replies, collapsed beside the relay", async () => {
+    // The agent's words ride the persona's hidden thread (HarnessService.takeAgentReplies)
+    // and are taken exactly once, when the reply lands — so the user sees the relay
+    // and its source side by side, and a later turn does not repeat them.
+    const fake = fakeBackend();
+    fake.script = { mode: 'ok', reply: 'Relay: the agent added the flag.' };
+    const taken: string[] = [];
+    const router = new MailRouter({
+      runtime: fake.backend,
+      onChange: () => undefined,
+      agentReplies: (threadId) => {
+        taken.push(threadId);
+        return taken.length === 1 ? ['Added --version to cli.ts and a test.'] : [];
+      }
+    });
+    await router.compose({ to: ['verifier'], subject: 's', body: 'add a --version flag' });
+    const mail = await settledMail();
+    expect(mail.items[1]).toMatchObject({
+      from: 'verifier',
+      body: 'Relay: the agent added the flag.',
+      agentReplies: ['Added --version to cli.ts and a test.']
+    });
+    expect(taken).toEqual([mail.conversations[0].sessions.verifier]);
+
+    // A turn that made no coding_agent call carries no field at all.
+    fake.script = { mode: 'ok', reply: 'nothing to relay' };
+    await router.reply(mail.conversations[0].id, 'again');
+    const after = await vi.waitFor(async () => {
+      const m = await readMail();
+      expect(m.items).toHaveLength(4);
+      return m;
+    });
+    expect(after.items[3].body).toBe('nothing to relay');
+    expect(after.items[3].agentReplies).toBeUndefined();
+  });
+
   it('a startTurn that throws still produces a reply mail (nothing vanishes)', async () => {
     const fake = fakeBackend();
     fake.script = { mode: 'reject', error: 'no auth' };

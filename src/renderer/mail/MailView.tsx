@@ -242,6 +242,21 @@ export const MailConversationView = forwardRef<MailViewHandle, {
           <MdxView text={m.result} />
         </section>
       )}
+      {m.agentReplies && m.agentReplies.length > 0 && (
+        <details className="mail-item-agent">
+          <summary className="mail-item-agent-summary">
+            <strong>Coding agent’s reply</strong>
+            <span>{m.agentReplies.length === 1 ? 'as received' : `${m.agentReplies.length} exchanges, as received`}</span>
+          </summary>
+          <div className="mail-item-agent-content">
+            {m.agentReplies.map((text, i) => (
+              <section key={i} className="mail-item-agent-reply">
+                <MdxView text={text} />
+              </section>
+            ))}
+          </div>
+        </details>
+      )}
       {m.attachments && m.attachments.length > 0 && (
         <div className="message-attachments">
           {m.attachments.map((att, i) =>

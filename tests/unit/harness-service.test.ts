@@ -180,6 +180,18 @@ describe('inner work history', () => {
 });
 
 describe('gates', () => {
+  it('keeps the agent\'s own words per thread for the reply mail, and hands them over once', async () => {
+    const host = scriptedHost({ turn: async () => ({ ok: true, stopReason: 'end_turn', text: 'Added the flag.' }) });
+    const { service } = makeService(host);
+    const res = await service.handleHarnessRequest(REQ);
+    // The tool result carries the footer for the persona…
+    expect(res.ok && res.text).toContain('This session continues');
+    // …the mail gets the agent's reply alone, and only for its own thread.
+    expect(service.takeAgentReplies('other-thread')).toEqual([]);
+    expect(service.takeAgentReplies(REQ.threadId)).toEqual(['Added the flag.']);
+    expect(service.takeAgentReplies(REQ.threadId)).toEqual([]);
+  });
+
   it('refuses scheduled runs with the explanatory sentence', async () => {
     const host = scriptedHost({});
     const { service } = makeService(host);

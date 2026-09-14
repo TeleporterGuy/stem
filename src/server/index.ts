@@ -797,6 +797,10 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   mailRouter = new MailRouter({
     runtime,
     onChange: () => emit('mail:changed', undefined),
+    // What the coding agent itself said during a code persona's turn, taken
+    // when the persona's reply mail lands so the Inbox can show both. Late
+    // bound: the harness service is built after the router.
+    agentReplies: (threadId) => harness?.service.takeAgentReplies(threadId) ?? [],
     // The offline hold's oracle: is the persona pin's computer able to run
     // coding agents right now? Null when the reference names no usable target
     // at all — then the delivery runs and coding_agent reports the problem.

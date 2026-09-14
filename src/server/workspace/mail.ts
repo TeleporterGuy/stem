@@ -50,6 +50,10 @@ function coerceItem(raw: unknown): MailItem | null {
   if (typeof r.subject === 'string' && r.subject) item.subject = r.subject;
   if (typeof r.result === 'string' && r.result) item.result = r.result;
   if (r.stale === true) item.stale = true;
+  if (Array.isArray(r.agentReplies)) {
+    const replies = r.agentReplies.filter((t): t is string => typeof t === 'string' && t.length > 0);
+    if (replies.length) item.agentReplies = replies;
+  }
   const sys = coerceSystemVersion(r.sys);
   if (sys) item.sys = sys;
   if (Array.isArray(r.attachments)) {

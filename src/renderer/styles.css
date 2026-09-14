@@ -2897,6 +2897,14 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 /* A scheduled firing's own headline, then its one-line notice, then the run's reply. */
 .mail-item-subject { margin: 0 0 var(--sp-3); font-size: var(--fs-14, 14px); font-weight: 600; }
 .mail-item-result { margin-top: var(--sp-5); padding-top: var(--sp-5); border-top: 0.5px solid var(--hair); }
+/* A code persona's mail: the coding agent's own words, collapsed under the persona's relay of them. */
+.mail-item-agent { margin-top: var(--sp-5); border: 0.5px solid var(--hair); border-radius: var(--radius-md); font-size: var(--fs-12); }
+.mail-item-agent-summary { padding: var(--sp-4) var(--sp-5); cursor: pointer; color: var(--muted); line-height: 1.8; }
+.mail-item-agent-summary > * { margin-right: var(--sp-4); }
+.mail-item-agent-summary strong { color: var(--ink); }
+.mail-item-agent summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
+.mail-item-agent-content { padding: 0 var(--sp-5) var(--sp-4); font-size: var(--fs-13, 13px); overflow-wrap: anywhere; }
+.mail-item-agent-reply + .mail-item-agent-reply { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 0.5px solid var(--hair); }
 .mail-reply { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-5) var(--sp-10) var(--sp-7); border-top: 0.5px solid var(--hair); }
 .mail-reply-row { display: flex; gap: var(--sp-4); align-items: flex-end; }
 .mail-attachments-draft { padding: 0; }
