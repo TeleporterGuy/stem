@@ -94,7 +94,11 @@ describe('stemAssistantInstructions', () => {
       expect(prompt).not.toContain('## When to use');
       expect(prompt).not.toContain('Dockerfile.local');
       const pages = [...prompt.matchAll(/`(assistant-[a-z-]+|output-format)`/g)].map((m) => m[1]);
-      expect(new Set(pages).size).toBe(kind === 'server' ? 8 : 7);
+      // Files and web are used on nearly every turn, so their procedure is
+      // inlined rather than pointed at — a pointer there just costs a tool call.
+      expect(pages).not.toContain('assistant-web');
+      expect(pages).not.toContain('assistant-files');
+      expect(new Set(pages).size).toBe(kind === 'server' ? 6 : 5);
       for (const slug of pages) expect(stemGuidePage(slug), slug).not.toBeNull();
     }
   });
