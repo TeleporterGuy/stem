@@ -12,8 +12,10 @@ import {
   listPersonaNotes,
   MAX_NOTE_TITLE,
   MAX_PERSONA_NOTES,
+  personaKeepsAnswers,
   personaOwnsMemory,
-  savePersonaNote
+  savePersonaNote,
+  saveStandingAnswer
 } from '../../src/server/workspace/persona-memory';
 import { deletePersona, savePersona } from '../../src/server/workspace/personas';
 import { personaMemoryDir, personasStorePath } from '../../src/server/workspace/paths';
@@ -27,6 +29,28 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   rmSync(personasStorePath(), { force: true });
+});
+
+describe('standing answers', () => {
+  it('only a code persona with memory on keeps them; agent-made helpers do not', () => {
+    const harness = { agent: 'claude', cwd: '/repo' };
+    expect(personaKeepsAnswers({ createdBy: undefined, harness })).toBe(true);
+    expect(personaKeepsAnswers({ createdBy: undefined, harness, memory: false })).toBe(false);
+    expect(personaKeepsAnswers({ createdBy: 'orchestrator', harness })).toBe(false);
+    expect(personaKeepsAnswers({ createdBy: undefined })).toBe(false);
+  });
+
+  it('replaces the answer to a repeated question and survives as source answer', async () => {
+    await saveStandingAnswer('coder', '  Should I   deploy? ', 'Yes.');
+    await saveStandingAnswer('coder', 'Which branch?', 'main');
+    await saveStandingAnswer('coder', 'Should I deploy?', 'Always.');
+    const notes = await listPersonaNotes('coder');
+    expect(notes.map((n) => [n.title, n.body, n.source])).toEqual([
+      ['Should I deploy?', 'Always.', 'answer'],
+      ['Which branch?', 'main', 'answer']
+    ]);
+    await expect(saveStandingAnswer('coder', '', 'x')).rejects.toThrow('needs a question');
+  });
 });
 
 describe('ownership', () => {

@@ -53,7 +53,7 @@ function summaryLabel(
   if (p.createdBy) {
     parts.push(`created by ${personas.find((x) => x.id === p.createdBy)?.name ?? p.createdBy}`);
   }
-  if (p.memory === false && !p.harness) parts.push('no private memory');
+  if (p.memory === false) parts.push(p.harness ? 'no standing answers' : 'no private memory');
   if (p.recall === false) parts.push('no recall');
   if (p.clients) parts.push('open to chats');
   return parts.join(' · ');
@@ -94,8 +94,40 @@ const BETA_TITLE = 'Beta: personas work, but how they are set up and what they c
 const NOTE_SOURCE_LABELS: Record<PersonaNote['source'], string> = {
   reflection: 'Learned',
   tool: 'Saved by persona',
-  user: 'Added by you'
+  user: 'Added by you',
+  answer: 'From your reply'
 };
+
+/**
+ * The two faces of the notes store (workspace/persona-memory.ts): a memory of
+ * lessons for an ordinary persona, standing answers for a code persona — same
+ * rows, different words, and no Tidy up for answers (nothing automatic wrote
+ * them, so there is nothing to merge).
+ */
+const NOTES_COPY = {
+  memory: {
+    heading: 'Memory',
+    titleLabel: 'Note title',
+    bodyLabel: 'Note body',
+    titlePlaceholder: 'Title (optional — the body’s first line otherwise)',
+    bodyPlaceholder: 'The lesson this persona should keep.',
+    add: 'Add note',
+    save: 'Save note',
+    remove: 'Delete this note',
+    tidy: true
+  },
+  answers: {
+    heading: 'Standing answers',
+    titleLabel: 'When the coding agent asks',
+    bodyLabel: 'Answer',
+    titlePlaceholder: 'When the agent asks… (e.g. “Should I deploy this now?”)',
+    bodyPlaceholder: 'The answer the persona should give on your behalf.',
+    add: 'Add answer',
+    save: 'Save answer',
+    remove: 'Delete this answer',
+    tidy: false
+  }
+} as const;
 
 /**
  * A persona's memory notes: the browse/edit/delete surface for the store its
@@ -104,7 +136,8 @@ const NOTE_SOURCE_LABELS: Record<PersonaNote['source'], string> = {
  * itself also writes, so each note saves explicitly on its own, and a Cancel
  * of the persona form must not throw note edits away with it.
  */
-function PersonaNotes({ personaId }: { personaId: string }) {
+function PersonaNotes({ personaId, kind }: { personaId: string; kind: keyof typeof NOTES_COPY }) {
+  const copy = NOTES_COPY[kind];
   const [notes, setNotes] = useState<PersonaNote[] | null>(null);
   // The note being edited (or the add form when id is ''), as a local draft.
   const [editing, setEditing] = useState<{ id: string; title: string; body: string } | null>(null);
@@ -174,14 +207,24 @@ function PersonaNotes({ personaId }: { personaId: string }) {
   return (
     <div className="persona-notes">
       <div className="grp-head">
-        Memory ({notes ? notes.length : '…'}){' '}
-        <InfoTip label="About persona memory">
-          Lessons this persona keeps from its past work. It learns automatically after each mail
-          it handles and can save notes itself; everything here is injected as its note index on
-          every delivery. Tidy up asks the memory model to merge overlapping notes and drop the
-          ones that are advice rather than knowledge; it also runs by itself every dozen lessons.
-        </InfoTip>
-        {(notes?.length ?? 0) >= 3 && (
+        {copy.heading} ({notes ? notes.length : '…'}){' '}
+        {kind === 'memory' ? (
+          <InfoTip label="About persona memory">
+            Lessons this persona keeps from its past work. It learns automatically after each mail
+            it handles and can save notes itself; everything here is injected as its note index on
+            every delivery. Tidy up asks the memory model to merge overlapping notes and drop the
+            ones that are advice rather than knowledge; it also runs by itself every dozen lessons.
+          </InfoTip>
+        ) : (
+          <InfoTip label="About standing answers">
+            Questions the coding agent tends to ask, with the answer this persona may give on your
+            behalf instead of mailing you. Every time you answer such a question in a mail reply,
+            the pair is saved here automatically; you can also add answers yourself. The persona
+            asks you whenever nothing here settles the question. Knowledge about the project
+            itself belongs in the repository (CLAUDE.md) where the agent reads it.
+          </InfoTip>
+        )}
+        {copy.tidy && (notes?.length ?? 0) >= 3 && (
           <button className="link-btn" onClick={tidy} disabled={tidying}>
             {tidying ? 'Tidying…' : 'Tidy up'}
           </button>
@@ -194,13 +237,13 @@ function PersonaNotes({ personaId }: { personaId: string }) {
           <div key={n.id} className="persona-note-editor">
             <input
               className="vfield"
-              aria-label="Note title"
+              aria-label={copy.titleLabel}
               value={editing.title}
               onChange={(e) => setEditing({ ...editing, title: e.target.value })}
             />
             <textarea
               className="ci-textarea"
-              aria-label="Note body"
+              aria-label={copy.bodyLabel}
               rows={4}
               value={editing.body}
               onChange={(e) => setEditing({ ...editing, body: e.target.value })}
@@ -214,7 +257,7 @@ function PersonaNotes({ personaId }: { personaId: string }) {
                 onClick={() => saveNote(editing)}
                 disabled={!editing.body.trim()}
               >
-                Save note
+                {copy.save}
               </button>
             </div>
           </div>
@@ -236,8 +279,8 @@ function PersonaNotes({ personaId }: { personaId: string }) {
               <button
                 className="icon-action sm"
                 onClick={() => removeNote(n.id)}
-                title="Delete this note"
-                aria-label="Delete note"
+                title={copy.remove}
+                aria-label={copy.remove}
               >
                 <Trash2 size={14} />
               </button>
@@ -259,16 +302,16 @@ function PersonaNotes({ personaId }: { personaId: string }) {
         <div className="persona-note-editor">
           <input
             className="vfield"
-            aria-label="Note title"
-            placeholder="Title (optional — the body’s first line otherwise)"
+            aria-label={copy.titleLabel}
+            placeholder={copy.titlePlaceholder}
             value={editing.title}
             onChange={(e) => setEditing({ ...editing, title: e.target.value })}
           />
           <textarea
             className="ci-textarea"
-            aria-label="Note body"
+            aria-label={copy.bodyLabel}
             rows={4}
-            placeholder="The lesson this persona should keep."
+            placeholder={copy.bodyPlaceholder}
             value={editing.body}
             onChange={(e) => setEditing({ ...editing, body: e.target.value })}
           />
@@ -281,13 +324,13 @@ function PersonaNotes({ personaId }: { personaId: string }) {
               onClick={() => saveNote(editing)}
               disabled={!editing.body.trim()}
             >
-              Save note
+              {copy.save}
             </button>
           </div>
         </div>
       ) : (
         <button className="link-btn" onClick={() => setEditing({ id: '', title: '', body: '' })}>
-          <Plus size={14} /> Add note
+          <Plus size={14} /> {copy.add}
         </button>
       )}
     </div>
@@ -670,18 +713,26 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
                   <label className="persona-cap">
                     <input
                       type="checkbox"
-                      checked={p.memory !== false && !p.harness}
+                      checked={p.memory !== false}
                       onChange={(e) => setDraft({ ...p, memory: e.target.checked ? undefined : false })}
-                      disabled={!!p.createdBy || !!p.harness}
+                      disabled={!!p.createdBy}
                     />
                     <span>
-                      Keeps private memory{' '}
-                      <InfoTip label="About private memory">
-                        Expertise notes this persona saves from its work and reads on every mail.
-                        Turn it off for personas whose value is a fresh outside view (the built-in
-                        Critic ships without one). A code persona keeps none: it only relays to
-                        its coding agent, which carries its own memory.
-                      </InfoTip>
+                      {p.harness ? 'Keeps standing answers' : 'Keeps private memory'}{' '}
+                      {p.harness ? (
+                        <InfoTip label="About standing answers">
+                          Your answers to the coding agent’s recurring questions, kept per persona
+                          so it can answer them for you next time instead of mailing you. A code
+                          persona keeps no expertise notes: it only relays to its coding agent,
+                          which carries its own memory.
+                        </InfoTip>
+                      ) : (
+                        <InfoTip label="About private memory">
+                          Expertise notes this persona saves from its work and reads on every mail.
+                          Turn it off for personas whose value is a fresh outside view (the built-in
+                          Critic ships without one).
+                        </InfoTip>
+                      )}
                     </span>
                   </label>
                   <label className="persona-cap">
@@ -759,8 +810,8 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
                   {/* Only SAVED personas with a store: agent-created helpers and
                       memory-off personas keep none, and a never-saved draft has no
                       id on the server yet. */}
-                  {saved && !p.createdBy && p.memory !== false && !p.harness && (
-                    <PersonaNotes personaId={p.id} />
+                  {saved && !p.createdBy && p.memory !== false && (
+                    <PersonaNotes personaId={p.id} kind={p.harness ? 'answers' : 'memory'} />
                   )}
                 </div>
               )}

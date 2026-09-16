@@ -1,5 +1,5 @@
 import type { Persona, StartTurnInput } from '../../shared/types';
-import { listPersonaNotes, personaOwnsMemory } from './persona-memory';
+import { listPersonaNotes, personaKeepsAnswers, personaOwnsMemory } from './persona-memory';
 
 // The one place a persona row becomes the persona part of a StartTurnInput.
 // Three surfaces run turns AS a persona — mail deliveries, scheduled tasks, and
@@ -27,6 +27,13 @@ export async function personaTurnFields(persona: Persona, opts: { notes?: boolea
   // turn proceeds with an empty index rather than failing.
   const noteRows = wantNotes ? await listPersonaNotes(persona.id).catch(() => []) : undefined;
   const notes = noteRows?.map((n) => ({ id: n.id, title: n.title }));
+  // A code persona reads its standing answers whole: its relay has no
+  // read_notes, so the bodies ride the preamble. Same skip as the index.
+  const wantAnswers = opts.notes !== false && personaKeepsAnswers(persona);
+  // quiet: same as the index above — listPersonaNotes already degraded the
+  // unreadable store; the turn runs without answers rather than not at all.
+  const answerRows = wantAnswers ? await listPersonaNotes(persona.id).catch(() => []) : undefined;
+  const answers = answerRows?.map((n) => ({ title: n.title, body: n.body }));
   return {
     ...(persona.model ? { model: persona.model } : {}),
     ...(persona.effort ? { effort: persona.effort } : {}),
@@ -35,6 +42,7 @@ export async function personaTurnFields(persona: Persona, opts: { notes?: boolea
       prompt: persona.prompt,
       ...(persona.harness ? { harness: persona.harness } : {}),
       ...(notes ? { notes } : {}),
+      ...(answers ? { answers } : {}),
       ...(persona.recall === false ? { recall: false as const } : {})
     }
   };

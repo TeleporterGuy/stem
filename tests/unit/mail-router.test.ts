@@ -331,6 +331,30 @@ describe('mail router', () => {
     expect(after.items[3].agentReplies).toBeUndefined();
   });
 
+  it("the user's reply to a code persona's relayed question becomes a standing answer", async () => {
+    await savePersona({ id: 'coder', name: 'Coder', prompt: 'relay', harness: { agent: 'claude', cwd: '/repo' } });
+    const fake = fakeBackend();
+    fake.script = { mode: 'ok', reply: 'Relay: done — should I deploy?' };
+    const router = new MailRouter({
+      runtime: fake.backend,
+      onChange: () => undefined,
+      agentReplies: () => ['Added the flag.\n\nShould I deploy now?']
+    });
+    await router.compose({ to: ['coder'], subject: 's', body: 'add a --version flag' });
+    const mail = await settledMail();
+    // The delivery turn itself carried an (empty) standing-answers list.
+    expect(fake.starts[0].persona?.answers).toEqual([]);
+    await router.reply(mail.conversations[0].id, 'Yes, always deploy.');
+    await vi.waitFor(async () => {
+      expect(await listPersonaNotes('coder')).toMatchObject([
+        { title: 'Should I deploy now?', body: 'Yes, always deploy.', source: 'answer' }
+      ]);
+    });
+    // The next delivery reads it back, whole.
+    await vi.waitFor(() => expect(fake.starts).toHaveLength(2));
+    expect(fake.starts[1].persona?.answers).toEqual([{ title: 'Should I deploy now?', body: 'Yes, always deploy.' }]);
+  });
+
   it('a startTurn that throws still produces a reply mail (nothing vanishes)', async () => {
     const fake = fakeBackend();
     fake.script = { mode: 'reject', error: 'no auth' };

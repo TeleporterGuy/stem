@@ -24,14 +24,27 @@ import { personaMemoryDir } from './paths';
 // memory flag is switched off (the built-in Critic, or the editor toggle)
 // keeps none either: no store at all, not a hidden one, because a store the
 // persona writes but never reads is pure confusion. A code persona (harness
-// pin) keeps none for the same reason from the other side: its wrapper is a
-// relay that may only call coding_agent, so it could never read or write a
-// note, and the coding agent it relays to carries its own memory. Every write
-// path checks personaOwnsMemory; the store dies with delete_persona.
+// pin) keeps no LESSONS for the same reason from the other side: its wrapper
+// is a relay that may only call coding_agent, so it could never read or write
+// a note, and the coding agent it relays to carries its own memory (the
+// project's CLAUDE.md and the agent's own per-project memory). What a code
+// persona keeps instead is STANDING ANSWERS: the same file, but every entry is
+// "when the agent asks this, the answer is that" — written by the user in the
+// editor, or captured by the mail router from the user's reply to a question
+// the agent asked. Rendered whole into the relay's preamble (no read_notes),
+// so the persona can answer the agent itself instead of asking the user the
+// same thing every time. Nothing writes them automatically from a model.
+// Every write path checks one of the two owners; the store dies with
+// delete_persona.
 
-/** Whether this persona keeps a private memory (see module doc). */
+/** Whether this persona keeps a private memory of lessons (see module doc). */
 export function personaOwnsMemory(persona: Pick<Persona, 'createdBy' | 'memory' | 'harness'>): boolean {
   return !persona.createdBy && persona.memory !== false && !persona.harness;
+}
+
+/** Whether this persona keeps standing answers for its coding agent's questions (code personas). */
+export function personaKeepsAnswers(persona: Pick<Persona, 'createdBy' | 'memory' | 'harness'>): boolean {
+  return !persona.createdBy && persona.memory !== false && !!persona.harness;
 }
 
 /** Hard cap per persona — the index is injected wholesale, so it must stay small. */
@@ -80,7 +93,8 @@ function coerceNote(raw: unknown): PersonaNote | null {
   const r = raw as Record<string, unknown>;
   if (typeof r.id !== 'string' || !r.id.trim()) return null;
   if (typeof r.body !== 'string' || !r.body.trim()) return null;
-  const source = r.source === 'reflection' || r.source === 'user' ? r.source : 'tool';
+  const source =
+    r.source === 'reflection' || r.source === 'user' || r.source === 'answer' ? r.source : 'tool';
   const title =
     typeof r.title === 'string' && r.title.trim() ? r.title.trim() : titleFromBody(r.body);
   return {
@@ -251,6 +265,51 @@ export function savePersonaNote(
       };
       store.notes.push(note);
     }
+    await writeNotesFile(personaId, store);
+    return note;
+  });
+}
+
+/**
+ * Record the user's answer to a question the coding agent asked (mail router,
+ * code personas). Keyed by the question: answering the same question again
+ * replaces the earlier answer rather than stacking a contradiction, and a
+ * full store drops the oldest captured answer — captured answers are the one
+ * automatic write here, so they must not wedge the user's own entries.
+ */
+export function saveStandingAnswer(personaId: string, question: string, answer: string): Promise<PersonaNote> {
+  return enqueue(async () => {
+    const title = question.replace(/\s+/g, ' ').trim().slice(0, MAX_NOTE_TITLE);
+    const body = answer.trim().slice(0, MAX_NOTE_BODY);
+    if (!title || !body) throw new Error('A standing answer needs a question and an answer.');
+    const store = await readNotesFile(personaId);
+    if (!store) {
+      degrade('persona-memory', 'refused to write notes over a file it could not read', personaId);
+      throw new Error('This persona’s notes file is unreadable; refusing to overwrite it.');
+    }
+    const at = store.notes.findIndex((n) => n.source === 'answer' && n.title === title);
+    if (at >= 0) {
+      const note = { ...store.notes[at], body, at: Date.now() };
+      store.notes[at] = note;
+      await writeNotesFile(personaId, store);
+      return note;
+    }
+    if (store.notes.length >= MAX_PERSONA_NOTES) {
+      const evict = store.notes.reduce<PersonaNote | null>(
+        (oldest, n) => (n.source === 'answer' && (!oldest || n.at < oldest.at) ? n : oldest),
+        null
+      );
+      if (!evict) throw new Error(`This persona already keeps ${MAX_PERSONA_NOTES} notes. Delete old ones first.`);
+      store.notes = store.notes.filter((n) => n.id !== evict.id);
+    }
+    const note: PersonaNote = {
+      id: mintNoteId(new Set(store.notes.map((n) => n.id))),
+      title,
+      body,
+      at: Date.now(),
+      source: 'answer'
+    };
+    store.notes.push(note);
     await writeNotesFile(personaId, store);
     return note;
   });

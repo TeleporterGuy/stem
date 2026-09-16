@@ -4005,7 +4005,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     const message = input.scheduled
       ? `${scheduledPreamble(input.scheduled.at, input.persona?.notes)}\n\n${body}`
       : input.mail
-        ? `${mailPreamble(input.mail, input.persona?.id, input.persona?.notes, input.persona?.recall === false)}\n\n${body}`
+        ? `${mailPreamble(
+            input.mail,
+            input.persona?.id,
+            input.persona?.notes,
+            input.persona?.recall === false,
+            input.persona?.answers
+          )}\n\n${body}`
         : body;
     return { message, images };
   }

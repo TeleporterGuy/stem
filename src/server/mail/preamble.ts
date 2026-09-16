@@ -34,6 +34,26 @@ export function personaNotesBlock(notes: { id: string; title: string }[] | undef
 }
 
 /**
+ * A code persona's standing answers as the relay sees them: whole, because the
+ * relay has no read_notes. `undefined` renders nothing (not a code persona, or
+ * answers switched off); an empty list still tells the relay the rule, so it
+ * knows asking the user is the fallback and not a failure.
+ */
+export function standingAnswersBlock(answers: { title: string; body: string }[] | undefined, fence: string): string[] {
+  if (answers === undefined) return [];
+  const clean = (text: string) => text.split(fence).join('').replace(/\s+/g, ' ').trim();
+  return [
+    (answers.length
+      ? `Standing answers from the user for questions the coding agent tends to ask:\n${answers
+          .map((a) => `- When asked "${clean(a.title)}": ${clean(a.body)}`)
+          .join('\n')}\nWhen the agent's reply asks something one of these clearly covers, answer it yourself with a follow-up coding_agent call instead of asking the user; `
+      : 'The user keeps no standing answers for this persona yet. ') +
+      'when the agent asks something the conversation and these answers do not settle, put the question in your reply and let the user answer. ' +
+      'The user’s reply to such a question is saved here automatically for next time.'
+  ];
+}
+
+/**
  * The model-visible mail-delivery preamble, fenced for replay stripping +
  * detection. `self` is the persona this delivery runs as, kept out of the
  * "other personas" line — the first smoke test told Normal that "normal" was
@@ -55,7 +75,9 @@ export function mailPreamble(
    * A reviewer told the draft is "from the user" grades the user's work, not
    * the draft; removing the cue beats asking the model to ignore it.
    */
-  blind = false
+  blind = false,
+  /** Code personas: the user's standing answers, whole (see standingAnswersBlock). */
+  answers?: { title: string; body: string }[]
 ): string {
   // The other personas this conversation can reach — the To: list is the closed
   // participant set, and this line is how a persona learns who else is in it.
@@ -127,6 +149,7 @@ export function mailPreamble(
       ]
     : [];
   const memory = personaNotesBlock(notes, MAIL_CLOSE);
+  const standing = standingAnswersBlock(answers, MAIL_CLOSE);
   return [
     `<!--stem:mail from=${blind ? '' : mail.from.split('>').join('')}-->`,
     blind
@@ -138,6 +161,7 @@ export function mailPreamble(
     'Work the task with your tools. Your final message is sent back to the sender as your reply mail — write it as the reply.',
     ...(role ? [role] : []),
     ...memory,
+    ...standing,
     ...source,
     'If you are blocked, need a decision, or an approval was refused, say exactly what you need in your reply: it lands in the sender’s inbox and the conversation waits for their answer.',
     MAIL_CLOSE

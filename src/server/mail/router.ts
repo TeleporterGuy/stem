@@ -24,6 +24,7 @@ import {
   savePersonaNote
 } from '../workspace/persona-memory';
 import { reflectOnDelivery } from './reflect';
+import { captureStandingAnswer } from './standing-answers';
 import { personaTurnFields } from '../workspace/persona-turn';
 import { repoLocks } from './repo-lock';
 import { attachScheduledWork, beginMailWork, type WorkHandle } from './work';
@@ -289,10 +290,23 @@ export class MailRouter {
     const trimmed = body.trim();
     const files = attachments?.length ? attachments : undefined;
     if (!trimmed && !files) throw new Error('Write the reply before sending it.');
-    const { conversations } = await readMail();
+    const { conversations, items } = await readMail();
     const conversation = conversations.find((c) => c.id === conversationId);
     if (!conversation) throw new Error('That mail conversation no longer exists.');
     const driver = conversation.participants[0];
+    // A code persona's driver just relayed the agent's question and this is
+    // the answer: keep it as a standing answer (never in a private
+    // conversation — nothing there is captured).
+    if (!conversation.private) {
+      const persona = await getPersona(driver);
+      if (persona?.harness) {
+        await captureStandingAnswer({
+          persona,
+          items: items.filter((i) => i.conversationId === conversationId).sort((a, b) => a.at - b.at),
+          reply: trimmed
+        });
+      }
+    }
     const result = await appendMailItem({
       conversationId,
       from: 'user',

@@ -464,6 +464,14 @@ export interface StartTurnInput {
      */
     notes?: { id: string; title: string }[];
     /**
+     * Code personas only: the standing answers the user keeps for this persona
+     * (title = the coding agent's question or situation, body = the answer),
+     * rendered whole into the mail preamble so the relay can answer the agent
+     * without asking the user again. Present exactly when the persona keeps
+     * them (workspace/persona-memory.ts personaKeepsAnswers).
+     */
+    answers?: { title: string; body: string }[];
+    /**
      * `false` when the persona's `recall` flag is off: the prompt assembler
      * then skips the recall block for this turn (see Persona.recall).
      */
@@ -2198,8 +2206,12 @@ export interface PersonaNote {
   body: string;
   /** Epoch ms of the last write. */
   at: number;
-  /** Who wrote it: the end-of-turn reflection pass, the remember_note tool, or the user. */
-  source: 'reflection' | 'tool' | 'user';
+  /**
+   * Who wrote it: the end-of-turn reflection pass, the remember_note tool, the
+   * user, or — code personas only — the user's mail reply to a question the
+   * coding agent asked (`answer`: title is the question, body the answer).
+   */
+  source: 'reflection' | 'tool' | 'user' | 'answer';
 }
 
 /** What one consolidation pass did to a persona's memory (see server/mail/consolidate.ts). */

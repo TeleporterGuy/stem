@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Persona } from '../../src/shared/types';
 import { personaTurnFields } from '../../src/server/workspace/persona-turn';
-import { savePersonaNote } from '../../src/server/workspace/persona-memory';
+import { savePersonaNote, saveStandingAnswer } from '../../src/server/workspace/persona-memory';
 
 // The one builder every persona surface (mail, scheduler, client chats) uses:
 // what a persona row contributes to a StartTurnInput.
@@ -26,13 +26,20 @@ describe('personaTurnFields', () => {
     });
   });
 
-  it('carries the harness pin and no notes index for a code persona: a relay reads no notes', async () => {
-    const fields = await personaTurnFields({ ...base, harness: { agent: 'claude', cwd: '/repo' } });
-    expect(fields.persona).toEqual({
-      id: 'p-turn',
-      prompt: 'You are Turn.',
-      harness: { agent: 'claude', cwd: '/repo' }
-    });
+  it('carries the harness pin and standing answers (whole, no notes index) for a code persona', async () => {
+    const harness = { agent: 'claude', cwd: '/repo' };
+    const coder = { ...base, id: 'p-coder', harness };
+    const empty = await personaTurnFields(coder);
+    // A relay reads no notes index — it has no read_notes — but its standing
+    // answers ride whole, present-but-empty so the preamble states the rule.
+    expect(empty.persona).toEqual({ id: 'p-coder', prompt: 'You are Turn.', harness, answers: [] });
+    await saveStandingAnswer('p-coder', 'Should I deploy?', 'Yes, always.');
+    const fields = await personaTurnFields(coder);
+    expect(fields.persona.notes).toBeUndefined();
+    expect(fields.persona.answers).toEqual([{ title: 'Should I deploy?', body: 'Yes, always.' }]);
+    // Answers switched off (memory: false) or a chat surface (notes: false): nothing rides.
+    expect((await personaTurnFields({ ...coder, memory: false })).persona.answers).toBeUndefined();
+    expect((await personaTurnFields(coder, { notes: false })).persona.answers).toBeUndefined();
   });
 
   it('lists the persona’s notes newest first, and omits the index for personas without a memory', async () => {
