@@ -3,6 +3,8 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { log } from '../server/log';
 import {
+  COMPUTER_END_FRAME,
+  COMPUTER_REQUEST_FRAME,
   EXEC_REQUEST_FRAME,
   HARNESS_CANCEL_FRAME,
   HARNESS_REQUEST_FRAME,
@@ -10,6 +12,7 @@ import {
   MCP_REQUEST_FRAME,
   type AuthUiEvent,
   type BackendEventEnvelope,
+  type DeviceComputerRequest,
   type DeviceExecRequest,
   type DeviceHarnessCancel,
   type DeviceHarnessRequest,
@@ -261,6 +264,16 @@ export interface DeviceHarnessHostBinding {
   onCancel(cancel: DeviceHarnessCancel): void;
 }
 
+/**
+ * Same seam for the screen actions this Mac performs (the `computer` tool of a
+ * persona pinned here). The screenshot goes back as an ordinary
+ * `computerHost:result` RPC; nothing here waits.
+ */
+export interface DeviceComputerHostBinding {
+  onRequest(request: DeviceComputerRequest): void;
+  onEnd(end: { threadId: string }): void;
+}
+
 export interface ProxyDeps {
   /** HUD lifecycle is separate from HTTP reachability and renderer replay. */
   hudDisconnected?(): void;
@@ -321,6 +334,8 @@ export interface ProxyDeps {
   execHost: DeviceExecHostBinding;
   /** Runs the coding agents addressed to this device. See DeviceHarnessHostBinding. */
   harnessHost: DeviceHarnessHostBinding;
+  /** Performs the screen actions addressed to this device. See DeviceComputerHostBinding. */
+  computerHost: DeviceComputerHostBinding;
   /** Quick Chat settings were persisted: apply the parts that are not settings. */
   applyQuickChatSettings(patch: Partial<QuickChatSettings>, next: QuickChatSettings): void;
 }
@@ -689,6 +704,18 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       if (typeof turnId === 'string' && turnId) deps.harnessHost.onCancel({ turnId });
       return;
     }
+    // A screen action for THIS Mac, and the end of a run. Addressed and off
+    // the ring like the frames above; an unreadable frame is dropped silently.
+    if (name === COMPUTER_REQUEST_FRAME) {
+      const request = asComputerRequest(data);
+      if (request) deps.computerHost.onRequest(request);
+      return;
+    }
+    if (name === COMPUTER_END_FRAME) {
+      const threadId = (data as { threadId?: unknown } | null)?.threadId;
+      if (typeof threadId === 'string' && threadId) deps.computerHost.onEnd({ threadId });
+      return;
+    }
     if (name === 'hudSnapshot') {
       const snapshot = data as { deviceId?: unknown; state?: { liveTurns?: unknown } };
       if (typeof snapshot.deviceId === 'string' && Array.isArray(snapshot.state?.liveTurns)) {
@@ -743,6 +770,17 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
    * so the shape is established before it is handed anywhere.
    */
   /** Same establish-the-shape-first rule for a harness frame. */
+  function asComputerRequest(data: unknown): DeviceComputerRequest | null {
+    const frame = data as Partial<DeviceComputerRequest> | null;
+    if (!frame || typeof frame.requestId !== 'string' || !frame.requestId) return null;
+    if (typeof frame.threadId !== 'string' || !frame.threadId) return null;
+    const action = frame.action as { kind?: unknown } | undefined;
+    if (!action || typeof action !== 'object' || typeof action.kind !== 'string') return null;
+    // The action's fields are validated where they land (the helper refuses
+    // what it cannot do); the shape here is only what the host keys off.
+    return { requestId: frame.requestId, threadId: frame.threadId, action: frame.action! };
+  }
+
   function asHarnessRequest(data: unknown): DeviceHarnessRequest | null {
     const frame = data as Partial<DeviceHarnessRequest> | null;
     if (!frame || typeof frame.requestId !== 'string' || !frame.requestId) return null;

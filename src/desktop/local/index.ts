@@ -15,6 +15,7 @@ import { currentThemeState, ensureThemesDir, listThemes } from '../themes';
 import type { McpHost } from '../mcp-host';
 import type { ExecHost, ExecHostLocalState } from '../exec-host';
 import type { DesktopHarnessHost } from '../harness-host';
+import type { ComputerHost, ComputerHostLocalState } from '../computer-host';
 import type { HarnessHostLocalState } from '../../shared/types';
 import type { MirrorFolderLocalState, MirrorHost } from '../mirror-host';
 import type { Updates } from '../updates';
@@ -87,6 +88,8 @@ export interface LocalIpcDeps {
   execHost: ExecHost;
   /** Whether this machine runs coding agents for its server (see desktop/harness-host/). */
   harnessHost: DesktopHarnessHost;
+  /** Whether this Mac lets its server drive the screen (see desktop/computer-host/). */
+  computerHost: ComputerHost;
   /**
    * The folders THIS machine mirrors to its server (see desktop/mirror-host/).
    * Null when the server runs on this computer — a folder here is connected
@@ -244,6 +247,16 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
     'harnessHost:setEnabled',
     (_e, enabled: boolean): Promise<HarnessHostLocalState> => deps.harnessHost.setEnabled(enabled)
   );
+
+  // Whether THIS Mac lets Stem drive its screen. Client-owned for the same
+  // reason: the switch is the consent, and so is the request for the macOS
+  // grants, which prompt on this machine's own display.
+  handleLocal('computerHost:localState', (): Promise<ComputerHostLocalState> => deps.computerHost.localState());
+  handleLocal(
+    'computerHost:setEnabled',
+    (_e, enabled: boolean): Promise<ComputerHostLocalState> => deps.computerHost.setEnabled(enabled)
+  );
+  handleLocal('computerHost:requestAccess', (): Promise<ComputerHostLocalState> => deps.computerHost.requestAccess());
 
   // Connect folders that live on THIS machine. Client-owned for the mcpHost
   // reason at its sharpest: the machine-local mirror list is the authority over

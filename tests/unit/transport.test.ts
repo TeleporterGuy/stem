@@ -106,6 +106,7 @@ beforeAll(async () => {
     mcpHost: { onRequest: () => undefined, onAssignmentsChanged: () => undefined },
     execHost: { onRequest: () => undefined },
     harnessHost: { onRequest: () => undefined, onCancel: () => undefined },
+    computerHost: { onRequest: () => undefined, onEnd: () => undefined },
     threadOpened: async (threadId) => {
       clientSide.push(`client:threadOpened(${threadId})`);
       if (refuseHandoff) throw refuseHandoff;
@@ -235,6 +236,7 @@ describe('when the server is somewhere else', () => {
       mcpHost: { onRequest: () => undefined, onAssignmentsChanged: () => undefined },
     execHost: { onRequest: () => undefined },
     harnessHost: { onRequest: () => undefined, onCancel: () => undefined },
+    computerHost: { onRequest: () => undefined, onEnd: () => undefined },
       threadOpened: async () => undefined,
       applyQuickChatSettings: () => undefined,
       resync: () => undefined,
@@ -395,6 +397,7 @@ describe('stale-while-revalidate', () => {
       mcpHost: { onRequest: () => undefined, onAssignmentsChanged: () => undefined },
       execHost: { onRequest: () => undefined },
       harnessHost: { onRequest: () => undefined, onCancel: () => undefined },
+    computerHost: { onRequest: () => undefined, onEnd: () => undefined },
       threadOpened: async () => undefined,
       applyQuickChatSettings: () => undefined,
       resync: () => undefined,
@@ -521,6 +524,7 @@ describe('resuming a dropped stream', () => {
       mcpHost: { onRequest: () => undefined, onAssignmentsChanged: () => undefined },
     execHost: { onRequest: () => undefined },
     harnessHost: { onRequest: () => undefined, onCancel: () => undefined },
+    computerHost: { onRequest: () => undefined, onEnd: () => undefined },
       threadOpened: async () => undefined,
       applyQuickChatSettings: () => undefined,
       resync: () => {
@@ -782,6 +786,7 @@ describe('a server reached over TLS', () => {
     mcpHost: { onRequest: () => undefined, onAssignmentsChanged: () => undefined },
     execHost: { onRequest: () => undefined },
     harnessHost: { onRequest: () => undefined, onCancel: () => undefined },
+    computerHost: { onRequest: () => undefined, onEnd: () => undefined },
     threadOpened: async () => undefined,
     applyQuickChatSettings: () => undefined,
     resync: () => undefined,

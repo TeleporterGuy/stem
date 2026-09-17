@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import type {
+  ComputerHostLocalState,
   DeviceInfo,
   ExecHostShellInfo,
   ExecSettings,
@@ -74,6 +75,9 @@ export function AutonomySections() {
   const remote = useRemoteServer();
   const [execHostEnabled, setExecHostEnabled] = useState<boolean | null>(null);
   const [harnessHostEnabled, setHarnessHostEnabled] = useState<boolean | null>(null);
+  // Whether THIS Mac lets the server drive its screen, plus the macOS grants
+  // the helper has. Null until asked; `supported: false` off macOS.
+  const [computerHost, setComputerHost] = useState<ComputerHostLocalState | null>(null);
   // Labels for the per-device allowlist groups. Devices that were unpaired keep
   // their entries readable (and deletable) under the raw id.
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
@@ -94,6 +98,7 @@ export function AutonomySections() {
       .catch(() => setHostShell(null));
     void window.stem.execHostState().then((s) => setExecHostEnabled(s.enabled)).catch(() => undefined);
     void window.stem.harnessHostState().then((s) => setHarnessHostEnabled(s.enabled)).catch(() => undefined);
+    void window.stem.computerHostState().then(setComputerHost).catch(() => undefined);
     void window.stem
       .listDevices()
       .then((snap) => setDevices(snap.devices))
@@ -535,6 +540,81 @@ export function AutonomySections() {
               }
             />
           </ValueRow>
+          </div>
+        </>
+      )}
+
+      {/* Computer control: whether THIS Mac lets a persona pinned to it see the
+          screen and move the mouse and keyboard. Same shape as the coding-agent
+          consent above — offered when the server is elsewhere, client-local
+          state, never on the wire — plus the three macOS grants the helper
+          needs, requested from here because the prompts appear on this display. */}
+      {remote && computerHost?.supported && (
+        <>
+          <div className="grp-head">Computer control</div>
+          <div className="group">
+            <ValueRow
+              label={<strong>Let Stem control this Mac</strong>}
+              hint={
+                <>
+                  A persona pinned to this computer can see the screen and drive the mouse and keyboard{' '}
+                  <InfoTip label="What switching this on means">
+                    A persona pinned to this Mac in Manage → Personas gets a <code>computer</code> tool:
+                    it takes screenshots, clicks and types here, with no per-action approval. While it
+                    works a banner says so, and any key or mouse movement of your own stops the run at
+                    once. Switching this off stops new runs immediately. Leave it off if this Stem server
+                    isn’t yours alone.
+                  </InfoTip>
+                </>
+              }
+            >
+              <button
+                className={`switch${computerHost.enabled ? ' on' : ''}`}
+                role="switch"
+                aria-checked={computerHost.enabled}
+                aria-label="Let Stem control this Mac"
+                onClick={() =>
+                  void window.stem.setComputerHostEnabled(!computerHost.enabled).then(setComputerHost)
+                }
+              />
+            </ValueRow>
+            {computerHost.enabled && (
+              <ValueRow
+                label="macOS permissions"
+                hint={
+                  <>
+                    {(
+                      [
+                        ['Screen Recording', computerHost.access?.screen],
+                        ['Accessibility', computerHost.access?.accessibility],
+                        ['Input Monitoring', computerHost.access?.inputMonitoring]
+                      ] as [string, boolean | undefined][]
+                    ).map(([name, granted], i) => (
+                      <span key={name}>
+                        {i > 0 && ' · '}
+                        {name}: {granted ? 'granted' : 'not granted'}
+                      </span>
+                    ))}{' '}
+                    <InfoTip label="About these permissions">
+                      Screen Recording lets Stem take screenshots, Accessibility lets it click and type,
+                      Input Monitoring lets it notice your own input and stop. macOS asks once per grant;
+                      a refused one is changed under System Settings → Privacy &amp; Security.
+                    </InfoTip>
+                  </>
+                }
+              >
+                <button
+                  className="btn sm"
+                  onClick={() => void window.stem.requestComputerAccess().then(setComputerHost)}
+                >
+                  {computerHost.access?.screen &&
+                  computerHost.access?.accessibility &&
+                  computerHost.access?.inputMonitoring
+                    ? 'Re-check'
+                    : 'Grant…'}
+                </button>
+              </ValueRow>
+            )}
           </div>
         </>
       )}

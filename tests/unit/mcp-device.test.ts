@@ -416,6 +416,7 @@ describe('a call to a device, end to end', () => {
         }
       },
       harnessHost: { onRequest: () => undefined, onCancel: () => undefined },
+    computerHost: { onRequest: () => undefined, onEnd: () => undefined },
       oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
       sendToMain: () => undefined,
       sendToOverlay: () => undefined,

@@ -23,6 +23,8 @@ import { registerLocalIpc } from './local';
 import { createMcpHost, type McpHost } from './mcp-host';
 import { createExecHost, type ExecHost } from './exec-host';
 import { createDesktopHarnessHost, type DesktopHarnessHost } from './harness-host';
+import { createComputerHost, type ComputerHost } from './computer-host';
+import { createComputerBanner } from './computer-host/banner';
 import { createMirrorHost, type MirrorHost } from './mirror-host';
 import { createOAuthCourier, type OAuthCourier } from './oauth-courier';
 import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, requestAttention } from './platform';
@@ -336,6 +338,7 @@ let presence: PresenceHeartbeat | null = null;
 let mcpHost: McpHost | null = null;
 let execHost: ExecHost | null = null;
 let harnessHost: DesktopHarnessHost | null = null;
+let computerHost: ComputerHost | null = null;
 let mirrorHost: MirrorHost | null = null;
 
 /**
@@ -456,6 +459,14 @@ app.whenReady().then(async () => {
     invoke: (channel, args) => proxy!.invoke(channel, args)
   });
 
+  // The screen actions the server addresses to THIS Mac (a persona's
+  // `computer` tool). Same posture as the hosts above: off until the switch
+  // in Settings is flipped on this computer.
+  computerHost = createComputerHost({
+    invoke: (channel, args) => proxy!.invoke(channel, args),
+    banner: createComputerBanner()
+  });
+
   proxy = createServerProxy({
     ...endpoint,
     // The one `if` above decides this too: a server we did not start is a server
@@ -465,6 +476,7 @@ app.whenReady().then(async () => {
     mcpHost,
     execHost,
     harnessHost,
+    computerHost,
     sendToMain,
     sendToOverlay: (channel, payload) => quickChat.sendToOverlay(channel, payload),
     revealIfOwns: (threadId) => quickChat.revealIfOwns(threadId),
@@ -498,6 +510,8 @@ app.whenReady().then(async () => {
       if (reachable) void execHost?.refresh();
       // And whether it runs coding agents, for the same reason.
       if (reachable) void harnessHost?.refresh();
+      // And whether it lets Stem drive its screen.
+      if (reachable) void computerHost?.refresh();
       // And reconcile + rescan the mirrored folders: edits made while the
       // stream was down are exactly what a reconnect has to catch up on.
       if (reachable) void mirrorHost?.refresh();
@@ -529,6 +543,7 @@ app.whenReady().then(async () => {
     mcpHost,
     execHost,
     harnessHost,
+    computerHost,
     mirrorHost,
     themeChanged
   });
@@ -581,6 +596,7 @@ app.whenReady().then(async () => {
     void mcpHost?.start();
     void execHost?.start();
     void harnessHost?.start();
+    void computerHost?.start();
     void mirrorHost?.start();
   });
 
@@ -640,6 +656,8 @@ app.on('before-quit', (event) => {
   // Same argument for a coding agent's adapter processes: cancel gracefully and
   // close; the sessions themselves survive on this disk.
   void harnessHost?.close();
+  // And a screen run: the helper is a child of this process too.
+  computerHost?.close();
   // Nothing to drain when the server is somebody else's process.
   if (!server) return;
   event.preventDefault();

@@ -455,6 +455,8 @@ export interface StartTurnInput {
     id: string;
     prompt: string;
     harness?: PersonaHarnessPin;
+    /** The persona's computer-control pin; the `computer` tool exists for the turn exactly when present. */
+    computer?: PersonaComputerPin;
     /**
      * The persona's memory-note index (id + title, newest first), rendered
      * into the mail preamble so the persona sees what it knows every turn and
@@ -528,6 +530,8 @@ export interface ModelSummary {
   isDefault: boolean;
   /** Context window size in tokens; denominator of the context meter. Absent => hide it. */
   contextWindow?: number;
+  /** What the model accepts; absent when pi did not say (treated as text-only by the editor's vision warning). */
+  input?: ('text' | 'image')[];
 }
 
 export interface StartTurnResult {
@@ -1345,6 +1349,96 @@ export interface ExecHostLocalState {
   enabled: boolean;
 }
 
+// ---- Computer control on the user's own Mac (the `computer` tool) ----
+//
+// Same rails as the exec device path — addressed control frames out, ordinary
+// authenticated RPCs back, 128-bit single-use requestIds — carrying one
+// screen action (screenshot, click, type, …) instead of one shell command.
+// Which machine is the persona's `computer` pin, read from the live turn and
+// never from the tool payload. The machine holds the two decisions the server
+// must never make for it: whether it lets Stem drive its screen at all (a
+// client-local switch, off until its owner flips it there), and the kill
+// switch — the moment the person at that keyboard touches anything, the run
+// is over.
+
+export const COMPUTER_REQUEST_FRAME = 'computer-request';
+/** The run for a thread is over (turn ended, cancelled, worker died): drop the banner, stop the helper. */
+export const COMPUTER_END_FRAME = 'computer-end';
+
+/** One screen action, in the helper's own vocabulary. Coordinates are pixels of the last screenshot. */
+export type ComputerAction =
+  | { kind: 'screenshot' }
+  | { kind: 'cursor' }
+  | { kind: 'move'; x: number; y: number }
+  | { kind: 'click'; x?: number; y?: number; button: 'left' | 'right' | 'middle'; count: 1 | 2 | 3 }
+  | { kind: 'drag'; from: { x: number; y: number }; to: { x: number; y: number } }
+  | { kind: 'scroll'; x?: number; y?: number; dir: 'up' | 'down' | 'left' | 'right'; amount: number }
+  | { kind: 'type'; text: string }
+  | { kind: 'key'; combo: string }
+  | { kind: 'hold'; combo: string; ms: number }
+  | { kind: 'wait'; ms: number }
+  | { kind: 'zoom'; x: number; y: number; w: number; h: number };
+
+export interface DeviceComputerRequest {
+  /** Unguessable and single-use — same defence as {@link DeviceExecRequest.requestId}. */
+  requestId: string;
+  /** The turn's thread; the device keys its run (banner, helper, watchdog) off it. */
+  threadId: string;
+  action: ComputerAction;
+}
+
+/** A frame of the screen, as the device answers it. */
+export interface ComputerScreenshot {
+  jpegBase64: string;
+  width: number;
+  height: number;
+  /** Display points per screenshot pixel (absent on a zoom, whose pixels are not clickable). */
+  scale?: number;
+  zoomed?: boolean;
+}
+
+export type DeviceComputerResult =
+  | { ok: true; screenshot: ComputerScreenshot; cursor: { x: number; y: number } }
+  | {
+      ok: false;
+      error: string;
+      /** The person at the machine took over (their input, or the banner's Stop). */
+      aborted?: true;
+    };
+
+/** The three macOS grants the helper needs, as the device last saw them. */
+export interface ComputerAccess {
+  screen: boolean;
+  accessibility: boolean;
+  inputMonitoring: boolean;
+}
+
+/** A device's account of whether it lets Stem drive its screen — `computerHost:announce`. */
+export interface DeviceComputerAnnouncement {
+  enabled: boolean;
+  platform: 'darwin';
+  access?: ComputerAccess;
+}
+
+export interface DeviceComputerHostEntry extends DeviceComputerAnnouncement {
+  deviceId: string;
+  announcedAt: string;
+}
+
+/** `computerHost:event` — the device reporting that the person took over. */
+export interface DeviceComputerEvent {
+  threadId: string;
+  kind: 'human-input';
+}
+
+/** The answer to `computerHost:localState` — client-owned, never on the wire. */
+export interface ComputerHostLocalState {
+  /** False on every platform but macOS: there is no helper to run. */
+  supported: boolean;
+  enabled: boolean;
+  access: ComputerAccess | null;
+}
+
 // ---- Coding agents on the user's own devices (coding_agent's `device`) ----
 //
 // Same rails as the exec device path: addressed control frames out (one
@@ -2119,6 +2213,17 @@ export interface PersonaHarnessPin {
   model?: string;
 }
 
+/**
+ * A persona's computer-control pin: the paired Mac whose screen it drives with
+ * the `computer` tool (screenshot, click, type). Like the harness pin, the pin
+ * IS the capability, in every kind of turn — a persona without one has no
+ * such tool, and the device cannot be chosen per call.
+ */
+export interface PersonaComputerPin {
+  /** Paired computer id (a desktop that announced computer control). */
+  device: string;
+}
+
 export interface Persona {
   /** Stable id (built-ins use fixed slugs; user personas a UUID). */
   id: string;
@@ -2131,6 +2236,7 @@ export interface Persona {
   /** Reasoning effort pinned to this persona. */
   effort?: string;
   harness?: PersonaHarnessPin;
+  computer?: PersonaComputerPin;
   /**
    * Run via the sessionless one-shot path (ChatBackend.complete) instead of a
    * worker: cheaper, but no tools and no memory between mails. For pure-text
@@ -3531,6 +3637,12 @@ export interface DeviceInfo {
    * editor can offer it as a place a coding pin runs.
    */
   runsCodingAgents?: boolean;
+  /**
+   * Whether this Mac said it lets Stem drive its screen (`computerHost:announce`).
+   * Absent when it never announced or announced off. Surfaced so the persona
+   * editor can offer it as a computer-control pin.
+   */
+  runsComputer?: boolean;
 }
 
 /**
@@ -3914,6 +4026,12 @@ export interface StemApi {
   setHarnessHostEnabled(enabled: boolean): Promise<HarnessHostLocalState>;
   /** Flip the switch, persist it here, and tell the server. */
   setExecHostEnabled(enabled: boolean): Promise<ExecHostLocalState>;
+  /** Whether THIS Mac lets its server drive the screen (client-owned). */
+  computerHostState(): Promise<ComputerHostLocalState>;
+  /** Flip the local computer-control consent switch (client-owned). */
+  setComputerHostEnabled(enabled: boolean): Promise<ComputerHostLocalState>;
+  /** Ask macOS for the grants the helper is missing; answers with the current state. */
+  requestComputerAccess(): Promise<ComputerHostLocalState>;
 
   getMemorySettings(): Promise<MemorySettings>;
   setMemoryEnabled(enabled: boolean): Promise<MemorySettings>;
