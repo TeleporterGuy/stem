@@ -1235,7 +1235,10 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .mdx-form-submit:disabled { opacity: 0.5; cursor: default; }
 
 /* ---- inspector / manage ---- */
-.inspector { background: var(--panel); overflow-y: auto; min-height: 0; }
+/* scrollbar-gutter: stable reserves the (transparent) 10px track even when the
+   content fits, so opening a persona/MCP detail that overflows no longer shifts
+   everything 10px left when the scrollbar appears. */
+.inspector { background: var(--panel); overflow-y: auto; min-height: 0; scrollbar-gutter: stable; }
 .manage { display: flex; flex-direction: column; min-height: 100%; }
 
 /* segmented icon switcher (Memory / Skills / MCP) */
