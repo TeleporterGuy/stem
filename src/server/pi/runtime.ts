@@ -44,7 +44,12 @@ import { TURN_INTERRUPTED_MESSAGE, turnFailureMessage } from '../../shared/chatS
 import { log } from '../log';
 import { degrade } from '../degrade';
 import { isContextOverflowError } from '../backend/overflow';
-import { PLAIN_MD_DIRECTIVE, codingDelegationInstructions, stemAssistantInstructions } from '../workspace/bootstrap';
+import {
+  PLAIN_MD_DIRECTIVE,
+  codingDelegationInstructions,
+  computerControlInstructions,
+  stemAssistantInstructions
+} from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
 import { resolveHostShell } from '../exec/git-bash';
 import { clampPinnedCwd } from '../harness/pin';
@@ -62,7 +67,16 @@ import { buildConnectedFoldersContext } from '../connected-folders/inject';
 import { getPrivateRoots } from '../workspace/connected-folders';
 import { resolveAttachments, type PiImageContent } from './attachments';
 import { captureUserMessage } from '../recall/capture';
-import type { ApprovalId, ChatBackend, ExecBridge, HarnessBridge, MailBridge, TaskBridge } from '../backend/types';
+import type {
+  ApprovalId,
+  ChatBackend,
+  ComputerBridge,
+  ComputerRequest,
+  ExecBridge,
+  HarnessBridge,
+  MailBridge,
+  TaskBridge
+} from '../backend/types';
 import type { SkillBridge } from '../skills/bridge';
 import {
   buildMcpCatalogContext,
@@ -132,6 +146,7 @@ import {
   ENV_SECRET_KEY,
   ENV_SKILLS_DIR,
   EXEC_BRIDGE_TITLE,
+  COMPUTER_BRIDGE_TITLE,
   HARNESS_BRIDGE_TITLE,
   INSTRUCTIONS_APPROVAL_TITLE,
   MAIL_BRIDGE_TITLE,
@@ -409,6 +424,8 @@ interface PiModel {
   reasoning?: boolean;
   /** Context window size in tokens (pi defaults to 128000 when a model omits it). */
   contextWindow?: number;
+  /** What the model accepts (pi's Model.input); the persona editor's vision warning reads it. */
+  input?: ('text' | 'image')[];
   /**
    * Per-model thinking-level capability/override map from pi. A key present with a
    * non-null value means that level is supported (pi maps it to the provider value
@@ -612,6 +629,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   private execBridge: ExecBridge | null = null;
   /** Wired by main to route the assistant's coding_agent tool. */
   private harnessBridge: HarnessBridge | null = null;
+  private computerBridge: ComputerBridge | null = null;
   /** Wired by main to route the assistant's manage_skill tool through the validator + policy. */
   private skillBridge: SkillBridge | null = null;
   /** Set when an admin add/remove was approved; reloads MCP servers once every turn ends. */
@@ -1087,9 +1105,15 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         // dispose so the exit handler reads it as deliberate, not a crash.
         // A code persona's brief (which agent, where) rides the role prompt, so
         // editing the pin re-spawns the worker exactly like editing the prompt.
-        w.personaPrompt = input.persona.harness
-          ? `${input.persona.prompt}\n\n${codingDelegationInstructions(input.persona.harness)}`
-          : input.persona.prompt;
+        // The same for a computer-control pin: how to drive the pinned Mac is
+        // spawn-time state too.
+        w.personaPrompt = [
+          input.persona.prompt,
+          input.persona.harness ? codingDelegationInstructions(input.persona.harness) : '',
+          input.persona.computer ? computerControlInstructions(input.persona.computer) : ''
+        ]
+          .filter(Boolean)
+          .join('\n\n');
         if (w.proc?.running && w.spawnedPersonaPrompt !== w.personaPrompt) {
           const stale = w.proc;
           w.proc = null;
@@ -1193,6 +1217,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       if (input.mail) turn.mail = { conversationId: input.mail.conversationId, participants: input.mail.participants };
       if (input.persona) turn.personaId = input.persona.id;
       if (input.persona?.harness) turn.personaHarness = input.persona.harness;
+      if (input.persona?.computer) turn.personaComputer = input.persona.computer;
       // The exec safety judge classifies commands relative to this request.
       turn.userText = input.input;
       // Folders connected memorize:false: if the assistant reads inside one this turn,
@@ -1239,6 +1264,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             // up front instead of wasting a round-trip on the bridge's refusal
             // (which stays the boundary).
             coding: !!turn.personaHarness,
+            // Same rule for the `computer` tool: the computer pin is the
+            // capability, in every kind of turn (chats, mail, scheduled runs).
+            computer: !!turn.personaComputer,
             // Mirrors buildMessage's recall gate: a recall-off persona (or a
             // private chat) gets neither the injected block nor the search
             // tools that would reproduce it on demand.
@@ -1437,6 +1465,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     turn.abortRequested = true;
     this.execBridge?.abortThread(turn.threadId);
     this.harnessBridge?.abortThread(turn.threadId, reason);
+    this.computerBridge?.endThread(turn.threadId, 'The turn was stopped.');
     worker.proc?.send({ type: 'abort' });
   }
 
@@ -1468,7 +1497,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         defaultEffort: efforts.includes('medium') ? 'medium' : efforts[0] ?? 'medium',
         serviceTiers: serviceTiersFor(m),
         isDefault: m.provider === def.provider && m.id === def.modelId,
-        ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {})
+        ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
+        ...(Array.isArray(m.input) ? { input: m.input } : {})
       };
     });
   }
@@ -2374,6 +2404,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // Harness: same argument — cancel live coding-agent turns and dismiss their
     // cards; the sessions themselves survive on disk for the next call.
     this.harnessBridge?.settleAll('the backend restarted');
+    this.computerBridge?.settleAll('the backend restarted');
   }
 
   /**
@@ -2398,6 +2429,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       }
       this.execBridge?.abortThread(threadId);
       this.harnessBridge?.abortThread(threadId, 'the backend process died');
+      this.computerBridge?.endThread(threadId, 'The backend process died.');
     }
   }
 
@@ -2441,6 +2473,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
   setHarnessBridge(bridge: HarnessBridge | null): void {
     this.harnessBridge = bridge;
+  }
+
+  setComputerBridge(bridge: ComputerBridge | null): void {
+    this.computerBridge = bridge;
   }
 
   setSkillBridge(bridge: SkillBridge | null): void {
@@ -2584,6 +2620,52 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           threadId: turn?.threadId ?? '',
           isScheduled: turn?.isScheduled === true,
           isMail: turn?.isMail === true
+        });
+        respond(result);
+      } catch (e) {
+        respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    })();
+  }
+
+  /**
+   * Handle the `computer` tool's ctx.ui.input round-trip (sentinel
+   * COMPUTER_BRIDGE_TITLE). The placeholder is a JSON { action } payload; the
+   * Mac it runs on is the persona's computer pin, read off the live turn and
+   * never from the payload — the pin is the capability in every turn kind,
+   * exactly as the harness pin is for coding_agent. Answers the process that
+   * ASKED, like the other bridges.
+   */
+  private handleComputerBridgeRequest(worker: PiWorker, id: string, payload: string | undefined): void {
+    const requestProcess = worker.proc;
+    const respond = (value: unknown): void => {
+      if (worker.proc !== requestProcess) return;
+      requestProcess?.send({ type: 'extension_ui_response', id, value: JSON.stringify(value) });
+    };
+    const turn = worker.currentTurn;
+    void (async () => {
+      try {
+        const bridge = this.computerBridge;
+        if (!bridge) return respond({ ok: false, error: 'Computer control is unavailable.' });
+        const pin = turn?.personaComputer;
+        if (!pin?.device?.trim()) {
+          return respond({
+            ok: false,
+            error:
+              'Computer control is reserved for personas pinned to a computer in the persona editor ' +
+              '(Manage → Personas → "Computer this persona controls"). This conversation runs as none, so do ' +
+              'not retry; tell the user which persona should take the task, or that one needs setting up.'
+          });
+        }
+        const req = JSON.parse(payload ?? '{}') as { action?: unknown };
+        const action = req.action;
+        if (!action || typeof action !== 'object' || typeof (action as { kind?: unknown }).kind !== 'string') {
+          return respond({ ok: false, error: 'The computer tool sent no action.' });
+        }
+        const result = await bridge.handleComputerRequest({
+          device: pin.device.trim(),
+          action: action as ComputerRequest['action'],
+          threadId: turn?.threadId ?? ''
         });
         respond(result);
       } catch (e) {
@@ -3128,6 +3210,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         this.handleHarnessBridgeRequest(worker, id, ev.placeholder as string | undefined);
         return;
       }
+      // The `computer` tool round-trip: one screen action on the persona's
+      // pinned Mac; the elicitation is held until the screenshot comes back.
+      if (ev.method === 'input' && ev.title === COMPUTER_BRIDGE_TITLE) {
+        this.handleComputerBridgeRequest(worker, id, ev.placeholder as string | undefined);
+        return;
+      }
       // An MCP server that runs on one of the user's own devices: the call
       // leaves this machine entirely (transport → that device's MCP host) and
       // the elicitation is held open until it comes back or times out.
@@ -3217,6 +3305,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * work until agent_settled (see onPiEvent). */
   private settleTurn(worker: PiWorker, turn: TurnContext, now: number): void {
     turn.endedAt = now;
+    // A computer-control run lives exactly as long as its turn: the Mac drops
+    // its banner and helper now, whatever the turn's outcome was.
+    if (turn.personaComputer) this.computerBridge?.endThread(turn.threadId);
     if (turn.aborted) {
       log('pi.interrupt', 'turn ended aborted', {
         threadId: turn.threadId,

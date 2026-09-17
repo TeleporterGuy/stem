@@ -31,6 +31,7 @@ import type { ExecService } from './exec/service';
 import { detectGitBash } from './exec/git-bash';
 import { startScratchSweeper, stopScratchSweeper } from './exec/scratch';
 import { initExecService } from './startup/exec';
+import { initComputerControl } from './startup/computer';
 import { initHarness } from './startup/harness';
 import type { HarnessService } from './harness/service';
 import { registerHarnessIpc } from './harness/ipc';
@@ -51,6 +52,7 @@ import { onMailChanged, onMailReceived } from './workspace/mail';
 import { closeApns } from './push/apns';
 import { closeDeviceMcpRouter } from './mcp-device/router';
 import { closeExecDeviceRouter, resolveHarnessTarget } from './exec-device/router';
+import { closeComputerDeviceRouter } from './computer-device/router';
 import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
 import { ensureUsageTracking } from './skills/usage';
@@ -868,6 +870,11 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   setPendingApprovalsSource(() => execService?.pendingApprovals() ?? []);
   setPendingHarnessApprovalsSource(() => harness?.service.pendingApprovals() ?? []);
 
+  // Computer control (the `computer` tool): one screen action at a time to the
+  // Mac a persona is pinned to; no cards — the Mac's own switch and the
+  // person's own input are the guards.
+  initComputerControl({ runtime });
+
   // Coding agents (the coding_agent tool): the HarnessService owns the host
   // resolution, session continuity and the blocking harness turn; its approval cards
   // ride the same rails as exec's.
@@ -1157,6 +1164,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       closeExecDeviceRouter();
       // And every held device coding-agent turn.
       closeHarnessDeviceRouter();
+      // And every held screen action.
+      closeComputerDeviceRouter();
       // Cancel live coding-agent turns gracefully and close the acpx adapters;
       // their sessions persist on disk for the next boot.
       void harness?.close();

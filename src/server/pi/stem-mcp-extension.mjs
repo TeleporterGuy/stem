@@ -1821,6 +1821,12 @@ export default async function stemMcpBridge(pi) {
   // can refuse up front instead of round-tripping into main's refusal.
   registerHarnessTools(pi, turnContextGate);
 
+  // Computer control: drive the screen of the Mac a persona is pinned to. The
+  // tool forwards one action; main resolves the Mac from the persona pin, the
+  // Mac's own switch and kill switch guard it, and the screenshot comes back
+  // as the tool result's image block.
+  registerComputerTool(pi, turnContextGate);
+
   // Stem self-authored skills: let the assistant save its own SKILL.md procedures.
   // The write itself happens in main (see SKILL_BRIDGE_TITLE) — it owns the
   // contract validator and the Off/Ask/Auto policy, neither of which a subprocess
@@ -2007,11 +2013,14 @@ export function makeTurnContextGate(path) {
         mail: parsed.mail === true,
         scheduled: parsed.scheduled === true,
         coding: parsed.coding !== false,
+        // The `computer` tool: only a persona with a computer pin. Defaults to
+        // OFF when absent (an older main never wrote it, and never had the tool).
+        computer: parsed.computer === true,
         recall: parsed.recall !== false,
         relay: parsed.relay === true
       };
     } catch {
-      return { mail: false, scheduled: false, coding: true, recall: true, relay: false };
+      return { mail: false, scheduled: false, coding: true, computer: false, recall: true, relay: false };
     }
   };
 }
@@ -2670,6 +2679,202 @@ function registerExecTool(pi) {
       });
       if (!res.ok) return taskErr(res.error || 'The command could not be run.');
       return taskOk(res.text || '(no output)');
+    }
+  });
+}
+
+// ---- Computer control: see the screen of the pinned Mac and drive it ----
+
+const COMPUTER_BRIDGE_TITLE = 'stem-computer-bridge';
+
+const COMPUTER_UNPINNED_REFUSAL =
+  'Computer control is reserved for personas pinned to a computer in the persona editor (Manage → Personas → ' +
+  '"Computer this persona controls"). This conversation runs as none, so do not retry; tell the user which ' +
+  'persona should take the task, or that one needs setting up.';
+
+const COMPUTER_ACTIONS = [
+  'screenshot',
+  'left_click',
+  'right_click',
+  'middle_click',
+  'double_click',
+  'triple_click',
+  'mouse_move',
+  'left_click_drag',
+  'scroll',
+  'type',
+  'key',
+  'hold_key',
+  'wait',
+  'cursor_position',
+  'zoom'
+];
+
+/** Round-trip one screen action through PiRuntime; returns the parsed result (or an error object). */
+async function computerBridge(ctx, payload) {
+  if (!ctx || !ctx.ui || typeof ctx.ui.input !== 'function') {
+    return { ok: false, error: 'Computer control is unavailable in this context.' };
+  }
+  const raw = await ctx.ui.input(COMPUTER_BRIDGE_TITLE, JSON.stringify(payload));
+  if (typeof raw !== 'string') return { ok: false, error: 'No response from Stem.' };
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { ok: false, error: 'Malformed response from Stem.' };
+  }
+}
+
+function coordinateOf(value, name) {
+  if (value === undefined || value === null) return { ok: true, point: null };
+  if (!Array.isArray(value) || value.length !== 2) return { ok: false, error: `${name} must be [x, y].` };
+  const [x, y] = value;
+  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
+    return { ok: false, error: `${name} must be two non-negative numbers, in pixels of the last screenshot.` };
+  }
+  return { ok: true, point: { x: Math.round(x), y: Math.round(y) } };
+}
+
+/**
+ * The tool's Anthropic-shaped call → the helper's action. Null point = "where
+ * the cursor is", which the helper accepts for clicks, moves and scrolls.
+ */
+export function computerActionFrom(params) {
+  const action = String((params && params.action) || '').trim();
+  if (!COMPUTER_ACTIONS.includes(action)) {
+    return { ok: false, error: `Unknown action "${action}". One of: ${COMPUTER_ACTIONS.join(', ')}.` };
+  }
+  const at = coordinateOf(params.coordinate, 'coordinate');
+  if (!at.ok) return at;
+  const p = at.point;
+  const text = typeof params.text === 'string' ? params.text : '';
+  switch (action) {
+    case 'screenshot':
+      return { ok: true, action: { kind: 'screenshot' } };
+    case 'cursor_position':
+      return { ok: true, action: { kind: 'cursor' } };
+    case 'mouse_move':
+      if (!p) return { ok: false, error: 'mouse_move needs a coordinate.' };
+      return { ok: true, action: { kind: 'move', x: p.x, y: p.y } };
+    case 'left_click':
+    case 'right_click':
+    case 'middle_click':
+    case 'double_click':
+    case 'triple_click': {
+      const button = action === 'right_click' ? 'right' : action === 'middle_click' ? 'middle' : 'left';
+      const count = action === 'double_click' ? 2 : action === 'triple_click' ? 3 : 1;
+      return { ok: true, action: { kind: 'click', ...(p ? { x: p.x, y: p.y } : {}), button, count } };
+    }
+    case 'left_click_drag': {
+      const from = coordinateOf(params.start_coordinate, 'start_coordinate');
+      if (!from.ok) return from;
+      if (!from.point || !p) return { ok: false, error: 'left_click_drag needs start_coordinate and coordinate.' };
+      return { ok: true, action: { kind: 'drag', from: from.point, to: p } };
+    }
+    case 'scroll': {
+      const dir = String(params.scroll_direction || 'down');
+      if (!['up', 'down', 'left', 'right'].includes(dir)) {
+        return { ok: false, error: 'scroll_direction must be up, down, left or right.' };
+      }
+      const amount = Number.isFinite(params.scroll_amount) ? Math.max(1, Math.min(50, Math.round(params.scroll_amount))) : 3;
+      return { ok: true, action: { kind: 'scroll', ...(p ? { x: p.x, y: p.y } : {}), dir, amount } };
+    }
+    case 'type':
+      if (!text) return { ok: false, error: 'type needs `text`.' };
+      if (text.length > 4000) return { ok: false, error: 'type takes at most 4000 characters per call.' };
+      return { ok: true, action: { kind: 'type', text } };
+    case 'key':
+      if (!text.trim()) return { ok: false, error: 'key needs `text` naming the key, e.g. "Return" or "cmd+shift+t".' };
+      return { ok: true, action: { kind: 'key', combo: text.trim() } };
+    case 'hold_key': {
+      if (!text.trim()) return { ok: false, error: 'hold_key needs `text` naming the key.' };
+      const seconds = Number.isFinite(params.duration) ? Math.max(0.05, Math.min(5, params.duration)) : 1;
+      return { ok: true, action: { kind: 'hold', combo: text.trim(), ms: Math.round(seconds * 1000) } };
+    }
+    case 'wait': {
+      const seconds = Number.isFinite(params.duration) ? Math.max(0, Math.min(10, params.duration)) : 1;
+      return { ok: true, action: { kind: 'wait', ms: Math.round(seconds * 1000) } };
+    }
+    case 'zoom': {
+      const r = params.region;
+      if (!Array.isArray(r) || r.length !== 4 || !r.every((n) => Number.isFinite(n) && n >= 0)) {
+        return { ok: false, error: 'zoom needs `region` as [x, y, width, height] in screenshot pixels.' };
+      }
+      return { ok: true, action: { kind: 'zoom', x: Math.round(r[0]), y: Math.round(r[1]), w: Math.round(r[2]), h: Math.round(r[3]) } };
+    }
+    default:
+      return { ok: false, error: `Unknown action "${action}".` };
+  }
+}
+
+function registerComputerTool(pi, turnContext) {
+  pi.registerTool({
+    name: 'computer',
+    label: 'Computer',
+    description:
+      "See and drive the screen of the Mac this persona is pinned to (Manage → Personas → \"Computer this persona " +
+      'controls"). One call is one action; every action answers with a fresh screenshot of the main display, ' +
+      'so look before you act and check after. Coordinates are PIXELS OF THE LAST SCREENSHOT you were shown ' +
+      '(top-left origin) — never guess them from memory of an earlier frame. Use `zoom` with a `region` to read ' +
+      'small text (its picture is magnified: do not click from it, take a screenshot first). Prefer `run_command` ' +
+      'with `device` set to this same computer for anything a shell does better (opening an app with `open -a`, ' +
+      'files, git, scripts); click only for what needs the GUI. The user sees a banner while you work, and any ' +
+      'input of their own ends the run — when a result says they took over, stop for this turn and report. ' +
+      'Never type passwords, one-time codes or payment details, and never dismiss a security prompt; tell the ' +
+      'user and wait. Keys use xdotool names: Return, Tab, Escape, space, BackSpace, Delete, Up/Down/Left/Right, ' +
+      'Home, End, Page_Up, Page_Down, F1–F12, and chords like "cmd+shift+t" or "ctrl+c".',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: COMPUTER_ACTIONS,
+          description:
+            'screenshot | left_click | right_click | middle_click | double_click | triple_click | mouse_move | ' +
+            'left_click_drag (start_coordinate → coordinate) | scroll | type (text) | key (text = key name) | ' +
+            'hold_key (text + duration) | wait (duration) | cursor_position | zoom (region).'
+        },
+        coordinate: {
+          type: 'array',
+          items: { type: 'number' },
+          description: '[x, y] in pixels of the last screenshot. Clicks and scrolls without it act at the cursor.'
+        },
+        start_coordinate: {
+          type: 'array',
+          items: { type: 'number' },
+          description: '[x, y] where a left_click_drag begins.'
+        },
+        text: { type: 'string', description: 'Text to type, or the key / chord for key and hold_key.' },
+        scroll_direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
+        scroll_amount: { type: 'number', description: 'Lines to scroll (default 3).' },
+        duration: { type: 'number', description: 'Seconds: wait (max 10) or hold_key (max 5).' },
+        region: {
+          type: 'array',
+          items: { type: 'number' },
+          description: '[x, y, width, height] in screenshot pixels, for zoom.'
+        }
+      },
+      required: ['action']
+    },
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      // Personas with a computer pin only, in every kind of turn. The gate
+      // saves the round-trip; main's computer bridge enforces the same rule.
+      if (turnContext && turnContext().computer !== true) return taskErr(COMPUTER_UNPINNED_REFUSAL);
+      const parsed = computerActionFrom(params || {});
+      if (!parsed.ok) return taskErr(parsed.error);
+      const res = await computerBridge(ctx, { action: parsed.action });
+      if (!res.ok) return taskErr(res.error || 'The action could not be performed.');
+      const shot = res.screenshot;
+      const cursor = res.cursor || {};
+      const line = shot.zoomed
+        ? `Zoomed view, ${shot.width}×${shot.height} px — magnified, not clickable; take a screenshot before acting.`
+        : `Screenshot ${shot.width}×${shot.height} px. Cursor at (${cursor.x ?? '?'}, ${cursor.y ?? '?'}).`;
+      return {
+        content: [
+          { type: 'text', text: line },
+          { type: 'image', data: shot.jpegBase64, mimeType: 'image/jpeg' }
+        ],
+        details: {}
+      };
     }
   });
 }

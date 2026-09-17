@@ -1,6 +1,8 @@
 import type { HistoricalWorkRun } from '../mail/work-history';
 import type { EventEmitter } from 'node:events';
 import type {
+  ComputerAction,
+  DeviceComputerResult,
   ChatMessage,
   ChatSummary,
   McpAdminProposal,
@@ -103,6 +105,29 @@ export interface HarnessRequest {
    * that can mail the user about it — where a plain scheduled run refuses.
    */
   isMail?: boolean;
+}
+
+/** What the assistant's `computer` tool sends over its round-trip, after PiRuntime fills in the turn. */
+export interface ComputerRequest {
+  /** The pinned Mac, injected from the persona's computer pin — never from the payload. */
+  device: string;
+  action: ComputerAction;
+  /** Injected from the live turn. */
+  threadId: string;
+}
+
+/**
+ * The seam the backend uses to reach the computer-device router (which lives
+ * in main). PiRuntime intercepts the `computer` tool's round-trip, resolves
+ * the device from the persona pin, and routes here. One call is one screen
+ * action; the answer carries the screenshot the tool hands the model.
+ */
+export interface ComputerBridge {
+  handleComputerRequest(req: ComputerRequest): Promise<DeviceComputerResult>;
+  /** The turn is over, however it ended: fail what is in flight, drop the Mac's banner. */
+  endThread(threadId: string, reason?: string): void;
+  /** Everything (the backend restarted). */
+  settleAll(reason?: string): void;
 }
 
 /** What the HarnessService answers a coding_agent round-trip with. */
@@ -352,4 +377,8 @@ export interface ChatBackend extends EventEmitter {
   // Coding agents: wire the bridge the assistant's coding_agent tool routes
   // through. Pass null to detach. No-op on a backend without harness support.
   setHarnessBridge(bridge: HarnessBridge | null): void;
+
+  // Computer control: wire the bridge the assistant's `computer` tool routes
+  // through. Pass null to detach. No-op on a backend without it.
+  setComputerBridge(bridge: ComputerBridge | null): void;
 }

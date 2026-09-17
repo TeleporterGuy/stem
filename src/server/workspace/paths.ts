@@ -109,6 +109,11 @@ export function execDeviceHostsPath(): string {
   return process.env.STEM_EXEC_DEVICE_HOSTS ?? join(piHome(), 'exec-device-hosts.json');
 }
 
+/** Which paired Macs let Stem drive their screen (computer-device/router.ts); same lifecycle as the exec hosts. */
+export function computerDeviceHostsPath(): string {
+  return process.env.STEM_COMPUTER_DEVICE_HOSTS ?? join(piHome(), 'computer-device-hosts.json');
+}
+
 /**
  * Which paired computers said they run coding agents (server/harness/
  * device-host.ts). Survives restarts for the reason its exec sibling does.

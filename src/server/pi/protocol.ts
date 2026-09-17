@@ -82,6 +82,14 @@ export const DEVICE_MCP_BRIDGE_TITLE = 'stem-device-mcp-bridge';
 export const HARNESS_BRIDGE_TITLE = 'stem-harness-bridge';
 
 /**
+ * `computer` tool round-trip (`input`): one screen action rides in
+ * `placeholder`; PiRuntime resolves the Mac from the persona's computer pin
+ * (never from the payload), sends it through the computer-device router and
+ * answers with a JSON result carrying the screenshot.
+ */
+export const COMPUTER_BRIDGE_TITLE = 'stem-computer-bridge';
+
+/**
  * manage_skill tool round-trip (`input`): the write payload rides in
  * `placeholder`; PiRuntime routes it to the main-process SkillBridge, which owns
  * the contract validator, the Off/Ask/Auto policy, and the approval card. The

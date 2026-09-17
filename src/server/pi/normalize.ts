@@ -1,6 +1,6 @@
 import { workDetail } from '../../shared/work-detail';
 import type { PiEvent } from './rpc';
-import type { ActivityItem, PersonaHarnessPin, SourceRef, TurnUsage, TurnOrigin } from '../../shared/types';
+import type { ActivityItem, PersonaComputerPin, PersonaHarnessPin, SourceRef, TurnUsage, TurnOrigin } from '../../shared/types';
 import { stripCiteMarkers } from '../../shared/citations';
 import { WEB_ACCESS_TOOL_NAMES } from '../../shared/activity';
 import { SECRET_ENVELOPE_KEY, toolArgsOf } from './protocol';
@@ -154,6 +154,8 @@ export interface TurnContext {
    * it is the clamp. The model rides along whenever the pinned agent runs.
    */
   personaHarness?: PersonaHarnessPin;
+  /** The turn's persona computer-control pin: the Mac the `computer` tool drives. Present = the tool exists. */
+  personaComputer?: PersonaComputerPin;
   /** The raw user message that started this turn — intent context for the exec safety judge. */
   userText?: string;
   phase: 'pending' | 'thinking' | 'tool' | 'answer';

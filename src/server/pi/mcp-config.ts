@@ -344,7 +344,7 @@ export function piTurnContextPath(gateDir?: string): string {
 }
 
 export async function writeTurnContextGate(
-  ctx: { mail: boolean; scheduled: boolean; coding: boolean; recall: boolean; relay: boolean },
+  ctx: { mail: boolean; scheduled: boolean; coding: boolean; computer?: boolean; recall: boolean; relay: boolean },
   gateDir?: string
 ): Promise<void> {
   await mkdir(gateDir ?? piHome(), { recursive: true });
@@ -363,7 +363,16 @@ export async function writeTurnContextGate(
     // channels is refused, so the persona cannot re-verify or redo the agent's
     // work. Defaults to false when absent (an older main), unlike `coding`.
     JSON.stringify(
-      { mail: ctx.mail, scheduled: ctx.scheduled, coding: ctx.coding, recall: ctx.recall, relay: ctx.relay },
+      {
+        mail: ctx.mail,
+        scheduled: ctx.scheduled,
+        coding: ctx.coding,
+        // `computer`: whether the `computer` tool may run — only a turn run as
+        // a persona with a computer pin. Defaults to false when absent.
+        computer: ctx.computer === true,
+        recall: ctx.recall,
+        relay: ctx.relay
+      },
       null,
       2
     ),

@@ -560,7 +560,14 @@ describe('recall search tools in a recall-off turn', () => {
     cleanup.push(root);
     const gate = makeTurnContextGate(join(root, 'turn-context.json'));
     // No file yet: a live chat with recall.
-    expect(gate()).toEqual({ mail: false, scheduled: false, coding: true, recall: true, relay: false });
+    expect(gate()).toEqual({
+      mail: false,
+      scheduled: false,
+      coding: true,
+      computer: false,
+      recall: true,
+      relay: false
+    });
     // What main writes for a Critic delivery.
     await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: false, relay: false }, root);
     expect(gate().recall).toBe(false);
