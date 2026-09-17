@@ -45,6 +45,14 @@ That command runs wherever your Stem runs, and starts only if the command exists
 that machine — see [Where a server runs](#where-a-server-runs). Check its publisher,
 source, requested folders, and exact package version first.
 
+## Change a server
+
+Select the server's row, then **Edit…**. The same form opens with what is stored:
+the command or URL, arguments, environment variables or headers, and the OAuth
+client. Stored secrets show as dots; leave them to keep them, or type a new
+value. The name, where the server runs, and whether it is on stay as they are —
+use **Move to** and the switch for those.
+
 ## Where a server runs
 
 **Command** and **URL** say how Stem talks to a server, not where it runs. A server

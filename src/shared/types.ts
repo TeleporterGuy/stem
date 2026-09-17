@@ -1096,6 +1096,31 @@ export interface McpServerInput {
   location?: { deviceId: string };
 }
 
+/**
+ * What the Edit form is handed: the stored definition, with every value that
+ * looks like a credential replaced by MCP_SECRET_MASK. Sending it back
+ * unchanged keeps the stored value, which is what lets a person change one env
+ * var or the URL without retyping the token beside it. The mask is a value a
+ * person would not type, and a value that happens to equal it is kept rather
+ * than saved — so the one thing this can never do is store the mask itself.
+ */
+export interface McpServerDetails {
+  name: string;
+  transport: McpTransport;
+  command: string;
+  args: string[];
+  url: string;
+  env: Record<string, string>;
+  headers: Record<string, string>;
+  oauthClientId: string;
+  /** MCP_SECRET_MASK when one is stored, '' when none is. */
+  oauthClientSecret: string;
+  oauthScope: string;
+}
+
+/** Stands in for a stored secret in McpServerDetails; see there. */
+export const MCP_SECRET_MASK = '••••••••';
+
 export interface McpLoginResult {
   ok: boolean;
   error?: string;
@@ -3974,6 +3999,15 @@ export interface StemApi {
   /** Live per-server connection status (keyed by name) from the running app-server. */
   getMcpStatus(): Promise<Record<string, McpServerStatus>>;
   addMcpServer(input: McpServerInput): Promise<McpServerSummary[]>;
+  /** The stored definition of one server, secrets masked — what Edit opens with. */
+  getMcpServer(name: string): Promise<McpServerDetails>;
+  /**
+   * Replace how `input.name` is reached — command, args, env, URL, headers,
+   * OAuth client — keeping its name, where it runs, whether it is enabled, and
+   * any value sent back as MCP_SECRET_MASK. The OAuth token survives when the
+   * URL and credentials did not change.
+   */
+  updateMcpServer(input: McpServerInput): Promise<McpServerSummary[]>;
   removeMcpServer(name: string): Promise<McpServerSummary[]>;
   /** Enable/disable a server without removing it (preserves config + OAuth token). */
   setMcpServerEnabled(name: string, enabled: boolean): Promise<McpServerSummary[]>;

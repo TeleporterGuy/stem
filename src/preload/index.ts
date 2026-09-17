@@ -177,6 +177,8 @@ const api: StemApi = {
   listMcpServers: () => ipcRenderer.invoke('mcp:list'),
   getMcpStatus: () => ipcRenderer.invoke('mcp:status'),
   addMcpServer: (input: McpServerInput) => ipcRenderer.invoke('mcp:add', input),
+  getMcpServer: (name: string) => ipcRenderer.invoke('mcp:get', name),
+  updateMcpServer: (input: McpServerInput) => ipcRenderer.invoke('mcp:update', input),
   removeMcpServer: (name: string) => ipcRenderer.invoke('mcp:remove', name),
   setMcpServerEnabled: (name: string, enabled: boolean) =>
     ipcRenderer.invoke('mcp:setEnabled', name, enabled),

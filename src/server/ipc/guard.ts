@@ -105,6 +105,8 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'tasks:updateModel': [a.string, a.object],
   'tasks:updatePersona': [a.string, a.object],
   'mcp:add': [a.object],
+  'mcp:get': [a.string],
+  'mcp:update': [a.object],
   'mcp:remove': [a.string],
   'mcp:setEnabled': [a.string, a.boolean],
   // The device id, or null for "the machine hosting stem-server". Whether that

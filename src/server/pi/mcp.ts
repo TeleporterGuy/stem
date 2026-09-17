@@ -1,4 +1,10 @@
-import type { McpServerInput, McpServerLocation, McpServerSummary } from '../../shared/types';
+import {
+  MCP_SECRET_MASK,
+  type McpServerDetails,
+  type McpServerInput,
+  type McpServerLocation,
+  type McpServerSummary
+} from '../../shared/types';
 import { deviceKind, readDevices, type DeviceRecord } from '../transport/auth';
 import {
   readMcpConfig,
@@ -195,14 +201,12 @@ async function resolveLocation(
   return { deviceId: device.id, label: device.label };
 }
 
-export async function addMcpServer(input: McpServerInput): Promise<McpServerSummary[]> {
-  const name = input.name.trim();
-  if (!name) throw new Error('MCP server requires a name.');
-  assertValidName(name);
-  if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
-  const location = await resolveLocation(input.location);
-
-  let next: PiMcpServer;
+/**
+ * The stored shape of what a form or a tool call said, minus everything that is
+ * not "how to reach it": where it runs, whether it is on, and trust are decided
+ * by the caller. Shared by add and update so the two cannot validate differently.
+ */
+function specFromInput(input: McpServerInput): PiMcpServer {
   if (input.transport === 'http') {
     const url = input.url?.trim();
     if (!url) throw new Error('A remote MCP server requires a URL.');
@@ -215,7 +219,7 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
     const oauthScope = input.oauthScope?.trim() || undefined;
     // A user explicitly adding a server implies trust → its tools run without a
     // per-call confirmation (standard MCP-host behavior).
-    next = {
+    return {
       url,
       ...(headers ? { headers } : {}),
       ...(oauthClientId ? { oauthClientId } : {}),
@@ -223,12 +227,21 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
       ...(oauthScope ? { oauthScope } : {}),
       trusted: true
     };
-  } else {
-    const command = input.command?.trim();
-    if (!command) throw new Error('A local MCP server requires a command.');
-    const env = input.env && Object.keys(input.env).length > 0 ? input.env : undefined;
-    next = { command, args: input.args ?? [], ...(env ? { env } : {}), trusted: true };
   }
+  const command = input.command?.trim();
+  if (!command) throw new Error('A local MCP server requires a command.');
+  const env = input.env && Object.keys(input.env).length > 0 ? input.env : undefined;
+  return { command, args: input.args ?? [], ...(env ? { env } : {}), trusted: true };
+}
+
+export async function addMcpServer(input: McpServerInput): Promise<McpServerSummary[]> {
+  const name = input.name.trim();
+  if (!name) throw new Error('MCP server requires a name.');
+  assertValidName(name);
+  if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
+  const location = await resolveLocation(input.location);
+
+  let next = specFromInput(input);
   if (location) next = { ...next, location };
 
   return writeServers(async (config) => {
@@ -238,6 +251,101 @@ export async function addMcpServer(input: McpServerInput): Promise<McpServerSumm
     // config write then fails/crashes, the old server merely needs to sign in
     // again; the secret can never become attached to the new URL.
     if (identityChanged) await deleteOAuthToken(name);
+    config.servers[name] = next;
+  });
+}
+
+/**
+ * Whether a stored value under this name is one to keep off the wire. Names,
+ * not values, because a value cannot say what it is — and a name that says
+ * "token" is the one convention every MCP server's README follows.
+ */
+function looksSecret(key: string): boolean {
+  return /token|secret|passw|credential|api[_-]?key|private|authorization|cookie|bearer/i.test(key);
+}
+
+function masked(values: Record<string, string> | undefined): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(values ?? {}).map(([k, v]) => [k, looksSecret(k) ? MCP_SECRET_MASK : v])
+  );
+}
+
+/**
+ * The stored definition, for the Edit form: everything a person typed, with
+ * credential-shaped values masked so the form can show the rest and keep the
+ * secrets (see McpServerDetails).
+ */
+export async function getMcpServer(name: string): Promise<McpServerDetails> {
+  if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
+  const def = (await readMcpConfig()).servers[name];
+  if (!def) throw new Error(`No MCP server named "${name}".`);
+  return {
+    name,
+    transport: def.url ? 'http' : 'stdio',
+    command: def.command ?? '',
+    args: Array.isArray(def.args) ? def.args : [],
+    url: def.url ?? '',
+    env: masked(def.env),
+    headers: masked(def.headers),
+    oauthClientId: def.oauthClientId ?? '',
+    oauthClientSecret: def.oauthClientSecret ? MCP_SECRET_MASK : '',
+    oauthScope: def.oauthScope ?? ''
+  };
+}
+
+/** `incoming` with every masked value replaced by what is stored under that key. */
+function unmasked(
+  incoming: Record<string, string> | undefined,
+  stored: Record<string, string> | undefined
+): Record<string, string> | undefined {
+  if (!incoming) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(incoming)) {
+    if (v !== MCP_SECRET_MASK) out[k] = v;
+    else if (stored?.[k] !== undefined) out[k] = stored[k];
+    // A mask with nothing stored under it is a key a person typed the mask
+    // into; dropping it beats storing eight dots as a credential.
+  }
+  return out;
+}
+
+/**
+ * Change how an existing server is reached without touching anything else
+ * about it. The panel's Edit, and the one write that can alter a single env
+ * var: an add replaces the whole entry and the form cannot show a secret back,
+ * so before this the only way to change the URL beside a token was to retype
+ * the token, and the only way to keep a server pinned to your Mac through that
+ * was to remember to pick it again.
+ *
+ * Kept: the name, `location`, `disabled`, and every value the form sent back
+ * as MCP_SECRET_MASK. The OAuth token is kept when the URL, headers and OAuth
+ * client are unchanged, by the same identity rule an add uses — a new URL is
+ * a new server as far as a credential is concerned.
+ */
+export async function updateMcpServer(input: McpServerInput): Promise<McpServerSummary[]> {
+  const name = input.name.trim();
+  if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
+  return writeServers(async (config) => {
+    const previous = config.servers[name];
+    if (!previous) throw new Error(`No MCP server named "${name}".`);
+    const storedTransport = previous.url ? 'http' : 'stdio';
+    if (input.transport !== storedTransport) {
+      throw new Error('A server keeps its transport when edited: remove it and add it again to change that.');
+    }
+    const spec = specFromInput({
+      ...input,
+      env: unmasked(input.env, previous.env),
+      headers: unmasked(input.headers, previous.headers),
+      oauthClientSecret:
+        input.oauthClientSecret === MCP_SECRET_MASK ? previous.oauthClientSecret : input.oauthClientSecret
+    });
+    const next: PiMcpServer = {
+      ...spec,
+      ...(previous.location ? { location: previous.location } : {}),
+      ...(previous.disabled ? { disabled: true } : {}),
+      ...(previous.trusted === undefined ? {} : { trusted: previous.trusted })
+    };
+    if (mcpServerAuthIdentity(previous) !== mcpServerAuthIdentity(next)) await deleteOAuthToken(name);
     config.servers[name] = next;
   });
 }

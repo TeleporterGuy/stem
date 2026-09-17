@@ -11,6 +11,8 @@ export function registerMcpIpc(deps: IpcDeps): void {
   registerServer('mcp:list', () => piMcp.listMcpServers());
   registerServer('mcp:status', () => deps.runtime().getMcpStatus());
   registerServer('mcp:add', (_e, input: McpServerInput) => piMcp.addMcpServer(input));
+  registerServer('mcp:get', (_e, name: string) => piMcp.getMcpServer(name));
+  registerServer('mcp:update', (_e, input: McpServerInput) => piMcp.updateMcpServer(input));
   registerServer('mcp:remove', (_e, name: string) => piMcp.removeMcpServer(name));
   registerServer('mcp:setEnabled', (_e, name: string, enabled: boolean) =>
     piMcp.setMcpServerEnabled(name, enabled)

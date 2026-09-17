@@ -8,6 +8,7 @@ import type {
   McpHostServerStatus,
   McpHostSpecPreview,
   McpLoginUrlParams,
+  McpServerInput,
   McpServerStatus,
   McpServerSummary,
   McpTransport,
@@ -66,6 +67,11 @@ function McpTab() {
   const [oauthClientId, setOauthClientId] = useState('');
   const [oauthClientSecret, setOauthClientSecret] = useState('');
   const [oauthScope, setOauthScope] = useState('');
+  // The server the form is editing, or null when it is adding. Edit reuses the
+  // Add form with the name locked and the transport fixed — a server keeps both
+  // — and with no "Runs on" picker, because Move already exists and a picker
+  // defaulting to "Server" is how an edit used to silently unpin a server.
+  const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [loginName, setLoginName] = useState<string | null>(null);
@@ -219,6 +225,7 @@ function McpTab() {
   // Collapse the Add Server form and reset every field + disclosure to a clean slate.
   function closeForm() {
     setAdding(false);
+    setEditing(null);
     setShowAdvanced(false);
     setName('');
     setCommand('');
@@ -263,7 +270,7 @@ function McpTab() {
     try {
       const headers = transport === 'http' ? parseHeaders(envText) : {};
       const env = transport === 'http' ? {} : parseEnv(envText);
-      const list = await window.stem.addMcpServer({
+      const input: McpServerInput = {
         name: name.trim(),
         transport,
         command: command.trim(),
@@ -277,8 +284,10 @@ function McpTab() {
         // Sent only when a device was picked: an absent location is what "runs
         // where the server runs" has always looked like on disk.
         ...(locationDeviceId ? { location: { deviceId: locationDeviceId } } : {})
-      });
-      setServers(list);
+      };
+      // An update keeps the stored location and enabled state itself, and turns
+      // every masked value back into the stored one — the form never held them.
+      setServers(editing ? await window.stem.updateMcpServer(input) : await window.stem.addMcpServer(input));
       closeForm();
       await applyMcpChange();
     } catch (e) {
@@ -300,6 +309,38 @@ function McpTab() {
 
   // Toggle a server on/off without removing it. Neither the bridge nor a hosting
   // machine re-reads mcp.json on its own, so both are told — see applyMcpChange.
+  /**
+   * Open the form on a stored server. Secrets arrive as MCP_SECRET_MASK and go
+   * back the same way unless retyped, so changing the URL beside a token no
+   * longer means finding the token again.
+   */
+  async function startEdit(serverName: string) {
+    setError(null);
+    try {
+      const d = await window.stem.getMcpServer(serverName);
+      setEditing(serverName);
+      setName(d.name);
+      setTransport(d.transport);
+      setCommand(d.command);
+      setArgs(d.args.join(' '));
+      setUrl(d.url);
+      const lines = d.transport === 'http' ? d.headers : d.env;
+      const text = Object.entries(lines)
+        .map(([k, v]) => (d.transport === 'http' ? `${k}: ${v}` : `${k}=${v}`))
+        .join('\n');
+      setEnvText(text);
+      setOauthClientId(d.oauthClientId);
+      setOauthClientSecret(d.oauthClientSecret);
+      setOauthScope(d.oauthScope);
+      setLocationDeviceId('');
+      // Everything a person came to edit is usually behind Advanced.
+      setShowAdvanced(!!text || !!d.oauthClientId);
+      setAdding(true);
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    }
+  }
+
   async function toggleEnabled(serverName: string, enabled: boolean) {
     setError(null);
     setServers(await window.stem.setMcpServerEnabled(serverName, enabled));
@@ -763,7 +804,14 @@ function McpTab() {
       }
     }
 
-    if (bits.length === 0) return null;
+    bits.push(
+      <div className="memory-view-actions" key="edit">
+        <button className="link-btn" onClick={() => startEdit(s.name)} disabled={!!busy || !!loginName}>
+          Edit…
+        </button>
+      </div>
+    );
+
     return <div className="row-detail selected">{bits}</div>;
   }
 
@@ -891,21 +939,23 @@ function McpTab() {
 
       {adding && (
         <>
-          <div className="grp-head">Add Server</div>
+          <div className="grp-head">{editing ? `Edit ${editing}` : 'Add Server'}</div>
           <div className="formgroup">
             {/* HOW to reach the server, not where it runs: a command to spawn or
                 a URL to open. The old Remote|Local labels named the wrong axis —
                 "Local" meant a command, which on a hosted Stem is a process in a
                 datacentre. Where it runs is the separate control below. */}
-            <div className="seg-ctl">
-              <button className={transport === 'stdio' ? 'active' : ''} onClick={() => setTransport('stdio')}>
-                Command
-              </button>
-              <button className={transport === 'http' ? 'active' : ''} onClick={() => setTransport('http')}>
-                URL
-              </button>
-            </div>
-            {remote && (
+            {!editing && (
+              <div className="seg-ctl">
+                <button className={transport === 'stdio' ? 'active' : ''} onClick={() => setTransport('stdio')}>
+                  Command
+                </button>
+                <button className={transport === 'http' ? 'active' : ''} onClick={() => setTransport('http')}>
+                  URL
+                </button>
+              </div>
+            )}
+            {remote && !editing && (
               <div className="set-block">
                 <span className="set-sub">Runs on</span>
                 <select
@@ -928,7 +978,20 @@ function McpTab() {
                 </p>
               </div>
             )}
-            <input ref={nameRef} className="ifield" placeholder="Name (e.g. fastmail)" value={name} onChange={(e) => setName(e.target.value)} />
+            <input
+              ref={nameRef}
+              className="ifield"
+              placeholder="Name (e.g. fastmail)"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={!!editing}
+            />
+            {editing && (
+              <p className="muted">
+                Dotted values are stored secrets. Leave them as they are to keep them, or type a new one.
+                Where the server runs and whether it is on do not change here.
+              </p>
+            )}
             {transport === 'http' ? (
               <>
                 <input className="ifield" placeholder="https://api.fastmail.com/mcp" value={url} onChange={(e) => setUrl(e.target.value)} />
@@ -1003,7 +1066,9 @@ function McpTab() {
             )}
             <div className="push-row">
               <button className="push" onClick={closeForm} disabled={!!busy}>Cancel</button>
-              <button className="push default" onClick={add} disabled={!canAdd}>Add Server</button>
+              <button className="push default" onClick={add} disabled={!canAdd}>
+                {editing ? 'Save' : 'Add Server'}
+              </button>
             </div>
             {transport === 'http' && (
               <p className="muted">
