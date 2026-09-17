@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { Plus, Minus, ChevronRight, Info } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ChevronRight, LogIn, Plus, PlugZap, ShieldOff, Trash2 } from 'lucide-react';
 import type {
   BackendEventEnvelope,
   DeviceInfo,
@@ -14,6 +14,8 @@ import type {
   McpTransport,
   ModelSummary
 } from '../../../shared/types';
+import { MCP_SECRET_MASK } from '../../../shared/types';
+import { InfoTip } from '../../ui/InfoTip';
 import { SkillsTab } from './SkillsTab';
 import { useRememberedTab } from '../../hooks/useRememberedTab';
 import { useRemoteServer } from '../../hooks/useRemoteServer';
@@ -54,24 +56,117 @@ export function McpSkillsTab({ models }: { models: ModelSummary[] }) {
   );
 }
 
+// ---- MCP servers tab: the rows the assistant's outside tools come from ----
+//
+// The same shape as the Personas tab: a row is a name and its address, and the
+// whole of what you can change about it is one editor the row expands into,
+// edited as a local draft and written on Save. Where a server runs is a field
+// in that editor like any other — the old panel offered it as a row of "Move
+// to …" text links under the selected row, beside "Edit…", "Test connection"
+// and three paragraphs behind ⓘ buttons, which read as a different application
+// from the tab one segment to the right. A new server is a draft row, expanded,
+// that exists nowhere but this screen until Save.
+
+/** Everything the editor can change about one server, as the form holds it. */
+interface Draft {
+  name: string;
+  transport: McpTransport;
+  command: string;
+  args: string;
+  url: string;
+  /** Environment (`KEY=value`) for a command, headers (`Key: value`) for a URL — one per line. */
+  text: string;
+  oauthClientId: string;
+  oauthClientSecret: string;
+  oauthScope: string;
+  /** Device id it is pinned to; '' = the machine hosting the Stem server. */
+  location: string;
+}
+
+interface Editing {
+  /** What the server looked like when the editor opened — Save is offered against this. */
+  base: Draft;
+  draft: Draft;
+  /** A row that exists only on this screen until Save. */
+  isNew: boolean;
+}
+
+function blankDraft(transport: McpTransport): Draft {
+  return {
+    name: '',
+    transport,
+    command: '',
+    args: '',
+    url: '',
+    text: '',
+    oauthClientId: '',
+    oauthClientSecret: '',
+    oauthScope: '',
+    location: ''
+  };
+}
+
+function sameDraft(a: Draft, b: Draft): boolean {
+  return (Object.keys(a) as (keyof Draft)[]).every((k) => a[k] === b[k]);
+}
+
+// Parse the env textarea ("KEY=value" per line) into a map; blank/`#` lines skipped.
+function parseEnv(text: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+  }
+  return env;
+}
+
+// Parse the headers textarea ("Key: value" or "Key=value" per line).
+function parseHeaders(text: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const i = trimmed.search(/[:=]/);
+    if (i <= 0) continue;
+    headers[trimmed.slice(0, i).trim()] = trimmed.slice(i + 1).trim();
+  }
+  return headers;
+}
+
+/** The IPC input a draft saves as. Location rides along only for an add; an update moves separately. */
+function inputOf(d: Draft, isNew: boolean): McpServerInput {
+  const headers = d.transport === 'http' ? parseHeaders(d.text) : {};
+  const env = d.transport === 'http' ? {} : parseEnv(d.text);
+  return {
+    name: d.name.trim(),
+    transport: d.transport,
+    command: d.command.trim(),
+    args: d.args.trim() ? d.args.trim().split(/\s+/) : [],
+    url: d.url.trim(),
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...(d.transport === 'http' && d.oauthClientId.trim() ? { oauthClientId: d.oauthClientId.trim() } : {}),
+    ...(d.transport === 'http' && d.oauthClientSecret.trim() ? { oauthClientSecret: d.oauthClientSecret.trim() } : {}),
+    ...(d.transport === 'http' && d.oauthScope.trim() ? { oauthScope: d.oauthScope.trim() } : {}),
+    // Sent only when a device was picked: an absent location is what "runs
+    // where the server runs" has always looked like on disk.
+    ...(isNew && d.location ? { location: { deviceId: d.location } } : {})
+  };
+}
+
 function McpTab() {
   const [servers, setServers] = useState<McpServerSummary[]>([]);
-  const [transport, setTransport] = useState<McpTransport>('http');
-  const [name, setName] = useState('');
-  const [command, setCommand] = useState('');
-  const [args, setArgs] = useState('');
-  const [url, setUrl] = useState('');
-  const [envText, setEnvText] = useState('');
-  // Optional static OAuth client for remote servers without dynamic registration
-  // (e.g. Slack): you pre-register an app with the provider and paste its creds.
-  const [oauthClientId, setOauthClientId] = useState('');
-  const [oauthClientSecret, setOauthClientSecret] = useState('');
-  const [oauthScope, setOauthScope] = useState('');
-  // The server the form is editing, or null when it is adding. Edit reuses the
-  // Add form with the name locked and the transport fixed — a server keeps both
-  // — and with no "Runs on" picker, because Move already exists and a picker
-  // defaulting to "Server" is how an edit used to silently unpin a server.
-  const [editing, setEditing] = useState<string | null>(null);
+  // Open editors, keyed by server name — or by a fresh id for a server that is
+  // not saved yet. A draft survives a collapse (the row says "unsaved").
+  const [editing, setEditing] = useState<Map<string, Editing>>(new Map());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  // Which URL editors show the OAuth client fields — three inputs almost nobody
+  // fills, kept behind a disclosure so an edit of a URL is a URL.
+  const [oauthOpen, setOauthOpen] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [loginName, setLoginName] = useState<string | null>(null);
@@ -81,17 +176,6 @@ function McpTab() {
   // only says whether OAuth creds exist on disk, which stays 'o_auth' even when
   // the token is rejected at connect time and the server exposes no tools.
   const [statuses, setStatuses] = useState<Record<string, McpServerStatus>>({});
-  const [selected, setSelected] = useState<string | null>(null);
-  // The Add Server form is collapsed by default — the + button reveals it — so the
-  // panel stays calm when you're just reviewing servers. `showAdvanced` hides headers
-  // and the static OAuth client fields behind a disclosure (most adds are Name + URL).
-  const [adding, setAdding] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const nameRef = useRef<HTMLInputElement>(null);
-  // Where a new server should run. '' = on the machine hosting the server, which
-  // is where every server has always run and stays the default. Only meaningful
-  // when this window is talking to a server somewhere else — see `remote` below.
-  const [locationDeviceId, setLocationDeviceId] = useState('');
   const [hosts, setHosts] = useState<DeviceInfo[]>([]);
   const [thisDeviceId, setThisDeviceId] = useState<string | null>(null);
   const remote = useRemoteServer();
@@ -101,10 +185,6 @@ function McpTab() {
   // whose other clients are phones, which host nothing and are never asked to.
   const [hostState, setHostState] = useState<McpHostLocalState>({ approved: {}, pending: [], status: {} });
   const [testing, setTesting] = useState<string | null>(null);
-  // Which explanations are open. A panel section should be the thing you came to
-  // do — here, two or three buttons — and the reasoning behind it is worth one
-  // click, not three paragraphs above the buttons every time you pass through.
-  const [explaining, setExplaining] = useState<Record<string, boolean>>({});
 
   async function refresh() {
     const [list, status] = await Promise.all([
@@ -135,8 +215,8 @@ function McpTab() {
   }, []);
 
   // Servers pinned to a device that is no longer paired. They cannot run
-  // anywhere, and they are the one case below that a window with a LOCAL server
-  // still has to be able to fix — an orphan outlives the move that made it.
+  // anywhere, and they are the one case a window with a LOCAL server still has
+  // to be able to fix — an orphan outlives the move that made it.
   const orphans = servers.filter((s) => s.location?.orphaned);
   // Any pin at all, sound or broken. A local install can hold one — an import,
   // or a pin that outlived the move back — and its owner must be able to undo it
@@ -177,11 +257,6 @@ function McpTab() {
     });
   }, []);
 
-  // Focus the Name field once the form has mounted (the + button opens it).
-  useEffect(() => {
-    if (adding) nameRef.current?.focus();
-  }, [adding]);
-
   // Apply config/token changes to the live session without an app restart.
   async function reconnect() {
     setBusy('Reconnecting…');
@@ -219,174 +294,141 @@ function McpTab() {
     await reconnect();
   }
 
-  const canAdd =
-    !!name.trim() && (transport === 'http' ? !!url.trim() : !!command.trim()) && !busy;
+  const setRowExpanded = (key: string, on: boolean) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
 
-  // Collapse the Add Server form and reset every field + disclosure to a clean slate.
-  function closeForm() {
-    setAdding(false);
-    setEditing(null);
-    setShowAdvanced(false);
-    setName('');
-    setCommand('');
-    setArgs('');
-    setUrl('');
-    setEnvText('');
-    setOauthClientId('');
-    setOauthClientSecret('');
-    setOauthScope('');
-    setLocationDeviceId('');
-    setError(null);
-  }
+  const setDraft = (key: string, draft: Draft) =>
+    setEditing((cur) => {
+      const entry = cur.get(key);
+      return entry ? new Map(cur).set(key, { ...entry, draft }) : cur;
+    });
 
-  // Parse the env textarea ("KEY=value" per line) into a map; blank/`#` lines skipped.
-  function parseEnv(text: string): Record<string, string> {
-    const env: Record<string, string> = {};
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq <= 0) continue;
-      env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+  const dropEditing = (key: string) =>
+    setEditing((cur) => {
+      const next = new Map(cur);
+      next.delete(key);
+      return next;
+    });
+
+  /**
+   * Expand ↔ collapse. Opening fetches the stored server — secrets arrive as
+   * MCP_SECRET_MASK and go back the same way unless retyped, so changing the URL
+   * beside a token no longer means finding the token again. A dirty draft
+   * survives a collapse; a clean one is thrown away.
+   */
+  async function toggleExpanded(s: McpServerSummary) {
+    const key = s.name;
+    if (expanded.has(key)) {
+      const entry = editing.get(key);
+      if (entry && sameDraft(entry.draft, entry.base)) dropEditing(key);
+      setRowExpanded(key, false);
+      return;
     }
-    return env;
-  }
-
-  // Parse the headers textarea ("Key: value" or "Key=value" per line).
-  function parseHeaders(text: string): Record<string, string> {
-    const headers: Record<string, string> = {};
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const i = trimmed.search(/[:=]/);
-      if (i <= 0) continue;
-      headers[trimmed.slice(0, i).trim()] = trimmed.slice(i + 1).trim();
+    if (!editing.has(key)) {
+      setError(null);
+      try {
+        const d = await window.stem.getMcpServer(key);
+        const lines = d.transport === 'http' ? d.headers : d.env;
+        const base: Draft = {
+          name: d.name,
+          transport: d.transport,
+          command: d.command,
+          args: d.args.join(' '),
+          url: d.url,
+          text: Object.entries(lines)
+            .map(([k, v]) => (d.transport === 'http' ? `${k}: ${v}` : `${k}=${v}`))
+            .join('\n'),
+          oauthClientId: d.oauthClientId,
+          oauthClientSecret: d.oauthClientSecret,
+          oauthScope: d.oauthScope,
+          location: s.location?.deviceId ?? ''
+        };
+        setEditing((cur) => new Map(cur).set(key, { base, draft: { ...base }, isNew: false }));
+        if (d.oauthClientId) setOauthOpen((cur) => new Set(cur).add(key));
+      } catch (e) {
+        setError(String(e instanceof Error ? e.message : e));
+        return;
+      }
     }
-    return headers;
+    setRowExpanded(key, true);
   }
 
-  async function add() {
+  /** A new server: a draft row, expanded, on the server only after Save. */
+  function add() {
+    const key = `new:${crypto.randomUUID()}`;
+    const base = blankDraft('http');
+    setEditing((cur) => new Map(cur).set(key, { base, draft: { ...base }, isNew: true }));
+    setRowExpanded(key, true);
+  }
+
+  async function save(key: string) {
+    const entry = editing.get(key);
+    if (!entry) return;
+    const d = entry.draft;
     setError(null);
+    setSavingKey(key);
     try {
-      const headers = transport === 'http' ? parseHeaders(envText) : {};
-      const env = transport === 'http' ? {} : parseEnv(envText);
-      const input: McpServerInput = {
-        name: name.trim(),
-        transport,
-        command: command.trim(),
-        args: args.trim() ? args.trim().split(/\s+/) : [],
-        url: url.trim(),
-        ...(Object.keys(env).length > 0 ? { env } : {}),
-        ...(Object.keys(headers).length > 0 ? { headers } : {}),
-        ...(transport === 'http' && oauthClientId.trim() ? { oauthClientId: oauthClientId.trim() } : {}),
-        ...(transport === 'http' && oauthClientSecret.trim() ? { oauthClientSecret: oauthClientSecret.trim() } : {}),
-        ...(transport === 'http' && oauthScope.trim() ? { oauthScope: oauthScope.trim() } : {}),
-        // Sent only when a device was picked: an absent location is what "runs
-        // where the server runs" has always looked like on disk.
-        ...(locationDeviceId ? { location: { deviceId: locationDeviceId } } : {})
-      };
+      const input = inputOf(d, entry.isNew);
       // An update keeps the stored location and enabled state itself, and turns
       // every masked value back into the stored one — the form never held them.
-      setServers(editing ? await window.stem.updateMcpServer(input) : await window.stem.addMcpServer(input));
-      closeForm();
+      let list = entry.isNew ? await window.stem.addMcpServer(input) : await window.stem.updateMcpServer(input);
+      if (!entry.isNew && d.location !== entry.base.location) {
+        list = await window.stem.setMcpServerLocation(input.name, d.location || null);
+      }
+      setServers(list);
+      dropEditing(key);
+      setRowExpanded(key, false);
+      await applyMcpChange();
+    } catch (e) {
+      // A refused save keeps the draft on screen so it can be fixed — nothing was lost.
+      setError(String(e instanceof Error ? e.message : e));
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
+  /** Discard the draft; a never-saved server disappears with it. */
+  function cancel(key: string) {
+    dropEditing(key);
+    setRowExpanded(key, false);
+  }
+
+  async function remove(s: McpServerSummary) {
+    // The system's own dialog, as in Skills and Files: removing also deletes its
+    // sign-in, and a switch is the answer for "stop using it, keep it".
+    if (
+      !window.confirm(
+        `Remove “${s.name}”?\n\nIts configuration and sign-in are deleted. To stop using it without deleting it, switch it off instead.`
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      setServers(await window.stem.removeMcpServer(s.name));
+      cancel(s.name);
+      setStatuses((prev) => {
+        const next = { ...prev };
+        delete next[s.name];
+        return next;
+      });
       await applyMcpChange();
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     }
-  }
-
-  async function remove(serverName: string) {
-    setError(null);
-    setServers(await window.stem.removeMcpServer(serverName));
-    setSelected((cur) => (cur === serverName ? null : cur));
-    setStatuses((prev) => {
-      const next = { ...prev };
-      delete next[serverName];
-      return next;
-    });
-    await applyMcpChange();
   }
 
   // Toggle a server on/off without removing it. Neither the bridge nor a hosting
   // machine re-reads mcp.json on its own, so both are told — see applyMcpChange.
-  /**
-   * Open the form on a stored server. Secrets arrive as MCP_SECRET_MASK and go
-   * back the same way unless retyped, so changing the URL beside a token no
-   * longer means finding the token again.
-   */
-  async function startEdit(serverName: string) {
-    setError(null);
-    try {
-      const d = await window.stem.getMcpServer(serverName);
-      setEditing(serverName);
-      setName(d.name);
-      setTransport(d.transport);
-      setCommand(d.command);
-      setArgs(d.args.join(' '));
-      setUrl(d.url);
-      const lines = d.transport === 'http' ? d.headers : d.env;
-      const text = Object.entries(lines)
-        .map(([k, v]) => (d.transport === 'http' ? `${k}: ${v}` : `${k}=${v}`))
-        .join('\n');
-      setEnvText(text);
-      setOauthClientId(d.oauthClientId);
-      setOauthClientSecret(d.oauthClientSecret);
-      setOauthScope(d.oauthScope);
-      setLocationDeviceId('');
-      // Everything a person came to edit is usually behind Advanced.
-      setShowAdvanced(!!text || !!d.oauthClientId);
-      setAdding(true);
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
-    }
-  }
-
   async function toggleEnabled(serverName: string, enabled: boolean) {
     setError(null);
     setServers(await window.stem.setMcpServerEnabled(serverName, enabled));
     await applyMcpChange();
-  }
-
-  /**
-   * Move one server to another machine, or back to the one hosting the server.
-   *
-   * The list is replaced from the call's own answer, because the row now names a
-   * different place; the two things that run the server catch up in
-   * applyMcpChange, which is the same pair every other edit here needs.
-   */
-  async function moveTo(serverName: string, deviceId: string | null) {
-    setError(null);
-    try {
-      setServers(await window.stem.setMcpServerLocation(serverName, deviceId));
-      await applyMcpChange();
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
-    }
-  }
-
-  /**
-   * *Move to <device>*, for each machine that is not already this server's home.
-   *
-   * A machine whose name matches the one the pin remembered comes first and says
-   * so. Pairing mints a new device id, so re-pairing the same Mac — the rollback
-   * in running-on-a-server.md, an import, switching to this computer's server
-   * and back — orphans everything pinned to it, and the fix is almost always
-   * "the computer with the same name". It is offered, not applied: ⑩ refuses to
-   * repoint a pin without somebody saying so, and a label is not evidence.
-   */
-  function moveButtons(s: McpServerSummary) {
-    const remembered = s.location?.rememberedLabel;
-    return hosts
-      .filter((d) => d.id !== s.location?.deviceId)
-      .slice()
-      .sort((a, b) => Number(b.label === remembered) - Number(a.label === remembered))
-      .map((d) => (
-        <button key={d.id} className="link-btn" onClick={() => moveTo(s.name, d.id)} disabled={!!busy}>
-          Move to {d.label}
-          {d.id === thisDeviceId ? ' (this computer)' : ''}
-          {remembered && d.label === remembered && d.id !== thisDeviceId ? ' (the same name as before)' : ''}
-        </button>
-      ));
   }
 
   async function signIn(serverName: string) {
@@ -483,7 +525,7 @@ function McpTab() {
     if (!anyPinned) return [{ key: 'all', head: 'MCP servers', items: servers }];
 
     const groups: { key: string; head: string; items: McpServerSummary[] }[] = [];
-    const add = (key: string, head: string, items: McpServerSummary[]) => {
+    const push = (key: string, head: string, items: McpServerSummary[]) => {
       if (items.length > 0) groups.push({ key, head, items });
     };
     const unpinned = servers.filter((s) => !s.location);
@@ -494,10 +536,10 @@ function McpTab() {
     // run" — two sections with identical headers would be a distinction only the
     // config file cares about.
     if (remote) {
-      add('server', 'On your Stem server', unpinned);
-      add('here', 'On this computer', here);
+      push('server', 'On your Stem server', unpinned);
+      push('here', 'On this computer', here);
     } else {
-      add('here', 'On this computer', [...unpinned, ...here]);
+      push('here', 'On this computer', [...unpinned, ...here]);
     }
 
     // One section per other machine, by device rather than by label: two paired
@@ -518,7 +560,7 @@ function McpTab() {
 
     // Last, and named for the consequence rather than the cause: what matters
     // about a pin to an unpaired computer is that the server runs nowhere.
-    add('orphan', 'Nowhere — that computer is gone', orphans);
+    push('orphan', 'Nowhere — that computer is gone', orphans);
     return groups;
   }
 
@@ -531,22 +573,6 @@ function McpTab() {
    */
   function hostedHere(s: McpServerSummary): boolean {
     return !!thisDeviceId && s.location?.deviceId === thisDeviceId;
-  }
-
-  /** The ⓘ that opens a section's explanation, and stays pressed while it is open. */
-  function explainToggle(key: string) {
-    const open = !!explaining[key];
-    return (
-      <button
-        className={`icon-btn explain${open ? ' on' : ''}`}
-        aria-expanded={open}
-        aria-label={open ? 'Hide explanation' : 'What does this mean?'}
-        title={open ? 'Hide explanation' : 'What does this mean?'}
-        onClick={() => setExplaining((prev) => ({ ...prev, [key]: !prev[key] }))}
-      >
-        <Info size={13} />
-      </button>
-    );
   }
 
   /** What a spec would actually run, in one line. */
@@ -575,11 +601,11 @@ function McpTab() {
     return (
       `Stem could not read the saved value of ${keys.join(', ')} on the computer holding the configuration — ` +
       'it was lost, not changed (usually an import opened with a different passphrase). That is why this is being ' +
-      'asked again. Approving starts the server without it; set the value again in Settings → Tools first if it needs one.'
+      'asked again. Approving starts the server without it; set the value again in this row first if it needs one.'
     );
   }
 
-  /** A hosted server's state, in the words the card under the list uses. */
+  /** A hosted server's state, in the words the editor uses. */
   function hostStateLine(status: McpHostServerStatus | undefined): string {
     if (!status) return 'Not started yet.';
     if (status.status === 'ready') {
@@ -626,9 +652,8 @@ function McpTab() {
 
   /**
    * "Reconnect" when a token that worked has stopped working, "Sign in" when
-   * there has never been one. Read from the live status rather than passed in,
-   * now that both arrive at the button as the same state: they are the same
-   * act, and the word is only there to say whether you have done it before.
+   * there has never been one: the same act, and the word is only there to say
+   * whether you have done it before.
    */
   function signInLabel(serverName: string): string {
     if (loginName === serverName) return 'Waiting…';
@@ -636,20 +661,14 @@ function McpTab() {
   }
 
   /**
-   * The approval this computer owes a server pinned to it (⑥), inline under its
-   * row. It used to be a card at the bottom of the panel that the row pointed at
-   * from a distance — and the pointing is exactly what broke: the jump landed
-   * silently, and even fixed it asked somebody to read a row here and answer a
-   * question there. A question belongs under the thing it is about.
-   *
-   * It is shown without being asked for, unlike everything else in a row's
-   * detail. This one is not information about a server, it is a server waiting
-   * on a person, and a call to action that only appears once you click the right
-   * row is one most people never see.
+   * The approval this computer owes a server pinned to it, inline under its
+   * row and open whether or not the row is: this is not information about a
+   * server, it is a server waiting on a person, and a call to action that only
+   * appears once you click the right row is one most people never see.
    */
   function approvalCard(p: McpHostPendingServer) {
     return (
-      <>
+      <div className="mcp-approval">
         <span className="set-sub">{pendingHeading(p)}</span>
         <code>{previewLine(p.preview)}</code>
         {credentialLine(p.preview) && <p className="muted">{credentialLine(p.preview)}</p>}
@@ -664,261 +683,408 @@ function McpTab() {
             start it again until you say so.
           </p>
         )}
-        {/* The one thing the plan insists is visible rather than documented:
-            after this click there are no further questions, so what the click
-            authorizes has to be readable here. Why it is being asked at all,
-            when nothing is wrong, is the part that goes behind the ⓘ — this
-            strip sits in the middle of a list and cannot be an essay. */}
+        {/* What the click authorizes has to be readable here — after it there
+            are no further questions. Why it is asked at all goes behind the ⓘ. */}
         <p className="muted">
-          Once approved, Stem starts it and uses its tools whenever the assistant asks — including on a scheduled
-          run — without asking again.
-          {!p.changed && !lostLine(p) && explainToggle(`why-${p.name}`)}
+          Once approved, Stem uses its tools whenever the assistant asks — including on a scheduled run —
+          without asking again.{' '}
+          {!p.changed && !lostLine(p) && (
+            <InfoTip label="Why approve it here?">
+              Stem never starts a server on your own computer without being asked, even when the entry was
+              added elsewhere — from your phone, from another computer, or by the assistant.
+            </InfoTip>
+          )}
         </p>
-        {explaining[`why-${p.name}`] && (
-          <p className="muted">
-            Stem never starts a server on your own computer without being asked, even when the entry was added
-            elsewhere — from your phone, from another computer, or by the assistant.
-          </p>
-        )}
         {p.unbounded && <p className="error">{p.unbounded}</p>}
-        <div className="memory-view-actions">
-          <button className="link-btn" onClick={() => approveHosted(p)}>
+        <div className="push-row">
+          <button className="primary" onClick={() => approveHosted(p)}>
             Approve and start
           </button>
         </div>
-      </>
+      </div>
+    );
+  }
+
+  /** The "Runs on" choice: the Stem server, each paired computer, and — for an orphan — the computer that is gone. */
+  function locationSelect(s: McpServerSummary | null, key: string, d: Draft) {
+    const remembered = s?.location?.rememberedLabel;
+    // A machine whose name matches the one the pin remembered comes first: pairing
+    // mints a new device id, so re-pairing the same Mac orphans everything pinned
+    // to it, and the fix is almost always "the computer with the same name". It is
+    // offered, not applied — a label is not evidence.
+    const offered = hosts
+      .slice()
+      .sort((a, b) => Number(b.label === remembered) - Number(a.label === remembered));
+    return (
+      <div className="task-field">
+        <span className="task-field-label">
+          Runs on{' '}
+          <InfoTip label="About where a server runs">
+            A server runs on one machine and reaches that machine’s files, its applications and its network.
+            Pick one of your computers for a server that only means anything there. Whoever is at that computer
+            approves it there before it starts — an approval belongs to the machine that gave it, so a move never
+            carries one across. Phones are not offered: they sleep.
+          </InfoTip>
+        </span>
+        <select
+          className="vfield"
+          aria-label="Computer this server runs on"
+          value={d.location}
+          onChange={(e) => setDraft(key, { ...d, location: e.target.value })}
+        >
+          <option value="">{remote ? 'On your Stem server' : 'On this computer'}</option>
+          {s?.location?.orphaned && (
+            <option value={s.location.deviceId}>
+              On {s.location.label} (no longer paired)
+            </option>
+          )}
+          {offered.map((h) => (
+            <option key={h.id} value={h.id}>
+              On {h.label}
+              {h.id === thisDeviceId ? ' · this computer' : ''}
+              {remembered && h.label === remembered && h.id !== thisDeviceId ? ' · the same name as before' : ''}
+            </option>
+          ))}
+        </select>
+      </div>
     );
   }
 
   /**
-   * Everything there is to do to one server, under that server.
-   *
-   * These were five sections stacked below the list — approve, on this computer,
-   * move, signing in, pinned to a computer that is gone — each repeating a name
-   * from the list and each about exactly one row. With the list grouped by
-   * machine they also started repeating its headers. One detail strip under the
-   * selected row says the same things in the one place where you do not have to
-   * carry a name down the panel to use them.
+   * The editor a row expands into. `s` is null for a server not saved yet —
+   * the only time the name and the transport are open to change: a server keeps
+   * both for life, because the bridge and every pinned computer know it by them.
    */
-  function rowDetail(s: McpServerSummary) {
+  function editor(s: McpServerSummary | null, key: string, entry: Editing) {
+    const d = entry.draft;
+    const dirty = !sameDraft(d, entry.base);
+    const valid = !!d.name.trim() && (d.transport === 'http' ? !!d.url.trim() : !!d.command.trim());
+    const pinnedUrl = !!s?.location && d.transport === 'http' && !s.location.orphaned;
+    const hasSecret = d.text.includes(MCP_SECRET_MASK) || d.oauthClientSecret === MCP_SECRET_MASK;
+    const showOauth = oauthOpen.has(key);
+    return (
+      <div className="mcp-editor">
+        {entry.isNew && (
+          <>
+            <div className="seg-ctl">
+              <button
+                className={d.transport === 'stdio' ? 'active' : ''}
+                onClick={() => setDraft(key, { ...d, transport: 'stdio' })}
+              >
+                Command
+              </button>
+              <button
+                className={d.transport === 'http' ? 'active' : ''}
+                onClick={() => setDraft(key, { ...d, transport: 'http' })}
+              >
+                URL
+              </button>
+            </div>
+            <input
+              className="vfield"
+              aria-label="Server name"
+              placeholder="Name (e.g. fastmail)"
+              value={d.name}
+              autoFocus
+              onChange={(e) => setDraft(key, { ...d, name: e.target.value })}
+            />
+          </>
+        )}
+        {(remote || anyPinned || d.location) && locationSelect(s, key, d)}
+        {d.transport === 'http' ? (
+          <>
+            <input
+              className="vfield"
+              aria-label="Server URL"
+              placeholder="https://api.fastmail.com/mcp"
+              value={d.url}
+              onChange={(e) => setDraft(key, { ...d, url: e.target.value })}
+            />
+            <textarea
+              className="ci-textarea"
+              aria-label="Headers"
+              placeholder={'Headers, one per line\nAuthorization: Bearer …'}
+              rows={2}
+              value={d.text}
+              onChange={(e) => setDraft(key, { ...d, text: e.target.value })}
+            />
+            {!pinnedUrl && (
+              <button
+                className="memory-view-toggle"
+                aria-expanded={showOauth}
+                onClick={() =>
+                  setOauthOpen((cur) => {
+                    const next = new Set(cur);
+                    if (next.has(key)) next.delete(key);
+                    else next.add(key);
+                    return next;
+                  })
+                }
+              >
+                <ChevronRight size={14} className={showOauth ? 'open' : ''} />
+                <strong>OAuth client</strong>
+              </button>
+            )}
+            {!pinnedUrl && showOauth && (
+              <>
+                <input
+                  className="vfield"
+                  aria-label="OAuth client ID"
+                  placeholder="Client ID (providers without auto-registration, e.g. Slack)"
+                  value={d.oauthClientId}
+                  onChange={(e) => setDraft(key, { ...d, oauthClientId: e.target.value })}
+                />
+                <input
+                  className="vfield"
+                  type="password"
+                  aria-label="OAuth client secret"
+                  placeholder="Client secret (confidential clients only)"
+                  value={d.oauthClientSecret}
+                  onChange={(e) => setDraft(key, { ...d, oauthClientSecret: e.target.value })}
+                />
+                <input
+                  className="vfield"
+                  aria-label="OAuth scopes"
+                  placeholder="Scopes, space-separated"
+                  value={d.oauthScope}
+                  onChange={(e) => setDraft(key, { ...d, oauthScope: e.target.value })}
+                />
+                {d.oauthClientId.trim() && (
+                  <p className="muted">
+                    Register this redirect URL in the provider app: <code>http://127.0.0.1:41759/callback</code>
+                  </p>
+                )}
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <input
+              className="vfield"
+              aria-label="Command"
+              placeholder="Command (e.g. npx)"
+              value={d.command}
+              onChange={(e) => setDraft(key, { ...d, command: e.target.value })}
+            />
+            <input
+              className="vfield"
+              aria-label="Arguments"
+              placeholder="Arguments, space-separated"
+              value={d.args}
+              onChange={(e) => setDraft(key, { ...d, args: e.target.value })}
+            />
+            <textarea
+              className="ci-textarea"
+              aria-label="Environment variables"
+              placeholder={'Environment, one per line\nKEY=value'}
+              rows={2}
+              value={d.text}
+              onChange={(e) => setDraft(key, { ...d, text: e.target.value })}
+            />
+          </>
+        )}
+        {hasSecret && (
+          <p className="muted">
+            {MCP_SECRET_MASK} is a stored secret — leave it to keep it, or type a new value.
+          </p>
+        )}
+        {s && !entry.isNew && (
+          <div className="mcp-state">
+            {s.location?.orphaned ? (
+              <span>
+                Runs nowhere: that computer is no longer paired.{' '}
+                <InfoTip label="About a server whose computer is gone">
+                  Nothing was deleted — pair that computer again, pick another one above, or remove the server.
+                  Pairing a computer again gives it a new identity, so the same machine under the same name is a
+                  different device to Stem: if you have just re-paired it, it is the one offered first.
+                </InfoTip>
+              </span>
+            ) : hostedHere(s) ? (
+              <>
+                <span>{hostStateLine(hostState.status[s.name])}</span>
+                <button
+                  className="icon-action sm"
+                  onClick={() => testHosted(s.name)}
+                  disabled={testing === s.name}
+                  title={testing === s.name ? 'Connecting…' : 'Test connection'}
+                  aria-label="Test connection"
+                >
+                  <PlugZap size={14} />
+                </button>
+                {hostState.approved[s.name] && (
+                  <button
+                    className="icon-action sm"
+                    onClick={() => rejectHosted(s.name)}
+                    title="Stop trusting — it will not start here again until approved"
+                    aria-label="Stop trusting"
+                  >
+                    <ShieldOff size={14} />
+                  </button>
+                )}
+              </>
+            ) : s.location ? (
+              <span>
+                Approved and tested on {s.location.label}, not from here.
+                {pinnedUrl && (
+                  <>
+                    {' '}
+                    Static token only. <InfoTip label="Why no sign-in?">{NO_OAUTH_ELSEWHERE}</InfoTip>
+                  </>
+                )}
+              </span>
+            ) : null}
+          </div>
+        )}
+        <div className="push-row">
+          <button className="link-btn" onClick={() => cancel(key)}>
+            Cancel
+          </button>
+          <button
+            className="primary"
+            onClick={() => save(key)}
+            disabled={!dirty || !valid || savingKey === key || !!busy}
+          >
+            {savingKey === key ? 'Saving…' : entry.isNew ? 'Add server' : 'Save'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /** One saved server: its face, its open approval, and its editor when expanded. */
+  function serverRow(s: McpServerSummary) {
+    const key = s.name;
+    const entry = editing.get(key);
+    const isOpen = expanded.has(key);
+    const dirty = !!entry && !sameDraft(entry.draft, entry.base);
+    const state = serverState(s);
+    const detail = s.transport === 'http' ? s.url : `${s.command} ${s.args.join(' ')}`.trim();
     const pending =
       hostedHere(s) && hostState.status[s.name]?.status === 'unapproved'
         ? hostState.pending.find((p) => p.name === s.name)
         : undefined;
-    if (pending) {
-      return <div className="row-detail approval">{approvalCard(pending)}</div>;
-    }
-    if (selected !== s.name) return null;
-
-    // Moving is offered wherever there is somewhere else to go, an orphan
-    // included — a pin you cannot undo from the panel that made it is a trap,
-    // and the machine list is only fetched when there is a choice to make.
-    const elsewhere = moveButtons(s);
-    const canUnpin = !!s.location && (remote || !s.location.orphaned || hosts.length > 0);
-    const bits: React.ReactNode[] = [];
-
-    if (s.location?.orphaned) {
-      bits.push(
-        <p className="muted" key="orphan">
-          It runs nowhere: the computer it is pinned to is no longer paired.
-          {explainToggle(`orphan-${s.name}`)}
-        </p>
-      );
-      if (explaining[`orphan-${s.name}`]) {
-        bits.push(
-          <p className="muted" key="orphan-why">
-            Nothing was deleted — pair that computer again, move it to another one, or remove it with −.
-            {s.location.rememberedLabel
-              ? ' Pairing a computer again gives it a new identity, so the same machine under the same name is a' +
-                ' different device to Stem: if you have just re-paired it, it is the one offered below.'
-              : ''}
-          </p>
-        );
-      }
-    } else if (hostedHere(s)) {
-      bits.push(
-        <p className="muted" key="state">
-          {hostStateLine(hostState.status[s.name])}
-        </p>
-      );
-      bits.push(
-        <div className="memory-view-actions" key="host-actions">
-          <button className="link-btn" onClick={() => testHosted(s.name)} disabled={testing === s.name}>
-            {testing === s.name ? 'Connecting…' : 'Test connection'}
+    return (
+      <div key={key} className={`task-item${s.enabled ? '' : ' paused'}${isOpen ? ' open' : ''}`}>
+        <div className="task-head">
+          <span className="row-main">
+            <strong
+              className="task-title"
+              onClick={() => void toggleExpanded(s)}
+              title={isOpen ? 'Collapse' : 'Edit this server'}
+            >
+              {s.name}
+            </strong>
+            {/* The address, clamped to two lines with the whole of it on the
+                title. A failure takes the line instead, in the words of
+                whichever machine reported it. */}
+            <em
+              title={state === 'failed' ? stateTitle(s, state) : detail}
+              className={state === 'failed' ? 'mcp-failed' : undefined}
+            >
+              {state === 'failed' ? stateTitle(s, state) : detail}
+              {dirty && !isOpen ? ' · unsaved' : ''}
+            </em>
+          </span>
+          {/* One slot, one vocabulary: a dot when the row is being told
+              something, a sign-in button when this machine is being asked for
+              something, nothing when there is nothing true to say. */}
+          {state === 'needs-login' ? (
+            <button
+              className="icon-action sm"
+              onClick={() => signIn(s.name)}
+              disabled={!!loginName || !!busy}
+              title={signInLabel(s.name)}
+              aria-label={signInLabel(s.name)}
+            >
+              <LogIn size={14} />
+            </button>
+          ) : state === 'connected' || state === 'pending' || state === 'failed' ? (
+            <span
+              className={`mcp-dot${state === 'pending' ? ' pending' : ''}${state === 'failed' ? ' failed' : ''}`}
+              title={stateTitle(s, state)}
+              aria-label={state === 'failed' ? 'Not running' : state === 'pending' ? 'Starting' : 'Running'}
+            />
+          ) : null}
+          <button
+            className={`switch${s.enabled ? ' on' : ''}`}
+            role="switch"
+            aria-checked={s.enabled}
+            aria-label={`${s.name} enabled`}
+            title={s.enabled ? 'Disable server' : 'Enable server'}
+            onClick={() => toggleEnabled(s.name, !s.enabled)}
+            disabled={!!busy || !!loginName}
+          />
+          <button
+            className="icon-action sm"
+            onClick={() => remove(s)}
+            disabled={!!busy || !!loginName}
+            title="Remove server"
+            aria-label="Remove server"
+          >
+            <Trash2 size={14} />
           </button>
-          {hostState.approved[s.name] && (
-            <button className="link-btn danger" onClick={() => rejectHosted(s.name)}>
-              Stop trusting
-            </button>
-          )}
         </div>
-      );
-    } else if (s.location) {
-      // Another of your computers owns it. This window has nothing true to say
-      // about whether it is approved or running there — only where to send it.
-      bits.push(
-        <p className="muted" key="elsewhere">
-          {`“${s.location.label}” runs it and decides whether it runs: there is nothing to approve or test from here.`}
-        </p>
-      );
-    }
-
-    // OAuth cannot run for a pinned URL server, and the sentence has to be
-    // somewhere a person without a mouse can read it (⑤).
-    if (s.location && s.transport === 'http' && !s.location.orphaned) {
-      bits.push(
-        <p className="muted" key="oauth">
-          Static token only
-          {explainToggle(`oauth-${s.name}`)}
-        </p>
-      );
-      if (explaining[`oauth-${s.name}`]) {
-        bits.push(
-          <p className="muted" key="oauth-why">
-            {NO_OAUTH_ELSEWHERE}
-          </p>
-        );
-      }
-    }
-
-    if (elsewhere.length > 0 || canUnpin) {
-      bits.push(
-        <div className="memory-view-actions" key="move">
-          {elsewhere}
-          {canUnpin && (
-            <button className="link-btn" onClick={() => moveTo(s.name, null)} disabled={!!busy}>
-              {remote ? 'Run on the server instead' : 'Run on this computer instead'}
-            </button>
-          )}
-          {explainToggle(`move-${s.name}`)}
-        </div>
-      );
-      if (explaining[`move-${s.name}`]) {
-        bits.push(
-          <p className="muted" key="move-why">
-            A server runs on one machine and reaches that machine’s files, its applications and its network.
-            Whoever is at that computer approves it there before it starts — an approval belongs to the machine
-            that gave it, so a move never carries one across.
-          </p>
-        );
-      }
-    }
-
-    bits.push(
-      <div className="memory-view-actions" key="edit">
-        <button className="link-btn" onClick={() => startEdit(s.name)} disabled={!!busy || !!loginName}>
-          Edit…
-        </button>
+        {pending && approvalCard(pending)}
+        {isOpen && entry && editor(s, key, entry)}
       </div>
     );
+  }
 
-    return <div className="row-detail selected">{bits}</div>;
+  /** A server not saved yet: the same row, with nothing true to say on its face. */
+  function draftRow(key: string, entry: Editing) {
+    const isOpen = expanded.has(key);
+    return (
+      <div key={key} className={`task-item${isOpen ? ' open' : ''}`}>
+        <div className="task-head">
+          <span className="row-main">
+            <strong
+              className="task-title"
+              onClick={() => setRowExpanded(key, !isOpen)}
+              title={isOpen ? 'Collapse' : 'Edit this server'}
+            >
+              {entry.draft.name.trim() || 'New server'}
+            </strong>
+            <em>not saved yet</em>
+          </span>
+          <button
+            className="icon-action sm"
+            onClick={() => cancel(key)}
+            title="Discard this draft"
+            aria-label="Discard this draft"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+        {isOpen && editor(null, key, entry)}
+      </div>
+    );
   }
 
   const groups = placeGroups();
+  const newRows = [...editing.entries()].filter(([, e]) => e.isNew);
 
   return (
     <div>
-      {servers.length === 0 ? (
-        <>
-          <div className="grp-head">MCP servers</div>
-          <div className="group">
-            <div className="group-row">
-              <span className="row-main">
-                <em>No servers yet. Add one with the + button.</em>
-              </span>
-            </div>
-          </div>
-        </>
+      {error && <p className="task-failed">{error}</p>}
+      {servers.length === 0 && newRows.length === 0 ? (
+        <p className="muted">
+          No MCP servers yet. A server gives Stem tools from another service or program — its URL or
+          command comes from whoever provides it.
+        </p>
       ) : (
         groups.map((group) => (
           <div key={group.key}>
             <div className="grp-head">{group.head}</div>
-            <div className="group mcp-list">
-              {group.items.map((s) => {
-                const viaUrl = s.transport === 'http';
-                const state = serverState(s);
-                const detail = viaUrl ? s.url : `${s.command} ${s.args.join(' ')}`.trim();
-                return (
-                  <div key={s.name} className="row-block">
-                    <div
-                      className={`group-row${selected === s.name ? ' selected' : ''}${s.enabled ? '' : ' disabled'}`}
-                      onClick={() => setSelected(selected === s.name ? null : s.name)}
-                    >
-                      <span className="row-main">
-                        <strong title={s.name}>{s.name}</strong>
-                        {/* The address, clamped to two lines with the whole of it
-                            on the title — an npx invocation with four flags is
-                            longer than any panel and is still the thing you came
-                            to read. A failure takes the line instead, in the
-                            words of whichever machine reported it. */}
-                        <em
-                          title={state === 'failed' ? stateTitle(s, state) : detail}
-                          className={state === 'failed' ? 'mcp-failed' : undefined}
-                        >
-                          {state === 'failed' ? stateTitle(s, state) : detail}
-                        </em>
-                      </span>
-                      {/* One slot, one vocabulary. A dot when the row is being
-                          told something, a Sign in button when this machine is
-                          being asked for something, and nothing at all when
-                          there is nothing true to say. An unapproved server has
-                          no button here either: its question is open under the
-                          row, which is a better answer than a button pointing at
-                          one. */}
-                      {state === 'needs-login' ? (
-                        <button
-                          className="push"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            signIn(s.name);
-                          }}
-                          disabled={!!loginName || !!busy}
-                        >
-                          {signInLabel(s.name)}
-                        </button>
-                      ) : state === 'connected' || state === 'pending' || state === 'failed' ? (
-                        <span
-                          className={`mcp-dot${state === 'pending' ? ' pending' : ''}${state === 'failed' ? ' failed' : ''}`}
-                          title={stateTitle(s, state)}
-                          aria-label={
-                            state === 'failed' ? 'Not running' : state === 'pending' ? 'Starting' : 'Running'
-                          }
-                        />
-                      ) : null}
-                      <button
-                        className={`switch${s.enabled ? ' on' : ''}`}
-                        role="switch"
-                        aria-checked={s.enabled}
-                        aria-label={`${s.name} enabled`}
-                        title={s.enabled ? 'Disable server' : 'Enable server'}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleEnabled(s.name, !s.enabled);
-                        }}
-                        disabled={!!busy || !!loginName}
-                      />
-                    </div>
-                    {rowDetail(s)}
-                  </div>
-                );
-              })}
-            </div>
+            <div className="group mcp-list">{group.items.map(serverRow)}</div>
           </div>
         ))
       )}
-      <div className="gutter">
-        <button title="Add server" onClick={() => (adding ? nameRef.current?.focus() : setAdding(true))}>
-          <Plus size={15} />
-        </button>
-        <button
-          title="Remove selected"
-          onClick={() => selected && remove(selected)}
-          disabled={!selected || !!busy || !!loginName}
-        >
-          <Minus size={15} />
-        </button>
-      </div>
+      {newRows.length > 0 && (
+        <div className="group mcp-list">{newRows.map(([key, entry]) => draftRow(key, entry))}</div>
+      )}
+      <button className="link-btn" onClick={add}>
+        <Plus size={14} /> New server
+      </button>
 
       {/* The server is older than this app and does not know what a pinned
           server is. Said here because the alternative is a panel that looks
@@ -932,155 +1098,6 @@ function McpTab() {
         </p>
       )}
       {busy && <p className="muted">{busy}</p>}
-      {/* The Add Server form renders `error` inside itself; this is the same
-          string for everything that can fail with the form closed — approving,
-          rejecting or testing a server hosted here. */}
-      {error && !adding && <p className="error">{error}</p>}
-
-      {adding && (
-        <>
-          <div className="grp-head">{editing ? `Edit ${editing}` : 'Add Server'}</div>
-          <div className="formgroup">
-            {/* HOW to reach the server, not where it runs: a command to spawn or
-                a URL to open. The old Remote|Local labels named the wrong axis —
-                "Local" meant a command, which on a hosted Stem is a process in a
-                datacentre. Where it runs is the separate control below. */}
-            {!editing && (
-              <div className="seg-ctl">
-                <button className={transport === 'stdio' ? 'active' : ''} onClick={() => setTransport('stdio')}>
-                  Command
-                </button>
-                <button className={transport === 'http' ? 'active' : ''} onClick={() => setTransport('http')}>
-                  URL
-                </button>
-              </div>
-            )}
-            {remote && !editing && (
-              <div className="set-block">
-                <span className="set-sub">Runs on</span>
-                <select
-                  className="ifield"
-                  aria-label="Runs on"
-                  value={locationDeviceId}
-                  onChange={(e) => setLocationDeviceId(e.target.value)}
-                >
-                  <option value="">Server</option>
-                  {hosts.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.label}
-                      {d.id === thisDeviceId ? ' · this computer' : ''}
-                    </option>
-                  ))}
-                </select>
-                <p className="muted">
-                  Pick a computer for a server that only means anything there — its files, its
-                  applications, or a URL on its own network. Phones aren’t offered: they sleep.
-                </p>
-              </div>
-            )}
-            <input
-              ref={nameRef}
-              className="ifield"
-              placeholder="Name (e.g. fastmail)"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={!!editing}
-            />
-            {editing && (
-              <p className="muted">
-                Dotted values are stored secrets. Leave them as they are to keep them, or type a new one.
-                Where the server runs and whether it is on do not change here.
-              </p>
-            )}
-            {transport === 'http' ? (
-              <>
-                <input className="ifield" placeholder="https://api.fastmail.com/mcp" value={url} onChange={(e) => setUrl(e.target.value)} />
-                <button
-                  className="memory-view-toggle"
-                  aria-expanded={showAdvanced}
-                  onClick={() => setShowAdvanced((v) => !v)}
-                >
-                  <ChevronRight size={14} className={showAdvanced ? 'open' : ''} />
-                  <strong>Advanced — headers, OAuth client</strong>
-                </button>
-                {showAdvanced && (
-                  <>
-                    <textarea
-                      className="ifield"
-                      placeholder="headers (optional), one per line — e.g. Authorization: Bearer …"
-                      rows={2}
-                      value={envText}
-                      onChange={(e) => setEnvText(e.target.value)}
-                    />
-                    <div className="grp-head">OAuth sign-in (optional)</div>
-                    <input
-                      className="ifield"
-                      placeholder="OAuth Client ID — for providers without auto-registration (e.g. Slack)"
-                      value={oauthClientId}
-                      onChange={(e) => setOauthClientId(e.target.value)}
-                    />
-                    <input
-                      className="ifield"
-                      type="password"
-                      placeholder="OAuth Client Secret (if the provider is a confidential client)"
-                      value={oauthClientSecret}
-                      onChange={(e) => setOauthClientSecret(e.target.value)}
-                    />
-                    <input
-                      className="ifield"
-                      placeholder="OAuth Scopes (space-separated, must match the provider app)"
-                      value={oauthScope}
-                      onChange={(e) => setOauthScope(e.target.value)}
-                    />
-                    {oauthClientId.trim() && (
-                      <p className="muted">
-                        Register this exact redirect URL in the provider app:{' '}
-                        <code>http://127.0.0.1:41759/callback</code>
-                      </p>
-                    )}
-                  </>
-                )}
-              </>
-            ) : (
-              <>
-                <input className="ifield" placeholder="command (e.g. npx)" value={command} onChange={(e) => setCommand(e.target.value)} />
-                <input className="ifield" placeholder="args (space-separated)" value={args} onChange={(e) => setArgs(e.target.value)} />
-                <button
-                  className="memory-view-toggle"
-                  aria-expanded={showAdvanced}
-                  onClick={() => setShowAdvanced((v) => !v)}
-                >
-                  <ChevronRight size={14} className={showAdvanced ? 'open' : ''} />
-                  <strong>Advanced — environment variables</strong>
-                </button>
-                {showAdvanced && (
-                  <textarea
-                    className="ifield"
-                    placeholder="env (optional), one KEY=value per line"
-                    rows={2}
-                    value={envText}
-                    onChange={(e) => setEnvText(e.target.value)}
-                  />
-                )}
-              </>
-            )}
-            <div className="push-row">
-              <button className="push" onClick={closeForm} disabled={!!busy}>Cancel</button>
-              <button className="push default" onClick={add} disabled={!canAdd}>
-                {editing ? 'Save' : 'Add Server'}
-              </button>
-            </div>
-            {transport === 'http' && (
-              <p className="muted">
-                Most URL servers just need a name and URL — add it, then use “Sign in” to authorize
-                via OAuth where supported. For a static token, add an <code>Authorization: Bearer …</code>{' '}
-                header under Advanced.
-              </p>
-            )}
-            {error && <p className="error">{error}</p>}
-          </div>
-        </>
-      )}
     </div>
   );
 }

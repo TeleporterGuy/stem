@@ -724,8 +724,8 @@ function ProvidersSection({ deadProvider }: { deadProvider?: string | null }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  // The Add Provider form is collapsed behind the + button (like the MCP tab's
-  // Add Server) so the steady state is a calm list of connected providers.
+  // The Add Provider form is collapsed behind the + button so the steady
+  // state is a calm list of connected providers.
   const [adding, setAdding] = useState(false);
   const [mode, setMode] = useState<'account' | 'apikey' | 'local'>('account');
   // In-flight OAuth attempt (null = none). Mirrors the onboarding wizard's
