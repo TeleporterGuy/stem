@@ -79,6 +79,12 @@ process.stdin.on('data', (chunk) => {
 });
 `;
 
+/** A server that prints a Local Network denial on stderr and exits before handshake. */
+const DIES_ERRNO_65 = `
+process.stderr.write('OSError: [Errno 65] No route to host\\n');
+process.exit(1);
+`;
+
 /** A server whose only tool answers with the PATH its process was given. */
 const REPORTS_PATH = `
 let buf = '';
@@ -192,5 +198,21 @@ describe('McpStdioClient against a real child', () => {
     const client = new McpStdioClient('never', { command: process.execPath, args: ['-e', ''] });
     expect(() => client.stop()).not.toThrow();
     expect(() => client.stop()).not.toThrow();
+  });
+
+  it('quotes a child stderr of errno 65, and on macOS names Local Network permission', async () => {
+    const client = await open('ha', await server('errno65', DIES_ERRNO_65));
+    try {
+      await client.handshake();
+      expect.unreachable('handshake should reject');
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      expect(message).toMatch(/Errno 65|No route to host/);
+      if (process.platform === 'darwin') {
+        expect(message).toMatch(/Privacy & Security → Local Network/);
+      } else {
+        expect(message).not.toMatch(/Privacy & Security → Local Network/);
+      }
+    }
   });
 });

@@ -84,7 +84,7 @@ files:
 # `!…` patterns gets `**/*` prepended — every release up to 0.5.1 carried the
 # whole repository (src/, tests/, mobile/, docs/, Dockerfile, …) inside the app
 # because of two such lists. Target-specific trimming lives in the hook instead.
-afterPack: scripts/prune-onnxruntime.mjs
+afterPack: scripts/after-pack.mjs
 
 mac:
   target: [dmg, zip]
@@ -92,6 +92,12 @@ mac:
   # Unsigned for now (no Apple Developer ID) — recipients right-click-open or
   # clear quarantine; notarization is a later follow-up.
   identity: null
+  # macOS 15+ Local Network Privacy. Without this key the system cannot show a
+  # prompt, Stem never appears under Privacy & Security → Local Network, and
+  # MCP children (uvx/Python) fail with errno 65. Ignored on older macOS.
+  # Keep in sync with scripts/macos-info.mjs (asserted by tests/unit/macos-info.test.ts).
+  extendInfo:
+    NSLocalNetworkUsageDescription: Stem connects to services and MCP integrations running on your local network, such as Home Assistant.
 
 linux:
   target: [AppImage, deb]

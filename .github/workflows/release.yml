@@ -92,6 +92,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run dist:mac -- --arm64 --x64
+      - name: Packaged Info.plist has Local Network usage description
+        run: |
+          found=0
+          while IFS= read -r plist; do
+            found=1
+            desc=$(/usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$plist")
+            echo "$plist: $desc"
+            echo "$desc" | grep -q 'local network'
+          done < <(find release -path '*/Stem.app/Contents/Info.plist')
+          if [ "$found" -eq 0 ]; then echo "::error::no packaged Stem.app Info.plist"; exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
           name: mac

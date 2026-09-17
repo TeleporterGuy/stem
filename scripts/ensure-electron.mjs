@@ -28,15 +28,30 @@ if (!existsSync(installer)) process.exit(0);
 // platform-relative path inside dist/, and both are written by install.js.
 const pathTxt = join(electronDir, 'path.txt');
 const binary = existsSync(pathTxt) ? join(electronDir, 'dist', readFileSync(pathTxt, 'utf8').trim()) : null;
-if (binary && existsSync(binary)) process.exit(0);
+if (!(binary && existsSync(binary))) {
+  console.log('Downloading the Electron binary (~120MB, cached for later installs)…');
+  const { status, error } = spawnSync(process.execPath, [installer], { stdio: 'inherit' });
 
-console.log('Downloading the Electron binary (~120MB, cached for later installs)…');
-const { status, error } = spawnSync(process.execPath, [installer], { stdio: 'inherit' });
+  if (status !== 0) {
+    console.warn(
+      `\n  Could not download the Electron binary${error ? ` (${error.message})` : ''}.\n` +
+        '  Install completed anyway — re-run this when you have a connection:\n' +
+        '    node node_modules/electron/install.js\n'
+    );
+  }
+}
 
-if (status !== 0) {
-  console.warn(
-    `\n  Could not download the Electron binary${error ? ` (${error.message})` : ''}.\n` +
-      '  Install completed anyway — re-run this when you have a connection:\n' +
-      '    node node_modules/electron/install.js\n'
-  );
+// macOS Local Network: patch the generic Electron.app Info.plist (and ad-hoc
+// re-sign) so `npm run preview` / E2E / a fresh install get the same usage
+// description as `npm run dev`. No-op off macOS or when the bundle is missing.
+// Warn rather than fail the install — predev runs the same script strictly.
+const brand = join(root, 'scripts/brand-electron-dev.mjs');
+if (existsSync(brand)) {
+  const branded = spawnSync(process.execPath, [brand], { stdio: 'inherit' });
+  if (branded.status !== 0) {
+    console.warn(
+      '\n  Could not brand the dev Electron bundle for macOS Local Network.\n' +
+        '  `npm run dev` will try again (scripts/brand-electron-dev.mjs).\n'
+    );
+  }
 }

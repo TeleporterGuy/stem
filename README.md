@@ -132,7 +132,7 @@ First run opens the onboarding wizard — pick a provider and sign in, and you'r
 Grab an artifact from [GitHub Releases](https://github.com/join3r/stem/releases):
 
 - **Linux** — `.AppImage` (make it executable and run it, any distro) or `.deb` (Ubuntu/Debian/Mint; also puts `stem` on your PATH).
-- **macOS** — `.dmg`. Builds are currently unsigned: right-click → Open the first time, or run `xattr -dr com.apple.quarantine /Applications/Stem.app`.
+- **macOS** — `.dmg`. Builds are currently unsigned: right-click → Open the first time, or run `xattr -dr com.apple.quarantine /Applications/Stem.app`. The first time an MCP server reaches a device on your LAN, macOS asks for Local Network permission — see [MCP servers](docs/user/tools/mcp-servers.md).
 
 ### Linux notes
 

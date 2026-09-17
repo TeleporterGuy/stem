@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { open, rm } from 'node:fs/promises';
+import { connect as netConnect } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join, parse, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -70,6 +71,119 @@ const SECRET_ENVELOPE_KEY = '__stemenc__';
 // processes never read each other's gate; unset (single-process spawns, older
 // mains) it falls back to the mcp.json directory, the historical location.
 const ENV_GATE_DIR = 'STEM_GATE_DIR';
+
+// Twin of src/shared/macos-local-network.ts. This file is dependency-free ESM
+// loaded by `pi -e` and cannot import that module; keep the hint and the
+// errno-65 match in lockstep (tests/unit/macos-info.test.ts).
+const LOCAL_NETWORK_DENIED_HINT =
+  'macOS blocked access to the local network. Allow Stem in System Settings → Privacy & Security → Local Network, then retry.';
+const LOCAL_NETWORK_DENIED_RE = /EHOSTUNREACH|ENETUNREACH|errno 65|\[Errno 65\]|No route to host/i;
+const STDERR_TAIL_CHARS = 4000;
+const STDERR_QUOTE_CHARS = 300;
+
+function describeCaughtError(e) {
+  if (typeof e === 'string') return e.trim() || 'an unknown error';
+  if (!(e instanceof Error)) return String(e);
+  const cause = e.cause;
+  if (cause instanceof Error) {
+    const code = cause.code;
+    const detail = code && !cause.message.includes(code) ? `${code}: ${cause.message}` : cause.message;
+    return `${e.message} (${detail})`;
+  }
+  if (e.code && !e.message.includes(e.code)) return `${e.message} (${e.code})`;
+  return e.message.trim() || 'an unknown error';
+}
+
+function withLocalNetworkHint(message) {
+  if (process.platform !== 'darwin') return message;
+  if (!LOCAL_NETWORK_DENIED_RE.test(message)) return message;
+  if (message.includes('Privacy & Security → Local Network')) return message;
+  return `${message} ${LOCAL_NETWORK_DENIED_HINT}`;
+}
+
+function mcpErrorText(e) {
+  return withLocalNetworkHint(describeCaughtError(e));
+}
+
+function quoteStderr(tail) {
+  const lines = tail
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+  const reason = lines.slice(-2).join(' ');
+  return reason.length > STDERR_QUOTE_CHARS ? `${reason.slice(-STDERR_QUOTE_CHARS)}…` : reason;
+}
+
+function isLanUnicastHostname(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host === '::1') return false;
+  if (host.endsWith('.local') || host.endsWith('.home.arpa')) return true;
+  if (!host.includes('.') && !host.includes(':')) return true;
+  const parts = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!parts) return false;
+  const first = Number(parts[1]);
+  const second = Number(parts[2]);
+  if (first === 127) return false;
+  if (first === 10) return true;
+  if (first === 192 && second === 168) return true;
+  if (first === 172 && second >= 16 && second <= 31) return true;
+  if (first === 169 && second === 254) return true;
+  return false;
+}
+
+function lanTargetsFromSpec(spec) {
+  const values = [spec.url, ...Object.values(spec.env || {})].filter((v) => typeof v === 'string' && v.trim());
+  const seen = new Set();
+  const out = [];
+  for (const raw of values) {
+    let url;
+    try {
+      url = new URL(raw.trim());
+    } catch {
+      continue;
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
+    if (!isLanUnicastHostname(url.hostname)) continue;
+    const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
+    if (!Number.isFinite(port) || port <= 0) continue;
+    const key = `${url.hostname}:${port}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ host: url.hostname, port });
+  }
+  return out;
+}
+
+function probeLanTargets(spec, timeoutMs = 1500) {
+  if (process.platform !== 'darwin') return Promise.resolve();
+  const targets = lanTargetsFromSpec(spec);
+  return (async () => {
+    for (const target of targets) {
+      await new Promise((resolve, reject) => {
+        const socket = netConnect({ host: target.host, port: target.port });
+        const finish = (err) => {
+          clearTimeout(timer);
+          socket.removeAllListeners();
+          socket.destroy();
+          if (!err) {
+            resolve();
+            return;
+          }
+          const text = mcpErrorText(err);
+          if (LOCAL_NETWORK_DENIED_RE.test(text)) reject(new Error(text));
+          else resolve();
+        };
+        const timer = setTimeout(() => finish(), timeoutMs);
+        timer.unref?.();
+        socket.once('connect', () => finish());
+        socket.once('error', (err) => finish(err));
+      });
+    }
+  })();
+}
 
 function bridgeSecretKey() {
   const hex = process.env[ENV_SECRET_KEY];
@@ -279,12 +393,16 @@ class McpStdioClient {
     this.nextId = 1;
     this.pending = new Map();
     this.tools = [];
+    this.stderrTail = '';
+    this.handed = false;
+    this.deadWhy = null;
     // Tracks whether the child is still up, so the cross-session connection cache
     // can detect a crashed server and reconnect instead of reusing a dead client.
     this.alive = false;
   }
 
-  start() {
+  async start() {
+    await probeLanTargets(this.spec);
     this.proc = spawn(this.spec.command, this.spec.args ?? [], {
       env: { ...process.env, ...(this.spec.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe']
@@ -299,21 +417,29 @@ class McpStdioClient {
         if (line.trim()) this.onLine(line);
       }
     });
-    this.proc.stderr.on('data', () => {});
+    this.proc.stderr.on('data', (chunk) => {
+      this.stderrTail = (this.stderrTail + chunk.toString('utf8')).slice(-STDERR_TAIL_CHARS);
+    });
     // A missing/unspawnable binary (ENOENT etc.) emits 'error', which is FATAL to
     // the whole pi process when unhandled — one broken user-configured server must
     // never take down the backend. Treat it exactly like an exit: mark dead and
     // fail this server's pending requests only.
     this.proc.on('error', (err) => {
-      this.alive = false;
-      for (const p of this.pending.values()) p.reject(new Error(`${this.name} failed to start: ${err.message}`));
-      this.pending.clear();
+      this.die(withLocalNetworkHint(`${this.name} failed to start: ${mcpErrorText(err)}`));
     });
     this.proc.on('exit', () => {
-      this.alive = false;
-      for (const p of this.pending.values()) p.reject(new Error(`${this.name} exited`));
-      this.pending.clear();
+      setImmediate(() => {
+        const reason = quoteStderr(this.stderrTail);
+        this.die(withLocalNetworkHint(`${this.name} exited${reason ? `: ${reason}` : ''}`));
+      });
     });
+  }
+
+  die(why) {
+    this.alive = false;
+    this.deadWhy = why;
+    for (const p of this.pending.values()) p.reject(new Error(why));
+    this.pending.clear();
   }
 
   /** Kill the child (used when the connection cache rebuilds). Best-effort. */
@@ -336,12 +462,16 @@ class McpStdioClient {
     if (msg.id !== undefined && this.pending.has(msg.id)) {
       const p = this.pending.get(msg.id);
       this.pending.delete(msg.id);
-      if (msg.error) p.reject(new Error(msg.error.message || 'MCP error'));
+      if (msg.error) p.reject(new Error(withLocalNetworkHint(msg.error.message || 'MCP error')));
       else p.resolve(msg.result);
     }
   }
 
   request(method, params, timeoutMs = 30000) {
+    if (!this.alive || !this.proc?.stdin?.writable) {
+      if (this.deadWhy && !this.handed) return Promise.reject(new Error(this.deadWhy));
+      return Promise.reject(new Error(`${this.name} is not running.`));
+    }
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -377,6 +507,7 @@ class McpStdioClient {
     this.notify('notifications/initialized', {});
     const res = await this.request('tools/list', {});
     this.tools = (res && res.tools) || [];
+    this.handed = true;
     return this.tools;
   }
 
@@ -585,7 +716,7 @@ export class McpHttpClient {
           ? controller.signal.reason
           : new Error(`${this.name} ${method} timed out after ${MCP_HTTP_REQUEST_TIMEOUT_MS}ms`);
       }
-      throw e;
+      throw new Error(mcpErrorText(e));
     } finally {
       clearTimeout(timer);
     }
@@ -1532,7 +1663,7 @@ async function connectOneServer(name, spec, oauthTokens, refreshAuth) {
         refreshAuth(name, spec, auth, signal))
     : new McpStdioClient(name, spec);
   try {
-    client.start();
+    await client.start();
     const tools = await client.handshake();
     return { ok: true, name, spec, client, tools };
   } catch (e) {
@@ -1541,7 +1672,7 @@ async function connectOneServer(name, spec, oauthTokens, refreshAuth) {
     } catch {
       // best-effort
     }
-    return { ok: false, name, client, error: String((e && e.message) || e) };
+    return { ok: false, name, client, error: mcpErrorText(e) };
   }
 }
 

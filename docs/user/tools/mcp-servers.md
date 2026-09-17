@@ -108,3 +108,19 @@ does not have — `spawn uvx ENOENT` means no `uvx` there. Install it on that ma
 or move the server to a computer that already has it. When Stem runs on a server, that
 machine is the server, not the computer you are reading this on: a tool installed on
 your Mac is not installed for Stem.
+
+**macOS Local Network.** The first time a server on this Mac reaches an address on
+your LAN (Home Assistant at `192.168.x.x`, a NAS, a `.local` name), macOS should
+ask to allow **Local Network** access and list Stem under **System Settings →
+Privacy & Security → Local Network**. Allow it. Children Stem starts (`uvx`,
+Python, Node) inherit that grant.
+
+If the prompt never appears, or a connection fails with **error 65** / **No route
+to host** while `curl` to the same address works: you denied the prompt, or this
+Stem build is too old to declare the permission. Restart Stem, then toggle Stem
+in that list. `tccutil reset LocalNetwork` is not a supported category on current
+macOS — the Settings toggle is the way. That failure is this permission, not a
+missing route and not Home Assistant being down.
+
+From source (`npm run dev`), Stem patches the generic Electron.app it runs
+through; do not edit that Info.plist by hand.

@@ -1,4 +1,5 @@
 import { log } from '../../server/log';
+import { mcpErrorText } from '../../shared/macos-local-network';
 import { connectClient, type McpClient, type McpToolDefinition } from './clients';
 import { fileApprovalStore, type ApprovalStore } from './approvals';
 import type {
@@ -712,6 +713,6 @@ function missingHandler(error: string, channel: string): boolean {
 
 /** An error as a sentence, whatever it actually was. */
 function errorText(e: unknown): string {
-  const message = e instanceof Error ? e.message : String(e);
+  const message = mcpErrorText(e);
   return message.trim() || 'an unknown error';
 }

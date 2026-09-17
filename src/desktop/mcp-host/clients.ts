@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { execEnv, resolveLoginPath } from '../../server/exec/executor';
+import { mcpErrorText, probeLanTargets, withLocalNetworkHint } from '../../shared/macos-local-network';
 import type { DeviceMcpSpec } from '../../shared/types';
 
 // Two minimal MCP clients: a stdio one that spawns a child here, and a
@@ -80,6 +81,21 @@ export interface McpClient {
 
 /** How long one JSON-RPC request may take before it is failed. */
 const REQUEST_TIMEOUT_MS = 30_000;
+/** Rolling stderr kept so a child that prints errno 65 and exits still explains itself. */
+const STDERR_TAIL_CHARS = 4_000;
+const STDERR_QUOTE_CHARS = 300;
+
+function quoteStderr(tail: string): string | null {
+  const lines = tail
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+  const reason = lines.slice(-2).join(' ');
+  return reason.length > STDERR_QUOTE_CHARS ? `${reason.slice(-STDERR_QUOTE_CHARS)}…` : reason;
+}
 
 /** The protocol version and identity both clients announce at initialize. */
 const PROTOCOL_VERSION = '2024-11-05';
@@ -91,6 +107,11 @@ export class McpStdioClient implements McpClient {
   private proc: ChildProcess | null = null;
   private buf = '';
   private nextId = 1;
+  private stderrTail = '';
+  /** Set once initialize + tools/list succeeded. */
+  private handed = false;
+  /** Why the child died, so a handshake that starts after a fast exit still explains it. */
+  private deadWhy: string | null = null;
   private readonly pending = new Map<number, { resolve(v: unknown): void; reject(e: Error): void }>();
 
   constructor(
@@ -100,6 +121,11 @@ export class McpStdioClient implements McpClient {
 
   async start(): Promise<void> {
     if (!this.spec.command?.trim()) throw new Error(`${this.name} has no command to run.`);
+    // Python grandchildren (uvx ha-mcp) often hit Local Network TCC without
+    // ever raising the GUI prompt. A short connect from this process — the
+    // Stem/Electron app — is what macOS can attach the prompt to. Public URLs
+    // are not probed.
+    await probeLanTargets(this.spec);
     // The PATH a login shell on this machine would have, not the one a GUI app
     // was launched with. On macOS a double-clicked app gets
     // /usr/bin:/bin:/usr/sbin:/sbin and nothing else, so `npx` — which is how
@@ -130,20 +156,31 @@ export class McpStdioClient implements McpClient {
         if (line.trim()) this.onLine(line);
       }
     });
-    // Drained and dropped. An MCP server's stderr is its own log; left unread it
-    // fills the pipe buffer and blocks the child mid-write.
-    this.proc.stderr?.on('data', () => undefined);
+    // Drained so the pipe cannot fill and block the child; the tail is the only
+    // place a Python OSError: [Errno 65] explains itself.
+    this.proc.stderr?.on('data', (chunk: Buffer) => {
+      this.stderrTail = (this.stderrTail + chunk.toString('utf8')).slice(-STDERR_TAIL_CHARS);
+    });
     // A missing or unspawnable binary (ENOENT and friends) arrives here, and an
     // unhandled 'error' on a ChildProcess is fatal to the whole process. One
     // mistyped command in one user's mcp.json must cost that server and nothing
     // else — so it is treated exactly like an exit.
-    this.proc.on('error', (err: Error) => this.die(`${this.name} failed to start: ${err.message}`));
-    this.proc.on('exit', () => this.die(`${this.name} exited`));
+    this.proc.on('error', (err: Error) =>
+      this.die(withLocalNetworkHint(`${this.name} failed to start: ${mcpErrorText(err)}`))
+    );
+    this.proc.on('exit', () => {
+      // One tick so a stderr write that raced the exit still lands in the tail.
+      setImmediate(() => {
+        const reason = quoteStderr(this.stderrTail);
+        this.die(withLocalNetworkHint(`${this.name} exited${reason ? `: ${reason}` : ''}`));
+      });
+    });
   }
 
   /** The child is gone: remember that, and fail everything waiting on it. */
   private die(why: string): void {
     this.alive = false;
+    this.deadWhy = why;
     for (const p of this.pending.values()) p.reject(new Error(why));
     this.pending.clear();
   }
@@ -168,7 +205,7 @@ export class McpStdioClient implements McpClient {
     const waiter = this.pending.get(msg.id);
     if (!waiter) return;
     this.pending.delete(msg.id);
-    if (msg.error) waiter.reject(new Error(msg.error.message || 'MCP error'));
+    if (msg.error) waiter.reject(new Error(withLocalNetworkHint(msg.error.message || 'MCP error')));
     else waiter.resolve(msg.result);
   }
 
@@ -176,6 +213,9 @@ export class McpStdioClient implements McpClient {
     // Checked before an id is minted: writing to a dead child's stdin throws
     // EPIPE from somewhere unhelpful, and the honest sentence is this one.
     if (!this.alive || !this.proc?.stdin?.writable) {
+      // A child that printed errno 65 and exited before the first RPC has no
+      // in-flight waiter. Quote that death rather than a generic "not running".
+      if (this.deadWhy && !this.handed) return Promise.reject(new Error(this.deadWhy));
       return Promise.reject(new Error(`${this.name} is not running.`));
     }
     const id = this.nextId++;
@@ -210,7 +250,9 @@ export class McpStdioClient implements McpClient {
       clientInfo: CLIENT_INFO
     });
     this.notify('notifications/initialized', {});
-    return toolsOf(await this.request('tools/list', {}));
+    const tools = toolsOf(await this.request('tools/list', {}));
+    this.handed = true;
+    return tools;
   }
 
   callTool(name: string, args: unknown): Promise<unknown> {
@@ -289,7 +331,7 @@ export class McpHttpClient implements McpClient {
           ? controller.signal.reason
           : new Error(`${this.name} ${method} timed out.`);
       }
-      throw e;
+      throw new Error(mcpErrorText(e));
     } finally {
       clearTimeout(timer);
     }
