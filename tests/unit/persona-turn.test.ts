@@ -26,6 +26,12 @@ describe('personaTurnFields', () => {
     });
   });
 
+  it('carries the computer pin for a persona that controls a Mac', async () => {
+    const computer = { device: 'mac-1' };
+    const fields = await personaTurnFields({ ...base, id: 'p-screen', computer });
+    expect(fields.persona).toMatchObject({ id: 'p-screen', computer, notes: [] });
+  });
+
   it('carries the harness pin and standing answers (whole, no notes index) for a code persona', async () => {
     const harness = { agent: 'claude', cwd: '/repo' };
     const coder = { ...base, id: 'p-coder', harness };

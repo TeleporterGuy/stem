@@ -50,6 +50,9 @@ function summaryLabel(
     const agent = p.harness.model ? `${p.harness.agent} (${p.harness.model})` : p.harness.agent;
     parts.push(p.harness.cwd ? `${agent}${where} in ${p.harness.cwd}` : `${agent}${where}`);
   }
+  if (p.computer) {
+    parts.push(`controls ${devices.find((d) => d.id === p.computer?.device)?.label ?? p.computer.device}`);
+  }
   if (p.createdBy) {
     parts.push(`created by ${personas.find((x) => x.id === p.createdBy)?.name ?? p.createdBy}`);
   }
@@ -68,6 +71,17 @@ function uniqueName(base: string, taken: Set<string>): string {
   }
 }
 
+/**
+ * Whether the model this persona will run on accepts images — the whole basis
+ * of computer control. Unknown (`input` absent: an older server, or a model pi
+ * did not describe) reads as yes: the warning is for a certain miss, not a doubt.
+ */
+function modelSeesImages(p: Persona, models: ModelSummary[]): boolean {
+  const id = p.model ?? appDefaultModel(models);
+  const m = models.find((x) => x.id === id);
+  return !m?.input || m.input.includes('image');
+}
+
 /** Field-by-field equality over everything the editor can change. */
 function sameEdit(a: Persona, b: Persona): boolean {
   return (
@@ -79,6 +93,7 @@ function sameEdit(a: Persona, b: Persona): boolean {
     (a.harness?.cwd ?? '') === (b.harness?.cwd ?? '') &&
     (a.harness?.device ?? '') === (b.harness?.device ?? '') &&
     (a.harness?.model ?? '') === (b.harness?.model ?? '') &&
+    (a.computer?.device ?? '') === (b.computer?.device ?? '') &&
     (a.canManagePersonas ?? false) === (b.canManagePersonas ?? false) &&
     (a.memory ?? true) === (b.memory ?? true) &&
     (a.recall ?? true) === (b.recall ?? true) &&
@@ -692,6 +707,45 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
                         <FolderSearch size={14} />
                       </button>
                     </div>
+                  </div>
+                  {/* Computer control: the Mac whose screen this persona drives. The
+                      pin is the capability — no pin, no `computer` tool — and only a Mac
+                      that switched on "Let Stem control this Mac" is offered. */}
+                  <div className="persona-harness">
+                    <select
+                      className="vfield"
+                      aria-label="Computer this persona controls"
+                      value={p.computer?.device ?? ''}
+                      onChange={(e) =>
+                        setDraft({
+                          ...p,
+                          computer: e.target.value ? { device: e.target.value } : undefined
+                        })
+                      }
+                    >
+                      <option value="">Controls no computer</option>
+                      {p.computer?.device &&
+                        !devices.some((d) => d.id === p.computer?.device && d.runsComputer) && (
+                          <option value={p.computer.device}>
+                            Controls {devices.find((d) => d.id === p.computer?.device)?.label ??
+                              p.computer.device}{' '}
+                            (not letting Stem control it)
+                          </option>
+                        )}
+                      {devices
+                        .filter((d) => d.runsComputer)
+                        .map((d) => (
+                          <option key={d.id} value={d.id}>
+                            Controls {d.label}
+                          </option>
+                        ))}
+                    </select>
+                    {p.computer && !modelSeesImages(p, models) && (
+                      <div className="persona-warn" role="status">
+                        This persona’s model cannot see images. Computer control works from screenshots,
+                        so pick a model that accepts image input.
+                      </div>
+                    )}
                   </div>
                   <label className="persona-cap">
                     <input

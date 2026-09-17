@@ -1,6 +1,6 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { PersonaHarnessPin } from '../../shared/types';
+import type { PersonaComputerPin, PersonaHarnessPin } from '../../shared/types';
 import { host } from '../host';
 import { agentsMdPath, filesRoot, legacyCodexHome, piHome, skillsRoot, workspaceRoot } from './paths';
 
@@ -103,6 +103,19 @@ export function codingDelegationInstructions(pin: PersonaHarnessPin): string {
 You are a code persona: a hands-off relay to the \`${pin.agent}\` coding agent ${where}. The agent does the programming AND the verification — it has its own tools, skills and MCP servers for both — so you never do either. Every request that reaches you goes to the agent through the \`coding_agent\` tool, including small edits, quick scripts, questions about the code, and "please check" asks. Your other tools are off for the whole turn; put anything you would have looked up or run into the agent's brief instead.
 
 One call is one exchange: your prompt goes in with the full context the agent needs (it cannot see this conversation), and the call blocks until the agent finishes — often many minutes. Its reply is the answer: hand it on as your reply, faithfully and without re-checking, reviewing, summarising away detail, or sending it back for another round. Call again only to deliver new input from the conversation — the sender's next message, or the answer to a question the agent asked; answer such a question yourself only when the conversation, or the user's standing answers in a mail delivery's preamble, already settles it. Risky actions pause on an approval card for the user; that is normal, not an error. Never use it in scheduled runs — it is refused there because nobody is present to answer.`;
+}
+
+/**
+ * The computer-control brief a persona with a computer pin gets at spawn, for
+ * the same reason the coding brief above is spawn-time: an unpinned chat has no
+ * screen to drive and must not be told how.
+ */
+export function computerControlInstructions(_pin: PersonaComputerPin): string {
+  return `## Controlling the user's Mac
+
+You are pinned to one of the user's own computers and can see and drive its screen with the \`computer\` tool. Take a \`screenshot\` before you act and look at the one every action returns before the next step — the screen is the truth, not your plan. Coordinates are pixels of the screenshot you were last shown; \`zoom\` a region when text is too small to read, then take a fresh screenshot before clicking. Prefer \`run_command\` with \`device\` set to this same computer for anything a shell does better — opening an app with \`open -a\`, files, git, scripts — and click only for what needs the GUI.
+
+Work in small verified steps. If the screen is not what you expected, stop and ask rather than guessing. Never type passwords, one-time codes or payment details, and never dismiss a security or permission prompt: tell the user and wait. The user sees a banner while you work, and any input of their own ends the run; when a result says they took over, stop for this turn and report what you did and what is left. That is normal, not an error.`;
 }
 
 export function stemAssistantInstructions(): string {

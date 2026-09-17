@@ -423,6 +423,7 @@ function DevicesSection() {
                   {/* It said yes to run_command's `device` target — the switch
                       itself lives on that machine, this is just the fact. */}
                   {d.runsCommands && <span className="muted"> · runs commands</span>}
+                  {d.runsComputer && <span className="muted"> · controls screen</span>}
                 </strong>
                 <em>{seenLabel(d.lastSeenAt)}</em>
               </span>

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { Persona, PersonaHarnessPin } from '../../shared/types';
+import type { Persona, PersonaComputerPin, PersonaHarnessPin } from '../../shared/types';
 import { degrade } from '../degrade';
 import { personasStorePath } from './paths';
 import { deletePersonaMemory } from './persona-memory';
@@ -110,6 +110,13 @@ function coerceHarness(raw: unknown): PersonaHarnessPin | undefined {
   return { agent: r.agent.trim(), cwd, ...(device ? { device } : {}), ...(model ? { model } : {}) };
 }
 
+function coerceComputer(raw: unknown): PersonaComputerPin | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const device = typeof r.device === 'string' ? r.device.trim() : '';
+  return device ? { device } : undefined;
+}
+
 /** Reshape one stored/submitted persona; null when it isn't one. */
 function coercePersona(raw: unknown): Persona | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -125,6 +132,8 @@ function coercePersona(raw: unknown): Persona | null {
   if (typeof r.effort === 'string' && r.effort.trim()) persona.effort = r.effort.trim();
   const harness = coerceHarness(r.harness);
   if (harness) persona.harness = harness;
+  const computer = coerceComputer(r.computer);
+  if (computer) persona.computer = computer;
   if (r.lightweight === true) persona.lightweight = true;
   // `canAddPersonas` is the flag's pre-rename spelling — files written before
   // the rename migrate here, on read.
