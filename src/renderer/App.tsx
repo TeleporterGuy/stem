@@ -50,7 +50,7 @@ import { RecallRecommendation } from './RecallRecommendation';
 import { RECALL_DEFAULTS_RELEASE, recommendedRetrievalPatch } from '../shared/recall-recommended';
 import { DropOverlay } from './files/DropOverlay';
 import { useWebSearch } from './webSearch';
-import { useAutoHideScroll } from './hooks/useAutoHideScroll';
+import { useOverlayScrollbar } from './hooks/useOverlayScrollbar';
 import { useOffline } from './hooks/useServerReachable';
 import { useRememberedTab } from './hooks/useRememberedTab';
 import { useShallowStable } from './hooks/useShallowStable';
@@ -186,7 +186,7 @@ export default function App() {
   // returned yet (a brand-new thread isn't listed until its first turn persists).
   // Keyed by threadId; dropped once the real list includes them.
   const [pendingChats, setPendingChats] = useState<Record<string, ChatSummary>>({});
-  const inspectorRef = useAutoHideScroll<HTMLElement>();
+  const inspectorScroll = useOverlayScrollbar();
   // Imperative handle to the active ChatView so the drop overlay can push files
   // ("Add to this conversation") into its composer.
   const chatViewRef = useRef<ChatViewHandle>(null);
@@ -1815,49 +1815,52 @@ export default function App() {
         </div>
       </main>
       {showInspector && (
-        <aside className="inspector" ref={inspectorRef}>
-          <ManagePanel
-            data={displayList}
-            activeThreadId={activeThreadId}
-            chatsTab={chatsTab}
-            onChatsTabChange={setChatsTab}
-            inboxReturn={inboxReturn.row}
-            onDismissInboxReturn={dismissInboxReturn}
-            statuses={threadStatuses}
-            scheduledThreadIds={scheduledThreadIds}
-            approvalThreadIds={approvalThreadIds}
-            models={models}
-            modelId={modelId}
-            onSelectModel={onSelectModel}
-            onOpen={openChat}
-            onNewChat={newConversation}
-            onCreateFolder={onCreateFolder}
-            onRenameFolder={onRenameFolder}
-            onDeleteFolder={onDeleteFolder}
-            onMoveFolder={onMoveFolder}
-            onRenameChat={onRenameChat}
-            onDeleteChat={onDeleteChat}
-            onMoveChat={onMoveChat}
-            onSetRead={onSetRead}
-            onWriteSubject={onWriteSubject}
-            mail={mail}
-            personas={mailApi.personas}
-            activeMailId={mailView?.kind === 'conversation' ? mailView.id : null}
-            onOpenMail={openMail}
-            onComposeMail={composeMail}
-            onMailArchive={mailApi.archive}
-            onMailSnooze={mailApi.snooze}
-            onMailSetRead={mailApi.setRead}
-            onMailMarkAllRead={onMailMarkAllRead}
-            onMailDelete={onMailDelete}
-            mailUnreadCount={inboxUnreadCount}
-            inboxUnreadCount={inboxUnreadCount}
-            activeRunning={cur.running}
-            previewActive={previewActive}
-            previewDraft={previewDraft}
-            onTogglePreview={onTogglePreview}
-            authDeadProvider={authProvider}
-          />
+        <aside className="inspector" ref={inspectorScroll.hostRef}>
+          <div className="inspector-scroll" ref={inspectorScroll.scrollerRef}>
+            <ManagePanel
+              data={displayList}
+              activeThreadId={activeThreadId}
+              chatsTab={chatsTab}
+              onChatsTabChange={setChatsTab}
+              inboxReturn={inboxReturn.row}
+              onDismissInboxReturn={dismissInboxReturn}
+              statuses={threadStatuses}
+              scheduledThreadIds={scheduledThreadIds}
+              approvalThreadIds={approvalThreadIds}
+              models={models}
+              modelId={modelId}
+              onSelectModel={onSelectModel}
+              onOpen={openChat}
+              onNewChat={newConversation}
+              onCreateFolder={onCreateFolder}
+              onRenameFolder={onRenameFolder}
+              onDeleteFolder={onDeleteFolder}
+              onMoveFolder={onMoveFolder}
+              onRenameChat={onRenameChat}
+              onDeleteChat={onDeleteChat}
+              onMoveChat={onMoveChat}
+              onSetRead={onSetRead}
+              onWriteSubject={onWriteSubject}
+              mail={mail}
+              personas={mailApi.personas}
+              activeMailId={mailView?.kind === 'conversation' ? mailView.id : null}
+              onOpenMail={openMail}
+              onComposeMail={composeMail}
+              onMailArchive={mailApi.archive}
+              onMailSnooze={mailApi.snooze}
+              onMailSetRead={mailApi.setRead}
+              onMailMarkAllRead={onMailMarkAllRead}
+              onMailDelete={onMailDelete}
+              mailUnreadCount={inboxUnreadCount}
+              inboxUnreadCount={inboxUnreadCount}
+              activeRunning={cur.running}
+              previewActive={previewActive}
+              previewDraft={previewDraft}
+              onTogglePreview={onTogglePreview}
+              authDeadProvider={authProvider}
+            />
+          </div>
+          <div className="overlay-thumb" ref={inspectorScroll.thumbRef} />
         </aside>
       )}
       <DropOverlay onDropToChat={onDropToChat} target={mailPaneShowing ? 'mail' : 'chat'} />

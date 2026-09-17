@@ -1235,10 +1235,30 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .mdx-form-submit:disabled { opacity: 0.5; cursor: default; }
 
 /* ---- inspector / manage ---- */
-/* scrollbar-gutter: stable reserves the (transparent) 10px track even when the
-   content fits, so opening a persona/MCP detail that overflows no longer shifts
-   everything 10px left when the scrollbar appears. */
-.inspector { background: var(--panel); overflow-y: auto; min-height: 0; scrollbar-gutter: stable; }
+/* The inspector column is a fixed 320px; a classic scrollbar would eat 10px of
+   it whenever a tab overflows. So the native scrollbar is hidden and an overlay
+   thumb (useOverlayScrollbar) is drawn on top of the content instead. */
+.inspector { background: var(--panel); position: relative; overflow: hidden; min-height: 0; }
+.inspector-scroll { height: 100%; overflow-y: auto; scrollbar-width: none; }
+.inspector-scroll::-webkit-scrollbar { display: none; }
+.overlay-thumb {
+  position: absolute;
+  top: 0;
+  right: 2px;
+  width: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ink) 32%, transparent);
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  will-change: transform;
+  user-select: none;
+  touch-action: none;
+}
+.inspector.is-scrolling .overlay-thumb,
+.inspector.is-dragging .overlay-thumb,
+.inspector:hover .overlay-thumb { opacity: 1; }
+.inspector.is-dragging .overlay-thumb,
+.overlay-thumb:hover { background: color-mix(in srgb, var(--ink) 45%, transparent); }
 .manage { display: flex; flex-direction: column; min-height: 100%; }
 
 /* segmented icon switcher (Memory / Skills / MCP) */
@@ -2320,22 +2340,20 @@ button.inbox-return-main:focus-visible { outline: none; box-shadow: var(--shadow
 
 /* Auto-hiding scrollbars: invisible at rest, fading in only while the user
    scrolls (or hovers the pane). The track stays transparent throughout. */
-.messages, .inspector { scrollbar-width: thin; scrollbar-color: transparent transparent; }
-.messages::-webkit-scrollbar, .inspector::-webkit-scrollbar { width: 10px; }
-.messages::-webkit-scrollbar-track, .inspector::-webkit-scrollbar-track { background: transparent; }
-.messages::-webkit-scrollbar-thumb, .inspector::-webkit-scrollbar-thumb {
+.messages { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.messages::-webkit-scrollbar { width: 10px; }
+.messages::-webkit-scrollbar-track { background: transparent; }
+.messages::-webkit-scrollbar-thumb {
   background: transparent;
   border-radius: var(--radius);
   border: 3px solid transparent;
   background-clip: content-box;
   transition: background-color 0.35s ease;
 }
-.messages.is-scrolling, .inspector.is-scrolling,
-.messages:hover, .inspector:hover { scrollbar-color: color-mix(in srgb, var(--ink) 40%, transparent) transparent; }
+.messages.is-scrolling,
+.messages:hover { scrollbar-color: color-mix(in srgb, var(--ink) 40%, transparent) transparent; }
 .messages.is-scrolling::-webkit-scrollbar-thumb,
-.inspector.is-scrolling::-webkit-scrollbar-thumb,
-.messages:hover::-webkit-scrollbar-thumb,
-.inspector:hover::-webkit-scrollbar-thumb {
+.messages:hover::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--ink) 32%, transparent);
   background-clip: content-box;
 }
