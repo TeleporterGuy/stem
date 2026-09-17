@@ -22,10 +22,11 @@ import { readClientSettings } from './settings';
 //     whichever comes first. No signature requirement stands in the way: the
 //     AppImage is one file the user already owns.
 //
-//   manual — the mac and deb builds. macOS refuses to swap in an unsigned app
-//     (Squirrel validates code signatures, and Stem ships unsigned — see
-//     `identity: null` in electron-builder.yml), and a deb belongs to dpkg. So
-//     the most honest thing this install can do is find out and say so: the
+//   manual — the mac and deb builds. Squirrel validates code signatures, and
+//     mac builds were unsigned until 2026-09; they are signed now (see the
+//     `mac` block in electron-builder.yml) but the self-update path has not
+//     been switched on yet, and a deb belongs to dpkg. So the most honest
+//     thing this install can do is find out and say so: the
 //     check is one HTTPS request for where github.com/…/releases/latest
 //     redirects to, which names the newest tag without spending anyone's API
 //     rate limit, and "install" means opening that page.

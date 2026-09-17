@@ -7,6 +7,9 @@ release/
 .DS_Store
 .vite/
 
+# The Swift helper compiled by scripts/build-mac-helper.mjs (source in native/mac/)
+build/native/
+
 # Stem Recall verification probe build output
 .recall-build/
 

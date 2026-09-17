@@ -11,9 +11,10 @@ directories:
 # where to look) and writes latest-linux*.yml beside the artifacts (what it finds
 # there). The build itself never uploads — the dist scripts say `--publish never`
 # and the release workflow attaches these files to the GitHub Release instead.
-# Only the AppImage self-updates; macOS is unsigned (Squirrel refuses unsigned
-# apps) and a deb belongs to dpkg, so both get a notify-and-download-yourself
-# check against the same releases page (src/desktop/updates.ts).
+# Only the AppImage self-updates; macOS stays notify-and-download for now (the
+# app is signed since 2026-09, so Squirrel updates are possible later) and a deb
+# belongs to dpkg, so both get a notify-and-download-yourself check against the
+# same releases page (src/desktop/updates.ts).
 publish:
   provider: github
   owner: join3r
@@ -85,13 +86,32 @@ files:
 # whole repository (src/, tests/, mobile/, docs/, Dockerfile, …) inside the app
 # because of two such lists. Target-specific trimming lives in the hook instead.
 afterPack: scripts/prune-onnxruntime.mjs
+# Compiles native/mac/stem-computer (the computer-control persona's Swift
+# helper) before the mac app is packed; a no-op on every other platform.
+beforePack: scripts/build-mac-helper.mjs
 
 mac:
   target: [dmg, zip]
   category: public.app-category.productivity
-  # Unsigned for now (no Apple Developer ID) — recipients right-click-open or
-  # clear quarantine; notarization is a later follow-up.
-  identity: null
+  # Signed with the Awantech Developer ID and notarized (both required for the
+  # macOS permission grants — Screen Recording, Accessibility, Input Monitoring —
+  # that the computer-control persona needs to survive a rebuild: TCC keys them
+  # off a stable signing identity). electron-builder finds the "Developer ID
+  # Application" identity in the keychain (or CSC_LINK/CSC_KEY_PASSWORD on CI);
+  # notarization reads APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER. With
+  # no identity available the build falls back to unsigned, exactly as before.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: true
+  extendInfo:
+    NSScreenCaptureUsageDescription: Stem captures the screen so a computer-control persona can see what it is doing.
+  # The helper is a Mach-O under Resources; electron-builder signs every binary
+  # it finds in the bundle, so it gets the same identity and hardened runtime.
+  extraResources:
+    - from: build/native/stem-computer
+      to: bin/stem-computer
 
 linux:
   target: [AppImage, deb]
