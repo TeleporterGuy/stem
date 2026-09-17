@@ -902,23 +902,26 @@ function McpTab() {
             ) : hostedHere(s) ? (
               <>
                 <span>{hostStateLine(hostState.status[s.name])}</span>
+                {/* Icon-only with the instant hover label the Memory tab's action
+                    row uses: a native title takes a second to appear, which
+                    reads as an icon with no meaning. */}
                 <button
-                  className="icon-action sm"
+                  className="link-btn icon-only"
+                  data-label={testing === s.name ? 'Connecting…' : 'Test connection'}
                   onClick={() => testHosted(s.name)}
                   disabled={testing === s.name}
-                  title={testing === s.name ? 'Connecting…' : 'Test connection'}
                   aria-label="Test connection"
                 >
-                  <PlugZap size={14} />
+                  <PlugZap size={15} className={testing === s.name ? 'spin' : undefined} />
                 </button>
                 {hostState.approved[s.name] && (
                   <button
-                    className="icon-action sm"
+                    className="link-btn icon-only"
+                    data-label="Stop trusting it"
                     onClick={() => rejectHosted(s.name)}
-                    title="Stop trusting — it will not start here again until approved"
                     aria-label="Stop trusting"
                   >
-                    <ShieldOff size={14} />
+                    <ShieldOff size={15} />
                   </button>
                 )}
               </>

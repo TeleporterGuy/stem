@@ -1374,6 +1374,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 /* How the server is doing, with what can be done about it beside the words. */
 .mcp-state { display: flex; align-items: center; gap: var(--sp-3); max-width: 320px; font-size: var(--fs-12); color: var(--muted); }
 .mcp-state > span { flex: 1; min-width: 0; }
+.mcp-state .link-btn.icon-only { flex: none; }
 /* A question waiting on a person, so it carries the one colour that means "your
    turn" — and it is open whether or not its row is, because a call to action
    you have to find is one most people never see. */
@@ -2816,7 +2817,7 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 .cfolder-learn-confirm .push-row { display: flex; gap: var(--sp-3); justify-content: flex-end; }
 
 /* ---- Scheduled tasks (Tasks tab) ---- */
-.task-item { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-5) var(--sp-6); }
+.task-item { display: flex; flex-direction: column; align-items: stretch; gap: var(--sp-3); padding: var(--sp-5) var(--sp-6); }
 .task-item + .task-item { border-top: 0.5px solid var(--hair); }
 .task-item.paused { opacity: 0.6; }
 .task-head { display: flex; align-items: flex-start; gap: var(--sp-3); }
