@@ -59,6 +59,18 @@ files:
   # in its `files` list for the npm/GitHub page). pi loads its *.ts sources; the
   # marketing assets are pure weight in every artifact.
   - '!node_modules/pi-web-access/*.{mp4,png}'
+  # transformers.js (the recall embedder, server/recall/embed-worker.ts) resolves
+  # through its `node` export to dist/transformers.node.mjs, a webpack build in
+  # which `onnxruntime-web` is an ignored module — only onnxruntime-node and
+  # onnxruntime-common are ever loaded. The browser package (91MB: WebGL/WebGPU
+  # bundles + wasm) and the browser/min/sourcemap variants of transformers' own
+  # dist (48MB, incl. a second copy of the 21MB JSEP wasm) are dead in Node.
+  - '!node_modules/onnxruntime-web/**'
+  - '!node_modules/@huggingface/transformers/dist/*.map'
+  - '!node_modules/@huggingface/transformers/dist/*.min.*'
+  - '!node_modules/@huggingface/transformers/dist/transformers.js'
+  - '!node_modules/@huggingface/transformers/dist/transformers.web.js'
+  - '!node_modules/@huggingface/transformers/dist/ort-wasm-*'
   # NOTE: never exclude pi's dependency tree here (@earendil-works/pi-ai, pi-tui,
   # the provider SDKs it carries: anthropic, aws, google, mistral, openai, …).
   # electron-builder 26 does not copy node_modules as laid out on disk: its
