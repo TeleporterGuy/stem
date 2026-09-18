@@ -80,19 +80,26 @@ jobs:
             release/latest-linux-arm64.yml
 
   mac:
-    runs-on: macos-latest
+    # Standard Apple Silicon runner; release only arm64 installers.
+    runs-on: macos-15
     env:
-      # Signed + notarized when the secrets exist (electron-builder.yml `mac`);
-      # with none of them set electron-builder skips signing and the build is the
-      # unsigned artifact it always was. CSC_LINK is the base64 .p12 of the
+      # Release builds require signing and notarization. CSC_LINK is the base64 .p12 of the
       # "Developer ID Application" certificate; APPLE_API_KEY is the .p8 of an
       # App Store Connect key (written to disk below), the other two its ids.
       CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
       CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CSC_LINK != '' && 'true' || 'false' }}
+      CSC_NAME: 'Awantech s.r.o. (AX23G9CAL9)'
     steps:
+      - name: Require Apple Silicon and release credentials
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          test "$(uname -m)" = arm64
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_API_KEY_P8; do
+            if [ -z "${!name}" ]; then echo "::error::Missing release credential: $name"; exit 1; fi
+          done
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -100,19 +107,30 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Write the notarization key
-        if: ${{ secrets.APPLE_API_KEY_P8 != '' }}
         run: |
-          echo "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          umask 077
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
           echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-      - run: npm run dist:mac -- --arm64 --x64
+      - run: npm run dist:mac -- --arm64 --config.forceCodeSigning=true
+      - name: Verify signed and notarized app
+        run: |
+          app=release/mac-arm64/Stem.app
+          test "$(lipo -archs "$app/Contents/MacOS/Stem")" = arm64
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
       - uses: actions/upload-artifact@v4
         with:
           name: mac
+          if-no-files-found: error
           path: |
-            release/*.dmg
-            release/*.zip
+            release/*-arm64.dmg
+            release/*-arm64-mac.zip
+      - name: Remove temporary notarization key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
 
   publish:
     needs: [linux-x64, mac]
