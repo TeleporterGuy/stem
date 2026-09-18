@@ -113,7 +113,8 @@ jobs:
           echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-      - run: npm run dist:mac -- --arm64 --config.forceCodeSigning=true
+      # Sign while electron-builder's temporary signing keychain is available.
+      - run: npm run dist:mac -- --arm64 --config.forceCodeSigning=true --config.dmg.sign=true
       - name: Verify signed and notarized app
         run: |
           app=release/mac-arm64/Stem.app
@@ -121,10 +122,14 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
+      - name: Notarize and verify final DMG
+        run: bash scripts/notarize-mac-dmg.sh release/*-arm64.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: mac
           if-no-files-found: error
+          # Stapling changes the DMG bytes. Do not publish electron-builder's
+          # earlier DMG blockmap/update metadata; macOS uses manual downloads.
           path: |
             release/*-arm64.dmg
             release/*-arm64-mac.zip
