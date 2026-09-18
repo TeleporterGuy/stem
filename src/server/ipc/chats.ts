@@ -80,6 +80,11 @@ export function registerChatsIpc(deps: IpcDeps): void {
       // meant something, so it stays where the user left it — see shared/inbox.ts.
       chat.updatedAt = listedUpdatedAt(chat, inbox);
     }
+    // The runtime sorted by real mtime; the listed stamps above can move a chat
+    // back weeks (a scheduled run that fired overnight). Sort by what is shown,
+    // or the client's date headers ("Previous 7 Days", "Yesterday", "Previous
+    // 7 Days" again) follow the mtime order while the labels follow the stamp.
+    chats.sort((a, b) => toMs(b.updatedAt) - toMs(a.updatedAt));
     return { chats, folders, inbox };
   };
 
