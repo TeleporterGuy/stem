@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -210,7 +210,6 @@ describe('TaskScheduler catch-up', () => {
       createdAt: future, nextRunAt: future, title: id, ...pins
     });
     // Written raw: the store's own writer would already carry runsAs.
-    const { writeFileSync } = await import('node:fs');
     writeFileSync(STORE, JSON.stringify({ version: 1, tasks: [
       legacy('plain', {}),
       legacy('pinned', { model: 'prov/m', effort: 'high' }),
@@ -276,6 +275,79 @@ describe('TaskScheduler does not flood', () => {
     scheduler.stop();
   });
 }, 10_000);
+
+describe('the one-off prompt rewrite for stores from before fresh-thread runs', () => {
+  const legacyStore = (tasks: Array<{ id: string; prompt: string }>) => {
+    const future = new Date(Date.now() + 60 * 60_000).toISOString();
+    writeFileSync(STORE, JSON.stringify({ version: 1, tasks: tasks.map((t) => ({
+      id: t.id, threadId: 't1', prompt: t.prompt, title: t.prompt, schedule: { kind: 'cron', expr: '0 8 * * *' },
+      enabled: true, createdAt: future, nextRunAt: future
+    })) }));
+  };
+
+  it('rewrites every prompt once, keeps the original for Revert, mails the outcome and moves the store to version 2', async () => {
+    legacyStore([{ id: 'a', prompt: 'compare with earlier reports here' }, { id: 'b', prompt: 'already fine' }]);
+    const asked: string[] = [];
+    const mails: { rewritten: string[]; untouched: string[] }[] = [];
+    const { scheduler } = makeScheduler(new FakeRuntime(), {
+      rewriteForFreshThreads: async (task) => {
+        asked.push(task.id);
+        return task.id === 'a' ? 'Compare against the baseline: nothing known as of June.' : null;
+      },
+      onRewritten: async ({ rewritten, untouched }) => {
+        mails.push({ rewritten: rewritten.map((t) => t.id), untouched: untouched.map((t) => t.id) });
+      }
+    });
+    await scheduler.start();
+    expect(asked).toEqual(['a', 'b']);
+    expect(mails).toEqual([{ rewritten: ['a'], untouched: ['b'] }]);
+    const [a, b] = scheduler.snapshot();
+    expect(a.prompt).toBe('Compare against the baseline: nothing known as of June.');
+    expect(a.title).toBe('Compare against the baseline: nothing known as of June.');
+    expect(a.rewritten).toMatchObject({ original: 'compare with earlier reports here' });
+    expect(b.prompt).toBe('already fine');
+    expect(b.rewritten).toBeUndefined();
+    expect(JSON.parse(readFileSync(STORE, 'utf8')).version).toBe(2);
+    scheduler.stop();
+
+    // A second boot on the saved store does not ask again.
+    const again = makeScheduler(new FakeRuntime(), { rewriteForFreshThreads: async () => 'never' });
+    await again.scheduler.start();
+    expect(again.scheduler.snapshot()[0].prompt).toBe('Compare against the baseline: nothing known as of June.');
+    again.scheduler.stop();
+  });
+
+  it('Revert puts the original back and drops the mark; a user edit drops the mark too', async () => {
+    legacyStore([{ id: 'a', prompt: 'old words' }, { id: 'b', prompt: 'other old words' }]);
+    const { scheduler } = makeScheduler(new FakeRuntime(), {
+      rewriteForFreshThreads: async (task) => `${task.prompt}, spelled out`,
+      onRewritten: async () => {}
+    });
+    await scheduler.start();
+    let [a, b] = await scheduler.revertRewrite('a');
+    expect(a).toMatchObject({ prompt: 'old words', title: 'old words' });
+    expect(a.rewritten).toBeUndefined();
+    expect(b.rewritten).toBeDefined();
+    [a, b] = await scheduler.updatePrompt('b', 'my own words');
+    expect(b.rewritten).toBeUndefined();
+    expect((await readTasks()).map((t) => t.rewritten)).toEqual([undefined, undefined]);
+    scheduler.stop();
+  });
+
+  it('a version-2 store, or no rewrite hook, leaves prompts alone', async () => {
+    await saveTasks([seed({ id: 'a', prompt: 'fine' })]);
+    const asked: string[] = [];
+    const { scheduler } = makeScheduler(new FakeRuntime(), { rewriteForFreshThreads: async (t) => (asked.push(t.id), 'x') });
+    await scheduler.start();
+    expect(asked).toEqual([]);
+    scheduler.stop();
+    legacyStore([{ id: 'a', prompt: 'fine' }]);
+    const bare = makeScheduler(new FakeRuntime(), { rewriteForFreshThreads: undefined });
+    await bare.scheduler.start();
+    expect(bare.scheduler.snapshot()[0].prompt).toBe('fine');
+    bare.scheduler.stop();
+  });
+});
 
 describe('every run gets a fresh thread', () => {
   it('sends no threadId, so the backend mints a session per firing; the origin chat is never written to', async () => {

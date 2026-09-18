@@ -32,8 +32,11 @@ arrives as mail in the Inbox.
 - Each run starts with an empty context: the task’s prompt, the persona it runs
   as (if any), and your memory. Nothing said in the chat that created the task
   carries over, so the prompt has to say everything the run needs. Stem writes
-  prompts that way when it schedules a task; check the **Prompt** field if a run
-  seems to have forgotten something.
+  prompts that way when it schedules a task. Tasks from before this behaviour
+  were rewritten once, on the first start after the update, from the chat each
+  was scheduled from; a mail lists them, and each shows its previous prompt in
+  the Tasks tab with a **Revert to the original** link until you revert or edit
+  it.
 - Runs use the app’s default model and effort, unless the task runs as a persona
   (its model settings apply) or pins a model of its own in **Scheduled tasks**
   (see below).

@@ -1,4 +1,5 @@
 import { TaskScheduler } from '../scheduler';
+import { rewriteTaskPrompt } from '../scheduler/rewrite';
 import { reflectOnDelivery } from '../mail/reflect';
 import { degrade } from '../degrade';
 import { pushTaskAlert } from '../push';
@@ -85,6 +86,31 @@ export function initTaskScheduler(deps: {
         headline: `Failed: ${args.title}`,
         ...(args.threadId ? { threadId: args.threadId } : {}),
         ...(args.personaId ? { personaId: args.personaId } : {})
+      });
+    },
+    // Tasks from before runs had threads of their own get their prompts
+    // rewritten to stand alone, once, and the user gets one mail saying which.
+    rewriteForFreshThreads: (task) => rewriteTaskPrompt(deps.runtime, task),
+    onRewritten: async ({ rewritten, untouched }) => {
+      const lines = [
+        'Scheduled runs now start in a thread of their own, with no view of the chat they were scheduled from. Prompts written for the old behaviour could lean on that chat ("compare with earlier reports in this conversation"), so Stem rewrote them to stand alone.',
+        ''
+      ];
+      if (rewritten.length) {
+        lines.push(`Rewritten (${rewritten.length}):`);
+        for (const t of rewritten) lines.push(`- ${t.title}`);
+        lines.push('', 'Each rewritten task shows its previous prompt in the Tasks tab, with a Revert. Please read the new prompts once — the rewrite keeps the task\'s purpose, but only you know what it was meant to do.');
+      }
+      if (untouched.length) {
+        lines.push('', `Left as they were (${untouched.length}) — the chat could not be read, or the prompt was already self-contained:`);
+        for (const t of untouched) lines.push(`- ${t.title}`);
+        lines.push('', 'If one of these refers to its chat, edit its prompt in the Tasks tab so each run has everything it needs.');
+      }
+      await deps.deliverTaskMail({
+        subject: 'Scheduled task prompts rewritten',
+        body: lines.join('\n'),
+        taskId: 'tasks:rewrite',
+        headline: 'Scheduled task prompts rewritten'
       });
     },
     ...(deps.taskRunThreadIds

@@ -943,6 +943,13 @@ export interface ScheduledTask {
   title: string;
   /** Who and what this task's runs execute as (see {@link TaskRunsAs}). */
   runsAs: TaskRunsAs;
+  /**
+   * Set when Stem rewrote the prompt on the update that gave every run a thread
+   * of its own: the old prompt was written for a run that could read its chat,
+   * and a blind run needs everything spelled out. `original` is the prompt as
+   * it stood, for Revert; cleared by Revert or by the user's own prompt edit.
+   */
+  rewritten?: { at: string; original: string };
 }
 
 /** What the assistant's `schedule_task` tool passes (exactly one of cron/at). */
@@ -3919,6 +3926,8 @@ export interface StemApi {
   updateTaskPrompt(id: string, patch: TaskPromptPatch): Promise<ScheduledTask[]>;
   /** Replace who/what a task's runs execute as. Rejects an unknown persona. Returns the fresh list. */
   updateTaskRunsAs(id: string, patch: TaskRunsAsPatch): Promise<ScheduledTask[]>;
+  /** Put back the prompt a task had before Stem rewrote it for fresh-thread runs. */
+  revertTaskRewrite(id: string): Promise<ScheduledTask[]>;
   /** Fired whenever the task list changes (created/updated/run/deleted). */
   onTasksChanged(listener: (tasks: ScheduledTask[]) => void): () => void;
   /** Fired when the agent calls notify_user during a run — show the prominent alert modal. */

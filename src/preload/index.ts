@@ -153,6 +153,7 @@ const api: StemApi = {
     ipcRenderer.invoke('tasks:updatePrompt', id, patch),
   updateTaskRunsAs: (id: string, patch: TaskRunsAsPatch) =>
     ipcRenderer.invoke('tasks:updateRunsAs', id, patch),
+  revertTaskRewrite: (id: string) => ipcRenderer.invoke('tasks:revertRewrite', id),
   onTasksChanged: (listener: (tasks: ScheduledTask[]) => void) => {
     const handler = (_e: unknown, tasks: ScheduledTask[]) => listener(tasks);
     ipcRenderer.on('tasks:changed', handler);

@@ -145,6 +145,10 @@ export function TasksTab({
     // "A model": nothing to save until one is picked below.
     if (t.runsAs.kind !== 'model') setPickingModel((s) => new Set(s).add(t.id));
   };
+  const revertRewrite = async (t: ScheduledTask) => {
+    setTasks(await window.stem.revertTaskRewrite(t.id));
+    setPromptDrafts((d) => dropDraft(d, t.id));
+  };
   const savePrompt = async (t: ScheduledTask) => {
     const prompt = promptDrafts[t.id];
     if (prompt === undefined) return;
@@ -296,6 +300,20 @@ export function TasksTab({
                       Save prompt
                     </button>
                   </div>
+                )}
+                {/* Stem rewrote this prompt when runs moved into threads of their
+                    own. The old one stays readable here until the user makes the
+                    prompt theirs — by reverting, or by saving an edit. */}
+                {t.rewritten && !promptDirty && (
+                  <details className="task-rewritten">
+                    <summary className="muted">
+                      Rewritten by Stem on {formatWhen(t.rewritten.at)} to stand alone — runs no longer see the chat.{' '}
+                      <button className="link-btn" onClick={(e) => { e.preventDefault(); void revertRewrite(t); }}>
+                        Revert to the original
+                      </button>
+                    </summary>
+                    <pre className="task-rewritten-original">{t.rewritten.original}</pre>
+                  </details>
                 )}
                 <label className="task-field">
                   <span className="task-field-label">

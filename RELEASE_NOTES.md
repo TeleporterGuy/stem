@@ -22,9 +22,11 @@ Maintainer notes:
   task burned a fortune re-reading its own history. Nothing lands in that chat any more: a run
   that has something for you sends mail, and the mail keeps the run's work beneath it; a run
   that finds nothing leaves no trace. Because a run knows nothing of the conversation that
-  created it, Stem now writes task prompts to stand on their own — check the **Prompt** field
-  of an older task if a run seems to have forgotten something. Deleting the originating chat
-  leaves its tasks in place.
+  created it, Stem now writes task prompts to stand on their own — and, once, on the first start
+  after this update, rewrites the prompts of your existing tasks the same way, reading the chat
+  each was scheduled from. One mail lists what was rewritten; each rewritten task keeps its old
+  prompt in the Tasks tab with a **Revert**. Deleting the originating chat leaves its tasks in
+  place.
 - **A task starts failing: one mail.** The first failed run after a good one (or after none)
   sends a mail with the reason; repeated failures stay on the task's row in the Tasks tab, and
   a recovery sends nothing.

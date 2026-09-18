@@ -102,6 +102,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'tasks:updateSchedule': [a.string, a.object],
   'tasks:updatePrompt': [a.string, a.object],
   'tasks:updateRunsAs': [a.string, a.object],
+  'tasks:revertRewrite': [a.string],
   'mcp:add': [a.object],
   'mcp:get': [a.string],
   'mcp:update': [a.object],

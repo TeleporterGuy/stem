@@ -267,6 +267,7 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     const scheduler = deps.scheduler();
     return scheduler ? scheduler.updateRunsAs(id, patch.runsAs) : [];
   });
+  registerServer('tasks:revertRewrite', (_e, id: string) => deps.scheduler()?.revertRewrite(id) ?? []);
 
   // What each chat's shell commands have left on disk. Measured here rather than
   // client-side because the client may be a phone and the disk may be a VPS's.

@@ -9,8 +9,16 @@ import { tasksStorePath } from './paths';
 // than breaking the app. This module is the persistence layer only — the in-memory
 // scheduler (scheduler/index.ts) owns timing and execution.
 
+/**
+ * Store versions: 1 — runs appended to the task's chat, so prompts could lean on
+ * it; 2 — every run gets a fresh thread, prompts must stand alone. A version-1
+ * store read by version-2 code is the one signal that its prompts were written
+ * for the old world (see TaskScheduler.start's rewrite pass).
+ */
+const STORE_VERSION = 2;
+
 interface TasksStore {
-  version: 1;
+  version: number;
   tasks: ScheduledTask[];
 }
 
@@ -95,6 +103,9 @@ function coerce(raw: unknown): ScheduledTask | null {
     createdAt: typeof r.createdAt === 'string' && r.createdAt ? r.createdAt : new Date().toISOString(),
     title: typeof r.title === 'string' && r.title ? r.title : titleFromPrompt(r.prompt),
     runsAs: coerceRunsAs(r.runsAs) ?? legacyRunsAs(r),
+    ...(r.rewritten && typeof r.rewritten === 'object' && typeof r.rewritten.at === 'string' && typeof r.rewritten.original === 'string'
+      ? { rewritten: { at: r.rewritten.at, original: r.rewritten.original } }
+      : {}),
     ...(typeof r.lastRunAt === 'string' ? { lastRunAt: r.lastRunAt } : {}),
     ...(typeof r.nextRunAt === 'string' || r.nextRunAt === null ? { nextRunAt: r.nextRunAt } : {}),
     ...(r.lastStatus === 'ok' || r.lastStatus === 'failed' || r.lastStatus === 'running'
@@ -104,21 +115,38 @@ function coerce(raw: unknown): ScheduledTask | null {
   };
 }
 
-async function loadTasks(): Promise<ScheduledTask[]> {
+async function loadStore(): Promise<{ tasks: ScheduledTask[]; version: number }> {
   const parsed = JSON.parse(await readFile(tasksStorePath(), 'utf8')) as Partial<TasksStore>;
-  return Array.isArray(parsed.tasks) ? parsed.tasks.map(coerce).filter((t): t is ScheduledTask => !!t) : [];
+  return {
+    tasks: Array.isArray(parsed.tasks) ? parsed.tasks.map(coerce).filter((t): t is ScheduledTask => !!t) : [],
+    version: typeof parsed.version === 'number' ? parsed.version : 1
+  };
+}
+
+async function loadTasks(): Promise<ScheduledTask[]> {
+  return (await loadStore()).tasks;
 }
 
 export async function readTasks(): Promise<ScheduledTask[]> {
+  return (await readTasksStore()).tasks;
+}
+
+/**
+ * The tasks plus whether the store predates fresh-thread runs (`legacy`): a
+ * version-1 file, whose prompts were written to be run inside their chat. A
+ * missing store is current — there is nothing in it to rewrite.
+ */
+export async function readTasksStore(): Promise<{ tasks: ScheduledTask[]; legacy: boolean }> {
   try {
-    return await loadTasks();
+    const { tasks, version } = await loadStore();
+    return { tasks, legacy: version < STORE_VERSION };
   } catch (error) {
     // "No tasks" is what a fresh install looks like, so a store that is there and
     // will not read stops every schedule without a word.
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
       degrade('tasks', 'reported no scheduled tasks', error);
     }
-    return [];
+    return { tasks: [], legacy: false };
   }
 }
 
@@ -154,7 +182,7 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
 async function writeTasks(tasks: ScheduledTask[]): Promise<void> {
   const path = tasksStorePath();
   const tmp = `${path}.${randomUUID()}.tmp`;
-  await writeFile(tmp, JSON.stringify({ version: 1, tasks } satisfies TasksStore, null, 2), 'utf8');
+  await writeFile(tmp, JSON.stringify({ version: STORE_VERSION, tasks } satisfies TasksStore, null, 2), 'utf8');
   await rename(tmp, path); // atomic on the same volume
 }
 

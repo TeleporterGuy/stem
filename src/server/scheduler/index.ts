@@ -12,7 +12,7 @@ import { degrade } from '../degrade';
 import { log } from '../log';
 import { noteTurnStart } from '../live-turns';
 import { isValidCron, nextAfter } from './cron';
-import { clipError, coerceRunsAs, readTasks, saveTasks, titleFromPrompt } from '../workspace/tasks';
+import { clipError, coerceRunsAs, readTasksStore, saveTasks, titleFromPrompt } from '../workspace/tasks';
 import { getPersona } from '../workspace/personas';
 import { personaTurnFields } from '../workspace/persona-turn';
 import * as activity from '../activity';
@@ -78,6 +78,14 @@ export interface SchedulerOptions {
    * its mail items) are nobody's now. The mail itself stays.
    */
   onTaskDeleted?: (taskId: string) => Promise<void>;
+  /**
+   * The one-off pass for a tasks store from before runs had threads of their
+   * own (see scheduler/rewrite.ts): answer a self-contained prompt for the
+   * task, or null to leave it as it is. Absent = no pass (tests).
+   */
+  rewriteForFreshThreads?: (task: ScheduledTask) => Promise<string | null>;
+  /** The pass is over: what it rewrote and what it could not. Mail the user. */
+  onRewritten?: (result: { rewritten: ScheduledTask[]; untouched: ScheduledTask[] }) => Promise<void>;
 }
 
 // Timer cap: setTimeout is unreliable over very long delays and across system
@@ -185,7 +193,13 @@ export class TaskScheduler {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
-    this.tasks = await readTasks();
+    const store = await readTasksStore();
+    this.tasks = store.tasks;
+    // A store from before runs had threads of their own: its prompts were
+    // written for runs that could read their chat. Rewrite them once, before
+    // anything fires blind on them. The save below moves the store to the new
+    // version whatever happened, so the pass runs once per install.
+    if (store.legacy && this.tasks.length) await this.rewriteLegacyPrompts();
 
     const now = new Date();
     const overdue: ScheduledTask[] = [];
@@ -210,6 +224,52 @@ export class TaskScheduler {
   stop(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  /**
+   * Every task, in turn, through the host's rewrite; the original prompt is
+   * kept on the task for Revert. Sequential on purpose — each is a model call
+   * over a whole chat, and boot is not the moment to run five at once.
+   */
+  private async rewriteLegacyPrompts(): Promise<void> {
+    const rewrite = this.opts.rewriteForFreshThreads;
+    if (!rewrite) return;
+    const rewritten: ScheduledTask[] = [];
+    const untouched: ScheduledTask[] = [];
+    for (const task of this.tasks) {
+      // quiet: a rewrite that rejects is a task left as it was, and the mail
+      // below names it under "left as they were" — the same outcome as null.
+      const next = await rewrite(task).catch(() => null);
+      if (!next) {
+        untouched.push({ ...task });
+        continue;
+      }
+      task.rewritten = { at: new Date().toISOString(), original: task.prompt };
+      task.prompt = next;
+      task.title = titleFromPrompt(next);
+      log('tasks', 'rewrote a prompt for fresh-thread runs', { task: task.title });
+      rewritten.push({ ...task });
+    }
+    // Persist before the mail goes out: a mail about a rewrite that a crash
+    // then lost would be worse than no mail.
+    await saveTasks(this.tasks);
+    if (this.opts.onRewritten && (rewritten.length || untouched.length)) {
+      await this.opts.onRewritten({ rewritten, untouched }).catch((err) =>
+        degrade('tasks', 'did not mail the user which task prompts were rewritten', err)
+      );
+    }
+  }
+
+  /** Put back the prompt a task had before the rewrite pass; the mark goes with it. */
+  async revertRewrite(id: string): Promise<ScheduledTask[]> {
+    const task = this.tasks.find((t) => t.id === id);
+    if (task?.rewritten) {
+      task.prompt = task.rewritten.original;
+      task.title = titleFromPrompt(task.prompt);
+      delete task.rewritten;
+      await this.persistAndArm();
+    }
+    return this.snapshot();
   }
 
   // ---- public surface (IPC handlers + the TaskBridge build on these) ----
@@ -316,6 +376,9 @@ export class TaskScheduler {
     if (task) {
       task.prompt = next;
       task.title = titleFromPrompt(next);
+      // The user's own words now: the rewrite mark (and its Revert) would only
+      // offer to throw them away.
+      delete task.rewritten;
       await this.persistAndArm();
     }
     return this.snapshot();

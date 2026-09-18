@@ -144,7 +144,9 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<LaunchedApp> 
   const settingsStore = join(userDataDir, 'settings.json');
   const clientStore = join(userDataDir, 'client.json');
   if (opts.seedTasks) {
-    writeFileSync(tasksStorePath, JSON.stringify({ version: 1, tasks: opts.seedTasks }, null, 2));
+    // Version 2: prompts already written for fresh-thread runs, so the
+    // scheduler's one-off rewrite pass has nothing to do with them.
+    writeFileSync(tasksStorePath, JSON.stringify({ version: 2, tasks: opts.seedTasks }, null, 2));
   }
   if (opts.seedSettings) {
     const { server: serverSeed, client: clientSeed } = splitAcrossStores(opts.seedSettings);
