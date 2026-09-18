@@ -20,7 +20,8 @@ import {
   setMailArchived,
   setMailItemResult,
   setMailRead,
-  setMailSnooze
+  setMailSnooze,
+  taskRunThreadIds
 } from '../../src/server/workspace/mail';
 import { mailStorePath } from '../../src/server/workspace/paths';
 import { isUnread, placement } from '../../src/shared/inbox';
@@ -173,6 +174,21 @@ describe('conversations and items', () => {
     expect(await mailSessionThreadIds()).toEqual(new Set(['thread-9']));
   });
 
+  it('a scheduled run\'s thread rides its mail item: hidden from the chat list, released when the task goes', async () => {
+    const c = await createConversation('Watch', ['normal']);
+    await appendMailItem({ conversationId: c.id, from: 'task:t1', to: ['user'], body: 'found it', taskId: 't1', runThreadId: 'run-a' });
+    await appendMailItem({ conversationId: c.id, from: 'task:t1', to: ['user'], body: 'again', taskId: 't1', runThreadId: 'run-b' });
+    await appendMailItem({ conversationId: c.id, from: 'task:t2', to: ['user'], body: 'other task', taskId: 't2', runThreadId: 'run-c' });
+    // Survives the reload coerce.
+    expect((await readMail()).items.map((i) => i.runThreadId)).toEqual(['run-a', 'run-b', 'run-c']);
+    expect(await mailSessionThreadIds()).toEqual(new Set(['run-a', 'run-b', 'run-c']));
+    // Deleting the TASK hands its threads over once; the mail stays.
+    expect((await taskRunThreadIds('t1')).sort()).toEqual(['run-a', 'run-b']);
+    expect(await taskRunThreadIds('t1')).toEqual([]);
+    expect((await readMail()).items).toHaveLength(3);
+    expect(await mailSessionThreadIds()).toEqual(new Set(['run-c']));
+  });
+
   it('a live working status survives reads and unrelated writes; a stale one reads idle', async () => {
     const c = await createConversation('s', ['normal']);
     await setConversationStatus(c.id, 'working');
@@ -211,9 +227,11 @@ describe('conversations and items', () => {
     const c = await createConversation('s', ['normal']);
     await setConversationSession(c.id, 'normal', 'thread-1');
     await appendMailItem({ conversationId: c.id, from: 'user', to: ['normal'], body: 'x' });
+    // A scheduled run's retained thread goes with the mail that kept it.
+    await appendMailItem({ conversationId: c.id, from: 'task:t', to: ['user'], body: 'y', taskId: 't', runThreadId: 'run-1' });
     await setMailArchived([c.id], true);
     const { result, threadIds } = await deleteConversation(c.id);
-    expect(threadIds).toEqual(['thread-1']);
+    expect(threadIds).toEqual(['thread-1', 'run-1']);
     expect(result.conversations).toHaveLength(0);
     expect(result.items).toHaveLength(0);
     expect(result.inbox.entries[c.id]).toBeUndefined();

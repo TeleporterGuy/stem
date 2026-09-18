@@ -37,9 +37,8 @@ import type {
   ScheduledTask,
   ScratchUsageRow,
   SkillsMode,
-  TaskModelPatch,
   TaskPromptPatch,
-  TaskPersonaPatch,
+  TaskRunsAsPatch,
   TaskSchedulePatch
 } from '../../shared/types';
 
@@ -247,8 +246,6 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
 
   // Scheduled tasks. Mutations return the fresh list (like the cfolders handlers).
   registerServer('tasks:list', (): ScheduledTask[] => deps.scheduler()?.snapshot() ?? []);
-  // What a scheduled run of this thread would execute on (Tasks tab "runs on" chip).
-  registerServer('tasks:threadSettings', (_e, threadId: string) => deps.runtime().threadTurnSettings(threadId));
   registerServer('tasks:setEnabled', (_e, id: string, enabled: boolean) => {
     const scheduler = deps.scheduler();
     return scheduler ? scheduler.setEnabled(id, enabled) : [];
@@ -266,13 +263,9 @@ export function registerWorkspaceIpc(deps: IpcDeps): void {
     const scheduler = deps.scheduler();
     return scheduler ? scheduler.updatePrompt(id, patch.prompt) : [];
   });
-  registerServer('tasks:updateModel', (_e, id: string, patch: TaskModelPatch) => {
+  registerServer('tasks:updateRunsAs', (_e, id: string, patch: TaskRunsAsPatch) => {
     const scheduler = deps.scheduler();
-    return scheduler ? scheduler.updateModel(id, patch.model ?? null, patch.effort ?? null) : [];
-  });
-  registerServer('tasks:updatePersona', (_e, id: string, patch: TaskPersonaPatch) => {
-    const scheduler = deps.scheduler();
-    return scheduler ? scheduler.updatePersona(id, patch.personaId ?? null) : [];
+    return scheduler ? scheduler.updateRunsAs(id, patch.runsAs) : [];
   });
 
   // What each chat's shell commands have left on disk. Measured here rather than

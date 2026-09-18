@@ -62,12 +62,15 @@ export function registerChatsIpc(deps: IpcDeps): void {
       getSubjects(),
       getPrivateChats(),
       readInbox(),
-      // The hidden persona sessions behind mail conversations are backend
-      // threads like any other — the Inbox shows them as mail, so the chat
-      // list must not show them again as chats.
+      // The hidden persona sessions behind mail conversations, and the threads
+      // scheduled runs left behind on their mail, are backend threads like any
+      // other — the Inbox shows them as mail, so the chat list must not show
+      // them again as chats.
       mailSessionThreadIds()
     ]);
-    const chats = allChats.filter((chat) => !mailThreads.has(chat.threadId));
+    // A scheduled run in flight is on no mail yet; its thread is hidden all the same.
+    const running = deps.scheduler()?.activeRunThreadId() ?? null;
+    const chats = allChats.filter((chat) => !mailThreads.has(chat.threadId) && chat.threadId !== running);
     const valid = new Set(folders.map((f) => f.id));
     for (const chat of chats) {
       const folderId = assignments[chat.threadId];
@@ -75,13 +78,14 @@ export function registerChatsIpc(deps: IpcDeps): void {
       const subject = subjects[chat.threadId];
       if (subject) chat.subject = subject;
       if (privateChats.has(chat.threadId)) chat.private = true;
-      // A write nobody should notice (a silent scheduled run, a no-op rename)
-      // still moved the file's mtime. List the chat as of the last write that
-      // meant something, so it stays where the user left it — see shared/inbox.ts.
+      // A write nobody should notice (a no-op rename; historically a silent
+      // scheduled run) still moved the file's mtime. List the chat as of the last
+      // write that meant something, so it stays where the user left it — see
+      // shared/inbox.ts.
       chat.updatedAt = listedUpdatedAt(chat, inbox);
     }
     // The runtime sorted by real mtime; the listed stamps above can move a chat
-    // back weeks (a scheduled run that fired overnight). Sort by what is shown,
+    // back weeks (quiet windows from before runs had their own threads). Sort by what is shown,
     // or the client's date headers ("Previous 7 Days", "Yesterday", "Previous
     // 7 Days" again) follow the mtime order while the labels follow the stamp.
     chats.sort((a, b) => toMs(b.updatedAt) - toMs(a.updatedAt));
@@ -137,8 +141,7 @@ export function registerChatsIpc(deps: IpcDeps): void {
     // The title is indexed for search too — reflect the new name right away.
     void reindexChatThread(deps.runtime(), threadId);
     // A real rename is the user's own doing, not new activity: keep the chat
-    // where it was, with whatever read/archive/snooze standing it had. Same
-    // absorber a silent scheduled run gets, for the same reason.
+    // where it was, with whatever read/archive/snooze standing it had.
     if (before) {
       const after = (await deps.runtime().listThreads()).find((t) => t.threadId === threadId);
       const at = Math.max(Date.now(), toMs(after?.updatedAt ?? 0)) + RENAME_GRACE_MS;
@@ -149,16 +152,15 @@ export function registerChatsIpc(deps: IpcDeps): void {
   });
   registerServer('chats:delete', async (_e, threadId: string) => {
     // Independent stores (pi session file vs. folder-assignment JSON) — run concurrently.
-    // Also drop any scheduled tasks bound to this chat (they'd otherwise run into a
-    // missing thread; the scheduler guards against that too, but cleaning up is tidier).
+    // Scheduled tasks created here survive: they only remember this chat as
+    // where they were scheduled from, and run in threads of their own.
     await Promise.all([
       deps.runtime().deleteThread(threadId),
       removeChat(threadId),
       removeInboxEntry(threadId),
       // The chat's scratch folder goes with it — that is the whole point of
       // keeping scratch per chat (see server/exec/scratch.ts).
-      deleteThreadScratch(threadId),
-      deps.scheduler()?.removeForThread(threadId) ?? Promise.resolve()
+      deleteThreadScratch(threadId)
     ]);
     dropChatThread(threadId); // forget it from the search index
   });

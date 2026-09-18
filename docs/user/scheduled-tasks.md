@@ -12,7 +12,8 @@ Maya creates tasks by asking in a chat:
 > or discussed on Reddit. Show only well-liked films, with direct links and visible
 > audience signals.
 
-Future runs and their answers return to that same conversation.
+Every run starts fresh, in a thread of its own, and anything it has for Maya
+arrives as mail in the Inbox.
 
 <!-- TODO(screenshot): Recapture with the two canonical Maya demo tasks. -->
 
@@ -28,15 +29,24 @@ Future runs and their answers return to that same conversation.
 - Stem must be running. If Stem is closed or the computer sleeps, each overdue task
   runs once when Stem can run again.
 - Times use the computer’s local time.
-- Runs use the task chat’s last selected model and effort, unless the task pins its
-  own in **Scheduled tasks** (see below). Speed, output format, and custom
-  instructions do not carry over.
+- Each run starts with an empty context: the task’s prompt, the persona it runs
+  as (if any), and your memory. Nothing said in the chat that created the task
+  carries over, so the prompt has to say everything the run needs. Stem writes
+  prompts that way when it schedules a task; check the **Prompt** field if a run
+  seems to have forgotten something.
+- Runs use the app’s default model and effort, unless the task runs as a persona
+  (its model settings apply) or pins a model of its own in **Scheduled tasks**
+  (see below).
 - Runs can use enabled tools. Web-search tasks request search automatically. Native
   search needs a compatible model; otherwise enable a search-capable tool.
-- Every run and answer is recorded in that chat. Stem speaks up only when the task
-  explicitly asks it to notify you — by default with a pop-up that brings Stem to the
-  front. Settings → App → **Notifications** turns that down to a dock bounce, or to
-  nothing at all; the chat still turns up unread in your Inbox in every case.
+- A run that has something for you sends **mail**: all firings of one task share
+  one conversation in the Inbox, and the run’s full reply is attached beneath the
+  notice once it finishes. A run that finds nothing leaves no trace, and no run ever
+  makes a chat unread. By default the notice also pops up and brings Stem to the
+  front; Settings → App → **Notifications** turns that down to a dock bounce, or to
+  nothing but the mail.
+- When a task starts failing, one mail says so with the reason. Repeated failures
+  are shown on the task’s row instead, and a recovery sends nothing.
 - A one-time task disappears after its scheduled run finishes, even if it fails.
 - Commands needing interactive approval are denied. Use clearly safe commands or a
   narrowly saved allowed prefix.
@@ -55,18 +65,19 @@ Open **Scheduled tasks**, then:
   - **Schedule** — the cron expression (minute hour day month weekday), or the
     date and time of a one-time run. **Save schedule** refuses an expression that
     can never fire, and a time already in the past.
-  - **Runs as** — a persona, or a plain run. A persona run uses that persona’s
-    role prompt, coding-agent pin, private memory, and model settings, and its
-    `notify_user` mails arrive from that persona. Each run also lets the persona
-    save what it learned into its notes, as a mail delivery does.
-  - **Model** and effort — what a plain run executes on. Left on **Chat model**,
-    runs follow whatever model is selected in the task’s chat; pick a model (and
-    optionally an effort) to pin runs of this task to it, regardless of what the
-    chat later switches to. A persona’s own pins take precedence.
-- **Open chat** to inspect its history or change its model.
+  - **Runs as** — one choice: the **app default model**, **a model of its own**
+    (pick the model, and optionally an effort), or a **persona**. A persona run
+    uses that persona’s role prompt, coding-agent pin, private memory, and model
+    settings, and its mails arrive from that persona. Each run also lets the
+    persona save what it learned into its notes, as a mail delivery does. A task
+    never has both a persona and a model pin.
+- **Open chat** opens the chat the task was scheduled from. Runs do not appear
+  there; their work is under the mail they sent, in the Inbox.
 - **Run now** to test it without changing the next scheduled time.
 - **Pause** to keep the task without running it.
-- **Delete** to remove the schedule. Existing chat messages remain.
+- **Delete** to remove the schedule. Its mail stays in the Inbox; the hidden
+  threads its runs left behind are removed.
 
-To replace the instruction or timing, ask Stem in that chat to cancel the task and
-create a new one.
+To replace the instruction or timing, edit the task here, or ask Stem in the chat
+that created it to cancel the task and create a new one. Deleting that chat leaves
+the task in place.

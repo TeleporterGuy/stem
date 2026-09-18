@@ -47,6 +47,7 @@ function coerceItem(raw: unknown): MailItem | null {
     at: num(r.at) ?? 0
   };
   if (typeof r.taskId === 'string' && r.taskId) item.taskId = r.taskId;
+  if (typeof r.runThreadId === 'string' && r.runThreadId) item.runThreadId = r.runThreadId;
   if (typeof r.subject === 'string' && r.subject) item.subject = r.subject;
   if (typeof r.result === 'string' && r.result) item.result = r.result;
   if (r.stale === true) item.stale = true;
@@ -484,11 +485,34 @@ export function setConversationSession(
   });
 }
 
-/** Every hidden persona thread id — the chat list filters these out. */
+/**
+ * Every thread mail owns: persona sessions behind conversations, and the
+ * threads scheduled runs left behind on their mail items. The chat list
+ * filters these out — the Inbox is where they show.
+ */
 export async function mailSessionThreadIds(): Promise<Set<string>> {
-  const { conversations } = await readMail();
+  const { conversations, items } = await readMail();
   const ids = new Set<string>();
   for (const c of conversations) for (const threadId of Object.values(c.sessions)) ids.add(threadId);
+  for (const item of items) if (item.runThreadId) ids.add(item.runThreadId);
+  return ids;
+}
+
+/**
+ * The threads a scheduled task's runs left behind (one per mail-sending
+ * firing), for deletion when the TASK goes. The mail stays, and so does its
+ * Work record — only the transcript nobody can reach any more is dropped. The
+ * ids come off the items too, so a second call answers nothing.
+ */
+export async function taskRunThreadIds(taskId: string): Promise<string[]> {
+  const ids: string[] = [];
+  await update((store) => {
+    for (const item of store.items) {
+      if (item.taskId !== taskId || !item.runThreadId) continue;
+      ids.push(item.runThreadId);
+      delete item.runThreadId;
+    }
+  });
   return ids;
 }
 
@@ -499,6 +523,8 @@ export async function deleteConversation(id: string): Promise<{ result: MailList
   const result = await update((store) => {
     const conversation = store.conversations.find((c) => c.id === id);
     threadIds = conversation ? Object.values(conversation.sessions) : [];
+    // A scheduled run's thread goes with the mail that kept it.
+    for (const item of store.items) if (item.conversationId === id && item.runThreadId) threadIds.push(item.runThreadId);
     store.conversations = store.conversations.filter((c) => c.id !== id);
     store.items = store.items.filter((i) => i.conversationId !== id);
     delete store.inbox.entries[id];

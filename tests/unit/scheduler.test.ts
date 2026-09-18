@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../src/server/mail/work', () => ({
   beginMailWork: async (_runtime: unknown, input: { turnId: string }) => ({
     run: { turnId: input.turnId },
+    bindThread: () => {},
     finish: async () => {}
   })
 }));
@@ -21,27 +22,29 @@ const STORE = join(tmpdir(), `stem-tasks-${process.pid}.json`);
 process.env.STEM_TASKS_STORE = STORE;
 
 import type { ScheduledTask, StartTurnInput } from '../../src/shared/types';
-import { isContextOverflowError, TaskScheduler } from '../../src/server/scheduler';
+import { TaskScheduler, type SchedulerOptions } from '../../src/server/scheduler';
 import { readTasks, saveTasks } from '../../src/server/workspace/tasks';
 
-// A minimal ChatBackend stand-in: records startTurn calls, emits the turn/completed
-// event the scheduler waits on, and reports one existing thread.
+// A minimal ChatBackend stand-in: records startTurn calls, mints a fresh thread
+// per call (as pi does when no threadId comes in), emits the turn/completed event
+// the scheduler waits on, and records thread deletions.
 class FakeRuntime extends EventEmitter {
   starts: StartTurnInput[] = [];
-  threadIds = new Set<string>(['t1']);
+  deleted: string[] = [];
+  threadOf(n: number): string {
+    return `run-${n}`;
+  }
   async startTurn(input: StartTurnInput) {
     this.starts.push(input);
-    const turnId = `turn-${this.starts.length}`;
+    const n = this.starts.length;
+    const turnId = `turn-${n}`;
+    const threadId = this.threadOf(n);
     // Settle on the next tick so waitForSettle's listener is attached first.
-    setTimeout(() => this.emit('event', { method: 'turn/completed', params: { threadId: input.threadId, turn: { id: turnId } } }), 0);
-    return { threadId: input.threadId, turnId };
+    setTimeout(() => this.emit('event', { method: 'turn/completed', params: { threadId, turn: { id: turnId } } }), 0);
+    return { threadId, turnId };
   }
-  async listThreads() {
-    return [...this.threadIds].map((threadId) => ({ threadId, title: '', folderId: null, createdAt: 0, updatedAt: 0 }));
-  }
-  compacts: string[] = [];
-  async compactThread(threadId: string) {
-    this.compacts.push(threadId);
+  async deleteThread(threadId: string) {
+    this.deleted.push(threadId);
   }
 }
 
@@ -53,39 +56,41 @@ class ScriptedRuntime extends FakeRuntime {
   }
   override async startTurn(input: StartTurnInput) {
     this.starts.push(input);
-    const turnId = `turn-${this.starts.length}`;
-    const error = this.outcomes[this.starts.length - 1] ?? null;
+    const n = this.starts.length;
+    const turnId = `turn-${n}`;
+    const threadId = this.threadOf(n);
+    const error = this.outcomes[n - 1] ?? null;
     setTimeout(() => {
       if (error) {
-        this.emit('event', {
-          method: 'turn/failed',
-          params: { threadId: input.threadId, turn: { id: turnId }, error }
-        });
+        this.emit('event', { method: 'turn/failed', params: { threadId, turn: { id: turnId }, error } });
       } else {
-        this.emit('event', { method: 'turn/completed', params: { threadId: input.threadId, turn: { id: turnId } } });
+        this.emit('event', { method: 'turn/completed', params: { threadId, turn: { id: turnId } } });
       }
     }, 0);
-    return { threadId: input.threadId, turnId };
+    return { threadId, turnId };
   }
 }
 
-const OVERFLOW_ERROR = 'Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.';
-
-function makeScheduler(runtime: EventEmitter) {
+function makeScheduler(runtime: EventEmitter, extra: Partial<SchedulerOptions> = {}) {
   const changes: ScheduledTask[][] = [];
-  const runs: unknown[] = [];
-  const silent: { threadId: string; before: number; at: number }[] = [];
   const reflections: { personaId: string; assignment: string; threadId: string }[] = [];
+  const failures: { taskId: string; title: string; threadId?: string; personaId?: string; error: string }[] = [];
+  const deletedTasks: string[] = [];
   const scheduler = new TaskScheduler({
     runtime: runtime as never,
     onChange: (tasks) => changes.push(tasks),
-    onRun: (run) => runs.push(run),
-    onSilentRun: (threadId, before, at) => silent.push({ threadId, before, at }),
     reflect: async (args) => {
       reflections.push(args);
-    }
+    },
+    onFailureTransition: async (args) => {
+      failures.push(args);
+    },
+    onTaskDeleted: async (taskId) => {
+      deletedTasks.push(taskId);
+    },
+    ...extra
   });
-  return { scheduler, changes, runs, silent, reflections };
+  return { scheduler, changes, reflections, failures, deletedTasks };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 5));
@@ -105,6 +110,16 @@ async function until(cond: () => boolean | Promise<boolean>, label: string, time
 /** The status the store has actually persisted for the first (usually only) task. */
 const storedStatus = async () => (await readTasks())[0]?.lastStatus;
 
+const seed = (patch: Partial<ScheduledTask> & { id: string; prompt: string }): ScheduledTask => ({
+  threadId: 't1',
+  schedule: { kind: 'cron', expr: '0 8 * * *' },
+  enabled: true,
+  createdAt: new Date().toISOString(),
+  title: patch.prompt,
+  runsAs: { kind: 'default' },
+  ...patch
+});
+
 beforeEach(() => rmSync(STORE, { force: true }));
 afterEach(() => {
   vi.useRealTimers();
@@ -112,15 +127,19 @@ afterEach(() => {
 });
 
 describe('TaskScheduler.create', () => {
-  it('creates a cron task with a future next-run', async () => {
+  it('creates a cron task with a future next-run, scheduled from the calling thread', async () => {
     const runtime = new FakeRuntime();
     const { scheduler } = makeScheduler(runtime);
     const res = await scheduler.create({ prompt: 'do it', cron: '0 8 * * *' }, 't1');
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.task.schedule).toEqual({ kind: 'cron', expr: '0 8 * * *' });
+    expect(res.task.threadId).toBe('t1');
+    expect(res.task.runsAs).toEqual({ kind: 'default' });
     expect(res.task.nextRunAt).toBeTruthy();
     expect(new Date(res.task.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
+    expect(scheduler.listForThread('t1').map((t) => t.id)).toEqual([res.task.id]);
+    expect(scheduler.listForThread('elsewhere')).toEqual([]);
     // Persisted.
     expect((await readTasks())).toHaveLength(1);
     scheduler.stop();
@@ -139,22 +158,6 @@ describe('TaskScheduler.create', () => {
     expect((await scheduler.create({ prompt: 'x', at: new Date(Date.now() + 60_000).toISOString() }, 't1')).ok).toBe(true);
     scheduler.stop();
   });
-});
-
-describe('tasks scheduled from a hidden mail session', () => {
-  it('create keeps the origin, and listForThread answers for both the chat and the origin', async () => {
-    const { scheduler } = makeScheduler(new FakeRuntime());
-    const res = await scheduler.create({ prompt: 'draft replies', cron: '0 8 * * *' }, 'fresh-chat', { threadId: 'mail-session' });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.task.threadId).toBe('fresh-chat');
-    expect(res.task.originThreadId).toBe('mail-session');
-    expect(scheduler.listForThread('fresh-chat').map((t) => t.id)).toEqual([res.task.id]);
-    expect(scheduler.listForThread('mail-session').map((t) => t.id)).toEqual([res.task.id]);
-    expect(scheduler.listForThread('elsewhere')).toEqual([]);
-    expect((await readTasks())[0].originThreadId).toBe('mail-session');
-    scheduler.stop();
-  });
 
   it('validate refuses what create refuses, without writing anything', async () => {
     const { scheduler } = makeScheduler(new FakeRuntime());
@@ -165,79 +168,21 @@ describe('tasks scheduled from a hidden mail session', () => {
     expect(await readTasks()).toEqual([]);
     scheduler.stop();
   });
-
-  it('start moves a task still bound to a hidden session into the chat the host adopts, once', async () => {
-    const past = new Date(Date.now() + 60 * 60_000).toISOString();
-    await saveTasks([
-      { id: 'a', threadId: 'mail-session', prompt: 'draft replies', schedule: { kind: 'cron', expr: '0 8 * * *' }, enabled: true, createdAt: past, nextRunAt: past, title: 'draft replies' },
-      { id: 'b', threadId: 't1', prompt: 'leave me', schedule: { kind: 'cron', expr: '0 8 * * *' }, enabled: true, createdAt: past, nextRunAt: past, title: 'leave me' }
-    ]);
-    const runtime = new FakeRuntime();
-    const asked: string[] = [];
-    const scheduler = new TaskScheduler({
-      runtime: runtime as never,
-      onChange: () => {},
-      onRun: () => {},
-      rehomeHiddenThread: async (task) => {
-        asked.push(task.id);
-        return task.threadId === 'mail-session' ? 'fresh-chat' : null;
-      }
-    });
-    await scheduler.start();
-    const after = await readTasks();
-    expect(asked.sort()).toEqual(['a', 'b']);
-    expect(after.find((t) => t.id === 'a')).toMatchObject({ threadId: 'fresh-chat', originThreadId: 'mail-session' });
-    expect(after.find((t) => t.id === 'b')).toMatchObject({ threadId: 't1' });
-    expect(after.find((t) => t.id === 'b')!.originThreadId).toBeUndefined();
-    expect(scheduler.listForThread('mail-session').map((t) => t.id)).toEqual(['a']);
-    scheduler.stop();
-  });
-
-  it('start leaves a task alone when the host cannot adopt a chat for it this boot', async () => {
-    const past = new Date(Date.now() + 60 * 60_000).toISOString();
-    await saveTasks([
-      { id: 'a', threadId: 'mail-session', prompt: 'draft replies', schedule: { kind: 'cron', expr: '0 8 * * *' }, enabled: true, createdAt: past, nextRunAt: past, title: 'draft replies' }
-    ]);
-    const scheduler = new TaskScheduler({
-      runtime: new FakeRuntime() as never,
-      onChange: () => {},
-      onRun: () => {},
-      rehomeHiddenThread: async () => {
-        throw new Error('backend not up');
-      }
-    });
-    await scheduler.start();
-    expect((await readTasks())[0]).toMatchObject({ threadId: 'mail-session' });
-    scheduler.stop();
-  });
 });
 
 describe('TaskScheduler catch-up', () => {
   it('runs an overdue task exactly once on start', async () => {
     // Seed a task whose persisted nextRunAt is in the past (missed during downtime).
     const past = new Date(Date.now() - 60_000).toISOString();
-    await saveTasks([
-      {
-        id: 'a',
-        threadId: 't1',
-        prompt: 'catch me up',
-        schedule: { kind: 'cron', expr: '0 8 * * *' },
-        enabled: true,
-        createdAt: past,
-        nextRunAt: past,
-        title: 'catch me up'
-      }
-    ]);
+    await saveTasks([seed({ id: 'a', prompt: 'catch me up', createdAt: past, nextRunAt: past })]);
 
     const runtime = new FakeRuntime();
-    const { scheduler, runs } = makeScheduler(runtime);
+    const { scheduler } = makeScheduler(runtime);
     await scheduler.start();
     await until(async () => (await storedStatus()) === 'ok', 'the catch-up run to be recorded');
 
     expect(runtime.starts).toHaveLength(1);
-    expect(runtime.starts[0].threadId).toBe('t1');
     expect(runtime.starts[0].scheduled).toBeTruthy();
-    expect(runs).toHaveLength(1);
 
     // After the catch-up run, nextRunAt is recomputed into the future (no re-run).
     const after = await readTasks();
@@ -249,24 +194,35 @@ describe('TaskScheduler catch-up', () => {
 
   it('does not catch up a task whose next-run is still in the future', async () => {
     const future = new Date(Date.now() + 60 * 60_000).toISOString();
-    await saveTasks([
-      {
-        id: 'b',
-        threadId: 't1',
-        prompt: 'later',
-        schedule: { kind: 'cron', expr: '0 8 * * *' },
-        enabled: true,
-        createdAt: future,
-        nextRunAt: future,
-        title: 'later'
-      }
-    ]);
+    await saveTasks([seed({ id: 'b', prompt: 'later', createdAt: future, nextRunAt: future })]);
     const runtime = new FakeRuntime();
     const { scheduler } = makeScheduler(runtime);
     await scheduler.start();
     await flush();
     expect(runtime.starts).toHaveLength(0);
     scheduler.stop();
+  });
+
+  it('reads tasks saved before runsAs existed, folding the old pins into the one choice', async () => {
+    const future = new Date(Date.now() + 60 * 60_000).toISOString();
+    const legacy = (id: string, pins: Record<string, unknown>) => ({
+      id, threadId: 't1', prompt: id, schedule: { kind: 'cron', expr: '0 8 * * *' }, enabled: true,
+      createdAt: future, nextRunAt: future, title: id, ...pins
+    });
+    // Written raw: the store's own writer would already carry runsAs.
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(STORE, JSON.stringify({ version: 1, tasks: [
+      legacy('plain', {}),
+      legacy('pinned', { model: 'prov/m', effort: 'high' }),
+      // Persona AND model used to coexist with the model ignored; the persona wins.
+      legacy('persona', { personaId: 'verifier', model: 'prov/m' })
+    ] }));
+    const tasks = await readTasks();
+    expect(tasks.map((t) => t.runsAs)).toEqual([
+      { kind: 'default' },
+      { kind: 'model', model: 'prov/m', effort: 'high' },
+      { kind: 'persona', personaId: 'verifier' }
+    ]);
   });
 });
 
@@ -290,32 +246,19 @@ describe('TaskScheduler does not flood', () => {
         // Settle after 600ms — longer than the re-arm interval, so a buggy tick has
         // multiple chances to re-enqueue this still-"due" task before it clears.
         setTimeout(
-          () => this.emit('event', { method: 'turn/completed', params: { threadId: input.threadId, turn: { id: turnId } } }),
+          () => this.emit('event', { method: 'turn/completed', params: { threadId: 'run-1', turn: { id: turnId } } }),
           600
         );
-        return { threadId: input.threadId, turnId };
+        return { threadId: 'run-1', turnId };
       }
-      async listThreads() {
-        return [{ threadId: 't1', title: '', folderId: null, createdAt: 0, updatedAt: 0 }];
-      }
+      async deleteThread() {}
     }
 
     // A one-time task armed ~1.2s out: comfortably past the catch-up slop (so start()
     // arms the live timer instead of running it immediately), but soon enough to keep
     // the test short. A once-task also dodges cron's minute-boundary variability.
     const at = new Date(Date.now() + 1200).toISOString();
-    await saveTasks([
-      {
-        id: 'flood',
-        threadId: 't1',
-        prompt: 'ping',
-        schedule: { kind: 'once', at },
-        enabled: true,
-        createdAt: new Date().toISOString(),
-        nextRunAt: at,
-        title: 'ping'
-      }
-    ]);
+    await saveTasks([seed({ id: 'flood', prompt: 'ping', schedule: { kind: 'once', at }, nextRunAt: at })]);
 
     const runtime = new SlowRuntime();
     const { scheduler } = makeScheduler(runtime);
@@ -334,6 +277,87 @@ describe('TaskScheduler does not flood', () => {
   });
 }, 10_000);
 
+describe('every run gets a fresh thread', () => {
+  it('sends no threadId, so the backend mints a session per firing; the origin chat is never written to', async () => {
+    const runtime = new FakeRuntime();
+    const { scheduler } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'now', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await until(async () => (await storedStatus()) === 'ok', 'the first run to be recorded');
+    scheduler.runNow(res.task.id);
+    await until(() => runtime.starts.length === 2 && runtime.deleted.length === 2, 'the second run to settle');
+    for (const start of runtime.starts) {
+      expect('threadId' in start).toBe(false);
+      expect(start.scheduled?.taskId).toBe(res.task.id);
+      expect(start.webSearch).toBe(true);
+    }
+    // Neither run notified: both fresh threads are gone, and t1 was never touched.
+    expect(runtime.deleted).toEqual(['run-1', 'run-2']);
+    expect((await readTasks())[0].threadId).toBe('t1');
+    scheduler.stop();
+  });
+
+  it('keeps the thread of a run that called notify_user — the mail points at it', async () => {
+    const runtime = new NotifyingRuntime();
+    const { scheduler } = makeScheduler(runtime);
+    runtime.scheduler = scheduler;
+    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await until(async () => (await storedStatus()) === 'ok', 'the run to be recorded');
+    await flush();
+    expect(runtime.deleted).toEqual([]);
+    scheduler.stop();
+  });
+
+  it('ignores a notify_user from some other thread: that run\'s thread is still disposed of', async () => {
+    const runtime = new FakeRuntime();
+    const { scheduler } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.noteNotify('someone-else');
+    scheduler.runNow(res.task.id);
+    await until(() => runtime.deleted.length === 1, 'the run thread to be deleted');
+    expect(runtime.deleted).toEqual(['run-1']);
+    scheduler.stop();
+  });
+
+  it('disposes through the host\'s deleteThread when given one (it also forgets the search index)', async () => {
+    const runtime = new FakeRuntime();
+    const discarded: string[] = [];
+    const { scheduler } = makeScheduler(runtime, {
+      deleteThread: async (id) => {
+        discarded.push(id);
+      }
+    });
+    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await until(() => discarded.length === 1, 'the host to be asked');
+    expect(discarded).toEqual(['run-1']);
+    expect(runtime.deleted).toEqual([]);
+    scheduler.stop();
+  });
+
+  it('runningTask answers for the run\'s own thread only', async () => {
+    const runtime = new HangingRuntime();
+    const { scheduler } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'p', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await until(() => runtime.listenerCount('event') > 0, 'the run to await its settle');
+    expect(scheduler.runningTask('run-1')?.id).toBe(res.task.id);
+    expect(scheduler.runningTask('t1')).toBeNull();
+    // …and the chat list asks for it by this name, to hide it while it runs.
+    expect(scheduler.activeRunThreadId()).toBe('run-1');
+    runtime.settle('turn-1');
+    await until(async () => (await storedStatus()) === 'ok', 'the run to settle');
+    expect(scheduler.activeRunThreadId()).toBeNull();
+    scheduler.stop();
+  });
+});
+
 describe('TaskScheduler.runNow + management', () => {
   it('runs a task immediately and records the outcome', async () => {
     const runtime = new FakeRuntime();
@@ -348,10 +372,10 @@ describe('TaskScheduler.runNow + management', () => {
     scheduler.stop();
   });
 
-  // A run that dies before its turn ever starts — the chat cannot be opened, the
-  // backend will not spawn — used to leave "failed" in the Tasks tab and not one
-  // word anywhere else, because the throw was caught and dropped. That is how a
-  // migrated server ran every scheduled task into the ground for days unnoticed.
+  // A run that dies before its turn ever starts — the backend will not spawn —
+  // used to leave "failed" in the Tasks tab and not one word anywhere else,
+  // because the throw was caught and dropped. That is how a migrated server ran
+  // every scheduled task into the ground for days unnoticed.
   it('keeps why a run failed, and drops it once one succeeds', async () => {
     const runtime = new FakeRuntime();
     let refuse = true;
@@ -375,60 +399,9 @@ describe('TaskScheduler.runNow + management', () => {
     scheduler.stop();
   });
 
-  it('disables a task whose thread no longer exists instead of running it', async () => {
+  it('pause/resume and delete update the store; delete hands the task\'s run threads over', async () => {
     const runtime = new FakeRuntime();
-    runtime.threadIds.clear(); // t1 is gone
-    const { scheduler } = makeScheduler(runtime);
-    const res = await scheduler.create({ prompt: 'orphan', cron: '0 8 * * *' }, 't1');
-    if (!res.ok) throw new Error('create failed');
-    scheduler.runNow(res.task.id);
-    await until(async () => (await storedStatus()) === 'failed', 'the orphaned task to be disabled');
-    expect(runtime.starts).toHaveLength(0);
-    const after = await readTasks();
-    expect(after[0].enabled).toBe(false);
-    expect(after[0].lastStatus).toBe('failed');
-    scheduler.stop();
-  });
-
-  // The per-task model pin (Tasks tab): persisted on the task, carried into every
-  // run as an explicit startTurn model/effort, and cleared back to "the chat's
-  // model" with nulls — an unpinned task must keep sending no model at all, since
-  // absence is what makes the runtime fall back to the thread's own.
-  it('pins a model/effort onto runs and clears it back to the thread default', async () => {
-    const runtime = new FakeRuntime();
-    const { scheduler } = makeScheduler(runtime);
-    const res = await scheduler.create({ prompt: 'digest', cron: '0 8 * * *' }, 't1');
-    if (!res.ok) throw new Error('create failed');
-    const id = res.task.id;
-
-    // Unpinned: the run carries no model/effort keys.
-    scheduler.runNow(id);
-    await until(() => runtime.starts.length === 1, 'the unpinned run');
-    expect('model' in runtime.starts[0]).toBe(false);
-    expect('effort' in runtime.starts[0]).toBe(false);
-
-    let list = await scheduler.updateModel(id, 'openai-codex/gpt-5.6-sol', 'high');
-    expect(list[0]).toMatchObject({ model: 'openai-codex/gpt-5.6-sol', effort: 'high' });
-    expect((await readTasks())[0]).toMatchObject({ model: 'openai-codex/gpt-5.6-sol', effort: 'high' });
-
-    scheduler.runNow(id);
-    await until(() => runtime.starts.length === 2, 'the pinned run');
-    expect(runtime.starts[1]).toMatchObject({ model: 'openai-codex/gpt-5.6-sol', effort: 'high' });
-
-    list = await scheduler.updateModel(id, null, null);
-    expect(list[0].model).toBeUndefined();
-    expect(list[0].effort).toBeUndefined();
-    expect((await readTasks())[0].model).toBeUndefined();
-
-    scheduler.runNow(id);
-    await until(() => runtime.starts.length === 3, 'the cleared run');
-    expect('model' in runtime.starts[2]).toBe(false);
-    scheduler.stop();
-  });
-
-  it('pause/resume and delete update the store', async () => {
-    const runtime = new FakeRuntime();
-    const { scheduler } = makeScheduler(runtime);
+    const { scheduler, deletedTasks } = makeScheduler(runtime);
     const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
     if (!res.ok) throw new Error('create failed');
     const id = res.task.id;
@@ -444,18 +417,77 @@ describe('TaskScheduler.runNow + management', () => {
     list = await scheduler.remove(id);
     expect(list).toHaveLength(0);
     expect(await readTasks()).toHaveLength(0);
+    expect(deletedTasks).toEqual([id]);
+    // Removing what is not there hands nothing over.
+    await scheduler.remove(id);
+    expect(deletedTasks).toEqual([id]);
+    scheduler.stop();
+  });
+});
+
+describe('first-failure mail', () => {
+  it('mails once when a task starts failing, stays quiet on repeats, and says nothing on recovery', async () => {
+    const runtime = new ScriptedRuntime(['boom one', 'boom two', null, 'boom three']);
+    const { scheduler, failures } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    const runAndWait = async (n: number, status: 'ok' | 'failed') => {
+      scheduler.runNow(res.task.id);
+      await until(async () => runtime.starts.length === n && (await storedStatus()) === status, `run ${n}`);
+    };
+    await runAndWait(1, 'failed');
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ taskId: res.task.id, title: 'watch', threadId: 'run-1', error: 'boom one' });
+    // The failure mail keeps the failed run's thread; nothing else does.
+    expect(runtime.deleted).toEqual([]);
+
+    await runAndWait(2, 'failed');
+    expect(failures).toHaveLength(1);
+    await until(() => runtime.deleted.includes('run-2'), 'the repeat failure\'s thread to be deleted');
+
+    await runAndWait(3, 'ok');
+    expect(failures).toHaveLength(1);
+
+    await runAndWait(4, 'failed');
+    expect(failures).toHaveLength(2);
+    expect(failures[1]).toMatchObject({ threadId: 'run-4', error: 'boom three' });
+    scheduler.stop();
+  });
+
+  it('a failure before the turn had a thread mails without one', async () => {
+    const runtime = new FakeRuntime();
+    runtime.startTurn = async () => {
+      throw new Error('backend down');
+    };
+    const { scheduler, failures } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await until(async () => (await storedStatus()) === 'failed', 'the failure');
+    expect(failures).toHaveLength(1);
+    expect(failures[0].threadId).toBeUndefined();
+    expect(failures[0].error).toMatch(/backend down/);
     scheduler.stop();
   });
 });
 
 // A runtime whose run raises a notify_user alert mid-turn — the task bridge routes
-// the tool call to noteNotify, which is what marks the run as having found something.
+// the tool call to noteNotify with the run's own thread, which is what marks the
+// run as having found something.
 class NotifyingRuntime extends FakeRuntime {
   scheduler: TaskScheduler | null = null;
   override async startTurn(input: StartTurnInput) {
-    const started = await super.startTurn(input);
-    if (input.threadId) this.scheduler?.noteNotify(input.threadId);
-    return started;
+    this.starts.push(input);
+    const n = this.starts.length;
+    const turnId = `turn-${n}`;
+    const threadId = this.threadOf(n);
+    // The bridge fires while the run is under way — after the scheduler learned
+    // the thread from startTurn's result, before the turn settles.
+    setTimeout(() => {
+      this.scheduler?.noteNotify(threadId);
+      this.emit('event', { method: 'turn/completed', params: { threadId, turn: { id: turnId } } });
+    }, 0);
+    return { threadId, turnId };
   }
 }
 
@@ -493,6 +525,58 @@ describe('Tasks tab editor', () => {
     expect(new Date(task.nextRunAt!).getDay()).toBe(1);
     scheduler.stop();
   });
+
+  // The per-task "runs as" choice (Tasks tab): a model pin is carried into every
+  // run as an explicit startTurn model/effort; the default sends no model at all,
+  // since absence is what leaves the run on the app default.
+  it('updateRunsAs pins a model/effort onto runs and clears it back to the default', async () => {
+    const runtime = new FakeRuntime();
+    const { scheduler } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'digest', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    const id = res.task.id;
+
+    // Default: the run carries no model/effort keys.
+    scheduler.runNow(id);
+    await until(() => runtime.starts.length === 1, 'the unpinned run');
+    expect('model' in runtime.starts[0]).toBe(false);
+    expect('effort' in runtime.starts[0]).toBe(false);
+
+    let list = await scheduler.updateRunsAs(id, { kind: 'model', model: 'openai-codex/gpt-5.6-sol', effort: 'high' });
+    expect(list[0].runsAs).toEqual({ kind: 'model', model: 'openai-codex/gpt-5.6-sol', effort: 'high' });
+    expect((await readTasks())[0].runsAs).toEqual({ kind: 'model', model: 'openai-codex/gpt-5.6-sol', effort: 'high' });
+
+    scheduler.runNow(id);
+    await until(() => runtime.starts.length === 2, 'the pinned run');
+    expect(runtime.starts[1]).toMatchObject({ model: 'openai-codex/gpt-5.6-sol', effort: 'high' });
+    expect(runtime.starts[1].persona).toBeUndefined();
+
+    list = await scheduler.updateRunsAs(id, { kind: 'default' });
+    expect(list[0].runsAs).toEqual({ kind: 'default' });
+
+    scheduler.runNow(id);
+    await until(() => runtime.starts.length === 3, 'the cleared run');
+    expect('model' in runtime.starts[2]).toBe(false);
+    scheduler.stop();
+  });
+
+  it('updateRunsAs is one choice: a persona replaces a model pin outright, and vice versa; junk is refused', async () => {
+    const runtime = new FakeRuntime();
+    const { scheduler } = makeScheduler(runtime);
+    const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    const id = res.task.id;
+    await scheduler.updateRunsAs(id, { kind: 'model', model: 'prov/m', effort: 'low' });
+    let [task] = await scheduler.updateRunsAs(id, { kind: 'persona', personaId: 'verifier' });
+    expect(task.runsAs).toEqual({ kind: 'persona', personaId: 'verifier' });
+    [task] = await scheduler.updateRunsAs(id, { kind: 'model', model: 'prov/other' });
+    expect(task.runsAs).toEqual({ kind: 'model', model: 'prov/other' });
+    await expect(scheduler.updateRunsAs(id, { kind: 'persona', personaId: 'ghost' })).rejects.toThrow(/No persona/);
+    await expect(scheduler.updateRunsAs(id, { kind: 'model', model: '' } as never)).rejects.toThrow(/Choose/);
+    await expect(scheduler.updateRunsAs(id, { kind: 'bogus' } as never)).rejects.toThrow(/Choose/);
+    expect((await readTasks())[0].runsAs).toEqual({ kind: 'model', model: 'prov/other' });
+    scheduler.stop();
+  });
 });
 
 describe('schedule-as-persona', () => {
@@ -504,7 +588,7 @@ describe('schedule-as-persona', () => {
     const res = await scheduler.create({ prompt: 'watch it', cron: '0 8 * * *', personaId: 'verifier' }, 't1');
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.task.personaId).toBe('verifier');
+    expect(res.task.runsAs).toEqual({ kind: 'persona', personaId: 'verifier' });
     scheduler.runNow(res.task.id);
     await until(() => runtime.starts.length === 1, 'the persona run');
     // The run executes AS the persona: worker match + spawn prompt come from this.
@@ -514,12 +598,20 @@ describe('schedule-as-persona', () => {
     scheduler.stop();
   });
 
-  it('a persona run carries the persona’s memory index and recall flag, and reflects when it settles ok', async () => {
+  it('a persona run carries the persona’s memory index and recall flag, reflects when it settles ok, and its thread outlives the reflection', async () => {
     const { savePersonaNote } = await import('../../src/server/workspace/persona-memory');
     // Verifier is a built-in that owns a memory; seed one note so the index is non-empty.
     const note = await savePersonaNote('verifier', { title: 'Check the build first', body: 'Always run tsc.' }, 'tool');
     const runtime = new FakeRuntime();
-    const { scheduler, reflections } = makeScheduler(runtime);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const reflections: { personaId: string; assignment: string; threadId: string }[] = [];
+    const { scheduler } = makeScheduler(runtime, {
+      reflect: async (args) => {
+        reflections.push(args);
+        await held;
+      }
+    });
     const res = await scheduler.create({ prompt: 'verify the nightly', cron: '0 8 * * *', personaId: 'verifier' }, 't1');
     expect(res.ok).toBe(true);
     if (!res.ok) return;
@@ -527,9 +619,15 @@ describe('schedule-as-persona', () => {
     await until(() => runtime.starts.length === 1, 'the persona run');
     // The same persona block a mail delivery gets: the notes index rides the turn…
     expect(runtime.starts[0].persona?.notes).toEqual([{ id: note.id, title: 'Check the build first' }]);
-    // …and the run that settled ok reflects into the persona's memory.
+    // …and the run that settled ok reflects into the persona's memory, reading
+    // the run's own thread — which stays until the reflection is done with it.
     await until(() => reflections.length === 1, 'the reflection pass');
-    expect(reflections[0]).toEqual({ personaId: 'verifier', assignment: 'verify the nightly', threadId: 't1' });
+    expect(reflections[0]).toEqual({ personaId: 'verifier', assignment: 'verify the nightly', threadId: 'run-1' });
+    await until(async () => (await storedStatus()) === 'ok', 'the run to be recorded');
+    expect(runtime.deleted).toEqual([]);
+    release();
+    await until(() => runtime.deleted.length === 1, 'the thread to go after the reflection');
+    expect(runtime.deleted).toEqual(['run-1']);
     scheduler.stop();
   });
 
@@ -549,7 +647,7 @@ describe('schedule-as-persona', () => {
     scheduler.stop();
   });
 
-  it('the persona model pin wins over the task pin; a vanished persona degrades to a plain run', async () => {
+  it('the persona’s model pin rides the run; a vanished persona degrades to the app default', async () => {
     const { savePersona, deletePersona } = await import('../../src/server/workspace/personas');
     await savePersona({ id: 'temp-runner', name: 'Temp runner', prompt: 'You are Temp.', model: 'prov/persona-model' });
     try {
@@ -558,21 +656,17 @@ describe('schedule-as-persona', () => {
       const res = await scheduler.create({ prompt: 'go', cron: '0 8 * * *', personaId: 'temp-runner' }, 't1');
       expect(res.ok).toBe(true);
       if (!res.ok) return;
-      await scheduler.updateModel(res.task.id, 'prov/task-model', null);
       scheduler.runNow(res.task.id);
-      await until(() => runtime.starts.length === 1, 'the pinned run');
+      await until(() => runtime.starts.length === 1, 'the persona run');
       expect(runtime.starts[0].model).toBe('prov/persona-model');
 
-      // The persona disappears: the next run is plain rather than skipped.
+      // The persona disappears: the next run is a plain one on the app default
+      // rather than skipped — there is no model pin underneath a persona choice.
       await deletePersona('temp-runner');
       scheduler.runNow(res.task.id);
       await until(() => runtime.starts.length === 2, 'the degraded run');
       expect(runtime.starts[1].persona).toBeUndefined();
-      expect(runtime.starts[1].model).toBe('prov/task-model');
-
-      // updatePersona clears the pin for good.
-      await scheduler.updatePersona(res.task.id, null);
-      expect((await readTasks())[0].personaId).toBeUndefined();
+      expect('model' in runtime.starts[1]).toBe(false);
       scheduler.stop();
     } finally {
       await deletePersona('temp-runner').catch(() => undefined);
@@ -580,64 +674,21 @@ describe('schedule-as-persona', () => {
   });
 });
 
-describe('silent runs', () => {
-  // A scheduled run appends a turn whether or not it found anything, and that turn
-  // bumps the thread's mtime — the Inbox's only notion of "something happened".
-  // notify_user is the line between the two, so the scheduler reports every run
-  // that didn't call it and the host absorbs the bump (see workspace/inbox).
-  it('reports a run that never called notify_user', async () => {
-    const runtime = new FakeRuntime();
-    const { scheduler, silent } = makeScheduler(runtime);
-    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
-    if (!res.ok) throw new Error('create failed');
-    scheduler.runNow(res.task.id);
-    await until(async () => (await storedStatus()) === 'ok', 'the run to be recorded');
-    expect(silent).toHaveLength(1);
-    expect(silent[0].threadId).toBe('t1');
-    // The stamp has to cover the turn's own writes, so it sits at/past the run's end.
-    expect(silent[0].at).toBeGreaterThanOrEqual(silent[0].before);
-    scheduler.stop();
-  });
-
-  it('absorbs the write of a run that raised an alert too — the mail carries it, the chat row stays put', async () => {
-    const runtime = new NotifyingRuntime();
-    const { scheduler, silent } = makeScheduler(runtime);
-    runtime.scheduler = scheduler;
-    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
-    if (!res.ok) throw new Error('create failed');
-    scheduler.runNow(res.task.id);
-    await until(async () => (await storedStatus()) === 'ok', 'the run to be recorded');
-    expect(silent).toHaveLength(1);
-    expect(silent[0].threadId).toBe('t1');
-    scheduler.stop();
-  });
-
-  it('ignores a notify_user that came from some other thread', async () => {
-    const runtime = new FakeRuntime();
-    const { scheduler, silent } = makeScheduler(runtime);
-    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
-    if (!res.ok) throw new Error('create failed');
-    scheduler.noteNotify('someone-else');
-    scheduler.runNow(res.task.id);
-    await until(async () => (await storedStatus()) === 'ok', 'the run to be recorded');
-    expect(silent).toHaveLength(1);
-    scheduler.stop();
-  });
-});
-
 // A runtime whose turns hang until the test settles them — for preemption tests.
 class HangingRuntime extends EventEmitter {
   starts: StartTurnInput[] = [];
   interrupted: string[] = [];
+  deleted: string[] = [];
   async startTurn(input: StartTurnInput) {
     this.starts.push(input);
-    return { threadId: input.threadId, turnId: `turn-${this.starts.length}` };
+    const n = this.starts.length;
+    return { threadId: `run-${n}`, turnId: `turn-${n}` };
   }
-  async listThreads() {
-    return [{ threadId: 't1', title: '', folderId: null, createdAt: 0, updatedAt: 0 }];
+  async deleteThread(threadId: string) {
+    this.deleted.push(threadId);
   }
   settle(turnId: string, method = 'turn/completed') {
-    this.emit('event', { method, params: { threadId: 't1', turn: { id: turnId } } });
+    this.emit('event', { method, params: { threadId: `run-${turnId.slice('turn-'.length)}`, turn: { id: turnId } } });
   }
 }
 
@@ -677,7 +728,7 @@ describe('TaskScheduler backend exit handling', () => {
     expect(runtime.listenerCount('event')).toBeGreaterThan(0);
     expect(await storedStatus()).not.toBe('failed');
 
-    runtime.emit('event', { method: 'process/exit', params: { code: 1, signal: null, threadId: 't1' } });
+    runtime.emit('event', { method: 'process/exit', params: { code: 1, signal: null, threadId: 'run-1' } });
     await until(async () => (await storedStatus()) === 'failed', 'the run to settle as failed');
     scheduler.stop();
   });
@@ -689,7 +740,6 @@ describe('TaskScheduler backend exit handling', () => {
     const scheduler = new TaskScheduler({
       runtime: runtime as never,
       onChange: () => {},
-      onRun: () => {},
       interrupt: async (turnId) => {
         interrupted.push(turnId);
       }
@@ -716,7 +766,6 @@ describe('TaskScheduler defer + preempt', () => {
     const scheduler = new TaskScheduler({
       runtime: runtime as never,
       onChange: () => {},
-      onRun: () => {},
       isUserActive: () => active,
       interrupt: async () => {}
     });
@@ -736,14 +785,13 @@ describe('TaskScheduler defer + preempt', () => {
     scheduler.stop();
   });
 
-  it('preempts an in-flight run for the user and re-queues it after idle', async () => {
+  it('preempts an in-flight run for the user, drops its thread, and re-queues it after idle in a fresh one', async () => {
     vi.useFakeTimers();
     const runtime = new HangingRuntime();
     let active = false;
     const scheduler = new TaskScheduler({
       runtime: runtime as never,
       onChange: () => {},
-      onRun: () => {},
       isUserActive: () => active,
       // Preemption aborts via the backend; the fake settles the turn as aborted.
       interrupt: async (turnId) => {
@@ -765,38 +813,29 @@ describe('TaskScheduler defer + preempt', () => {
     const afterPreempt = scheduler.snapshot().find((t) => t.id === res.task.id)!;
     expect(afterPreempt.lastStatus).not.toBe('failed');
     expect(afterPreempt.lastStatus).not.toBe('running');
+    // The yielded attempt produced nothing; its thread goes.
+    expect(runtime.deleted).toEqual(['run-1']);
 
-    // Once the user goes idle, the re-queued run fires again and completes.
+    // Once the user goes idle, the re-queued run fires again — in a thread of its own — and completes.
     active = false;
     await vi.advanceTimersByTimeAsync(16_000);
     expect(runtime.starts).toHaveLength(2);
     runtime.settle('turn-2');
     await vi.advanceTimersByTimeAsync(5);
     expect(scheduler.snapshot().find((t) => t.id === res.task.id)!.lastStatus).toBe('ok');
+    expect(runtime.deleted).toEqual(['run-1', 'run-2']);
     scheduler.stop();
   });
 
   it('catch-up runs defer while the user is active', async () => {
     vi.useFakeTimers();
     const past = new Date(Date.now() - 60_000).toISOString();
-    await saveTasks([
-      {
-        id: 'c',
-        threadId: 't1',
-        prompt: 'overdue',
-        schedule: { kind: 'cron', expr: '0 8 * * *' },
-        enabled: true,
-        createdAt: past,
-        nextRunAt: past,
-        title: 'overdue'
-      }
-    ]);
+    await saveTasks([seed({ id: 'c', prompt: 'overdue', createdAt: past, nextRunAt: past })]);
     const runtime = new FakeRuntime();
     let active = true;
     const scheduler = new TaskScheduler({
       runtime: runtime as never,
       onChange: () => {},
-      onRun: () => {},
       isUserActive: () => active,
       interrupt: async () => {}
     });
@@ -808,80 +847,5 @@ describe('TaskScheduler defer + preempt', () => {
     await vi.advanceTimersByTimeAsync(16_000);
     expect(runtime.starts).toHaveLength(1);
     scheduler.stop();
-  });
-});
-
-describe('overflow self-heal', () => {
-  it('condenses the thread and retries once when a run dies on a context overflow', async () => {
-    const runtime = new ScriptedRuntime([OVERFLOW_ERROR, null]);
-    const { scheduler, runs } = makeScheduler(runtime);
-    const res = await scheduler.create({ prompt: 'morning news', cron: '0 8 * * *' }, 't1');
-    if (!res.ok) throw new Error('create failed');
-    scheduler.runNow(res.task.id);
-    await until(async () => (await storedStatus()) === 'ok', 'the retried run to succeed');
-
-    expect(runtime.compacts).toEqual(['t1']);
-    expect(runtime.starts).toHaveLength(2);
-    // Both attempts announce themselves so an open thread shows the run rows.
-    expect(runs).toHaveLength(2);
-    expect((await readTasks())[0].lastStatus).toBe('ok');
-    scheduler.stop();
-  });
-
-  it('does not retry a non-overflow failure', async () => {
-    const runtime = new ScriptedRuntime(['pi exploded', null]);
-    const { scheduler } = makeScheduler(runtime);
-    const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
-    if (!res.ok) throw new Error('create failed');
-    scheduler.runNow(res.task.id);
-    await until(async () => (await storedStatus()) === 'failed', 'the failure to be recorded');
-
-    expect(runtime.compacts).toEqual([]);
-    expect(runtime.starts).toHaveLength(1);
-    expect((await readTasks())[0].lastStatus).toBe('failed');
-    scheduler.stop();
-  });
-
-  it('retries at most once per firing even when the retry overflows again', async () => {
-    const runtime = new ScriptedRuntime([OVERFLOW_ERROR, OVERFLOW_ERROR, null]);
-    const { scheduler } = makeScheduler(runtime);
-    const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
-    if (!res.ok) throw new Error('create failed');
-    scheduler.runNow(res.task.id);
-    await until(async () => (await storedStatus()) === 'failed', 'the second overflow to be recorded');
-
-    expect(runtime.compacts).toEqual(['t1']);
-    expect(runtime.starts).toHaveLength(2);
-    expect((await readTasks())[0].lastStatus).toBe('failed');
-    scheduler.stop();
-  });
-
-  it('records a failure when the condense itself fails, without retrying', async () => {
-    const runtime = new ScriptedRuntime([OVERFLOW_ERROR, null]);
-    runtime.compactThread = async () => {
-      throw new Error('nothing to compact');
-    };
-    const { scheduler } = makeScheduler(runtime);
-    const res = await scheduler.create({ prompt: 'x', cron: '0 8 * * *' }, 't1');
-    if (!res.ok) throw new Error('create failed');
-    scheduler.runNow(res.task.id);
-    await until(async () => (await storedStatus()) === 'failed', 'the failed condense to be recorded');
-
-    expect(runtime.starts).toHaveLength(1);
-    expect((await readTasks())[0].lastStatus).toBe('failed');
-    scheduler.stop();
-  });
-});
-
-describe('isContextOverflowError', () => {
-  it('recognizes provider overflow shapes and rejects lookalikes', () => {
-    expect(isContextOverflowError(OVERFLOW_ERROR)).toBe(true);
-    expect(isContextOverflowError('prompt is too long: 213462 tokens > 200000 maximum')).toBe(true);
-    expect(isContextOverflowError("Requested token count exceeds the model's maximum context length of 131072 tokens")).toBe(true);
-    expect(isContextOverflowError('tokens to keep from the initial prompt is greater than the context length')).toBe(true);
-    expect(isContextOverflowError('the request exceeds the available context size, try increasing it')).toBe(true);
-    expect(isContextOverflowError(undefined)).toBe(false);
-    expect(isContextOverflowError('pi exploded')).toBe(false);
-    expect(isContextOverflowError('Rate limit reached, token limit exceeded for this minute')).toBe(false);
   });
 });

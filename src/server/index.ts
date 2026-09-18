@@ -48,7 +48,7 @@ import {
 import { setActivityEmitter } from './activity';
 import { foldTurnEvent, liveTurnCount, noteTurnStart } from './live-turns';
 import { pushApprovalRequest, pushMailReceived, pushTurnFinished, type ApprovalPushKind } from './push';
-import { onMailChanged, onMailReceived } from './workspace/mail';
+import { onMailChanged, onMailReceived, taskRunThreadIds } from './workspace/mail';
 import { closeApns } from './push/apns';
 import { closeDeviceMcpRouter } from './mcp-device/router';
 import { closeExecDeviceRouter, resolveHarnessTarget } from './exec-device/router';
@@ -834,6 +834,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     deliverTaskMail: (input) => mailRouter!.deliverTaskMail(input),
     // …and the run's final reply lands on that mail once the run settles.
     attachTaskResult: (input) => mailRouter!.attachTaskResult(input),
+    // A deleted task's mail stays; the run threads its mail items kept alive go.
+    taskRunThreadIds,
     // Raising a window and bouncing a dock are things only a machine with a
     // screen can do, so they leave as pushes rather than calls. There is no
     // allowlist deciding who hears them — every SSE client gets every channel

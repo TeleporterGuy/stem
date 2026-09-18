@@ -743,38 +743,20 @@ export default function App() {
     return events.detach;
   }, [core, handlePossibleAuthFailure, refreshChats, applyServerList, refreshThreadHistory]);
 
-  // Scheduled tasks: keep the list in sync (drives chat badges + the Tasks tab),
-  // insert a collapsed run row into an open thread when a run starts, and raise the
-  // alert modal when a run calls notify_user.
+  // Scheduled tasks: keep the list in sync (drives chat badges + the Tasks tab)
+  // and raise the alert modal when a run calls notify_user. Runs themselves
+  // happen in threads of their own that no chat shows; the mail is the surfacing.
   useEffect(() => {
     window.stem.listTasks().then(setTasks);
     const offChanged = window.stem.onTasksChanged(setTasks);
-    const offRun = window.stem.onScheduledRun((run) => {
-      // Unloaded threads get their full transcript, including the persisted
-      // collapse marker, when opened.
-      if (!core.store.getThread(run.threadId)) return;
-      setThread(run.threadId, (s) => {
-        const id = `user-sched-${run.turnId}`;
-        if (s.messages.some((m) => m.id === id)) return {};
-        const bubble = {
-          id,
-          role: 'user' as const,
-          content: run.prompt,
-          turnId: run.turnId,
-          scheduled: { at: run.at }
-        };
-        return { messages: [...s.messages, bubble] };
-      });
-    });
     const offNotify = window.stem.onTaskNotify((alert) => {
       setTaskAlerts((queue) => enqueueTaskAlert(queue, alert));
     });
     return () => {
       offChanged();
-      offRun();
       offNotify();
     };
-  }, [core, setThread]);
+  }, []);
 
   const onSend = useCallback(
     async (text: string, attachments: TurnAttachment[] = []) => {
@@ -1901,9 +1883,10 @@ export default function App() {
       {taskAlert && (
         <TaskAlertModal
           payload={taskAlert}
-          onOpenChat={(threadId) => {
+          onOpenMail={(conversationId) => {
             setTaskAlerts((queue) => dismissTaskAlert(queue));
-            void openChat(threadId);
+            setChatsTab('inbox');
+            openMail(conversationId);
           }}
           onDismiss={() => setTaskAlerts((queue) => dismissTaskAlert(queue))}
         />

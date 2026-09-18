@@ -48,7 +48,6 @@ import type {
   QuickChatSettings,
   QuickChatSessionStarted,
   QuickChatStatus,
-  ScheduledRunPayload,
   MailComposeInput,
   Persona,
   ScheduledTask,
@@ -58,9 +57,8 @@ import type {
   StartTurnInput,
   StemApi,
   TaskNotifyPayload,
-  TaskModelPatch,
   TaskPromptPatch,
-  TaskPersonaPatch,
+  TaskRunsAsPatch,
   TaskSchedulePatch,
   TasksSettings,
   TurnAttachment,
@@ -146,7 +144,6 @@ const api: StemApi = {
   mirrorSkippedFiles: (id: string) => ipcRenderer.invoke('cfolders:skipped', id),
 
   listTasks: () => ipcRenderer.invoke('tasks:list'),
-  taskThreadSettings: (threadId: string) => ipcRenderer.invoke('tasks:threadSettings', threadId),
   setTaskEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke('tasks:setEnabled', id, enabled),
   runTaskNow: (id: string) => ipcRenderer.invoke('tasks:runNow', id),
   deleteTask: (id: string) => ipcRenderer.invoke('tasks:delete', id),
@@ -154,19 +151,12 @@ const api: StemApi = {
     ipcRenderer.invoke('tasks:updateSchedule', id, patch),
   updateTaskPrompt: (id: string, patch: TaskPromptPatch) =>
     ipcRenderer.invoke('tasks:updatePrompt', id, patch),
-  updateTaskModel: (id: string, patch: TaskModelPatch) =>
-    ipcRenderer.invoke('tasks:updateModel', id, patch),
-  updateTaskPersona: (id: string, patch: TaskPersonaPatch) =>
-    ipcRenderer.invoke('tasks:updatePersona', id, patch),
+  updateTaskRunsAs: (id: string, patch: TaskRunsAsPatch) =>
+    ipcRenderer.invoke('tasks:updateRunsAs', id, patch),
   onTasksChanged: (listener: (tasks: ScheduledTask[]) => void) => {
     const handler = (_e: unknown, tasks: ScheduledTask[]) => listener(tasks);
     ipcRenderer.on('tasks:changed', handler);
     return () => ipcRenderer.removeListener('tasks:changed', handler);
-  },
-  onScheduledRun: (listener: (run: ScheduledRunPayload) => void) => {
-    const handler = (_e: unknown, run: ScheduledRunPayload) => listener(run);
-    ipcRenderer.on('tasks:run', handler);
-    return () => ipcRenderer.removeListener('tasks:run', handler);
   },
   onTaskNotify: (listener: (payload: TaskNotifyPayload) => void) => {
     const handler = (_e: unknown, payload: TaskNotifyPayload) => listener(payload);

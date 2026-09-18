@@ -70,11 +70,21 @@ export async function getMailWork(runtime: ChatBackend, conversationId: string):
   };
   const missingSources = user.some((i) => !groups.some((g) => g.sourceItemId === i.id));
   if (missingSources) await Promise.all(Object.entries(conversation.sessions).map(([persona, thread]) => recover(thread, persona)));
-  const taskMails = items.filter((i) => i.taskId && !groups.some((g) => g.notificationItemId === i.id));
+  // A scheduled run's mail names the thread it ran in (`runThreadId`): one
+  // thread per firing, shared by every notification that firing sent. Each
+  // thread is recovered once, against the mails that came out of it. Mail from
+  // before runs had threads of their own carries none and falls through to the
+  // "unavailable" row below. The sender is the persona the task runs as today;
+  // a task since deleted reads as the plain task sender.
+  const taskMails = items.filter((i) => i.taskId && i.runThreadId && !groups.some((g) => g.notificationItemId === i.id));
   if (taskMails.length) {
     const tasks = await readTasks();
-    for (const task of tasks.filter((t) => taskMails.some((i) => i.taskId === t.id))) {
-      await recover(task.threadId, task.personaId ?? `task:${task.id}`, taskMails.filter((i) => i.taskId === task.id));
+    const byThread = new Map<string, MailItem[]>();
+    for (const item of taskMails) byThread.set(item.runThreadId!, [...(byThread.get(item.runThreadId!) ?? []), item]);
+    for (const [threadId, mails] of byThread) {
+      const task = tasks.find((t) => t.id === mails[0].taskId);
+      const personaId = task?.runsAs.kind === 'persona' ? task.runsAs.personaId : `task:${mails[0].taskId}`;
+      await recover(threadId, personaId, mails);
     }
   }
   // Every source is represented, including legacy runs whose sessions no longer exist.

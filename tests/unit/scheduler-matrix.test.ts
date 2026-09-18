@@ -2,7 +2,7 @@
 //
 // A firing moves through queued → deferred (user active) → building (startTurn
 // in flight) → running → settling, and at every one of those states the user can
-// pause the task, delete it, delete its chat, or start typing (preempt). Each
+// pause the task, delete it, or start typing (preempt). Each
 // existing test exercised one state × one action; the bugs live where the
 // combinations meet — the same shape as the approval bug (see
 // exec-approval-matrix.test.ts).
@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // integration is exercised in mail-work-scheduler.test.ts.
 vi.mock('../../src/server/mail/work', () => ({
   beginMailWork: async (_runtime: unknown, input: { turnId: string }) => ({
-    run: { turnId: input.turnId }, finish: async () => {}
+    run: { turnId: input.turnId }, bindThread: () => {}, finish: async () => {}
   })
 }));
 
@@ -29,9 +29,6 @@ process.env.STEM_TASKS_STORE = STORE;
 import type { StartTurnInput } from '../../src/shared/types';
 import { TaskScheduler } from '../../src/server/scheduler';
 
-const OVERFLOW_ERROR =
-  'Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.';
-
 /**
  * A runtime whose turns hang until the test settles them, and whose startTurn
  * can itself be held open — the "building" state is a real window (prompt
@@ -40,8 +37,7 @@ const OVERFLOW_ERROR =
 class MatrixRuntime extends EventEmitter {
   starts: StartTurnInput[] = [];
   interrupted: string[] = [];
-  compacts: string[] = [];
-  threadIds = new Set<string>(['t1']);
+  deleted: string[] = [];
   /** When set, startTurn parks until the test calls releaseBuild(). */
   holdBuild = false;
   private buildWaiters: Array<() => void> = [];
@@ -50,7 +46,12 @@ class MatrixRuntime extends EventEmitter {
     this.starts.push(input);
     const turnId = `turn-${this.starts.length}`;
     if (this.holdBuild) await new Promise<void>((r) => this.buildWaiters.push(r));
-    return { threadId: input.threadId, turnId };
+    // No threadId comes in: every firing gets a session of its own.
+    return { threadId: `run-${this.starts.length}`, turnId };
+  }
+
+  async deleteThread(threadId: string) {
+    this.deleted.push(threadId);
   }
 
   releaseBuild(): void {
@@ -61,22 +62,8 @@ class MatrixRuntime extends EventEmitter {
   settle(turnId: string, method = 'turn/completed', error?: string) {
     this.emit('event', {
       method,
-      params: { threadId: 't1', turn: { id: turnId }, ...(error ? { error } : {}) }
+      params: { threadId: `run-${turnId.slice('turn-'.length)}`, turn: { id: turnId }, ...(error ? { error } : {}) }
     });
-  }
-
-  async listThreads() {
-    return [...this.threadIds].map((threadId) => ({
-      threadId,
-      title: '',
-      folderId: null,
-      createdAt: 0,
-      updatedAt: 0
-    }));
-  }
-
-  async compactThread(threadId: string) {
-    this.compacts.push(threadId);
   }
 }
 
@@ -87,7 +74,6 @@ function makeScheduler(
   return new TaskScheduler({
     runtime: runtime as never,
     onChange: () => {},
-    onRun: () => {},
     isUserActive: opts.isUserActive,
     interrupt: async (turnId) => {
       runtime.interrupted.push(turnId);
@@ -236,7 +222,7 @@ describe('building × preempt', () => {
 });
 
 describe('running × failure source', () => {
-  it('a backend that dies during the overflow retry fails the run without a third attempt', async () => {
+  it('a backend that dies mid-run fails the run once, with no retry', async () => {
     const runtime = new MatrixRuntime();
     const scheduler = makeScheduler(runtime);
     const res = await scheduler.create({ prompt: 'p', cron: '0 8 * * *' }, 't1');
@@ -245,37 +231,28 @@ describe('running × failure source', () => {
     await vi.advanceTimersByTimeAsync(5);
     expect(runtime.starts).toHaveLength(1);
 
-    // First attempt dies on overflow → condense → one retry.
-    runtime.settle('turn-1', 'turn/failed', OVERFLOW_ERROR);
-    await vi.advanceTimersByTimeAsync(5);
-    expect(runtime.compacts).toEqual(['t1']);
-    expect(runtime.starts).toHaveLength(2);
-
-    // The retry never settles — the whole backend goes down instead.
     runtime.emit('event', { method: 'process/exit', params: { code: 1, signal: null } });
     await vi.advanceTimersByTimeAsync(50);
 
-    expect(runtime.starts).toHaveLength(2); // the self-heal does not loop
+    expect(runtime.starts).toHaveLength(1);
     expect(scheduler.snapshot()[0].lastStatus).toBe('failed');
     scheduler.stop();
   });
 
-  it('a task whose chat is gone is paused with the reason on its row', async () => {
+  it('a run whose origin chat is gone still fires: the chat is only where it was scheduled from', async () => {
     const runtime = new MatrixRuntime();
-    runtime.threadIds.clear();
     const scheduler = makeScheduler(runtime);
     const res = await scheduler.create({ prompt: 'p', cron: '0 8 * * *' }, 't-gone');
     if (!res.ok) throw new Error('create failed');
     scheduler.runNow(res.task.id);
-    await vi.advanceTimersByTimeAsync(50);
-
+    await vi.advanceTimersByTimeAsync(5);
+    expect(runtime.starts).toHaveLength(1);
+    expect('threadId' in runtime.starts[0]).toBe(false);
+    runtime.settle('turn-1');
+    await drainIo();
     const task = scheduler.snapshot()[0];
-    expect(runtime.starts).toHaveLength(0);
-    expect(task.enabled).toBe(false);
-    expect(task.lastStatus).toBe('failed');
-    // "failed" with nothing beside it is the shape the quiet-failure sweep was
-    // about; this row must say WHY it will never fire again.
-    expect(task.lastError).toMatch(/no longer exists/);
+    expect(task.enabled).toBe(true);
+    expect(task.lastStatus).toBe('ok');
     scheduler.stop();
   });
 });

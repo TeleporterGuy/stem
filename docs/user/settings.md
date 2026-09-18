@@ -165,8 +165,8 @@ How a [scheduled task](scheduled-tasks.md) reaches you on a run that found somet
 - **Nudge** — the dock bounces (the taskbar flashes); focus stays where it is.
 - **Inbox only** — nothing interrupts you.
 
-All three leave the task's chat unread in your Inbox, so nothing is missed either
-way. Only how much it interrupts changes.
+All three deliver the same mail to your Inbox, so nothing is missed either way.
+Only how much it interrupts changes.
 
 ## Context used across chats
 

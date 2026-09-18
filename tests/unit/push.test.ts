@@ -609,17 +609,19 @@ class FakeRuntime extends EventEmitter {
   async listThreads(): Promise<{ threadId: string; title: string; updatedAt: number }[]> {
     return [{ threadId: 't1', title: 'The build', updatedAt: 0 }];
   }
-  async startTurn(input: { threadId?: string }): Promise<{ threadId: string; turnId: string }> {
-    const threadId = input.threadId!;
+  async startTurn(_input: { threadId?: string }): Promise<{ threadId: string; turnId: string }> {
+    // A scheduled run comes in without a thread; the backend mints one.
+    const threadId = 'run-1';
     const turnId = 'turn-1';
-    await this.duringTurn?.(threadId);
-    // Settle on the next tick, so the scheduler's listener is attached first.
-    setTimeout(
-      () => this.emit('event', { method: 'turn/completed', params: { threadId, turn: { id: turnId } } }),
-      0
-    );
+    // The turn (and the notify_user inside it) happens after startTurn resolved
+    // — once the scheduler knows the run's thread — and settles after that.
+    setTimeout(async () => {
+      await this.duringTurn?.(threadId);
+      this.emit('event', { method: 'turn/completed', params: { threadId, turn: { id: turnId } } });
+    }, 0);
     return { threadId, turnId };
   }
+  async deleteThread(): Promise<void> {}
 }
 
 describe('task notifications', () => {
@@ -666,7 +668,7 @@ describe('task notifications', () => {
 
   it('wakes the phone in alert mode', async () => {
     expect((await notifyUnder('alert')).sends).toBe(1);
-    expect(lastStem()).toMatchObject({ kind: 'task', threadId: 't1' });
+    expect(lastStem()).toMatchObject({ kind: 'task', threadId: 'run-1' });
   });
 
   it('wakes the phone in nudge mode too — the phone is not the machine being nudged', async () => {

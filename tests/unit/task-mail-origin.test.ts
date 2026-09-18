@@ -1,9 +1,8 @@
-// schedule_task called from a mail persona's hidden session. The bridge wired in
-// startup/scheduler.ts must not bind the task to that session — the Chats list
-// hides it and the Inbox shows only mail, so every run would land where nobody
-// can see it. It adopts a fresh chat named after the task instead, remembers the
-// origin so list_tasks from the mail conversation still finds it, and at boot
-// moves any task that was left on a hidden session before this existed.
+// schedule_task called from a mail persona's hidden session. Runs used to append
+// to the task's chat, so a task made from a hidden session needed a visible chat
+// adopted for it (and a boot-time pass to move old ones). Every run now gets a
+// thread of its own, so the bridge binds the task to wherever it was called from
+// — a chat or a hidden session alike — and adopts nothing.
 import { EventEmitter } from 'node:events';
 import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,38 +17,54 @@ import type { TaskBridge } from '../../src/server/backend/types';
 import { initTaskScheduler } from '../../src/server/startup/scheduler';
 import { createConversation, setConversationSession } from '../../src/server/workspace/mail';
 import { mailStorePath } from '../../src/server/workspace/paths';
-import { readTasks, saveTasks } from '../../src/server/workspace/tasks';
+import { readTasks } from '../../src/server/workspace/tasks';
 
 class FakeRuntime extends EventEmitter {
   bridge: TaskBridge | null = null;
   created: string[] = [];
-  names = new Map<string, string>();
+  deleted: string[] = [];
+  starts = 0;
+  /** Runs inside the turn — after startTurn resolved, before it settles. */
+  duringTurn: ((threadId: string) => Promise<void>) | null = null;
   setTaskBridge(bridge: TaskBridge | null) {
     this.bridge = bridge;
-  }
-  async listThreads() {
-    return [];
   }
   async createThread() {
     const id = `chat-${this.created.length + 1}`;
     this.created.push(id);
     return id;
   }
-  async renameThread(threadId: string, name: string) {
-    this.names.set(threadId, name);
+  async deleteThread(threadId: string) {
+    this.deleted.push(threadId);
+  }
+  async startTurn() {
+    const n = ++this.starts;
+    const threadId = `run-${n}`;
+    const turnId = `turn-${n}`;
+    setTimeout(async () => {
+      await this.duringTurn?.(threadId);
+      this.emit('event', { method: 'turn/completed', params: { threadId, turn: { id: turnId } } });
+    }, 0);
+    return { threadId, turnId };
   }
 }
 
-function wire(runtime: FakeRuntime) {
+function wire(
+  runtime: FakeRuntime,
+  opts: { taskRunThreadIds?: (taskId: string) => Promise<string[]>; deliverTaskMail?: () => Promise<string | void> } = {}
+) {
   return initTaskScheduler({
     runtime: runtime as unknown as ChatBackend,
     emit: () => {},
     isUserActive: () => false,
     revealMainWindow: () => {},
     requestAttention: () => {},
-    deliverTaskMail: async () => {}
+    deliverTaskMail: opts.deliverTaskMail ?? (async () => {}),
+    ...(opts.taskRunThreadIds ? { taskRunThreadIds: opts.taskRunThreadIds } : {})
   });
 }
+
+const settled = (runtime: FakeRuntime) => new Promise<void>((r) => setTimeout(r, 30)).then(() => runtime);
 
 const mailPath = mailStorePath();
 beforeEach(() => {
@@ -62,8 +77,8 @@ afterEach(() => {
   rmSync(STORE, { force: true });
 });
 
-describe('schedule_task from a mail session', () => {
-  it('adopts a fresh chat named after the task and keeps the mail session as the origin', async () => {
+describe('schedule_task through the bridge', () => {
+  it('from a mail session: binds to that session, adopts no chat, and list_tasks there finds it', async () => {
     const conversation = await createConversation('Create a schedule', ['secretary']);
     await setConversationSession(conversation.id, 'secretary', 'secretary-session');
     const runtime = new FakeRuntime();
@@ -72,52 +87,69 @@ describe('schedule_task from a mail session', () => {
     const res = await runtime.bridge!.schedule({ prompt: 'Every morning review the latest email and draft replies', cron: '0 8 * * *' }, 'secretary-session');
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.task.threadId).toBe('chat-1');
-    expect(res.task.originThreadId).toBe('secretary-session');
-    expect(runtime.names.get('chat-1')).toBe(res.task.title);
-    // The persona can still list (and so cancel) it from the conversation it scheduled it in.
-    expect((await runtime.bridge!.listForThread('secretary-session')).map((t) => t.id)).toEqual([res.task.id]);
-    scheduler.stop();
-  });
-
-  it('refuses a bad request before adopting anything', async () => {
-    const conversation = await createConversation('Create a schedule', ['secretary']);
-    await setConversationSession(conversation.id, 'secretary', 'secretary-session');
-    const runtime = new FakeRuntime();
-    const scheduler = wire(runtime);
-    const res = await runtime.bridge!.schedule({ prompt: 'x', cron: 'nope' }, 'secretary-session');
-    expect(res.ok).toBe(false);
+    expect(res.task.threadId).toBe('secretary-session');
     expect(runtime.created).toEqual([]);
+    expect((await runtime.bridge!.listForThread('secretary-session')).map((t) => t.id)).toEqual([res.task.id]);
+    expect((await readTasks())[0].threadId).toBe('secretary-session');
     scheduler.stop();
   });
 
-  it('an ordinary chat schedules in place, no chat adopted', async () => {
+  it('refuses a bad request and writes nothing', async () => {
     const runtime = new FakeRuntime();
     const scheduler = wire(runtime);
-    const res = await runtime.bridge!.schedule({ prompt: 'watch the build', cron: '0 8 * * *' }, 'plain-chat');
+    const res = await runtime.bridge!.schedule({ prompt: 'x', cron: 'nope' }, 'plain-chat');
+    expect(res.ok).toBe(false);
+    expect(await readTasks()).toEqual([]);
+    scheduler.stop();
+  });
+
+  it('from a chat: binds to the chat, and the persona asked for runs it', async () => {
+    const runtime = new FakeRuntime();
+    const scheduler = wire(runtime);
+    const res = await runtime.bridge!.schedule({ prompt: 'watch the build', cron: '0 8 * * *', personaId: 'verifier' }, 'plain-chat');
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.task.threadId).toBe('plain-chat');
-    expect(res.task.originThreadId).toBeUndefined();
-    expect(runtime.created).toEqual([]);
+    expect(res.task.runsAs).toEqual({ kind: 'persona', personaId: 'verifier' });
     scheduler.stop();
   });
 
-  it('at boot, a task left on a hidden session moves into a chat of its own', async () => {
-    const conversation = await createConversation('Create a schedule', ['secretary']);
-    await setConversationSession(conversation.id, 'secretary', 'secretary-session');
-    const future = new Date(Date.now() + 60 * 60_000).toISOString();
-    await saveTasks([
-      { id: 'a', threadId: 'secretary-session', prompt: 'draft replies', schedule: { kind: 'cron', expr: '0 8 * * *' }, enabled: true, createdAt: future, nextRunAt: future, title: 'draft replies' },
-      { id: 'b', threadId: 'plain-chat', prompt: 'watch the build', schedule: { kind: 'cron', expr: '0 8 * * *' }, enabled: true, createdAt: future, nextRunAt: future, title: 'watch the build' }
-    ]);
+  it('cancel_task deletes the task and the threads its mail-sending runs left behind', async () => {
     const runtime = new FakeRuntime();
-    const scheduler = wire(runtime);
-    await scheduler.start();
-    const after = await readTasks();
-    expect(after.find((t) => t.id === 'a')).toMatchObject({ threadId: 'chat-1', originThreadId: 'secretary-session' });
-    expect(after.find((t) => t.id === 'b')).toMatchObject({ threadId: 'plain-chat' });
-    expect(runtime.names.get('chat-1')).toBe('draft replies');
+    const asked: string[] = [];
+    const scheduler = wire(runtime, {
+      taskRunThreadIds: async (taskId) => {
+        asked.push(taskId);
+        return ['run-a', 'run-b'];
+      }
+    });
+    const res = await runtime.bridge!.schedule({ prompt: 'watch', cron: '0 8 * * *' }, 'plain-chat');
+    if (!res.ok) throw new Error(res.error);
+    expect(await runtime.bridge!.cancel(res.task.id)).toEqual({ ok: true });
+    expect(asked).toEqual([res.task.id]);
+    expect(runtime.deleted.sort()).toEqual(['run-a', 'run-b']);
+    expect(await runtime.bridge!.cancel(res.task.id)).toMatchObject({ ok: false });
     scheduler.stop();
+  });
+
+  it('notify_user keeps the run thread only once its mail has landed; a dropped mail leaves nothing orphaned', async () => {
+    for (const landed of [true, false]) {
+      const runtime = new FakeRuntime();
+      const scheduler = wire(runtime, {
+        deliverTaskMail: async () => {
+          if (!landed) throw new Error('mail store unwritable');
+          return 'conversation-1';
+        }
+      });
+      const res = await runtime.bridge!.schedule({ prompt: 'watch', cron: '0 8 * * *' }, 'plain-chat');
+      if (!res.ok) throw new Error(res.error);
+      runtime.duringTurn = (threadId) => runtime.bridge!.notify({ title: 'Found', message: 'it' }, threadId);
+      scheduler.runNow(res.task.id);
+      await settled(runtime);
+      // Mail landed → the thread is the mail's now. Mail dropped → the thread
+      // would be reachable from nowhere, so it goes like a silent run's.
+      expect(runtime.deleted).toEqual(landed ? [] : ['run-1']);
+      scheduler.stop();
+    }
   });
 });

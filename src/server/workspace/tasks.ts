@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
-import type { ScheduledTask, TaskSchedule } from '../../shared/types';
+import type { ScheduledTask, TaskRunsAs, TaskSchedule } from '../../shared/types';
 import { degrade } from '../degrade';
 import { tasksStorePath } from './paths';
 
@@ -38,10 +38,50 @@ function coerceSchedule(raw: unknown): TaskSchedule | null {
   return null;
 }
 
+const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+
+/**
+ * Validate a `runsAs` value from any caller (the store, the Tasks tab, the
+ * bridge). Null for anything that is not one of the three shapes — a task must
+ * not be left half-pinned by a malformed patch.
+ */
+export function coerceRunsAs(raw: unknown): TaskRunsAs | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as { kind?: unknown; personaId?: unknown; model?: unknown; effort?: unknown };
+  if (r.kind === 'default') return { kind: 'default' };
+  if (r.kind === 'persona') {
+    const personaId = str(r.personaId);
+    return personaId ? { kind: 'persona', personaId } : null;
+  }
+  if (r.kind === 'model') {
+    const model = str(r.model);
+    if (!model) return null;
+    const effort = str(r.effort);
+    return { kind: 'model', model, ...(effort ? { effort } : {}) };
+  }
+  return null;
+}
+
+/**
+ * Tasks saved before `runsAs` existed carried three independent fields
+ * (personaId, model, effort) with "the persona's pins win" as the tiebreak.
+ * Fold them into the one choice on read; the next write persists the new shape.
+ */
+function legacyRunsAs(r: { personaId?: unknown; model?: unknown; effort?: unknown }): TaskRunsAs {
+  const personaId = str(r.personaId);
+  if (personaId) return { kind: 'persona', personaId };
+  const model = str(r.model);
+  if (model) {
+    const effort = str(r.effort);
+    return { kind: 'model', model, ...(effort ? { effort } : {}) };
+  }
+  return { kind: 'default' };
+}
+
 /** Coerce one parsed entry into a valid ScheduledTask, or null to drop it. */
 function coerce(raw: unknown): ScheduledTask | null {
   if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Partial<ScheduledTask>;
+  const r = raw as Partial<ScheduledTask> & { personaId?: unknown; model?: unknown; effort?: unknown };
   if (typeof r.threadId !== 'string' || !r.threadId) return null;
   if (typeof r.prompt !== 'string' || !r.prompt) return null;
   const schedule = coerceSchedule(r.schedule);
@@ -54,10 +94,7 @@ function coerce(raw: unknown): ScheduledTask | null {
     enabled: r.enabled !== false, // default true
     createdAt: typeof r.createdAt === 'string' && r.createdAt ? r.createdAt : new Date().toISOString(),
     title: typeof r.title === 'string' && r.title ? r.title : titleFromPrompt(r.prompt),
-    ...(typeof r.model === 'string' && r.model ? { model: r.model } : {}),
-    ...(typeof r.effort === 'string' && r.effort ? { effort: r.effort } : {}),
-    ...(typeof r.personaId === 'string' && r.personaId ? { personaId: r.personaId } : {}),
-    ...(typeof r.originThreadId === 'string' && r.originThreadId ? { originThreadId: r.originThreadId } : {}),
+    runsAs: coerceRunsAs(r.runsAs) ?? legacyRunsAs(r),
     ...(typeof r.lastRunAt === 'string' ? { lastRunAt: r.lastRunAt } : {}),
     ...(typeof r.nextRunAt === 'string' || r.nextRunAt === null ? { nextRunAt: r.nextRunAt } : {}),
     ...(r.lastStatus === 'ok' || r.lastStatus === 'failed' || r.lastStatus === 'running'

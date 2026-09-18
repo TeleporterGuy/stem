@@ -63,7 +63,7 @@ Chats live in **Spaces** — nestable folders with drag-and-drop — alongside a
 
 ## Automate it
 
-Ask Stem to check something every morning and it becomes a **scheduled task**: a prompt re-run on a cron or one-time schedule inside its own chat, autonomously. Tasks that miss their slot (laptop asleep) catch up on launch, and a task can raise an alert when it finds something you should see.
+Ask Stem to check something every morning and it becomes a **scheduled task**: a prompt re-run on a cron or one-time schedule, autonomously, each run in a fresh thread of its own. Tasks that miss their slot (laptop asleep) catch up on launch, and a task that finds something you should see sends you mail.
 
 <p align="center">
   <picture>

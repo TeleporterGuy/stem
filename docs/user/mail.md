@@ -10,7 +10,9 @@ A scheduled task that finds something worth telling you sends mail. All firings
 of one task share one conversation. Each firing keeps its own headline, and the
 conversation takes the latest headline as its subject. Beneath the short notice
 the mail carries the run's full reply, such as a report or the drafts it wrote,
-once the run finishes. The reply also stays in the task's chat.
+once the run finishes. Every run happens in a thread of its own that no chat
+shows; the mail, and the Work beneath it, is the only place a run appears. A
+task that starts failing sends one mail with the reason.
 
 ## Work history
 

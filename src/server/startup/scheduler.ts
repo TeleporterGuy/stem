@@ -2,18 +2,16 @@ import { TaskScheduler } from '../scheduler';
 import { reflectOnDelivery } from '../mail/reflect';
 import { degrade } from '../degrade';
 import { pushTaskAlert } from '../push';
-import { noteSilentRun } from '../workspace/inbox';
-import { mailSessionThreadIds } from '../workspace/mail';
 import { readSettings } from '../workspace/settings';
-import { titleFromPrompt } from '../workspace/tasks';
+import { dropChatThread } from '../chatsearch/index-sync';
 import type { ChatBackend } from '../backend';
-import type { ScheduledTask } from '../../shared/types';
 
 /**
- * Scheduled tasks: re-run a chat's prompt as an autonomous turn on a cron/once
- * schedule. The scheduler owns timing + execution; the backend routes the
- * assistant's schedule_task/notify_user tools to it via the TaskBridge wired
- * here.
+ * Scheduled tasks: re-run a prompt as an autonomous turn on a cron/once
+ * schedule, each firing in a fresh thread. The scheduler owns timing +
+ * execution; the backend routes the assistant's schedule_task/notify_user tools
+ * to it via the TaskBridge wired here, and everything a run has to say reaches
+ * the user as mail.
  */
 export function initTaskScheduler(deps: {
   runtime: ChatBackend;
@@ -26,10 +24,11 @@ export function initTaskScheduler(deps: {
   /** OS-level attention nudge (dock bounce / taskbar flash — see platform.ts). */
   requestAttention: () => void;
   /**
-   * Land a notify_user's message in the mail Inbox, grouped per task. This is
-   * how a scheduled result surfaces now that the Inbox is mail — the run's turn
-   * still lives in its chat thread, but the thread no longer has an Inbox row
-   * to go bold.
+   * Land a run's message in the mail Inbox, grouped per task. This is how a
+   * scheduled result surfaces: a notify_user mid-run, or the one notice that a
+   * task started failing. `threadId` is the run's own thread; the mail keeps it
+   * (and its Work record) so the run stays inspectable. Answers the
+   * conversation id.
    */
   deliverTaskMail: (input: {
     subject: string;
@@ -43,63 +42,71 @@ export function initTaskScheduler(deps: {
   }) => Promise<string | void>;
   /**
    * The run behind a notification settled with a reply: put it on that mail.
-   * Optional so a host without mail (tests) can leave results in the chat.
+   * Optional so a host without mail (tests) can leave results in Work.
    */
   attachTaskResult?: (input: { itemId: string; result: string }) => Promise<void>;
+  /**
+   * The threads a task's mail-sending runs left behind (recorded on its mail
+   * items as `runThreadId`), handed over for deletion when the task is deleted.
+   * Optional for hosts without mail (tests).
+   */
+  taskRunThreadIds?: (taskId: string) => Promise<string[]>;
 }): TaskScheduler {
-  // A task's runs need a chat the user can open. A mail persona's session is not
-  // one — the Chats list hides it and the Inbox shows only mail — so a task
-  // scheduled from a mail turn would append every run, drafts and all, to a
-  // thread no surface shows. Such a task gets a chat of its own instead, named
-  // after the task; pi writes the session file with the first run, which is
-  // when the chat appears in the list.
-  const hidden = async (threadId: string): Promise<boolean> => (await mailSessionThreadIds()).has(threadId);
-  const adoptChat = async (prompt: string): Promise<string> => {
-    const threadId = await deps.runtime.createThread();
-    await deps.runtime.renameThread(threadId, titleFromPrompt(prompt));
-    return threadId;
+  // A run's thread got indexed for chat search when its turn landed, like any
+  // thread; deleting it must forget that too, or the deleted run stays findable.
+  const discardThread = async (threadId: string) => {
+    await deps.runtime.deleteThread(threadId);
+    dropChatThread(threadId);
   };
-  const rehomeHiddenThread = async (task: ScheduledTask): Promise<string | null> =>
-    (await hidden(task.threadId)) ? adoptChat(task.prompt) : null;
-
   const scheduler = new TaskScheduler({
     runtime: deps.runtime,
     onChange: (tasks) => deps.emit('tasks:changed', tasks),
-    onRun: (run) => deps.emit('tasks:run', run),
     // Scheduled runs defer while the user is active, and an in-flight scheduled
     // run yields (preemptForUser) when the user sends a message.
     isUserActive: deps.isUserActive,
     interrupt: (turnId, reason) => deps.runtime.interruptTurn(turnId, reason),
+    deleteThread: discardThread,
     // A persona run that settled ok reflects into the persona's memory, the
     // same pass a mail delivery gets (mail/reflect.ts never rejects).
     reflect: (args) => reflectOnDelivery(deps.runtime, args),
-    rehomeHiddenThread,
     // The run's reply joins the mail its notify_user opened — the Inbox then
-    // holds the report or drafts, not a one-line pointer at a chat.
+    // holds the report or drafts, not a one-line pointer.
     ...(deps.attachTaskResult
       ? { onResult: (args: { itemId: string; result: string }) => deps.attachTaskResult!({ itemId: args.itemId, result: args.result }) }
       : {}),
-    // Every scheduled run writes a turn, which bumps the thread's mtime — the
-    // signal the CHATS TREE sorts and bolds rows by. What a run found reaches
-    // the user as mail (see notify below), so its chat row has no news to show:
-    // this absorber keeps it where the user's last message left it, neither on
-    // top nor bold, whether the run notified or came back empty.
-    onSilentRun: (threadId, before, at) => {
-      void noteSilentRun(threadId, before, at)
-        .then(() => deps.emit('chats:changed', undefined))
-        .catch((err) => {
-          degrade('tasks', 'left a silent scheduled run showing as unread in the chats tree', err);
-        });
-    }
+    // A task that starts failing says so once, as mail — the Tasks tab row keeps
+    // the reason after that. Inbox only: this is Stem's notice, not the agent's
+    // own notify_user judgment, so no window is raised and no phone woken.
+    onFailureTransition: async (args) => {
+      await deps.deliverTaskMail({
+        subject: args.title,
+        body: `This task failed on its latest run:\n\n${args.error}\n\nIt will try again on its next schedule. Repeated failures are shown on the task's row in the Tasks tab, not mailed.`,
+        taskId: args.taskId,
+        headline: `Failed: ${args.title}`,
+        ...(args.threadId ? { threadId: args.threadId } : {}),
+        ...(args.personaId ? { personaId: args.personaId } : {})
+      });
+    },
+    ...(deps.taskRunThreadIds
+      ? {
+          onTaskDeleted: async (taskId: string) => {
+            const ids = await deps.taskRunThreadIds!(taskId);
+            await Promise.all(
+              ids.map((id) =>
+                discardThread(id).catch((err) =>
+                  // Hidden from every list already; an undeleted one costs disk.
+                  degrade('tasks', 'left a deleted task\'s run thread on disk', err)
+                )
+              )
+            );
+          }
+        }
+      : {})
   });
   deps.runtime.setTaskBridge({
-    schedule: async (req, threadId) => {
-      if (!(await hidden(threadId))) return scheduler.create(req, threadId);
-      // Validate before adopting, so a bad cron does not leave an empty chat behind.
-      const valid = await scheduler.validate(req);
-      if (!valid.ok) return valid;
-      return scheduler.create(req, await adoptChat(req.prompt), { threadId });
-    },
+    // schedule_task binds the task to wherever it was called — a chat or a mail
+    // persona's hidden session. Either works: no run ever writes there.
+    schedule: async (req, threadId) => scheduler.create(req, threadId),
     listForThread: async (threadId) => scheduler.listForThread(threadId),
     cancel: async (taskId) => {
       const before = scheduler.snapshot().length;
@@ -112,13 +119,11 @@ export function initTaskScheduler(deps: {
     // native OS notifications were judged not prominent enough for watch-style tasks.
     // `nudge` keeps only the OS nudge, `inbox` interrupts not at all.
     //
-    // What every mode keeps is the mail: the noteNotify below is the run's
-    // declaration that it found something, so its reply joins the mail this
-    // delivers once the run settles. That is the whole of `inbox` mode — there is
-    // nothing extra to emit. The chat the run wrote into does not move or go bold
-    // in any mode (onSilentRun above absorbs the turn's write for every run).
+    // What every mode keeps is the mail: once it has landed, noteNotify records
+    // that this run found something, so its reply joins the mail once the run
+    // settles, and its thread is kept for the mail to point at. That is the
+    // whole of `inbox` mode — there is nothing extra to emit.
     notify: async ({ title, message }, threadId) => {
-      scheduler.noteNotify(threadId);
       // The Inbox half, in every mode: a scheduled run's notify_user is a mail
       // from the task, grouped with the task's earlier firings. Only for a run
       // actually in flight — an interactive turn calling notify_user has the
@@ -133,14 +138,18 @@ export function initTaskScheduler(deps: {
             taskId: running.id,
             threadId,
             ...(title?.trim() ? { headline: title.trim() } : {}),
-            ...(running.personaId ? { personaId: running.personaId } : {})
+            ...(running.runsAs.kind === 'persona' ? { personaId: running.runsAs.personaId } : {})
           })
           .catch((err) =>
-            // The mail IS the surfacing now — an undelivered one is a watch
+            // The mail IS the surfacing — an undelivered one is a watch
             // task that found something and told nobody but the modal (if the
             // mode even shows one).
             degrade('tasks', 'dropped a scheduled result on the way to the Inbox', err)
           );
+        // Only a mail that landed keeps the thread: a notified flag with no
+        // mail item naming the thread would leave a session nothing points at,
+        // never listed and never deleted.
+        if (conversationId) scheduler.noteNotify(threadId);
       }
       // Read per notification rather than once at wiring time: a task fires long
       // after startup, and the toggle must apply to the very next run.
@@ -172,6 +181,8 @@ export function initTaskScheduler(deps: {
       if (mode === 'nudge') return;
       deps.emit('tasks:notify', {
         threadId,
+        ...(running ? { taskId: running.id } : {}),
+        ...(conversationId ? { conversationId } : {}),
         title,
         message,
         at: new Date().toISOString()

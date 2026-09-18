@@ -3,21 +3,25 @@ import { Bell } from 'lucide-react';
 import type { TaskNotifyPayload } from '../shared/types';
 
 // Prominent alert raised when a scheduled run calls notify_user. Mirrors the
-// McpApprovalCard / DeleteThreadDialog modal markup. "Open chat" jumps to the chat
-// the run happened in; Dismiss (or Escape / backdrop click) closes it.
+// McpApprovalCard / DeleteThreadDialog modal markup. "Open mail" jumps to the
+// mail conversation the notification landed in — the run itself happened in a
+// hidden thread of its own, and the mail is where its report arrives. Dismiss
+// (or Escape / backdrop click) closes it. No Open button when the mail could
+// not be delivered: there is nothing to open.
 export function TaskAlertModal({
   payload,
-  onOpenChat,
+  onOpenMail,
   onDismiss
 }: {
   payload: TaskNotifyPayload;
-  onOpenChat: (threadId: string) => void;
+  onOpenMail: (conversationId: string) => void;
   onDismiss: () => void;
 }) {
-  const dismissRef = useRef<HTMLButtonElement>(null);
+  const defaultRef = useRef<HTMLButtonElement>(null);
+  const conversationId = payload.conversationId;
 
   useEffect(() => {
-    dismissRef.current?.focus();
+    defaultRef.current?.focus();
   }, []);
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -26,7 +30,8 @@ export function TaskAlertModal({
       onDismiss();
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      onOpenChat(payload.threadId);
+      if (conversationId) onOpenMail(conversationId);
+      else onDismiss();
     }
   }
 
@@ -49,12 +54,14 @@ export function TaskAlertModal({
         </div>
         <p className="task-alert-message">{payload.message}</p>
         <div className="mcp-approval-actions">
-          <button className="push" onClick={onDismiss}>
+          <button ref={conversationId ? undefined : defaultRef} className={conversationId ? 'push' : 'push default'} onClick={onDismiss}>
             Dismiss
           </button>
-          <button ref={dismissRef} className="push default" onClick={() => onOpenChat(payload.threadId)}>
-            Open chat
-          </button>
+          {conversationId && (
+            <button ref={defaultRef} className="push default" onClick={() => onOpenMail(conversationId)}>
+              Open mail
+            </button>
+          )}
         </div>
       </div>
     </div>

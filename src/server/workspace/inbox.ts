@@ -265,9 +265,9 @@ export function markAllRead(chats: { threadId: string; updatedAt: number }[]): P
 }
 
 /**
- * A write to the session file that the user should never notice: a scheduled
- * run that finished without calling `notify_user` (it looked, and there was
- * nothing to say), or a rename to the name the chat already had. The write
+ * A write to the session file that the user should never notice — today a
+ * rename to the name the chat already had; until scheduled runs got threads of
+ * their own, also a run that finished without calling `notify_user`. The write
  * bumped the file's mtime, which is the only "something happened here" signal
  * the chat list has, so left alone it would drag the thread to the top of the
  * list, resurrect it from the archive and paint the row bold.
@@ -287,8 +287,8 @@ export function markAllRead(chats: { threadId: string; updatedAt: number }[]): P
  * `before` is the thread's mtime as the write started; `at` must be at or past
  * its mtime now (the caller reads both from the thread list, so a write that
  * lands a moment after is still covered). A quiet write landing inside an open
- * window extends the window rather than opening a new one, so a thread polled
- * silently every morning stays exactly where the last real message left it.
+ * window extends the window rather than opening a new one, so a thread quietly
+ * rewritten again and again stays exactly where the last real message left it.
  */
 export function noteSilentRun(threadId: string, before: number, at: number): Promise<InboxState> {
   const prev = toMs(before);

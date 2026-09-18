@@ -4,8 +4,8 @@
 //
 // The load-bearing idea is that archive and snooze are *timestamps*, not flags.
 // A thread is archived only while its last activity is older than the moment you
-// archived it, so any new turn — a scheduled run, a reply from the phone, or you
-// picking it back up — lifts it out of the archive on its own. That's the email
+// archived it, so any new turn — a reply from the phone, or you picking it back
+// up — lifts it out of the archive on its own. That's the email
 // behaviour ("a new reply un-archives the conversation") with no background job,
 // no push channel, and no write to make it happen.
 
@@ -23,8 +23,9 @@ export interface InboxEntry {
   snoozedUntil?: number;
   /**
    * A quiet window: writes to the session file between `quietFrom` and
-   * `quietUntil` (ms, both or neither) were non-events — a scheduled run that
-   * found nothing, a rename to the name the chat already had. While the file's
+   * `quietUntil` (ms, both or neither) were non-events — a rename to the name
+   * the chat already had (and, before runs got threads of their own, a
+   * scheduled run that found nothing). While the file's
    * mtime is still inside the window the chat is listed as of `quietFrom`, so
    * it neither jumps to the top nor changes its read/archive/snooze standing.
    * The next real write lands past `quietUntil` and the mtime speaks again.

@@ -856,12 +856,11 @@ describe('readThread meta hydration', () => {
   });
 });
 
-describe('scheduled-run model restore', () => {
-  // pi never restores a session's persisted model on switch_session (the spawn-time
-  // --model pins every runtime rebuild), so a scheduled run — which carries no
-  // renderer-selected model — silently executed on the app default. First hit:
-  // a morning task on a gpt-5.6-sol thread ran on the 128k-context spark default
-  // and blew the context window mid-turn.
+describe('scheduled-run turns', () => {
+  // A scheduled run carries the model its task or persona pins (or none, for
+  // the app default) and runs in a session of its own. The session file below
+  // still has model_change entries: a scheduled turn must NOT read them — the
+  // thread's own history no longer decides anything for a run.
   const sessionLines = [
     { type: 'session', id: 'sched-1', timestamp: '2026-07-23T22:00:00.000Z', cwd: '/tmp' },
     { type: 'model_change', id: 'mc1', provider: 'openai-codex', modelId: 'gpt-5.3-codex-spark' },
@@ -887,7 +886,6 @@ describe('scheduled-run model restore', () => {
     ensureWorkerStarted: (worker: FakeWorker) => Promise<void>;
     buildMessage: () => Promise<{ message: string; images: unknown[] }>;
     sessionFiles: Map<string, string>;
-    threadTurnSettings: (threadId: string) => Promise<{ model?: string; effort?: string }>;
   };
 
   async function scheduledRuntime(extraLines: object[] = []): Promise<{
@@ -945,100 +943,36 @@ describe('scheduled-run model restore', () => {
     }
   });
 
-  it('resolves the last explicitly chosen model/effort, ignoring assistant-message models', async () => {
-    const { internal } = await scheduledRuntime();
-    await expect(internal.threadTurnSettings('sched-1')).resolves.toMatchObject({
-      model: 'openai-codex/gpt-5.6-sol',
-      effort: 'high'
-    });
-  });
-
-  it('re-applies the thread model and effort before the prompt of a scheduled turn', async () => {
-    const { runtime, requests } = await scheduledRuntime();
-    await runtime.startTurn({
-      input: 'check the news',
-      threadId: 'sched-1',
-      scheduled: { at: '2026-07-24T06:00:00.000Z', taskId: 'task-1' }
-    });
-
-    const types = requests.map((r) => r.type);
-    expect(requests.find((r) => r.type === 'set_model')).toMatchObject({
-      provider: 'openai-codex',
-      modelId: 'gpt-5.6-sol'
-    });
-    expect(requests.find((r) => r.type === 'set_thinking_level')).toMatchObject({ level: 'high' });
-    expect(types.indexOf('set_model')).toBeLessThan(types.indexOf('prompt'));
-    expect(types.indexOf('set_thinking_level')).toBeLessThan(types.indexOf('prompt'));
-  });
-
-  it('lets a task-pinned model outrank the thread model, keeping the thread effort', async () => {
-    // A task pin (Tasks tab) arrives as input.model on a scheduled turn. It must
-    // win over the thread's own model_change — pinning exists precisely because
-    // the thread's last selected model can be an outdated one — while an unpinned
-    // effort still falls back to the thread's persisted level.
+  it('applies the pin a scheduled turn carries, and nothing else, before the prompt', async () => {
     const { runtime, requests } = await scheduledRuntime();
     await runtime.startTurn({
       input: 'check the news',
       threadId: 'sched-1',
       model: 'openai-codex/gpt-5.6-terra',
+      effort: 'low',
       scheduled: { at: '2026-07-24T06:00:00.000Z', taskId: 'task-1' }
     });
-
     const types = requests.map((r) => r.type);
     expect(requests.filter((r) => r.type === 'set_model')).toEqual([
       expect.objectContaining({ provider: 'openai-codex', modelId: 'gpt-5.6-terra' })
     ]);
-    expect(requests.find((r) => r.type === 'set_thinking_level')).toMatchObject({ level: 'high' });
+    expect(requests.find((r) => r.type === 'set_thinking_level')).toMatchObject({ level: 'low' });
     expect(types.indexOf('set_model')).toBeLessThan(types.indexOf('prompt'));
+    expect(types).not.toContain('compact');
   });
 
-  it('degrades a pin that cannot be applied to the thread model, not the app default', async () => {
-    const { runtime, worker, requests } = await scheduledRuntime();
-    const base = worker.proc!.request!;
-    worker.proc!.request = async (cmd) => {
-      // The pinned model has vanished from the registry; the thread's own still works.
-      if (cmd.type === 'set_model' && cmd.modelId === 'gpt-5.6-terra') {
-        requests.push(cmd);
-        return { success: false, error: 'model unavailable' };
-      }
-      return base(cmd);
-    };
-
-    await expect(
-      runtime.startTurn({
-        input: 'check the news',
-        threadId: 'sched-1',
-        model: 'openai-codex/gpt-5.6-terra',
-        scheduled: { at: '2026-07-24T06:00:00.000Z', taskId: 'task-1' }
-      })
-    ).resolves.toMatchObject({ threadId: 'sched-1' });
-
-    expect(requests.filter((r) => r.type === 'set_model').map((r) => r.modelId)).toEqual([
-      'gpt-5.6-terra',
-      'gpt-5.6-sol'
-    ]);
-    expect(requests.map((r) => r.type)).toContain('prompt');
-  });
-
-  it('falls back to the active model instead of failing the run when set_model is rejected', async () => {
-    const { runtime, worker, requests } = await scheduledRuntime();
-    const base = worker.proc!.request!;
-    worker.proc!.request = async (cmd) => {
-      if (cmd.type === 'set_model') {
-        requests.push(cmd);
-        return { success: false, error: 'model unavailable' };
-      }
-      return base(cmd);
-    };
-
-    await expect(
-      runtime.startTurn({
-        input: 'check the news',
-        threadId: 'sched-1',
-        scheduled: { at: '2026-07-24T06:00:00.000Z', taskId: 'task-1' }
-      })
-    ).resolves.toMatchObject({ threadId: 'sched-1' });
-    expect(requests.map((r) => r.type)).toContain('prompt');
+  it('an unpinned scheduled turn stays on the app default: the session history is not consulted', async () => {
+    const { runtime, requests } = await scheduledRuntime();
+    await runtime.startTurn({
+      input: 'check the news',
+      threadId: 'sched-1',
+      scheduled: { at: '2026-07-24T06:00:00.000Z', taskId: 'task-1' }
+    });
+    const types = requests.map((r) => r.type);
+    expect(types).not.toContain('set_model');
+    expect(types).not.toContain('set_thinking_level');
+    expect(types).not.toContain('compact');
+    expect(types).toContain('prompt');
   });
 
   it('leaves interactive turns on the renderer-selected model', async () => {
@@ -1270,48 +1204,6 @@ describe('scheduled-run model restore', () => {
       text: 'I want mail subjects autogenerated when missing.'
     });
   });
-
-  // Scheduled pre-run condense: pi's global compaction reserve can't scale per
-  // model, so startTurn condenses the thread itself when its estimated context
-  // exceeds the run model's window minus a proportional reserve (window/4,
-  // clamped to [16384, 65536] — 32000 for the 128k catalog model above).
-  const usageAssistant = (totalTokens: number) => ({
-    type: 'message',
-    id: 'a-usage',
-    message: {
-      role: 'assistant',
-      content: [{ type: 'text', text: 'done' }],
-      provider: 'openai-codex',
-      model: 'gpt-5.6-sol',
-      stopReason: 'stop',
-      usage: { input: totalTokens - 500, output: 500, cacheRead: 0, cacheWrite: 0, totalTokens }
-    }
-  });
-
-  it('condenses an oversized thread before a scheduled run', async () => {
-    const { runtime, requests } = await scheduledRuntime([usageAssistant(119_000)]);
-    await runtime.startTurn({
-      input: 'check the news',
-      threadId: 'sched-1',
-      scheduled: { at: '2026-07-25T06:00:00.000Z', taskId: 'task-1' }
-    });
-
-    const types = requests.map((r) => r.type);
-    expect(types).toContain('compact');
-    expect(types.indexOf('compact')).toBeLessThan(types.indexOf('prompt'));
-    expect(types.indexOf('set_model')).toBeLessThan(types.indexOf('compact'));
-  });
-
-  it('does not condense when the thread fits the run model comfortably', async () => {
-    const { runtime, requests } = await scheduledRuntime([usageAssistant(50_000)]);
-    await runtime.startTurn({
-      input: 'check the news',
-      threadId: 'sched-1',
-      scheduled: { at: '2026-07-25T06:00:00.000Z', taskId: 'task-1' }
-    });
-
-    expect(requests.map((r) => r.type)).not.toContain('compact');
-  });
 });
 
 describe('interactive overflow self-heal', () => {
@@ -1337,7 +1229,7 @@ describe('interactive overflow self-heal', () => {
     await expect(settledTurn({ errored: true, errorMessage: OVERFLOW })).resolves.toEqual(['thread-x']);
   });
 
-  it('leaves scheduled turns to the scheduler self-heal', async () => {
+  it('leaves scheduled turns alone: each ran in a one-off thread nobody sends to again', async () => {
     await expect(settledTurn({ errored: true, errorMessage: OVERFLOW, isScheduled: true })).resolves.toEqual([]);
   });
 

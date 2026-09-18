@@ -31,7 +31,7 @@ function run(id: string, request: string, startedAt: number, extra: Partial<Hist
   return { id, turnId: id, request, startedAt, endedAt: startedAt + 10, status: 'ok', personaId: '', threadId: 'lead-thread', activities: [], ...extra };
 }
 function task(id: string, threadId: string): ScheduledTask {
-  return { id, threadId, personaId: 'secretary', prompt: 'Check fictional news', title: 'News', enabled: true,
+  return { id, threadId, runsAs: { kind: 'persona', personaId: 'secretary' }, prompt: 'Check fictional news', title: 'News', enabled: true,
     createdAt: new Date(0).toISOString(), schedule: { kind: 'cron', expr: '0 8 * * *' } };
 }
 
@@ -121,23 +121,35 @@ describe('historical mail work linkage', () => {
 });
 
 describe('scheduled historical work', () => {
-  it('links each distinct notify_user body to its own scheduled notification', async () => {
+  // Every firing runs in a thread of its own, named on the mail it sent
+  // (`runThreadId`); recovery reads that thread for that item alone.
+  it('recovers each notification from the run thread its mail names, as the persona the task runs as', async () => {
     conversation.sessions = {};
-    items = [mail('monday-mail', 'Monday report', 2_000, { from: 'secretary', to: ['user'], taskId: 'news' }),
-      mail('tuesday-mail', 'Tuesday report', 4_000, { from: 'secretary', to: ['user'], taskId: 'news' })];
-    tasks = [task('news', 'task-thread')];
-    histories['task-thread'] = [run('monday-run', 'Check news', 1_000, { notifications: ['Monday report'], threadId: 'task-thread' }),
-      run('tuesday-run', 'Check news', 3_000, { notifications: ['Tuesday report'], threadId: 'task-thread' }),
-      run('unrelated-run', 'Check news', 5_000, { notifications: ['Another conversation report'], threadId: 'task-thread' })];
+    items = [mail('monday-mail', 'Monday report', 2_000, { from: 'secretary', to: ['user'], taskId: 'news', runThreadId: 'run-monday' }),
+      mail('tuesday-mail', 'Tuesday report', 4_000, { from: 'secretary', to: ['user'], taskId: 'news', runThreadId: 'run-tuesday' })];
+    tasks = [task('news', 'origin-chat')];
+    histories['run-monday'] = [run('monday-run', 'Check news', 1_000, { notifications: ['Monday report'], threadId: 'run-monday' })];
+    histories['run-tuesday'] = [run('tuesday-run', 'Check news', 3_000, { notifications: ['Tuesday report'], threadId: 'run-tuesday' })];
+    histories['origin-chat'] = [run('chat-turn', 'Check news', 500, { notifications: ['Monday report'], threadId: 'origin-chat' })];
     const { groups } = await getMailWork(runtime, ID);
-    expect(groups.find((group) => group.notificationItemId === 'monday-mail')?.runs[0].id).toBe('monday-run');
+    expect(groups.find((group) => group.notificationItemId === 'monday-mail')?.runs[0]).toMatchObject({ id: 'monday-run', personaId: 'secretary' });
     expect(groups.find((group) => group.notificationItemId === 'tuesday-mail')?.runs[0].id).toBe('tuesday-run');
-    expect(groups.flatMap((group) => group.runs.map((value) => value.id))).not.toContain('unrelated-run');
+    // The chat the task was scheduled from is never read: no run happened there.
+    expect(history).not.toHaveBeenCalledWith('origin-chat');
   });
 
-  it('marks removed tasks explicitly unavailable without guessing a session', async () => {
+  it('a notification whose task is gone still recovers from its own thread, as the plain task sender', async () => {
     conversation.sessions = {};
-    items = [mail('old-notification', 'Old report', 1_000, { from: 'secretary', to: ['user'], taskId: 'removed-task' })];
+    items = [mail('notice', 'Report', 2_000, { from: 'task:removed', to: ['user'], taskId: 'removed', runThreadId: 'run-x' })];
+    histories['run-x'] = [run('the-run', 'Check', 1_000, { notifications: ['Report'], threadId: 'run-x' })];
+    const { groups } = await getMailWork(runtime, ID);
+    expect(groups.find((group) => group.notificationItemId === 'notice')?.runs[0]).toMatchObject({ id: 'the-run', personaId: 'task:removed' });
+  });
+
+  it('marks mail from before runs had threads of their own explicitly unavailable without guessing a session', async () => {
+    conversation.sessions = {};
+    items = [mail('old-notification', 'Old report', 1_000, { from: 'secretary', to: ['user'], taskId: 'news' })];
+    tasks = [task('news', 'origin-chat')];
     const { groups } = await getMailWork(runtime, ID);
     expect(groups).toHaveLength(1);
     expect(groups[0]).toMatchObject({ notificationItemId: 'old-notification', historical: true, runs: [] });
@@ -145,21 +157,21 @@ describe('scheduled historical work', () => {
     expect(history).not.toHaveBeenCalled();
   });
 
-  it('shows the same saved scheduled run beneath each notification it explicitly produced', async () => {
+  it('shows the same saved run beneath each notification it produced', async () => {
     conversation.sessions = {};
-    items = [mail('first-update', 'Build complete', 2_000, { from: 'secretary', to: ['user'], taskId: 'build' }),
-      mail('second-update', 'Upload complete', 3_000, { from: 'secretary', to: ['user'], taskId: 'build' })];
-    tasks = [task('build', 'task-thread')];
-    histories['task-thread'] = [run('scheduled-run', 'Build and upload', 1_000, { notifications: ['Build complete', 'Upload complete'] })];
+    items = [mail('first-update', 'Build complete', 2_000, { from: 'secretary', to: ['user'], taskId: 'build', runThreadId: 'run-1' }),
+      mail('second-update', 'Upload complete', 3_000, { from: 'secretary', to: ['user'], taskId: 'build', runThreadId: 'run-1' })];
+    tasks = [task('build', 'origin-chat')];
+    histories['run-1'] = [run('scheduled-run', 'Build and upload', 1_000, { notifications: ['Build complete', 'Upload complete'] })];
     const { groups } = await getMailWork(runtime, ID);
     for (const id of ['first-update', 'second-update']) expect(groups.find((group) => group.notificationItemId === id)?.runs.map((value) => value.id)).toEqual(['scheduled-run']);
   });
 
-  it('does not guess among scheduled runs that emitted the same notification text', async () => {
+  it('does not guess among runs in one thread that emitted the same notification text', async () => {
     conversation.sessions = {};
-    items = [mail('notification', 'No news', 4_000, { from: 'secretary', to: ['user'], taskId: 'news' })];
-    tasks = [task('news', 'task-thread')];
-    histories['task-thread'] = [run('first-run', 'Check news', 1_000, { notifications: ['No news'] }),
+    items = [mail('notification', 'No news', 4_000, { from: 'secretary', to: ['user'], taskId: 'news', runThreadId: 'run-1' })];
+    tasks = [task('news', 'origin-chat')];
+    histories['run-1'] = [run('first-run', 'Check news', 1_000, { notifications: ['No news'] }),
       run('second-run', 'Check news', 3_000, { notifications: ['No news'] })];
     const { groups } = await getMailWork(runtime, ID);
     expect(groups.filter((group) => group.notificationItemId === 'notification').flatMap((group) => group.runs)).toEqual([]);

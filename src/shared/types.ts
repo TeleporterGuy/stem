@@ -174,8 +174,9 @@ export interface ChatMessage {
   /**
    * Set on the user message of a scheduled-task run (and propagated to its reply so
    * the pair renders as one collapsed "Scheduled run — HH:MM" block). `at` is the
-   * run's ISO timestamp. Derived live from the tasks:run push and on replay from a
-   * persisted marker in the message.
+   * run's ISO timestamp, read on replay from a persisted marker in the message.
+   * Runs now execute in threads of their own (hidden from the Chats list), so
+   * this only appears in chats that hosted runs before that change.
    */
   scheduled?: { at: string };
 }
@@ -879,11 +880,15 @@ export interface FolderIndexStatus {
 // ---- Scheduled tasks ----
 //
 // A scheduled task re-runs a prompt as a full autonomous agent turn on a schedule.
-// It is created conversationally (the assistant's `schedule_task` tool) and bound
-// to the originating chat: every run appends a turn to that thread. Runs are silent
-// by default; the agent calls `notify_user` when a run produces something worth
-// surfacing (a prominent in-app modal). Stem-owned (the pi backend has no concept
-// of schedules), persisted as tasks.json under userData.
+// It is created conversationally (the assistant's `schedule_task` tool) or edited
+// in the Tasks tab. Every firing runs in a FRESH thread with no history — the
+// prompt, the persona (if any) and recall are all it knows — so no chat ever
+// accumulates run after run. Runs are silent by default; the agent calls
+// `notify_user` when a run produces something worth surfacing, and that becomes
+// mail (grouped per task in the Inbox). A run that sent mail keeps its thread,
+// hidden from the Chats list and reachable from the mail's Work history; a run
+// that sent none is deleted with its thread. Stem-owned (the pi backend has no
+// concept of schedules), persisted as tasks.json under userData.
 
 /** When a task fires: a recurring cron expression, or a one-time ISO datetime. */
 export type TaskSchedule =
@@ -891,20 +896,29 @@ export type TaskSchedule =
   | { kind: 'once'; at: string };
 
 /**
- * The model/effort a scheduled run of a thread would use — the thread's last
- * explicitly selected model (`provider/modelId`) and thinking level, resolved
- * from its session file. Either field is absent when the thread never recorded
- * one (the run then stays on the backend's default).
+ * Who a task's runs execute as — exactly one of:
+ * - `default`: a plain run on the app's default model;
+ * - `persona`: AS that persona (its worker, role prompt, memory, coding-agent
+ *   pin and model settings; its notify_user mails arrive from it);
+ * - `model`: a plain run pinned to a model (`provider/modelId`) and optional
+ *   reasoning effort.
+ * A union rather than independent fields so "persona set, model ignored" is not
+ * a state a task can be in.
  */
-export interface ThreadTurnSettings {
-  model?: string;
-  effort?: string;
-}
+export type TaskRunsAs =
+  | { kind: 'default' }
+  | { kind: 'persona'; personaId: string }
+  | { kind: 'model'; model: string; effort?: string };
 
 export interface ScheduledTask {
   /** Stable id (randomUUID). */
   id: string;
-  /** The chat this task belongs to; each run appends a turn here. */
+  /**
+   * The conversation this task was scheduled FROM — a chat, or a mail persona's
+   * hidden session when a persona scheduled it. Used only for the clock badge
+   * on that chat's row and to scope `list_tasks`/`cancel_task` called there.
+   * No run ever writes to it: each firing gets a thread of its own.
+   */
   threadId: string;
   /** The prompt re-run on each firing. */
   prompt: string;
@@ -927,29 +941,8 @@ export interface ScheduledTask {
   lastError?: string;
   /** Short human label derived from the prompt, for the list + chat badge. */
   title: string;
-  /**
-   * Model pinned to THIS task (`provider/modelId`), set from the Tasks tab.
-   * Absent → the run inherits the thread's last explicitly selected model
-   * (see {@link ThreadTurnSettings}), which is how every task started out.
-   */
-  model?: string;
-  /** Reasoning effort pinned to this task; absent → the thread's persisted level. */
-  effort?: string;
-  /**
-   * Persona this task's runs execute AS: the run gets the persona's worker,
-   * role prompt, and coding-agent pin, with the persona's model/effort winning
-   * over the task's own; its notify_user mails arrive from this persona.
-   * Absent → a plain run, as every task started out.
-   */
-  personaId?: string;
-  /**
-   * The hidden mail-persona session this task was scheduled from, when it was.
-   * A task's runs need a chat the user can open, and a persona's mail session is
-   * not one (the Chats list hides it), so schedule_task called from a mail turn
-   * binds the task to a fresh chat and keeps where it came from here — so
-   * list_tasks asked in that mail conversation still finds it.
-   */
-  originThreadId?: string;
+  /** Who and what this task's runs execute as (see {@link TaskRunsAs}). */
+  runsAs: TaskRunsAs;
 }
 
 /** What the assistant's `schedule_task` tool passes (exactly one of cron/at). */
@@ -969,27 +962,16 @@ export type TaskSchedulePatch = { schedule: TaskSchedule };
 /** The Tasks tab's prompt editor: the instruction every run re-executes. */
 export type TaskPromptPatch = { prompt: string };
 
-/** The Tasks tab's model row: null clears a pin back to "the chat's model". */
-export type TaskModelPatch = { model: string | null; effort: string | null };
-
-/** The Tasks tab's persona row: null clears the pin back to "a plain run". */
-export type TaskPersonaPatch = { personaId: string | null };
-
-/** Main → renderer: a scheduled run just started (insert a collapsed run row live). */
-export interface ScheduledRunPayload {
-  threadId: string;
-  turnId: string;
-  taskId: string;
-  /** The prompt being run (shown as the run's user bubble). */
-  prompt: string;
-  /** ISO timestamp the run started (the "Scheduled run — HH:MM" label). */
-  at: string;
-}
+/** The Tasks tab's "runs as" picker: replaces the whole choice. */
+export type TaskRunsAsPatch = { runsAs: TaskRunsAs };
 
 /** Main → renderer: the agent called notify_user during a run; show the alert modal. */
 export interface TaskNotifyPayload {
+  /** The run's own (hidden) thread — for scoping, not for opening. */
   threadId: string;
   taskId?: string;
+  /** The mail conversation the notification landed in — what "Open" opens. Absent when the mail could not be delivered. */
+  conversationId?: string;
   title?: string;
   message: string;
   /** ISO timestamp the notification fired. */
@@ -2417,6 +2399,13 @@ export interface MailItem {
   /** Present when a scheduled task's run produced this mail. */
   taskId?: string;
   /**
+   * Scheduled-task mail only: the fresh thread this firing ran in. Its presence
+   * is what keeps that thread: a run that sent mail is inspectable from here
+   * (Work history), a run that sent none is deleted with its thread. The thread
+   * goes when the task or this conversation is deleted. The chat list hides it.
+   */
+  runThreadId?: string;
+  /**
    * Scheduled-task mail only: this firing's own headline (the run's notify_user
    * title). The conversation's subject follows the latest one; each item keeps
    * its own, so an older firing still reads under the headline it had.
@@ -2808,9 +2797,9 @@ export interface ChatsSettings {
  *             Inbox, the way any other new mail would.
  *
  * The run counts as having found something in all three, and the mail carries it
- * whatever the user chose here. Only the interruption differs. The chat the run
- * wrote into never moves or goes bold for it — the scheduler absorbs every run's
- * turn through `noteSilentRun`, notified or not.
+ * whatever the user chose here. Only the interruption differs. No chat moves or
+ * goes bold for a run in any mode: runs happen in threads of their own that the
+ * Chats list never shows.
  */
 export type TaskNotifyMode = 'alert' | 'nudge' | 'inbox';
 
@@ -3918,8 +3907,6 @@ export interface StemApi {
 
   // Scheduled tasks. Mutations return the fresh list (like the folders APIs).
   listTasks(): Promise<ScheduledTask[]>;
-  /** The model/effort a scheduled run of this thread would use (Tasks tab "runs on" chip). */
-  taskThreadSettings(threadId: string): Promise<ThreadTurnSettings>;
   /** Pause/resume a task without deleting it. Returns the fresh list. */
   setTaskEnabled(id: string, enabled: boolean): Promise<ScheduledTask[]>;
   /** Run a task immediately (off-schedule). Returns the fresh list. */
@@ -3930,14 +3917,10 @@ export interface StemApi {
   updateTaskSchedule(id: string, patch: TaskSchedulePatch): Promise<ScheduledTask[]>;
   /** Replace the prompt a task re-runs (its title follows). Rejects an empty prompt. */
   updateTaskPrompt(id: string, patch: TaskPromptPatch): Promise<ScheduledTask[]>;
-  /** Pin (or clear) the model/effort this task's runs execute on. Returns the fresh list. */
-  updateTaskModel(id: string, patch: TaskModelPatch): Promise<ScheduledTask[]>;
-  /** Pin (or clear) the persona a task's runs execute as. */
-  updateTaskPersona(id: string, patch: TaskPersonaPatch): Promise<ScheduledTask[]>;
+  /** Replace who/what a task's runs execute as. Rejects an unknown persona. Returns the fresh list. */
+  updateTaskRunsAs(id: string, patch: TaskRunsAsPatch): Promise<ScheduledTask[]>;
   /** Fired whenever the task list changes (created/updated/run/deleted). */
   onTasksChanged(listener: (tasks: ScheduledTask[]) => void): () => void;
-  /** Fired when a scheduled run starts, so the open thread can show a collapsed run row. */
-  onScheduledRun(listener: (run: ScheduledRunPayload) => void): () => void;
   /** Fired when the agent calls notify_user during a run — show the prominent alert modal. */
   onTaskNotify(listener: (payload: TaskNotifyPayload) => void): () => void;
 

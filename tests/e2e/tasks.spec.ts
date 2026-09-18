@@ -19,6 +19,7 @@ function seedTask(id: string, prompt: string): ScheduledTask {
     enabled: true,
     createdAt: new Date('2026-01-01T00:00:00').toISOString(),
     title: prompt,
+    runsAs: { kind: 'default' },
     nextRunAt: new Date('2030-01-01T08:00:00').toISOString()
   };
 }
@@ -61,9 +62,8 @@ test('Tasks tab renders seeded scheduled tasks', async () => {
   await expect(win.locator('.manage-body').getByText('Scheduled tasks', { exact: true })).toBeVisible();
   await expect(win.getByText('Summarize my unread email')).toBeVisible();
   await expect(win.getByText('Check the release page')).toBeVisible();
-  // Each row shows what its runs execute on — the thread's model, resolved
-  // through the real tasks:threadSettings IPC (the fake backend's single model).
-  await expect(win.getByText('Stem E2E model').first()).toBeVisible();
+  // Each row shows who/what its runs execute as — unpinned, the app default.
+  await expect(win.getByText('App default').first()).toBeVisible();
 });
 
 test('pausing a task persists enabled=false and clears the next run through real IPC', async () => {
@@ -97,6 +97,7 @@ function seedDueOnce(id: string, prompt: string): ScheduledTask {
     enabled: true,
     createdAt: new Date('2026-01-01T00:00:00').toISOString(),
     title: prompt,
+    runsAs: { kind: 'default' },
     nextRunAt: past
   };
 }

@@ -490,6 +490,11 @@ export class MailRouter {
     body: string;
     taskId: string;
     personaId?: string;
+    /**
+     * The run's own fresh thread. Recorded on the item as `runThreadId`, which
+     * is what keeps that thread alive (and hidden) once the run ends — the Work
+     * beneath the mail is recovered from it.
+     */
     threadId?: string;
     /**
      * The notify_user title, when the run gave one: kept on the item as this
@@ -518,6 +523,7 @@ export class MailRouter {
       to: ['user'],
       body: input.body,
       taskId: input.taskId,
+      ...(input.threadId ? { runThreadId: input.threadId } : {}),
       ...(headline ? { subject: headline } : {})
     });
     const notification = delivered.items.at(-1);

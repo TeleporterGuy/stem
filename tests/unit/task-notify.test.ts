@@ -35,12 +35,16 @@ async function notifyUnder(mode: TaskNotifyMode) {
   await updateTasksSettings({ notify: mode });
   const runtime = new FakeRuntime();
   const emitted: string[] = [];
+  const payloads: unknown[] = [];
   let revealed = 0;
   let attention = 0;
   const mails: { subject: string; body: string; taskId: string }[] = [];
   const scheduler = initTaskScheduler({
     runtime: runtime as unknown as ChatBackend,
-    emit: (channel) => emitted.push(channel),
+    emit: (channel, payload) => {
+      emitted.push(channel);
+      if (channel === 'tasks:notify') payloads.push(payload);
+    },
     isUserActive: () => false,
     revealMainWindow: () => revealed++,
     requestAttention: () => attention++,
@@ -50,7 +54,7 @@ async function notifyUnder(mode: TaskNotifyMode) {
   });
   await runtime.bridge!.notify({ title: 'Build', message: 'main went red' }, 't1');
   scheduler.stop();
-  return { revealed, attention, alerts: emitted.filter((c) => c === 'tasks:notify').length, mails };
+  return { revealed, attention, alerts: emitted.filter((c) => c === 'tasks:notify').length, mails, payloads };
 }
 
 beforeEach(() => {
@@ -65,15 +69,20 @@ afterEach(() => {
 
 describe('notify_user prominence', () => {
   it('alert (the default) raises the window, nudges the OS and pushes the modal', async () => {
-    expect(await notifyUnder('alert')).toEqual({ revealed: 1, attention: 1, alerts: 1, mails: [] });
+    const got = await notifyUnder('alert');
+    expect(got).toMatchObject({ revealed: 1, attention: 1, alerts: 1, mails: [] });
+    // An interactive turn's notify_user has no task and no mail: the modal has
+    // nothing to open, and the payload says so by carrying no conversation.
+    expect(got.payloads[0]).toMatchObject({ threadId: 't1', title: 'Build', message: 'main went red' });
+    expect((got.payloads[0] as { conversationId?: string }).conversationId).toBeUndefined();
   });
 
   it('nudge bounces the dock without stealing focus or popping the modal', async () => {
-    expect(await notifyUnder('nudge')).toEqual({ revealed: 0, attention: 1, alerts: 0, mails: [] });
+    expect(await notifyUnder('nudge')).toMatchObject({ revealed: 0, attention: 1, alerts: 0, mails: [] });
   });
 
   it('inbox interrupts in no way at all', async () => {
-    expect(await notifyUnder('inbox')).toEqual({ revealed: 0, attention: 0, alerts: 0, mails: [] });
+    expect(await notifyUnder('inbox')).toMatchObject({ revealed: 0, attention: 0, alerts: 0, mails: [] });
   });
 
   it('reads the mode per notification, so a change applies to the very next run', async () => {

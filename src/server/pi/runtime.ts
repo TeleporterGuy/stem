@@ -200,7 +200,8 @@ function scheduledPreamble(at: string, notes?: { id: string; title: string }[]):
   return [
     `<!--stem:scheduled at="${at}"-->`,
     'This is an automated scheduled run — no human is reading the reply live. Carry out the task.',
-    'If, and only if, the result is something the user should be told about, call the notify_user tool with a short message.',
+    'This run has no memory of any earlier conversation: the task prompt below is everything you know about it.',
+    'If, and only if, the result is something the user should be told about, call the notify_user tool with a short message; it reaches the user as mail, with your final reply attached — so put the report or drafts in that reply.',
     'Otherwise just finish quietly. Do not ask the user questions — there is no one to answer.',
     ...personaNotesBlock(notes, SCHED_CLOSE),
     SCHED_CLOSE
@@ -1145,48 +1146,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           throw new Error(`Could not mark this chat private: ${e instanceof Error ? e.message : String(e)}`);
         });
       }
-      if (input.scheduled) {
-        // pi does NOT restore the session's own model on switch_session (the
-        // spawn-time --model pins every runtime rebuild) — without an explicit
-        // re-apply the run would execute on the app default, not the model the
-        // user chose. `input.model` here is the task's own pin (Tasks tab); the
-        // thread's last explicitly selected model is the fallback for the pinless
-        // tasks every one started out as. Still read the thread settings even
-        // under a pin: they carry the effort fallback and `contextTokens` for the
-        // pre-run condense below.
-        const persisted = await this.threadTurnSettings(threadId).catch((e) => {
-          // Nothing else re-reads these. The run then goes out on the app
-          // default model at the app default effort, and with `contextTokens`
-          // absent the condense below returns immediately — so a thread that is
-          // over the window runs anyway, at 3am, with nobody watching.
-          degrade('pi.thread', 'ran the scheduled task on the app defaults with no pre-run condense', e);
-          return null;
-        });
-        // Best-effort, in preference order: a model that has since vanished from
-        // the registry must degrade to the next candidate, not skip the run.
-        for (const model of [input.model, persisted?.model]) {
-          if (!model) continue;
-          try {
-            await this.applyModel(w, model);
-            break;
-          } catch (error) {
-            log('pi', 'scheduled run: could not apply model', {
-              model,
-              error: error instanceof Error ? error.message : String(error)
-            });
-          }
-        }
-        if (!input.effort && persisted?.effort) await this.setThinking(w, persisted.effort);
-        await this.maybeCompactBeforeScheduledRun(w, threadId, persisted?.contextTokens).catch((e) =>
-          // This is the guard, not a retry of it: the run proceeds either way,
-          // and if the thread really had outgrown the window the prompt below
-          // dies on overflow — which for a scheduled run is a task that simply
-          // did not happen.
-          degrade('pi.thread', 'sent the scheduled run without condensing an oversized thread', e)
-        );
-      } else if (input.model) {
-        await this.applyModel(w, input.model);
-      }
+      // A scheduled run arrives in a fresh session (no threadId), so there is no
+      // thread model to restore and nothing to condense: the pin it carries (a
+      // persona's or the task's own) applies like any other, and no pin means
+      // the app default the worker spawned on.
+      if (input.model) await this.applyModel(w, input.model);
       if (input.effort) await this.setThinking(w, input.effort);
 
       const turn = newTurnContext(threadId, turnId);
@@ -3399,8 +3363,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // itself if it has come due (server/chats/subject.ts owns the policy). Same
     // fire-and-forget contract as the skills pass above: an ordinary turn costs
     // nothing here, and the rare turn that does spend a model call must not hold
-    // the settle up or break it.
-    void this.nameThreadIfDue(turn.threadId);
+    // the settle up or break it. A scheduled run's thread is skipped outright:
+    // it is hidden from every list and mostly deleted the moment it settles, so
+    // a subject for it is a model call spent on a name nobody reads.
+    if (turn.origin?.kind !== 'background') void this.nameThreadIfDue(turn.threadId);
     // Map this live turn's minted id to its persisted entry id so a later
     // fork/edit targets the right pi entry — and persist the turn's timing.
     void this.recordTurnEntry(worker, turn);
@@ -3411,9 +3377,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // background so the user's next message starts from a shrunken thread.
     // Queued behind the foreground gate, so a send the user fires first still
     // serializes correctly; the condense surfaces via the settled-turn
-    // compaction activity row. Scheduled runs are excluded — the scheduler owns
-    // their condense-and-retry, and a second condense here would make its
-    // compact call fail ("already compacted") and cancel the retry.
+    // compaction activity row. Scheduled runs are excluded: each runs in a
+    // thread of its own that nothing sends to again (and a silent run's thread
+    // is deleted the moment it settles), so there is nothing to shrink for.
     if (turn.errored && !turn.isScheduled && isContextOverflowError(turn.errorMessage)) {
       log('pi', 'turn died on context overflow; condensing thread', { threadId: turn.threadId });
       void this.compactThread(turn.threadId).catch((error) =>
@@ -3729,7 +3695,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // restores them when no CLI --model was given, and we always spawn with one, so
     // every rebuild resets to the spawn default. Invalidate the mirrors; callers
     // needing the thread's model must re-apply it (interactive turns pass
-    // input.model, scheduled runs resolve threadTurnSettings in startTurn).
+    // input.model).
     worker.currentModel = null;
     worker.currentThinking = null;
     worker.activeThreadId = threadId;
@@ -3737,116 +3703,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   /**
-   * The model/effort the user last chose for a thread, read from its session file.
-   * Model comes from model_change entries ONLY — assistant messages also persist a
-   * model, but a past scheduled run that executed on the wrong model would poison
-   * that signal, while model_change is only written by an explicit set_model.
-   * Used by startTurn to pin scheduled runs and by the Tasks tab to show what a
-   * task will run on. Also returns a rough context-size estimate (`contextTokens`)
-   * for the scheduled pre-run compaction guard: the last settled assistant usage
-   * (pi's own accounting basis) plus ~chars/4 for anything after it; a compaction
-   * entry resets the usage anchor (pre-compaction usage no longer describes the
-   * live context).
+   * Condense a thread's context via pi's manual compact — the interactive
+   * overflow self-heal (see settleTurn). Serialized behind the foreground gate
+   * like a turn.
    */
-  async threadTurnSettings(
-    threadId: string
-  ): Promise<{ model?: string; effort?: string; contextTokens?: number }> {
-    const file = await this.resolveSessionFile(threadId);
-    if (!file) return {};
-    // No `.catch` here on purpose. '' parses to {}, which is indistinguishable
-    // from a chat that has never chosen a model — so the scheduled run would pin
-    // nothing and, with no contextTokens, skip the pre-run condense that exists
-    // precisely for a thread this long. Both callers already handle a rejection:
-    // startTurn degrades and runs on the defaults knowingly, and the Tasks tab
-    // falls back to showing no override.
-    const text = await readFile(file, 'utf8');
-    let model: string | undefined;
-    let effort: string | undefined;
-    let usageTokens: number | undefined;
-    let charsSinceUsage = 0;
-    for (const line of text.split('\n')) {
-      if (!line.trim()) continue;
-      let entry: {
-        type?: string;
-        provider?: string;
-        modelId?: string;
-        thinkingLevel?: string;
-        message?: { role?: string; stopReason?: string; usage?: PiUsage };
-      };
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        // quiet: this is an estimate feeding the pre-run condense guard. A line
-        // that will not parse only moves the token count, and the guard already
-        // condenses against a window-proportional reserve.
-        continue;
-      }
-      if (entry.type === 'model_change' && entry.provider && entry.modelId) {
-        model = `${entry.provider}/${entry.modelId}`;
-      } else if (entry.type === 'thinking_level_change' && entry.thinkingLevel) {
-        effort = entry.thinkingLevel;
-      } else if (entry.type === 'compaction') {
-        usageTokens = undefined;
-        charsSinceUsage = line.length;
-      } else if (entry.type === 'message' && entry.message) {
-        charsSinceUsage += line.length;
-        const m = entry.message;
-        if (m.role === 'assistant' && m.stopReason !== 'error' && m.stopReason !== 'aborted' && m.usage) {
-          const tokens =
-            m.usage.totalTokens ||
-            (m.usage.input ?? 0) + (m.usage.output ?? 0) + (m.usage.cacheRead ?? 0) + (m.usage.cacheWrite ?? 0);
-          if (tokens > 0) {
-            usageTokens = tokens;
-            charsSinceUsage = 0;
-          }
-        }
-      }
-    }
-    const contextTokens = (usageTokens ?? 0) + Math.ceil(charsSinceUsage / 4);
-    return { model, effort, ...(contextTokens > 0 ? { contextTokens } : {}) };
-  }
-
-  /**
-   * Pre-run guard for autonomous turns. pi's threshold compaction uses ONE global
-   * reserve (seeded in ensurePiSettingsDefaults) that cannot scale with the active
-   * model's window, and inside a run context grows with no compaction opportunity —
-   * a scheduled run on a small-window model can sail from "fine" to a provider
-   * overflow with nobody watching. Before prompting, condense the thread when its
-   * estimated context exceeds the active model's window minus a window-proportional
-   * reserve (a quarter of the window, clamped to [16384, 65536]). Best-effort: a
-   * failed condense must not stop the run.
-   */
-  private async maybeCompactBeforeScheduledRun(worker: PiWorker, threadId: string, contextTokens?: number): Promise<void> {
-    if (!contextTokens) return;
-    const window = await this.activeModelContextWindow(worker);
-    const reserve = Math.max(16384, Math.min(65536, Math.floor(window / 4)));
-    if (contextTokens <= window - reserve) return;
-    log('pi', 'scheduled run: condensing thread before run', { threadId, contextTokens, window, reserve });
-    const res = await worker.proc!.request({ type: 'compact' });
-    if (!res.success) log('pi', 'scheduled run: pre-run condense failed', { threadId, error: res.error });
-  }
-
-  /** The worker's active model's context window per pi's catalog (pi's own default when unknown). */
-  private async activeModelContextWindow(worker: PiWorker): Promise<number> {
-    const current = worker.currentModel ? this.parseModel(worker.currentModel) : null;
-    if (current) {
-      // quiet: null falls through to the same 128k this returns whenever the
-      // catalog has nothing to say about the active model — the documented
-      // default, and the number the condense reserve is sized against.
-      const res = await worker.proc!.request({ type: 'get_available_models' }).catch(() => null);
-      const models = ((res?.data as { models?: PiModel[] } | undefined)?.models ?? []).filter(Boolean);
-      const m = models.find((x) => x.provider === current.provider && x.id === current.modelId);
-      if (typeof m?.contextWindow === 'number' && m.contextWindow > 0) return m.contextWindow;
-    }
-    return 128_000;
-  }
-
-  /**
-   * Condense a thread's context via pi's manual compact. Used by the scheduler's
-   * overflow self-heal: a run that died on a context-overflow error is retried
-   * once after this succeeds. Serialized behind the foreground gate like a turn.
-   */
-  async compactThread(threadId: string): Promise<void> {
+  private async compactThread(threadId: string): Promise<void> {
     return this.withThreadWorker(threadId, async (w) => {
       await this.ensureWorkerStarted(w);
       await this.ensureActive(w, threadId);
@@ -4523,10 +4384,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * one MCP result can be 100k+ chars), which is how a gpt-5.6-sol session went
    * from 327k straight past its 372k window and got a provider overflow error.
    * 64k of reserve makes compaction fire a turn earlier instead. This reserve is
-   * GLOBAL (pi cannot scale it per model), so small-window models get a
-   * window-proportional guard elsewhere: scheduled runs pre-condense via
-   * maybeCompactBeforeScheduledRun, and the scheduler compact-and-retries a run
-   * that still dies on a provider overflow (see TaskScheduler.runTask).
+   * GLOBAL (pi cannot scale it per model). Scheduled runs need no guard of
+   * their own: each starts in an empty thread, so only a single run's own
+   * growth can overflow it.
    */
   /**
    * Locate the vendored pi-web-access entry point once per process, warning if the

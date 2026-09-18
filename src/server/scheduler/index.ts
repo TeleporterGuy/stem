@@ -3,34 +3,34 @@ import { randomUUID } from 'node:crypto';
 import type { ChatBackend } from '../backend/types';
 import type {
   BackendEventEnvelope,
-  ScheduledRunPayload,
   ScheduledTask,
   ScheduleTaskRequest,
+  TaskRunsAs,
   TaskSchedule
 } from '../../shared/types';
-import { isContextOverflowError } from '../backend/overflow';
 import { degrade } from '../degrade';
 import { log } from '../log';
 import { noteTurnStart } from '../live-turns';
-import { toMs } from '../../shared/inbox';
 import { isValidCron, nextAfter } from './cron';
-import { clipError, readTasks, saveTasks, titleFromPrompt } from '../workspace/tasks';
+import { clipError, coerceRunsAs, readTasks, saveTasks, titleFromPrompt } from '../workspace/tasks';
 import { getPersona } from '../workspace/personas';
 import { personaTurnFields } from '../workspace/persona-turn';
 import * as activity from '../activity';
 
 // The main-process scheduler. Holds tasks in memory, keeps ONE timer armed for the
-// earliest due task, and runs each firing as a full autonomous agent turn appended
-// to the task's originating chat (exactly like a user turn, via runtime.startTurn).
-// Modeled on the existing background passes in whenReady (scheduleDistill / runCurate):
-// a single timer + a re-entrancy guard, gated by nothing but the enabled flag.
+// earliest due task, and runs each firing as a full autonomous agent turn in a
+// FRESH thread (startTurn with no threadId — pi mints a new session). Nothing
+// accumulates between firings: the run knows its prompt, its persona and recall,
+// and no more. What a run found reaches the user as mail (notify_user); the
+// thread it ran in is kept only when it produced mail, and deleted otherwise.
+// Modeled on the existing background passes in whenReady (scheduleDistill /
+// runCurate): a single timer + a re-entrancy guard, gated by nothing but the
+// enabled flag.
 
 export interface SchedulerOptions {
   runtime: ChatBackend;
   /** Pushed whenever the task list changes (created/updated/run/deleted). */
   onChange: (tasks: ScheduledTask[]) => void;
-  /** Pushed when a run starts, so the open thread can show a collapsed run row. */
-  onRun: (run: ScheduledRunPayload) => void;
   /**
    * True while the user is actively interacting (a turn running, or recent input).
    * Runs defer while this holds — a scheduled turn would hold the single foreground
@@ -40,16 +40,16 @@ export interface SchedulerOptions {
   /** Abort an in-flight turn (wired to runtime.interruptTurn) for preemption. */
   interrupt?: (turnId: string, reason?: string) => Promise<void>;
   /**
-   * A run settled and its turn's writes should not count as activity in the
-   * chats tree: whatever it found went out as mail, and a run that found
-   * nothing has nothing to show.
-   * `before` and `at` bracket the run in the thread's own mtime terms, so the host
-   * can keep the turn's mtime bump from reading as activity in the Inbox.
+   * Delete a run's thread once nothing points at it. Defaults to
+   * runtime.deleteThread; the host also forgets the thread in the chat search
+   * index, which indexed its turn like any other.
    */
-  onSilentRun?: (threadId: string, before: number, at: number) => void;
+  deleteThread?: (threadId: string) => Promise<void>;
   /**
    * A persona run settled ok: reflect what it taught the persona into its
-   * memory (mail/reflect.ts). Called only for personas that own a memory.
+   * memory (mail/reflect.ts). Called only for personas that own a memory. Must
+   * never reject; the run's thread is deleted once it resolves (when the run
+   * sent no mail), so it reads the transcript while it is still there.
    */
   reflect?: (args: { personaId: string; assignment: string; threadId: string }) => Promise<void>;
   /**
@@ -59,11 +59,25 @@ export interface SchedulerOptions {
    */
   onResult?: (args: { taskId: string; threadId: string; itemId: string; result: string }) => Promise<void>;
   /**
-   * Boot-time repair for a task bound to a thread the user cannot open (a mail
-   * persona's hidden session — see ScheduledTask.originThreadId). Answers with a
-   * fresh chat to move the task onto, or null to leave it where it is.
+   * A task's run just failed after its previous one did not (or after none at
+   * all): mail the user once, with the reason. Repeated failures stay quiet — the
+   * Tasks tab row carries them — and a recovery sends nothing. The host attaches
+   * the run's Work record to that mail, which is why it is called BEFORE the work
+   * record is closed, with the run's thread; the thread is then kept.
    */
-  rehomeHiddenThread?: (task: ScheduledTask) => Promise<string | null>;
+  onFailureTransition?: (args: {
+    taskId: string;
+    title: string;
+    /** The failed run's own thread, when the turn got far enough to have one. */
+    threadId?: string;
+    personaId?: string;
+    error: string;
+  }) => Promise<void>;
+  /**
+   * A task was deleted: the threads its notifying runs left behind (recorded on
+   * its mail items) are nobody's now. The mail itself stays.
+   */
+  onTaskDeleted?: (taskId: string) => Promise<void>;
 }
 
 // Timer cap: setTimeout is unreliable over very long delays and across system
@@ -83,24 +97,17 @@ const IDLE_POLL_MS = 15 * 1000;
 const DEFER_CAP_MS = 30 * 60 * 1000; // 30m
 // A run preempted by the user retries after idle at most this many times per firing.
 const MAX_REQUEUES = 3;
-// Slop on the "this run was silent" stamp. Thread mtimes are second-granular and
-// the backend's last session write can land after turn/completed, so a stamp taken
-// at the exact instant the run settled can still end up behind the file it is
-// meant to cover — which would resurrect the thread anyway. Nothing but the run's
-// own trailing write realistically happens in this window.
-const SILENT_RUN_GRACE_MS = 2000;
-
-export { isContextOverflowError };
 
 interface ActiveRun {
   taskId: string;
-  threadId: string;
+  /** The run's own fresh thread — known only once startTurn resolves. */
+  threadId: string | null;
   turnId: string | null;
   preempted: boolean;
   /**
    * The run called `notify_user` — i.e. it found something worth surfacing, and
-   * a mail now carries it. Decides whether the run's reply joins that mail; it
-   * does not decide whether the chat row moves (no scheduled run moves it).
+   * a mail now carries it. Decides whether the run's reply joins that mail and
+   * whether its thread outlives it.
    */
   notified: boolean;
 }
@@ -144,19 +151,19 @@ export class TaskScheduler {
   /**
    * The in-flight run just raised a `notify_user` alert (routed here by the task
    * bridge). That's the run's own declaration that it found something: its reply
-   * joins the mail the alert opened once the run settles (see runTask). Scoped to
-   * the running task's thread so an interactive turn that calls the tool can't
-   * speak for it.
+   * joins the mail the alert opened once the run settles, and its thread is kept
+   * (see runTask). Scoped to the running task's own thread so an interactive
+   * turn that calls the tool can't speak for it.
    */
   noteNotify(threadId: string): void {
     if (this.activeRun?.threadId === threadId) this.activeRun.notified = true;
   }
 
   /**
-   * The task whose run is in flight, or null. Read by the notify bridge so a push
-   * can name the task instead of the thread — the same scoping as noteNotify: an
-   * interactive turn that calls the tool is nobody's scheduled run and answers
-   * null here.
+   * The task whose run is in flight in `threadId`, or null. Read by the notify
+   * bridge so a push can name the task instead of the thread — the same scoping
+   * as noteNotify: an interactive turn that calls the tool is nobody's scheduled
+   * run and answers null here.
    */
   runningTask(threadId: string): ScheduledTask | null {
     const run = this.activeRun;
@@ -164,12 +171,21 @@ export class TaskScheduler {
     return this.tasks.find((t) => t.id === run.taskId) ?? null;
   }
 
+  /**
+   * The thread the in-flight run occupies, or null. The chat list filters it
+   * out: pi writes the session file with the first turn, and a run that has
+   * not mailed yet is on no mail item — without this it would surface as a new
+   * chat for as long as it ran, then vanish.
+   */
+  activeRunThreadId(): string | null {
+    return this.activeRun?.threadId ?? null;
+  }
+
   /** Load persisted tasks, run any overdue ones once (catch-up), then arm the timer. */
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
     this.tasks = await readTasks();
-    await this.rehomeHiddenThreads();
 
     const now = new Date();
     const overdue: ScheduledTask[] = [];
@@ -202,24 +218,12 @@ export class TaskScheduler {
     return this.tasks.map((t) => ({ ...t }));
   }
 
-  /**
-   * Tasks bound to `threadId` — plus the ones scheduled FROM it when it is a
-   * mail persona's hidden session, which run in a chat of their own (see
-   * ScheduledTask.originThreadId): the persona that made a task must still be
-   * able to list and cancel it from the conversation it made it in.
-   */
+  /** Tasks scheduled from `threadId` (a chat or a mail persona's session). */
   listForThread(threadId: string): ScheduledTask[] {
-    return this.tasks
-      .filter((t) => t.threadId === threadId || t.originThreadId === threadId)
-      .map((t) => ({ ...t }));
+    return this.tasks.filter((t) => t.threadId === threadId).map((t) => ({ ...t }));
   }
 
-  /**
-   * The checks `create` runs before it writes anything, on their own so a caller
-   * that has to set something up first (the bridge adopting a fresh chat for a
-   * task scheduled from mail) can refuse a bad request without leaving that
-   * setup behind.
-   */
+  /** The checks `create` runs before it writes anything. */
   async validate(req: ScheduleTaskRequest): Promise<{ ok: true } | { ok: false; error: string }> {
     const schedule = this.buildSchedule(req);
     if (!schedule.ok) return { ok: false, error: schedule.error };
@@ -234,14 +238,13 @@ export class TaskScheduler {
   }
 
   /**
-   * Create a task bound to a chat (the assistant's schedule_task tool). `origin`
-   * is the hidden mail session the tool was called from, when `threadId` is a
-   * fresh chat adopted in its place.
+   * Create a task scheduled from `threadId` (the assistant's schedule_task tool,
+   * called in a chat or in a mail persona's hidden session — either is fine,
+   * since no run ever writes there).
    */
   async create(
     req: ScheduleTaskRequest,
-    threadId: string,
-    origin?: { threadId: string }
+    threadId: string
   ): Promise<{ ok: true; task: ScheduledTask } | { ok: false; error: string }> {
     const valid = await this.validate(req);
     if (!valid.ok) return valid;
@@ -260,44 +263,12 @@ export class TaskScheduler {
       createdAt: now.toISOString(),
       title: titleFromPrompt(prompt),
       nextRunAt: null,
-      ...(personaId ? { personaId } : {}),
-      ...(origin ? { originThreadId: origin.threadId } : {})
+      runsAs: personaId ? { kind: 'persona', personaId } : { kind: 'default' }
     };
     task.nextRunAt = this.computeNextRunAt(task, now);
     this.tasks.push(task);
     await this.persistAndArm();
     return { ok: true, task: { ...task } };
-  }
-
-  /**
-   * Move every task still bound to a hidden mail session onto a chat of its own.
-   * Tasks scheduled from mail before origin tracking existed (and any the bridge
-   * failed to rehome at creation) ran in a thread no surface shows: the Chats
-   * list hides persona sessions and the Inbox shows only mail, so their runs —
-   * the drafts and reports the user was told to look for — landed nowhere. One
-   * pass at start; a task that cannot be moved this boot is tried again next.
-   */
-  private async rehomeHiddenThreads(): Promise<void> {
-    const rehome = this.opts.rehomeHiddenThread;
-    if (!rehome) return;
-    let moved = false;
-    for (const task of this.tasks) {
-      try {
-        const threadId = await rehome(task);
-        if (!threadId || threadId === task.threadId) continue;
-        log('tasks', 'moved a task out of a hidden mail session into its own chat', {
-          task: task.title,
-          from: task.threadId,
-          to: threadId
-        });
-        task.originThreadId = task.threadId;
-        task.threadId = threadId;
-        moved = true;
-      } catch (e) {
-        degrade('tasks', `left "${task.title}" running in a chat nobody can open`, e);
-      }
-    }
-    if (moved) await saveTasks(this.tasks);
   }
 
   async setEnabled(id: string, enabled: boolean): Promise<ScheduledTask[]> {
@@ -351,45 +322,40 @@ export class TaskScheduler {
   }
 
   /**
-   * Pin (or clear, with nulls) the model/effort this task's runs execute on.
-   * No validation against the model catalog here: the Tasks tab only offers
-   * catalog entries, and the runtime already degrades a vanished model to the
-   * thread's own (then the app default) rather than skipping the run.
+   * Replace who/what this task's runs execute as (Tasks tab). One choice, not
+   * three fields: a persona, a pinned model, or the app default. Rejects a
+   * malformed value and a persona that does not exist. No validation against
+   * the model catalog: the Tasks tab only offers catalog entries, and the
+   * runtime degrades a vanished model to the app default rather than skipping
+   * the run.
    */
-  async updateModel(id: string, model: string | null, effort: string | null): Promise<ScheduledTask[]> {
-    const task = this.tasks.find((t) => t.id === id);
-    if (task) {
-      if (model) task.model = model;
-      else delete task.model;
-      if (effort) task.effort = effort;
-      else delete task.effort;
-      await this.persistAndArm();
+  async updateRunsAs(id: string, runsAs: TaskRunsAs): Promise<ScheduledTask[]> {
+    const checked = coerceRunsAs(runsAs);
+    if (!checked) throw new Error('Choose a persona, a model, or the default.');
+    if (checked.kind === 'persona' && !(await getPersona(checked.personaId))) {
+      throw new Error(`No persona "${checked.personaId}" exists.`);
     }
-    return this.snapshot();
-  }
-
-  /** Pin (or clear, with null) the persona this task's runs execute AS. */
-  async updatePersona(id: string, personaId: string | null): Promise<ScheduledTask[]> {
     const task = this.tasks.find((t) => t.id === id);
     if (task) {
-      if (personaId) task.personaId = personaId;
-      else delete task.personaId;
+      task.runsAs = checked;
       await this.persistAndArm();
     }
     return this.snapshot();
   }
 
   async remove(id: string): Promise<ScheduledTask[]> {
-    this.tasks = this.tasks.filter((t) => t.id !== id);
-    await this.persistAndArm();
-    return this.snapshot();
-  }
-
-  /** Remove every task bound to a chat (called when the chat is deleted). */
-  async removeForThread(threadId: string): Promise<void> {
     const before = this.tasks.length;
-    this.tasks = this.tasks.filter((t) => t.threadId !== threadId);
-    if (this.tasks.length !== before) await this.persistAndArm();
+    this.tasks = this.tasks.filter((t) => t.id !== id);
+    if (this.tasks.length !== before) {
+      await this.persistAndArm();
+      // The threads its mail-sending runs left behind: with the task gone
+      // nothing will show them again except the mail, which keeps its own
+      // record of the work.
+      await this.opts.onTaskDeleted?.(id).catch((err) =>
+        degrade('tasks', "left a deleted task's run threads behind", err)
+      );
+    }
+    return this.snapshot();
   }
 
   /** Run a task immediately, off-schedule. Returns once it has been queued. */
@@ -505,10 +471,10 @@ export class TaskScheduler {
 
   /**
    * Keep why a run failed, on the task and in the log, and drop it the moment one
-   * succeeds. A run that fails before its turn ever starts — the chat could not be
-   * opened, the backend would not spawn — used to leave "failed" in the Tasks tab
-   * and NOTHING anywhere else: the error was caught and dropped here. That is how
-   * every scheduled run on a freshly migrated server could die for days unnoticed.
+   * succeeds. A run that fails before its turn ever starts — the backend would
+   * not spawn — used to leave "failed" in the Tasks tab and NOTHING anywhere
+   * else: the error was caught and dropped here. That is how every scheduled run
+   * on a freshly migrated server could die for days unnoticed.
    */
   private recordOutcome(task: ScheduledTask, error: string | null): void {
     if (!error) {
@@ -529,6 +495,48 @@ export class TaskScheduler {
     }
   }
 
+  /**
+   * The persona/model fields a run of `task` carries into startTurn. A persona
+   * that has vanished since the task was pinned degrades to the app default
+   * rather than wedging the task — there is no model underneath a persona pin
+   * to fall back to, by design.
+   */
+  private async resolveRunsAs(task: ScheduledTask): Promise<{
+    extras: { model?: string; effort?: string; persona?: Awaited<ReturnType<typeof personaTurnFields>>['persona'] };
+    personaId?: string;
+    notes: boolean;
+  }> {
+    const runsAs = task.runsAs;
+    if (runsAs.kind === 'model') {
+      return { extras: { model: runsAs.model, ...(runsAs.effort ? { effort: runsAs.effort } : {}) }, notes: false };
+    }
+    if (runsAs.kind === 'persona') {
+      // quiet: a registry read that rejects is indistinguishable here from a
+      // missing persona — the degrade below names the fallback either way.
+      const persona = await getPersona(runsAs.personaId).catch(() => null);
+      if (persona) {
+        // The persona block comes from the shared builder (memory index, recall
+        // flag and all), so a persona on a schedule is the same persona as in mail.
+        const fields = await personaTurnFields(persona);
+        return {
+          extras: {
+            ...(fields.model ? { model: fields.model } : {}),
+            ...(fields.effort ? { effort: fields.effort } : {}),
+            persona: fields.persona
+          },
+          personaId: persona.id,
+          notes: !!fields.persona.notes
+        };
+      }
+      degrade(
+        'tasks',
+        'ran a persona task on the app default',
+        new Error(`persona "${runsAs.personaId}" no longer exists`)
+      );
+    }
+    return { extras: {}, notes: false };
+  }
+
   private async runTask(id: string): Promise<void> {
     const task = this.tasks.find((t) => t.id === id);
     if (!task) return;
@@ -537,101 +545,51 @@ export class TaskScheduler {
     // catches a pause that lands while the run sits in the queue.
     if (!task.enabled) return;
 
-    // Guard: the originating chat may have been deleted. Running would spawn a new
-    // empty session (ensureActive falls back to newSession), so disable instead.
-    // The same read yields the thread's pre-run mtime, which the silent-run stamp
-    // below needs as its "before" — reading it after the turn would be too late.
-    const before = await this.findThread(task.threadId);
-    if (!before.found) {
-      task.enabled = false;
-      task.lastStatus = 'failed';
-      task.nextRunAt = null;
-      // Through recordOutcome, not a bare status: "failed" with nothing beside it
-      // is the exact shape recordOutcome exists to prevent, and this branch used
-      // to be the one path into it that skipped the explanation.
-      this.recordOutcome(task, 'The chat this task belonged to no longer exists, so the task was paused.');
-      await this.persistAndArm();
-      return;
-    }
-
     // Defer while the user is actively chatting — this run would hold the single
     // foreground gate and silently queue their message behind a whole agent turn.
     // Covers catch-up at launch too (it enqueues through this same path).
     await this.waitForUserIdle();
     if (!task.enabled || !this.tasks.some((t) => t.id === id)) return; // paused/deleted while deferred
 
-    const at = new Date();
-    const atIso = at.toISOString();
+    const atIso = new Date().toISOString();
     const prevStatus = task.lastStatus;
     task.lastStatus = 'running';
     this.opts.onChange(this.snapshot());
 
-    // Schedule-as-persona: the run executes AS the persona — its worker, role
-    // prompt, and harness pin, with the persona's model/effort winning over the
-    // task's own (the mail router's precedence). A persona deleted since the
-    // task was created degrades to a plain run rather than wedging the task.
-    let persona = null;
-    if (task.personaId) {
-      // quiet: a registry read that rejects is indistinguishable here from a
-      // missing persona — the degrade below names the plain-run fallback either way.
-      persona = await getPersona(task.personaId).catch(() => null);
-      if (!persona) {
-        degrade(
-          'tasks',
-          'ran a persona task as a plain run',
-          new Error(`persona "${task.personaId}" no longer exists`)
-        );
-      }
-    }
-    // The persona block comes from the shared builder (memory index, recall
-    // flag and all), so a persona on a schedule is the same persona as in mail.
-    // Only the pins fall back to the task's own.
-    const personaFields = persona ? await personaTurnFields(persona) : null;
-    const model = personaFields?.model ?? task.model;
-    const effort = personaFields?.effort ?? task.effort;
-    const turnExtras = {
-      ...(model ? { model } : {}),
-      ...(effort ? { effort } : {}),
-      ...(personaFields ? { persona: personaFields.persona } : {})
-    };
-
-    const run: ActiveRun = {
-      taskId: id,
-      threadId: task.threadId,
-      turnId: null,
-      preempted: false,
-      notified: false
-    };
+    const resolved = await this.resolveRunsAs(task);
+    const run: ActiveRun = { taskId: id, threadId: null, turnId: null, preempted: false, notified: false };
     this.activeRun = run;
-    // Instrumented here rather than at the onRun callback: onRun only fires when
-    // the turn starts, and this is the only scope that also sees it settle.
+    // Instrumented here rather than at a start callback: this is the only scope
+    // that sees the run both start and settle.
     const handle = activity.begin('tasks.run', 'Running scheduled task', { detail: titleFromPrompt(task.prompt) });
     let work: WorkHandle | undefined;
-    const startWorkTurn = async () => {
-      await work?.finish('failed', 'Retrying after a context overflow.');
+    /** The reflection pass, when one runs: the run's thread must outlive it. */
+    let reflection: Promise<void> | undefined;
+    try {
       const requestedTurnId = randomUUID();
-      work = await beginMailWork(this.opts.runtime, { personaId: task.personaId ?? `task:${task.id}`, turnId: requestedTurnId, threadId: task.threadId });
+      // The work record opens before the turn (a synchronous startTurn failure
+      // still leaves a record) and learns its thread once the backend names it.
+      work = await beginMailWork(this.opts.runtime, { personaId: resolved.personaId ?? `task:${task.id}`, turnId: requestedTurnId });
       const started = await this.opts.runtime.startTurn({
         turnId: requestedTurnId,
         input: task.prompt,
-        threadId: task.threadId,
-        // The persona's pin, then the task's own; the runtime falls back to the
-        // thread's persisted model/effort (then the app default) beyond those.
-        ...turnExtras,
+        // No threadId: every firing gets a fresh session — the whole point.
+        ...resolved.extras,
         webSearch: true,
         scheduled: { at: atIso, taskId: task.id }
       });
-      if (started.turnId) work.run.turnId = started.turnId;
-      return started;
-    };
-    try {
-      const { turnId } = await startWorkTurn();
-      if (turnId) {
+      if (started.turnId) {
+        const turnId = started.turnId;
         run.turnId = turnId;
-        // Start this turn's clock now rather than at its first streamed event, so
-        // a run that hangs without producing one is still measurable — same
-        // reason as the interactive path in server/index.ts (see noteTurnStart).
-        noteTurnStart(task.threadId, turnId);
+        work.run.turnId = turnId;
+        if (started.threadId) {
+          run.threadId = started.threadId;
+          work.bindThread(started.threadId);
+          // Start this turn's clock now rather than at its first streamed event,
+          // so a run that hangs without producing one is still measurable — same
+          // reason as the interactive path in server/index.ts (see noteTurnStart).
+          noteTurnStart(started.threadId, turnId);
+        }
         // A preempt that landed while startTurn was still building: interrupt now.
         if (run.preempted && this.opts.interrupt) {
           // Same as preemptForUser: an abort that fails is a scheduled turn the
@@ -640,55 +598,16 @@ export class TaskScheduler {
             degrade('tasks', 'left a preempted run holding the foreground gate', err)
           );
         }
-        this.opts.onRun({ threadId: task.threadId, turnId, taskId: task.id, prompt: task.prompt, at: atIso });
-        let settle = await this.waitForSettle(turnId, task.threadId);
-        // Overflow self-heal: a run that died because the thread outgrew the
-        // model's context window is not a lost cause — condense the thread and
-        // re-run once. (pi has its own compact-and-retry for this, but it has
-        // been observed to fail silently; this backstop is model-agnostic.)
-        if (settle.status === 'failed' && !run.preempted && isContextOverflowError(settle.error)) {
-          const compacted = await this.opts.runtime
-            .compactThread(task.threadId)
-            .then(() => true)
-            .catch((err) => {
-              // The task row says the same "context window" failure whether the
-              // condense was tried and did not help or never ran at all, and this
-              // backstop exists precisely because pi's own compact-and-retry was
-              // observed failing silently. Say which one happened.
-              degrade('tasks', 'skipped the overflow retry with the thread still over the window', err);
-              return false;
-            });
-          if (compacted) {
-            const retry = await startWorkTurn();
-            if (retry.turnId) {
-              run.turnId = retry.turnId;
-              noteTurnStart(task.threadId, retry.turnId);
-              if (run.preempted && this.opts.interrupt) {
-                // As above: a failed abort holds the gate against the user.
-                void this.opts.interrupt(retry.turnId, PREEMPT_REASON).catch((err) =>
-                  degrade('tasks', 'left a preempted run holding the foreground gate', err)
-                );
-              }
-              this.opts.onRun({
-                threadId: task.threadId,
-                turnId: retry.turnId,
-                taskId: task.id,
-                prompt: task.prompt,
-                at: atIso
-              });
-              settle = await this.waitForSettle(retry.turnId, task.threadId);
-            }
-          }
-        }
+        const settle = await this.waitForSettle(turnId, run.threadId);
         task.lastStatus = settle.status;
         this.recordOutcome(task, settle.status === 'failed' ? settle.error ?? 'The run did not finish.' : null);
         // What did this run teach the persona? Same pass a mail delivery gets,
         // for the same reason: a persona that runs nightly and never reflects
         // never learns. Only for runs that settled ok and only when the persona
-        // owns a memory (the index is present exactly then); fire-and-forget,
-        // never rejects (see mail/reflect.ts).
-        if (settle.status === 'ok' && personaFields?.persona.notes && this.opts.reflect) {
-          void this.opts.reflect({ personaId: personaFields.persona.id, assignment: task.prompt, threadId: task.threadId });
+        // owns a memory (the index is present exactly then); never rejects (see
+        // mail/reflect.ts). It reads the run's thread, so the thread waits for it.
+        if (settle.status === 'ok' && resolved.notes && resolved.personaId && run.threadId && this.opts.reflect) {
+          reflection = this.opts.reflect({ personaId: resolved.personaId, assignment: task.prompt, threadId: run.threadId });
         }
       } else {
         task.lastStatus = 'ok';
@@ -696,36 +615,23 @@ export class TaskScheduler {
       }
     } catch (error) {
       // quiet: recordOutcome puts the message on the task's row in the Tasks tab
-      // and the finally below raises tasks.run on the activity popover.
+      // and the activity below raises tasks.run on the activity popover.
       task.lastStatus = 'failed';
       this.recordOutcome(task, error instanceof Error ? error.message : String(error));
-    } finally {
-      const reply = await work?.finish(run.preempted ? 'aborted' : task.lastStatus === 'ok' ? 'ok' : 'failed', task.lastError ?? undefined);
-      // The notify said "the report is in this chat"; the report is this reply.
-      // Only a run that notified has a mail to carry it, and only a clean
-      // settle has a reply worth the name (a failed run's partial text is not).
-      const resultItemId = work?.group?.notificationItemIds?.at(-1);
-      if (reply && resultItemId && run.notified && !run.preempted && task.lastStatus === 'ok' && this.opts.onResult) {
-        await this.opts
-          .onResult({ taskId: task.id, threadId: task.threadId, itemId: resultItemId, result: reply })
-          .catch((err) => degrade('tasks', 'left a scheduled result out of its mail', err));
-      }
-      this.activeRun = null;
-      // A preempted run is requeued below rather than finished, so it earns
-      // neither a completed row nor a failure — `worked: false` drops it.
-      if (task.lastStatus === 'failed') {
-        activity.fail('tasks.run', 'Scheduled run failed', 'Running scheduled task');
-      } else {
-        activity.end(handle, { worked: !run.preempted });
-      }
     }
 
     // Preempted by the user: not a failure. Restore the pre-run status and retry
-    // after idle, bounded so a busy user can't ping-pong a task indefinitely.
+    // after idle, bounded so a busy user can't ping-pong a task indefinitely. The
+    // yielded attempt's thread is disposed of like any other run's (kept only if
+    // it had already notified); the retry gets a fresh one.
     if (run.preempted) {
       const n = (this.requeueCounts.get(id) ?? 0) + 1;
       if (n <= MAX_REQUEUES) {
         this.requeueCounts.set(id, n);
+        await work?.finish('aborted');
+        this.activeRun = null;
+        activity.end(handle, { worked: false });
+        await this.disposeRunThread(run, reflection);
         task.lastStatus = prevStatus;
         this.opts.onChange(this.snapshot());
         this.enqueueRun(id, 'requeued');
@@ -740,21 +646,45 @@ export class TaskScheduler {
       this.requeueCounts.delete(id);
     }
 
-    // The run is over. Whatever it found went out as mail (a notify_user opened
-    // one, and the reply joined it above); a run that found nothing sent none.
-    // Either way the turn appended to the thread and moved its mtime, which is
-    // exactly what the chats tree reads as "a new message here" — it would drag
-    // the chat to the top, bold, for a turn nobody took. Tell the host so it can
-    // absorb the bump. A notified run is not exempt: the mail is its surfacing,
-    // and the chat behind it stays where the user's last message left it. (A
-    // preempted-out-of-retries run reaches here too, and it produced nothing.)
-    if (before.updatedAt != null && this.opts.onSilentRun) {
-      // Re-read the mtime rather than trusting the clock alone — the turn's own
-      // writes are what we're covering, and they are the freshest thing on disk.
-      const after = await this.findThread(task.threadId);
-      const at = Math.max(Date.now(), after.updatedAt ?? 0) + SILENT_RUN_GRACE_MS;
-      this.opts.onSilentRun(task.threadId, before.updatedAt, at);
+    // First failure after a run that did not fail: one mail, with the reason.
+    // Before the work record closes, so the mail can adopt it (attachScheduledWork
+    // finds the record by the run's thread while it is still active); the thread
+    // is then kept for the mail, like a notifying run's.
+    if (task.lastStatus === 'failed' && prevStatus !== 'failed' && this.opts.onFailureTransition) {
+      await this.opts
+        .onFailureTransition({
+          taskId: task.id,
+          title: task.title,
+          ...(run.threadId ? { threadId: run.threadId } : {}),
+          ...(resolved.personaId ? { personaId: resolved.personaId } : {}),
+          error: task.lastError ?? 'The run did not finish.'
+        })
+        .then(() => {
+          run.notified = true;
+        })
+        .catch((err) => degrade('tasks', 'did not mail the user that a task started failing', err));
     }
+
+    const reply = await work?.finish(task.lastStatus === 'ok' ? 'ok' : 'failed', task.lastError ?? undefined);
+    // The notify said "the report is in the mail"; the report is this reply.
+    // Only a run that notified has a mail to carry it, and only a clean
+    // settle has a reply worth the name (a failed run's partial text is not).
+    const resultItemId = work?.group?.notificationItemIds?.at(-1);
+    if (reply && resultItemId && run.notified && run.threadId && task.lastStatus === 'ok' && this.opts.onResult) {
+      await this.opts
+        .onResult({ taskId: task.id, threadId: run.threadId, itemId: resultItemId, result: reply })
+        .catch((err) => degrade('tasks', 'left a scheduled result out of its mail', err));
+    }
+    this.activeRun = null;
+    if (task.lastStatus === 'failed') {
+      activity.fail('tasks.run', 'Scheduled run failed', 'Running scheduled task');
+    } else {
+      activity.end(handle, { worked: true });
+    }
+
+    // The run is over. Whatever it found went out as mail, and the mail keeps
+    // the thread it came from; a run that sent none leaves nothing behind.
+    await this.disposeRunThread(run, reflection);
 
     task.lastRunAt = atIso;
     // nextRunAt was already claimed (advanced) at dispatch time for scheduled and
@@ -771,10 +701,32 @@ export class TaskScheduler {
     await this.persistAndArm();
   }
 
+  /**
+   * Delete the run's fresh thread unless a mail now points at it (a notify or a
+   * failure mail — `notified` covers both). A pending reflection reads the
+   * thread's transcript, so the delete waits for it; the wait is not awaited
+   * here, because a reflection is a model call and the queue must move on.
+   */
+  private async disposeRunThread(run: ActiveRun, reflection?: Promise<void>): Promise<void> {
+    const threadId = run.threadId;
+    if (!threadId || run.notified) return;
+    const deleteThread = this.opts.deleteThread ?? ((id: string) => this.opts.runtime.deleteThread(id));
+    const remove = () =>
+      deleteThread(threadId).catch((err) =>
+        // The thread is hidden from every list either way (nothing points at
+        // it); what an undeleted one costs is disk, and a session file the next
+        // scan still finds.
+        degrade('tasks', 'left a silent scheduled run\'s thread behind', err)
+      );
+    if (reflection) void reflection.then(remove, remove);
+    else await remove();
+  }
+
   /** Resolve when the given turn settles (completed/failed/aborted), via backend events.
-   *  A failure carries the turn's terminal error text (when the backend reported one)
-   *  so runTask can recognize context-overflow deaths and self-heal. */
-  private waitForSettle(turnId: string, threadId: string): Promise<{ status: 'ok' | 'failed'; error?: string }> {
+   *  A failure carries the turn's terminal error text (when the backend reported one).
+   *  `threadId` is the run's own thread, for events that carry no turn id and for
+   *  attributing a worker's death; null when the backend named none. */
+  private waitForSettle(turnId: string, threadId: string | null): Promise<{ status: 'ok' | 'failed'; error?: string }> {
     return new Promise((resolve) => {
       let done = false;
       const finish = (status: 'ok' | 'failed', error?: string) => {
@@ -797,9 +749,9 @@ export class TaskScheduler {
           return;
         }
         const p = event.params as { threadId?: string; turn?: { id?: string }; error?: string } | undefined;
-        // Turns serialize, so threadId alone is sufficient, but match the turn id
-        // when present for precision.
-        const matches = p?.turn?.id ? p.turn.id === turnId : p?.threadId === threadId;
+        // Match the turn id when present; a thread-only event counts when it
+        // names our thread.
+        const matches = p?.turn?.id ? p.turn.id === turnId : threadId !== null && p?.threadId === threadId;
         if (!matches) return;
         if (event.method === 'turn/completed') finish('ok');
         else if (event.method === 'turn/failed') finish('failed', typeof p?.error === 'string' ? p.error : undefined);
@@ -820,29 +772,5 @@ export class TaskScheduler {
       }, RUN_TIMEOUT_MS);
       this.opts.runtime.on('event', onEvent);
     });
-  }
-
-  /**
-   * Look the task's chat up in the thread list: whether it still exists, and its
-   * last-activity mtime normalized to ms. `updatedAt` is null when the list read
-   * failed — the caller keeps running the task (see `found`) but skips anything
-   * that needs a trustworthy mtime.
-   */
-  private async findThread(threadId: string): Promise<{ found: boolean; updatedAt: number | null }> {
-    try {
-      const threads = await this.opts.runtime.listThreads();
-      const thread = threads.find((t) => t.threadId === threadId);
-      return thread
-        ? { found: true, updatedAt: toMs(thread.updatedAt) }
-        : { found: false, updatedAt: null };
-    } catch (err) {
-      // If we can't tell, assume it exists rather than silently disabling the
-      // task. The mtime is the loss that matters: onSilentRun uses the before/
-      // after pair to keep a scheduled run out of the Inbox, and without it the
-      // run either shows up as something the user did or hides something they
-      // should have seen.
-      degrade('tasks', 'ran the task without its chat\'s last-activity time', err);
-      return { found: true, updatedAt: null };
-    }
   }
 }

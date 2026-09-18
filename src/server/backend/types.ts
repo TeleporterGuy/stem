@@ -13,7 +13,6 @@ import type {
   ScheduledTask,
   StartTurnInput,
   StartTurnResult,
-  ThreadTurnSettings
 } from '../../shared/types';
 import type { SkillBridge } from '../skills/bridge';
 
@@ -294,19 +293,6 @@ export interface ChatBackend extends EventEmitter {
    * assistant material for the thread; no-op when nothing is pending.
    */
   flushPendingUserCapture(threadId: string): void;
-
-  /**
-   * The model/effort a scheduled run of this thread would use: the thread's last
-   * explicitly selected model, not whatever the process happens to be on. Shown
-   * in the Tasks tab and applied by startTurn for scheduled runs.
-   */
-  threadTurnSettings(threadId: string): Promise<ThreadTurnSettings>;
-
-  /**
-   * Condense a thread's context (summarize older messages). Used by the
-   * scheduler's overflow self-heal before retrying a failed run.
-   */
-  compactThread(threadId: string): Promise<void>;
 
   // thread CRUD
   listThreads(): Promise<ChatSummary[]>;

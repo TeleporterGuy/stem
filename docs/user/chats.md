@@ -32,8 +32,8 @@ there:
 
 - Use **+** on a folder to start a chat inside it.
 - Drag chats and folders to move or nest them.
-- Right-click a chat to rename, move, or delete it. Deletion is permanent and also
-  removes its scheduled tasks.
+- Right-click a chat to rename, move, or delete it. Deletion is permanent. Tasks
+  scheduled from the chat stay: they run on their own and report by mail.
 - Right-click a folder to create a subfolder, rename, or delete it. Deleting a folder
   moves its chats and child folders to the parent.
 - Use **Search**, `⌘F` on Mac, or `Ctrl+F` on Linux to search titles and message

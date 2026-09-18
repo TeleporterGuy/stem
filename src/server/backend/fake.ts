@@ -18,7 +18,6 @@ import type {
   StartTurnInput,
   StartTurnResult
 } from '../../shared/types';
-import { readTasks } from '../workspace/tasks';
 import { previewText } from '../chats/preview';
 import { autoTitle, KEEP, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
 import { setNaming } from '../workspace/chats';
@@ -262,29 +261,12 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
           updatedAt: t.updatedAt
         };
       });
-    // Seeded scheduled tasks reference threads that were never chatted in this
-    // run — report them as existing so the scheduler's thread-deleted guard
-    // doesn't remove the tasks at startup (specs seed tasks, never sessions).
-    for (const task of await readTasks()) {
-      if (!rows.some((r) => r.threadId === task.threadId)) {
-        rows.push({ threadId: task.threadId, title: task.title ?? '', folderId: null, createdAt: 0, updatedAt: 0 });
-      }
-    }
     return rows.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   async readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[] }> {
     const thread = this.threads.get(threadId);
     return { title: thread?.title ?? '', messages: [...(thread?.messages ?? [])] };
-  }
-
-  async threadTurnSettings(_threadId: string): Promise<{ model?: string; effort?: string }> {
-    // The fake catalog has exactly one model; every thread "runs on" it.
-    return { model: MODEL.id };
-  }
-
-  async compactThread(_threadId: string): Promise<void> {
-    // Nothing to condense — fake threads carry no real context.
   }
 
   async resumeThread(_threadId: string): Promise<void> {}

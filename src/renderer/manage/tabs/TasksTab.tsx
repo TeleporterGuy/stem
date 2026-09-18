@@ -4,8 +4,8 @@ import type {
   ModelSummary,
   Persona,
   ScheduledTask,
-  TaskSchedule,
-  ThreadTurnSettings
+  TaskRunsAs,
+  TaskSchedule
 } from '../../../shared/types';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { clampEffort, effortsOf, EffortSelect } from '../../ui/EffortSelect';
@@ -21,23 +21,17 @@ import { EFFORT_LABELS } from '../../modelLabels';
 // scrolled out of sight, and left the persona picker folded behind a chip
 // nobody found.
 
-/** "as Critic · GPT-5.6 Sol · High" — what a run of this task will execute as
- *  and on: the persona's pins, else its own, else the model selected in its
- *  chat. The collapsed face of the editor. */
-function runsOnLabel(
-  task: ScheduledTask,
-  thread: ThreadTurnSettings,
-  models: ModelSummary[],
-  personas: Persona[]
-): string {
-  const persona = task.personaId ? personas.find((p) => p.id === task.personaId) : undefined;
-  const modelId = (persona ? persona.model : undefined) ?? task.model ?? thread.model;
-  const m = modelId ? models.find((x) => x.id === modelId) : undefined;
-  const name = modelId ? (m ? m.displayName : modelId.split('/').pop() ?? modelId) : 'Chat model';
-  const effort = (persona ? persona.effort : undefined) ?? task.effort ?? thread.effort;
-  const base = effort && modelId ? `${name} · ${EFFORT_LABELS[effort] ?? effort}` : name;
-  if (task.personaId) return `as ${persona?.name ?? task.personaId} · ${base}`;
-  return base;
+/** "as Critic" / "GPT-5.6 Sol · High" / "App default" — who and what a run of
+ *  this task executes as. The collapsed face of the editor. */
+function runsOnLabel(task: ScheduledTask, models: ModelSummary[], personas: Persona[]): string {
+  const runsAs = task.runsAs;
+  if (runsAs.kind === 'persona') return `as ${personas.find((p) => p.id === runsAs.personaId)?.name ?? runsAs.personaId}`;
+  if (runsAs.kind === 'model') {
+    const m = models.find((x) => x.id === runsAs.model);
+    const name = m ? m.displayName : runsAs.model.split('/').pop() ?? runsAs.model;
+    return runsAs.effort ? `${name} · ${EFFORT_LABELS[runsAs.effort] ?? runsAs.effort}` : name;
+  }
+  return 'App default';
 }
 
 /** Human-readable schedule, e.g. "cron 0 8 * * 1-5" or "once · Jul 1, 08:00". */
@@ -76,9 +70,9 @@ export function TasksTab({
   models: ModelSummary[];
 }) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
-  // Each task runs on its thread's persisted model/effort — resolved lazily per
-  // thread so the label stays honest after the user switches the chat's model.
-  const [settings, setSettings] = useState<Record<string, ThreadTurnSettings>>({});
+  // Rows switched to "a model" whose model is not picked yet: the picker shows
+  // empty until a choice lands, and nothing is saved before then.
+  const [pickingModel, setPickingModel] = useState<Set<string>>(new Set());
   // One expansion per row: the title, the schedule line and the "runs as" chip
   // all open the same editor. Most visits are a glance at next-run times, so
   // every row starts folded.
@@ -109,19 +103,6 @@ export function TasksTab({
     return window.stem.onTasksChanged(setTasks);
   }, []);
 
-  useEffect(() => {
-    let stale = false;
-    const ids = [...new Set(tasks.map((t) => t.threadId))];
-    void Promise.all(
-      ids.map(async (id) => [id, await window.stem.taskThreadSettings(id).catch(() => ({}))] as const)
-    ).then((entries) => {
-      if (!stale) setSettings(Object.fromEntries(entries));
-    });
-    return () => {
-      stale = true;
-    };
-  }, [tasks]);
-
   // The scheduler's own words, without Electron's "Error invoking remote
   // method '…': Error:" wrapper (same strip as ServerFolderPicker).
   const setError = (id: string, err: unknown | null) =>
@@ -142,10 +123,28 @@ export function TasksTab({
   const toggle = async (t: ScheduledTask) => setTasks(await window.stem.setTaskEnabled(t.id, !t.enabled));
   const runNow = async (t: ScheduledTask) => setTasks(await window.stem.runTaskNow(t.id));
   const remove = async (t: ScheduledTask) => setTasks(await window.stem.deleteTask(t.id));
-  const pinModel = async (t: ScheduledTask, model: string | null, effort: string | null) =>
-    setTasks(await window.stem.updateTaskModel(t.id, { model, effort }));
-  const pinPersona = async (t: ScheduledTask, personaId: string | null) =>
-    setTasks(await window.stem.updateTaskPersona(t.id, { personaId }));
+  const setRunsAs = async (t: ScheduledTask, runsAs: TaskRunsAs) => {
+    try {
+      setTasks(await window.stem.updateTaskRunsAs(t.id, { runsAs }));
+      setPickingModel((s) => {
+        const next = new Set(s);
+        next.delete(t.id);
+        return next;
+      });
+      setError(t.id, null);
+    } catch (err) {
+      setError(t.id, err);
+    }
+  };
+  // The one "runs as" choice, as the <select> sees it.
+  const runsAsChoice = (t: ScheduledTask): string =>
+    pickingModel.has(t.id) ? 'model' : t.runsAs.kind === 'persona' ? `persona:${t.runsAs.personaId}` : t.runsAs.kind;
+  const chooseRunsAs = (t: ScheduledTask, choice: string) => {
+    if (choice === 'default') return void setRunsAs(t, { kind: 'default' });
+    if (choice.startsWith('persona:')) return void setRunsAs(t, { kind: 'persona', personaId: choice.slice('persona:'.length) });
+    // "A model": nothing to save until one is picked below.
+    if (t.runsAs.kind !== 'model') setPickingModel((s) => new Set(s).add(t.id));
+  };
   const savePrompt = async (t: ScheduledTask) => {
     const prompt = promptDrafts[t.id];
     if (prompt === undefined) return;
@@ -180,13 +179,14 @@ export function TasksTab({
         <p className="muted">
           No scheduled tasks yet. Ask Stem in a chat to do something on a schedule — “every weekday
           at 8, summarize my unread email” or “check this page hourly and let me know if it changes”.
-          The task runs in that chat and only interrupts you when there’s something worth seeing.
+          Each run starts fresh, and anything worth seeing arrives as mail in your Inbox.
         </p>
       ) : (
         <div className="group">
           {tasks.map((t) => {
-            const thread: ThreadTurnSettings = settings[t.threadId] ?? {};
             const isOpen = open.has(t.id);
+            const pinnedModel = t.runsAs.kind === 'model' ? t.runsAs : null;
+            const showModel = pickingModel.has(t.id) || pinnedModel !== null;
             const promptDraft = promptDrafts[t.id] ?? t.prompt;
             const promptDirty = promptDrafts[t.id] !== undefined && promptDrafts[t.id] !== t.prompt;
             const scheduleDraft = scheduleDrafts[t.id] ?? scheduleDraftOf(t.schedule);
@@ -208,7 +208,7 @@ export function TasksTab({
                 <button
                   className="icon-action sm"
                   onClick={() => onOpenChat(t.threadId)}
-                  title="Open the chat this task runs in"
+                  title="Open the chat this task was scheduled from"
                   aria-label="Open chat"
                 >
                   <ExternalLink size={14} />
@@ -270,7 +270,7 @@ export function TasksTab({
                   title="Who this task runs as and on what model — click to change"
                   aria-expanded={isOpen}
                 >
-                  {runsOnLabel(t, thread, models, personas)}
+                  {runsOnLabel(t, models, personas)}
                 </button>
               </div>
               {isOpen && (
@@ -330,55 +330,59 @@ export function TasksTab({
                   </div>
                 )}
                 {errors[t.id] && <div className="task-error">{errors[t.id]}</div>}
-                {/* Runs AS: a persona run gets the persona's worker, role prompt,
-                    memory and pins — its model/effort win over the two pickers
-                    below, which then only matter for a plain run. */}
+                {/* Runs AS — one choice: a persona (its worker, role prompt, memory
+                    and model settings; its mails arrive from it), a model of the
+                    task's own, or the app default. Never a persona AND a model:
+                    the two used to coexist with the model silently ignored. */}
                 <label className="task-field">
                   <span className="task-field-label">Runs as</span>
                   <select
                     className="vfield task-persona"
-                    aria-label="Persona this task runs as"
-                    value={t.personaId ?? ''}
-                    onChange={(e) => pinPersona(t, e.target.value || null)}
+                    aria-label="Who or what this task runs as"
+                    value={runsAsChoice(t)}
+                    onChange={(e) => chooseRunsAs(t, e.target.value)}
                   >
-                    <option value="">Plain run (no persona)</option>
-                    {personas.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
+                    <option value="default">App default model</option>
+                    <option value="model">A model of its own…</option>
+                    {personas.length > 0 && (
+                      <optgroup label="Personas">
+                        {personas.map((p) => (
+                          <option key={p.id} value={`persona:${p.id}`}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
                 </label>
-                {/* The model a PLAIN run executes on. Unset = the pinless
-                    inheritance every task starts with: the model selected in its
-                    chat, named by the picker's "uses …" line so an outdated one
-                    is visible right where it can be overridden. A persona's own
-                    pins take precedence, which the field label says. */}
-                <div className="task-field">
-                  <span className="task-field-label">
-                    {t.personaId ? 'Model (used only where the persona pins none)' : 'Model'}
-                  </span>
-                  <div className="task-model">
-                    <ModelPicker
-                      models={models}
-                      value={t.model ?? null}
-                      onChange={(id) =>
-                        pinModel(t, id, clampEffort(models, id ?? thread.model ?? null, t.effort ?? null))
-                      }
-                      emptyLabel="Chat model"
-                      ariaLabel="Model this task runs on"
-                      resolvedDefault={thread.model ?? null}
-                    />
-                    <EffortSelect
-                      label="Effort this task runs at"
-                      value={t.effort ?? null}
-                      efforts={effortsOf(models, t.model ?? thread.model ?? null)}
-                      emptyLabel="Chat effort"
-                      resolved={thread.effort ?? null}
-                      onChange={(effort) => pinModel(t, t.model ?? null, effort)}
-                    />
+                {showModel && (
+                  <div className="task-field">
+                    <span className="task-field-label">Model</span>
+                    <div className="task-model">
+                      <ModelPicker
+                        models={models}
+                        value={pinnedModel?.model ?? null}
+                        onChange={(id) => {
+                          if (!id) return void setRunsAs(t, { kind: 'default' });
+                          const effort = clampEffort(models, id, pinnedModel?.effort ?? null);
+                          void setRunsAs(t, { kind: 'model', model: id, ...(effort ? { effort } : {}) });
+                        }}
+                        emptyLabel="Choose a model"
+                        ariaLabel="Model this task runs on"
+                      />
+                      <EffortSelect
+                        label="Effort this task runs at"
+                        value={pinnedModel?.effort ?? null}
+                        efforts={effortsOf(models, pinnedModel?.model ?? null)}
+                        emptyLabel="Model default"
+                        onChange={(effort) => {
+                          if (!pinnedModel) return;
+                          void setRunsAs(t, { kind: 'model', model: pinnedModel.model, ...(effort ? { effort } : {}) });
+                        }}
+                      />
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
               )}
             </div>

@@ -13,16 +13,22 @@ let directory: string;
 let scheduler: TaskScheduler | undefined;
 let runtime: ScheduledRuntime | undefined;
 
+// The run's fresh thread — minted by the backend, unknown to the scheduler until
+// startTurn resolves. Events during startTurn name it (as pi's do), which is how
+// the work record and the notify bridge learn it before the scheduler does.
+const RUN_THREAD = 'run-thread';
+
 class ScheduledRuntime extends EventEmitter {
   started: StartTurnInput | undefined;
   beforeStart: MailWorkGroup[] = [];
-
-  async listThreads() {
-    return [{ threadId: 'scheduled-thread', title: 'Fictional news', folderId: null, createdAt: 0, updatedAt: 0 }];
-  }
+  deleted: string[] = [];
 
   event(method: string, extra: Record<string, unknown> = {}) {
-    this.emit('event', { method, params: { threadId: 'scheduled-thread', turnId: this.started?.turnId, ...extra } });
+    this.emit('event', { method, params: { threadId: RUN_THREAD, turnId: this.started?.turnId, ...extra } });
+  }
+
+  async deleteThread(threadId: string) {
+    this.deleted.push(threadId);
   }
 
   async startTurn(input: StartTurnInput) {
@@ -37,8 +43,8 @@ class ScheduledRuntime extends EventEmitter {
     this.event('mail/work/activity', { activity: {
       id: 'search', kind: 'tool', label: 'Search sources', at: 1, endedAt: 2, status: 'ok', output: 'Found a release'
     } });
-    scheduler?.noteNotify('scheduled-thread');
-    await attachScheduledWork('scheduled-thread', 'scheduled-conversation', 'notification-one', 'normal');
+    // notify_user mid-run: the bridge finds the record by the run's thread.
+    await attachScheduledWork(RUN_THREAD, 'scheduled-conversation', 'notification-one', 'normal');
     this.event('mail/work/activity', { activity: {
       id: 'verify', kind: 'tool', label: 'Verify release', at: 3, status: 'running', input: 'Open release notes'
     } });
@@ -46,7 +52,7 @@ class ScheduledRuntime extends EventEmitter {
       id: 'verify', kind: 'tool', label: 'Verify release', at: 3, endedAt: 4, status: 'ok', output: 'Release confirmed'
     } });
     this.event('item/agentMessage/delta', { delta: 'Sources checked; follow-up ready.' });
-    return { threadId: 'scheduled-thread', turnId: input.turnId! };
+    return { threadId: RUN_THREAD, turnId: input.turnId! };
   }
 }
 
@@ -58,9 +64,9 @@ beforeEach(async () => {
 
 afterEach(async () => {
   scheduler?.stop();
-  if (scheduler?.runningTask('scheduled-thread')) {
+  if (scheduler?.runningTask(RUN_THREAD)) {
     runtime?.event('turn/failed', { error: 'Test cleanup' });
-    await vi.waitFor(() => expect(scheduler?.runningTask('scheduled-thread')).toBeNull());
+    await vi.waitFor(() => expect(scheduler?.runningTask(RUN_THREAD)).toBeNull());
   }
   await readRecordedWork('scheduled-conversation');
   runtime?.removeAllListeners();
@@ -73,19 +79,24 @@ afterEach(async () => {
 describe('scheduled mail work integration', () => {
   it.each(['ok', 'failed'] as const)('retains activity before and after notification when a scheduled run ends %s', async (status) => {
     runtime = new ScheduledRuntime();
-    const silent = vi.fn();
     const result = vi.fn(async () => {});
     scheduler = new TaskScheduler({
       runtime: runtime as unknown as ChatBackend,
-      onChange: () => {}, onRun: () => {}, onSilentRun: silent, onResult: result
+      onChange: () => {}, onResult: result
     });
-    const created = await scheduler.create({ prompt: 'Check fictional product news', cron: '0 8 * * *' }, 'scheduled-thread');
+    const created = await scheduler.create({ prompt: 'Check fictional product news', cron: '0 8 * * *' }, 'origin-chat');
     if (!created.ok) throw new Error(created.error);
     scheduler.runNow(created.task.id);
     await vi.waitFor(() => {
       // Both the recorder and scheduler's settle listener must be attached.
       expect(runtime?.listenerCount('event')).toBe(2);
     });
+    // The run went out without a thread — the backend minted one — and the
+    // scheduler now knows it as the run's own.
+    expect('threadId' in runtime.started!).toBe(false);
+    expect(scheduler.runningTask(RUN_THREAD)?.id).toBe(created.task.id);
+    // The notify_user that attachScheduledWork stood in for, as the bridge does it.
+    scheduler.noteNotify(RUN_THREAD);
     const turnId = runtime.started?.turnId;
     expect(turnId).toBeTruthy();
     expect(runtime.beforeStart).toHaveLength(1);
@@ -99,7 +110,7 @@ describe('scheduled mail work integration', () => {
 
     runtime.event(status === 'ok' ? 'turn/completed' : 'turn/failed', status === 'failed' ? { error: 'Connection lost after verification' } : {});
     await vi.waitFor(async () => expect((await readTasks())[0]?.lastStatus).toBe(status));
-    expect(scheduler.runningTask('scheduled-thread')).toBeNull();
+    expect(scheduler.runningTask(RUN_THREAD)).toBeNull();
     const groups = await readRecordedWork('scheduled-conversation');
     expect(groups).toHaveLength(1);
     expect(groups[0].id).toBe(active.id);
@@ -115,16 +126,14 @@ describe('scheduled mail work integration', () => {
     );
     if (status === 'failed') expect(run.error).toBe('Connection lost after verification');
     expect(runtime.listenerCount('event')).toBe(0);
-    // The notify's mail is the surfacing; the chat the run wrote into is absorbed
-    // like any other run's, so it neither jumps to the top nor goes bold.
-    expect(silent).toHaveBeenCalledTimes(1);
-    expect(silent).toHaveBeenCalledWith('scheduled-thread', expect.any(Number), expect.any(Number));
+    // The run notified, so its thread is the mail's now: kept, not deleted.
+    expect(runtime.deleted).toEqual([]);
     // The final text block is the run's reply: it joins the mail the notify
     // opened — but only for a clean settle. A failed run's partial text stays
     // in Work as progress, never dressed up as the result.
     if (status === 'ok') {
       expect(result).toHaveBeenCalledWith({
-        taskId: created.task.id, threadId: 'scheduled-thread', itemId: 'notification-one', result: 'Sources checked; follow-up ready.'
+        taskId: created.task.id, threadId: RUN_THREAD, itemId: 'notification-one', result: 'Sources checked; follow-up ready.'
       });
     } else expect(result).not.toHaveBeenCalled();
   });

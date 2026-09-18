@@ -2331,11 +2331,11 @@ function registerTaskTools(pi) {
     name: 'schedule_task',
     label: 'Schedule task',
     description:
-      'Schedule the CURRENT conversation to re-run a prompt automatically on a schedule. Each run is a full autonomous turn appended to this same chat (or, when scheduled from a mail conversation, to a new chat of its own — the result says which); no human watches it live, so the run should call notify_user only if it finds something the user should see. Provide EITHER `cron` (a standard 5-field cron expression, in local time, for a recurring task) OR `at` (an ISO 8601 datetime for a one-time task) — not both. The `at` time is interpreted in the user\'s LOCAL time and must be in the future; write it without a trailing "Z" (e.g. 2026-07-01T08:00:00) so it is not misread as UTC. Examples: cron "0 8 * * 1-5" = weekday mornings at 08:00; cron "*/30 * * * *" = every 30 minutes.',
+      'Schedule a prompt to run automatically, on a recurring cron schedule or once at a datetime. Each run executes in a FRESH, isolated thread: it has no memory of this or any conversation, so the `prompt` must be fully self-contained — spell out every name, URL, path, criterion and desired output format the run needs, as if briefing a stranger. No human watches a run; when it finds something the user should see it calls notify_user, which reaches the user as MAIL (grouped per task in the Inbox), never as a message in this chat. Provide EITHER `cron` (a standard 5-field cron expression, in local time, for a recurring task) OR `at` (an ISO 8601 datetime for a one-time task) — not both. The `at` time is interpreted in the user\'s LOCAL time and must be in the future; write it without a trailing "Z" (e.g. 2026-07-01T08:00:00) so it is not misread as UTC. Examples: cron "0 8 * * 1-5" = weekday mornings at 08:00; cron "*/30 * * * *" = every 30 minutes.',
     parameters: {
       type: 'object',
       properties: {
-        prompt: { type: 'string', description: 'What to do on each run, e.g. "Check the news page and summarize anything new about LLM releases."' },
+        prompt: { type: 'string', description: 'The complete, self-contained instruction for each run — it is all the run will know. E.g. "Open https://example.com/releases and list any release newer than the last one mentioned on the page dated before today; if there is one, notify the user with its version and link."' },
         cron: { type: 'string', description: 'A 5-field cron expression (minute hour day-of-month month day-of-week) for a recurring task.' },
         at: { type: 'string', description: 'A future ISO 8601 datetime in the user\'s local time, without a "Z" suffix (e.g. 2026-07-01T08:00:00), for a one-time task.' },
         personaId: { type: 'string', description: 'Optional: run the task AS this persona (its role prompt, model, and coding-agent pin); its results mail from that persona. The persona must already exist.' }
@@ -2345,17 +2345,10 @@ function registerTaskTools(pi) {
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const res = await taskBridge(ctx, { op: 'schedule', prompt: params?.prompt, cron: params?.cron, at: params?.at, personaId: params?.personaId });
       if (!res.ok) return taskErr(res.error || 'Could not schedule the task.');
-      // Scheduled from a mail conversation: the task lives in a chat of its own
-      // (this persona session is hidden from the Chats list), and the user has
-      // to be told where to look — "in this chat" would point at nothing.
-      if (res.task && res.task.originThreadId) {
-        return taskOk(
-          `Scheduled to run ${describeSchedule(res.task)} in a NEW chat named "${res.task.title}" — not in this mail conversation. ` +
-            'Each run is appended to that chat (it appears in the Chats list after the first run), and anything the run writes for the user — drafts, reports — is there, not here. ' +
-            'Tell the user that in your reply. Manage it in the Tasks tab.'
-        );
-      }
-      return taskOk(`Scheduled this conversation to run ${describeSchedule(res.task)}. Manage it in the Tasks tab.`);
+      return taskOk(
+        `Scheduled to run ${describeSchedule(res.task)}. Each run starts fresh, with no memory of this conversation, and anything it has for the user arrives as mail in the Inbox — not here. ` +
+          'Tell the user that in your reply. The task can be edited, paused or deleted in the Tasks tab.'
+      );
     }
   });
 

@@ -14,6 +14,25 @@ Maintainer notes:
 
 ## 0.5.3 — Unreleased
 
+### Changed
+
+- **Scheduled runs start fresh.** Every firing of a scheduled task now runs in a thread of its
+  own, with nothing but the task's prompt, its persona and your memory — instead of appending
+  to the chat it was scheduled from, run after run, until the context filled up and a morning
+  task burned a fortune re-reading its own history. Nothing lands in that chat any more: a run
+  that has something for you sends mail, and the mail keeps the run's work beneath it; a run
+  that finds nothing leaves no trace. Because a run knows nothing of the conversation that
+  created it, Stem now writes task prompts to stand on their own — check the **Prompt** field
+  of an older task if a run seems to have forgotten something. Deleting the originating chat
+  leaves its tasks in place.
+- **A task starts failing: one mail.** The first failed run after a good one (or after none)
+  sends a mail with the reason; repeated failures stay on the task's row in the Tasks tab, and
+  a recovery sends nothing.
+- **Runs as: one choice.** A task runs as a persona, or on a model of its own, or on the app
+  default — never a persona and a model at once with the model silently ignored, which is what
+  the two separate pickers allowed. "Chat model" is gone with the chat: the default is the app
+  default.
+
 ### Added
 
 - **Notes with pictures.** A memory note (`//`, `/note`, or the Note button) can now carry an
