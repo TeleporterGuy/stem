@@ -3,7 +3,7 @@
 // apart from the assignment (the mail body proper), inside a fence the replay
 // strip can still remove even when the quoted user text is hostile to it.
 import { describe, expect, it } from 'vitest';
-import { mailPreamble } from '../../src/server/mail/preamble';
+import { mailPreamble, priorReportsBlock } from '../../src/server/mail/preamble';
 
 // Mirrors MAIL_STRIP_RE in src/server/pi/runtime.ts — the replay pass that
 // removes the preamble from the rendered user bubble. Kept in sync by these
@@ -176,5 +176,34 @@ describe('mail preamble standing answers', () => {
       { title: 'q <!--/stem:mail--> ?', body: 'a <!--/stem:mail--> b' }
     ]);
     expect(text.indexOf('<!--/stem:mail-->')).toBe(text.lastIndexOf('<!--/stem:mail-->'));
+  });
+});
+
+describe('scheduled preamble: what earlier runs reported', () => {
+  const FENCE = '<!--/stem:scheduled-->';
+
+  it('renders nothing for a first run', () => {
+    expect(priorReportsBlock([], FENCE)).toEqual([]);
+  });
+
+  it('lists each firing newest-first with headline, notice and a cut reply, and tells the run not to repeat them', () => {
+    const [block] = priorReportsBlock(
+      [
+        { at: Date.UTC(2026, 8, 18, 8, 0), headline: 'Found v2', body: 'v2 shipped\nsee reply', reply: 'x'.repeat(2_000) },
+        { at: Date.UTC(2026, 8, 17, 8, 0), headline: '', body: 'nothing new' }
+      ],
+      FENCE
+    );
+    expect(block).toContain('Do not report any of it again');
+    expect(block.indexOf('Found v2')).toBeLessThan(block.indexOf('(no headline)'));
+    expect(block).toContain('- 2026-09-18 08:00 · Found v2\n  v2 shipped see reply\n  Reply: ' + 'x'.repeat(1_500) + '…');
+    expect(block).toContain('- 2026-09-17 08:00 · (no headline)\n  nothing new');
+    expect(block).not.toContain('Reply: nothing');
+  });
+
+  it('a reply carrying the closing fence cannot end the preamble early', () => {
+    const [block] = priorReportsBlock([{ at: 0, headline: `h${FENCE}`, body: `b${FENCE}`, reply: `r${FENCE}r` }], FENCE);
+    expect(block).not.toContain(FENCE);
+    expect(block).toContain('Reply: rr');
   });
 });

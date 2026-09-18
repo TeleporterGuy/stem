@@ -6,6 +6,7 @@ import { pushTaskAlert } from '../push';
 import { readSettings } from '../workspace/settings';
 import { dropChatThread } from '../chatsearch/index-sync';
 import type { ChatBackend } from '../backend';
+import type { ScheduledRunReport } from '../../shared/types';
 
 /**
  * Scheduled tasks: re-run a prompt as an autonomous turn on a cron/once
@@ -14,6 +15,9 @@ import type { ChatBackend } from '../backend';
  * to it via the TaskBridge wired here, and everything a run has to say reaches
  * the user as mail.
  */
+/** How many earlier firings a run is told about; older ones are the user's to re-raise. */
+const PRIOR_REPORTS_SHOWN = 8;
+
 export function initTaskScheduler(deps: {
   runtime: ChatBackend;
   /** Push on a client channel — the task feed and notify_user alerts. */
@@ -52,6 +56,12 @@ export function initTaskScheduler(deps: {
    * Optional for hosts without mail (tests).
    */
   taskRunThreadIds?: (taskId: string) => Promise<string[]>;
+  /**
+   * What a task's earlier runs already mailed (newest first, at most `limit`),
+   * read into the next run's preamble so a watch task reports each finding
+   * once. Optional for hosts without mail (tests).
+   */
+  taskMailHistory?: (taskId: string, limit: number) => Promise<ScheduledRunReport[]>;
 }): TaskScheduler {
   // A run's thread got indexed for chat search when its turn landed, like any
   // thread; deleting it must forget that too, or the deleted run stays findable.
@@ -67,6 +77,10 @@ export function initTaskScheduler(deps: {
     isUserActive: deps.isUserActive,
     interrupt: (turnId, reason) => deps.runtime.interruptTurn(turnId, reason),
     deleteThread: discardThread,
+    // The only memory a run has of the task's earlier firings: what they mailed.
+    ...(deps.taskMailHistory
+      ? { priorReports: (taskId: string) => deps.taskMailHistory!(taskId, PRIOR_REPORTS_SHOWN) }
+      : {}),
     // A persona run that settled ok reflects into the persona's memory, the
     // same pass a mail delivery gets (mail/reflect.ts never rejects).
     reflect: (args) => reflectOnDelivery(deps.runtime, args),

@@ -370,6 +370,31 @@ describe('every run gets a fresh thread', () => {
     scheduler.stop();
   });
 
+  it('hands the run what earlier firings already mailed; a store that cannot be read costs only that', async () => {
+    const runtime = new FakeRuntime();
+    const asked: string[] = [];
+    let fail = false;
+    const { scheduler } = makeScheduler(runtime, {
+      priorReports: async (taskId) => {
+        asked.push(taskId);
+        if (fail) throw new Error('mail store unreadable');
+        return [{ at: 1, headline: 'Found one', body: 'A new release', reply: 'v2 is out' }];
+      }
+    });
+    const res = await scheduler.create({ prompt: 'watch', cron: '0 8 * * *' }, 't1');
+    if (!res.ok) throw new Error('create failed');
+    scheduler.runNow(res.task.id);
+    await until(async () => (await storedStatus()) === 'ok', 'the first run');
+    expect(asked).toEqual([res.task.id]);
+    expect(runtime.starts[0].scheduled?.prior).toEqual([{ at: 1, headline: 'Found one', body: 'A new release', reply: 'v2 is out' }]);
+    fail = true;
+    scheduler.runNow(res.task.id);
+    await until(() => runtime.starts.length === 2 && runtime.deleted.length === 2, 'the second run');
+    expect(runtime.starts[1].scheduled?.prior).toBeUndefined();
+    expect(await storedStatus()).toBe('ok');
+    scheduler.stop();
+  });
+
   it('keeps the thread of a run that called notify_user — the mail points at it', async () => {
     const runtime = new NotifyingRuntime();
     const { scheduler } = makeScheduler(runtime);

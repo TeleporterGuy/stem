@@ -368,6 +368,21 @@ export interface LiveTurnInfo {
   origin?: TurnOrigin;
 }
 
+/**
+ * One earlier firing of a scheduled task, as its next run sees it: the mail it
+ * sent (headline + notify line) and the reply that came with it, when one did.
+ */
+export interface ScheduledRunReport {
+  /** ms. */
+  at: number;
+  /** The firing's own headline (notify_user title), else the conversation subject. */
+  headline: string;
+  /** The notify_user message. */
+  body: string;
+  /** The run's final reply, attached once it settled; absent when it had none. */
+  reply?: string;
+}
+
 export interface StartTurnInput {
   /** Server-internal: authenticated submitting device; overwritten at the RPC boundary. */
   originDeviceId?: string;
@@ -430,9 +445,12 @@ export interface StartTurnInput {
    * Set by the scheduler for a scheduled-task run. The backend prepends an
    * automated-run preamble (so the agent knows it's running headless and should use
    * notify_user) plus a replay-detectable marker, and tags the turn's events so the
-   * UI renders the run collapsed. `at` is the run's ISO timestamp.
+   * UI renders the run collapsed. `at` is the run's ISO timestamp. `prior` is
+   * what this task's earlier runs already mailed the user (newest first): a run
+   * has no thread history, so this is how a watch task knows what it has
+   * reported and does not report it again.
    */
-  scheduled?: { at: string; taskId: string };
+  scheduled?: { at: string; taskId: string; prior?: ScheduledRunReport[] };
   /**
    * Run this turn AS a persona, by id. The one client-settable persona input:
    * the `backend:startTurn` handler resolves the id against the registry and

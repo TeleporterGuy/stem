@@ -44,8 +44,9 @@ arrives as mail in the Inbox.
   search needs a compatible model; otherwise enable a search-capable tool.
 - A run that has something for you sends **mail**: all firings of one task share
   one conversation in the Inbox, and the run’s full reply is attached beneath the
-  notice once it finishes. A run that finds nothing leaves no trace, and no run ever
-  makes a chat unread. By default the notice also pops up and brings Stem to the
+  notice once it finishes. Each run is also shown what the task's earlier runs
+  already mailed, so a watch task reports a finding once rather than every morning.
+  A run that finds nothing leaves no trace, and no run ever makes a chat unread. By default the notice also pops up and brings Stem to the
   front; Settings → App → **Notifications** turns that down to a dock bounce, or to
   nothing but the mail.
 - When a task starts failing, one mail says so with the reason. Repeated failures

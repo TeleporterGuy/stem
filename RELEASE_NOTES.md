@@ -21,7 +21,9 @@ Maintainer notes:
   to the chat it was scheduled from, run after run, until the context filled up and a morning
   task burned a fortune re-reading its own history. Nothing lands in that chat any more: a run
   that has something for you sends mail, and the mail keeps the run's work beneath it; a run
-  that finds nothing leaves no trace. Because a run knows nothing of the conversation that
+  that finds nothing leaves no trace. The one thing a run does carry over is what the task's
+  earlier runs already mailed you — their headlines and reports — so a watch task reports each
+  finding once instead of every morning. Because a run knows nothing of the conversation that
   created it, Stem now writes task prompts to stand on their own — and, once, on the first start
   after this update, rewrites the prompts of your existing tasks the same way, reading the chat
   each was scheduled from. One mail lists what was rewritten; each rewritten task keeps its old

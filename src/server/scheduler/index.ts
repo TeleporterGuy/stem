@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { ChatBackend } from '../backend/types';
 import type {
   BackendEventEnvelope,
+  ScheduledRunReport,
   ScheduledTask,
   ScheduleTaskRequest,
   TaskRunsAs,
@@ -58,6 +59,12 @@ export interface SchedulerOptions {
    * more than once), so the Inbox carries the result and not only the headline.
    */
   onResult?: (args: { taskId: string; threadId: string; itemId: string; result: string }) => Promise<void>;
+  /**
+   * What this task's earlier runs already mailed the user, newest first, for
+   * the run's preamble: a run has no thread history, so this is how a watch
+   * task knows what it has reported. Absent = runs start blind (tests).
+   */
+  priorReports?: (taskId: string) => Promise<ScheduledRunReport[]>;
   /**
    * A task's run just failed after its previous one did not (or after none at
    * all): mail the user once, with the reason. Repeated failures stay quiet — the
@@ -633,13 +640,16 @@ export class TaskScheduler {
       // The work record opens before the turn (a synchronous startTurn failure
       // still leaves a record) and learns its thread once the backend names it.
       work = await beginMailWork(this.opts.runtime, { personaId: resolved.personaId ?? `task:${task.id}`, turnId: requestedTurnId });
+      // quiet: a mail store that cannot be read costs this run its list of
+      // earlier reports, nothing more; it runs as a first firing would.
+      const prior = await this.opts.priorReports?.(task.id).catch(() => []);
       const started = await this.opts.runtime.startTurn({
         turnId: requestedTurnId,
         input: task.prompt,
         // No threadId: every firing gets a fresh session — the whole point.
         ...resolved.extras,
         webSearch: true,
-        scheduled: { at: atIso, taskId: task.id }
+        scheduled: { at: atIso, taskId: task.id, ...(prior?.length ? { prior } : {}) }
       });
       if (started.turnId) {
         const turnId = started.turnId;

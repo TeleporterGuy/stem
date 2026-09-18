@@ -6,6 +6,8 @@
 // buildMessage): the persona version hash (scripts/sys-version.mjs) covers this
 // directory, so a rewording here bumps the version stamped on every mail.
 
+import type { ScheduledRunReport } from '../../shared/types';
+
 /** Closes the fence; pi/runtime.ts strips the whole block on replay (MAIL_STRIP_RE). */
 export const MAIL_CLOSE = '<!--/stem:mail-->';
 
@@ -30,6 +32,29 @@ export function personaNotesBlock(notes: { id: string; title: string }[] | undef
       ' When this task teaches you something durable — a procedure, a gotcha, a stable fact about your ' +
       'domain or tools that would help on a FUTURE task — save it with the remember_note tool. ' +
       'Facts about the user do not belong there.'
+  ];
+}
+
+/** Earlier firings the next run must not repeat. Newest first; replies cut to fit. */
+const PRIOR_REPLY_CHARS = 1_500;
+
+/**
+ * The "already reported" block of a scheduled preamble: one entry per earlier
+ * mail-sending firing, headline + notify line + the reply cut to a budget. This
+ * is the memory a watch task has between runs — nothing else carries over.
+ */
+export function priorReportsBlock(prior: ScheduledRunReport[], fence: string): string[] {
+  if (!prior.length) return [];
+  const clean = (text: string) => text.split(fence).join('').trim();
+  const cut = (text: string) => (text.length > PRIOR_REPLY_CHARS ? `${text.slice(0, PRIOR_REPLY_CHARS)}…` : text);
+  const entries = prior.map((r) => {
+    const when = new Date(r.at).toISOString().slice(0, 16).replace('T', ' ');
+    const head = [`- ${when} · ${clean(r.headline) || '(no headline)'}`, `  ${clean(r.body).replace(/\s*\n\s*/g, ' ')}`];
+    if (r.reply) head.push(`  Reply: ${cut(clean(r.reply)).replace(/\n/g, '\n  ')}`);
+    return head.join('\n');
+  });
+  return [
+    `What earlier runs of this task already reported to the user (newest first). Do not report any of it again; report only what is new relative to it, and say so when nothing is.\n${entries.join('\n')}`
   ];
 }
 

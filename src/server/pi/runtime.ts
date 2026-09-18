@@ -29,6 +29,7 @@ import type {
   ModelServiceTier,
   ModelSummary,
   RuntimeStatus,
+  ScheduledRunReport,
   SkillProposal,
   StartTurnInput,
   StartTurnResult
@@ -134,7 +135,7 @@ import {
 } from './normalize';
 
 import { PiWorker } from './worker';
-import { mailPreamble, personaNotesBlock } from '../mail/preamble';
+import { mailPreamble, personaNotesBlock, priorReportsBlock } from '../mail/preamble';
 import { systemVersion } from '../sys-version';
 import { secretKeyHex } from './secrets';
 import {
@@ -196,13 +197,17 @@ const SCHED_STRIP_RE = /^<!--stem:scheduled at="([^"]*)"-->[\s\S]*?<!--\/stem:sc
  * here — the same block a mail delivery renders — so what the persona learned
  * on one schedule is in front of it on the next.
  */
-function scheduledPreamble(at: string, notes?: { id: string; title: string }[]): string {
+function scheduledPreamble(at: string, notes?: { id: string; title: string }[], prior?: ScheduledRunReport[]): string {
+  const reported = priorReportsBlock(prior ?? [], SCHED_CLOSE);
   return [
     `<!--stem:scheduled at="${at}"-->`,
     'This is an automated scheduled run — no human is reading the reply live. Carry out the task.',
-    'This run has no memory of any earlier conversation: the task prompt below is everything you know about it.',
+    reported.length
+      ? 'This run has no memory of any earlier conversation: the task prompt below and the list of what earlier runs already reported are everything you know about it.'
+      : 'This run has no memory of any earlier conversation: the task prompt below is everything you know about it.',
     'If, and only if, the result is something the user should be told about, call the notify_user tool with a short message; it reaches the user as mail, with your final reply attached — so put the report or drafts in that reply.',
     'Otherwise just finish quietly. Do not ask the user questions — there is no one to answer.',
+    ...reported,
     ...personaNotesBlock(notes, SCHED_CLOSE),
     SCHED_CLOSE
   ].join('\n');
@@ -3955,7 +3960,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // A mail delivery does the same with its own fence — who the mail is from, and
     // that the final message becomes the reply.
     const message = input.scheduled
-      ? `${scheduledPreamble(input.scheduled.at, input.persona?.notes)}\n\n${body}`
+      ? `${scheduledPreamble(input.scheduled.at, input.persona?.notes, input.scheduled.prior)}\n\n${body}`
       : input.mail
         ? `${mailPreamble(
             input.mail,

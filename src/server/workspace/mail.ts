@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import type { InboxEntry, InboxState } from '../../shared/inbox';
 import { toMs } from '../../shared/inbox';
 import { cleanMailSubject, deriveMailSubject, NO_SUBJECT, resolveMailSubject } from '../../shared/mail-subject';
-import type { MailConversation, MailItem, MailListResult } from '../../shared/types';
+import type { MailConversation, MailItem, MailListResult, ScheduledRunReport } from '../../shared/types';
 import { coerceSystemVersion } from '../../shared/sys-version';
 import { systemVersion } from '../sys-version';
 import { degrade } from '../degrade';
@@ -514,6 +514,28 @@ export async function taskRunThreadIds(taskId: string): Promise<string[]> {
     }
   });
   return ids;
+}
+
+/**
+ * What a scheduled task's earlier runs mailed the user, newest first, at most
+ * `limit` of them: each firing's headline, notify line and attached reply. The
+ * next run reads this instead of a thread history it no longer has, so a watch
+ * task reports each finding once. The user's own mails in the conversation are
+ * not the task's reports and stay out.
+ */
+export async function taskMailHistory(taskId: string, limit: number): Promise<ScheduledRunReport[]> {
+  const { conversations, items } = await readMail();
+  const subjectOf = new Map(conversations.map((c) => [c.id, c.subject]));
+  return items
+    .filter((i) => i.taskId === taskId && i.from !== 'user')
+    .sort((a, b) => b.at - a.at)
+    .slice(0, limit)
+    .map((i) => ({
+      at: i.at,
+      headline: i.subject ?? subjectOf.get(i.conversationId) ?? '',
+      body: i.body,
+      ...(i.result ? { reply: i.result } : {})
+    }));
 }
 
 /** Delete a conversation + its items + triage state. Returns the orphaned thread ids. */

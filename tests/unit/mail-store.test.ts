@@ -21,6 +21,7 @@ import {
   setMailItemResult,
   setMailRead,
   setMailSnooze,
+  taskMailHistory,
   taskRunThreadIds
 } from '../../src/server/workspace/mail';
 import { mailStorePath } from '../../src/server/workspace/paths';
@@ -300,6 +301,29 @@ describe('subject hygiene', () => {
     const c = await createConversation('', ['normal']);
     await appendMailItem({ conversationId: c.id, from: 'user', to: ['normal'], body: 'late body' });
     expect((await readMail()).conversations[0].subject).toBe('(no subject)');
+  });
+});
+
+describe('taskMailHistory', () => {
+  it('lists a task\'s own mails newest first with headline, notice and reply; the user\'s replies and other tasks stay out', async () => {
+    const c = await createConversation('Watch releases', ['normal']);
+    const first = await appendMailItem({ conversationId: c.id, from: 'task:t1', to: ['user'], body: 'v1 is out', taskId: 't1', subject: 'Found v1' });
+    await setMailItemResult(first.items.at(-1)!.id, 'Full report on v1');
+    await new Promise((r) => setTimeout(r, 2));
+    await appendMailItem({ conversationId: c.id, from: 'user', to: ['normal'], body: 'thanks', taskId: 't1' });
+    await new Promise((r) => setTimeout(r, 2));
+    await appendMailItem({ conversationId: c.id, from: 'task:t1', to: ['user'], body: 'v2 is out', taskId: 't1' });
+    const other = await createConversation('Other', ['normal']);
+    await appendMailItem({ conversationId: other.id, from: 'task:t2', to: ['user'], body: 'nope', taskId: 't2' });
+
+    const history = await taskMailHistory('t1', 5);
+    expect(history.map((h) => [h.headline, h.body, h.reply])).toEqual([
+      ['Watch releases', 'v2 is out', undefined],
+      ['Found v1', 'v1 is out', 'Full report on v1']
+    ]);
+    expect(history[0].at).toBeGreaterThan(history[1].at);
+    expect(await taskMailHistory('t1', 1)).toHaveLength(1);
+    expect(await taskMailHistory('t3', 5)).toEqual([]);
   });
 });
 
