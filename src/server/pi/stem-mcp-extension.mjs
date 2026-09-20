@@ -2881,29 +2881,29 @@ function registerComputerTool(pi, turnContext) {
     name: 'computer',
     label: 'Computer',
     description:
-      "See and drive the screen of the Mac this persona is pinned to (Manage → Personas → \"Computer this persona " +
-      'controls"). One call is one action; every action answers with a fresh screenshot, so look before you act ' +
-      'and check after. Coordinates are PIXELS OF THE LAST SCREENSHOT you were shown (top-left origin) — never ' +
+      "See and drive the Mac this persona is pinned to (Manage → Personas → \"Computer this persona " +
+      'controls"). One call is one action; every action answers with a fresh picture, so look before you act ' +
+      'and check after. Coordinates are PIXELS OF THE LAST PICTURE you were shown (top-left origin) — never ' +
       'guess them from memory of an earlier frame. Use `zoom` with a `region` to read small text (its picture is ' +
       'magnified: do not click from it, take a screenshot first). Prefer `run_command` with `device` set to this ' +
       'same computer for anything a shell does better (opening an app with `open -a`, files, git, scripts); click ' +
-      'only for what needs the GUI. Two modes. SCREEN mode (the default): screenshots show the main display and ' +
-      'clicks move the real mouse; the user sees a banner, and any input of their own ends the run — when a ' +
-      'result says they took over, stop for this turn and report. WINDOW mode, for an app that is not in front ' +
-      '(another Space, hidden behind something, another display) or when the user is busy at the keyboard: ' +
-      '`list_windows`, then `select_window` (by `window_id`, or `app` name plus optional `title` substring). ' +
-      'From then on screenshots show that window wherever it is, coordinates are pixels of the window ' +
-      'screenshot, and clicks and keys are delivered through Accessibility to that app alone — they work on ' +
-      'buttons, links, fields, list rows and menu items, not on canvases or games — while the user keeps their ' +
-      'own mouse and keyboard, and their typing does not end the run (only Stop on the banner does). `snapshot` ' +
-      'lists the window\'s controls with ids and their place in the picture; then `press`, `focus`, `menu` ' +
-      '(context menu) and `set_value` act by `element_id`, and `type`/`key` go to the focused field (click or ' +
-      '`focus` one first). If a click finds nothing pressable, `snapshot` and act by id, or clear the window ' +
-      '(`select_window` with no arguments) and use screen mode. mouse_move, left_click_drag and cursor_position ' +
-      'are screen-mode only. Never type passwords, one-time codes or payment details, and never dismiss a ' +
-      'security prompt; tell the user and wait. Keys use xdotool names: Return, Tab, Escape, space, BackSpace, ' +
-      'Delete, Up/Down/Left/Right, Home, End, Page_Up, Page_Down, F1–F12, and chords like "cmd+shift+t" or ' +
-      '"ctrl+c".',
+      'only for what needs the GUI. Two modes. START WITH `list_windows`: it costs nothing and never interrupts ' +
+      'the user. WINDOW mode (the default for working on an app): `select_window` (by `window_id`, or `app` name ' +
+      'plus optional `title` substring). From then on screenshots show that window wherever it is — another ' +
+      'Space, behind other windows, another display — coordinates are pixels of the window picture, and clicks ' +
+      'and keys are delivered through Accessibility to that app alone: they work on buttons, links, fields, list ' +
+      'rows and menu items, not on canvases or games. The user keeps their own mouse and keyboard and their ' +
+      'typing does not end the run (only Stop on the banner does). `snapshot` lists the window\'s controls with ' +
+      'ids and their place in the picture; `press`, `focus`, `menu` (context menu) and `set_value` act by ' +
+      '`element_id`; `type`/`key` go to the focused field (click or `focus` one first). SCREEN mode, only when ' +
+      'no window fits — the app is not running yet, the task is about the desktop itself, or it needs the real ' +
+      'pointer (mouse_move, left_click_drag, cursor_position, canvases): `select_window` with no arguments, then ' +
+      '`screenshot`. Screen mode moves the real mouse, and ANY input of the user\'s own ends the run — when a ' +
+      'result says they took over, stop for this turn and report; do not retry screen mode while they are ' +
+      'working, switch to a window. If a window click finds nothing pressable, `snapshot` and act by id. Never ' +
+      'type passwords, one-time codes or payment details, and never dismiss a security prompt; tell the user and ' +
+      'wait. Keys use xdotool names: Return, Tab, Escape, space, BackSpace, Delete, Up/Down/Left/Right, Home, ' +
+      'End, Page_Up, Page_Down, F1–F12, and chords like "cmd+shift+t" or "ctrl+c".',
     parameters: {
       type: 'object',
       properties: {

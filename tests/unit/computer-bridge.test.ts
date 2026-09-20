@@ -178,7 +178,8 @@ describe('extension side', () => {
     try {
       const tool = await registeredComputer();
       expect(tool.parameters.properties.action.enum).toContain('left_click_drag');
-      expect(tool.description).toContain('PIXELS OF THE LAST SCREENSHOT');
+      expect(tool.description).toContain('PIXELS OF THE LAST PICTURE');
+      expect(tool.description).toContain('START WITH `list_windows`');
       const { asks, ctx } = scriptedCtx(() =>
         JSON.stringify({
           ok: true,
