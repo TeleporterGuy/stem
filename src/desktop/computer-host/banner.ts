@@ -9,7 +9,7 @@ import { workspaceVisibilityOptions } from '../platform';
 // second case: with the run inside one app, the person's own mouse and
 // keyboard no longer end it, so the button does. (Driving the whole screen,
 // the click itself is human input and the helper's tap ends the run first.)
-// The page is a sandboxed data URL; Stop navigates to stem-banner://stop and
+// The page is a sandboxed data URL; Stop navigates to a sentinel URL and
 // the main process intercepts that, so no preload or IPC surface is needed.
 
 const WIDTH = 340;
@@ -24,9 +24,11 @@ const HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
   .txt{flex:1;white-space:nowrap}
   button{height:26px;padding:0 12px;border:0;border-radius:13px;background:#fff;color:#111;font:600 12px -apple-system,sans-serif;cursor:pointer}
 </style></head><body><div class="pill"><span class="dot"></span><span class="txt" id="txt">Stem is controlling this Mac</span>
-<button onclick="location.href='stem-banner://stop'">Stop</button></div></body></html>`;
+<button onclick="location.href='https://stop.stem-banner.invalid/'">Stop</button></div></body></html>`;
 
-const STOP_URL = 'stem-banner://stop';
+// An https URL, not a custom scheme: Chromium routes unknown schemes to the OS
+// instead of raising will-navigate. The host never resolves; it is cancelled first.
+const STOP_URL = 'https://stop.stem-banner.invalid/';
 
 export interface ComputerBanner {
   show(): void;

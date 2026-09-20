@@ -22,7 +22,14 @@ Maintainer notes:
   Stem server runs somewhere else. macOS asks for Screen Recording, Accessibility and Input
   Monitoring the first time. A banner says so while the persona is working, and any key you press
   or mouse you move stops the run at once. There are no per-action approvals: the switch, the pin
-  in Manage → Personas, and your own hand are the controls. Mac only for now.
+  in Manage → Personas, and your own hand are the controls. Mac only, macOS 14 or newer.
+- **Computer control reaches windows that aren't in front.** The persona no longer needs the app on
+  your screen: it can list the open windows, pick one — on another Space, behind other windows,
+  minimized — and work on it there, seeing that window alone and pressing its buttons and filling
+  its fields through macOS Accessibility instead of moving your mouse. You keep typing in whatever
+  you were doing; your keystrokes don't stop it, the banner's Stop button (now naming the app it is
+  working in) does. Apps that draw their own controls — games, canvases — still need the persona to
+  come to the screen.
 - **Standing answers.** A persona that relays to a coding agent used to hand you the same question
   every time the agent asked it — "should I deploy this?" on every single change. It now keeps
   standing answers: you write them in the persona editor, and it also keeps your reply when you

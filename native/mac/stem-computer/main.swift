@@ -16,6 +16,13 @@ import Foundation
 // produced (downscaled so the long side is at most MAX_SIDE); the helper keeps
 // the scale and maps them to global display points itself. The model on the
 // far end never sees points, backing pixels, or a Retina factor.
+//
+// Two modes. SCREEN (the default): the frame is the main display, clicks and
+// keys are real session events, and the person's first touch of their own
+// mouse or keyboard ends the run. WINDOW (after select-window): the frame is
+// one window wherever it is (ScreenCaptureKit), clicks are hit-tests + AXPress
+// and keys go to that process alone, so the app never comes forward and the
+// person's own input is theirs — the run ends from the banner's Stop instead.
 
 let stdoutLock = NSLock()
 
@@ -25,6 +32,13 @@ func emit(_ object: [String: Any]) {
   stdoutLock.lock()
   FileHandle.standardOutput.write((line + "\n").data(using: .utf8)!)
   stdoutLock.unlock()
+}
+
+/// stderr breadcrumbs when STEM_COMPUTER_TRACE is set; the desktop app forwards stderr to its log.
+let tracing = ProcessInfo.processInfo.environment["STEM_COMPUTER_TRACE"] != nil
+func trace(_ message: String) {
+  guard tracing else { return }
+  FileHandle.standardError.write(("[stem-computer] " + message + "\n").data(using: .utf8)!)
 }
 
 func fail(_ id: Any, _ message: String) {
@@ -41,18 +55,51 @@ func number(_ v: Any?) -> Double? {
 let capture = Capture()
 let input = Input(capture: capture)
 let watch = Watch()
+/// The accessibility side of the selected window; nil in screen mode.
+var ax: AX?
+
+/// What every reply says about the mode: the selected window, or null.
+func targetField() -> Any {
+  capture.target?.summary ?? NSNull()
+}
 
 /// Every input command settles for a beat and then answers with a fresh frame,
 /// so one round-trip carries both the effect and the evidence of it.
-func answerWithScreenshot(_ id: Any, settleMs: Int = 300) {
+func answerWithScreenshot(_ id: Any, settleMs: Int = 300, text: String? = nil) {
   if settleMs > 0 { usleep(useconds_t(settleMs) * 1000) }
   do {
     let shot = try capture.screenshot()
-    let cursor = input.cursorInScreenshot()
-    emit(["id": id, "ok": true, "screenshot": shot, "cursor": cursor])
+    var reply: [String: Any] = ["id": id, "ok": true, "screenshot": shot, "cursor": input.cursorInScreenshot(), "target": targetField()]
+    if let text { reply["text"] = text }
+    emit(reply)
   } catch {
     fail(id, "\(error)")
   }
+}
+
+/// Enter window mode on `info`, or leave it (nil).
+func selectWindow(_ info: WindowInfo?) {
+  if let info {
+    capture.target = Target(pid: info.pid, windowID: info.id, app: info.app, bundleId: info.bundleId, title: info.title, bounds: info.bounds)
+    ax = AX(pid: info.pid, windowID: info.id)
+    input.keyboardPid = info.pid
+    watch.setSuppressed(true)
+  } else {
+    capture.target = nil
+    ax = nil
+    input.keyboardPid = nil
+    watch.setSuppressed(false)
+  }
+}
+
+func screenOnly(_ what: String) -> HelperError {
+  HelperError("\(what) is a screen-mode action (it moves the real mouse). Clear the window first: select_window with no arguments.")
+}
+
+/// A window-mode click: pixels of the window picture → global point → the control there.
+func windowClick(_ ax: AX, x: Double?, y: Double?, button: String, count: Int) throws {
+  guard let x, let y else { throw HelperError("In window mode a click needs a coordinate (there is no cursor to click at).") }
+  try ax.click(at: try capture.toPoint(x: x, y: y), button: button, count: count)
 }
 
 while let line = readLine(strippingNewline: true) {
@@ -64,6 +111,7 @@ while let line = readLine(strippingNewline: true) {
   }
   let id: Any = obj["id"] ?? NSNull()
   let cmd = obj["cmd"] as? String ?? ""
+  trace("cmd \(cmd)")
   do {
     switch cmd {
     case "status":
@@ -73,28 +121,43 @@ while let line = readLine(strippingNewline: true) {
     case "screenshot":
       answerWithScreenshot(id, settleMs: 0)
     case "cursor":
-      emit(["id": id, "ok": true, "cursor": input.cursorInScreenshot()])
+      if ax != nil { throw screenOnly("cursor_position") }
+      emit(["id": id, "ok": true, "cursor": input.cursorInScreenshot(), "target": targetField()])
     case "move":
+      if ax != nil { throw screenOnly("mouse_move") }
       try input.move(x: number(obj["x"]), y: number(obj["y"]))
       answerWithScreenshot(id)
     case "click":
-      try input.click(
-        x: number(obj["x"]), y: number(obj["y"]),
-        button: obj["button"] as? String ?? "left",
-        count: Int(number(obj["count"]) ?? 1))
+      let button = obj["button"] as? String ?? "left"
+      let count = Int(number(obj["count"]) ?? 1)
+      if let ax {
+        try windowClick(ax, x: number(obj["x"]), y: number(obj["y"]), button: button, count: count)
+      } else {
+        try input.click(x: number(obj["x"]), y: number(obj["y"]), button: button, count: count)
+      }
       answerWithScreenshot(id)
     case "drag":
+      if ax != nil { throw screenOnly("left_click_drag") }
       let from = obj["from"] as? [String: Any] ?? [:]
       let to = obj["to"] as? [String: Any] ?? [:]
       try input.drag(fromX: number(from["x"]), fromY: number(from["y"]), toX: number(to["x"]), toY: number(to["y"]))
       answerWithScreenshot(id)
     case "scroll":
-      try input.scroll(
-        x: number(obj["x"]), y: number(obj["y"]),
-        direction: obj["dir"] as? String ?? "down",
-        amount: Int(number(obj["amount"]) ?? 3))
+      let dir = obj["dir"] as? String ?? "down"
+      let amount = Int(number(obj["amount"]) ?? 3)
+      if let ax {
+        guard let x = number(obj["x"]), let y = number(obj["y"]) else {
+          throw HelperError("In window mode scroll needs a coordinate over the area to scroll.")
+        }
+        try ax.scroll(at: try capture.toPoint(x: x, y: y), direction: dir, amount: amount)
+      } else {
+        try input.scroll(x: number(obj["x"]), y: number(obj["y"]), direction: dir, amount: amount)
+      }
       answerWithScreenshot(id)
     case "type":
+      if let ax, ax.focusedElement() == nil {
+        throw HelperError("Nothing in this window has keyboard focus. Click a field or `focus` its id first, then type.")
+      }
       try input.type(text: obj["text"] as? String ?? "")
       answerWithScreenshot(id)
     case "key":
@@ -109,7 +172,53 @@ while let line = readLine(strippingNewline: true) {
       let shot = try capture.zoom(
         x: number(obj["x"]) ?? 0, y: number(obj["y"]) ?? 0,
         w: number(obj["w"]) ?? 0, h: number(obj["h"]) ?? 0)
-      emit(["id": id, "ok": true, "screenshot": shot, "cursor": input.cursorInScreenshot()])
+      emit(["id": id, "ok": true, "screenshot": shot, "cursor": input.cursorInScreenshot(), "target": targetField()])
+    case "list-windows":
+      emit(["id": id, "ok": true, "text": Windows.describe(Windows.list()), "target": targetField()])
+    case "select-window":
+      let windowId = number(obj["windowId"]).map { Int($0) }
+      let app = (obj["app"] as? String)?.trimmingCharacters(in: .whitespaces)
+      let title = (obj["title"] as? String)?.trimmingCharacters(in: .whitespaces)
+      if windowId == nil && (app ?? "").isEmpty {
+        selectWindow(nil)
+        answerWithScreenshot(id, settleMs: 0)
+      } else {
+        let info = try Windows.find(windowId: windowId, app: app, title: title)
+        selectWindow(info)
+        // Prove the window can be captured before committing to it.
+        do {
+          _ = try capture.screenshot()
+        } catch {
+          selectWindow(nil)
+          throw error
+        }
+        answerWithScreenshot(id, settleMs: 0)
+      }
+    case "snapshot":
+      guard let ax, let target = capture.target else {
+        throw HelperError("snapshot lists the controls of a selected window; select_window first (or take a screenshot of the screen).")
+      }
+      // The picture first, so the ids' positions are in its pixels.
+      let shot = try capture.screenshot()
+      let depth = Int(number(obj["depth"]) ?? 12)
+      let tree = try ax.snapshot(depth: max(1, min(depth, 30)), windowBounds: capture.target?.bounds ?? target.bounds, toPixel: { capture.pixel($0) }, ppp: capture.pointsPerPixel)
+      emit(["id": id, "ok": true, "screenshot": shot, "cursor": input.cursorInScreenshot(), "text": tree, "target": targetField()])
+    case "press":
+      guard let ax else { throw HelperError("press acts on a snapshot id; select_window and snapshot first.") }
+      try ax.press(id: Int(number(obj["id"]) ?? -1))
+      answerWithScreenshot(id)
+    case "focus":
+      guard let ax else { throw HelperError("focus acts on a snapshot id; select_window and snapshot first.") }
+      try ax.focus(id: Int(number(obj["id"]) ?? -1))
+      answerWithScreenshot(id, settleMs: 100)
+    case "menu":
+      guard let ax else { throw HelperError("menu acts on a snapshot id; select_window and snapshot first.") }
+      try ax.menu(id: Int(number(obj["id"]) ?? -1))
+      answerWithScreenshot(id)
+    case "set-value":
+      guard let ax else { throw HelperError("set_value acts on a snapshot id; select_window and snapshot first.") }
+      try ax.setValue(id: Int(number(obj["id"]) ?? -1), text: obj["text"] as? String ?? "")
+      answerWithScreenshot(id)
     case "watch":
       let on = obj["on"] as? Bool ?? true
       if on {

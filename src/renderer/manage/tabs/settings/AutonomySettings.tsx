@@ -568,9 +568,12 @@ export function AutonomySections() {
                   <InfoTip label="What switching this on means">
                     A persona pinned to this Mac in Manage → Personas gets a <code>computer</code> tool:
                     it takes screenshots, clicks and types here, with no per-action approval. While it
-                    works a banner says so, and any key or mouse movement of your own stops the run at
-                    once. Switching this off stops new runs immediately. Leave it off if this Stem server
-                    isn’t yours alone.
+                    works a banner says so. Driving the whole screen, any key or mouse movement of your
+                    own stops the run at once; working inside one app’s window (which it can do even
+                    when that window is on another Space or behind others), it leaves your mouse and
+                    keyboard alone and the banner’s Stop button ends it. Switching this off stops new
+                    runs immediately. Leave it off if this Stem server isn’t yours alone. Needs macOS 14
+                    or newer.
                   </InfoTip>
                 </>
               }

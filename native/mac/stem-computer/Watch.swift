@@ -12,6 +12,13 @@ final class Watch {
   private var fired = false
   private var onHuman: ((String) -> Void)?
   private let lock = NSLock()
+  private var suppressed = false
+
+  /// Window mode: the person's input is theirs again and must not end the run.
+  /// The tap keeps running so switching back to the screen re-arms at once.
+  func setSuppressed(_ on: Bool) {
+    lock.lock(); suppressed = on; lock.unlock()
+  }
 
   func start(_ handler: @escaping (String) -> Void) throws {
     stop()
@@ -57,7 +64,7 @@ final class Watch {
     }
     if event.getIntegerValueField(.eventSourceUserData) == STEM_EVENT_TAG { return }
     lock.lock()
-    if fired { lock.unlock(); return }
+    if fired || suppressed { lock.unlock(); return }
     fired = true
     let handler = onHuman
     lock.unlock()

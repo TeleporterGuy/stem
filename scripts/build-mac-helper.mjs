@@ -8,7 +8,7 @@
 // so a fresh checkout works without remembering this step.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,7 +16,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const SOURCE_DIR = resolve(here, '..', 'native', 'mac', 'stem-computer');
 export const OUTPUT = resolve(here, '..', 'build', 'native', 'stem-computer');
 
-const FRAMEWORKS = ['CoreGraphics', 'ImageIO', 'ApplicationServices', 'Foundation'];
+// AppKit for the running-apps list, ScreenCaptureKit for per-window capture (the macOS 14 floor).
+const FRAMEWORKS = ['CoreGraphics', 'ImageIO', 'ApplicationServices', 'Foundation', 'AppKit', 'ScreenCaptureKit'];
 
 export function sourceFiles() {
   return readdirSync(SOURCE_DIR)
@@ -51,7 +52,7 @@ export function buildHelper({ output = OUTPUT, archs = ['arm64', 'x86_64'], log 
     swiftc([
       '-O',
       '-target',
-      `${arch}-apple-macos12`,
+      `${arch}-apple-macos14`,
       ...FRAMEWORKS.flatMap((f) => ['-framework', f]),
       '-o',
       slice,
@@ -59,11 +60,16 @@ export function buildHelper({ output = OUTPUT, archs = ['arm64', 'x86_64'], log 
     ]);
     slices.push(slice);
   }
+  // Never overwrite in place: the kernel caches a Mach-O's code signature by
+  // vnode, and a binary rewritten under it is SIGKILLed as "Code Signature
+  // Invalid" on its next launch. Unlink, then write, then ad-hoc sign the result.
+  rmSync(output, { force: true });
   if (slices.length === 1) {
     execFileSync('cp', [slices[0], output]);
   } else {
     execFileSync('lipo', ['-create', ...slices, '-output', output], { stdio: 'inherit' });
   }
+  execFileSync('codesign', ['--force', '--sign', '-', output], { stdio: 'inherit' });
   log(`[stem-computer] built ${output} (${statSync(output).size} bytes)`);
   return output;
 }

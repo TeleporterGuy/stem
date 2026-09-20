@@ -1,3 +1,4 @@
+import { release } from 'node:os';
 import { log } from '../../server/log';
 import type {
   ComputerAccess,
@@ -92,8 +93,17 @@ interface Run {
   target: ComputerTarget | null;
 }
 
+/** The macOS major version (Darwin 23 = macOS 14), or 0 off macOS / when unreadable. */
+function macOSMajor(): number {
+  if (process.platform !== 'darwin') return 0;
+  const darwin = Number.parseInt(release().split('.')[0] ?? '', 10);
+  return Number.isFinite(darwin) ? darwin - 9 : 0;
+}
+
 export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
-  const supported = process.platform === 'darwin';
+  // macOS 14 or newer: per-window capture (ScreenCaptureKit's screenshot API) is
+  // what window mode is built on, and the helper is compiled against it.
+  const supported = process.platform === 'darwin' && macOSMajor() >= 14;
   const helpers = deps.helpers ?? realHelpers;
   let run: Run | null = null;
   let lastAccess: ComputerAccess | null = null;

@@ -12,8 +12,10 @@ struct HelperError: Error, CustomStringConvertible {
 /// anyway, and coordinates the model returns then drift from what it saw.
 let MAX_SIDE = 1568.0
 
-/// Screen capture of the main display, downscaled, plus the geometry needed to
-/// turn screenshot pixels back into display points.
+/// Capture of the main display — or, once a run has selected a window, of that
+/// window alone — downscaled, plus the geometry needed to turn screenshot
+/// pixels back into global points. One coordinate space at a time: selecting
+/// or clearing a window resets it, and the next screenshot re-derives it.
 final class Capture {
   /// Size (in screenshot pixels) of the last frame produced, and the factor
   /// that maps one of its pixels to display points. Both are re-derived on
@@ -22,20 +24,50 @@ final class Capture {
   private(set) var lastWidth = 0
   private(set) var lastHeight = 0
   private(set) var pointsPerPixel = 1.0
+  /// Where the last frame's (0,0) sits in global points: the display's origin,
+  /// or the window's top-left.
+  private(set) var origin = CGPoint.zero
+
+  /// The window this capture is of; nil = the whole main display.
+  var target: Target? {
+    didSet {
+      // A new window (or none) is a new coordinate space; a refreshed title or
+      // bounds of the same window is not.
+      guard oldValue?.windowID != target?.windowID else { return }
+      lastWidth = 0
+      lastHeight = 0
+      pointsPerPixel = 1.0
+      origin = .zero
+    }
+  }
 
   private var displayID: CGDirectDisplayID { CGMainDisplayID() }
 
+  /// The area the frame covers, in global points — refreshed for a window, which may have moved.
+  private func currentBounds() throws -> CGRect {
+    guard let t = target else { return CGDisplayBounds(displayID) }
+    guard let b = Windows.bounds(of: t.windowID) else {
+      throw HelperError("The selected window is gone. Run list_windows and select again.")
+    }
+    target?.bounds = b
+    if let title = Windows.title(of: t.windowID) { target?.title = title }
+    return b
+  }
+
   private func grab() throws -> CGImage {
+    if let t = target {
+      return try WindowCapture.capture(windowID: t.windowID, bounds: t.bounds)
+    }
     guard let image = CGDisplayCreateImage(displayID) else {
       throw HelperError("Could not capture the screen. Stem needs Screen Recording access (System Settings → Privacy & Security → Screen Recording).")
     }
     return image
   }
 
-  /// A frame of the whole main display: {jpegBase64, width, height, scale}.
+  /// A frame of the whole main display or the selected window: {jpegBase64, width, height, scale}.
   func screenshot() throws -> [String: Any] {
+    let bounds = try currentBounds()
     let image = try grab()
-    let bounds = CGDisplayBounds(displayID)
     let longest = Double(max(image.width, image.height))
     let factor = longest > MAX_SIDE ? MAX_SIDE / longest : 1.0
     let width = max(1, Int((Double(image.width) * factor).rounded()))
@@ -44,6 +76,7 @@ final class Capture {
     lastWidth = width
     lastHeight = height
     pointsPerPixel = bounds.width / Double(width)
+    origin = bounds.origin
     return [
       "jpegBase64": try jpeg(scaled),
       "width": width,
@@ -106,22 +139,23 @@ final class Capture {
     return (data as Data).base64EncodedString()
   }
 
-  /// Screenshot pixels → global display points (CG coordinates, origin top-left).
+  /// Screenshot pixels → global points (CG coordinates, origin top-left).
   func toPoint(x: Double, y: Double) throws -> CGPoint {
     guard lastWidth > 0 else { throw HelperError("Take a screenshot before pointing at it.") }
-    let bounds = CGDisplayBounds(displayID)
     let px = min(max(x, 0), Double(lastWidth - 1))
     let py = min(max(y, 0), Double(lastHeight - 1))
-    return CGPoint(x: bounds.origin.x + px * pointsPerPixel, y: bounds.origin.y + py * pointsPerPixel)
+    return CGPoint(x: origin.x + px * pointsPerPixel, y: origin.y + py * pointsPerPixel)
   }
 
-  /// Global display points → screenshot pixels (for reporting the cursor).
+  /// Global points → screenshot pixels, as a pair.
+  func pixel(_ p: CGPoint) -> (Int, Int) {
+    guard lastWidth > 0 else { return (Int(p.x), Int(p.y)) }
+    return (Int(((p.x - origin.x) / pointsPerPixel).rounded()), Int(((p.y - origin.y) / pointsPerPixel).rounded()))
+  }
+
+  /// Global points → screenshot pixels (for reporting the cursor).
   func toPixel(_ p: CGPoint) -> [String: Any] {
-    guard lastWidth > 0 else { return ["x": Int(p.x), "y": Int(p.y)] }
-    let bounds = CGDisplayBounds(displayID)
-    return [
-      "x": Int(((p.x - bounds.origin.x) / pointsPerPixel).rounded()),
-      "y": Int(((p.y - bounds.origin.y) / pointsPerPixel).rounded())
-    ]
+    let (x, y) = pixel(p)
+    return ["x": x, "y": y]
   }
 }

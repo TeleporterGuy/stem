@@ -21,9 +21,18 @@ final class Input {
     source = src
   }
 
+  /// When set, keyboard events go to this process alone instead of the session
+  /// (window mode): the app need not be in front, and the person's own
+  /// keyboard focus stays where it is.
+  var keyboardPid: pid_t?
+
   private func post(_ event: CGEvent?) throws {
     guard let event else { throw HelperError("Could not build an input event.") }
     event.setIntegerValueField(.eventSourceUserData, value: STEM_EVENT_TAG)
+    if let pid = keyboardPid, event.type == .keyDown || event.type == .keyUp || event.type == .flagsChanged {
+      event.postToPid(pid)
+      return
+    }
     event.post(tap: .cgSessionEventTap)
   }
 
