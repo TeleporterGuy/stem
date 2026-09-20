@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 import type {
   ComputerHostLocalState,
   DeviceInfo,
@@ -99,10 +99,17 @@ export function AutonomySections() {
     void window.stem.execHostState().then((s) => setExecHostEnabled(s.enabled)).catch(() => undefined);
     void window.stem.harnessHostState().then((s) => setHarnessHostEnabled(s.enabled)).catch(() => undefined);
     void window.stem.computerHostState().then(setComputerHost).catch(() => undefined);
+    // The grants are changed in System Settings, so re-read them each time the
+    // user comes back here rather than making them press Re-check.
+    const refreshComputer = () => {
+      void window.stem.computerHostState().then(setComputerHost).catch(() => undefined);
+    };
+    window.addEventListener('focus', refreshComputer);
     void window.stem
       .listDevices()
       .then((snap) => setDevices(snap.devices))
       .catch(() => undefined);
+    return () => window.removeEventListener('focus', refreshComputer);
   }, []);
 
   function updateExec(patch: Partial<ExecSettings>) {
@@ -580,27 +587,39 @@ export function AutonomySections() {
             </ValueRow>
             {computerHost.enabled && (
               <ValueRow
-                label="macOS permissions"
-                hint={
+                label={
                   <>
-                    {(
-                      [
-                        ['Screen Recording', computerHost.access?.screen],
-                        ['Accessibility', computerHost.access?.accessibility],
-                        ['Input Monitoring', computerHost.access?.inputMonitoring]
-                      ] as [string, boolean | undefined][]
-                    ).map(([name, granted], i) => (
-                      <span key={name}>
-                        {i > 0 && ' · '}
-                        {name}: {granted ? 'granted' : 'not granted'}
-                      </span>
-                    ))}{' '}
+                    macOS permissions{' '}
                     <InfoTip label="About these permissions">
                       Screen Recording lets Stem take screenshots, Accessibility lets it click and type,
                       Input Monitoring lets it notice your own input and stop. macOS asks once per grant;
-                      a refused one is changed under System Settings → Privacy &amp; Security.
+                      a refused one is changed under System Settings → Privacy &amp; Security. This list
+                      re-checks itself whenever you come back to this window.
                     </InfoTip>
                   </>
+                }
+                hint={
+                  <span className="perm-list" role="list">
+                    {(
+                      [
+                        ['Screen Recording', computerHost.access?.screen, 'screenshots'],
+                        ['Accessibility', computerHost.access?.accessibility, 'clicking and typing'],
+                        ['Input Monitoring', computerHost.access?.inputMonitoring, 'stopping on your own input']
+                      ] as [string, boolean | undefined, string][]
+                    ).map(([name, granted, does]) => (
+                      <span key={name} role="listitem" className={`perm${granted ? ' ok' : ' missing'}`}>
+                        {granted ? (
+                          <Check size={12} strokeWidth={3} aria-label="granted" />
+                        ) : (
+                          <X size={12} strokeWidth={3} aria-label="not granted" />
+                        )}
+                        <span>
+                          {name}
+                          {granted ? '' : ` — needed for ${does}`}
+                        </span>
+                      </span>
+                    ))}
+                  </span>
                 }
               >
                 <button
