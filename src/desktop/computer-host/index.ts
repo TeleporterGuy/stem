@@ -20,10 +20,12 @@ import { readComputerHostEnabled, writeComputerHostEnabled } from './store';
 // the person at this machine — whether Stem may drive the screen at all (the
 // switch, read fresh from this disk on every request), and when a run ends:
 // the helper watches for the person's own input and the first touch aborts
-// everything, here, before the server hears of it — while the run drives the
-// whole screen. Once a run has selected a window it works through
-// Accessibility on that app alone, the person's own input is theirs again, and
-// the run ends from the banner's Stop, the consent switch, or the chat.
+// everything, here, before the server hears of it — but only from the moment
+// the run drives the real mouse or keyboard on the whole screen. Looking
+// (screenshots, the window list, the Accessibility tree) never arms it, and a
+// run that has selected a window works through Accessibility on that app
+// alone: the person's own input is theirs, and the run ends from the banner's
+// Stop, the consent switch, or the chat.
 //
 // A "run" is one thread's stretch of actions: it begins with the first action
 // for that thread (helper spawned, watch on, banner up) and ends when the

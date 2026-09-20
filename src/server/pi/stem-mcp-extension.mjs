@@ -2898,9 +2898,9 @@ function registerComputerTool(pi, turnContext) {
       '`element_id`; `type`/`key` go to the focused field (click or `focus` one first). SCREEN mode, only when ' +
       'no window fits — the app is not running yet, the task is about the desktop itself, or it needs the real ' +
       'pointer (mouse_move, left_click_drag, cursor_position, canvases): `select_window` with no arguments, then ' +
-      '`screenshot`. Screen mode moves the real mouse, and ANY input of the user\'s own ends the run — when a ' +
-      'result says they took over, stop for this turn and report; do not retry screen mode while they are ' +
-      'working, switch to a window. If a window click finds nothing pressable, `snapshot` and act by id. Never ' +
+      '`screenshot`. Screen mode moves the real mouse, and from your first click or keystroke there ANY input ' +
+      'of the user\'s own ends the run (looking never does) — when a result says they took over, stop for this ' +
+      'turn and report; do not retry screen mode while they are working, switch to a window. If a window click finds nothing pressable, `snapshot` and act by id. Never ' +
       'type passwords, one-time codes or payment details, and never dismiss a security prompt; tell the user and ' +
       'wait. Keys use xdotool names: Return, Tab, Escape, space, BackSpace, Delete, Up/Down/Left/Right, Home, ' +
       'End, Page_Up, Page_Down, F1–F12, and chords like "cmd+shift+t" or "ctrl+c".',

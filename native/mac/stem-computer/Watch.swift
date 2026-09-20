@@ -12,12 +12,22 @@ final class Watch {
   private var fired = false
   private var onHuman: ((String) -> Void)?
   private let lock = NSLock()
-  private var suppressed = false
+  /// Armed only while the run drives the real mouse and keyboard. Looking
+  /// (screenshots, the window list, the Accessibility tree) and window-mode
+  /// actions never conflict with the person's own input, so they do not arm it.
+  private var suppressed = true
+
+  /// The next screen-mode input action is about to go out: from here the
+  /// person's first touch ends the run. Input from before this moment does not
+  /// count — it was theirs to give while the run was only looking.
+  func arm() {
+    lock.lock(); suppressed = false; fired = false; lock.unlock()
+  }
 
   /// Window mode: the person's input is theirs again and must not end the run.
-  /// The tap keeps running so switching back to the screen re-arms at once.
-  func setSuppressed(_ on: Bool) {
-    lock.lock(); suppressed = on; lock.unlock()
+  /// The tap keeps running so the next screen-mode action re-arms at once.
+  func disarm() {
+    lock.lock(); suppressed = true; lock.unlock()
   }
 
   func start(_ handler: @escaping (String) -> Void) throws {

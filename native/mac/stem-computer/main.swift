@@ -83,12 +83,12 @@ func selectWindow(_ info: WindowInfo?) {
     capture.target = Target(pid: info.pid, windowID: info.id, app: info.app, bundleId: info.bundleId, title: info.title, bounds: info.bounds)
     ax = AX(pid: info.pid, windowID: info.id)
     input.keyboardPid = info.pid
-    watch.setSuppressed(true)
+    watch.disarm()
   } else {
     capture.target = nil
     ax = nil
     input.keyboardPid = nil
-    watch.setSuppressed(false)
+    // Stays disarmed: the first screen-mode input action arms the watch.
   }
 }
 
@@ -125,6 +125,7 @@ while let line = readLine(strippingNewline: true) {
       emit(["id": id, "ok": true, "cursor": input.cursorInScreenshot(), "target": targetField()])
     case "move":
       if ax != nil { throw screenOnly("mouse_move") }
+      watch.arm()
       try input.move(x: number(obj["x"]), y: number(obj["y"]))
       answerWithScreenshot(id)
     case "click":
@@ -133,11 +134,13 @@ while let line = readLine(strippingNewline: true) {
       if let ax {
         try windowClick(ax, x: number(obj["x"]), y: number(obj["y"]), button: button, count: count)
       } else {
+        watch.arm()
         try input.click(x: number(obj["x"]), y: number(obj["y"]), button: button, count: count)
       }
       answerWithScreenshot(id)
     case "drag":
       if ax != nil { throw screenOnly("left_click_drag") }
+      watch.arm()
       let from = obj["from"] as? [String: Any] ?? [:]
       let to = obj["to"] as? [String: Any] ?? [:]
       try input.drag(fromX: number(from["x"]), fromY: number(from["y"]), toX: number(to["x"]), toY: number(to["y"]))
@@ -151,6 +154,7 @@ while let line = readLine(strippingNewline: true) {
         }
         try ax.scroll(at: try capture.toPoint(x: x, y: y), direction: dir, amount: amount)
       } else {
+        watch.arm()
         try input.scroll(x: number(obj["x"]), y: number(obj["y"]), direction: dir, amount: amount)
       }
       answerWithScreenshot(id)
@@ -158,12 +162,15 @@ while let line = readLine(strippingNewline: true) {
       if let ax, ax.focusedElement() == nil {
         throw HelperError("Nothing in this window has keyboard focus. Click a field or `focus` its id first, then type.")
       }
+      if ax == nil { watch.arm() }
       try input.type(text: obj["text"] as? String ?? "")
       answerWithScreenshot(id)
     case "key":
+      if ax == nil { watch.arm() }
       try input.key(combo: obj["combo"] as? String ?? "")
       answerWithScreenshot(id)
     case "hold":
+      if ax == nil { watch.arm() }
       try input.hold(combo: obj["combo"] as? String ?? "", ms: Int(number(obj["ms"]) ?? 0))
       answerWithScreenshot(id)
     case "wait":
