@@ -14,6 +14,34 @@ Maintainer notes:
 
 ## 0.5.3 — Unreleased
 
+### Added
+
+- **Computer control.** A persona pinned to your Mac can now see its screen and drive the mouse
+  and keyboard, so it can work in apps that offer no other way in. It stays off until you turn it
+  on — **Let Stem control this Mac**, in Settings → App on that Mac, and only offered when your
+  Stem server runs somewhere else. macOS asks for Screen Recording, Accessibility and Input
+  Monitoring the first time. A banner says so while the persona is working, and any key you press
+  or mouse you move stops the run at once. There are no per-action approvals: the switch, the pin
+  in Manage → Personas, and your own hand are the controls. Mac only for now.
+- **Standing answers.** A persona that relays to a coding agent used to hand you the same question
+  every time the agent asked it — "should I deploy this?" on every single change. It now keeps
+  standing answers: you write them in the persona editor, and it also keeps your reply when you
+  answer a relayed question by mail, so the next time the agent asks, the persona answers from what
+  you said instead of asking you again.
+- **The coding agent's own reply.** When a coding persona mails you an answer, the agent's own
+  words now ride along beneath it in a collapsed **Coding agent's reply** block, on the desktop and
+  the phone, so you can check the relay against its source.
+- **Edit an MCP server.** Changing a server's address or its token no longer means adding it again
+  from scratch. **Edit** opens the stored definition with its name and transport fixed, shows
+  stored credentials as a mask you can leave untouched, and keeps the computer it runs on — where
+  re-adding used to quietly move a server pinned to your Mac back onto the Stem server.
+- **Notes with pictures.** A memory note (`//`, `/note`, or the Note button) can now carry an
+  image: paste a screenshot or attach a photo, with or without text, and it is saved with the
+  fact. Stem describes what the picture shows into the fact in the background, so a photo of a
+  router label, a receipt, or a menu can be recalled later like any other memory. The picture
+  itself stays yours: it shows in the fact's details under Manage → Memory and is never sent
+  to the assistant again. Desktop only for now.
+
 ### Changed
 
 - **Scheduled runs start fresh.** Every firing of a scheduled task now runs in a thread of its
@@ -36,18 +64,47 @@ Maintainer notes:
   default — never a persona and a model at once with the model silently ignored, which is what
   the two separate pickers allowed. "Chat model" is gone with the chat: the default is the app
   default.
-
-### Added
-
-- **Notes with pictures.** A memory note (`//`, `/note`, or the Note button) can now carry an
-  image: paste a screenshot or attach a photo, with or without text, and it is saved with the
-  fact. Stem describes what the picture shows into the fact in the background, so a photo of a
-  router label, a receipt, or a menu can be recalled later like any other memory. The picture
-  itself stays yours: it shows in the fact's details under Manage → Memory and is never sent
-  to the assistant again. Desktop only for now.
+- **Coding personas stay out of the way.** A persona that delegates to a coding agent used to
+  check the agent's work itself — re-reading the diff after every exchange, sending it back for
+  another round of review, once committing the change on its own, at a dozen agent runs for a
+  single feature. It now passes your brief in and hands the reply back as it came, and calls the
+  agent again only when you say something new.
+- **Personas remember less, and better.** Left alone, a persona filled its note quota on nearly
+  every turn with reworded versions of its own instructions. Reflection is now biased toward
+  writing nothing at all, overlapping notes are merged from time to time and on demand with a
+  **Tidy up** button in the editor, and a persona that delegates to a coding agent keeps no notes
+  at all — the agent has its own memory. The first time you open this version, the notes a persona
+  wrote about itself are cleared; the ones you wrote, and the ones it saved on purpose, stay.
+- **MCP servers, rearranged.** Tools → MCP servers now reads like the Personas tab: a server's
+  name opens an editor in place that you edit and Save, where it runs is a choice inside that
+  editor, and each row carries its status dot, its switch and a delete button instead of a strip
+  of text links underneath.
+- **Skills hear when they were wrong.** When the assistant says that a skill it loaded was wrong
+  for the step it was on, that report now counts: the skill is marked as having failed in
+  Tools → Skills, and it goes to the front of the queue to be rewritten, with the assistant's
+  reason handed over as evidence. Until now nothing read those reports.
+- **The Mac download is signed and notarized — and Apple Silicon only.** macOS no longer warns
+  about an unidentified developer, and permissions you grant the app now survive an update, which
+  is what computer control needs. Intel Macs are no longer built.
+- **A smaller Mac app.** It now unpacks to 560MB instead of 724MB: a machine-learning runtime and
+  an icon set that the app never loaded were being packaged with it.
 
 ### Fixed
 
+- **Web search on a ChatGPT login.** For five days, every web search from a Stem signed in with a
+  ChatGPT account failed. Stem was asking for one particular search model, and OpenAI stopped
+  accepting that name on that kind of login; Stem no longer names one.
+- **Chat keeps your place.** Switching back to Stem's window while you were reading an older part
+  of a long chat threw you to the newest message. Scrolling up now holds your place; scrolling back
+  down, or sending a message, follows new messages again.
+- **Photos from the iPhone camera roll.** Pictures the camera saves as HEIC could not be read by
+  the server or the models. The phone now converts them before sending.
+- **Repeated date headers in the chats list.** After a night of scheduled runs the sidebar could
+  show "Previous 7 Days", then "Previous 30 Days", then "Previous 7 Days" again. Rows are now
+  ordered by the date shown on them.
+- **Tool details for an MCP server on another computer.** The assistant's request for a tool's full
+  description never reached a server pinned to one of your computers: it timed out after five
+  seconds and fell back to argument names with no types and no documentation.
 - **Scheduled runs no longer move their chat.** A task that found something and sent you mail
   still dragged the chat it ran in to the top of the Chats list, bold, as if you had a new
   message there. The mail is the message; the chat now stays where your last message left it.
