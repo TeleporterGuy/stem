@@ -33,6 +33,11 @@ class FakeHelper implements HelperLike {
         ok: true,
         status: { screen: true, accessibility: true, inputMonitoring: true }
       });
+    if (cmd === 'list-windows') return Promise.resolve({ ok: true, text: '12  Discord  "#test"' });
+    if (cmd === 'select-window') {
+      const target = fields.windowId === undefined ? null : { app: 'Discord', title: '#test', windowId: 12 };
+      return Promise.resolve({ ok: true, screenshot: shot, target });
+    }
     if (this.hold === null && cmd !== 'stop') {
       return Promise.resolve({
         ok: true,
@@ -59,7 +64,7 @@ class FakeHelper implements HelperLike {
 describe.skipIf(!mac)('createComputerHost', () => {
   let dir: string;
   let calls: Array<{ channel: string; args: unknown[] }>;
-  let banner: { shown: number; hidden: number };
+  let banner: { shown: number; hidden: number; targets: Array<string | null>; stop: (() => void) | null };
   let helper: FakeHelper;
   let host: ComputerHost;
 
@@ -67,14 +72,21 @@ describe.skipIf(!mac)('createComputerHost', () => {
     dir = mkdtempSync(join(tmpdir(), 'stem-computer-host-'));
     process.env.STEM_COMPUTER_HOST_FILE = join(dir, 'computer-host.json');
     calls = [];
-    banner = { shown: 0, hidden: 0 };
+    banner = { shown: 0, hidden: 0, targets: [], stop: null };
     helper = new FakeHelper();
     host = createComputerHost({
       invoke: (channel, args) => {
         calls.push({ channel, args });
         return Promise.resolve(undefined);
       },
-      banner: { show: () => banner.shown++, hide: () => banner.hidden++ },
+      banner: {
+        show: () => banner.shown++,
+        hide: () => banner.hidden++,
+        setTarget: (app) => banner.targets.push(app),
+        onStop: (handler) => {
+          banner.stop = handler;
+        }
+      },
       helpers: {
         spawn: () => Promise.resolve(helper),
         oneShot: (cmd) => helper.call(cmd)
@@ -202,6 +214,47 @@ describe.skipIf(!mac)('createComputerHost', () => {
       error: 'The user took over the computer.',
       aborted: true
     });
+    expect(calls.find((c) => c.channel === 'computerHost:event')!.args[0]).toEqual({
+      threadId: 't1',
+      kind: 'human-input'
+    });
+    expect(banner.hidden).toBe(1);
+    expect(helper.killed).toBe(true);
+  });
+
+  it('a windows list answers with text alone, selecting a window relabels the banner, clearing it restores it', async () => {
+    await writeComputerHostEnabled(true);
+    host.onRequest({ requestId: 'r1', threadId: 't1', action: { kind: 'list_windows' } });
+    const [list] = await results();
+    expect(list!.result).toEqual({ ok: true, text: '12  Discord  "#test"' });
+    expect(banner.targets).toEqual([null]); // the run began on the whole screen
+    calls.length = 0;
+    host.onRequest({ requestId: 'r2', threadId: 't1', action: { kind: 'select_window', windowId: 12 } });
+    const [selected] = await results();
+    expect(selected!.result).toMatchObject({ ok: true, target: { app: 'Discord', windowId: 12 } });
+    expect(banner.targets.at(-1)).toBe('Discord');
+    expect(helper.calls.at(-1)).toEqual({ cmd: 'select-window', fields: { windowId: 12 } });
+    calls.length = 0;
+    host.onRequest({ requestId: 'r3', threadId: 't1', action: { kind: 'set_value', id: 4, text: 'hi' } });
+    const [set] = await results();
+    expect(set!.result.ok).toBe(true);
+    expect(helper.calls.at(-1)).toEqual({ cmd: 'set-value', fields: { id: 4, text: 'hi' } });
+    calls.length = 0;
+    host.onRequest({ requestId: 'r4', threadId: 't1', action: { kind: 'select_window' } });
+    const [cleared] = await results();
+    expect(cleared!.result).toMatchObject({ ok: true, target: null });
+    expect(banner.targets.at(-1)).toBeNull();
+  });
+
+  it('Stop on the banner fails the in-flight action as aborted, reports it, and ends the run', async () => {
+    await writeComputerHostEnabled(true);
+    helper.hold = () => undefined;
+    host.onRequest({ requestId: 'r1', threadId: 't1', action: { kind: 'press', id: 1 } });
+    for (let i = 0; i < 100 && helper.calls.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(banner.stop).toBeTruthy();
+    banner.stop!();
+    const [first] = await results();
+    expect(first!.result).toEqual({ ok: false, error: 'The user pressed Stop.', aborted: true });
     expect(calls.find((c) => c.channel === 'computerHost:event')!.args[0]).toEqual({
       threadId: 't1',
       kind: 'human-input'

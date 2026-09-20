@@ -2,6 +2,7 @@ import { log } from '../../server/log';
 import type {
   ComputerAccess,
   ComputerHostLocalState,
+  ComputerTarget,
   DeviceComputerRequest,
   DeviceComputerResult
 } from '../../shared/types';
@@ -18,7 +19,10 @@ import { readComputerHostEnabled, writeComputerHostEnabled } from './store';
 // the person at this machine — whether Stem may drive the screen at all (the
 // switch, read fresh from this disk on every request), and when a run ends:
 // the helper watches for the person's own input and the first touch aborts
-// everything, here, before the server hears of it.
+// everything, here, before the server hears of it — while the run drives the
+// whole screen. Once a run has selected a window it works through
+// Accessibility on that app alone, the person's own input is theirs again, and
+// the run ends from the banner's Stop, the consent switch, or the chat.
 //
 // A "run" is one thread's stretch of actions: it begins with the first action
 // for that thread (helper spawned, watch on, banner up) and ends when the
@@ -39,7 +43,14 @@ export interface HelperLike {
 
 export interface ComputerHostDeps {
   invoke(channel: string, args: unknown[]): Promise<unknown>;
-  banner: { show(): void; hide(): void };
+  banner: {
+    show(): void;
+    hide(): void;
+    /** Name what is being controlled: an app, or null for the whole Mac. */
+    setTarget?(app: string | null): void;
+    /** The person pressed Stop on the banner. */
+    onStop?(handler: () => void): void;
+  };
   /** How a helper is started and asked one-off questions; defaults to the real binary. */
   helpers?: {
     spawn(): Promise<HelperLike>;
@@ -77,6 +88,8 @@ interface Run {
     fail(result: DeviceComputerResult): void;
   } | null;
   aborted: boolean;
+  /** The window the run works on; null = the whole screen (pointer + kill switch). */
+  target: ComputerTarget | null;
 }
 
 export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
@@ -84,6 +97,9 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
   const helpers = deps.helpers ?? realHelpers;
   let run: Run | null = null;
   let lastAccess: ComputerAccess | null = null;
+  deps.banner.onStop?.(() => {
+    if (run) stoppedFromBanner(run);
+  });
 
   async function checkAccess(): Promise<ComputerAccess | null> {
     if (!supported) return null;
@@ -136,23 +152,30 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
     });
   }
 
-  /** The person touched the mouse or keyboard: over, now. */
-  function humanTookOver(r: Run, kind: string): void {
+  /** The person took over — touched the mouse or keyboard, or pressed Stop: over, now. */
+  function abortRun(r: Run, why: 'human-input' | 'banner-stop', message: string): void {
     if (run !== r || r.aborted) return;
     r.aborted = true;
-    log('computer-host', 'the user took over', { threadId: r.threadId, kind });
-    r.inFlight?.fail({
-      ok: false,
-      error: 'The user took over the computer.',
-      aborted: true
-    });
+    log('computer-host', 'the user took over', { threadId: r.threadId, why });
+    r.inFlight?.fail({ ok: false, error: message, aborted: true });
     r.inFlight = null;
     void deps.invoke('computerHost:event', [{ threadId: r.threadId, kind: 'human-input' }]).catch((e) => {
       log('computer-host', 'could not report the take-over', {
         error: e instanceof Error ? e.message : String(e)
       });
     });
-    endRun(r, 'human-input');
+    endRun(r, why);
+  }
+
+  function humanTookOver(r: Run, kind: string): void {
+    // The helper only reports input while the run drives the whole screen; in
+    // window mode the person's typing is theirs and this never fires.
+    log('computer-host', 'the user touched the machine', { threadId: r.threadId, kind });
+    abortRun(r, 'human-input', 'The user took over the computer.');
+  }
+
+  function stoppedFromBanner(r: Run): void {
+    abortRun(r, 'banner-stop', 'The user pressed Stop.');
   }
 
   async function beginRun(threadId: string): Promise<Run> {
@@ -162,7 +185,8 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
       helper,
       idle: setTimeout(() => undefined, 0),
       inFlight: null,
-      aborted: false
+      aborted: false,
+      target: null
     };
     helper.onEvent((event) => {
       if (event.event === 'human-input') humanTookOver(r, event.kind);
@@ -176,6 +200,7 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
     }
     run = r;
     touch(r);
+    deps.banner.setTarget?.(null);
     deps.banner.show();
     log('computer-host', 'a computer-control run began', { threadId });
     return r;
@@ -225,11 +250,34 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
           cmd: 'zoom',
           fields: { x: action.x, y: action.y, w: action.w, h: action.h }
         };
+      case 'list_windows':
+        return { cmd: 'list-windows', fields: {} };
+      case 'select_window':
+        return {
+          cmd: 'select-window',
+          fields: {
+            ...(action.windowId !== undefined ? { windowId: action.windowId } : {}),
+            ...(action.app !== undefined ? { app: action.app } : {}),
+            ...(action.title !== undefined ? { title: action.title } : {})
+          }
+        };
+      case 'snapshot':
+        return { cmd: 'snapshot', fields: action.depth !== undefined ? { depth: action.depth } : {} };
+      case 'press':
+        return { cmd: 'press', fields: { id: action.id } };
+      case 'focus':
+        return { cmd: 'focus', fields: { id: action.id } };
+      case 'menu':
+        return { cmd: 'menu', fields: { id: action.id } };
+      case 'set_value':
+        return { cmd: 'set-value', fields: { id: action.id, text: action.text } };
     }
   }
 
+  /** A reply is usable when it carries a frame or some text (the windows list); anything else is a failure. */
   function fromReply(reply: HelperReply): DeviceComputerResult {
-    if (!reply.ok || !reply.screenshot) {
+    const text = typeof reply.text === 'string' && reply.text.trim() ? reply.text : undefined;
+    if (!reply.ok || (!reply.screenshot && !text)) {
       return {
         ok: false,
         error: reply.error ?? 'The helper answered without a screenshot.'
@@ -237,9 +285,18 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
     }
     return {
       ok: true,
-      screenshot: reply.screenshot,
-      cursor: reply.cursor ?? { x: 0, y: 0 }
+      ...(reply.screenshot ? { screenshot: reply.screenshot } : {}),
+      ...(reply.cursor ? { cursor: reply.cursor } : {}),
+      ...(text ? { text } : {}),
+      ...(reply.target !== undefined ? { target: reply.target } : {})
     };
+  }
+
+  /** A reply that names the run's window (or its absence) relabels the banner. */
+  function noteTarget(r: Run, result: DeviceComputerResult): void {
+    if (!result.ok || result.target === undefined || run !== r) return;
+    r.target = result.target;
+    deps.banner.setTarget?.(result.target ? result.target.app : null);
   }
 
   async function execute(request: DeviceComputerRequest): Promise<DeviceComputerResult> {
@@ -285,7 +342,11 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
         resolve(result);
       };
       r!.inFlight = { requestId: request.requestId, fail: done };
-      void r!.helper.call(cmd, fields, timeout).then((reply) => done(fromReply(reply)));
+      void r!.helper.call(cmd, fields, timeout).then((reply) => {
+        const result = fromReply(reply);
+        noteTarget(r!, result);
+        done(result);
+      });
     });
   }
 

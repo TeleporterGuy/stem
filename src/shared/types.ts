@@ -1397,7 +1397,15 @@ export const COMPUTER_REQUEST_FRAME = 'computer-request';
 /** The run for a thread is over (turn ended, cancelled, worker died): drop the banner, stop the helper. */
 export const COMPUTER_END_FRAME = 'computer-end';
 
-/** One screen action, in the helper's own vocabulary. Coordinates are pixels of the last screenshot. */
+/**
+ * One screen action, in the helper's own vocabulary. Coordinates are pixels of
+ * the last screenshot — of the whole main display, or, once a window has been
+ * selected for the run, of that window. In window mode the pointer actions are
+ * delivered through Accessibility (a click is a hit-test + AXPress, keys go to
+ * the app's process), so the app need not be in front and the user's own mouse
+ * and keyboard are left alone; the AX kinds (snapshot, press, focus, menu,
+ * set_value) act on element ids from the last snapshot.
+ */
 export type ComputerAction =
   | { kind: 'screenshot' }
   | { kind: 'cursor' }
@@ -1409,7 +1417,22 @@ export type ComputerAction =
   | { kind: 'key'; combo: string }
   | { kind: 'hold'; combo: string; ms: number }
   | { kind: 'wait'; ms: number }
-  | { kind: 'zoom'; x: number; y: number; w: number; h: number };
+  | { kind: 'zoom'; x: number; y: number; w: number; h: number }
+  | { kind: 'list_windows' }
+  /** Pick the run's window by id or by app name (+ title substring); none of them = back to the whole screen. */
+  | { kind: 'select_window'; windowId?: number; app?: string; title?: string }
+  | { kind: 'snapshot'; depth?: number }
+  | { kind: 'press'; id: number }
+  | { kind: 'focus'; id: number }
+  | { kind: 'menu'; id: number }
+  | { kind: 'set_value'; id: number; text: string };
+
+/** The window a run is working on, as the helper reports it back. */
+export interface ComputerTarget {
+  app: string;
+  title: string;
+  windowId: number;
+}
 
 export interface DeviceComputerRequest {
   /** Unguessable and single-use — same defence as {@link DeviceExecRequest.requestId}. */
@@ -1430,7 +1453,16 @@ export interface ComputerScreenshot {
 }
 
 export type DeviceComputerResult =
-  | { ok: true; screenshot: ComputerScreenshot; cursor: { x: number; y: number } }
+  | {
+      ok: true;
+      /** Absent only on the text-only answers (list_windows). */
+      screenshot?: ComputerScreenshot;
+      cursor?: { x: number; y: number };
+      /** The windows list or the accessibility snapshot. */
+      text?: string;
+      /** The run's window after this action; null = whole-screen mode. Absent when unchanged and unknown. */
+      target?: ComputerTarget | null;
+    }
   | {
       ok: false;
       error: string;

@@ -3,9 +3,14 @@ import { workspaceVisibilityOptions } from '../platform';
 
 // The "Stem is controlling this Mac" pill: a small always-on-top window at the
 // top centre of the main display for as long as a run is on. It is the one
-// thing the person at the machine sees that says why the cursor is moving, and
-// its Stop button is a courtesy — the click itself is human input, and the
-// helper's event tap ends the run before the button could.
+// thing the person at the machine sees that says why the cursor is moving —
+// or, once the run has selected a window, which app is being worked on behind
+// their back ("Stem is controlling Discord"). The Stop button matters in that
+// second case: with the run inside one app, the person's own mouse and
+// keyboard no longer end it, so the button does. (Driving the whole screen,
+// the click itself is human input and the helper's tap ends the run first.)
+// The page is a sandboxed data URL; Stop navigates to stem-banner://stop and
+// the main process intercepts that, so no preload or IPC surface is needed.
 
 const WIDTH = 340;
 const HEIGHT = 44;
@@ -18,17 +23,34 @@ const HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
   @keyframes p{50%{opacity:.35}}
   .txt{flex:1;white-space:nowrap}
   button{height:26px;padding:0 12px;border:0;border-radius:13px;background:#fff;color:#111;font:600 12px -apple-system,sans-serif;cursor:pointer}
-</style></head><body><div class="pill"><span class="dot"></span><span class="txt">Stem is controlling this Mac</span>
-<button>Stop</button></div></body></html>`;
+</style></head><body><div class="pill"><span class="dot"></span><span class="txt" id="txt">Stem is controlling this Mac</span>
+<button onclick="location.href='stem-banner://stop'">Stop</button></div></body></html>`;
+
+const STOP_URL = 'stem-banner://stop';
 
 export interface ComputerBanner {
   show(): void;
   hide(): void;
+  /** Name what is being controlled: an app, or null for the whole Mac. */
+  setTarget(app: string | null): void;
+  /** The person pressed Stop. */
+  onStop(handler: () => void): void;
   destroy(): void;
+}
+
+function labelFor(app: string | null): string {
+  return app ? `Stem is controlling ${app}` : 'Stem is controlling this Mac';
 }
 
 export function createComputerBanner(): ComputerBanner {
   let win: BrowserWindow | null = null;
+  let label = labelFor(null);
+  let stopHandler: (() => void) | null = null;
+
+  function applyLabel(w: BrowserWindow): void {
+    const js = `document.getElementById('txt').textContent = ${JSON.stringify(label)};`;
+    void w.webContents.executeJavaScript(js).catch(() => undefined);
+  }
 
   function ensure(): BrowserWindow {
     if (win && !win.isDestroyed()) return win;
@@ -56,6 +78,13 @@ export function createComputerBanner(): ComputerBanner {
     win.setAlwaysOnTop(true, 'screen-saver');
     const opts = workspaceVisibilityOptions();
     if (opts) win.setVisibleOnAllWorkspaces(true, opts);
+    win.webContents.on('will-navigate', (event, url) => {
+      event.preventDefault();
+      if (url === STOP_URL) stopHandler?.();
+    });
+    win.webContents.on('did-finish-load', () => {
+      if (win && !win.isDestroyed()) applyLabel(win);
+    });
     void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(HTML)}`);
     return win;
   }
@@ -69,6 +98,13 @@ export function createComputerBanner(): ComputerBanner {
     },
     hide() {
       if (win && !win.isDestroyed()) win.hide();
+    },
+    setTarget(app) {
+      label = labelFor(app);
+      if (win && !win.isDestroyed()) applyLabel(win);
+    },
+    onStop(handler) {
+      stopHandler = handler;
     },
     destroy() {
       if (win && !win.isDestroyed()) win.destroy();

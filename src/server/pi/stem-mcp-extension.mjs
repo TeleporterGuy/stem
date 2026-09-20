@@ -2700,8 +2700,25 @@ const COMPUTER_ACTIONS = [
   'hold_key',
   'wait',
   'cursor_position',
-  'zoom'
+  'zoom',
+  // Window mode: work on one app's window through Accessibility, wherever it is.
+  'list_windows',
+  'select_window',
+  'snapshot',
+  'press',
+  'focus',
+  'menu',
+  'set_value'
 ];
+
+/** A positive integer element id from the last snapshot, or an error. */
+function elementIdOf(params, action) {
+  const raw = params.element_id;
+  if (!Number.isInteger(raw) || raw < 0) {
+    return { ok: false, error: `${action} needs \`element_id\` — an id from the last \`snapshot\`.` };
+  }
+  return { ok: true, id: raw };
+}
 
 /** Round-trip one screen action through PiRuntime; returns the parsed result (or an error object). */
 async function computerBridge(ctx, payload) {
@@ -2794,9 +2811,69 @@ export function computerActionFrom(params) {
       }
       return { ok: true, action: { kind: 'zoom', x: Math.round(r[0]), y: Math.round(r[1]), w: Math.round(r[2]), h: Math.round(r[3]) } };
     }
+    case 'list_windows':
+      return { ok: true, action: { kind: 'list_windows' } };
+    case 'select_window': {
+      const windowId = Number.isInteger(params.window_id) && params.window_id > 0 ? params.window_id : undefined;
+      const app = typeof params.app === 'string' && params.app.trim() ? params.app.trim() : undefined;
+      const title = typeof params.title === 'string' && params.title.trim() ? params.title.trim() : undefined;
+      return {
+        ok: true,
+        action: {
+          kind: 'select_window',
+          ...(windowId !== undefined ? { windowId } : {}),
+          ...(app !== undefined ? { app } : {}),
+          ...(title !== undefined ? { title } : {})
+        }
+      };
+    }
+    case 'snapshot': {
+      const depth = Number.isInteger(params.depth) ? Math.max(1, Math.min(30, params.depth)) : undefined;
+      return { ok: true, action: { kind: 'snapshot', ...(depth !== undefined ? { depth } : {}) } };
+    }
+    case 'press':
+    case 'focus':
+    case 'menu': {
+      const id = elementIdOf(params, action);
+      if (!id.ok) return id;
+      return { ok: true, action: { kind: action, id: id.id } };
+    }
+    case 'set_value': {
+      const id = elementIdOf(params, action);
+      if (!id.ok) return id;
+      if (typeof params.text !== 'string') return { ok: false, error: 'set_value needs `text` (may be empty to clear).' };
+      if (text.length > 4000) return { ok: false, error: 'set_value takes at most 4000 characters per call.' };
+      return { ok: true, action: { kind: 'set_value', id: id.id, text } };
+    }
     default:
       return { ok: false, error: `Unknown action "${action}".` };
   }
+}
+
+/**
+ * What the model reads back: one line saying what the picture is of (the
+ * screen, or the selected window), the text of a windows list or snapshot when
+ * there is one, then the frame when there is one.
+ */
+export function computerResultContent(res) {
+  const shot = res.screenshot;
+  const cursor = res.cursor || {};
+  const target = res.target;
+  const where = target ? `Window "${target.title || target.app}" (${target.app})` : 'Screen';
+  let line;
+  if (!shot) {
+    line = target === null ? 'Back to the whole screen.' : target ? `${where} selected.` : '';
+  } else if (shot.zoomed) {
+    line = `Zoomed view, ${shot.width}×${shot.height} px — magnified, not clickable; take a screenshot before acting.`;
+  } else if (target) {
+    line = `${where}, ${shot.width}×${shot.height} px — coordinates are pixels of this window picture.`;
+  } else {
+    line = `Screen ${shot.width}×${shot.height} px. Cursor at (${cursor.x ?? '?'}, ${cursor.y ?? '?'}).`;
+  }
+  const text = [line, res.text].filter((t) => typeof t === 'string' && t.trim()).join('\n\n');
+  const content = [{ type: 'text', text: text || 'Done.' }];
+  if (shot) content.push({ type: 'image', data: shot.jpegBase64, mimeType: 'image/jpeg' });
+  return content;
 }
 
 function registerComputerTool(pi, turnContext) {
@@ -2805,16 +2882,28 @@ function registerComputerTool(pi, turnContext) {
     label: 'Computer',
     description:
       "See and drive the screen of the Mac this persona is pinned to (Manage → Personas → \"Computer this persona " +
-      'controls"). One call is one action; every action answers with a fresh screenshot of the main display, ' +
-      'so look before you act and check after. Coordinates are PIXELS OF THE LAST SCREENSHOT you were shown ' +
-      '(top-left origin) — never guess them from memory of an earlier frame. Use `zoom` with a `region` to read ' +
-      'small text (its picture is magnified: do not click from it, take a screenshot first). Prefer `run_command` ' +
-      'with `device` set to this same computer for anything a shell does better (opening an app with `open -a`, ' +
-      'files, git, scripts); click only for what needs the GUI. The user sees a banner while you work, and any ' +
-      'input of their own ends the run — when a result says they took over, stop for this turn and report. ' +
-      'Never type passwords, one-time codes or payment details, and never dismiss a security prompt; tell the ' +
-      'user and wait. Keys use xdotool names: Return, Tab, Escape, space, BackSpace, Delete, Up/Down/Left/Right, ' +
-      'Home, End, Page_Up, Page_Down, F1–F12, and chords like "cmd+shift+t" or "ctrl+c".',
+      'controls"). One call is one action; every action answers with a fresh screenshot, so look before you act ' +
+      'and check after. Coordinates are PIXELS OF THE LAST SCREENSHOT you were shown (top-left origin) — never ' +
+      'guess them from memory of an earlier frame. Use `zoom` with a `region` to read small text (its picture is ' +
+      'magnified: do not click from it, take a screenshot first). Prefer `run_command` with `device` set to this ' +
+      'same computer for anything a shell does better (opening an app with `open -a`, files, git, scripts); click ' +
+      'only for what needs the GUI. Two modes. SCREEN mode (the default): screenshots show the main display and ' +
+      'clicks move the real mouse; the user sees a banner, and any input of their own ends the run — when a ' +
+      'result says they took over, stop for this turn and report. WINDOW mode, for an app that is not in front ' +
+      '(another Space, hidden behind something, another display) or when the user is busy at the keyboard: ' +
+      '`list_windows`, then `select_window` (by `window_id`, or `app` name plus optional `title` substring). ' +
+      'From then on screenshots show that window wherever it is, coordinates are pixels of the window ' +
+      'screenshot, and clicks and keys are delivered through Accessibility to that app alone — they work on ' +
+      'buttons, links, fields, list rows and menu items, not on canvases or games — while the user keeps their ' +
+      'own mouse and keyboard, and their typing does not end the run (only Stop on the banner does). `snapshot` ' +
+      'lists the window\'s controls with ids and their place in the picture; then `press`, `focus`, `menu` ' +
+      '(context menu) and `set_value` act by `element_id`, and `type`/`key` go to the focused field (click or ' +
+      '`focus` one first). If a click finds nothing pressable, `snapshot` and act by id, or clear the window ' +
+      '(`select_window` with no arguments) and use screen mode. mouse_move, left_click_drag and cursor_position ' +
+      'are screen-mode only. Never type passwords, one-time codes or payment details, and never dismiss a ' +
+      'security prompt; tell the user and wait. Keys use xdotool names: Return, Tab, Escape, space, BackSpace, ' +
+      'Delete, Up/Down/Left/Right, Home, End, Page_Up, Page_Down, F1–F12, and chords like "cmd+shift+t" or ' +
+      '"ctrl+c".',
     parameters: {
       type: 'object',
       properties: {
@@ -2824,7 +2913,9 @@ function registerComputerTool(pi, turnContext) {
           description:
             'screenshot | left_click | right_click | middle_click | double_click | triple_click | mouse_move | ' +
             'left_click_drag (start_coordinate → coordinate) | scroll | type (text) | key (text = key name) | ' +
-            'hold_key (text + duration) | wait (duration) | cursor_position | zoom (region).'
+            'hold_key (text + duration) | wait (duration) | cursor_position | zoom (region) | list_windows | ' +
+            'select_window (window_id, or app + title; none = back to the whole screen) | snapshot (depth) | ' +
+            'press / focus / menu (element_id) | set_value (element_id + text).'
         },
         coordinate: {
           type: 'array',
@@ -2844,7 +2935,12 @@ function registerComputerTool(pi, turnContext) {
           type: 'array',
           items: { type: 'number' },
           description: '[x, y, width, height] in screenshot pixels, for zoom.'
-        }
+        },
+        window_id: { type: 'number', description: 'A window id from list_windows, for select_window.' },
+        app: { type: 'string', description: 'An app name from list_windows, for select_window (its front window, or the one matching `title`).' },
+        title: { type: 'string', description: 'Part of a window title, to pick among an app\'s windows.' },
+        element_id: { type: 'number', description: 'An element id from the last snapshot, for press, focus, menu and set_value.' },
+        depth: { type: 'number', description: 'How deep snapshot walks the control tree (default 12).' }
       },
       required: ['action']
     },
@@ -2856,18 +2952,7 @@ function registerComputerTool(pi, turnContext) {
       if (!parsed.ok) return taskErr(parsed.error);
       const res = await computerBridge(ctx, { action: parsed.action });
       if (!res.ok) return taskErr(res.error || 'The action could not be performed.');
-      const shot = res.screenshot;
-      const cursor = res.cursor || {};
-      const line = shot.zoomed
-        ? `Zoomed view, ${shot.width}×${shot.height} px — magnified, not clickable; take a screenshot before acting.`
-        : `Screenshot ${shot.width}×${shot.height} px. Cursor at (${cursor.x ?? '?'}, ${cursor.y ?? '?'}).`;
-      return {
-        content: [
-          { type: 'text', text: line },
-          { type: 'image', data: shot.jpegBase64, mimeType: 'image/jpeg' }
-        ],
-        details: {}
-      };
+      return { content: computerResultContent(res), details: {} };
     }
   });
 }

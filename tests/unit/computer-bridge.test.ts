@@ -133,6 +133,34 @@ describe('computerActionFrom', () => {
     });
   });
 
+  it('maps the window-mode actions, and refuses them without their ids', () => {
+    expect(computerActionFrom({ action: 'list_windows' })).toEqual({ ok: true, action: { kind: 'list_windows' } });
+    expect(computerActionFrom({ action: 'select_window', window_id: 42 })).toEqual({
+      ok: true,
+      action: { kind: 'select_window', windowId: 42 }
+    });
+    expect(computerActionFrom({ action: 'select_window', app: ' Discord ', title: '#test' })).toEqual({
+      ok: true,
+      action: { kind: 'select_window', app: 'Discord', title: '#test' }
+    });
+    // No arguments = back to the whole screen.
+    expect(computerActionFrom({ action: 'select_window' })).toEqual({ ok: true, action: { kind: 'select_window' } });
+    expect(computerActionFrom({ action: 'snapshot', depth: 99 })).toEqual({
+      ok: true,
+      action: { kind: 'snapshot', depth: 30 }
+    });
+    expect(computerActionFrom({ action: 'press', element_id: 7 })).toEqual({ ok: true, action: { kind: 'press', id: 7 } });
+    expect(computerActionFrom({ action: 'focus', element_id: 0 })).toEqual({ ok: true, action: { kind: 'focus', id: 0 } });
+    expect(computerActionFrom({ action: 'menu', element_id: 3 })).toEqual({ ok: true, action: { kind: 'menu', id: 3 } });
+    expect(computerActionFrom({ action: 'set_value', element_id: 3, text: '' })).toEqual({
+      ok: true,
+      action: { kind: 'set_value', id: 3, text: '' }
+    });
+    expect(computerActionFrom({ action: 'press' }).ok).toBe(false);
+    expect(computerActionFrom({ action: 'press', element_id: 1.5 }).ok).toBe(false);
+    expect(computerActionFrom({ action: 'set_value', element_id: 1 }).ok).toBe(false);
+  });
+
   it('refuses what the helper could not do', () => {
     expect(computerActionFrom({ action: 'teleport' }).ok).toBe(false);
     expect(computerActionFrom({ action: 'mouse_move' }).ok).toBe(false);
@@ -173,7 +201,7 @@ describe('extension side', () => {
       expect(result.isError).toBeFalsy();
       expect(result.content[0]).toEqual({
         type: 'text',
-        text: 'Screenshot 640×400 px. Cursor at (7, 8).'
+        text: 'Screen 640×400 px. Cursor at (7, 8).'
       });
       expect(result.content[1]).toEqual({
         type: 'image',
@@ -218,6 +246,37 @@ describe('extension side', () => {
       const r = await tool.execute!('c', { action: 'screenshot' }, undefined, undefined, refused.ctx);
       expect(r.isError).toBe(true);
       expect(r.content[0]!.text).toContain('took over');
+    } finally {
+      rmSync(gatePath, { force: true });
+    }
+  });
+
+  it('renders a windows list without an image, and a window frame with its target line', async () => {
+    gate(true);
+    try {
+      const tool = await registeredComputer();
+      const list = scriptedCtx(() => JSON.stringify({ ok: true, text: '12  Discord  "#test"  otherSpace' }));
+      const l = await tool.execute!('c', { action: 'list_windows' }, undefined, undefined, list.ctx);
+      expect(l.isError).toBeFalsy();
+      expect(l.content).toHaveLength(1);
+      expect(l.content[0]!.text).toContain('Discord');
+      const win = scriptedCtx(() =>
+        JSON.stringify({
+          ok: true,
+          screenshot: { jpegBase64: 'QUJD', width: 800, height: 600 },
+          text: '1  textarea "Message #test" focused',
+          target: { app: 'Discord', title: '#test', windowId: 12 }
+        })
+      );
+      const w = await tool.execute!('c', { action: 'snapshot' }, undefined, undefined, win.ctx);
+      expect(w.content[0]!.text).toContain('Window "#test" (Discord), 800×600 px');
+      expect(w.content[0]!.text).toContain('textarea "Message #test"');
+      expect(w.content[1]).toMatchObject({ type: 'image', data: 'QUJD' });
+      const back = scriptedCtx(() =>
+        JSON.stringify({ ok: true, screenshot: { jpegBase64: 'QUJD', width: 8, height: 6 }, cursor: { x: 1, y: 1 }, target: null })
+      );
+      const b = await tool.execute!('c', { action: 'select_window' }, undefined, undefined, back.ctx);
+      expect(b.content[0]!.text).toContain('Screen 8×6 px');
     } finally {
       rmSync(gatePath, { force: true });
     }

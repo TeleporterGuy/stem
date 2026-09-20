@@ -6,7 +6,7 @@ import { constants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { host } from '../../server/host';
 import { log } from '../../server/log';
-import type { ComputerAccess } from '../../shared/types';
+import type { ComputerAccess, ComputerTarget } from '../../shared/types';
 
 // The Swift helper (native/mac/stem-computer) as a child process: one JSON
 // line in, one out, plus the unsolicited human-input event while a run is
@@ -29,6 +29,10 @@ export interface HelperReply {
   };
   cursor?: { x: number; y: number };
   status?: ComputerAccess;
+  /** list-windows / snapshot answer with text. */
+  text?: string;
+  /** The run's window after a select-window (null = whole screen); echoed on later replies. */
+  target?: ComputerTarget | null;
 }
 
 export type HelperEvent = { event: 'human-input'; kind: string };

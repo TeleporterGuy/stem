@@ -116,6 +116,35 @@ describe('createComputerDeviceRouter', () => {
     if (!result.ok) expect(result.error).toContain('without a screenshot');
   });
 
+  it('accepts a text-only answer (the windows list) and carries the target through', async () => {
+    const listing = router.send('t1', 'mac-1', { kind: 'list_windows' });
+    let frame = sent.at(-1)!.data as DeviceComputerRequest;
+    router.settle('mac-1', frame.requestId, { ok: true, text: '12  Discord  "#test"' });
+    expect(await listing).toEqual({ ok: true, text: '12  Discord  "#test"' });
+    const selected = router.send('t1', 'mac-1', { kind: 'select_window', windowId: 12 });
+    frame = sent.at(-1)!.data as DeviceComputerRequest;
+    router.settle('mac-1', frame.requestId, {
+      ok: true,
+      screenshot: shot,
+      target: { app: 'Discord', title: '#test', windowId: 12, extra: 'dropped' }
+    });
+    expect(await selected).toEqual({
+      ok: true,
+      screenshot: shot,
+      cursor: { x: 0, y: 0 },
+      target: { app: 'Discord', title: '#test', windowId: 12 }
+    });
+    const cleared = router.send('t1', 'mac-1', { kind: 'select_window' });
+    frame = sent.at(-1)!.data as DeviceComputerRequest;
+    router.settle('mac-1', frame.requestId, { ok: true, screenshot: shot, cursor: { x: 1, y: 1 }, target: null });
+    expect(await cleared).toMatchObject({ ok: true, target: null });
+    // Blank text is not an answer either.
+    const blank = router.send('t1', 'mac-1', { kind: 'snapshot' });
+    frame = sent.at(-1)!.data as DeviceComputerRequest;
+    router.settle('mac-1', frame.requestId, { ok: true, text: '   ' });
+    expect((await blank).ok).toBe(false);
+  });
+
   it('the person taking over fails the in-flight action, refuses the rest of the turn, and endThread clears it', async () => {
     const promise = router.send('t1', 'mac-1', { kind: 'type', text: 'hi' });
     // Another Mac cannot end a run it never had.

@@ -9,6 +9,8 @@ import {
   COMPUTER_REQUEST_FRAME,
   type ComputerAction,
   type ComputerAccess,
+  type ComputerScreenshot,
+  type ComputerTarget,
   type DeviceComputerAnnouncement,
   type DeviceComputerHostEntry,
   type DeviceComputerRequest,
@@ -104,38 +106,58 @@ function asAnnouncement(report: unknown): DeviceComputerAnnouncement | null {
   };
 }
 
+/** `target` as the device sent it: a window, null (whole screen), or undefined when it said nothing. */
+function asTarget(raw: unknown): ComputerTarget | null | undefined {
+  if (raw === null) return null;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const t = raw as { app?: unknown; title?: unknown; windowId?: unknown };
+  if (typeof t.app !== 'string' || typeof t.windowId !== 'number') return undefined;
+  return { app: t.app, title: typeof t.title === 'string' ? t.title : '', windowId: t.windowId };
+}
+
 function asResult(raw: unknown): DeviceComputerResult {
   const value = raw as Partial<DeviceComputerResult> | null;
   if (value && typeof value === 'object' && value.ok === true) {
-    const shot = (
-      value as {
-        screenshot?: Partial<DeviceComputerResult & { ok: true }>['screenshot'];
-      }
-    ).screenshot;
-    const cursor = (value as { cursor?: { x?: unknown; y?: unknown } }).cursor;
-    if (
+    const v = value as {
+      screenshot?: Partial<ComputerScreenshot>;
+      cursor?: { x?: unknown; y?: unknown };
+      text?: unknown;
+      target?: unknown;
+    };
+    const shot = v.screenshot;
+    const screenshot: ComputerScreenshot | undefined =
       shot &&
       typeof shot.jpegBase64 === 'string' &&
       shot.jpegBase64 &&
       typeof shot.width === 'number' &&
       typeof shot.height === 'number'
-    ) {
-      return {
-        ok: true,
-        screenshot: {
-          jpegBase64: shot.jpegBase64,
-          width: shot.width,
-          height: shot.height,
-          ...(typeof shot.scale === 'number' ? { scale: shot.scale } : {}),
-          ...(shot.zoomed === true ? { zoomed: true } : {})
-        },
-        cursor: {
-          x: typeof cursor?.x === 'number' ? cursor.x : 0,
-          y: typeof cursor?.y === 'number' ? cursor.y : 0
-        }
-      };
-    }
-    return { ok: false, error: 'The computer answered without a screenshot.' };
+        ? {
+            jpegBase64: shot.jpegBase64,
+            width: shot.width,
+            height: shot.height,
+            ...(typeof shot.scale === 'number' ? { scale: shot.scale } : {}),
+            ...(shot.zoomed === true ? { zoomed: true } : {})
+          }
+        : undefined;
+    const text = typeof v.text === 'string' && v.text.trim() ? v.text : undefined;
+    // A frame or some text: the windows list answers with text alone; every
+    // other action carries a screenshot, the evidence of what it did.
+    if (!screenshot && !text) return { ok: false, error: 'The computer answered without a screenshot.' };
+    const target = asTarget(v.target);
+    return {
+      ok: true,
+      ...(screenshot ? { screenshot } : {}),
+      ...(screenshot
+        ? {
+            cursor: {
+              x: typeof v.cursor?.x === 'number' ? v.cursor.x : 0,
+              y: typeof v.cursor?.y === 'number' ? v.cursor.y : 0
+            }
+          }
+        : {}),
+      ...(text ? { text } : {}),
+      ...(target !== undefined ? { target } : {})
+    };
   }
   const error = (value as { error?: unknown } | null)?.error;
   const aborted = (value as { aborted?: unknown } | null)?.aborted === true;
