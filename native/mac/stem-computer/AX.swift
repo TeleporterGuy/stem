@@ -45,9 +45,22 @@ final class AX {
     // AXEnhancedUserInterface is the signal VoiceOver sends; Chromium turns on
     // its web-content tree for it. Both are undone in release() so the app is
     // left as it was.
-    AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-    AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    let manual = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    let enhanced = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    wakeNote = "AXManualAccessibility set → \(manual.rawValue), reads \(AX.readBack(app, "AXManualAccessibility")); AXEnhancedUserInterface set → \(enhanced.rawValue), reads \(AX.readBack(app, "AXEnhancedUserInterface"))"
+    trace("ax wake: \(wakeNote)")
     window = lookUpWindow(tries: 5)
+  }
+
+  /// How the app took the wake-up above, quoted when a tree comes back bare.
+  private(set) var wakeNote = ""
+
+  private static func readBack(_ el: AXUIElement, _ name: String) -> String {
+    var value: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(el, name as CFString, &value)
+    if err != .success { return "error \(err.rawValue)" }
+    if let n = value as? NSNumber { return n.boolValue ? "true" : "false" }
+    return String(describing: value)
   }
 
   /// Leave the app's accessibility as we found it (Chromium apps behave
@@ -293,6 +306,9 @@ final class AX {
     if waited > 0 { trace("snapshot settled after \(waited) extra looks, \(lines.count) controls") }
     var head = "Controls of this window (id  role \"label\" [what it can do]  (x,y wxh in window pixels)). Ids are valid until the next snapshot."
     if truncated { head += " Only the first \(AX.maxNodes) controls are listed; lower `depth` or scroll to see others." }
+    if lines.count < 12 {
+      head += "\nThe app exposed almost nothing after \(waited / 2) s (\(wakeNote))."
+    }
     if lines.isEmpty { return head + "\n(none exposed — this window may be a canvas; act on it in screen mode)" }
     return ([head] + lines).joined(separator: "\n")
   }
