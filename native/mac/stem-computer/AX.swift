@@ -42,8 +42,19 @@ final class AX {
     // only for an assistive client that asks for it — this attribute is how
     // Electron documents asking. Chromium browsers switch theirs on at the
     // first query and fill it over the next moments, hence the retries below.
+    // AXEnhancedUserInterface is the signal VoiceOver sends; Chromium turns on
+    // its web-content tree for it. Both are undone in release() so the app is
+    // left as it was.
     AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
     window = lookUpWindow(tries: 5)
+  }
+
+  /// Leave the app's accessibility as we found it (Chromium apps behave
+  /// differently while an assistive client is announced).
+  func release() {
+    AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
+    AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanFalse)
   }
 
   /// The AX window for our CGWindowID, giving an app that is still building
@@ -269,13 +280,17 @@ final class AX {
       }
     }
     walk(root, depth: 0, indent: 0)
-    // A tree that comes back (nearly) empty right after accessibility was
-    // switched on is usually still being built: give it a moment and look again.
-    if lines.count < 3 && !truncated {
-      usleep(600_000)
+    // A tree that comes back nearly empty right after accessibility was
+    // switched on is still being built (Chromium fills its web area over a
+    // second or two): keep looking for a while before believing it.
+    var waited = 0
+    while lines.count < 12 && !truncated && waited < 8 {
+      usleep(500_000)
+      waited += 1
       nodes = [:]; lines = []; next = 0
       walk(root, depth: 0, indent: 0)
     }
+    if waited > 0 { trace("snapshot settled after \(waited) extra looks, \(lines.count) controls") }
     var head = "Controls of this window (id  role \"label\" [what it can do]  (x,y wxh in window pixels)). Ids are valid until the next snapshot."
     if truncated { head += " Only the first \(AX.maxNodes) controls are listed; lower `depth` or scroll to see others." }
     if lines.isEmpty { return head + "\n(none exposed — this window may be a canvas; act on it in screen mode)" }

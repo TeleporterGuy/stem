@@ -79,6 +79,7 @@ func answerWithScreenshot(_ id: Any, settleMs: Int = 300, text: String? = nil) {
 
 /// Enter window mode on `info`, or leave it (nil).
 func selectWindow(_ info: WindowInfo?) {
+  ax?.release()
   if let info {
     capture.target = Target(pid: info.pid, windowID: info.id, app: info.app, bundleId: info.bundleId, title: info.title, bounds: info.bounds)
     ax = AX(pid: info.pid, windowID: info.id)
@@ -235,6 +236,7 @@ while let line = readLine(strippingNewline: true) {
       }
       emit(["id": id, "ok": true])
     case "stop":
+      ax?.release()
       watch.stop()
       emit(["id": id, "ok": true])
       exit(0)
@@ -245,4 +247,5 @@ while let line = readLine(strippingNewline: true) {
     fail(id, "\(error)")
   }
 }
+ax?.release()
 watch.stop()
