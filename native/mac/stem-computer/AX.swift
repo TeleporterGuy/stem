@@ -28,6 +28,8 @@ final class AX {
   /// Ids handed out by the last snapshot; replaced wholesale on the next one.
   private var nodes: [Int: AXNode] = [:]
   private var snapshotTaken = false
+  /// How many controls the last snapshot listed.
+  private(set) var lastSnapshotCount = 0
 
   /// Why the last window lookup found nothing, for the error the model reads.
   private(set) var lookupNote = ""
@@ -304,6 +306,7 @@ final class AX {
       walk(root, depth: 0, indent: 0)
     }
     if waited > 0 { trace("snapshot settled after \(waited) extra looks, \(lines.count) controls") }
+    lastSnapshotCount = lines.count
     var head = "Controls of this window (id  role \"label\" [what it can do]  (x,y wxh in window pixels)). Ids are valid until the next snapshot."
     if truncated { head += " Only the first \(AX.maxNodes) controls are listed; lower `depth` or scroll to see others." }
     if lines.count < 12 {

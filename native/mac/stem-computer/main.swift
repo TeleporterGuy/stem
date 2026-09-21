@@ -77,9 +77,13 @@ func answerWithScreenshot(_ id: Any, settleMs: Int = 300, text: String? = nil) {
   }
 }
 
+/// The window selected for this run, as listed; nil in screen mode.
+var selected: WindowInfo?
+
 /// Enter window mode on `info`, or leave it (nil).
 func selectWindow(_ info: WindowInfo?) {
   ax?.release()
+  selected = info
   if let info {
     capture.target = Target(pid: info.pid, windowID: info.id, app: info.app, bundleId: info.bundleId, title: info.title, bounds: info.bounds)
     ax = AX(pid: info.pid, windowID: info.id)
@@ -200,7 +204,7 @@ while let line = readLine(strippingNewline: true) {
           selectWindow(nil)
           throw error
         }
-        answerWithScreenshot(id, settleMs: 0)
+        answerWithScreenshot(id, settleMs: 0, text: Windows.chromiumOffScreenNote(info))
       }
     case "snapshot":
       guard let ax, let target = capture.target else {
@@ -209,7 +213,10 @@ while let line = readLine(strippingNewline: true) {
       // The picture first, so the ids' positions are in its pixels.
       let shot = try capture.screenshot()
       let depth = Int(number(obj["depth"]) ?? 12)
-      let tree = try ax.snapshot(depth: max(1, min(depth, 30)), windowBounds: capture.target?.bounds ?? target.bounds, toPixel: { capture.pixel($0) }, ppp: capture.pointsPerPixel)
+      var tree = try ax.snapshot(depth: max(1, min(depth, 30)), windowBounds: capture.target?.bounds ?? target.bounds, toPixel: { capture.pixel($0) }, ppp: capture.pointsPerPixel)
+      if ax.lastSnapshotCount < 12, let selected, selected.chromium, !Windows.isOnScreen(selected.id) {
+        tree += "\n\n" + (Windows.chromiumOffScreenNote(selected) ?? "")
+      }
       emit(["id": id, "ok": true, "screenshot": shot, "cursor": input.cursorInScreenshot(), "text": tree, "target": targetField()])
     case "press":
       guard let ax else { throw HelperError("press acts on a snapshot id; select_window and snapshot first.") }

@@ -32,6 +32,10 @@ struct WindowInfo {
   let minimized: Bool
   let appHidden: Bool
   let frontmost: Bool
+  /// Built on Chromium (Electron apps, Chrome-family browsers): such an app
+  /// keeps its accessibility tree only for a window that is at least partly
+  /// visible, so off-screen it can be pictured but not driven.
+  let chromium: Bool
 }
 
 enum Windows {
@@ -45,6 +49,7 @@ enum Windows {
     var seen = Set<CGWindowID>()
     var apps: [pid_t: NSRunningApplication?] = [:]
     var minimizedByPid: [pid_t: Set<CGWindowID>] = [:]
+    var chromiumByPid: [pid_t: Bool] = [:]
     let axTrusted = AXIsProcessTrusted()
     var out: [WindowInfo] = []
     for w in raw {
@@ -75,13 +80,32 @@ enum Windows {
         if minimizedByPid[pid] == nil { minimizedByPid[pid] = AX.minimizedWindows(pid: pid) }
         minimized = minimizedByPid[pid]!.contains(id)
       }
+      if chromiumByPid[pid] == nil { chromiumByPid[pid] = isChromium(app) }
       out.append(WindowInfo(
         id: id, pid: pid, app: name, bundleId: app.bundleIdentifier, title: title, bounds: bounds,
         onScreen: onScreen, minimized: minimized, appHidden: app.isHidden,
-        frontmost: front != nil && front == pid))
+        frontmost: front != nil && front == pid, chromium: chromiumByPid[pid] ?? false))
     }
     trace("window list: \(out.count) kept")
     return out
+  }
+
+  /// Whether an app is built on Chromium: an Electron or Chrome-family framework
+  /// in its bundle, or a known browser id.
+  static func isChromium(_ app: NSRunningApplication) -> Bool {
+    let knownIds = ["com.google.chrome", "org.chromium.chromium", "com.brave.browser", "com.microsoft.edgemac",
+                    "com.vivaldi.vivaldi", "company.thebrowser.browser", "com.operasoftware.opera"]
+    if let id = app.bundleIdentifier?.lowercased(), knownIds.contains(where: { id.hasPrefix($0) }) { return true }
+    guard let url = app.bundleURL else { return false }
+    let frameworks = url.appendingPathComponent("Contents/Frameworks")
+    guard let names = try? FileManager.default.contentsOfDirectory(atPath: frameworks.path) else { return false }
+    return names.contains { $0.contains("Electron Framework") || $0.contains("Chromium Embedded") || $0.contains("Chrome Framework") }
+  }
+
+  /// The one-line explanation for a Chromium window that is not on screen.
+  static func chromiumOffScreenNote(_ w: WindowInfo) -> String? {
+    guard w.chromium, !w.onScreen else { return nil }
+    return "\(w.app) is built on Chromium (Electron / Chrome family): it keeps the controls of a window only while that window is at least partly visible on the current Space. This one is not, so its picture is fine but snapshot will find (almost) nothing and clicks will find nothing pressable. Ask the user to bring the window onto the current Space — it can stay behind their other windows — and retry; do not keep trying meanwhile."
   }
 
   /// The listing the model reads: one window per line, front app first.
@@ -101,7 +125,8 @@ enum Windows {
       else { place = "other Space or covered" }
       let title = w.title.isEmpty ? "(untitled)" : "\"\(w.title)\""
       let size = "\(Int(w.bounds.width))x\(Int(w.bounds.height))"
-      lines.append("\(w.id)  \(w.app)  \(title)  \(place)  \(size)\(w.frontmost ? "  ← frontmost app" : "")")
+      let hint = (w.chromium && !w.onScreen) ? "  · Chromium app: controls only while visible" : ""
+      lines.append("\(w.id)  \(w.app)  \(title)  \(place)  \(size)\(hint)\(w.frontmost ? "  ← frontmost app" : "")")
     }
     return lines.joined(separator: "\n")
   }
@@ -151,6 +176,10 @@ enum Windows {
   static func bounds(of id: CGWindowID) -> CGRect? {
     guard let w = record(of: id), let dict = w[kCGWindowBounds as String] as? NSDictionary else { return nil }
     return CGRect(dictionaryRepresentation: dict)
+  }
+
+  static func isOnScreen(_ id: CGWindowID) -> Bool {
+    (record(of: id)?[kCGWindowIsOnscreen as String] as? Bool) ?? false
   }
 
   static func title(of id: CGWindowID) -> String? {
