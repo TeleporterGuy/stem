@@ -3,6 +3,7 @@ import {
   buildJudgePrompt,
   classify,
   deviceShellLabel,
+  drivesGui,
   parseCommand,
   parseJudgeVerdict,
   resolveJudgeModel
@@ -278,6 +279,34 @@ describe('classify for a device target (zero trust)', () => {
     const cmd = "cat 'a & whoami & rem '";
     expect(classify(cmd, { allowlist: ['cat'] }, 'darwin', { includeBuiltins: false }).tier).toBe('run');
     expect(classify(cmd, { allowlist: ['cat'] }, 'win32', { includeBuiltins: false }).tier).toBe('judge');
+  });
+});
+
+describe('drivesGui', () => {
+  // The Secretary's 2026-09-21 workaround: `computer` refused it, so it switched
+  // the Mac to dark mode with AppleScript over run_command. GUI scripting is what
+  // the hand-off gate in ExecService looks for; ordinary shell work is not.
+  it('recognises AppleScript at System Events or an app, and synthetic input tools', () => {
+    expect(
+      drivesGui(
+        `open -a "System Settings" && osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true'`
+      )
+    ).toBe(true);
+    expect(drivesGui(`osascript -e 'tell app "Safari" to activate'`)).toBe(true);
+    expect(drivesGui(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`)).toBe(true);
+    expect(drivesGui('osascript ~/scripts/report.scpt')).toBe(false);
+    expect(drivesGui('cliclick c:100,200')).toBe(true);
+    expect(drivesGui('xdotool key ctrl+s')).toBe(true);
+    expect(drivesGui(`powershell.exe -Command "[System.Windows.Forms.SendKeys]::SendWait('%{F4}')"`)).toBe(true);
+  });
+
+  it('leaves shell work alone', () => {
+    expect(drivesGui('open -a Discord')).toBe(false);
+    expect(drivesGui('defaults read -g AppleInterfaceStyle')).toBe(false);
+    expect(drivesGui(`osascript -e 'display notification "done"'`)).toBe(false);
+    expect(drivesGui('git -C ~/proj status')).toBe(false);
+    expect(drivesGui('ls ~/Downloads | grep click')).toBe(false);
+    expect(drivesGui('')).toBe(false);
   });
 });
 

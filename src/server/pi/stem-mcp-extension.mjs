@@ -2656,7 +2656,12 @@ function registerExecTool(pi) {
             'awake with Stem running; your per-turn context says which computers accept commands. On that ' +
             'machine there is no files/ folder — outputs stay on that computer, so pass an absolute cwd ' +
             '(e.g. its Downloads folder) when the user should find the result, and tell them where it is. ' +
-            'Commands there face the same approval policy, judged for that machine.'
+            'Commands there face the same approval policy, judged for that machine. It is for SHELL work on ' +
+            'that computer — files, git, scripts, `open -a`. Driving its screen (System Settings, clicking, ' +
+            'typing, AppleScript at System Events or at an app, cliclick, SendKeys) belongs to the persona pinned ' +
+            'to that computer in the persona editor, which has the `computer` tool; if that is not you, hand the ' +
+            'task to that persona or name it to the user instead. Such a command is refused when a pinned persona ' +
+            'exists.'
         }
       },
       required: ['command']
@@ -2682,8 +2687,10 @@ const COMPUTER_BRIDGE_TITLE = 'stem-computer-bridge';
 
 const COMPUTER_UNPINNED_REFUSAL =
   'Computer control is reserved for personas pinned to a computer in the persona editor (Manage → Personas → ' +
-  '"Computer this persona controls"). This conversation runs as none, so do not retry; tell the user which ' +
-  'persona should take the task, or that one needs setting up.';
+  '"Computer this persona controls"). This conversation runs as none, so do not retry, and do not work around ' +
+  'it by scripting the GUI over run_command (osascript at System Events, cliclick) — that is refused too. ' +
+  'Hand the task to the pinned persona (add_persona + send_mail in a mail thread), or tell the user which ' +
+  'persona should take it, or that one needs setting up.';
 
 const COMPUTER_ACTIONS = [
   'screenshot',

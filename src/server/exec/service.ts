@@ -16,10 +16,11 @@ import { ensureThreadScratch } from './scratch';
 import { clampTimeout, execEnv, resolveLoginPath, runCommand } from './executor';
 import { gitBashPathEnv, resolveHostShellTarget, type HostShellTarget } from './git-bash';
 import { SafetyJudge } from './judge';
-import { classify, deviceShellLabel } from './policy';
+import { classify, deviceShellLabel, drivesGui } from './policy';
 import { scanCommandAgainstRoots, scanProtected } from './protected';
 import { execDeviceRouter, resolveExecTarget } from '../exec-device/router';
 import { clientFoldersForDevice } from '../workspace/connected-folders';
+import { listPersonas } from '../workspace/personas';
 
 // Orchestrates one run_command request end to end: settings gate → cwd resolve →
 // protected-roots guard → tiered policy (allowlist / LLM judge / approval card) →
@@ -68,6 +69,8 @@ export interface ExecServiceDeps {
   resolveDevice?: typeof resolveExecTarget;
   /** Test seam for the per-device read-only client-folder roots. */
   clientFolders?: typeof clientFoldersForDevice;
+  /** Test seam: the names of the personas pinned (computer pin) to a device. */
+  computerPersonas?: (deviceId: string) => Promise<string[]>;
 }
 
 /**
@@ -250,6 +253,18 @@ export class ExecService implements ExecBridge {
     return (this.deps.deviceRouter ?? execDeviceRouter)();
   }
 
+  private async computerPersonasFor(deviceId: string): Promise<string[]> {
+    if (this.deps.computerPersonas) return this.deps.computerPersonas(deviceId);
+    try {
+      return (await listPersonas()).filter((p) => p.computer?.device === deviceId).map((p) => p.name);
+    } catch (err) {
+      // quiet-ish: an unreadable registry means "nobody pinned", which keeps
+      // the escape hatch open rather than blocking every device command.
+      degrade('exec', 'could not read personas for the GUI hand-off gate', err);
+      return [];
+    }
+  }
+
   /**
    * The device-targeted path. The tiers are the same three, with two deliberate
    * differences (both user decisions): the static built-ins do not apply — a
@@ -273,6 +288,26 @@ export class ExecService implements ExecBridge {
     const target = await (this.deps.resolveDevice ?? resolveExecTarget)(device);
     if (!target.ok) return { ok: false, error: target.error };
     const label = `“${target.label}”`;
+    // GUI work on a computer belongs to the persona pinned to it: it has the
+    // `computer` tool, the consent switch and the banner. Another persona
+    // scripting that GUI over run_command (osascript at System Events, cliclick,
+    // SendKeys) slips past all three, so when someone IS pinned the command is
+    // refused with a hand-off. Nobody pinned → the escape hatch stays open.
+    if (req.personaComputerDevice !== target.deviceId && drivesGui(command)) {
+      const owners = await this.computerPersonasFor(target.deviceId);
+      if (owners.length) {
+        const names = owners.map((n) => `“${n}”`).join(' or ');
+        return {
+          ok: false,
+          error:
+            `Driving the screen of ${label} — clicking, typing, scripting its apps or System Settings — is the ` +
+            `job of the persona pinned to that computer, ${names}: it has the \`computer\` tool and the user's ` +
+            `consent for it. Hand the task to ${names} (add_persona + send_mail in a mail thread, or tell the ` +
+            `user to ask ${names}) rather than scripting the GUI from here. run_command on ${label} stays for ` +
+            'shell work: files, git, scripts, `open -a`.'
+        };
+      }
+    }
     const host = await this.router().hostFor(target.deviceId);
     if (!host?.enabled) {
       return {

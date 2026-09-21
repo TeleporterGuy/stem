@@ -127,6 +127,13 @@ machine*, is off until you switch it on there, and there is no way to switch it 
 from anywhere else. Withdrawing consent is the same switch; commands stop
 immediately.
 
+Commands on a paired computer are for shell work there: files, git, scripts, opening an
+app. Driving its screen — System Settings, clicking, typing, AppleScript at its apps — is
+what a persona with a computer pin (Manage → Personas → "Computer this persona controls")
+does with its `computer` tool, under your consent switch and banner. Once such a persona
+exists for a computer, a GUI-scripting command from any other persona is refused and told
+to hand the task over; with no persona pinned, the command runs under the usual policy.
+
 Once a computer accepts commands, they face the same approval policy as everywhere
 else, with one deliberate difference: nothing is pre-approved there. Even commands
 Stem considers routine ask (or pass the safety check) until you choose **Always

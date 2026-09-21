@@ -2513,6 +2513,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           cwd: typeof req.cwd === 'string' && req.cwd.trim() ? req.cwd : undefined,
           timeoutMs: typeof req.timeout_ms === 'number' ? req.timeout_ms : undefined,
           device: typeof req.device === 'string' && req.device.trim() ? req.device : undefined,
+          personaComputerDevice: turn?.personaComputer?.device ?? null,
           threadId: turn?.threadId ?? null,
           isScheduled: turn?.isScheduled === true,
           userText: turn?.userText,
@@ -2623,7 +2624,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             error:
               'Computer control is reserved for personas pinned to a computer in the persona editor ' +
               '(Manage → Personas → "Computer this persona controls"). This conversation runs as none, so do ' +
-              'not retry; tell the user which persona should take the task, or that one needs setting up.'
+              'not retry, and do not work around it by scripting the GUI over run_command — that is refused too. ' +
+              'Hand the task to the pinned persona, or tell the user which persona should take it, or that one ' +
+              'needs setting up.'
           });
         }
         const req = JSON.parse(payload ?? '{}') as { action?: unknown };

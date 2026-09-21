@@ -308,6 +308,7 @@ describe('ExecService device targeting', () => {
   let ran: Array<{ deviceId: string; command: string; cwd?: string; threadId: string }>;
   let hostEntry: { deviceId: string; announcedAt: string; enabled: boolean; platform: 'darwin' } | null;
   let available: boolean;
+  let pinned: string[];
 
   beforeEach(() => {
     settings = baseSettings();
@@ -318,6 +319,7 @@ describe('ExecService device targeting', () => {
     patches = [];
     ran = [];
     available = true;
+    pinned = [];
     hostEntry = { deviceId: 'mac-1', announcedAt: new Date().toISOString(), enabled: true, platform: 'darwin' };
     const runtime = {
       listModels: async () => [model('anthropic/claude-opus-4', 'anthropic', true)],
@@ -344,6 +346,7 @@ describe('ExecService device targeting', () => {
           ? { ok: true, deviceId: 'mac-1', label: "Vlado's MacBook" }
           : { ok: false, error: `No paired computer is called “${nameOrId}”.` },
       clientFolders: async () => [],
+      computerPersonas: async (deviceId: string) => (deviceId === 'mac-1' ? pinned : []),
       deviceRouter: () => ({
         announce: async () => undefined,
         hosts: async () => (hostEntry ? { 'mac-1': hostEntry } : {}),
@@ -421,6 +424,60 @@ describe('ExecService device targeting', () => {
     const result = await request({ device: 'Basement PC' });
     expect(result.ok).toBe(false);
     expect((result as { error: string }).error).toContain('Basement PC');
+  });
+
+  // 2026-09-21: `computer` refused the Secretary (no pin), so it drove the Mac's
+  // System Settings with osascript over run_command instead — past the consent
+  // switch and the banner the pinned persona would have had. GUI scripting at a
+  // computer that has a pinned persona is that persona's job.
+  const DARK_MODE =
+    `open -a "System Settings" && osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true'`;
+
+  it('hands GUI scripting off to the persona pinned to that computer', async () => {
+    pinned = ['MacControl'];
+    decision = 'allowOnce';
+    const result = await request({ command: DARK_MODE, personaComputerDevice: null });
+    expect(result.ok).toBe(false);
+    const error = (result as { error: string }).error;
+    expect(error).toContain('“MacControl”');
+    expect(error).toContain("“Vlado's MacBook”");
+    expect(error).toContain('computer');
+    // Refused before the judge and the card, and nothing reached the device.
+    expect(judgeCalls).toHaveLength(0);
+    expect(approvals).toHaveLength(0);
+    expect(ran).toHaveLength(0);
+  });
+
+  it('lets the pinned persona itself script the GUI over the shell', async () => {
+    pinned = ['MacControl'];
+    decision = 'allowOnce';
+    const result = await request({ command: DARK_MODE, personaComputerDevice: 'mac-1' });
+    expect(result.ok).toBe(true);
+    expect(ran).toHaveLength(1);
+  });
+
+  it('keeps the escape hatch when nobody is pinned to that computer', async () => {
+    pinned = [];
+    decision = 'allowOnce';
+    const result = await request({ command: DARK_MODE, personaComputerDevice: null });
+    expect(result.ok).toBe(true);
+    expect(ran).toHaveLength(1);
+  });
+
+  it('a persona pinned to a different computer is still an outsider here', async () => {
+    pinned = ['MacControl'];
+    decision = 'allowOnce';
+    const result = await request({ command: DARK_MODE, personaComputerDevice: 'mac-2' });
+    expect(result.ok).toBe(false);
+    expect(ran).toHaveLength(0);
+  });
+
+  it('shell work on a computer with a pinned persona is untouched', async () => {
+    pinned = ['MacControl'];
+    decision = 'allowOnce';
+    const result = await request({ command: 'open -a Discord', personaComputerDevice: null });
+    expect(result.ok).toBe(true);
+    expect(ran).toHaveLength(1);
   });
 
   it('scheduled runs still never get a card', async () => {

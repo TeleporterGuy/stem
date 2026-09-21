@@ -41,6 +41,13 @@ export interface ExecRequest {
    * through verbatim.
    */
   device?: string;
+  /**
+   * The paired computer id the turn's persona is pinned to with a computer pin
+   * (null/absent = no pin). A GUI-scripting command aimed at a computer that
+   * SOME persona is pinned to, from a turn whose persona is not that one, is
+   * refused with a hand-off — the pinned persona owns that computer's GUI.
+   */
+  personaComputerDevice?: string | null;
   /** The originating conversation (null when no turn is live — shouldn't happen in practice). */
   threadId: string | null;
   /** True for autonomous scheduled runs — manual approvals are rejected there. */

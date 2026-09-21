@@ -326,6 +326,33 @@ export function deviceShellLabel(platform: 'darwin' | 'linux' | 'win32', label: 
 }
 
 /**
+ * Whether a shell command drives a computer's GUI from the outside — AppleScript
+ * at System Events or at an app, synthetic clicks and keystrokes, SendKeys on
+ * Windows. This is what the `computer` tool exists for, and a persona without
+ * a computer pin used it as a way around that tool's refusal (2026-09-21: the
+ * Secretary switched a Mac to dark mode with `osascript ... appearance
+ * preferences` after `computer` told it the task belonged to a pinned persona).
+ * The ExecService turns this into a hand-off refusal when some persona IS
+ * pinned to the target computer; with nobody pinned it stays the escape hatch.
+ *
+ * Deliberately narrow: `open -a`, `defaults`, files, git and scripts are shell
+ * work the computer brief itself sends to run_command.
+ */
+export function drivesGui(command: string): boolean {
+  const text = command.trim();
+  if (!text) return false;
+  if (/(^|[\s;&|(])(cliclick|xdotool|ydotool|wtype|xdo|AutoHotkey(?:64|32|U64|U32)?(?:\.exe)?)(\s|$)/i.test(text)) return true;
+  if (/\bSendKeys\b|\bAppActivate\b|\bSendInput\b|\bmouse_event\b/i.test(text)) return true;
+  if (/(^|[\s;&|(])osascript(\s|$)/i.test(text)) {
+    // An AppleScript that talks to System Events or to an application's UI.
+    return /System Events|appearance preferences|\btell\s+app(?:lication)?\b|\bkeystroke\b|\bkey code\b|\bclick\b|\bactivate\b|\bUI element\b|\bmenu (?:bar )?item\b/i.test(
+      text
+    );
+  }
+  return false;
+}
+
+/**
  * The one-shot classification prompt for the safety judge. Safety is judged
  * relative to the user's request when it is available — a download the user
  * asked for is expected; the same download out of nowhere is not.
