@@ -29,13 +29,37 @@ final class AX {
   private var nodes: [Int: AXNode] = [:]
   private var snapshotTaken = false
 
+  /// Why the last window lookup found nothing, for the error the model reads.
+  private(set) var lookupNote = ""
+
   init(pid: pid_t, windowID: CGWindowID) {
     self.pid = pid
     self.windowID = windowID
     app = AXUIElementCreateApplication(pid)
     // Ask the app to answer AX queries within a beat; a hung app must not hang the helper.
     AXUIElementSetMessagingTimeout(app, 2.0)
-    window = AX.findWindow(app: app, windowID: windowID, title: nil, bounds: nil)
+    // Electron apps (Discord, Slack, VS Code…) build their accessibility tree
+    // only for an assistive client that asks for it — this attribute is how
+    // Electron documents asking. Chromium browsers switch theirs on at the
+    // first query and fill it over the next moments, hence the retries below.
+    AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    window = lookUpWindow(tries: 5)
+  }
+
+  /// The AX window for our CGWindowID, giving an app that is still building
+  /// its tree a moment (200 ms per try) before giving up.
+  private func lookUpWindow(tries: Int) -> AXUIElement? {
+    for attempt in 0..<tries {
+      if attempt > 0 { usleep(200_000) }
+      var note = ""
+      if let hit = AX.findWindow(app: app, windowID: windowID, title: nil, bounds: nil, note: &note) {
+        lookupNote = ""
+        return hit
+      }
+      lookupNote = note
+    }
+    trace("ax window lookup failed: \(lookupNote)")
+    return nil
   }
 
   // MARK: attribute helpers
@@ -91,13 +115,36 @@ final class AX {
     return _AXUIElementGetWindow(element, &id) == .success && id != 0 ? id : nil
   }
 
+  /// Every window element an app admits to: AXWindows first, then its main and
+  /// focused window and any window among its children (some apps answer one
+  /// and not the others). `note` says what came back when nothing matches.
+  static func axWindows(of app: AXUIElement, note: inout String) -> [AXUIElement] {
+    var value: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
+    var out = (value as? [AXUIElement]) ?? []
+    if err != .success { note = "the app answered AXWindows with error \(err.rawValue)" }
+    func add(_ el: AXUIElement?) {
+      guard let el, !out.contains(where: { CFEqual($0, el) }) else { return }
+      out.append(el)
+    }
+    add(attribute(app, kAXMainWindowAttribute as String).map { $0 as! AXUIElement })
+    add(attribute(app, kAXFocusedWindowAttribute as String).map { $0 as! AXUIElement })
+    for child in children(app) where string(child, kAXRoleAttribute as String) == (kAXWindowRole as String) { add(child) }
+    return out
+  }
+
   /// The AX window for a CGWindowID: by the private id call, else by title and frame.
   static func findWindow(app: AXUIElement, windowID: CGWindowID, title: String?, bounds: CGRect?) -> AXUIElement? {
-    let windows = (attribute(app, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
+    var note = ""
+    return findWindow(app: app, windowID: windowID, title: title, bounds: bounds, note: &note)
+  }
+
+  static func findWindow(app: AXUIElement, windowID: CGWindowID, title: String?, bounds: CGRect?, note: inout String) -> AXUIElement? {
+    let windows = axWindows(of: app, note: &note)
     if let hit = windows.first(where: { cgWindowID(of: $0) == windowID }) { return hit }
     let wantTitle = title ?? Windows.title(of: windowID)
     let wantBounds = bounds ?? Windows.bounds(of: windowID)
-    return windows.first { w in
+    let hit = windows.first { w in
       let t = string(w, kAXTitleAttribute as String)
       let f = frame(w)
       if let wantBounds, let f, abs(f.origin.x - wantBounds.origin.x) < 2, abs(f.origin.y - wantBounds.origin.y) < 2,
@@ -105,6 +152,21 @@ final class AX {
       if let wantTitle, !wantTitle.isEmpty, t == wantTitle { return true }
       return false
     }
+    if hit == nil && note.isEmpty {
+      if windows.isEmpty {
+        note = "the app lists no accessible windows"
+      } else {
+        let seen = windows.prefix(6).map { w -> String in
+          let t = string(w, kAXTitleAttribute as String) ?? ""
+          let f = frame(w)
+          let size = f.map { "\(Int($0.width))x\(Int($0.height)) at \(Int($0.origin.x)),\(Int($0.origin.y))" } ?? "no frame"
+          return "\"\(t)\" \(size)"
+        }
+        let want = wantBounds.map { "\(Int($0.width))x\(Int($0.height)) at \(Int($0.origin.x)),\(Int($0.origin.y))" } ?? "unknown size"
+        note = "the app lists \(windows.count) accessible window(s) [\(seen.joined(separator: "; "))], none is window \(windowID) \"\(wantTitle ?? "")\" \(want)"
+      }
+    }
+    return hit
   }
 
   /// The ids of an app's minimized windows — one AX round-trip per app for the windows list.
@@ -146,8 +208,9 @@ final class AX {
   /// `toPixel` turns global points into pixels of the current window picture so
   /// the ids line up with what the model sees.
   func snapshot(depth maxDepth: Int, windowBounds: CGRect, toPixel: (CGPoint) -> (Int, Int), ppp: Double) throws -> String {
-    guard let root = window ?? AX.findWindow(app: app, windowID: windowID, title: nil, bounds: nil) else {
-      throw HelperError("This app exposes no accessible window for the selected window; Accessibility cannot drive it. Clear the window (select_window with no arguments) and use the screen.")
+    guard let root = window ?? lookUpWindow(tries: 3) else {
+      let why = lookupNote.isEmpty ? "" : " (\(lookupNote))"
+      throw HelperError("This app exposes no accessible window for the selected window\(why); Accessibility cannot drive it. Clear the window (select_window with no arguments) and use the screen.")
     }
     window = root
     nodes = [:]
@@ -206,6 +269,13 @@ final class AX {
       }
     }
     walk(root, depth: 0, indent: 0)
+    // A tree that comes back (nearly) empty right after accessibility was
+    // switched on is usually still being built: give it a moment and look again.
+    if lines.count < 3 && !truncated {
+      usleep(600_000)
+      nodes = [:]; lines = []; next = 0
+      walk(root, depth: 0, indent: 0)
+    }
     var head = "Controls of this window (id  role \"label\" [what it can do]  (x,y wxh in window pixels)). Ids are valid until the next snapshot."
     if truncated { head += " Only the first \(AX.maxNodes) controls are listed; lower `depth` or scroll to see others." }
     if lines.isEmpty { return head + "\n(none exposed — this window may be a canvas; act on it in screen mode)" }
