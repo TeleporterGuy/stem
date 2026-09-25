@@ -276,13 +276,13 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
       case 'snapshot':
         return { cmd: 'snapshot', fields: action.depth !== undefined ? { depth: action.depth } : {} };
       case 'press':
-        return { cmd: 'press', fields: { id: action.id } };
+        return { cmd: 'press', fields: { element: action.id } };
       case 'focus':
-        return { cmd: 'focus', fields: { id: action.id } };
+        return { cmd: 'focus', fields: { element: action.id } };
       case 'menu':
-        return { cmd: 'menu', fields: { id: action.id } };
+        return { cmd: 'menu', fields: { element: action.id } };
       case 'set_value':
-        return { cmd: 'set-value', fields: { id: action.id, text: action.text } };
+        return { cmd: 'set-value', fields: { element: action.id, text: action.text } };
     }
   }
 

@@ -38,7 +38,7 @@ function call(cmd, fields = {}) {
   const id = nextId++;
   return new Promise((resolve) => {
     waiting.set(id, resolve);
-    helper.stdin.write(JSON.stringify({ id, cmd, ...fields }) + '\n');
+    helper.stdin.write(JSON.stringify({ ...fields, id, cmd }) + '\n');
   });
 }
 
@@ -66,8 +66,8 @@ if (selected.ok) {
   const match = snap.text?.match(/^\s*(\d+)\s+(textarea|textfield)\b.*\[.*setvalue/m);
   if (match) {
     const id = Number(match[1]);
-    show('focus', await call('focus', { id }));
-    show('set-value', await call('set-value', { id, text }));
+    show('focus', await call('focus', { element: id }));
+    show('set-value', await call('set-value', { element: id, text }));
     show('type', await call('type', { text: ' — and typed.' }));
   } else {
     console.log('\nno settable text field in the snapshot; skipping the text step');

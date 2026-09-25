@@ -170,7 +170,9 @@ export class HelperProcess {
         });
       }, timeoutMs);
       this.waiting.set(id, { resolve, timer });
-      this.proc.stdin?.write(`${JSON.stringify({ id, cmd, ...fields })}\n`, (e) => {
+      // The envelope goes last: `id` is how the reply finds its caller, and no
+      // command field may overwrite it.
+      this.proc.stdin?.write(`${JSON.stringify({ ...fields, id, cmd })}\n`, (e) => {
         if (!e) return;
         this.waiting.delete(id);
         clearTimeout(timer);

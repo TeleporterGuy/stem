@@ -238,7 +238,7 @@ describe.skipIf(!mac)('createComputerHost', () => {
     host.onRequest({ requestId: 'r3', threadId: 't1', action: { kind: 'set_value', id: 4, text: 'hi' } });
     const [set] = await results();
     expect(set!.result.ok).toBe(true);
-    expect(helper.calls.at(-1)).toEqual({ cmd: 'set-value', fields: { id: 4, text: 'hi' } });
+    expect(helper.calls.at(-1)).toEqual({ cmd: 'set-value', fields: { element: 4, text: 'hi' } });
     calls.length = 0;
     host.onRequest({ requestId: 'r4', threadId: 't1', action: { kind: 'select_window' } });
     const [cleared] = await results();

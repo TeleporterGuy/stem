@@ -220,19 +220,19 @@ while let line = readLine(strippingNewline: true) {
       emit(["id": id, "ok": true, "screenshot": shot, "cursor": input.cursorInScreenshot(), "text": tree, "target": targetField()])
     case "press":
       guard let ax else { throw HelperError("press acts on a snapshot id; select_window and snapshot first.") }
-      try ax.press(id: Int(number(obj["id"]) ?? -1))
+      try ax.press(id: Int(number(obj["element"]) ?? -1))
       answerWithScreenshot(id)
     case "focus":
       guard let ax else { throw HelperError("focus acts on a snapshot id; select_window and snapshot first.") }
-      try ax.focus(id: Int(number(obj["id"]) ?? -1))
+      try ax.focus(id: Int(number(obj["element"]) ?? -1))
       answerWithScreenshot(id, settleMs: 100)
     case "menu":
       guard let ax else { throw HelperError("menu acts on a snapshot id; select_window and snapshot first.") }
-      try ax.menu(id: Int(number(obj["id"]) ?? -1))
+      try ax.menu(id: Int(number(obj["element"]) ?? -1))
       answerWithScreenshot(id)
     case "set-value":
       guard let ax else { throw HelperError("set_value acts on a snapshot id; select_window and snapshot first.") }
-      try ax.setValue(id: Int(number(obj["id"]) ?? -1), text: obj["text"] as? String ?? "")
+      try ax.setValue(id: Int(number(obj["element"]) ?? -1), text: obj["text"] as? String ?? "")
       answerWithScreenshot(id)
     case "watch":
       let on = obj["on"] as? Bool ?? true
