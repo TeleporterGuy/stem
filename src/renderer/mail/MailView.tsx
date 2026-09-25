@@ -159,7 +159,7 @@ export const MailConversationView = forwardRef<MailViewHandle, {
   }));
   const [addingTo, setAddingTo] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
-  // Expanded exchange groups, keyed by their first item's id (stable across refreshes).
+  // Expanded exchange groups, keyed by their oldest item's id (stable across refreshes).
   const [openExchanges, setOpenExchanges] = useState<Set<string>>(new Set());
   const now = Date.now();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -167,7 +167,14 @@ export const MailConversationView = forwardRef<MailViewHandle, {
     () => items.filter((i) => i.conversationId === conversation.id).sort((a, b) => a.at - b.at),
     [items, conversation.id]
   );
-  const groups = useMemo(() => groupMailTimeline(mails), [mails]);
+  // Fold in time order, then show newest first — mail reads top-down, not like a chat.
+  const groups = useMemo(
+    () =>
+      groupMailTimeline(mails)
+        .map((g) => (g.kind === 'exchange' ? { ...g, items: [...g.items].reverse() } : g))
+        .reverse(),
+    [mails]
+  );
   const work = useMailWork(conversation.id);
   const workGroups = work.groups;
   const workByMail = useMemo(() => {
@@ -187,10 +194,10 @@ export const MailConversationView = forwardRef<MailViewHandle, {
     () => personas.filter((p) => !conversation.participants.includes(p.id)),
     [personas, conversation.participants]
   );
-  // Land at the newest mail on open and when one arrives — email reads bottom-up here.
+  // Land at the newest mail (the top) on open and when one arrives.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [mails.length]);
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [conversation.id, mails.length]);
 
   const send = () => {
     const body = draft.trim();
@@ -332,9 +339,12 @@ export const MailConversationView = forwardRef<MailViewHandle, {
         {addingTo && addError && <p className="task-failed">{addError}</p>}
       </header>
       <div className="mail-items" ref={scrollRef}>
+        {unlinkedWork.map((group) => <MailWork key={group.id} group={group} personas={personas} unlinked />)}
+        {work.error && <p className="mail-work-note">{work.error} <button type="button" onClick={work.refresh}>Retry</button></p>}
         {groups.map((group) => {
           if (group.kind === 'mail') return mailCard(group.item, false);
-          const key = group.items[0].id;
+          // The exchange's oldest item (last after the flip) — stable as new mail lands.
+          const key = group.items[group.items.length - 1].id;
           const open = openExchanges.has(key);
           const n = group.items.length;
           return (
@@ -349,8 +359,6 @@ export const MailConversationView = forwardRef<MailViewHandle, {
         {mails.length === 0 && (
           <p className="muted">This conversation has no mail yet.</p>
         )}
-        {unlinkedWork.map((group) => <MailWork key={group.id} group={group} personas={personas} unlinked />)}
-        {work.error && <p className="mail-work-note">{work.error} <button type="button" onClick={work.refresh}>Retry</button></p>}
       </div>
       <div className="mail-reply" onDragOver={(e) => e.preventDefault()} onDrop={files.onDrop}>
         <AttachmentChips attachments={files.attachments} onRemove={files.remove} />
