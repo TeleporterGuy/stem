@@ -3989,7 +3989,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     if (cached && (await this.fileExists(cached))) return cached;
     const files = await this.scanSessions();
     for (const f of files) this.sessionFiles.set(f.id, f.path);
-    return this.sessionFiles.get(threadId) ?? null;
+    // Only a file the scan found. The cache also holds paths pi REPORTED
+    // (recordState), and pi reports a new chat's path before it writes the file
+    // (nothing lands on disk until the first reply) — returning that one made
+    // every just-started chat fail its read with ENOENT instead of falling back
+    // to the live worker.
+    return files.find((f) => f.id === threadId)?.path ?? null;
   }
 
   /** Walk the session dir and read each JSONL header + name for the chat list. */

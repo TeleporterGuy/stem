@@ -757,6 +757,22 @@ describe('interrupted reply recovery', () => {
     expect(messages.at(-1)).toMatchObject({ role: 'system', content: TURN_INTERRUPTED_MESSAGE });
   });
 
+  it('reads a just-started chat from the worker when pi reported a session path it has not written yet', async () => {
+    const { runtime, sessions } = await tempRuntime();
+    const worker = workerOf(runtime);
+    worker.activeThreadId = 'just-started';
+    worker.proc = {
+      running: true,
+      request: async (command) => command.type === 'get_messages'
+        ? { success: true, data: { messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }] }] } }
+        : { success: true, data: {} }
+    };
+    // What recordState caches from get_state before the first reply is on disk.
+    (runtime as unknown as { sessionFiles: Map<string, string> }).sessionFiles.set('just-started', join(sessions, 'not-written-yet.jsonl'));
+    const { messages } = await runtime.readThread('just-started');
+    expect(messages).toMatchObject([{ role: 'user', content: 'Hello' }]);
+  });
+
   it.each([false, true])('logs observed abort without inventing a cause (requested=%s)', async (requested) => {
     const { runtime } = await tempRuntime();
     const worker = workerOf(runtime);
