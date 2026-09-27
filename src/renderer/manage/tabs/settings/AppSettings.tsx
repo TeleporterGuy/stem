@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type {
   CustomTheme,
   EscapeAction,
+  ModelSummary,
   ReleaseNotesSnapshot,
   TaskNotifyMode,
   UpdateStatus
@@ -11,11 +12,10 @@ import { ReleaseNotesModal } from '../../../ReleaseNotesModal';
 import { InfoTip } from '../../../ui/InfoTip';
 import { RowSelect, ValueRow } from './rows';
 import { ConversationSections } from './ChatSettings';
-import type { ModelTabProps } from '../shared';
 
 /**
- * Settings → App: using Stem day to day — the conversation (model, subjects,
- * standing instructions, Quick Chat), how it looks, what the keyboard does,
+ * Settings → App: using Stem day to day — the conversation (subjects, standing
+ * instructions, Quick Chat), how it looks, what the keyboard does,
  * how loudly it may interrupt, and which build this is. What the assistant may
  * DO on your machines (mail among personas, commands, coding agents, computer
  * control) lives under Features: one policy governs every conversation at once.
@@ -23,10 +23,10 @@ import type { ModelTabProps } from '../shared';
  * Layout is the settings-row idiom (rows.tsx): one row per setting, current
  * value visible on the right, so the tab reads as an answer sheet.
  */
-export function AppSettings(props: ModelTabProps) {
+export function AppSettings({ models }: { models: ModelSummary[] }) {
   return (
     <div>
-      <ConversationSections {...props} />
+      <ConversationSections models={models} />
       <AppearanceSection />
       <KeyboardSection />
       <NotificationsSection />

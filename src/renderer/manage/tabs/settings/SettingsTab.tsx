@@ -56,7 +56,7 @@ export function SettingsTab({
           </button>
         ))}
       </div>
-      {sub === 'app' && <AppSettings models={models} modelId={modelId} onSelectModel={onSelectModel} />}
+      {sub === 'app' && <AppSettings models={models} />}
       {sub === 'features' && <FeaturesSettings />}
       {sub === 'server' && <ServerSettings />}
       {sub === 'models' && (

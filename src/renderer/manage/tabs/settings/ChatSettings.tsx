@@ -1,23 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ChatsSettings, CustomInstructionsSettings, WebSearchSettings } from '../../../../shared/types';
+import type { ChatsSettings, CustomInstructionsSettings, ModelSummary, WebSearchSettings } from '../../../../shared/types';
 import { InfoTip } from '../../../ui/InfoTip';
-import { ModelPicker } from '../../../ui/ModelPicker';
 import { broadcastWebSearch, useWebSearchSync } from '../../../webSearch';
-import type { ModelTabProps } from '../shared';
 import { DisclosureRow, RowSelect, ValueRow } from './rows';
 import { QuickChatSection } from './QuickChatSettings';
 
 /**
  * Settings → App, top half: everywhere you talk to Stem — the main
- * conversation and the Quick Chat overlay. Which model answers, how chats get
- * named, and the instructions carried into every turn. What the assistant may
+ * conversation and the Quick Chat overlay. How chats get named, and the
+ * instructions carried into every turn. Which model answers lives under
+ * Models, beside the other roles that follow it. What the assistant may
  * DO while it works (commands, coding agents, computer control) lives under
  * Features: that policy governs every conversation at once.
  *
  * Layout is the settings-row idiom (rows.tsx): the tab reads as an answer
  * sheet, and the instruction textareas live one level down behind their row.
  */
-export function ConversationSections({ models, modelId, onSelectModel }: ModelTabProps) {
+export function ConversationSections({ models }: { models: ModelSummary[] }) {
   const [ws, setWs] = useState<WebSearchSettings>({
     main: true,
     quickChat: true,
@@ -69,22 +68,6 @@ export function ConversationSections({ models, modelId, onSelectModel }: ModelTa
     <div>
       <div className="grp-head">Conversation</div>
       <div className="group">
-        {models.length === 0 ? (
-          <div className="set-vrow">
-            <span className="vlab">
-              <em>Loading models…</em>
-            </span>
-          </div>
-        ) : (
-          <ValueRow label="Model">
-            <ModelPicker
-              models={models}
-              value={modelId}
-              onChange={(id) => onSelectModel(id ?? '')}
-              ariaLabel="Model"
-            />
-          </ValueRow>
-        )}
         <ValueRow label="Web search" hint="Live results with citations">
           <input
             type="checkbox"

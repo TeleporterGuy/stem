@@ -9,7 +9,9 @@ import type {
   LocalProviderId,
   LocalProvidersSettings,
   LocalProviderTestResult,
-  ModelOverride
+  ModelOverride,
+  ModelSummary,
+  QuickChatSettings
 } from '../../../../shared/types';
 import {
   API_KEY_PROVIDER_IDS,
@@ -119,6 +121,25 @@ type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
  * saying it is idle. An overview that hid them would answer "what is running on
  * what" with a different list every time you changed a mode.
  */
+/**
+ * Point Quick Chat at a new default model, clamping the overlay's saved effort
+ * and speed (set under App → Quick Chat) into what that model supports — or a
+ * default the model can't run would ride along into every summon.
+ */
+async function selectQuickChatModel(models: ModelSummary[], id: string | null): Promise<string | null> {
+  const { quickChat: qc } = await window.stem.getSettings();
+  const m = id ? models.find((x) => x.id === id) : undefined;
+  const efforts = m?.supportedEfforts.length ? m.supportedEfforts : ['low', 'medium', 'high', 'xhigh'];
+  const patch: Partial<QuickChatSettings> = { defaultModel: id };
+  if (!efforts.includes(qc.defaultEffort)) patch.defaultEffort = m?.defaultEffort ?? efforts[0];
+  // Drop a saved Fast default when the new model has no priority tier.
+  if (qc.defaultServiceTier === 'priority' && m && !m.serviceTiers.some((t) => t.id === 'priority')) {
+    patch.defaultServiceTier = null;
+  }
+  const s = await window.stem.updateQuickChat(patch);
+  return s.quickChat.defaultModel;
+}
+
 function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
   const [background, setBackground] = useState<string | null>(null);
   const [backgroundEffort, setBackgroundEffort] = useState<string | null>(null);
@@ -218,7 +239,7 @@ function ModelRolesSection({ models, modelId, onSelectModel }: ModelTabProps) {
             value={quickChatModel}
             onChange={(id) => {
               setQuickChatModel(id);
-              window.stem.updateQuickChat({ defaultModel: id }).then((s) => setQuickChatModel(s.quickChat.defaultModel));
+              void selectQuickChatModel(models, id).then(setQuickChatModel);
             }}
             emptyLabel="Same as main"
             ariaLabel="Quick Chat default model"

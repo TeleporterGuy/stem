@@ -7,8 +7,6 @@ import type {
   QuickChatSettings as QuickChatSettingsType,
   QuickChatShortcutStatus
 } from '../../../../shared/types';
-import { appDefaultModel } from '../../../../shared/modelRoles';
-import { ModelPicker } from '../../../ui/ModelPicker';
 import { EFFORT_LABELS } from '../../../modelLabels';
 import { broadcastWebSearch, useWebSearchSync } from '../../../webSearch';
 import { ShortcutRecorder } from './shortcut';
@@ -24,9 +22,9 @@ const NEW_THREAD_PRESETS: { label: string; ms: number }[] = [
 ];
 
 /**
- * Settings → App → Quick Chat: the overlay you summon from anywhere. It lives
- * on the Chat tab, not App, because nearly everything here is a conversation
- * default (model, effort, instructions, when a thread restarts) — the overlay
+ * Settings → App → Quick Chat: the overlay you summon from anywhere. It sits
+ * with the conversation settings because nearly everything here is a conversation
+ * default (effort, instructions, when a thread restarts) — the overlay
  * being its own window is an implementation detail, not a reason to file its
  * settings under the shell. The summon shortcut stays with it so the feature
  * reads as one thing.
@@ -107,7 +105,8 @@ export function QuickChatSection({ models }: { models: ModelSummary[] }) {
 
   if (!qc) return <p className="muted">Loading…</p>;
 
-  // The Quick Chat default-effort options follow the chosen default model's capabilities.
+  // The Quick Chat default-effort options follow the default model's capabilities.
+  // That model is picked under Settings → Models, which clamps these two on change.
   // "Same as main" (empty) has no concrete model here, so offer all levels.
   const qcModel = qc.defaultModel ? models.find((m) => m.id === qc.defaultModel) : undefined;
   const qcEfforts = qcModel?.supportedEfforts.length ? qcModel.supportedEfforts : ['low', 'medium', 'high', 'xhigh'];
@@ -115,19 +114,6 @@ export function QuickChatSection({ models }: { models: ModelSummary[] }) {
   // ("Same as main"), offer it — the runtime ignores Fast on models that don't support it.
   const qcFastTier = qcModel?.serviceTiers.find((t) => t.id === 'priority');
   const qcHasFast = qcModel ? !!qcFastTier : true;
-
-  // Switch the default model, clamping a now-unsupported saved effort/speed into range.
-  function selectQcModel(id: string | null) {
-    const m = id ? models.find((x) => x.id === id) : undefined;
-    const efforts = m?.supportedEfforts.length ? m.supportedEfforts : ['low', 'medium', 'high', 'xhigh'];
-    const patch: Partial<QuickChatSettingsType> = { defaultModel: id };
-    if (qc && !efforts.includes(qc.defaultEffort)) patch.defaultEffort = m?.defaultEffort ?? efforts[0];
-    // Drop a saved Fast default when the new model has no priority tier.
-    if (qc?.defaultServiceTier === 'priority' && m && !m.serviceTiers.some((t) => t.id === 'priority')) {
-      patch.defaultServiceTier = null;
-    }
-    update(patch);
-  }
 
   return (
     <>
@@ -190,17 +176,6 @@ export function QuickChatSection({ models }: { models: ModelSummary[] }) {
             </div>
           </div>
         )}
-
-        <ValueRow label="Default model">
-          <ModelPicker
-            models={models}
-            value={qc.defaultModel}
-            onChange={selectQcModel}
-            emptyLabel="Same as main"
-            ariaLabel="Quick Chat default model"
-            resolvedDefault={appDefaultModel(models)}
-          />
-        </ValueRow>
 
         <ValueRow label="Web search" hint="Live results with citations, in the overlay">
           <input
