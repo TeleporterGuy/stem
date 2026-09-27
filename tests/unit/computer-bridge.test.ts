@@ -290,7 +290,8 @@ describe('extension side', () => {
       const { asks, ctx } = scriptedCtx(() => JSON.stringify({ ok: true }));
       const result = await tool.execute!('c', { action: 'screenshot' }, undefined, undefined, ctx);
       expect(result.isError).toBe(true);
-      expect(result.content[0]!.text).toContain('pinned to a computer');
+      expect(result.content[0]!.text).toContain('computer pin');
+      expect(result.content[0]!.text).toContain('Settings → Features');
       expect(asks).toHaveLength(0);
       // An older main that never wrote the field: the tool stays shut (unlike coding).
       writeFileSync(gatePath, JSON.stringify({ mail: true }));
@@ -339,12 +340,13 @@ describe('runtime side', () => {
           cursor: { x: 0, y: 0 }
         };
       },
+      resolveNamedMac: async () => ({ ok: false, error: 'never' }),
       endThread: () => {},
       settleAll: () => {}
     });
     worker.currentTurn = newTurnContext('the-real-thread', 'turn-1');
     worker.currentTurn.isScheduled = true;
-    worker.currentTurn.personaComputer = { device: 'mac-1' };
+    worker.currentTurn.computerGrant = { kind: 'pin', device: 'mac-1' };
     internal.handleComputerBridgeRequest(
       worker,
       'elicit-1',
@@ -371,15 +373,16 @@ describe('runtime side', () => {
         seen.push(req);
         return { ok: false, error: 'never' };
       },
+      resolveNamedMac: async () => ({ ok: false, error: 'never' }),
       endThread: () => {},
       settleAll: () => {}
     });
     worker.currentTurn = newTurnContext('t', 'turn-1');
-    worker.currentTurn.personaHarness = {
+    worker.currentTurn.codingGrant = { kind: 'pin', pin: {
       agent: 'claude',
       cwd: '/repo',
       device: 'mac-1'
-    }; // a code pin is not a computer pin
+    } }; // a code pin is not a computer pin
     internal.handleComputerBridgeRequest(
       worker,
       'elicit-1',
@@ -389,11 +392,11 @@ describe('runtime side', () => {
     expect(seen).toHaveLength(0);
     expect(JSON.parse(sent[0]!.value)).toMatchObject({
       ok: false,
-      error: expect.stringContaining('pinned to a computer')
+      error: expect.stringContaining('not available')
     });
     sent.length = 0;
     worker.currentTurn.isMail = true;
-    worker.currentTurn.personaComputer = { device: '  ' };
+    worker.currentTurn.computerRefusal = 'runs as the persona “Critic”, which controls no computer';
     internal.handleComputerBridgeRequest(
       worker,
       'elicit-2',
@@ -401,6 +404,75 @@ describe('runtime side', () => {
     );
     await settleSends(sent);
     expect(seen).toHaveLength(0);
-    expect(JSON.parse(sent[0]!.value)).toMatchObject({ ok: false });
+    expect(JSON.parse(sent[0]!.value)).toMatchObject({ ok: false, error: expect.stringContaining('Critic') });
+  });
+
+  it('a plain chat with a fixed Mac drives that Mac, whatever the payload names', async () => {
+    const seen: ComputerRequest[] = [];
+    const { internal, worker, sent } = runtimeWithBridge({
+      handleComputerRequest: async (req) => {
+        seen.push(req);
+        return { ok: true, screenshot: { jpegBase64: 'QUJD', width: 1, height: 1 }, cursor: { x: 0, y: 0 } };
+      },
+      resolveNamedMac: async () => ({ ok: true, deviceId: 'never' }),
+      endThread: () => {},
+      settleAll: () => {}
+    });
+    worker.currentTurn = newTurnContext('t', 'turn-1');
+    worker.currentTurn.computerGrant = { kind: 'chat', device: 'mac-1' };
+    internal.handleComputerBridgeRequest(
+      worker,
+      'elicit-1',
+      JSON.stringify({ action: { kind: 'screenshot' }, device: 'Other Mac' })
+    );
+    await settleSends(sent);
+    expect(seen[0]).toMatchObject({ device: 'mac-1' });
+  });
+
+  it('a model-chooses chat resolves the named Mac through the bridge, and passes on its refusal', async () => {
+    const seen: ComputerRequest[] = [];
+    const named: string[] = [];
+    const { internal, worker, sent } = runtimeWithBridge({
+      handleComputerRequest: async (req) => {
+        seen.push(req);
+        return { ok: true, screenshot: { jpegBase64: 'QUJD', width: 1, height: 1 }, cursor: { x: 0, y: 0 } };
+      },
+      resolveNamedMac: async (name) => {
+        named.push(name);
+        return name === 'MacBook'
+          ? { ok: true, deviceId: 'mac-1' }
+          : { ok: false, error: `“${name}” is not connected right now.` };
+      },
+      endThread: () => {},
+      settleAll: () => {}
+    });
+    const wait = async () => {
+      for (let i = 0; i < 200 && sent.length === 0; i++) await new Promise((r) => setTimeout(r, 1));
+    };
+    worker.currentTurn = newTurnContext('t', 'turn-1');
+    worker.currentTurn.computerGrant = { kind: 'chat', device: null };
+    internal.handleComputerBridgeRequest(
+      worker,
+      'elicit-1',
+      JSON.stringify({ action: { kind: 'screenshot' }, device: 'MacBook' })
+    );
+    await wait();
+    expect(seen[0]).toMatchObject({ device: 'mac-1' });
+
+    sent.length = 0;
+    internal.handleComputerBridgeRequest(
+      worker,
+      'elicit-2',
+      JSON.stringify({ action: { kind: 'screenshot' }, device: 'Studio' })
+    );
+    await wait();
+    expect(seen).toHaveLength(1);
+    expect(JSON.parse(sent[0]!.value).error).toContain('not connected');
+
+    sent.length = 0;
+    internal.handleComputerBridgeRequest(worker, 'elicit-3', JSON.stringify({ action: { kind: 'screenshot' } }));
+    await wait();
+    expect(JSON.parse(sent[0]!.value).error).toContain('Name the Mac');
+    expect(named).toEqual(['MacBook', 'Studio']);
   });
 });

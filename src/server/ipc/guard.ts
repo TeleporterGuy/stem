@@ -216,6 +216,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'settings:updateMail': [a.object],
   'settings:updateExec': [a.object],
   'settings:updateHarness': [a.object],
+  'settings:updateChatFeatures': [a.object],
   'exec:resolveApproval': [a.string, a.oneOf(['allowOnce', 'alwaysAllow', 'deny'])],
   // The second string is the harness's own optionId; the service checks it
   // against the card's options rather than any fixed vocabulary.

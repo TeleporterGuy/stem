@@ -39,6 +39,7 @@ export async function personaTurnFields(persona: Persona, opts: { notes?: boolea
     ...(persona.effort ? { effort: persona.effort } : {}),
     persona: {
       id: persona.id,
+      name: persona.name,
       prompt: persona.prompt,
       ...(persona.harness ? { harness: persona.harness } : {}),
       ...(persona.computer ? { computer: persona.computer } : {}),

@@ -136,7 +136,7 @@ function ExecBody({ request, busy, error, countdown, decide }: BodyProps<ExecApp
             className="push"
             onClick={() => decide('alwaysAllow')}
             disabled={busy}
-            title={`Adds ${request.prefixes.map((p) => `"${p}"`).join(', ')} to the allowlist in Settings → Chat → Command execution`}
+            title={`Adds ${request.prefixes.map((p) => `"${p}"`).join(', ')} to the allowlist in Settings → Features → Commands`}
           >
             Always allow {request.prefixes.map((p) => `“${p}”`).join(', ')}
           </button>

@@ -351,6 +351,13 @@ export async function resolveHarnessTarget(
   return resolveDesktopTarget(nameOrId, { singular: 'the coding agent', plural: 'coding agents' });
 }
 
+/** The same resolution for the `computer` tool's `device`, when a plain chat lets the model choose. */
+export async function resolveComputerTarget(
+  nameOrId: string
+): Promise<{ ok: true; deviceId: string; label: string } | { ok: false; error: string }> {
+  return resolveDesktopTarget(nameOrId, { singular: 'computer control', plural: 'computer control' });
+}
+
 async function resolveDesktopTarget(
   nameOrId: string,
   subject: { singular: string; plural: string }

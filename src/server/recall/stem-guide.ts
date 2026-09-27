@@ -98,7 +98,7 @@ export const STEM_GUIDE_PAGES: readonly StemGuidePage[] = [
   page('shortcuts', 'docs/user/shortcuts.md', 'keyboard shortcuts and tricks across the app', shortcutsMd),
   page('connected-folders', 'docs/user/connected-folders.md', 'using folders where they live: indexing, Memorize, Learn facts', connectedFoldersMd),
   page('scheduled-tasks', 'docs/user/scheduled-tasks.md', 'running a prompt later or on a repeating schedule, and its controls', scheduledTasksMd),
-  page('settings', 'docs/user/settings.md', 'providers and models, command approvals, Esc, notifications, Quick Chat defaults', settingsMd),
+  page('settings', 'docs/user/settings.md', 'the App/Features/Server/Models tabs: providers and models, command approvals, coding agents and computer control in chats (vs persona pins), Esc, notifications, Quick Chat defaults', settingsMd),
   page('moving-and-backups', 'docs/user/moving-and-backups.md', 'moving Stem to another computer, what travels, and backups', movingAndBackupsMd),
   page('release-notes', 'RELEASE_NOTES.md', 'what changed in each Stem version, newest first', releaseNotesMd),
   // Detailed assistant procedures are loaded only for the task that needs them.

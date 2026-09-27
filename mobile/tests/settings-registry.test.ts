@@ -21,9 +21,24 @@ describe('mobileGroups', () => {
 
   it('offers the server settings a phone can meaningfully change', () => {
     const offered = new Set(mobileGroups().flatMap((g) => g.settings.map((s) => s.key)));
-    for (const key of ['web-search', 'subjects', 'tasks-notify', 'exec-enabled', 'exec-approval']) {
+    for (const key of [
+      'web-search',
+      'subjects',
+      'tasks-notify',
+      'exec-enabled',
+      'exec-approval',
+      'chat-coding',
+      'chat-coding-where',
+      'chat-coding-agent',
+      'chat-computer',
+      'chat-computer-mac'
+    ]) {
       expect(offered.has(key)).toBe(true);
     }
+  });
+
+  it('groups rows the way the desktop names its tabs', () => {
+    expect(mobileGroups().map((g) => g.title)).toEqual(['App', 'Features', 'Models']);
   });
 
   it('gives every setting a unique key, because the list is a list of rows', () => {

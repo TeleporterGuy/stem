@@ -472,6 +472,8 @@ export interface StartTurnInput {
    */
   persona?: {
     id: string;
+    /** Display name — only for refusals that have to say which persona this is. */
+    name?: string;
     prompt: string;
     harness?: PersonaHarnessPin;
     /** The persona's computer-control pin; the `computer` tool exists for the turn exactly when present. */
@@ -2613,7 +2615,7 @@ export interface ChatSummary {
   title: string;
   /**
    * A short subject written by a model from the thread's conversation, when
-   * Settings → Chat → Chats has subjects on. The Inbox shows this in place of `title`.
+   * Settings → App → Subjects has subjects on. The Inbox shows this in place of `title`.
    * At the `everywhere` setting the thread was also renamed to it, so the two
    * agree; at `inbox` they deliberately differ. Absent = never written.
    */
@@ -2978,6 +2980,30 @@ export interface HarnessSettings {
 }
 
 /**
+ * Coding agents and computer control in chats that run as NO persona
+ * (2026-09-27). Personas keep their pins as the whole story — a persona chat
+ * without a pin gets neither tool whatever this says — so this only reaches
+ * plain chats (Quick Chat included), never mail or scheduled runs.
+ *
+ * `target: null` is "let the model choose": the tool takes agent/device
+ * arguments and the turn is told which computers qualify. A fixed target is
+ * filled in by the server and the tool keeps its argument-free shape, which is
+ * what a small local model copes with.
+ */
+export interface ChatFeatureSettings {
+  coding: {
+    allow: boolean;
+    /** `device` absent = the computer Stem's server runs on. */
+    target: { agent: string; device?: string } | null;
+  };
+  computer: {
+    allow: boolean;
+    /** A paired Mac's device id. */
+    target: { device: string } | null;
+  };
+}
+
+/**
  * What one host answered a model probe with — the agent's advertised model
  * ids (verbatim, e.g. `claude-fable-5-1[1m]`) and whichever it treats as
  * current. Host-level: the service wraps it with the agent and host label.
@@ -2991,7 +3017,7 @@ export type HarnessModelsResult =
   | { ok: true; agent: string; models: string[]; currentModelId?: string; hostLabel: string }
   | { ok: false; error: string };
 
-/** One chat's scratch folder in Settings → Chat → Command execution → Scratch files. */
+/** One chat's scratch folder in Settings → Features → Commands → Scratch files. */
 export interface ScratchUsageRow {
   /** The thread id, or "unfiled" for the aggregate of everything not owned by a chat. */
   key: string;
@@ -3542,6 +3568,8 @@ export interface AppSettings {
   exec: ExecSettings;
   /** Coding agents (coding_agent): acpx registry overrides; the capability itself is a persona pin. */
   harness: HarnessSettings;
+  /** Coding agents and computer control for chats run as no persona. */
+  chatFeatures: ChatFeatureSettings;
   retrieval: RetrievalSettings;
   /** Escape-to-retract behavior in the main composer. */
   escapeAction: EscapeAction;
@@ -4352,6 +4380,8 @@ export interface StemApi {
   /** Patch the command-execution policy (enable switch, judge model, allowlist). */
   updateExecSettings(patch: Partial<ExecSettings>): Promise<AppSettings>;
   updateHarnessSettings(patch: Partial<HarnessSettings>): Promise<AppSettings>;
+  /** Patch whether plain chats get coding agents / computer control, and where they run. */
+  updateChatFeatureSettings(patch: Partial<ChatFeatureSettings>): Promise<AppSettings>;
   /**
    * The models the coding agent offers, probed live from the host that would
    * run it — an available paired computer that runs coding agents, else this

@@ -219,6 +219,7 @@ const SETTINGS_CHANNELS = [
   'settings:updateDefaults',
   'settings:updateExec',
   'settings:updateHarness',
+  'settings:updateChatFeatures',
   'settings:updateCustomInstructions',
   'settings:updateRetrieval'
 ];

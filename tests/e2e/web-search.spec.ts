@@ -157,7 +157,7 @@ test('the composer Web button writes the saved switch, and Settings follows it',
   await expect.poll(savedMain).toBe(false);
 
   // Same switch, second view: the checkbox opens already unchecked...
-  await openSettings(mainWindow, 'Chat');
+  await openSettings(mainWindow, 'App');
   const checkbox = mainWindow.getByRole('checkbox', { name: 'Web search' }).first();
   await expect(checkbox).not.toBeChecked();
   // ...and turning it back on there moves the composer button, which never
@@ -170,7 +170,7 @@ test('the composer Web button writes the saved switch, and Settings follows it',
 test('the web-search toggle shows regardless of the selected model', async ({ mainWindow }) => {
   // The toggle rides with the model it applies to (Chat), not with the backend
   // that answers the search (Models).
-  await openSettings(mainWindow, 'Chat');
+  await openSettings(mainWindow, 'App');
 
   // Previously gated on selectedModel.supportsNativeWebSearch, which was false for
   // every provider but openai-codex.

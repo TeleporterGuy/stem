@@ -564,7 +564,11 @@ describe('recall search tools in a recall-off turn', () => {
       mail: false,
       scheduled: false,
       coding: true,
+      codingChoose: false,
+      codingRefusal: null,
       computer: false,
+      computerChoose: false,
+      computerRefusal: null,
       recall: true,
       relay: false
     });

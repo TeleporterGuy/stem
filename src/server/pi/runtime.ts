@@ -52,6 +52,8 @@ import {
   stemAssistantInstructions
 } from '../workspace/bootstrap';
 import { readSettings } from '../workspace/settings';
+import { resolveCodingGrant, resolveComputerGrant } from '../harness/chat-grants';
+import { codingChoicesText, computerChoicesText } from '../harness/chat-hosts';
 import { resolveHostShell } from '../exec/git-bash';
 import { clampPinnedCwd } from '../harness/pin';
 import { hostShellAgentHint } from '../exec/host-shell';
@@ -1187,6 +1189,20 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       if (input.persona) turn.personaId = input.persona.id;
       if (input.persona?.harness) turn.personaHarness = input.persona.harness;
       if (input.persona?.computer) turn.personaComputer = input.persona.computer;
+      // coding_agent / computer: the persona's pins, or for a chat run as no
+      // persona, Settings → Features.
+      // quiet: readSettings answers coerced defaults rather than rejecting; a failure here leaves both tools off, with the "off for chats" refusal, which is the default anyway.
+      const chatFeatures = (await readSettings().catch(() => null))?.chatFeatures ?? {
+        coding: { allow: false, target: null },
+        computer: { allow: false, target: null }
+      };
+      const grantTurn = { persona: input.persona, unattended: turn.isScheduled === true };
+      const coding = resolveCodingGrant(grantTurn, chatFeatures.coding);
+      if (coding.ok) turn.codingGrant = coding.grant;
+      else turn.codingRefusal = coding.refusal;
+      const computer = resolveComputerGrant(grantTurn, chatFeatures.computer);
+      if (computer.ok) turn.computerGrant = computer.grant;
+      else turn.computerRefusal = computer.refusal;
       // The exec safety judge classifies commands relative to this request.
       turn.userText = input.input;
       // Folders connected memorize:false: if the assistant reads inside one this turn,
@@ -1228,14 +1244,19 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           {
             mail: turn.isMail === true,
             scheduled: turn.isScheduled === true,
-            // coding_agent belongs to code personas only, in every kind of
-            // turn — the pin is the capability. The tool reads this to refuse
-            // up front instead of wasting a round-trip on the bridge's refusal
-            // (which stays the boundary).
-            coding: !!turn.personaHarness,
-            // Same rule for the `computer` tool: the computer pin is the
-            // capability, in every kind of turn (chats, mail, scheduled runs).
-            computer: !!turn.personaComputer,
+            // coding_agent: a code persona's pin in every kind of turn, or a
+            // chat run as no persona when Settings → Features allows it. The
+            // tool reads this to refuse up front — with the reason, so the
+            // model can tell the user — instead of wasting a round-trip on the
+            // bridge's refusal (which stays the boundary). `codingChoose` is
+            // the model-chooses mode: the tool's agent/device arguments count.
+            coding: !!turn.codingGrant,
+            codingChoose: turn.codingGrant?.kind === 'chat' && turn.codingGrant.target === null,
+            codingRefusal: turn.codingRefusal ?? null,
+            // Same rule for the `computer` tool.
+            computer: !!turn.computerGrant,
+            computerChoose: turn.computerGrant?.kind === 'chat' && turn.computerGrant.device === null,
+            computerRefusal: turn.computerRefusal ?? null,
             // Mirrors buildMessage's recall gate: a recall-off persona (or a
             // private chat) gets neither the injected block nor the search
             // tools that would reproduce it on demand.
@@ -2513,7 +2534,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           cwd: typeof req.cwd === 'string' && req.cwd.trim() ? req.cwd : undefined,
           timeoutMs: typeof req.timeout_ms === 'number' ? req.timeout_ms : undefined,
           device: typeof req.device === 'string' && req.device.trim() ? req.device : undefined,
-          personaComputerDevice: turn?.personaComputer?.device ?? null,
+          personaComputerDevice:
+            turn?.computerGrant?.kind === 'pin' ? turn.computerGrant.device : (turn?.computerGrant?.device ?? null),
+          computerAnyDevice: turn?.computerGrant?.kind === 'chat' && turn.computerGrant.device === null,
           threadId: turn?.threadId ?? null,
           isScheduled: turn?.isScheduled === true,
           userText: turn?.userText,
@@ -2529,8 +2552,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   /**
    * Handle the coding_agent tool's ctx.ui.input round-trip (sentinel
    * HARNESS_BRIDGE_TITLE). The placeholder is a JSON { prompt, cwd?,
-   * fresh_session? } payload (agent and device come from the persona pin, never
-   * the tool call); we run it through the wired
+   * fresh_session?, agent?, device? } payload (agent and device come from the
+   * persona pin or a chat's fixed Settings target, and count from the tool call
+   * only in a model-chooses chat); we run it through the wired
    * HarnessBridge with the CURRENT turn's threadId + scheduled flag (only main
    * knows both) and answer with a JSON result string the tool returns. The
    * response can be HOURS away — one whole external coding-agent turn — so it
@@ -2553,32 +2577,61 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           cwd?: string;
           fresh_session?: boolean;
           item_id?: string;
+          agent?: string;
+          device?: string;
         };
-        // The persona pin is the boundary in EVERY kind of turn — chat, mail,
-        // schedule: coding_agent belongs to code personas only (2026-09-04; it
-        // used to be mail-only, and plain chats launched Claude Code off a
-        // global switch). A code persona's runs are clamped to its pinned
-        // agent, device, and folder — the caller cannot hop machines or escape
-        // its repo by naming them in the tool call (the turn-context gate
-        // refuses the tool up front; this is the enforcement behind it).
-        const pin = turn?.personaHarness;
-        if (!pin?.agent?.trim()) {
+        const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+        // The grant resolved at turn start is the boundary in EVERY kind of
+        // turn (the turn-context gate refuses the tool up front; this is the
+        // enforcement behind it). A code persona's runs are clamped to its
+        // pinned agent, device and folder — the caller cannot hop machines or
+        // escape its repo by naming them in the tool call. A chat run as no
+        // persona gets what Settings → Features allows: a fixed agent/computer,
+        // or the model's pick; its folder is whatever the chat names.
+        const grant = turn?.codingGrant;
+        if (!grant) {
           return respond({
             ok: false,
             error:
-              'Coding agents are reserved for code personas — personas with a coding setup (agent + working ' +
-              'folder) pinned in the persona editor (Manage → Personas). This conversation runs as none, so ' +
-              'do not retry; tell the user which code persona should take the task, or that one needs creating.'
+              turn?.codingRefusal ??
+              'Coding agents are not available in this conversation. Do not retry; tell the user which code ' +
+                'persona should take the task, or that chats can be allowed in Settings → Features → Coding agents.'
           });
         }
-        const clamped = clampPinnedCwd(typeof req.cwd === 'string' ? req.cwd : undefined, pin);
-        if (!clamped.ok) return respond({ ok: false, error: clamped.error });
-        const agent = pin.agent.trim();
-        const cwd = clamped.cwd;
-        const device = pin.device?.trim() || undefined;
-        // The persona's model rides along: the pinned agent is always the one
-        // running. The tool call itself has no model arg.
-        const model = pin.model?.trim() || undefined;
+        let agent: string | undefined;
+        let cwd: string | undefined;
+        let device: string | undefined;
+        let model: string | undefined;
+        const choosing = grant.kind === 'chat' && grant.target === null;
+        if (grant.kind === 'pin') {
+          const clamped = clampPinnedCwd(str(req.cwd), grant.pin);
+          if (!clamped.ok) return respond({ ok: false, error: clamped.error });
+          agent = grant.pin.agent.trim();
+          cwd = clamped.cwd;
+          device = grant.pin.device?.trim() || undefined;
+          // The persona's model rides along: the pinned agent is always the
+          // one running. The tool call itself has no model arg.
+          model = grant.pin.model?.trim() || undefined;
+        } else {
+          agent = grant.target ? grant.target.agent : str(req.agent);
+          device = grant.target ? grant.target.device : str(req.device);
+          cwd = str(req.cwd);
+          if (!agent) {
+            // quiet: the refusal still says what is missing; the list only helps the model pick.
+            const choices = await codingChoicesText().catch(() => '');
+            return respond({ ok: false, error: `Name the coding agent in \`agent\`. ${choices}`.trim() });
+          }
+          // Only this server's disk has a sensible default (the chat's scratch
+          // folder); a path on someone's laptop is the user's to name.
+          if (device && !cwd) {
+            return respond({
+              ok: false,
+              error:
+                'A coding agent on another computer needs a folder to work in. Ask the user which folder, then ' +
+                'call again with it as an absolute `cwd` the way that computer sees it — do not guess a path.'
+            });
+          }
+        }
         const result = await bridge.handleHarnessRequest({
           agent,
           prompt: req.prompt ?? '',
@@ -2591,6 +2644,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           isScheduled: turn?.isScheduled === true,
           isMail: turn?.isMail === true
         });
+        // A wrong pick in a model-chooses chat comes back with the real options.
+        if (!result.ok && choosing && device) {
+          // quiet: the service's own error goes out either way; the options are an addendum.
+          const choices = await codingChoicesText().catch(() => '');
+          if (choices) return respond({ ...result, error: `${result.error} ${choices}` });
+        }
         respond(result);
       } catch (e) {
         respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -2600,11 +2659,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
   /**
    * Handle the `computer` tool's ctx.ui.input round-trip (sentinel
-   * COMPUTER_BRIDGE_TITLE). The placeholder is a JSON { action } payload; the
-   * Mac it runs on is the persona's computer pin, read off the live turn and
-   * never from the payload — the pin is the capability in every turn kind,
-   * exactly as the harness pin is for coding_agent. Answers the process that
-   * ASKED, like the other bridges.
+   * COMPUTER_BRIDGE_TITLE). The placeholder is a JSON { action, device? }
+   * payload; the Mac it runs on is the turn's computer grant — the persona's
+   * pin or a chat's fixed Settings target, read off the live turn — and the
+   * payload's `device` counts only in a model-chooses chat. Answers the
+   * process that ASKED, like the other bridges.
    */
   private handleComputerBridgeRequest(worker: PiWorker, id: string, payload: string | undefined): void {
     const requestProcess = worker.proc;
@@ -2617,25 +2676,36 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       try {
         const bridge = this.computerBridge;
         if (!bridge) return respond({ ok: false, error: 'Computer control is unavailable.' });
-        const pin = turn?.personaComputer;
-        if (!pin?.device?.trim()) {
+        const grant = turn?.computerGrant;
+        if (!grant) {
           return respond({
             ok: false,
             error:
-              'Computer control is reserved for personas pinned to a computer in the persona editor ' +
-              '(Manage → Personas → "Computer this persona controls"). This conversation runs as none, so do ' +
-              'not retry, and do not work around it by scripting the GUI over run_command — that is refused too. ' +
-              'Hand the task to the pinned persona, or tell the user which persona should take it, or that one ' +
-              'needs setting up.'
+              turn?.computerRefusal ??
+              'Computer control is not available in this conversation. Do not retry, and do not work around it ' +
+                'by scripting the GUI over run_command — that is refused too. Tell the user which persona should ' +
+                'take it, or that chats can be allowed in Settings → Features → Computer control.'
           });
         }
-        const req = JSON.parse(payload ?? '{}') as { action?: unknown };
+        const req = JSON.parse(payload ?? '{}') as { action?: unknown; device?: unknown };
         const action = req.action;
         if (!action || typeof action !== 'object' || typeof (action as { kind?: unknown }).kind !== 'string') {
           return respond({ ok: false, error: 'The computer tool sent no action.' });
         }
+        let device = grant.device;
+        if (device === null) {
+          // Model-chooses chat: the named Mac must be paired, let Stem drive
+          // it, and be connected — each refusal carries the real options.
+          const named = typeof req.device === 'string' ? req.device.trim() : '';
+          // quiet: every refusal below still says what went wrong; the options are an addendum.
+          const choices = await computerChoicesText().catch(() => '');
+          if (!named) return respond({ ok: false, error: `Name the Mac in \`device\`. ${choices}`.trim() });
+          const target = await bridge.resolveNamedMac(named);
+          if (!target.ok) return respond({ ok: false, error: `${target.error} ${choices}`.trim() });
+          device = target.deviceId;
+        }
         const result = await bridge.handleComputerRequest({
-          device: pin.device.trim(),
+          device,
           action: action as ComputerRequest['action'],
           threadId: turn?.threadId ?? ''
         });
@@ -3279,7 +3349,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     turn.endedAt = now;
     // A computer-control run lives exactly as long as its turn: the Mac drops
     // its banner and helper now, whatever the turn's outcome was.
-    if (turn.personaComputer) this.computerBridge?.endThread(turn.threadId);
+    if (turn.computerGrant) this.computerBridge?.endThread(turn.threadId);
     if (turn.aborted) {
       log('pi.interrupt', 'turn ended aborted', {
         threadId: turn.threadId,
@@ -3928,6 +3998,18 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // from here. Mirrors the gate written above for this turn.
     const web = buildWebSearchContext(input.webSearch ?? true);
     if (web) blocks.push(web);
+    // A chat whose coding agent / Mac the model names (Settings → Features →
+    // "Let the model choose") is told what it can pick from, fresh each turn.
+    if (turn?.codingGrant?.kind === 'chat' && turn.codingGrant.target === null) {
+      // quiet: without the list the model can still ask the user, and a wrong pick is refused with the options attached.
+      const choices = await codingChoicesText().catch(() => '');
+      if (choices) blocks.push(choices);
+    }
+    if (turn?.computerGrant?.kind === 'chat' && turn.computerGrant.device === null) {
+      // quiet: same as the coding list above.
+      const choices = await computerChoicesText().catch(() => '');
+      if (choices) blocks.push(choices);
+    }
     try {
       const exec = (await readSettings()).exec;
       if (exec.enabled) {

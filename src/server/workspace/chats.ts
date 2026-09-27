@@ -17,7 +17,7 @@ interface ChatStore {
   /**
    * threadId -> the subject a model wrote from the thread's conversation.
    * Kept here, next to the folder assignment, because it is thread metadata
-   * rather than Inbox state: it has to survive Settings → Chat → Chats being turned
+   * rather than Inbox state: it has to survive Settings → App → Subjects being turned
    * down from `everywhere` to `inbox`, and it must not be lost when the user
    * renames the thread by hand.
    */

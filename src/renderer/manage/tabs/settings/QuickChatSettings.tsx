@@ -24,7 +24,7 @@ const NEW_THREAD_PRESETS: { label: string; ms: number }[] = [
 ];
 
 /**
- * Settings → Chat → Quick Chat: the overlay you summon from anywhere. It lives
+ * Settings → App → Quick Chat: the overlay you summon from anywhere. It lives
  * on the Chat tab, not App, because nearly everything here is a conversation
  * default (model, effort, instructions, when a thread restarts) — the overlay
  * being its own window is an implementation detail, not a reason to file its

@@ -276,7 +276,7 @@ export function createDesktopHarnessHost(deps: HarnessHostDeps): DesktopHarnessH
           deliverResult(request.requestId, {
             ok: false,
             error:
-              'This computer does not run coding agents for Stem. The switch is in Settings → Chat → ' +
+              'This computer does not run coding agents for Stem. The switch is in Settings → Features → ' +
               'Coding agents, on this computer.'
           });
           return;

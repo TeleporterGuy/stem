@@ -15,6 +15,10 @@ instructions.
   </picture>
 </p>
 
+Settings has four tabs: **App** (the conversation, Quick Chat, appearance, the Escape
+key, notifications, About), **Features** (mail among personas, commands, coding agents,
+computer control), **Server** and **Models**.
+
 ## Providers and models
 
 Add a provider with:
@@ -129,10 +133,12 @@ immediately.
 
 Commands on a paired computer are for shell work there: files, git, scripts, opening an
 app. Driving its screen — System Settings, clicking, typing, AppleScript at its apps — is
-what a persona with a computer pin (Manage → Personas → "Computer this persona controls")
-does with its `computer` tool, under your consent switch and banner. Once such a persona
-exists for a computer, a GUI-scripting command from any other persona is refused and told
-to hand the task over; with no persona pinned, the command runs under the usual policy.
+what a persona with a computer pin (Manage → Personas → "Computer this persona controls"),
+or a chat allowed to control that Mac (see [Coding agents and computer
+control](#coding-agents-and-computer-control)), does with its `computer` tool, under your
+consent switch and banner. Once a persona is pinned to a computer, a GUI-scripting command
+from any conversation that may not drive it is refused and told to hand the task over;
+with no persona pinned, the command runs under the usual policy.
 
 Once a computer accepts commands, they face the same approval policy as everywhere
 else, with one deliberate difference: nothing is pre-approved there. Even commands
@@ -157,6 +163,45 @@ nothing in the chat — has been touched for the period you choose (7, 30 or 90 
 or **Never**). Treat scratch as working space: anything you want to keep belongs in
 your Files, which the assistant can copy into and which is not swept. Scratch is
 also left behind when you move Stem to another machine.
+
+## Coding agents and computer control
+
+A coding agent (Claude Code, Codex, OpenCode, …) takes programming work off Stem's
+hands; computer control lets Stem see a Mac's screen and click and type there. Both
+come from two places, and a conversation gets them from exactly one:
+
+- **A persona** gets them from its own setup in Manage → Personas: a coding setup
+  (agent, computer, folder) and a computer pin ("Computer this persona controls").
+  A persona without one has no coding agent, or no computer control — whatever the
+  switches below say. Chatting as your Secretary will not start Claude Code unless the
+  Secretary has a coding setup.
+- **A chat with no persona** (Quick Chat included) gets them from Settings → Features →
+  Coding agents / Computer control → **Allow in chats**. Off by default. The switch
+  belongs to your Stem server, so it covers chats from every device, the phone too.
+  Scheduled tasks never use it: a task that needs a coding agent runs as a persona that
+  has one.
+
+When a chat is allowed, the row under the switch says where the work goes:
+
+- **Let the model choose**: the chat is told which agents Stem knows and which
+  computers have switched the feature on, and picks from them per request ("fix the
+  build on the Linux box with Codex"). Suits strong models.
+- **A fixed computer** (and, for coding, an agent): every chat's run goes there, and the
+  model has nothing to decide. Suits small or local models. The agent has to be
+  installed on that computer; if it is not, the run fails with the agent's own error.
+
+A chat uses these only when you ask: it does not start a coding agent for an ordinary
+question. It works in the folder you name ("fix the tests in ~/code/app"). Left
+unnamed, a run on Stem's own machine uses the chat's scratch folder, and a run on
+another computer stops to ask you which folder. A computer that is asleep or has
+Stem closed fails right away with a message saying so; nothing is queued.
+
+Each computer still has to agree for itself: **Run coding agents on this computer**
+and **Let Stem control this Mac**, in the same section *on that machine*. Command
+approvals apply to what a coding agent runs, the same as for personas.
+
+If Stem says it cannot use a coding agent or control the computer, it names the
+reason: the chat runs as a persona without that setup, or chats are switched off here.
 
 ## Escape key
 

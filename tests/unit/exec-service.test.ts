@@ -456,6 +456,14 @@ describe('ExecService device targeting', () => {
     expect(ran).toHaveLength(1);
   });
 
+  it('lets a plain chat allowed to drive any Mac script the GUI too (Settings → Features)', async () => {
+    pinned = ['MacControl'];
+    decision = 'allowOnce';
+    const result = await request({ command: DARK_MODE, personaComputerDevice: null, computerAnyDevice: true });
+    expect(result.ok).toBe(true);
+    expect(ran).toHaveLength(1);
+  });
+
   it('keeps the escape hatch when nobody is pinned to that computer', async () => {
     pinned = [];
     decision = 'allowOnce';

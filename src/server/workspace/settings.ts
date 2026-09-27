@@ -13,6 +13,7 @@ import type {
   EscapeAction,
   ExecSettings,
   HarnessSettings,
+  ChatFeatureSettings,
   OnboardingSettings,
   LocalEmbedModelId,
   LocalModelDtype,
@@ -123,6 +124,12 @@ const DEFAULTS: ServerSettings = {
   // (name -> command); empty means the built-in registry.
   harness: {
     agents: {}
+  },
+  // Coding agents / computer control in chats run as no persona: off until
+  // the user allows them in Settings → Features (2026-09-27).
+  chatFeatures: {
+    coding: { allow: false, target: null },
+    computer: { allow: false, target: null }
   },
   // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
   // default to the bundled local model (multilingual, in-process, nothing leaves
@@ -552,6 +559,7 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
       return agents;
     })()
   };
+  const chatFeatures = coerceChatFeatures(parsed?.chatFeatures);
   const rawRet = (parsed?.retrieval ?? {}) as Partial<RetrievalSettings>;
   // Imported models first: they are half of what a stage's model id is allowed
   // to be, so an entry that doesn't survive coercion must not leave the stage
@@ -654,12 +662,37 @@ function coerce(parsed: Partial<ServerSettings> | null): ServerSettings {
     mail,
     exec,
     harness,
+    chatFeatures,
     retrieval,
     escapeAction,
     customInstructions,
     onboarding,
     defaults,
     localProviders
+  };
+}
+
+/** Ids and agent names only: trimmed, capped, and a blank one is no target. */
+function coerceChatFeatures(raw: unknown): ChatFeatureSettings {
+  const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : undefined;
+  const r = obj(raw);
+  const coding = obj(r.coding);
+  const computer = obj(r.computer);
+  const codingTarget = obj(coding.target);
+  const agent = str(codingTarget.agent);
+  const codingDevice = str(codingTarget.device);
+  const computerDevice = str(obj(computer.target).device);
+  return {
+    coding: {
+      allow: coding.allow === true,
+      target: agent ? { agent, ...(codingDevice ? { device: codingDevice } : {}) } : null
+    },
+    computer: {
+      allow: computer.allow === true,
+      target: computerDevice ? { device: computerDevice } : null
+    }
   };
 }
 
@@ -836,6 +869,16 @@ export function updateHarnessSettings(patch: Partial<HarnessSettings>): Promise<
   return enqueue(async () => {
     const cur = await readForUpdate();
     const next = coerce({ ...cur, harness: { ...cur.harness, ...patch } });
+    await writeSettings(next);
+    return next;
+  });
+}
+
+/** Patch the chat-feature switches (coding agents / computer control in plain chats). */
+export function updateChatFeatureSettings(patch: Partial<ChatFeatureSettings>): Promise<ServerSettings> {
+  return enqueue(async () => {
+    const cur = await readForUpdate();
+    const next = coerce({ ...cur, chatFeatures: { ...cur.chatFeatures, ...patch } });
     await writeSettings(next);
     return next;
   });

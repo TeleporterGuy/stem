@@ -113,8 +113,8 @@ export function createExecHost(deps: ExecHostDeps): ExecHost {
       return {
         ok: false,
         error:
-          'This computer does not accept commands from Stem. The switch is in Settings → Chat → ' +
-          'Command execution, on this computer.'
+          'This computer does not accept commands from Stem. The switch is in Settings → Features → ' +
+          'Commands, on this computer.'
       };
     }
     // The read-only re-check, against THIS machine's own mirror list — the copy

@@ -59,6 +59,12 @@ export interface ChannelSignatures {
    * UI decision, not a secret, and every paired device is fully trusted anyway.
    */
   'personas:list': StemApi['listPersonas'];
+  /**
+   * The paired devices and what each one said it hosts, plus the coding-agent
+   * names Stem knows — the options of Settings → Features' "in chats" rows.
+   */
+  'devices:list': StemApi['listDevices'];
+  'personas:agents': StemApi['listCodingAgents'];
 
   // Inbox triage. Every mutator returns the fresh ChatListResult, so the list
   // screen replaces its state with the answer instead of re-fetching.
@@ -87,6 +93,7 @@ export interface ChannelSignatures {
   'settings:updateTasks': StemApi['updateTasksSettings'];
   'settings:updateExec': StemApi['updateExecSettings'];
   'settings:updateHarness': StemApi['updateHarnessSettings'];
+  'settings:updateChatFeatures': StemApi['updateChatFeatureSettings'];
   'settings:updateSkills': StemApi['updateSkillsSettings'];
   'settings:updateQuickChat': StemApi['updateQuickChat'];
   'settings:updateEscapeAction': StemApi['updateEscapeAction'];

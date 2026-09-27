@@ -6,9 +6,10 @@
 //    JSON answer as the tool result;
 //  - the runtime side (PiRuntime.handleHarnessBridgeRequest): the payload is
 //    routed to the wired HarnessBridge with the CURRENT turn's threadId and
-//    scheduled flag injected — never trusted from the payload — the persona
-//    pin decides whether the tool exists at all and clamps agent, device and
-//    cwd in every turn kind, and the answer goes to the process that ASKED,
+//    scheduled flag injected — never trusted from the payload — the turn's
+//    grant (a persona pin, clamping agent, device and cwd; or a plain chat's
+//    Settings choice) decides whether the tool exists at all and where it
+//    runs, and the answer goes to the process that ASKED,
 //    not to a replacement.
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -77,8 +78,8 @@ describe('extension side', () => {
     expect(tool.description).toContain('continues the SAME');
     const { asks, ctx } = scriptedCtx(() => JSON.stringify({ ok: true, text: 'flag added' }));
     const result = await tool.execute!('call-1', {
-      // Neither is a parameter any more: the persona pin fixes them. A model
-      // that names them anyway must not smuggle them across the bridge.
+      // They count only in a model-chooses chat (gate codingChoose); here the
+      // gate is absent, so naming them must not smuggle them across the bridge.
       agent: 'opencode',
       device: 'OtherMac',
       prompt: 'add a flag',
@@ -126,6 +127,37 @@ describe('extension side', () => {
     expect(b.isError).toBe(true);
   });
 
+  it('forwards agent and device only when the gate says the model chooses them', async () => {
+    const gatePath = join(configDir, 'turn-context.json');
+    writeFileSync(gatePath, JSON.stringify({ mail: false, scheduled: false, coding: true, codingChoose: true }));
+    try {
+      const tool = await registeredCodingAgent();
+      const { asks, ctx } = scriptedCtx(() => JSON.stringify({ ok: true, text: 'ok' }));
+      await tool.execute!('c', { agent: 'codex', device: 'MacBook', prompt: 'go' }, undefined, undefined, ctx);
+      expect(JSON.parse(asks[0].payload)).toMatchObject({ agent: 'codex', device: 'MacBook', prompt: 'go' });
+    } finally {
+      rmSync(gatePath, { force: true });
+    }
+  });
+
+  it('refuses with the reason main wrote into the gate', async () => {
+    const gatePath = join(configDir, 'turn-context.json');
+    writeFileSync(
+      gatePath,
+      JSON.stringify({ mail: false, scheduled: false, coding: false, codingRefusal: 'runs as the persona “Critic”' })
+    );
+    try {
+      const tool = await registeredCodingAgent();
+      const { asks, ctx } = scriptedCtx(() => JSON.stringify({ ok: true, text: 'never' }));
+      const result = await tool.execute!('c', { prompt: 'go' }, undefined, undefined, ctx);
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain('Critic');
+      expect(asks).toHaveLength(0);
+    } finally {
+      rmSync(gatePath, { force: true });
+    }
+  });
+
   it('refuses up front when the turn-context gate says coding is off (no code persona, any turn kind)', async () => {
     const gatePath = join(configDir, 'turn-context.json');
     // A plain live chat: the gate alone must keep the tool shut.
@@ -136,6 +168,7 @@ describe('extension side', () => {
       const result = await tool.execute!('c', { agent: 'claude', prompt: 'go' }, undefined, undefined, ctx);
       expect(result.isError).toBe(true);
       expect(result.content[0]?.text).toContain('code personas');
+      expect(result.content[0]?.text).toContain('Settings → Features');
       // No round-trip: the refusal is the point of the gate.
       expect(asks).toHaveLength(0);
       // An older main that writes no `coding` field reads as allowed — the
@@ -223,7 +256,7 @@ describe('runtime side', () => {
     });
     worker.currentTurn = newTurnContext('the-real-thread', 'turn-1');
     worker.currentTurn.isScheduled = true;
-    worker.currentTurn.personaHarness = { agent: 'claude', cwd: '' };
+    worker.currentTurn.codingGrant = { kind: 'pin', pin: { agent: 'claude', cwd: '' } };
     internal.handleHarnessBridgeRequest(
       worker,
       'elicit-1',
@@ -257,7 +290,14 @@ describe('runtime side', () => {
     expect(seen).toHaveLength(0);
     const answer = JSON.parse(sent[0].value) as { ok: boolean; error?: string };
     expect(answer.ok).toBe(false);
-    expect(answer.error).toContain('code personas');
+    expect(answer.error).toContain('not available');
+    // The reason resolved at turn start is what the model is told.
+    sent.length = 0;
+    worker.currentTurn.codingRefusal = 'Coding agents are off for chats that run as no persona.';
+    internal.handleHarnessBridgeRequest(worker, 'elicit-1b', JSON.stringify({ prompt: 'go' }));
+    await settleSends(sent);
+    expect(seen).toHaveLength(0);
+    expect(JSON.parse(sent[0].value).error).toContain('off for chats');
 
     // A mail delivery as an unpinned persona: same refusal.
     sent.length = 0;
@@ -283,7 +323,7 @@ describe('runtime side', () => {
     worker.currentTurn = newTurnContext('t', 'turn-1');
     worker.currentTurn.isMail = true;
     worker.currentTurn.isScheduled = true;
-    worker.currentTurn.personaHarness = { agent: 'opencode', cwd: '/repo', device: 'dev-1' };
+    worker.currentTurn.codingGrant = { kind: 'pin', pin: { agent: 'opencode', cwd: '/repo', device: 'dev-1' } };
     // The tool call tries to hop agent and machine; only the in-repo cwd survives.
     internal.handleHarnessBridgeRequest(
       worker,
@@ -318,7 +358,7 @@ describe('runtime side', () => {
       settleAll: () => {}
     });
     worker.currentTurn = newTurnContext('t', 'turn-1');
-    worker.currentTurn.personaHarness = { agent: 'claude', cwd: '/repo', model: 'claude-haiku-4-5' };
+    worker.currentTurn.codingGrant = { kind: 'pin', pin: { agent: 'claude', cwd: '/repo', model: 'claude-haiku-4-5' } };
     // A chat turn as a code persona: the pin fills agent, cwd AND model.
     internal.handleHarnessBridgeRequest(worker, 'elicit-1', JSON.stringify({ prompt: 'go' }));
     await settleSends(sent);
@@ -345,6 +385,83 @@ describe('runtime side', () => {
     expect(JSON.parse(sent[0].value)).toMatchObject({ ok: false });
   });
 
+  it('a plain chat with a fixed Settings target: agent and device from Settings, folder from the chat', async () => {
+    const seen: HarnessRequest[] = [];
+    const { internal, worker, sent } = runtimeWithBridge({
+      handleHarnessRequest: async (req) => {
+        seen.push(req);
+        return { ok: true, text: 'done' };
+      },
+      abortThread: () => {},
+      settleAll: () => {}
+    });
+    worker.currentTurn = newTurnContext('t', 'turn-1');
+    worker.currentTurn.codingGrant = { kind: 'chat', target: { agent: 'claude', device: 'dev-1' } };
+    internal.handleHarnessBridgeRequest(
+      worker,
+      'elicit-1',
+      JSON.stringify({ agent: 'codex', device: 'Other', prompt: 'go', cwd: '/Users/me/code/app' })
+    );
+    await settleSends(sent);
+    expect(seen[0]).toMatchObject({ agent: 'claude', device: 'dev-1', cwd: '/Users/me/code/app' });
+    expect(seen[0].model).toBeUndefined();
+
+    // Another computer and no folder: ask the user, never guess.
+    sent.length = 0;
+    internal.handleHarnessBridgeRequest(worker, 'elicit-2', JSON.stringify({ prompt: 'go' }));
+    await settleSends(sent);
+    expect(seen).toHaveLength(1);
+    const refused = JSON.parse(sent[0].value) as { ok: boolean; error?: string };
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('Ask the user which folder');
+  });
+
+  it("a plain chat on Stem's server with no folder runs in the chat's scratch (cwd left to the service)", async () => {
+    const seen: HarnessRequest[] = [];
+    const { internal, worker, sent } = runtimeWithBridge({
+      handleHarnessRequest: async (req) => {
+        seen.push(req);
+        return { ok: true, text: 'done' };
+      },
+      abortThread: () => {},
+      settleAll: () => {}
+    });
+    worker.currentTurn = newTurnContext('t', 'turn-1');
+    worker.currentTurn.codingGrant = { kind: 'chat', target: { agent: 'claude' } };
+    internal.handleHarnessBridgeRequest(worker, 'elicit-1', JSON.stringify({ prompt: 'go' }));
+    await settleSends(sent);
+    expect(seen[0]).toMatchObject({ agent: 'claude' });
+    expect(seen[0].device).toBeUndefined();
+    expect(seen[0].cwd).toBeUndefined();
+  });
+
+  it('a model-chooses chat: agent and device come from the call, and a missing agent is refused', async () => {
+    const seen: HarnessRequest[] = [];
+    const { internal, worker, sent } = runtimeWithBridge({
+      handleHarnessRequest: async (req) => {
+        seen.push(req);
+        return { ok: true, text: 'done' };
+      },
+      abortThread: () => {},
+      settleAll: () => {}
+    });
+    worker.currentTurn = newTurnContext('t', 'turn-1');
+    worker.currentTurn.codingGrant = { kind: 'chat', target: null };
+    internal.handleHarnessBridgeRequest(
+      worker,
+      'elicit-1',
+      JSON.stringify({ agent: 'codex', device: 'Linux box', prompt: 'go', cwd: '/srv/app' })
+    );
+    await settleSends(sent);
+    expect(seen[0]).toMatchObject({ agent: 'codex', device: 'Linux box', cwd: '/srv/app' });
+
+    sent.length = 0;
+    internal.handleHarnessBridgeRequest(worker, 'elicit-2', JSON.stringify({ prompt: 'go' }));
+    for (let i = 0; i < 200 && sent.length === 0; i++) await new Promise((r) => setTimeout(r, 1));
+    expect(seen).toHaveLength(1);
+    expect(JSON.parse(sent[0].value).error).toContain('Name the coding agent');
+  });
+
   it('answers honestly when no bridge is wired', async () => {
     const { internal, worker, sent } = runtimeWithBridge(null);
     internal.handleHarnessBridgeRequest(worker, 'elicit-1', JSON.stringify({ prompt: 'go' }));
@@ -363,7 +480,7 @@ describe('runtime side', () => {
       settleAll: () => {}
     });
     worker.currentTurn = newTurnContext('t', 'turn-1');
-    worker.currentTurn.personaHarness = { agent: 'claude', cwd: '' };
+    worker.currentTurn.codingGrant = { kind: 'pin', pin: { agent: 'claude', cwd: '' } };
     internal.handleHarnessBridgeRequest(worker, 'elicit-1', JSON.stringify({ prompt: 'go' }));
     // The pi child restarts while the harness turn runs; the reply must not
     // land on the new process's unrelated elicitation table.

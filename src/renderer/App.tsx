@@ -410,7 +410,7 @@ export default function App() {
     () => (localStorage.getItem('stem.format') === 'md' ? 'md' : 'mdx')
   );
   // Web search for main-window turns. Unlike the pickers above this one lives in
-  // settings rather than localStorage — it is the same switch Settings → Chat
+  // settings rather than localStorage — it is the same switch Settings → App
   // shows, and the server reads it when the turn starts.
   const { enabled: webSearch, toggle: toggleWebSearch } = useWebSearch('main');
   const selectedModel = models.find((m) => m.id === modelId) ?? null;

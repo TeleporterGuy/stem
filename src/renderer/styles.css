@@ -3351,7 +3351,7 @@ summary.mail-work-action { cursor: pointer; }
   max-height: 100px;
 }
 
-/* Settings → Chat → Command execution: the learned-prefix allowlist editor. */
+/* Settings → Features → Commands: the learned-prefix allowlist editor. */
 .exec-allowlist {
   display: flex;
   flex-wrap: wrap;
@@ -3374,7 +3374,7 @@ summary.mail-work-action { cursor: pointer; }
 }
 .exec-bash-path .ifield { flex: 1; min-width: 0; }
 
-/* Settings → Chat → Command execution: what each chat's commands left on disk. */
+/* Settings → Features → Commands: what each chat's commands left on disk. */
 .scratch-usage {
   margin-top: var(--sp-4);
   display: flex;

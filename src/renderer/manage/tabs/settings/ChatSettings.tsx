@@ -8,16 +8,16 @@ import { DisclosureRow, RowSelect, ValueRow } from './rows';
 import { QuickChatSection } from './QuickChatSettings';
 
 /**
- * Settings → Chat: everywhere you talk to Stem — the main conversation and the
- * Quick Chat overlay. Which model answers, how chats get named, and the
- * instructions carried into every turn. What the assistant may DO while it
- * works (commands, coding agents) lives under App: that policy governs every
- * conversation at once, so it is the shell's business, not any one chat's.
+ * Settings → App, top half: everywhere you talk to Stem — the main
+ * conversation and the Quick Chat overlay. Which model answers, how chats get
+ * named, and the instructions carried into every turn. What the assistant may
+ * DO while it works (commands, coding agents, computer control) lives under
+ * Features: that policy governs every conversation at once.
  *
  * Layout is the settings-row idiom (rows.tsx): the tab reads as an answer
  * sheet, and the instruction textareas live one level down behind their row.
  */
-export function ChatSettings({ models, modelId, onSelectModel }: ModelTabProps) {
+export function ConversationSections({ models, modelId, onSelectModel }: ModelTabProps) {
   const [ws, setWs] = useState<WebSearchSettings>({
     main: true,
     quickChat: true,

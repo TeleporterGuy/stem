@@ -5,6 +5,7 @@ import { stripCiteMarkers } from '../../shared/citations';
 import { WEB_ACCESS_TOOL_NAMES } from '../../shared/activity';
 import { SECRET_ENVELOPE_KEY, toolArgsOf } from './protocol';
 import type { InlinedSkill } from '../skills/inject';
+import type { CodingGrant, ComputerGrant } from '../harness/chat-grants';
 import type { SkillIssue } from '../skills/grade';
 import { extractSources } from './web-search';
 
@@ -149,13 +150,24 @@ export interface TurnContext {
   personaId?: string;
   /**
    * The turn's persona coding-harness pin (agent + cwd + optional device and
-   * model), when the persona has one. In a chat it fills coding_agent's
-   * agent/cwd/device defaults — explicit tool arguments win; in a mail delivery
-   * it is the clamp. The model rides along whenever the pinned agent runs.
+   * model), when the persona has one. It is the clamp in every turn kind, and
+   * what makes the persona a relay. The model rides along whenever the pinned
+   * agent runs.
    */
   personaHarness?: PersonaHarnessPin;
-  /** The turn's persona computer-control pin: the Mac the `computer` tool drives. Present = the tool exists. */
+  /** The turn's persona computer-control pin: the Mac the `computer` tool drives. */
   personaComputer?: PersonaComputerPin;
+  /**
+   * What coding_agent may do this turn — the persona pin, or a plain chat's
+   * Settings → Features choice — or, absent, why not (`codingRefusal`).
+   * Resolved once at turn start (harness/chat-grants.ts); the harness bridge
+   * reads it, never the tool payload's say-so.
+   */
+  codingGrant?: CodingGrant;
+  codingRefusal?: string;
+  /** The same for the `computer` tool. */
+  computerGrant?: ComputerGrant;
+  computerRefusal?: string;
   /** The raw user message that started this turn — intent context for the exec safety judge. */
   userText?: string;
   phase: 'pending' | 'thinking' | 'tool' | 'answer';

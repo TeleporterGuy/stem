@@ -322,7 +322,7 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
       return {
         ok: false,
         error:
-          'This Mac does not let Stem control its screen. The switch is in Settings → Chat → Computer control, ' +
+          'This Mac does not let Stem control its screen. The switch is in Settings → Features → Computer control, ' +
           'on that computer.'
       };
     }

@@ -120,7 +120,7 @@ export class ExecService implements ExecBridge {
     const all = await this.deps.readSettings();
     const settings = all.exec;
     if (!settings.enabled) {
-      return { ok: false, error: 'Command execution is disabled in Settings → Chat → Command execution.' };
+      return { ok: false, error: 'Command execution is disabled in Settings → Features → Commands.' };
     }
     // Decide the host shell ONCE, here, and carry it all the way to spawn. The
     // parser, the allowlist, the protected-roots scan and the judge are all
@@ -292,8 +292,10 @@ export class ExecService implements ExecBridge {
     // `computer` tool, the consent switch and the banner. Another persona
     // scripting that GUI over run_command (osascript at System Events, cliclick,
     // SendKeys) slips past all three, so when someone IS pinned the command is
-    // refused with a hand-off. Nobody pinned → the escape hatch stays open.
-    if (req.personaComputerDevice !== target.deviceId && drivesGui(command)) {
+    // refused with a hand-off. Nobody pinned → the escape hatch stays open. A
+    // plain chat allowed to drive that Mac (Settings → Features) counts as its
+    // owner, as the pinned persona itself does.
+    if (!req.computerAnyDevice && req.personaComputerDevice !== target.deviceId && drivesGui(command)) {
       const owners = await this.computerPersonasFor(target.deviceId);
       if (owners.length) {
         const names = owners.map((n) => `“${n}”`).join(' or ');
@@ -314,7 +316,7 @@ export class ExecService implements ExecBridge {
         ok: false,
         error:
           `${label} does not accept commands from this Stem. Only its owner can change that, in ` +
-          `Settings → Chat → Command execution ON that computer — tell them so rather than retrying.`
+          `Settings → Features → Commands ON that computer — tell them so rather than retrying.`
       };
     }
     if (!this.router().isAvailable(target.deviceId)) {

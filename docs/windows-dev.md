@@ -94,7 +94,7 @@ parser then follows **bash** quoting, not cmd’s — `ls` auto-runs, `dir` does
 
 Stem looks for `bash.exe` on disk (usual Git for Windows paths, then PATH)
 without running PowerShell. If Git is installed somewhere unusual, paste the
-path to `bash.exe` under Settings → Chat → Command execution.
+path to `bash.exe` under Settings → Features → Commands.
 
 Only a Git for Windows layout is accepted — `…\Git\bin\bash.exe` with `git.exe`
 beside it. `C:\Windows\System32\bash.exe` is WSL's launcher, and it is on PATH
@@ -177,6 +177,6 @@ Or avoid pipes with `(...)` / property access when that is enough
     - `[embed-endpoint]` — the named pipe serving query embeddings to the
       `stem-recall` MCP server. Failing here costs `search_past_chats` its
       semantic half and nothing else.
-11. Settings → Chat → Command execution → Windows shell should already be Git Bash
+11. Settings → Features → Commands → Windows shell should already be Git Bash
     when `bash.exe` was found. Ask Stem to run `ls`. Switch to Command Prompt and
     `dir` if you want the cmd parser.

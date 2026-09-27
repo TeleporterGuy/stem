@@ -91,7 +91,7 @@ export const TIPS: Tip[] = [
   },
   {
     id: 'commands-on-this-computer',
-    text: 'The assistant can run commands on this computer too, once Settings → Chat → Command execution allows it here.',
+    text: 'The assistant can run commands on this computer too, once Settings → Features → Commands allows it here.',
     // The switch it points at only exists when the server is elsewhere.
     when: (c) => c.remote
   },

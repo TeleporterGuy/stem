@@ -27,6 +27,7 @@ import type { ModelSummary } from '@shared/types';
 import {
   mobileGroups,
   type ChoiceSetting,
+  type DynamicChoiceSetting,
   type ModelSetting,
   type SettingDef,
   type Settings,
@@ -150,7 +151,11 @@ export default function SettingsScreen(): ReactElement {
       ...(settings
         ? GROUPS.map((g) => ({
             title: g.title,
-            data: g.settings.map((def): Row => ({ type: 'setting', key: def.key, def }))
+            data: g.settings
+              // Follow-up rows (where chats run a coding agent) only while
+              // the switch they follow is on.
+              .filter((def) => !('visible' in def) || !def.visible || def.visible(settings))
+              .map((def): Row => ({ type: 'setting', key: def.key, def }))
           }))
         : []),
       { title: '', data: [{ type: 'unpair', key: 'unpair' } as Row] }
@@ -247,6 +252,11 @@ export default function SettingsScreen(): ReactElement {
                 onSave={save}
                 connection={connection}
               />
+            );
+          }
+          if (item.def.kind === 'dynamicChoice') {
+            return (
+              <DynamicChoiceRow def={item.def} settings={settings!} theme={theme} onSave={save} connection={connection} />
             );
           }
           return <ChoiceRow def={item.def} settings={settings!} theme={theme} onSave={save} connection={connection} />;
@@ -375,6 +385,58 @@ function ChoiceRow({
         {def.hint ? <Text style={[styles.hint, { color: theme.dim }]}>{def.hint}</Text> : null}
       </View>
       <Text style={[styles.value, { color: theme.dim }]}>{currentLabel}</Text>
+    </Pressable>
+  );
+}
+
+function DynamicChoiceRow({
+  def,
+  settings,
+  theme,
+  onSave,
+  connection
+}: {
+  def: DynamicChoiceSetting;
+  settings: Settings;
+  theme: Theme;
+  onSave: (run: () => Promise<Settings>) => Promise<void>;
+  connection: ReturnType<typeof useTransport>['connection'];
+}): ReactElement {
+  // Fetched by the row, on mount and again on each tap: which computers said
+  // yes changes on the desk, not here.
+  const [options, setOptions] = useState<{ value: string; label: string }[] | null>(null);
+  useEffect(() => {
+    void def
+      .load(connection)
+      .then(setOptions)
+      .catch(() => undefined);
+  }, [def, connection]);
+  const current = def.read(settings);
+  const currentLabel = options?.find((o) => o.value === current)?.label ?? current;
+  const pick = async (): Promise<void> => {
+    const fresh = await def.load(connection).catch(() => options);
+    if (fresh) setOptions(fresh);
+    if (!fresh || fresh.length === 0) {
+      Alert.alert(def.label, 'The options couldn’t be loaded — pull down to refresh, then try again.');
+      return;
+    }
+    Alert.alert(def.label, def.hint, [
+      ...fresh.map((o) => ({
+        text: o.value === current ? `${o.label} ✓` : o.label,
+        onPress: () => void onSave(() => def.save(connection, o.value, settings))
+      })),
+      { text: 'Cancel', style: 'cancel' as const }
+    ]);
+  };
+  return (
+    <Pressable onPress={() => void pick()} style={styles.row}>
+      <View style={styles.labelSide}>
+        <Text style={[styles.label, { color: theme.text }]}>{def.label}</Text>
+        {def.hint ? <Text style={[styles.hint, { color: theme.dim }]}>{def.hint}</Text> : null}
+      </View>
+      <Text numberOfLines={1} style={[styles.value, { color: theme.dim }]}>
+        {currentLabel}
+      </Text>
     </Pressable>
   );
 }

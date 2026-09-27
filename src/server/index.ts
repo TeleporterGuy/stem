@@ -80,6 +80,7 @@ import {
   updateEscapeAction,
   updateExecSettings,
   updateHarnessSettings,
+  updateChatFeatureSettings,
   updateMemorySettings,
   updateWebSearch,
   updateQuickChat,
@@ -98,6 +99,7 @@ import type {
   ExecHostShellInfo,
   ExecSettings,
   HarnessSettings,
+  ChatFeatureSettings,
   MemoryModelSettings,
   ModelSummary,
   WebSearchSettings,
@@ -594,6 +596,11 @@ function registerIpc(): void {
     // enable switch lives here: coding is a persona-pin capability.
     return updateHarnessSettings(patch);
   });
+  registerServer('settings:updateChatFeatures', async (_e, patch: Partial<ChatFeatureSettings>) => {
+    // Just persist — each chat turn reads it when its turn-context gate is
+    // written, so the change applies to the next message.
+    return updateChatFeatureSettings(patch);
+  });
   registerServer('harness:listModels', async (_e, input?: { agent?: string; host?: string }) => {
     // The persona editor's live probe: which models the agent offers on the
     // host the persona is pinned to. Never rejects; the editor renders the error.
@@ -909,8 +916,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   });
 
   // Scratch housekeeping: each chat's run_command folder is removed when the chat
-  // is deleted, and idle ones age out on the TTL (Settings → Chat → Command
-  // execution). Swept once now and then daily — the desktop app is quit most
+  // is deleted, and idle ones age out on the TTL (Settings → Features →
+  // Commands). Swept once now and then daily — the desktop app is quit most
   // nights, but a headless server can run for a quarter, and that is exactly the
   // machine where disk creeping up goes unnoticed.
   startScratchSweeper({

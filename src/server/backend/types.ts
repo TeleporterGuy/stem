@@ -42,12 +42,15 @@ export interface ExecRequest {
    */
   device?: string;
   /**
-   * The paired computer id the turn's persona is pinned to with a computer pin
-   * (null/absent = no pin). A GUI-scripting command aimed at a computer that
-   * SOME persona is pinned to, from a turn whose persona is not that one, is
+   * The paired computer id this turn may drive with the `computer` tool — its
+   * persona's computer pin, or a plain chat's fixed Mac from Settings →
+   * Features (null/absent = none). A GUI-scripting command aimed at a computer
+   * that SOME persona is pinned to, from a turn that may not drive it, is
    * refused with a hand-off — the pinned persona owns that computer's GUI.
    */
   personaComputerDevice?: string | null;
+  /** A plain chat whose computer control lets the model name any Mac: no hand-off. */
+  computerAnyDevice?: boolean;
   /** The originating conversation (null when no turn is live — shouldn't happen in practice). */
   threadId: string | null;
   /** True for autonomous scheduled runs — manual approvals are rejected there. */
@@ -115,7 +118,10 @@ export interface HarnessRequest {
 
 /** What the assistant's `computer` tool sends over its round-trip, after PiRuntime fills in the turn. */
 export interface ComputerRequest {
-  /** The pinned Mac, injected from the persona's computer pin — never from the payload. */
+  /**
+   * The Mac, injected from the turn's computer grant (a persona pin or a chat's
+   * fixed Settings target), or resolved by resolveNamedMac in a model-chooses chat.
+   */
   device: string;
   action: ComputerAction;
   /** Injected from the live turn. */
@@ -130,6 +136,11 @@ export interface ComputerRequest {
  */
 export interface ComputerBridge {
   handleComputerRequest(req: ComputerRequest): Promise<DeviceComputerResult>;
+  /**
+   * A model-chooses chat named a Mac: resolve it to a paired Mac that lets Stem
+   * drive it and is connected, or say why not.
+   */
+  resolveNamedMac(name: string): Promise<{ ok: true; deviceId: string } | { ok: false; error: string }>;
   /** The turn is over, however it ended: fail what is in flight, drop the Mac's banner. */
   endThread(threadId: string, reason?: string): void;
   /** Everything (the backend restarted). */
@@ -310,7 +321,7 @@ export interface ChatBackend extends EventEmitter {
   renameThread(threadId: string, name: string): Promise<void>;
   /**
    * Ask a small model to name the thread from its conversation and apply the name
-   * per Settings → Chat → Chats (see server/chats/subject.ts). Always resolves; a
+   * per Settings → App → Subjects (see server/chats/subject.ts). Always resolves; a
    * thread that gets no subject just keeps the name it already has. `force` = the
    * explicit "Write a subject" action, which ignores the mode, reads the whole
    * thread and may replace a hand-typed name. The automatic naming schedule runs

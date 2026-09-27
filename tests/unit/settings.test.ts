@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
+  updateChatFeatureSettings,
   backgroundRunFor,
   markOnboardingCompleted,
   memoryRunFor,
@@ -936,6 +937,44 @@ describe('chats settings', () => {
   });
 });
 
+
+describe('chat features setting', () => {
+  it('starts with both off and no target', async () => {
+    writeFileSync(path, JSON.stringify({}));
+    expect((await readSettings()).chatFeatures).toEqual({
+      coding: { allow: false, target: null },
+      computer: { allow: false, target: null }
+    });
+  });
+
+  it('keeps well-formed targets, trims them, and drops blank or malformed ones', async () => {
+    writeFileSync(
+      path,
+      JSON.stringify({
+        chatFeatures: {
+          coding: { allow: true, target: { agent: ' claude ', device: ' dev-1 ' } },
+          computer: { allow: 'yes', target: { device: '   ' } }
+        }
+      })
+    );
+    expect((await readSettings()).chatFeatures).toEqual({
+      coding: { allow: true, target: { agent: 'claude', device: 'dev-1' } },
+      computer: { allow: false, target: null }
+    });
+    writeFileSync(path, JSON.stringify({ chatFeatures: { coding: { allow: true, target: { device: 'dev-1' } } } }));
+    // A target with no agent is "let the model choose", not half a target.
+    expect((await readSettings()).chatFeatures.coding).toEqual({ allow: true, target: null });
+  });
+
+  it('patches one feature without touching the other', async () => {
+    writeFileSync(path, JSON.stringify({ chatFeatures: { computer: { allow: true, target: { device: 'mac-1' } } } }));
+    const next = await updateChatFeatureSettings({ coding: { allow: true, target: { agent: 'codex' } } });
+    expect(next.chatFeatures).toEqual({
+      coding: { allow: true, target: { agent: 'codex' } },
+      computer: { allow: true, target: { device: 'mac-1' } }
+    });
+  });
+});
 
 describe('harness agents setting', () => {
   it('keeps command overrides and drops the retired per-agent model pin on read', async () => {

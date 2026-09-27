@@ -11,6 +11,7 @@ import type {
 import { InfoTip } from '../../../ui/InfoTip';
 import { useRemoteServer } from '../../../hooks/useRemoteServer';
 import { DisclosureRow, RowSelect, ValueRow } from './rows';
+import { ChatCodingRows, ChatComputerRows } from './ChatFeatureRows';
 
 /** How long a chat's scratch folder survives being ignored. null = never sweep. */
 const SCRATCH_TTLS: { label: string; days: number | null }[] = [
@@ -50,11 +51,11 @@ function scratchLabel(row: ScratchUsageRow): string {
 }
 
 /**
- * Settings → App → Commands / Coding agents: what the assistant may DO on your
- * machines. On the App tab, not Chat, because it isn't a property of any one
- * conversation — the same policy governs the main chat, Quick Chat and every
- * scheduled run, and the machine consenting is the shell's business. Chat keeps
- * everything about talking; this is everything about acting.
+ * Settings → Features → Commands / Coding agents / Computer control: what the
+ * assistant may DO on your machines. Not under App, because it isn't a property
+ * of any one conversation — the same policy governs the main chat, Quick Chat
+ * and every scheduled run, and the machine consenting is its own business. App
+ * keeps everything about talking; this is everything about acting.
  */
 export function AutonomySections() {
   const [exec, setExec] = useState<ExecSettings | null>(null);
@@ -81,6 +82,9 @@ export function AutonomySections() {
   // Labels for the per-device allowlist groups. Devices that were unpaired keep
   // their entries readable (and deletable) under the raw id.
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
+  // This client's own device id: "this computer" is where the chat rows start
+  // a fixed pick when it qualifies.
+  const [clientDeviceId, setClientDeviceId] = useState<string | null>(null);
   // Debounced so typing a path doesn't spam the atomic settings writer.
   const bashPathTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -105,12 +109,22 @@ export function AutonomySections() {
       void window.stem.computerHostState().then(setComputerHost).catch(() => undefined);
     };
     window.addEventListener('focus', refreshComputer);
+    refreshDevices();
+    void window.stem
+      .clientInfo()
+      .then((c) => setClientDeviceId(c.deviceId))
+      .catch(() => undefined);
+    return () => window.removeEventListener('focus', refreshComputer);
+  }, []);
+
+  // Also after a consent switch flips: the chat rows offer the machines that
+  // said yes, and this one just changed its answer.
+  function refreshDevices() {
     void window.stem
       .listDevices()
       .then((snap) => setDevices(snap.devices))
       .catch(() => undefined);
-    return () => window.removeEventListener('focus', refreshComputer);
-  }, []);
+  }
 
   function updateExec(patch: Partial<ExecSettings>) {
     setExec((cur) => (cur ? { ...cur, ...patch } : cur)); // optimistic; reconcile below
@@ -510,24 +524,26 @@ export function AutonomySections() {
         )}
       </div>
 
-      {/* Coding agents have no Stem-wide switch: which persona may drive one, on
-          which computer and in which folder, is that persona's setup under
-          Manage → Personas. The only setting here is THIS computer's consent to
-          run agents the server sends it — offered when the server is elsewhere,
-          for the exec-host reason: on a local install the server machine is the
-          only one there is. Client-local state, never on the wire. */}
-      {remote && harnessHostEnabled !== null && (
-        <>
-          <div className="grp-head">Coding agents</div>
-          <div className="group">
+      {/* Coding agents: which persona may drive one, on which computer and in
+          which folder, is that persona's setup under Manage → Personas. Here:
+          whether chats with NO persona get one (server-wide, ChatCodingRows),
+          and THIS computer's consent to run agents the server sends it —
+          offered when the server is elsewhere, for the exec-host reason: on a
+          local install the server machine is the only one there is.
+          Client-local state, never on the wire. */}
+      <div className="grp-head">Coding agents</div>
+      <div className="group">
+        <ChatCodingRows devices={devices} remote={remote} clientDeviceId={clientDeviceId} />
+        {remote && harnessHostEnabled !== null && (
           <ValueRow
             label={<strong>Run coding agents on this computer</strong>}
             hint={
               <>
                 Let your Stem server drive a coding agent installed here{' '}
                 <InfoTip label="What switching this on means">
-                  With this on, a persona pinned to this computer in Manage → Personas can run its
-                  coding agent (Claude Code, OpenCode) here, with this machine's own logins and files. Its
+                  With this on, a persona pinned to this computer in Manage → Personas — or a chat,
+                  when “Allow in chats” above sends it here — can run a coding agent (Claude Code,
+                  OpenCode) on this machine, with its own logins and files. Its
                   commands follow the server's approval mode — safe ones run, flagged ones pause on
                   a card. Switching this off stops new runs immediately. Leave it off if this Stem
                   server isn't yours alone.
@@ -543,30 +559,35 @@ export function AutonomySections() {
               onClick={() =>
                 void window.stem
                   .setHarnessHostEnabled(!harnessHostEnabled)
-                  .then((s) => setHarnessHostEnabled(s.enabled))
+                  .then((s) => {
+                    setHarnessHostEnabled(s.enabled);
+                    refreshDevices();
+                  })
               }
             />
           </ValueRow>
-          </div>
-        </>
-      )}
+        )}
+      </div>
 
-      {/* Computer control: whether THIS Mac lets a persona pinned to it see the
+      {/* Computer control: whether chats with no persona may drive a Mac
+          (server-wide, ChatComputerRows), and whether THIS Mac lets Stem see the
           screen and move the mouse and keyboard. Same shape as the coding-agent
           consent above — offered when the server is elsewhere, client-local
           state, never on the wire — plus the three macOS grants the helper
           needs, requested from here because the prompts appear on this display. */}
-      {remote && computerHost?.supported && (
-        <>
-          <div className="grp-head">Computer control</div>
-          <div className="group">
+      <div className="grp-head">Computer control</div>
+      <div className="group">
+        <ChatComputerRows devices={devices} clientDeviceId={clientDeviceId} />
+        {remote && computerHost?.supported && (
+          <>
             <ValueRow
               label={<strong>Let Stem control this Mac</strong>}
               hint={
                 <>
-                  A persona pinned to this computer can see the screen and drive the mouse and keyboard{' '}
+                  Stem can see the screen and drive the mouse and keyboard here{' '}
                   <InfoTip label="What switching this on means">
-                    A persona pinned to this Mac in Manage → Personas gets a <code>computer</code> tool:
+                    A persona pinned to this Mac in Manage → Personas — or a chat, when “Allow in chats”
+                    above sends it here — gets a <code>computer</code> tool:
                     it takes screenshots, clicks and types here, with no per-action approval. While it
                     works a banner says so. Driving the whole screen, any key or mouse movement of your
                     own stops the run at once; working inside one app’s window (which it can do even
@@ -584,7 +605,10 @@ export function AutonomySections() {
                 aria-checked={computerHost.enabled}
                 aria-label="Let Stem control this Mac"
                 onClick={() =>
-                  void window.stem.setComputerHostEnabled(!computerHost.enabled).then(setComputerHost)
+                  void window.stem.setComputerHostEnabled(!computerHost.enabled).then((s) => {
+                    setComputerHost(s);
+                    refreshDevices();
+                  })
                 }
               />
             </ValueRow>
@@ -637,9 +661,9 @@ export function AutonomySections() {
                 </button>
               </ValueRow>
             )}
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </div>
     </>
   );
 }

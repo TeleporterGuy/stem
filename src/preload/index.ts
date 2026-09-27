@@ -21,6 +21,7 @@ import type {
   HarnessApprovalRequest,
   HarnessProgress,
   HarnessSettings,
+  ChatFeatureSettings,
   InstructionsProposal,
   LiveTurn,
   LocalEmbedStatus,
@@ -234,6 +235,8 @@ const api: StemApi = {
     ipcRenderer.invoke('skills:resolveApproval', id, accept, skill),
   updateExecSettings: (patch: Partial<ExecSettings>) => ipcRenderer.invoke('settings:updateExec', patch),
   updateHarnessSettings: (patch: Partial<HarnessSettings>) => ipcRenderer.invoke('settings:updateHarness', patch),
+  updateChatFeatureSettings: (patch: Partial<ChatFeatureSettings>) =>
+    ipcRenderer.invoke('settings:updateChatFeatures', patch),
   listHarnessModels: (input?: { agent?: string; host?: string }) => ipcRenderer.invoke('harness:listModels', input),
   onExecApproval: (listener: (request: ExecApprovalRequest) => void) => {
     const handler = (_e: unknown, request: ExecApprovalRequest) => listener(request);

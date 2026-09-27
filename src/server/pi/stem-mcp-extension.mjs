@@ -1999,9 +1999,12 @@ const TURN_CONTEXT_GATE_FILE = 'turn-context.json';
  * Reader for the per-turn context gate: what kind of turn is running on THIS
  * worker. Main rewrites the file before every prompt; a missing or unreadable
  * file reads as a live chat, which is also what an older main produces.
- * `coding` is whether coding_agent may run this turn (only a turn run as a
- * code persona — one with a coding pin — gets it); absent — an older main — it
- * reads as allowed, because the harness bridge in main enforces it regardless.
+ * `coding` is whether coding_agent may run this turn (a code persona's pin, or
+ * a plain chat Settings → Features allows); absent — an older main — it reads
+ * as allowed, because the harness bridge in main enforces it regardless.
+ * `codingRefusal` is main's reason when it may not (null → the generic one),
+ * and `codingChoose` whether the tool's agent/device arguments count. The
+ * computer trio mirrors it.
  * `recall` is whether the stem-recall search tools may answer (false for a
  * recall-off persona); absent it reads as allowed, the pre-gate behaviour.
  */
@@ -2013,14 +2016,29 @@ export function makeTurnContextGate(path) {
         mail: parsed.mail === true,
         scheduled: parsed.scheduled === true,
         coding: parsed.coding !== false,
-        // The `computer` tool: only a persona with a computer pin. Defaults to
-        // OFF when absent (an older main never wrote it, and never had the tool).
+        codingChoose: parsed.codingChoose === true,
+        codingRefusal: typeof parsed.codingRefusal === 'string' ? parsed.codingRefusal : null,
+        // The `computer` tool defaults to OFF when absent (an older main never
+        // wrote it, and never had the tool).
         computer: parsed.computer === true,
+        computerChoose: parsed.computerChoose === true,
+        computerRefusal: typeof parsed.computerRefusal === 'string' ? parsed.computerRefusal : null,
         recall: parsed.recall !== false,
         relay: parsed.relay === true
       };
     } catch {
-      return { mail: false, scheduled: false, coding: true, computer: false, recall: true, relay: false };
+      return {
+        mail: false,
+        scheduled: false,
+        coding: true,
+        codingChoose: false,
+        codingRefusal: null,
+        computer: false,
+        computerChoose: false,
+        computerRefusal: null,
+        recall: true,
+        relay: false
+      };
     }
   };
 }
@@ -2618,7 +2636,7 @@ function registerExecTool(pi) {
       'for when and how. ' +
       'On macOS/Linux Stem uses the host shell (zsh where there is one, otherwise bash or sh) with the login-shell ' +
       'PATH (Homebrew/npm CLIs like `agent-browser` work). On Windows Stem uses the shell chosen in Settings → ' +
-      'Chat → Command execution: Git Bash when Git for Windows is installed, Command Prompt otherwise. Each ' +
+      'Features → Commands: Git Bash when Git for Windows is installed, Command Prompt otherwise. Each ' +
       'turn names the one local shell that will run — follow that, not both. ' +
       'When the shell is cmd.exe (which is also the shell on a paired Windows computer), ' +
       'if you need PowerShell, invoke it explicitly as `powershell.exe -NoProfile -ExecutionPolicy Bypass ' +
@@ -2685,9 +2703,12 @@ function registerExecTool(pi) {
 
 const COMPUTER_BRIDGE_TITLE = 'stem-computer-bridge';
 
+// Fallback only: main writes the exact reason (persona without a pin, chats
+// switched off, …) into the turn-context gate as `computerRefusal`.
 const COMPUTER_UNPINNED_REFUSAL =
-  'Computer control is reserved for personas pinned to a computer in the persona editor (Manage → Personas → ' +
-  '"Computer this persona controls"). This conversation runs as none, so do not retry, and do not work around ' +
+  'Computer control is not available in this conversation: personas get it from a computer pin (Manage → ' +
+  'Personas → "Computer this persona controls"), chats with no persona when Settings → Features → Computer ' +
+  'control allows it. Do not retry, and do not work around ' +
   'it by scripting the GUI over run_command (osascript at System Events, cliclick) — that is refused too. ' +
   'Hand the task to the pinned persona (add_persona + send_mail in a mail thread), or tell the user which ' +
   'persona should take it, or that one needs setting up.';
@@ -2888,8 +2909,10 @@ function registerComputerTool(pi, turnContext) {
     name: 'computer',
     label: 'Computer',
     description:
-      "See and drive the Mac this persona is pinned to (Manage → Personas → \"Computer this persona " +
-      'controls"). One call is one action; every action answers with a fresh picture, so look before you act ' +
+      "See and drive a Mac: the one this persona is pinned to (Manage → Personas → \"Computer this persona " +
+      'controls"), or, in a chat with no persona, the one Settings → Features → Computer control names — or, ' +
+      'when this turn\'s context lists Macs for you to choose from, the one you name in `device`. In such a ' +
+      'chat use it only when the user asks you to do something on their computer. One call is one action; every action answers with a fresh picture, so look before you act ' +
       'and check after. Coordinates are PIXELS OF THE LAST PICTURE you were shown (top-left origin) — never ' +
       'guess them from memory of an earlier frame. Use `zoom` with a `region` to read small text (its picture is ' +
       'magnified: do not click from it, take a screenshot first). Prefer `run_command` with `device` set to this ' +
@@ -2951,17 +2974,27 @@ function registerComputerTool(pi, turnContext) {
         app: { type: 'string', description: 'An app name from list_windows, for select_window (its front window, or the one matching `title`).' },
         title: { type: 'string', description: 'Part of a window title, to pick among an app\'s windows.' },
         element_id: { type: 'number', description: 'An element id from the last snapshot, for press, focus, menu and set_value.' },
-        depth: { type: 'number', description: 'How deep snapshot walks the control tree (default 12).' }
+        depth: { type: 'number', description: 'How deep snapshot walks the control tree (default 12).' },
+        device: {
+          type: 'string',
+          description:
+            'Which Mac, by name — only when this turn\'s context lists Macs for you to choose from. Otherwise leave it out: the Mac is fixed.'
+        }
       },
       required: ['action']
     },
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      // Personas with a computer pin only, in every kind of turn. The gate
+      // A persona's computer pin, or a plain chat Settings allows. The gate
       // saves the round-trip; main's computer bridge enforces the same rule.
-      if (turnContext && turnContext().computer !== true) return taskErr(COMPUTER_UNPINNED_REFUSAL);
+      const turnCtx = turnContext ? turnContext() : null;
+      if (turnCtx && turnCtx.computer !== true) return taskErr(turnCtx.computerRefusal || COMPUTER_UNPINNED_REFUSAL);
       const parsed = computerActionFrom(params || {});
       if (!parsed.ok) return taskErr(parsed.error);
-      const res = await computerBridge(ctx, { action: parsed.action });
+      const device =
+        turnCtx && turnCtx.computerChoose && params && typeof params.device === 'string' && params.device.trim()
+          ? params.device.trim()
+          : undefined;
+      const res = await computerBridge(ctx, { action: parsed.action, ...(device ? { device } : {}) });
       if (!res.ok) return taskErr(res.error || 'The action could not be performed.');
       return { content: computerResultContent(res), details: {} };
     }
@@ -2990,20 +3023,25 @@ async function harnessBridge(ctx, payload) {
   }
 }
 
+// Fallback only: main writes the exact reason (persona without a coding setup,
+// chats switched off, …) into the turn-context gate as `codingRefusal`.
 const HARNESS_UNPINNED_REFUSAL =
-  'Coding agents are reserved for code personas — personas with a coding setup (agent + working folder) ' +
-  'pinned in the persona editor (Manage → Personas). This conversation runs as none, so do not retry; ' +
-  'tell the user which code persona should take the task, or that one needs creating.';
+  'Coding agents are not available in this conversation: code personas get one from their coding setup ' +
+  '(Manage → Personas), chats with no persona when Settings → Features → Coding agents allows it. Do not ' +
+  'retry; tell the user which code persona should take the task, or how to turn it on.';
 
 function registerHarnessTools(pi, turnContext) {
   pi.registerTool({
     name: 'coding_agent',
     label: 'Coding agent',
     description:
-      'Hand the task to the external coding agent this persona is pinned to (Claude Code, OpenCode, …), ' +
-      'a full coding harness with its own tools, skills and MCP servers, running on the computer and in the ' +
-      "folder the persona's setup names. Only code personas — those with a coding setup pinned in the persona " +
-      'editor — have this tool; the agent, computer and folder are fixed by the pin and cannot be chosen per call. ' +
+      'Hand the task to an external coding agent (Claude Code, OpenCode, …), a full coding harness with its ' +
+      'own tools, skills and MCP servers. Two kinds of conversation have it. A CODE PERSONA: its coding setup ' +
+      'fixes the agent, computer and folder — `cwd` may only name that folder or one inside it, and `agent`/' +
+      '`device` are ignored. A CHAT WITH NO PERSONA, when the user allows it in Settings → Features: use it ONLY ' +
+      'when the user explicitly asks for a coding agent (or names one — Claude Code, Codex, OpenCode), never on ' +
+      'your own; the agent and computer are fixed by Settings (leave `agent`/`device` out) unless this turn\'s ' +
+      'context lists the choices, then name them. ' +
       'The agent does the work AND the verification; you are a relay. Pass the brief in, return its reply ' +
       'as-is — do not inspect, re-check, review or redo what it did, and do not send it follow-up rounds of ' +
       'your own (no "verify", "self-review", "check again" prompts). ' +
@@ -3017,8 +3055,7 @@ function registerHarnessTools(pi, turnContext) {
       'reply and call again when the answer arrives. ' +
       'Risky actions (commands, publishes) may pause on an approval card for the user — that time counts ' +
       'against nobody; just let the call run. ' +
-      'The agent works in the pinned folder; `cwd` may only name that folder or one inside it. Do not use ' +
-      'this in scheduled tasks — it is refused there.',
+      'Do not use this in scheduled tasks — it is refused there.',
     parameters: {
       type: 'object',
       properties: {
@@ -3030,7 +3067,18 @@ function registerHarnessTools(pi, turnContext) {
         cwd: {
           type: 'string',
           description:
-            'Optional sub-folder to work in, relative to (or an absolute path inside) the persona\'s pinned folder. Leave out to use the pinned folder itself.'
+            "A code persona: optional sub-folder, relative to (or an absolute path inside) its pinned folder; leave out for the pinned folder itself. " +
+            "A chat: the folder the user named, as an absolute path the way that computer sees it. Left out, a run on Stem's server uses this chat's scratch folder, and a run on another computer is refused — ask the user which folder."
+        },
+        agent: {
+          type: 'string',
+          description:
+            'Which coding agent (e.g. "claude", "codex", "opencode") — only when this turn\'s context lists the choices. Otherwise leave it out.'
+        },
+        device: {
+          type: 'string',
+          description:
+            "Which computer, by name — only when this turn's context lists the choices. Leave it out to run on Stem's server."
         },
         fresh_session: {
           type: 'boolean',
@@ -3042,11 +3090,17 @@ function registerHarnessTools(pi, turnContext) {
     async execute(id, params, _signal, _onUpdate, ctx) {
       const prompt = String((params && params.prompt) || '').trim();
       if (!prompt) return taskErr('Provide a prompt for the coding agent.');
-      // Code personas only, in every kind of turn. The gate saves the
-      // round-trip; main's harness bridge enforces the same rule (and the
+      // A code persona's pin, or a plain chat Settings allows. The gate saves
+      // the round-trip; main's harness bridge enforces the same rule (and the
       // clamp to the pinned agent, computer and folder) itself.
-      if (turnContext && turnContext().coding === false) return taskErr(HARNESS_UNPINNED_REFUSAL);
+      const turnCtx = turnContext ? turnContext() : null;
+      if (turnCtx && turnCtx.coding === false) return taskErr(turnCtx.codingRefusal || HARNESS_UNPINNED_REFUSAL);
+      const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+      // Forwarded only in a model-chooses chat; a pin or a fixed Settings
+      // target wins over anything named here (main ignores them regardless).
+      const choose = !!(turnCtx && turnCtx.codingChoose);
       const res = await harnessBridge(ctx, {
+        ...(choose ? { agent: str(params && params.agent), device: str(params && params.device) } : {}),
         prompt,
         // The tool call id doubles as the turn strip's row id; main echoes it
         // on harness:progress so the row can update live.

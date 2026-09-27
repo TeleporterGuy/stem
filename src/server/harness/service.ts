@@ -188,7 +188,7 @@ export class HarnessService implements HarnessBridge {
           ok: false,
           error:
             `“${target.label}” does not run coding agents for this Stem. Only its owner can change that, in ` +
-            `Settings → Chat → Coding agents ON that computer — tell them so rather than retrying.`
+            `Settings → Features → Coding agents ON that computer — tell them so rather than retrying.`
         };
       }
       if (!deviceHost.available()) {

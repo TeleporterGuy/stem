@@ -20,6 +20,7 @@ describe('personaTurnFields', () => {
     expect(fields.effort).toBe('high');
     expect(fields.persona).toEqual({
       id: 'p-turn',
+      name: 'Turn',
       prompt: 'You are Turn.',
       notes: [],
       recall: false
@@ -38,7 +39,7 @@ describe('personaTurnFields', () => {
     const empty = await personaTurnFields(coder);
     // A relay reads no notes index — it has no read_notes — but its standing
     // answers ride whole, present-but-empty so the preamble states the rule.
-    expect(empty.persona).toEqual({ id: 'p-coder', prompt: 'You are Turn.', harness, answers: [] });
+    expect(empty.persona).toEqual({ id: 'p-coder', name: 'Turn', prompt: 'You are Turn.', harness, answers: [] });
     await saveStandingAnswer('p-coder', 'Should I deploy?', 'Yes, always.');
     const fields = await personaTurnFields(coder);
     expect(fields.persona.notes).toBeUndefined();
@@ -58,6 +59,6 @@ describe('personaTurnFields', () => {
     expect((await personaTurnFields({ ...base, createdBy: 'orchestrator' })).persona.notes).toBeUndefined();
     // Absent knobs stay absent rather than becoming undefined keys.
     const plain = await personaTurnFields({ ...base, memory: false });
-    expect(plain).toEqual({ persona: { id: 'p-turn', prompt: 'You are Turn.' } });
+    expect(plain).toEqual({ persona: { id: 'p-turn', name: 'Turn', prompt: 'You are Turn.' } });
   });
 });
