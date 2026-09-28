@@ -138,3 +138,29 @@ describe('scheduled mail work integration', () => {
     } else expect(result).not.toHaveBeenCalled();
   });
 });
+
+describe('scheduled runs that made pictures', () => {
+  it('a silent run that made pictures mails them and keeps its thread; one that made none is deleted', async () => {
+    for (const made of [true, false]) {
+      runtime = new ScheduledRuntime();
+      const unreported = vi.fn(async () => made);
+      scheduler = new TaskScheduler({
+        runtime: runtime as unknown as ChatBackend,
+        onChange: () => {},
+        onUnreportedImages: unreported
+      });
+      const created = await scheduler.create({ prompt: 'Draw the daily fox', cron: '0 8 * * *' }, 'origin-chat');
+      if (!created.ok) throw new Error(created.error);
+      scheduler.runNow(created.task.id);
+      await vi.waitFor(() => expect(scheduler?.runningTask(RUN_THREAD)?.id).toBe(created.task.id));
+      // No noteNotify: the run never called notify_user.
+      runtime.event('turn/completed');
+      await vi.waitFor(async () => expect((await readTasks()).find((t) => t.id === created.task.id)?.lastStatus).toBe('ok'));
+      await vi.waitFor(() => expect(unreported).toHaveBeenCalledTimes(1));
+      expect(unreported).toHaveBeenCalledWith(expect.objectContaining({ taskId: created.task.id, threadId: RUN_THREAD }));
+      await vi.waitFor(() => expect(runtime!.deleted).toEqual(made ? [] : [RUN_THREAD]));
+      scheduler.stop();
+      runtime.removeAllListeners();
+    }
+  });
+});

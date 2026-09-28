@@ -331,6 +331,27 @@ describe('mail router', () => {
     expect(after.items[3].agentReplies).toBeUndefined();
   });
 
+  it("a persona's reply mail carries the pictures its turn made, taken once", async () => {
+    const fake = fakeBackend();
+    fake.script = { mode: 'ok', reply: 'Here is the logo.' };
+    let calls = 0;
+    const router = new MailRouter({
+      runtime: fake.backend,
+      onChange: () => undefined,
+      generatedImages: (threadId) =>
+        ++calls === 1 ? [{ id: 'img_0123456789', threadId, mime: 'image/png', prompt: 'a logo' }] : []
+    });
+    await router.compose({ to: ['verifier'], subject: 's', body: 'draw a logo' });
+    const mail = await settledMail();
+    const session = mail.conversations[0].sessions.verifier;
+    expect(mail.items[1]).toMatchObject({
+      from: 'verifier',
+      body: 'Here is the logo.',
+      images: [{ id: 'img_0123456789', threadId: session, mime: 'image/png', prompt: 'a logo' }]
+    });
+    expect(mail.items[1].agentReplies).toBeUndefined();
+  });
+
   it("the user's reply to a code persona's relayed question becomes a standing answer", async () => {
     await savePersona({ id: 'coder', name: 'Coder', prompt: 'relay', harness: { agent: 'claude', cwd: '/repo' } });
     const fake = fakeBackend();

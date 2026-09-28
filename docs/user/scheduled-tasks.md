@@ -46,7 +46,9 @@ arrives as mail in the Inbox.
   one conversation in the Inbox, and the run’s full reply is attached beneath the
   notice once it finishes. Each run is also shown what the task's earlier runs
   already mailed, so a watch task reports a finding once rather than every morning.
-  A run that finds nothing leaves no trace, and no run ever makes a chat unread. By default the notice also pops up and brings Stem to the
+  A run that finds nothing leaves no trace, and no run ever makes a chat unread.
+  Pictures a run makes arrive with its mail; a run that made any always mails, since
+  its thread is the only place they are kept. By default the notice also pops up and brings Stem to the
   front; Settings → App → **Notifications** turns that down to a dock bounce, or to
   nothing but the mail.
 - When a task starts failing, one mail says so with the reason. Repeated failures

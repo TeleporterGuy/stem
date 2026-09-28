@@ -6,7 +6,7 @@ import { pushTaskAlert } from '../push';
 import { readSettings } from '../workspace/settings';
 import { dropChatThread } from '../chatsearch/index-sync';
 import type { ChatBackend } from '../backend';
-import type { ScheduledRunReport } from '../../shared/types';
+import type { GeneratedImageRef, ScheduledRunReport } from '../../shared/types';
 
 /**
  * Scheduled tasks: re-run a prompt as an autonomous turn on a cron/once
@@ -44,12 +44,14 @@ export function initTaskScheduler(deps: {
     threadId?: string;
     /** The notify_user title, when given — this firing's own headline. */
     headline?: string;
+    /** Pictures to carry; absent = whatever the run's thread made since the last take. */
+    images?: GeneratedImageRef[];
   }) => Promise<string | void>;
   /**
    * The run behind a notification settled with a reply: put it on that mail.
    * Optional so a host without mail (tests) can leave results in Work.
    */
-  attachTaskResult?: (input: { itemId: string; result: string }) => Promise<void>;
+  attachTaskResult?: (input: { itemId: string; result: string; threadId?: string }) => Promise<void>;
   /**
    * The threads a task's mail-sending runs left behind (recorded on its mail
    * items as `runThreadId`), handed over for deletion when the task is deleted.
@@ -87,8 +89,27 @@ export function initTaskScheduler(deps: {
     // The run's reply joins the mail its notify_user opened — the Inbox then
     // holds the report or drafts, not a one-line pointer.
     ...(deps.attachTaskResult
-      ? { onResult: (args: { itemId: string; result: string }) => deps.attachTaskResult!({ itemId: args.itemId, result: args.result }) }
+      ? {
+          onResult: (args: { itemId: string; result: string; threadId: string }) =>
+            deps.attachTaskResult!({ itemId: args.itemId, result: args.result, threadId: args.threadId })
+        }
       : {}),
+    // A run that made pictures and never notified still mails them: deleting
+    // its thread would delete the only copy, and nobody would ever see them.
+    onUnreportedImages: async (args) => {
+      const images = deps.runtime.takeGeneratedImages(args.threadId);
+      if (!images.length) return false;
+      await deps.deliverTaskMail({
+        subject: args.title,
+        body: args.reply || 'Pictures from this run.',
+        taskId: args.taskId,
+        threadId: args.threadId,
+        headline: args.title,
+        images,
+        ...(args.personaId ? { personaId: args.personaId } : {})
+      });
+      return true;
+    },
     // A task that starts failing says so once, as mail — the Tasks tab row keeps
     // the reason after that. Inbox only: this is Stem's notice, not the agent's
     // own notify_user judgment, so no window is raised and no phone woken.

@@ -60,6 +60,18 @@ export interface SchedulerOptions {
    */
   onResult?: (args: { taskId: string; threadId: string; itemId: string; result: string }) => Promise<void>;
   /**
+   * A clean run that never notified: mail its generated pictures, if it made
+   * any (answers whether it mailed). Without it such a run's thread — the only
+   * place its pictures live — is deleted with them unseen.
+   */
+  onUnreportedImages?: (args: {
+    taskId: string;
+    title: string;
+    threadId: string;
+    personaId?: string;
+    reply?: string;
+  }) => Promise<boolean>;
+  /**
    * What this task's earlier runs already mailed the user, newest first, for
    * the run's preamble: a run has no thread history, so this is how a watch
    * task knows what it has reported. Absent = runs start blind (tests).
@@ -743,9 +755,25 @@ export class TaskScheduler {
     // Only a run that notified has a mail to carry it, and only a clean
     // settle has a reply worth the name (a failed run's partial text is not).
     const resultItemId = work?.group?.notificationItemIds?.at(-1);
-    if (reply && resultItemId && run.notified && run.threadId && task.lastStatus === 'ok' && this.opts.onResult) {
+    if (!run.notified && run.threadId && task.lastStatus === 'ok' && this.opts.onUnreportedImages) {
+      const mailed = await this.opts
+        .onUnreportedImages({
+          taskId: task.id,
+          title: task.title,
+          threadId: run.threadId,
+          ...(resolved.personaId ? { personaId: resolved.personaId } : {}),
+          ...(reply ? { reply } : {})
+        })
+        .catch((err) => {
+          degrade('tasks', "did not mail a scheduled run's pictures", err);
+          return false;
+        });
+      if (mailed) run.notified = true;
+    }
+    // A reply-less run can still have pictures made after its notify.
+    if (resultItemId && run.notified && run.threadId && task.lastStatus === 'ok' && this.opts.onResult) {
       await this.opts
-        .onResult({ taskId: task.id, threadId: run.threadId, itemId: resultItemId, result: reply })
+        .onResult({ taskId: task.id, threadId: run.threadId, itemId: resultItemId, result: reply ?? '' })
         .catch((err) => degrade('tasks', 'left a scheduled result out of its mail', err));
     }
     this.activeRun = null;

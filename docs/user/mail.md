@@ -2,7 +2,8 @@
 
 Send mail to a persona when you want it to work on a request and return a reply.
 The first recipient coordinates the conversation and can consult the other
-personas. Replies arrive in your Inbox.
+personas. Replies arrive in your Inbox. A persona that makes pictures while answering
+(see [image generation](settings.md#image-generation)) attaches them to its reply.
 
 ## Scheduled tasks
 
@@ -12,7 +13,8 @@ conversation takes the latest headline as its subject. Beneath the short notice
 the mail carries the run's full reply, such as a report or the drafts it wrote,
 once the run finishes. Every run happens in a thread of its own that no chat
 shows; the mail, and the Work beneath it, is the only place a run appears. A
-task that starts failing sends one mail with the reason.
+task that starts failing sends one mail with the reason. Pictures a run makes come
+with its mail, and a run that made pictures always sends one.
 
 ## Work history
 

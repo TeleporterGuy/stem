@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import type { InboxEntry, InboxState } from '../../shared/inbox';
 import { toMs } from '../../shared/inbox';
 import { cleanMailSubject, deriveMailSubject, NO_SUBJECT, resolveMailSubject } from '../../shared/mail-subject';
-import type { MailConversation, MailItem, MailListResult, ScheduledRunReport } from '../../shared/types';
+import type { GeneratedImageRef, MailConversation, MailItem, MailListResult, ScheduledRunReport } from '../../shared/types';
 import { coerceSystemVersion } from '../../shared/sys-version';
 import { systemVersion } from '../sys-version';
 import { degrade } from '../degrade';
@@ -54,6 +54,24 @@ function coerceItem(raw: unknown): MailItem | null {
   if (Array.isArray(r.agentReplies)) {
     const replies = r.agentReplies.filter((t): t is string => typeof t === 'string' && t.length > 0);
     if (replies.length) item.agentReplies = replies;
+  }
+  if (Array.isArray(r.images)) {
+    const images = r.images.flatMap((raw): GeneratedImageRef[] => {
+      const img = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+      if (!img || typeof img.id !== 'string' || typeof img.threadId !== 'string') return [];
+      return [
+        {
+          id: img.id,
+          threadId: img.threadId,
+          mime: typeof img.mime === 'string' ? img.mime : 'image/png',
+          ...(num(img.width) !== undefined ? { width: num(img.width) } : {}),
+          ...(num(img.height) !== undefined ? { height: num(img.height) } : {}),
+          ...(typeof img.prompt === 'string' ? { prompt: img.prompt } : {}),
+          ...(typeof img.revisedPrompt === 'string' ? { revisedPrompt: img.revisedPrompt } : {})
+        }
+      ];
+    });
+    if (images.length) item.images = images;
   }
   const sys = coerceSystemVersion(r.sys);
   if (sys) item.sys = sys;
@@ -462,11 +480,16 @@ export function setConversationSubject(id: string, subject: string): Promise<Mai
  * sees the conversation unread again, which is what happened. No `received`
  * announcement — the notify already pushed, and this is the same mail.
  */
-export function setMailItemResult(itemId: string, result: string): Promise<MailListResult> {
+export function setMailItemResult(itemId: string, result: string, images?: GeneratedImageRef[]): Promise<MailListResult> {
   return update((store) => {
     const item = store.items.find((i) => i.id === itemId);
     if (!item) throw new Error('That mail no longer exists.');
-    item.result = result;
+    if (result) item.result = result;
+    // Pictures the run made after its notify ride with the result.
+    if (images?.length) {
+      const have = new Set((item.images ?? []).map((i) => i.id));
+      item.images = [...(item.images ?? []), ...images.filter((i) => !have.has(i.id))];
+    }
     const conversation = conversationOf(store, item.conversationId);
     const at = Date.now();
     conversation.updatedAt = Math.max(conversation.updatedAt, at);

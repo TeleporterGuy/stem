@@ -831,6 +831,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     // when the persona's reply mail lands so the Inbox can show both. Late
     // bound: the harness service is built after the router.
     agentReplies: (threadId) => harness?.service.takeAgentReplies(threadId) ?? [],
+    generatedImages: (threadId) => runtime!.takeGeneratedImages(threadId),
     // The offline hold's oracle: is the persona pin's computer able to run
     // coding agents right now? Null when the reference names no usable target
     // at all — then the delivery runs and coding_agent reports the problem.

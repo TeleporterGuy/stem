@@ -11,6 +11,7 @@ import { mailName, statusLabel } from '../../src/mail/list';
 import { chooseSnooze, confirmMailDelete, mailAction } from '../../src/mail/actions';
 import { AgentReplies } from '../../src/mail/AgentReplies';
 import { AgentMarkdown } from '../../src/ui/AgentMarkdown';
+import { GeneratedImages } from '../../src/ui/GeneratedImages';
 import { DraftComposer } from '../../src/ui/DraftComposer';
 import { useTheme } from '../../src/ui/theme';
 import { useTransport } from '../../src/transport/provider';
@@ -186,6 +187,7 @@ export default function MailConversation() {
                   {item.agentReplies && item.agentReplies.length > 0 && (
                     <AgentReplies replies={item.agentReplies} theme={theme} />
                   )}
+                  {item.images?.length ? <GeneratedImages images={item.images} live={false} theme={theme} /> : null}
                   {item.attachments?.map((a, index) =>
                     a.kind === 'image' && a.dataUrl ? (
                       <Image

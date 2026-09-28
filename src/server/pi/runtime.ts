@@ -3415,8 +3415,33 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       }
       this.advancePhase(turn, events, now);
     }
-    for (const e of events) this.emitEvent(e.method, tagTurnEvent(e.params, turn));
+    for (const e of events) {
+      if (e.method === 'item/completed') this.bufferGeneratedImage(e.params);
+      this.emitEvent(e.method, tagTurnEvent(e.params, turn));
+    }
     if (done) this.settleTurn(worker, turn, now);
+  }
+
+  /**
+   * Pictures generate_image made per thread since the last take — what a mail
+   * reply or a scheduled run's result carries (takeGeneratedImages). Refs
+   * only; the bytes stay in the thread's session file.
+   */
+  private readonly generatedImages = new Map<string, GeneratedImageRef[]>();
+
+  private bufferGeneratedImage(params: unknown): void {
+    const image = (params as { item?: { image?: GeneratedImageRef } } | undefined)?.item?.image;
+    if (!image?.threadId) return;
+    const list = this.generatedImages.get(image.threadId) ?? [];
+    if (!list.some((i) => i.id === image.id)) list.push(image);
+    this.generatedImages.set(image.threadId, list);
+  }
+
+  /** The thread's generated images since the last take, then forgotten. */
+  takeGeneratedImages(threadId: string): GeneratedImageRef[] {
+    const list = this.generatedImages.get(threadId) ?? [];
+    this.generatedImages.delete(threadId);
+    return list;
   }
 
   /** The turn's stream is over (its terminal event just went out): flush timing,

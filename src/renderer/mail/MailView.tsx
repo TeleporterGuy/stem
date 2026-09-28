@@ -25,6 +25,7 @@ import { groupMailTimeline } from './grouping';
 import { personaName } from './useMail';
 import { useMailWork } from './useMailWork';
 import { MailWork } from './MailWork';
+import { GeneratedImages } from '../chat/GeneratedImage';
 
 // The centre pane's mail surface: a conversation read like email (discrete
 // mails, newest last, a reply box underneath), or the compose form for a new
@@ -264,6 +265,7 @@ export const MailConversationView = forwardRef<MailViewHandle, {
           </div>
         </details>
       )}
+      {m.images && m.images.length > 0 && <GeneratedImages images={m.images} live={false} />}
       {m.attachments && m.attachments.length > 0 && (
         <div className="message-attachments">
           {m.attachments.map((att, i) =>

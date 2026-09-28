@@ -312,6 +312,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     return rows.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
+  takeGeneratedImages(): GeneratedImageRef[] {
+    return [];
+  }
+
   async findThreadImage(threadId: string, imageId: string): Promise<{ mimeType: string; data: string } | null> {
     // Like the session file: the picture exists from the moment the tool
     // returned, before the reply that carries it is saved.

@@ -304,6 +304,36 @@ describe('subject hygiene', () => {
   });
 });
 
+describe('generated images on mail items', () => {
+  const img = (id: string) => ({ id, threadId: 'run-1', mime: 'image/png', width: 1024, height: 1024, prompt: 'a fox' });
+
+  it('keeps refs through the file, and a result adds the later pictures without duplicates', async () => {
+    const c = await createConversation('Fox', ['normal']);
+    const first = await appendMailItem({
+      conversationId: c.id,
+      from: 'task:t1',
+      to: ['user'],
+      body: 'Made a fox',
+      images: [img('img_aaaaaaaaaa')]
+    });
+    const id = first.items.at(-1)!.id;
+    await setMailItemResult(id, '', [img('img_aaaaaaaaaa'), img('img_bbbbbbbbbb')]);
+    const item = (await readMail()).items.find((i) => i.id === id)!;
+    expect(item.images?.map((i) => i.id)).toEqual(['img_aaaaaaaaaa', 'img_bbbbbbbbbb']);
+    expect(item.images?.[0]).toEqual(img('img_aaaaaaaaaa'));
+    expect(item.result).toBeUndefined();
+  });
+
+  it('drops malformed refs on read', async () => {
+    const c = await createConversation('Fox', ['normal']);
+    await appendMailItem({ conversationId: c.id, from: 'task:t1', to: ['user'], body: 'x' });
+    const raw = JSON.parse(readFileSync(path, 'utf8'));
+    raw.items[0].images = [{ id: 'img_cccccccccc' }, 'junk', { id: 'img_dddddddddd', threadId: 't' }];
+    writeFileSync(path, JSON.stringify(raw), 'utf8');
+    expect((await readMail()).items[0].images).toEqual([{ id: 'img_dddddddddd', threadId: 't', mime: 'image/png' }]);
+  });
+});
+
 describe('taskMailHistory', () => {
   it('lists a task\'s own mails newest first with headline, notice and reply; the user\'s replies and other tasks stay out', async () => {
     const c = await createConversation('Watch releases', ['normal']);

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ChatBackend, MailBridgeContext, MailBridgeResult, SavePersonaRequest } from '../backend/types';
 import type {
+  GeneratedImageRef,
   BackendEventEnvelope,
   MailComposeInput,
   MailListResult,
@@ -193,6 +194,12 @@ export interface MailRouterOptions {
    * its source side by side. Absent in tests that don't care.
    */
   agentReplies?: (threadId: string) => string[];
+  /**
+   * Take the pictures generate_image made on a thread since the last take
+   * (PiRuntime.takeGeneratedImages): a persona's reply mail and a scheduled
+   * run's mail carry them. Absent in tests that don't care.
+   */
+  generatedImages?: (threadId: string) => GeneratedImageRef[];
 }
 
 /**
@@ -502,6 +509,8 @@ export class MailRouter {
      * row reads the newest headline rather than the one the task opened with.
      */
     headline?: string;
+    /** Pictures to carry; absent = whatever the run's thread made since the last take. */
+    images?: GeneratedImageRef[];
   }): Promise<string> {
     // One conversation per task, found by the task id on its items; created on
     // the first notify. Keeps every firing of a watch task in one thread of mail.
@@ -524,7 +533,10 @@ export class MailRouter {
       body: input.body,
       taskId: input.taskId,
       ...(input.threadId ? { runThreadId: input.threadId } : {}),
-      ...(headline ? { subject: headline } : {})
+      ...(headline ? { subject: headline } : {}),
+      // Pictures the run made before this notify go with it; later ones join
+      // the result (attachTaskResult).
+      ...(input.images?.length ? { images: input.images } : this.imagesField(input.threadId))
     });
     const notification = delivered.items.at(-1);
     if (input.threadId && notification) await attachScheduledWork(input.threadId, target.id, notification.id, from);
@@ -537,8 +549,10 @@ export class MailRouter {
    * the mail, so the report or drafts its short notify line pointed at are in
    * the Inbox, not only in the run's chat.
    */
-  async attachTaskResult(input: { itemId: string; result: string }): Promise<void> {
-    await setMailItemResult(input.itemId, input.result);
+  async attachTaskResult(input: { itemId: string; result: string; threadId?: string }): Promise<void> {
+    const images = input.threadId ? (this.opts.generatedImages?.(input.threadId) ?? []) : [];
+    if (!input.result && !images.length) return;
+    await setMailItemResult(input.itemId, input.result, images);
     this.opts.onChange();
   }
 
@@ -1385,17 +1399,30 @@ export class MailRouter {
     await this.appendReply(conversationId, personaId, reply, 'idle', epoch, agentReplies);
   }
 
-  /** The `agentReplies` field for a persona's item, or nothing when the turn made no coding_agent call. */
-  private agentRepliesField(threadId: string | undefined): { agentReplies?: string[] } {
-    if (!threadId || !this.opts.agentReplies) return {};
-    const replies = this.opts.agentReplies(threadId);
-    return replies.length ? { agentReplies: replies } : {};
+  /**
+   * What a persona's item carries beside its body: the coding agent's own
+   * replies (`agentReplies`) and the pictures the turn made (`images`) —
+   * nothing when the turn made neither.
+   */
+  private agentRepliesField(threadId: string | undefined): { agentReplies?: string[]; images?: GeneratedImageRef[] } {
+    if (!threadId) return {};
+    const replies = this.opts.agentReplies?.(threadId) ?? [];
+    const images = this.opts.generatedImages?.(threadId) ?? [];
+    return { ...(replies.length ? { agentReplies: replies } : {}), ...(images.length ? { images } : {}) };
   }
 
-  private async agentRepliesFor(conversationId: string, personaId: string): Promise<{ agentReplies?: string[] }> {
-    if (!this.opts.agentReplies) return {};
+  private async agentRepliesFor(
+    conversationId: string,
+    personaId: string
+  ): Promise<{ agentReplies?: string[]; images?: GeneratedImageRef[] }> {
+    if (!this.opts.agentReplies && !this.opts.generatedImages) return {};
     const { conversations } = await readMail();
     return this.agentRepliesField(conversations.find((c) => c.id === conversationId)?.sessions[personaId]);
+  }
+
+  private imagesField(threadId: string | undefined): { images?: GeneratedImageRef[] } {
+    const images = threadId ? (this.opts.generatedImages?.(threadId) ?? []) : [];
+    return images.length ? { images } : {};
   }
 
   /** A branch whose reply was forced to the user by the cap must still settle. */
@@ -1414,7 +1441,7 @@ export class MailRouter {
     body: string,
     drainStatus: DrainStatus,
     epoch: number,
-    agentReplies?: { agentReplies?: string[] }
+    agentReplies?: { agentReplies?: string[]; images?: GeneratedImageRef[] }
   ): Promise<void> {
     // A failure notice (no agentReplies passed) still carries what the agent
     // said before things went wrong — that is often the only clue.

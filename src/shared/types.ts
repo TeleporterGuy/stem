@@ -2519,6 +2519,11 @@ export interface MailItem {
    */
   attachments?: MessageAttachment[];
   /**
+   * Pictures a persona or scheduled run made for this reply (refs; the bytes
+   * stay in the thread named on each ref, fetched with `chats:image`).
+   */
+  images?: GeneratedImageRef[];
+  /**
    * Code personas only: what the coding agent itself replied during the turn
    * that produced this item, verbatim, one entry per coding_agent exchange —
    * next to the persona's own (relayed) answer in `body`, so the user can

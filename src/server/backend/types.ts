@@ -5,6 +5,7 @@ import type {
   DeviceComputerResult,
   ChatMessage,
   ChatSummary,
+  GeneratedImageRef,
   McpAdminProposal,
   McpLoginResult,
   ModelSummary,
@@ -317,6 +318,8 @@ export interface ChatBackend extends EventEmitter {
   readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[]; complete?: boolean }>;
   /** One image a thread's session holds, by id (generate_image output or an attachment). */
   findThreadImage(threadId: string, imageId: string): Promise<{ mimeType: string; data: string } | null>;
+  /** Generated images a thread made since the last take (mail replies, scheduled results). */
+  takeGeneratedImages(threadId: string): GeneratedImageRef[];
   /** Raw persisted action history for Mail; excludes private reasoning. */
   readWorkHistory?(threadId: string): Promise<HistoricalWorkRun[]>;
   resumeThread(threadId: string): Promise<void>;
