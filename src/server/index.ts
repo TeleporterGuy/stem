@@ -535,7 +535,9 @@ function registerIpc(): void {
     const hit = await runtime!.findThreadImage(threadId, imageId);
     if (!hit) throw new Error('This image is no longer in the chat.');
     const ext = hit.mimeType === 'image/jpeg' ? 'jpg' : (hit.mimeType.split('/')[1] ?? 'png');
-    const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '.');
+    const d = new Date();
+    const two = (n: number) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}.${two(d.getMinutes())}`;
     const rel = await addFileBytes(`Stem image ${stamp}.${ext}`, Buffer.from(hit.data, 'base64'));
     return { rel };
   });

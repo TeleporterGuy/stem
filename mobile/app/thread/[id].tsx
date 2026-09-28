@@ -20,6 +20,7 @@ import { useThread } from '../../src/hooks/useThread';
 import { useTransport } from '../../src/transport/provider';
 import { MdxActionContext } from '../../src/mdx/actions';
 import { AgentMarkdown } from '../../src/ui/AgentMarkdown';
+import { GeneratedImages } from '../../src/ui/GeneratedImages';
 import { ConnectionBadge } from '../../src/ui/ConnectionBadge';
 import { DraftComposer, type DraftComposerHandle } from '../../src/ui/DraftComposer';
 import { useDraft } from '../../src/drafts/useDraft';
@@ -203,6 +204,13 @@ export default function ThreadScreen(): ReactElement {
               message={item}
               theme={theme}
               streaming={item.id === thread.state.streamingId}
+              running={thread.running}
+              onUseAsReference={(file) =>
+                void draftStore.addAttachment(file).then(
+                  () => composerInput.current?.focus(),
+                  (e) => console.warn('[images] could not attach the reference', e)
+                )
+              }
               onRestore={
                 resend && item.id === thread.state.messages.at(-1)?.id ? restoreMessage : undefined
               }
@@ -236,12 +244,16 @@ function Bubble({
   message,
   theme,
   streaming,
+  running,
+  onUseAsReference,
   onRestore,
   canRestore
 }: {
   message: ChatMessage;
   theme: Theme;
   streaming: boolean;
+  running: boolean;
+  onUseAsReference?: (file: { uri: string; name: string; mime: string }) => void;
   onRestore?: () => void;
   canRestore: boolean;
 }): ReactElement {
@@ -296,6 +308,15 @@ function Bubble({
           only the growing tail; the settled ones take the exact full parse that
           heals any block-split artifact it left behind. */}
       <AgentMarkdown text={message.content} theme={theme} streaming={streaming} />
+      {/* A running call's card lives in the live footer; a settled row still
+          "running" is a call the turn stopped under. */}
+      <GeneratedImages
+        images={message.images}
+        activity={running ? undefined : message.activity}
+        live={false}
+        theme={theme}
+        onUseAsReference={onUseAsReference}
+      />
     </View>
   );
 }
@@ -348,11 +369,15 @@ function LiveActivity({
 }): ReactElement | null {
   if (!running || streaming) return null;
   return (
-    <View style={styles.live}>
-      <ActivityIndicator size="small" color={theme.dim} />
-      <Text numberOfLines={1} style={[styles.liveText, { color: theme.dim }]}>
-        {label ?? (activities.length ? 'Working…' : 'Thinking…')}
-      </Text>
+    <View>
+      <View style={styles.live}>
+        <ActivityIndicator size="small" color={theme.dim} />
+        <Text numberOfLines={1} style={[styles.liveText, { color: theme.dim }]}>
+          {label ?? (activities.length ? 'Working…' : 'Thinking…')}
+        </Text>
+      </View>
+      {/* The "Creating image…" card of a generate_image call still running. */}
+      <GeneratedImages activity={activities} live theme={theme} />
     </View>
   );
 }

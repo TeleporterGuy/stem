@@ -246,6 +246,15 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
       },
       {
         kind: 'toggle',
+        key: 'chat-images',
+        label: 'Image generation',
+        hint: 'Create pictures when you ask, with your ChatGPT subscription (every chat and persona)',
+        // Absent on an older server = its default, on.
+        read: (s) => s.chatFeatures?.images?.allow !== false,
+        save: (c, allow) => c.rpc('settings:updateChatFeatures', { images: { allow } })
+      },
+      {
+        kind: 'toggle',
         key: 'chat-computer',
         label: 'Computer control in chats',
         hint: 'Chats with no persona can drive a Mac when you ask',
