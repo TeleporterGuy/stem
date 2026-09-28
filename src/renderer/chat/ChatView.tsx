@@ -26,6 +26,7 @@ import {
 import type { ActivityItem, ChatMessage, EscapeAction, ModelSummary, TurnAttachment, TurnTiming } from '../../shared/types';
 import { formatSystemVersion } from '../../shared/sys-version';
 import { ActivityRows, SourcesList } from './ActivityRows';
+import { GeneratedImages } from './GeneratedImage';
 import { Composer, type ComposerHandle } from './Composer';
 import { ApprovalCard } from '../manage/ApprovalCard';
 import type { PendingApproval } from '../manage/approvalQueue';
@@ -419,6 +420,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   // yet (reasoning / tool calls happen before the first token, when no assistant
   // bubble exists). It's replaced by the streamed reply once content arrives.
   const streamingMsg = messages.find((m) => m.id === streamingId);
+  const lastAssistantId = [...messages].reverse().find((m) => m.role === 'assistant')?.id;
   const showActivity = running && !(streamingMsg && streamingMsg.content);
 
   // The pulsing-dots "Thinking…" indicator. It lives inside the assistant bubble
@@ -463,6 +465,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
       m.role === 'assistant' && (!isStreaming || (format === 'md' && !!m.content));
     const metaText = m.role === 'assistant' ? metaTooltip(m.meta, models) : undefined;
     const isEditing = editingId === m.id;
+    // The bubble of the turn still in flight (the last assistant message).
+    const liveTurn = running && m.role === 'assistant' && m.id === lastAssistantId;
     // Retry/Edit/Fork need an authoritative turn id and a settled thread. Error
     // bubbles (role system) carry their failed turn's id, so they can offer
     // Copy + Retry — but not Edit/Fork/Delete, which belong to the real messages.
@@ -525,6 +529,15 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
             activityIndicator
           ) : (
             <div className="message-plain">{m.content}</div>
+          )}
+          {m.role === 'assistant' && !isEditing && (
+            // While the turn runs, its placeholders live in the activity area
+            // below — unless this bubble is the one streaming, which hides it.
+            <GeneratedImages
+              images={m.images}
+              activity={liveTurn && !isStreaming ? undefined : m.activity}
+              live={liveTurn}
+            />
           )}
           {m.role === 'assistant' && !isEditing && (m.sources?.length ?? 0) > 0 && (
             <SourcesList sources={m.sources!} />
@@ -735,6 +748,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
             <div className="msg-avatar stem">{AVATAR.assistant.icon}</div>
             <div className="message-body">
               {activities.length > 0 && <ActivityRows items={activities} running />}
+              <GeneratedImages activity={activities} live />
               {/* The generic dots only when no tool row is already pulsing. */}
               {!activities.some((a) => a.status === 'running') && activityIndicator}
             </div>

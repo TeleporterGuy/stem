@@ -939,12 +939,20 @@ describe('chats settings', () => {
 
 
 describe('chat features setting', () => {
-  it('starts with both off and no target', async () => {
+  it('starts with both off and no target, and image generation on', async () => {
     writeFileSync(path, JSON.stringify({}));
     expect((await readSettings()).chatFeatures).toEqual({
       coding: { allow: false, target: null },
-      computer: { allow: false, target: null }
+      computer: { allow: false, target: null },
+      images: { allow: true }
     });
+  });
+
+  it('keeps image generation switched off once saved off', async () => {
+    writeFileSync(path, JSON.stringify({}));
+    const next = await updateChatFeatureSettings({ images: { allow: false } });
+    expect(next.chatFeatures.images).toEqual({ allow: false });
+    expect((await readSettings()).chatFeatures.images).toEqual({ allow: false });
   });
 
   it('keeps well-formed targets, trims them, and drops blank or malformed ones', async () => {
@@ -959,7 +967,8 @@ describe('chat features setting', () => {
     );
     expect((await readSettings()).chatFeatures).toEqual({
       coding: { allow: true, target: { agent: 'claude', device: 'dev-1' } },
-      computer: { allow: false, target: null }
+      computer: { allow: false, target: null },
+      images: { allow: true }
     });
     writeFileSync(path, JSON.stringify({ chatFeatures: { coding: { allow: true, target: { device: 'dev-1' } } } }));
     // A target with no agent is "let the model choose", not half a target.
@@ -971,7 +980,8 @@ describe('chat features setting', () => {
     const next = await updateChatFeatureSettings({ coding: { allow: true, target: { agent: 'codex' } } });
     expect(next.chatFeatures).toEqual({
       coding: { allow: true, target: { agent: 'codex' } },
-      computer: { allow: true, target: { device: 'mac-1' } }
+      computer: { allow: true, target: { device: 'mac-1' } },
+      images: { allow: true }
     });
   });
 });

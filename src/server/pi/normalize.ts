@@ -1,6 +1,6 @@
 import { workDetail } from '../../shared/work-detail';
 import type { PiEvent } from './rpc';
-import type { ActivityItem, PersonaComputerPin, PersonaHarnessPin, SourceRef, TurnUsage, TurnOrigin } from '../../shared/types';
+import type { ActivityItem, GeneratedImageRef, PersonaComputerPin, PersonaHarnessPin, SourceRef, TurnUsage, TurnOrigin } from '../../shared/types';
 import { stripCiteMarkers } from '../../shared/citations';
 import { WEB_ACCESS_TOOL_NAMES } from '../../shared/activity';
 import { SECRET_ENVELOPE_KEY, toolArgsOf } from './protocol';
@@ -8,6 +8,7 @@ import type { InlinedSkill } from '../skills/inject';
 import type { CodingGrant, ComputerGrant } from '../harness/chat-grants';
 import type { SkillIssue } from '../skills/grade';
 import { extractSources } from './web-search';
+import { IMAGE_TOOL_NAME } from './image-gen.mjs';
 
 // Translate pi's RPC event stream into Stem's canonical backend events (the
 // { method, params } envelopes the renderer/HUD/recall consume).
@@ -432,9 +433,30 @@ function toolItemType(toolName: string | undefined): string {
     return 'commandExecution';
   if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'apply_patch') return 'fileChange';
   if (WEB_ACCESS_TOOLS.has(n)) return 'webSearch';
+  if (n === IMAGE_TOOL_NAME) return 'imageGeneration';
   // No substring guessing beyond this point: MCP tools unwrapped from
   // invoke_tool keep server-side names like ha_search, which are not web tools.
   return 'mcpToolCall'; // generic tool → "Using a tool…"
+}
+
+/** The display ref of a generate_image result's `details.stemImage`, or null. */
+export function generatedImageRef(details: unknown, threadId: string): GeneratedImageRef | null {
+  const img = details && typeof details === 'object' ? (details as { stemImage?: unknown }).stemImage : null;
+  if (!img || typeof img !== 'object') return null;
+  const r = img as Record<string, unknown>;
+  if (typeof r.id !== 'string' || !r.id) return null;
+  const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined);
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  const ref: GeneratedImageRef = { id: r.id, threadId, mime: str(r.mime) ?? 'image/png' };
+  const width = num(r.width);
+  const height = num(r.height);
+  const prompt = str(r.prompt);
+  const revisedPrompt = str(r.revisedPrompt);
+  if (width !== undefined) ref.width = width;
+  if (height !== undefined) ref.height = height;
+  if (prompt) ref.prompt = prompt;
+  if (revisedPrompt) ref.revisedPrompt = revisedPrompt;
+  return ref;
 }
 
 /**
@@ -458,7 +480,7 @@ function resultText(result: { content?: unknown } | undefined): string {
 // Argument keys that carry a human-meaningful target, most-specific first. pi's
 // tool_execution_start arg shape isn't formally typed (PiEvent is open), so we
 // probe both the event itself and a nested args object defensively.
-const DETAIL_KEYS = ['file_path', 'path', 'filename', 'command', 'cmd', 'pattern', 'query', 'url'] as const;
+const DETAIL_KEYS = ['file_path', 'path', 'filename', 'command', 'cmd', 'pattern', 'query', 'url', 'prompt'] as const;
 
 /** Format a target value for the label: basename file paths, truncate long strings. */
 function formatDetail(key: string, raw: string): string {
@@ -581,6 +603,7 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       );
       if (!ctx.activity.some((a) => a.id === item.id)) ctx.activity.push(item);
       if (!ctx.activityStartedAt.has(item.id)) ctx.activityStartedAt.set(item.id, Date.now());
+      if (item.type === 'imageGeneration') item.startedAt = ctx.activityStartedAt.get(item.id);
       // Any web-access tool call taints the turn's capture as web-derived (see
       // TurnContext.webTainted) — set at start, not end, so even a failed fetch
       // that still returned partial content can never dodge the flag.
@@ -599,7 +622,13 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       out.push({
         method: 'item/started',
         params: {
-          item: { type: item.type, id: item.id, name: item.name, detail: item.detail },
+          item: {
+            type: item.type,
+            id: item.id,
+            name: item.name,
+            detail: item.detail,
+            ...(item.startedAt !== undefined ? { startedAt: item.startedAt } : {})
+          },
           threadId,
           turnId
         }
@@ -620,8 +649,14 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       const id = String(ev.toolCallId ?? '');
       const entry = ctx.activity.find((a) => a.id === id);
       if (!entry) break; // an end without a tracked start (or unkeyed) — nothing to flip
-      const result = ev.result as { isError?: boolean; content?: unknown } | undefined;
+      const result = ev.result as { isError?: boolean; content?: unknown; details?: unknown } | undefined;
       entry.status = ev.isError === true || result?.isError === true ? 'error' : 'ok';
+      // A picture generate_image made: only its ref travels (and is kept on the
+      // activity row); the bytes stay in the session file.
+      if (entry.status === 'ok' && entry.type === 'imageGeneration') {
+        const made = generatedImageRef(result?.details, threadId);
+        if (made) entry.image = made;
+      }
       // Retain the outcome for skill authoring. A failure is worth more than a
       // success here — it is what turns a list of steps into a warning about the
       // dead end — so errors are kept even once the budget is spent.
@@ -654,7 +689,14 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
       out.push({
         method: 'item/completed',
         params: {
-          item: { type: entry.type, id, name: entry.name, detail: entry.detail, status: entry.status },
+          item: {
+            type: entry.type,
+            id,
+            name: entry.name,
+            detail: entry.detail,
+            status: entry.status,
+            ...(entry.image ? { image: entry.image } : {})
+          },
           threadId,
           turnId
         }

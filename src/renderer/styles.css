@@ -726,6 +726,48 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 }
 .note-flash.ok { color: var(--accent); }
 .note-flash > svg { flex: none; }
+/* Pictures generate_image made, under the assistant reply. The button keeps the
+   image's own aspect ratio so the layout does not jump when the bytes arrive. */
+.gen-images { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-top: var(--sp-3); }
+.gen-image {
+  display: block; padding: 0; cursor: zoom-in;
+  width: min(360px, 100%); max-height: 420px;
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  overflow: hidden;
+}
+.gen-image img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.gen-image-loading {
+  display: block; width: 100%; height: 100%;
+  animation: gen-image-breathe 1.4s ease-in-out infinite;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.gen-image-card {
+  display: flex; align-items: center; gap: var(--sp-3);
+  width: min(360px, 100%); aspect-ratio: 1 / 1; max-height: 240px;
+  justify-content: center;
+  border: 1px dashed var(--line); border-radius: var(--radius-md);
+  color: var(--muted); font-size: var(--fs-13);
+}
+.gen-image-pending { animation: gen-image-breathe 1.8s ease-in-out infinite; }
+@keyframes gen-image-breathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .gen-image-pending, .gen-image-loading { animation: none; } }
+.gen-image-failed { aspect-ratio: auto; max-height: none; padding: var(--sp-4); justify-content: flex-start; }
+.gen-image-timer { font-variant-numeric: tabular-nums; }
+.gen-image-lightbox {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, #000 78%, transparent);
+  padding: 32px;
+}
+.gen-image-lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--radius-md); }
+.gen-image-close {
+  position: absolute; top: 14px; right: 14px;
+  width: 32px; height: 32px; border-radius: 50%; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, #fff 16%, transparent); color: #fff;
+}
+.gen-image-close:hover { background: color-mix(in srgb, #fff 28%, transparent); }
 /* Attachments shown inside a sent message bubble (thumbnails + file chips). */
 .message-attachments { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-top: var(--sp-3); }
 .message-image {

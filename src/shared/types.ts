@@ -101,6 +101,28 @@ export interface ActivityItem {
    * regression shipped unnoticed — see tests/unit/web-search-latency.test.ts.
    */
   ms?: number;
+  /** When the call started (epoch ms) — the "Creating image…" card's timer. */
+  startedAt?: number;
+  /** A generate_image row that finished: the picture it made (no bytes). */
+  image?: GeneratedImageRef;
+}
+
+/**
+ * An image the chat can show without carrying its bytes: one `generate_image`
+ * made, or a user attachment that got an id. The bytes live in the session
+ * file of `threadId` (for a mail item, the persona or run thread that made it)
+ * and are fetched on demand with `chats:image`.
+ */
+export interface GeneratedImageRef {
+  /** `img_` + 10 hex; unique within its thread. */
+  id: string;
+  threadId: string;
+  mime: string;
+  width?: number;
+  height?: number;
+  /** The prompt the assistant wrote, and the one OpenAI actually used. */
+  prompt?: string;
+  revisedPrompt?: string;
 }
 
 /** A web source the model consulted, parsed out of a web_search result. */
@@ -158,6 +180,8 @@ export interface ChatMessage {
   activity?: ActivityItem[];
   /** Assistant messages only: web sources consulted by the search tools. */
   sources?: SourceRef[];
+  /** Assistant messages only: pictures generate_image made this turn (refs; bytes via `chats:image`). */
+  images?: GeneratedImageRef[];
   /**
    * ISO timestamp the message was authored. Surfaced as a hover-revealed label on
    * user bubbles (mirroring the assistant model/timing reveal). Read from the pi
@@ -606,6 +630,10 @@ export interface BackendItem {
   detail?: string;
   /** Tool items on `item/completed`: how the call ended. */
   status?: 'ok' | 'error';
+  /** Tool items on `item/started`: when the call began (epoch ms). */
+  startedAt?: number;
+  /** A finished generate_image call: the picture it made (a ref, never bytes). */
+  image?: GeneratedImageRef;
 }
 
 /** `item/started` and `item/completed`. The completed agentMessage item carries authoritative text. */
@@ -3001,6 +3029,13 @@ export interface ChatFeatureSettings {
     /** A paired Mac's device id. */
     target: { device: string } | null;
   };
+  /**
+   * Image generation (`generate_image`, the user's ChatGPT subscription).
+   * Unlike the two above this covers EVERY chat, persona, mail and scheduled
+   * run — not just chats run as no persona; code personas never get it. It
+   * also needs an openai-codex sign-in. Absent (an older server) = on.
+   */
+  images?: { allow: boolean };
 }
 
 /**
@@ -4194,6 +4229,8 @@ export interface StemApi {
   openChat(threadId: string): Promise<ChatHistory>;
   /** Refresh a transcript without opening/prewarming its backend session. */
   readChatHistory(threadId: string): Promise<ChatHistory>;
+  /** One image a thread holds (see GeneratedImageRef), as a data URL; null when gone. */
+  getChatImage(threadId: string, imageId: string): Promise<{ dataUrl: string; mime: string } | null>;
   /** Drop the given turn and every later turn from the thread (retry/edit re-run). */
   rollbackToTurn(threadId: string, turnId: string): Promise<void>;
   /** Branch the thread into a new chat, trimmed to end at the given turn. */

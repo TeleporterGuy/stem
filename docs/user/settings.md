@@ -16,8 +16,8 @@ instructions.
 </p>
 
 Settings has four tabs: **App** (the conversation, Quick Chat, appearance, the Escape
-key, notifications, About), **Features** (mail among personas, commands, coding agents,
-computer control), **Server** and **Models**.
+key, notifications, About), **Features** (mail among personas, image generation, commands,
+coding agents, computer control), **Server** and **Models**.
 
 ## Providers and models
 
@@ -202,6 +202,25 @@ approvals apply to what a coding agent runs, the same as for personas.
 
 If Stem says it cannot use a coding agent or control the computer, it names the
 reason: the chat runs as a persona without that setup, or chats are switched off here.
+
+## Image generation
+
+Ask for a picture in plain words ("draw a sprout in a terracotta pot", "make a logo for
+…", "make the sky darker") and Stem makes it and shows it in the reply. It can also
+start from a photo you attach. Pictures come from your **ChatGPT subscription**, not an
+API key, so this needs a ChatGPT sign-in under Models, and each picture uses your plan's
+image allowance. One picture takes 20–60 seconds. While it's being made, the reply shows
+a placeholder with a timer, and Stop cancels it.
+
+Settings → Features → **Image generation** switches it on or off for every chat and
+persona at once, mail and scheduled runs included. It is on by default whenever you're
+signed in with ChatGPT. Code personas never make images: they only relay to their
+coding agent.
+
+The assistant sees the pictures it made, so you can ask for changes. Only the newest
+three stay in its view as pictures. Older ones stay in the chat and can still be edited
+when you ask. Pictures are kept with the chat and deleted with it. Your prompt, and any
+image used as a starting point, go to OpenAI, even in a private chat.
 
 ## Escape key
 

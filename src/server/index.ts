@@ -521,6 +521,14 @@ function registerIpc(): void {
     return { threadId, ...history };
   });
 
+  // One image a chat shows (generate_image output or an attachment with an id),
+  // as a data URL. Bytes never ride the event stream or the history payload;
+  // clients fetch each picture on demand and cache it.
+  registerServer('chats:image', async (_e, threadId: string, imageId: string) => {
+    const hit = await runtime!.findThreadImage(threadId, imageId);
+    return hit ? { dataUrl: `data:${hit.mimeType};base64,${hit.data}`, mime: hit.mimeType } : null;
+  });
+
   // ---- settings ----
   registerServer('settings:get', () => readSettings());
   registerServer('settings:updateQuickChat', async (_e, patch: Partial<QuickChatSettings>) => {

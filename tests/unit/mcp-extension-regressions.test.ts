@@ -570,7 +570,9 @@ describe('recall search tools in a recall-off turn', () => {
       computerChoose: false,
       computerRefusal: null,
       recall: true,
-      relay: false
+      relay: false,
+      imageGen: false,
+      imageGenRefusal: null
     });
     // What main writes for a Critic delivery.
     await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: false, relay: false }, root);

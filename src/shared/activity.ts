@@ -28,6 +28,7 @@ function labelForTool(name: string, detail?: string): string | undefined {
     // src/foo.ts · 3 tool calls · $0.40"); the initial detail is the bare agent name.
     return detail.includes(':') ? `${detail}…` : `Running the ${detail} coding agent…`;
   }
+  if (n === 'generate_image') return 'Creating an image…';
   if (n === 'read') return detail ? `Reading ${detail}…` : 'Reading a file…';
   if (n === 'bash' || n === 'cmd') return detail ? `Running ${detail}…` : 'Running a command…';
   if (n === 'grep') return detail ? `Searching for ${detail}…` : 'Searching files…';
@@ -52,6 +53,7 @@ export function settledActivityLabel(type: string, name?: string, detail?: strin
   // allows for — as a file's contents may go unused.
   if (type === 'skill') return name ? `Used the skill ${name}` : 'Used a saved skill';
   if (n === 'coding_agent' || type === 'codingAgent') return 'Ran a coding agent';
+  if (n === 'generate_image' || type === 'imageGeneration') return 'Created an image';
   if (n === 'read') return detail ? `Read ${detail}` : 'Read a file';
   if (n === 'bash' || n === 'cmd') return detail ? `Ran ${detail}` : 'Ran a command';
   if (n === 'grep') return detail ? `Searched for ${detail}` : 'Searched files';

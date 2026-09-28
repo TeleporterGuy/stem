@@ -264,6 +264,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     return rows.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
+  async findThreadImage(): Promise<{ mimeType: string; data: string } | null> {
+    return null;
+  }
+
   async readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[] }> {
     const thread = this.threads.get(threadId);
     return { title: thread?.title ?? '', messages: [...(thread?.messages ?? [])] };

@@ -20,6 +20,7 @@ import type {
   BackendEventEnvelope,
   ChatMessage,
   ChatSummary,
+  GeneratedImageRef,
   InstructionsProposal,
   McpAdminProposal,
   McpLoginResult,
@@ -123,6 +124,7 @@ import {
   spawnReadyCompleteChild
 } from './complete-worker';
 import {
+  generatedImageRef,
   newTurnContext,
   normalizePiEvent,
   phaseOfEvents,
@@ -137,6 +139,7 @@ import {
 } from './normalize';
 
 import { PiWorker } from './worker';
+import { findImageInEntries, stemImageOf } from './image-gen.mjs';
 import { mailPreamble, personaNotesBlock, priorReportsBlock } from '../mail/preamble';
 import { systemVersion } from '../sys-version';
 import { secretKeyHex } from './secrets';
@@ -1203,6 +1206,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const computer = resolveComputerGrant(grantTurn, chatFeatures.computer);
       if (computer.ok) turn.computerGrant = computer.grant;
       else turn.computerRefusal = computer.refusal;
+      // generate_image: one Settings switch for every kind of turn, on the
+      // user's ChatGPT sign-in; a code persona is a relay and never gets it.
+      const imageGen = await this.imageGenGrant(chatFeatures.images, !!turn.personaHarness);
       // The exec safety judge classifies commands relative to this request.
       turn.userText = input.input;
       // Folders connected memorize:false: if the assistant reads inside one this turn,
@@ -1264,7 +1270,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             // A code persona is a relay: the harness does the work AND the
             // verification, so the persona's own read/grep/run_command/MCP
             // tools are off for the turn (codeRelayRefusal in the extension).
-            relay: !!turn.personaHarness
+            relay: !!turn.personaHarness,
+            imageGen: imageGen.ok,
+            imageGenRefusal: imageGen.ok ? null : imageGen.refusal
           },
           w.gateDir
         ).catch(
@@ -1832,6 +1840,34 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     return parseWorkHistory(await readFile(file, 'utf8'), threadId, (content) => this.contentToParts(content).text);
   }
 
+  /**
+   * The bytes of one image a thread holds — a picture generate_image made, or a
+   * user attachment with an id — straight from its session file (the only
+   * place Stem keeps them). Null when the thread or the id is unknown.
+   */
+  async findThreadImage(threadId: string, imageId: string): Promise<{ mimeType: string; data: string } | null> {
+    if (!/^img_[0-9a-f]{6,32}$/.test(imageId)) return null;
+    const file = await this.resolveSessionFile(threadId);
+    if (!file) {
+      const live = this.workers.find((w) => w.proc?.running && w.activeThreadId === threadId);
+      if (!live) return null;
+      const res = await live.proc!.request({ type: 'get_messages' });
+      return findImageInEntries((res.data as { messages?: unknown[] } | undefined)?.messages ?? [], imageId);
+    }
+    const text = await readFile(file, 'utf8');
+    // Only lines naming the id are worth parsing — the others can be megabytes.
+    for (const line of text.split('\n')) {
+      if (!line.includes(imageId)) continue;
+      try {
+        const hit = findImageInEntries([JSON.parse(line)], imageId);
+        if (hit) return hit;
+      } catch {
+        // quiet: a torn line (pi still appending) is not the image; keep looking
+      }
+    }
+    return null;
+  }
+
   async readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[]; complete?: boolean }> {
     const file = await this.resolveSessionFile(threadId);
     if (!file) {
@@ -1865,6 +1901,29 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // Fallback for turns predating the sqlite activity rows: synthesize activity
     // items from the session's own persisted toolCall blocks + toolResult entries.
     let pendingActivity: ActivityItem[] = [];
+    // Pictures generate_image made in the current turn (from the tool results'
+    // details; the bytes stay in this file) and how many a bubble already has.
+    let turnImages: GeneratedImageRef[] = [];
+    let placedImages = 0;
+    // A turn that ended right after an image (stopped, or no closing words)
+    // still shows it: onto the turn's bubble, or a bubble of its own.
+    const flushTurnImages = () => {
+      if (turnImages.length <= placedImages) return;
+      if (aggregateIndex >= 0) {
+        messages[aggregateIndex] = { ...messages[aggregateIndex], images: [...turnImages] };
+      } else {
+        const turnId = runtimeTurnId ?? lastUserId;
+        messages.push({
+          id: `assistant-${turnId}`,
+          role: 'assistant',
+          content: '',
+          turnId: lastUserId,
+          ...(runtimeTurnId ? { runtimeTurnId } : {}),
+          images: [...turnImages]
+        });
+      }
+      placedImages = turnImages.length;
+    };
     // Which model/effort produced each reply (the hover label next to "Stem").
     // Assistant entries persist provider+model directly; effort comes from the
     // thinking_level_change entry in force when the reply was written, and
@@ -1893,6 +1952,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           stopReason?: string;
           errorMessage?: string;
           toolCallId?: string;
+          toolName?: string;
+          details?: unknown;
           isError?: boolean;
           provider?: string;
           model?: string;
@@ -1941,10 +2002,18 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       if (role === 'toolResult') {
         const hit = pendingActivity.find((a) => a.id === entry.message?.toolCallId);
         if (hit && entry.message.isError === true) hit.status = 'error';
+        const made = stemImageOf(entry.message) ? generatedImageRef(entry.message.details, threadId) : null;
+        if (made) {
+          turnImages.push(made);
+          if (hit) hit.image = made;
+        }
         continue;
       }
       const { text: content, images, scheduled } = this.contentToParts(entry.message.content);
       if (role === 'user') {
+        flushTurnImages();
+        turnImages = [];
+        placedImages = 0;
         if (pendingFailure) messages.push(pendingFailure);
         pendingFailure = undefined;
         lastUserId = entry.id ?? lastUserId;
@@ -1978,7 +2047,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             pendingActivity.push(item);
           }
         }
-        if (content.trim()) {
+        if (content.trim() || turnImages.length > placedImages) {
           const timing = entry.id ? timings.get(entry.id) : undefined;
           const usage = toTurnUsage(entry.message.usage);
           const persisted = entry.id ? activities.get(entry.id) : undefined;
@@ -2011,17 +2080,25 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             ...(timing ? { timing } : {}),
             ...(usage ? { usage } : {}),
             ...(activity ? { activity } : {}),
-            ...(sources ? { sources } : {})
+            ...(sources ? { sources } : {}),
+            ...(turnImages.length ? { images: [...turnImages] } : {})
           };
+          placedImages = turnImages.length;
           if (runtimeTurnId) {
-            answer.content = committedText ? `${committedText}\n\n${content}` : content;
+            answer.content = committedText && content.trim() ? `${committedText}\n\n${content}` : committedText || content;
             if (entry.message.stopReason !== 'error' && entry.message.stopReason !== 'aborted') committedText = answer.content;
             if (aggregateIndex < 0) {
               aggregateIndex = messages.length;
               messages.push(answer);
             } else {
               const previous = messages[aggregateIndex];
-              messages[aggregateIndex] = { ...previous, ...answer, activity: answer.activity ?? previous.activity, sources: answer.sources ?? previous.sources };
+              messages[aggregateIndex] = {
+                ...previous,
+                ...answer,
+                activity: answer.activity ?? previous.activity,
+                sources: answer.sources ?? previous.sources,
+                images: answer.images ?? previous.images
+              };
             }
           } else messages.push(answer);
         }
@@ -2046,6 +2123,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         }
       }
     }
+    flushTurnImages();
     if (pendingFailure) messages.push(pendingFailure);
     if (unparsed > 0) {
       degrade('pi.thread', `dropped ${unparsed} unreadable lines from the transcript`, unparsedError);
@@ -4217,7 +4295,14 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     let runtimeTurnId: string | undefined;
     let committedText = '';
     let aggregateIndex = -1;
+    let turnImages: GeneratedImageRef[] = [];
+    const threadId = worker.activeThreadId ?? '';
     for (const m of raw) {
+      if (m.role === 'toolResult') {
+        const made = stemImageOf(m) ? generatedImageRef((m as { details?: unknown }).details, threadId) : null;
+        if (made) turnImages.push(made);
+        continue;
+      }
       const { text: content, images, scheduled } = this.contentToParts(m.content);
       if (m.role === 'user' && !content.trim() && !images.length) continue;
       if (m.role === 'user') {
@@ -4226,6 +4311,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         runtimeTurnId = this.runtimeIdentity(m.content);
         committedText = '';
         aggregateIndex = -1;
+        turnImages = [];
         messages.push({
           id: `user-${messages.length}`,
           role: 'user',
@@ -4243,16 +4329,17 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           model || worker.currentThinking
             ? { ...(model ? { model } : {}), ...(worker.currentThinking ? { effort: worker.currentThinking } : {}) }
             : undefined;
-        if (content.trim()) {
+        if (content.trim() || turnImages.length) {
           const answer: ChatMessage = {
             id: `assistant-${runtimeTurnId ?? messages.length}`,
             role: 'assistant',
             content,
             ...(meta ? { meta } : {}),
-            ...(runtimeTurnId ? { runtimeTurnId } : {})
+            ...(runtimeTurnId ? { runtimeTurnId } : {}),
+            ...(turnImages.length ? { images: [...turnImages] } : {})
           };
           if (runtimeTurnId) {
-            answer.content = committedText ? `${committedText}\n\n${content}` : content;
+            answer.content = committedText && content.trim() ? `${committedText}\n\n${content}` : committedText || content;
             if (m.stopReason !== 'error' && m.stopReason !== 'aborted') committedText = answer.content;
             if (aggregateIndex < 0) { aggregateIndex = messages.length; messages.push(answer); }
             else messages[aggregateIndex] = answer;
@@ -4366,6 +4453,23 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   /** Providers Stem has credentials for (from the isolated auth.json). */
+  /** Whether generate_image may run this turn, else the reason the model passes on. */
+  private async imageGenGrant(
+    setting: { allow: boolean } | undefined,
+    codePersona: boolean
+  ): Promise<{ ok: true } | { ok: false; refusal: string }> {
+    if (codePersona) return { ok: false, refusal: 'Code personas relay to their coding agent and do not create images.' };
+    if (setting?.allow === false) {
+      return { ok: false, refusal: 'Image generation is switched off in Settings → Features. Tell the user; they can turn it on there.' };
+    }
+    // quiet: an unreadable auth.json reads as signed out, and the refusal says so
+    const providers = await this.authProviders().catch(() => new Set<string>());
+    if (!providers.has('openai-codex')) {
+      return { ok: false, refusal: 'Image generation needs a ChatGPT sign-in (Settings → Models). Tell the user.' };
+    }
+    return { ok: true };
+  }
+
   private async authProviders(): Promise<Set<string>> {
     try {
       const raw = await readFile(join(this.options.piHome, 'auth.json'), 'utf8');

@@ -44,6 +44,8 @@ export interface ChannelSignatures {
    * reason this does.
    */
   'chats:history': StemApi['openChat'];
+  /** One image a chat or mail shows, as a data URL (bytes never ride the history). */
+  'chats:image': StemApi['getChatImage'];
 
   // Writing. `backend:startTurn` is the only channel on the phone that causes a
   // model to be paid for, which is why the composer gates it on the connection

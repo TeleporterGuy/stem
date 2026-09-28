@@ -17,6 +17,7 @@ import type {
   AgentMessageDeltaParams,
   BackendEventEnvelope,
   ChatMessage,
+  GeneratedImageRef,
   ItemEventParams,
   MessageMeta,
   QuickChatHandoff,
@@ -248,6 +249,28 @@ export function mergeQuickChatHandoff(
 }
 
 /** Copy the live activity list onto the turn's assistant bubble (if it exists yet). */
+/**
+ * Put a picture generate_image just made onto its turn's assistant bubble,
+ * creating the bubble when the model has not written any text yet — a reply
+ * can be nothing but the image.
+ */
+function withTurnImage(
+  messages: ChatMessage[],
+  turnId: string,
+  image: GeneratedImageRef,
+  options: ApplyBackendEventOptions
+): ChatMessage[] {
+  const id = `assistant-${turnId}`;
+  const idx = messages.findIndex((m) => m.id === id);
+  if (idx === -1) {
+    const meta = options.turnMeta?.get(turnId);
+    return [...messages, { id, role: 'assistant', content: '', images: [image], meta, turnId, runtimeTurnId: turnId } as ChatMessage];
+  }
+  const current = messages[idx].images ?? [];
+  if (current.some((img) => img.id === image.id)) return messages;
+  return messages.map((m, i) => (i === idx ? { ...m, images: [...current, image] } : m));
+}
+
 function stampActivity(messages: ChatMessage[], turnId: string, activities: ActivityItem[]): ChatMessage[] {
   if (!activities.length) return messages;
   const id = `assistant-${turnId}`;
@@ -321,7 +344,8 @@ export function applyBackendEventToThread(
               type,
               name: p.item.name,
               detail: p.item.detail,
-              status: 'running'
+              status: 'running',
+              ...(p.item.startedAt !== undefined ? { startedAt: p.item.startedAt } : {})
             } as ActivityItem
           ];
       return {
@@ -358,12 +382,15 @@ export function applyBackendEventToThread(
           return null;
         }
         const activities = state.activities.map((a, i) =>
-          i === idx ? { ...a, status: p.item.status ?? 'ok', detail: p.item.detail ?? a.detail } : a
+          i === idx
+            ? { ...a, status: p.item.status ?? 'ok', detail: p.item.detail ?? a.detail, ...(p.item.image ? { image: p.item.image } : {}) }
+            : a
         );
         // Refresh the working label from whatever is still running; keep the last
         // label when nothing is (reasoning/answer events overwrite it as before).
         const activity = runningLabel(activities) ?? state.activity;
-        return { ...state, activity, activities, messages: stampActivity(state.messages, p.turnId, activities) };
+        const messages = p.item.image ? withTurnImage(state.messages, p.turnId, p.item.image, options) : state.messages;
+        return { ...state, activity, activities, messages: stampActivity(messages, p.turnId, activities) };
       }
       const id = `assistant-${p.turnId}`;
       const text = agentMessageText(p.item);

@@ -337,6 +337,7 @@ const api: StemApi = {
   searchChats: (query: string) => ipcRenderer.invoke('chats:search', query),
   openChat: (threadId: string) => ipcRenderer.invoke('chats:open', threadId),
   readChatHistory: (threadId: string) => ipcRenderer.invoke('chats:history', threadId),
+  getChatImage: (threadId: string, imageId: string) => ipcRenderer.invoke('chats:image', threadId, imageId),
   rollbackToTurn: (threadId: string, turnId: string) =>
     ipcRenderer.invoke('chats:rollbackToTurn', threadId, turnId),
   forkThread: (threadId: string, turnId: string) => ipcRenderer.invoke('chats:forkThread', threadId, turnId),

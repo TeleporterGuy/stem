@@ -315,6 +315,8 @@ export interface ChatBackend extends EventEmitter {
   // thread CRUD
   listThreads(): Promise<ChatSummary[]>;
   readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[]; complete?: boolean }>;
+  /** One image a thread's session holds, by id (generate_image output or an attachment). */
+  findThreadImage(threadId: string, imageId: string): Promise<{ mimeType: string; data: string } | null>;
   /** Raw persisted action history for Mail; excludes private reasoning. */
   readWorkHistory?(threadId: string): Promise<HistoricalWorkRun[]>;
   resumeThread(threadId: string): Promise<void>;

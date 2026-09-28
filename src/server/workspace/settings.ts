@@ -129,7 +129,10 @@ const DEFAULTS: ServerSettings = {
   // the user allows them in Settings → Features (2026-09-27).
   chatFeatures: {
     coding: { allow: false, target: null },
-    computer: { allow: false, target: null }
+    computer: { allow: false, target: null },
+    // Image generation: ON for every chat, persona and run with a ChatGPT
+    // sign-in until switched off (2026-09-28).
+    images: { allow: true }
   },
   // Embeddings + reranker for relevance-ranking facts at inject time. Embeddings
   // default to the bundled local model (multilingual, in-process, nothing leaves
@@ -692,7 +695,8 @@ function coerceChatFeatures(raw: unknown): ChatFeatureSettings {
     computer: {
       allow: computer.allow === true,
       target: computerDevice ? { device: computerDevice } : null
-    }
+    },
+    images: { allow: obj(r.images).allow !== false }
   };
 }
 

@@ -17,6 +17,23 @@ import { open, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, parse, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  CODEX_RESPONSES_URL,
+  IMAGE_SIZES,
+  IMAGE_TOOL_NAME,
+  ImageGenError,
+  accountIdFromJwt,
+  buildImageRequest,
+  codexHeaders,
+  dispatcherCandidates,
+  findImageInEntries,
+  httpError,
+  knownImageIds,
+  newImageId,
+  parseImageSse,
+  pngSize,
+  stubOldImages
+} from './image-gen.mjs';
 import { searchMcpTools, summarizeToolCapabilities } from './mcp-discovery.mjs';
 
 // Stem's internal recall server stays EAGER (its one tool is used every turn);
@@ -1827,6 +1844,13 @@ export default async function stemMcpBridge(pi) {
   // as the tool result's image block.
   registerComputerTool(pi, turnContextGate);
 
+  // Image generation on the user's ChatGPT subscription. Unlike the tools
+  // above, the whole call happens here: the Codex request needs pi's own
+  // openai-codex login (refreshed under pi's lock), Stop aborts it through the
+  // tool signal, and the picture lands in the tool result — the session file is
+  // where Stem keeps it and where the chat reads it back from.
+  registerImageTool(pi, turnContextGate);
+
   // Stem self-authored skills: let the assistant save its own SKILL.md procedures.
   // The write itself happens in main (see SKILL_BRIDGE_TITLE) — it owns the
   // contract validator and the Off/Ask/Auto policy, neither of which a subprocess
@@ -1879,6 +1903,10 @@ export default async function stemMcpBridge(pi) {
             if (wantSearch) next.add(t);
             else next.delete(t);
           }
+          // generate_image: hidden unless main says this turn may make images
+          // (Settings → Features switch, a ChatGPT sign-in, not a code persona).
+          if (turnContextGate().imageGen) next.add(IMAGE_TOOL_NAME);
+          else next.delete(IMAGE_TOOL_NAME);
           if (next.size !== active.length || active.some((t) => !next.has(t))) {
             pi.setActiveTools([...next]);
           }
@@ -1944,6 +1972,14 @@ export default async function stemMcpBridge(pi) {
         };
       }
       return undefined;
+    });
+    // Generated images stay in the conversation the way ChatGPT keeps them, but
+    // only the newest few keep their pixels in what the model is sent — each is
+    // megabytes on every request. The session file keeps them all (references).
+    pi.on('context', (event) => {
+      const messages = event && event.messages;
+      const next = stubOldImages(messages, IMAGE_CONTEXT_KEEP);
+      return next !== messages ? { messages: next } : undefined;
     });
     // Service tier ("Fast"): see withServiceTier for which requests accept it.
     pi.on('before_provider_request', (event) => withServiceTier(event && event.payload, serviceTier()));
@@ -2024,7 +2060,10 @@ export function makeTurnContextGate(path) {
         computerChoose: parsed.computerChoose === true,
         computerRefusal: typeof parsed.computerRefusal === 'string' ? parsed.computerRefusal : null,
         recall: parsed.recall !== false,
-        relay: parsed.relay === true
+        relay: parsed.relay === true,
+        // generate_image defaults to OFF when absent (an older main never wrote it).
+        imageGen: parsed.imageGen === true,
+        imageGenRefusal: typeof parsed.imageGenRefusal === 'string' ? parsed.imageGenRefusal : null
       };
     } catch {
       return {
@@ -2037,7 +2076,9 @@ export function makeTurnContextGate(path) {
         computerChoose: false,
         computerRefusal: null,
         recall: true,
-        relay: false
+        relay: false,
+        imageGen: false,
+        imageGenRefusal: null
       };
     }
   };
@@ -2997,6 +3038,168 @@ function registerComputerTool(pi, turnContext) {
       const res = await computerBridge(ctx, { action: parsed.action, ...(device ? { device } : {}) });
       if (!res.ok) return taskErr(res.error || 'The action could not be performed.');
       return { content: computerResultContent(res), details: {} };
+    }
+  });
+}
+
+// ---- Image generation: the user's ChatGPT subscription ----
+
+// Newest generated images whose pixels the model keeps seeing (stubOldImages).
+const IMAGE_CONTEXT_KEEP = 3;
+const IMAGE_TIMEOUT_MS = 180_000;
+
+// Fallback only: main writes the exact reason into the turn-context gate.
+const IMAGE_OFF_REFUSAL =
+  'Image generation is not available in this conversation (it needs a ChatGPT sign-in and Settings → Features → ' +
+  'Image generation switched on). Do not retry; tell the user.';
+
+// The dispatcher model that last worked, so a rejected one is not retried on
+// every image. Module scope: one pi process serves one worker's turns.
+let lastImageModel = null;
+
+async function codexAuth(ctx, model) {
+  const registry = ctx && ctx.modelRegistry;
+  if (!registry || typeof registry.getApiKeyAndHeaders !== 'function') return null;
+  try {
+    const resolved = await registry.getApiKeyAndHeaders(model);
+    if (!resolved || !resolved.ok || !resolved.apiKey) return null;
+    const accountId = accountIdFromJwt(resolved.apiKey);
+    return accountId ? { token: resolved.apiKey, accountId } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One Codex image call; resolves { b64, revisedPrompt, model } or throws ImageGenError. */
+async function requestImage(ctx, { prompt, size, refs }, signal) {
+  let available = [];
+  try {
+    available = ctx.modelRegistry.getAvailable();
+  } catch {
+    available = [];
+  }
+  const candidates = dispatcherCandidates(ctx.model, available, lastImageModel);
+  if (!candidates.length) {
+    throw new ImageGenError('auth', 'Image generation needs a ChatGPT sign-in (Settings → Models → ChatGPT). Tell the user.');
+  }
+  let lastErr = null;
+  // A rejected dispatcher model gets one retry with the next candidate.
+  for (const model of candidates.slice(0, 2)) {
+    const auth = await codexAuth(ctx, model);
+    if (!auth) {
+      throw new ImageGenError('auth', 'The ChatGPT sign-in could not be used. Ask the user to sign in with ChatGPT again (Settings → Models).');
+    }
+    const timeout = AbortSignal.timeout(IMAGE_TIMEOUT_MS);
+    const res = await fetch(CODEX_RESPONSES_URL, {
+      method: 'POST',
+      headers: codexHeaders(auth.token, auth.accountId),
+      body: JSON.stringify(buildImageRequest({ model: model.id, prompt, size, refs })),
+      redirect: 'error',
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout
+    });
+    if (res.status !== 200) {
+      lastErr = httpError(res.status, await res.text().catch(() => ''));
+      if (lastErr.code === 'model_rejected') continue;
+      throw lastErr;
+    }
+    const out = await parseImageSse(res.body);
+    lastImageModel = model.id;
+    return { ...out, model: model.id };
+  }
+  throw lastErr || new ImageGenError('http', 'The image could not be created.');
+}
+
+function registerImageTool(pi, turnContext) {
+  pi.registerTool({
+    name: IMAGE_TOOL_NAME,
+    label: 'Generate image',
+    description:
+      'Create or edit a picture with the user\'s ChatGPT subscription. Use it when the user asks for an image, ' +
+      'drawing, illustration, logo, photo-style picture, or a change or variation of one. Write a complete, ' +
+      'specific prompt (subject, style, composition, text to render) rather than passing their words through. ' +
+      'To edit or vary an existing image, or to start from a photo the user attached, pass its id in ' +
+      '`references`: ids come from this tool\'s earlier results and from the "Images attached" line under a ' +
+      'user message. One call makes one image and takes 20–60 seconds; for several variations call it several ' +
+      'times. The user sees the picture in the chat as soon as it is made, so do not describe it back at length ' +
+      '— a short line is enough.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'What to draw, in full.' },
+        size: {
+          type: 'string',
+          enum: IMAGE_SIZES,
+          description:
+            'auto (default), 1024x1024 square, 1536x1024 landscape, or 1024x1536 portrait. A preference only: ' +
+            'the service may return another shape, so also say the orientation in the prompt.'
+        },
+        references: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Ids of images to start from or match (e.g. "img_3fa9c1d2e0"), in order of importance.'
+        }
+      },
+      required: ['prompt']
+    },
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const turnCtx = turnContext ? turnContext() : null;
+      if (!turnCtx || turnCtx.imageGen !== true) return taskErr((turnCtx && turnCtx.imageGenRefusal) || IMAGE_OFF_REFUSAL);
+      const prompt = params && typeof params.prompt === 'string' ? params.prompt.trim() : '';
+      if (!prompt) return taskErr('Pass a `prompt` describing the image.');
+      const size = IMAGE_SIZES.includes(params.size) ? params.size : 'auto';
+      const refIds = Array.isArray(params.references)
+        ? [...new Set(params.references.filter((r) => typeof r === 'string' && r.trim()).map((r) => r.trim()))]
+        : [];
+      let entries = [];
+      try {
+        entries = refIds.length && ctx && ctx.sessionManager ? ctx.sessionManager.getBranch() : [];
+      } catch {
+        entries = [];
+      }
+      const refs = [];
+      for (const refId of refIds) {
+        const found = findImageInEntries(entries, refId);
+        if (!found) {
+          const known = knownImageIds(entries);
+          return taskErr(
+            `No image "${refId}" in this conversation.` +
+              (known.length ? ` Known ids: ${known.slice(-12).join(', ')}.` : ' It has no images you can reference yet.')
+          );
+        }
+        refs.push(found);
+      }
+      let out;
+      try {
+        out = await requestImage(ctx, { prompt, size, refs }, signal);
+      } catch (err) {
+        if (signal && signal.aborted) return taskErr('Stopped before the image was ready.');
+        if (err && err.name === 'TimeoutError') return taskErr('The image service did not answer in time. Tell the user; they can ask again.');
+        if (err instanceof ImageGenError) return taskErr(err.message);
+        return taskErr(`The image could not be created: ${(err && err.message) || err}`);
+      }
+      const id = newImageId();
+      const dims = pngSize(Buffer.from(out.b64.slice(0, 64), 'base64'));
+      const stemImage = {
+        id,
+        mime: 'image/png',
+        ...(dims || {}),
+        prompt,
+        ...(out.revisedPrompt ? { revisedPrompt: out.revisedPrompt } : {}),
+        size,
+        ...(refIds.length ? { references: refIds } : {}),
+        model: out.model
+      };
+      const text =
+        `Image ${id} created${dims ? ` (${dims.width}×${dims.height})` : ''}; the user already sees it in the chat.` +
+        (out.revisedPrompt ? `\nPrompt used: ${out.revisedPrompt}` : '') +
+        `\nTo change it later, call generate_image again with references: ["${id}"].`;
+      return {
+        content: [
+          { type: 'text', text },
+          { type: 'image', data: out.b64, mimeType: 'image/png' }
+        ],
+        details: { stemImage }
+      };
     }
   });
 }

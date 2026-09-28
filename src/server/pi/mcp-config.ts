@@ -355,6 +355,8 @@ export async function writeTurnContextGate(
     computerRefusal?: string | null;
     recall: boolean;
     relay: boolean;
+    imageGen?: boolean;
+    imageGenRefusal?: string | null;
   },
   gateDir?: string
 ): Promise<void> {
@@ -388,7 +390,11 @@ export async function writeTurnContextGate(
         computerChoose: ctx.computerChoose === true,
         computerRefusal: ctx.computerRefusal ?? null,
         recall: ctx.recall,
-        relay: ctx.relay
+        relay: ctx.relay,
+        // `imageGen`: whether generate_image is offered this turn (the bridge
+        // also hides it from the tool set when false). Defaults to false.
+        imageGen: ctx.imageGen === true,
+        imageGenRefusal: ctx.imageGenRefusal ?? null
       },
       null,
       2
