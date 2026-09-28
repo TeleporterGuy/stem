@@ -737,6 +737,23 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   overflow: hidden;
 }
 .gen-image img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.gen-image-wrap { display: flex; flex-direction: column; gap: 2px; width: min(360px, 100%); }
+.gen-image-wrap .gen-image { width: 100%; }
+.gen-image-actions {
+  display: flex; align-items: center; gap: 2px; min-height: 24px;
+  opacity: 0; transition: opacity 120ms ease;
+}
+.gen-image-wrap:hover .gen-image-actions,
+.gen-image-actions:focus-within,
+.gen-image-actions:has(.gen-image-flash) { opacity: 1; }
+.gen-image-actions button {
+  width: 24px; height: 24px; border: none; background: none; cursor: pointer;
+  border-radius: var(--radius); color: var(--muted);
+  display: flex; align-items: center; justify-content: center;
+}
+.gen-image-actions button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--ink); }
+.gen-image-flash { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-12); color: var(--muted); margin-left: var(--sp-2); }
+@media (hover: none) { .gen-image-actions { opacity: 1; } }
 .gen-image-loading {
   display: block; width: 100%; height: 100%;
   animation: gen-image-breathe 1.4s ease-in-out infinite;

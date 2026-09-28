@@ -90,6 +90,7 @@ import {
   updateMailSettings
 } from './workspace/settings';
 import { needsBackendRestart, needsWebSearchConfigWrite, writeWebSearchConfig } from './pi/web-search';
+import { addFileBytes } from './files/store';
 import type {
   ChatsSettings,
   DefaultsSettings,
@@ -527,6 +528,16 @@ function registerIpc(): void {
   registerServer('chats:image', async (_e, threadId: string, imageId: string) => {
     const hit = await runtime!.findThreadImage(threadId, imageId);
     return hit ? { dataUrl: `data:${hit.mimeType};base64,${hit.data}`, mime: hit.mimeType } : null;
+  });
+
+  // Keep a copy of a chat image in the Files place ("Save to Files").
+  registerServer('chats:saveImageToFiles', async (_e, threadId: string, imageId: string) => {
+    const hit = await runtime!.findThreadImage(threadId, imageId);
+    if (!hit) throw new Error('This image is no longer in the chat.');
+    const ext = hit.mimeType === 'image/jpeg' ? 'jpg' : (hit.mimeType.split('/')[1] ?? 'png');
+    const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '.');
+    const rel = await addFileBytes(`Stem image ${stamp}.${ext}`, Buffer.from(hit.data, 'base64'));
+    return { rel };
   });
 
   // ---- settings ----

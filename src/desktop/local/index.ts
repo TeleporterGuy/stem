@@ -1,4 +1,5 @@
-import { app, dialog, shell, type BrowserWindow } from 'electron';
+import { app, clipboard, dialog, nativeImage, shell, type BrowserWindow } from 'electron';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { handleLocal } from '../ipc-bridge';
 import { ensureFilesRoot } from '../../server/files/store';
@@ -326,6 +327,31 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
     // skipped under the same kind of flag for the same kind of reason).
     if (!process.env.STEM_BACKGROUND) shell.showItemInFolder(saved);
     return saved;
+  });
+
+  /**
+   * Save a chat image (the data URL the renderer is already showing) wherever
+   * the user picks, Downloads by default. Only image data URLs are accepted.
+   */
+  handleLocal('image:saveAs', async (_e, dataUrl: string, name: string): Promise<string | null> => {
+    const m = /^data:(image\/(png|jpeg|webp|gif));base64,(.+)$/s.exec(dataUrl);
+    if (!m) throw new Error('Not an image.');
+    const ext = m[2] === 'jpeg' ? 'jpg' : m[2];
+    const base = (name || 'Stem image').replace(/[\\/:*?"<>|]/g, '-').slice(0, 80);
+    const chosen = await dialog.showSaveDialog(deps.mainWindow()!, {
+      title: 'Save image',
+      defaultPath: join(downloadsDir(), `${base}.${ext}`),
+      filters: [{ name: 'Image', extensions: [ext] }]
+    });
+    if (chosen.canceled || !chosen.filePath) return null;
+    await writeFile(chosen.filePath, Buffer.from(m[3], 'base64'));
+    return chosen.filePath;
+  });
+
+  handleLocal('image:copy', (_e, dataUrl: string) => {
+    const img = nativeImage.createFromDataURL(dataUrl);
+    if (img.isEmpty()) throw new Error('Not an image.');
+    clipboard.writeImage(img);
   });
 
   /**

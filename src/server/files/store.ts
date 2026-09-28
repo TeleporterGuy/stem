@@ -5,7 +5,7 @@
 // read tools reach these files because the folder is inside its cwd.
 
 import { constants } from 'node:fs';
-import { copyFile, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, extname, join, relative, resolve, sep } from 'node:path';
 import type { FileEntry, FilesListing } from '../../shared/types';
 import { degrade } from '../degrade';
@@ -82,6 +82,29 @@ async function copyToUniquePath(src: string, dir: string, name: string): Promise
     try {
       await copyFile(src, candidate, constants.COPYFILE_EXCL);
       return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw error;
+    }
+  }
+}
+
+/**
+ * Write `bytes` as a new file in the Files root under `name` (or a numbered
+ * sibling), the same collision rule as addFiles. Answers the relative path it
+ * landed at. `wx` makes reserving the name and writing it one atomic step.
+ */
+export async function addFileBytes(name: string, bytes: Buffer): Promise<string> {
+  const dir = filesRoot();
+  await mkdir(dir, { recursive: true });
+  const safe = basename(name).replace(/[\\/:*?"<>|]/g, '-') || `file-${Date.now()}`;
+  const ext = extname(safe);
+  const stem = basename(safe, ext);
+  for (let i = 0; ; i++) {
+    const rel = i === 0 ? safe : `${stem}-${i}${ext}`;
+    try {
+      await writeFile(join(dir, rel), bytes, { flag: 'wx' });
+      return rel;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
       throw error;

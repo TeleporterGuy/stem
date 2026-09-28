@@ -139,7 +139,7 @@ import {
 } from './normalize';
 
 import { PiWorker } from './worker';
-import { findImageInEntries, stemImageOf } from './image-gen.mjs';
+import { findImageInEntries, newImageId, parseImagesMarker, stemImageOf } from './image-gen.mjs';
 import { mailPreamble, personaNotesBlock, priorReportsBlock } from '../mail/preamble';
 import { systemVersion } from '../sys-version';
 import { secretKeyHex } from './secrets';
@@ -4104,6 +4104,15 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // Images go to pi natively; text-like files and PDF text layers are inlined,
     // other binaries noted and dropped.
     const { images, textBlocks, rejected } = await resolveAttachments(input.attachments ?? []);
+    // Each attached image gets an id the model can pass to generate_image as a
+    // reference ("make this photo a watercolor"). The marker rides in the
+    // context fence, so replay strips it and reads the ids back (stripMarkers).
+    if (images.length) {
+      const ids = images.map(() => newImageId());
+      blocks.push(
+        `<!--stem:images ids="${ids.join(',')}"-->\nImages attached to this message, in order (ids for generate_image \`references\`): ${ids.join(', ')}`
+      );
+    }
 
     // The user's text comes last; context blocks precede it across a `---` rule, while
     // inlined files and skip notes attach to the user turn just after their message.
@@ -4420,6 +4429,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     scheduled?: { at: string };
   } {
     const sched = raw.match(SCHED_STRIP_RE);
+    // Ids buildMessage gave the attached images, in attachment order.
+    const ids = parseImagesMarker(raw);
+    if (ids.length) images = images.map((img, i) => (ids[i] ? { ...img, imageId: ids[i] } : img));
     const text = stripCiteMarkers(
       raw.replace(SCHED_STRIP_RE, '').replace(MAIL_STRIP_RE, '').replace(CONTEXT_STRIP_RE, '')
     );

@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { deflateSync } from 'node:zlib';
 import type {
   ApprovalId,
   ChatBackend,
@@ -11,6 +12,7 @@ import type {
 import type {
   ChatMessage,
   ChatSummary,
+  GeneratedImageRef,
   McpAdminProposal,
   McpLoginResult,
   ModelSummary,
@@ -22,6 +24,50 @@ import { previewText } from '../chats/preview';
 import { autoTitle, KEEP, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
 import { setNaming } from '../workspace/chats';
 import { turnFailureMessage } from '../../shared/chatState';
+
+const E2E_IMAGE_ID = 'img_e2e0000001';
+
+/** A small RGB gradient PNG, built by hand so the fake needs no image fixture. */
+function testPatternPng(width: number, height: number): Buffer {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf: Buffer) => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, sum]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // RGB
+  const rows = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y++) {
+    const o = y * (width * 3 + 1);
+    for (let x = 0; x < width; x++) {
+      rows[o + 1 + x * 3] = Math.round((x / width) * 255);
+      rows[o + 2 + x * 3] = Math.round((y / height) * 255);
+      rows[o + 3 + x * 3] = 160;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(rows)),
+    chunk('IEND', Buffer.alloc(0))
+  ]);
+}
 
 /**
  * The canned model behind the fake's naming pass: "About <the first three words
@@ -106,6 +152,8 @@ interface ActiveTurn {
   hang: boolean;
   /** Gap between scripted events; longer for `[e2e:slow]`. */
   stepMs: number;
+  /** Pictures an `[e2e:image]` turn made, recorded with its reply. */
+  images?: GeneratedImageRef[];
 }
 
 export interface FakeBackendOptions {
@@ -264,8 +312,13 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     return rows.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  async findThreadImage(): Promise<{ mimeType: string; data: string } | null> {
-    return null;
+  async findThreadImage(threadId: string, imageId: string): Promise<{ mimeType: string; data: string } | null> {
+    // Like the session file: the picture exists from the moment the tool
+    // returned, before the reply that carries it is saved.
+    const has =
+      this.threads.get(threadId)?.messages.some((m) => m.images?.some((i) => i.id === imageId)) ||
+      (this.activeTurn?.threadId === threadId && this.activeTurn.images?.some((i) => i.id === imageId));
+    return has ? { mimeType: 'image/png', data: testPatternPng(96, 64).toString('base64') } : null;
   }
 
   async readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[] }> {
@@ -406,6 +459,28 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
       this.emitEvent('item/started', { item: { type: 'reasoning', id: turnId }, threadId, turnId })
     );
     let streamed = '';
+    // [e2e:image]: a generate_image call — the running row (the "Creating
+    // image…" card), then the finished ref, before the words. The bytes come
+    // back through findThreadImage like the real session file's.
+    if (!fail && !turn.hang && text.includes('[e2e:image]')) {
+      const callId = `e2e-image-${turnId}`;
+      steps.push(() =>
+        this.emitEvent('item/started', {
+          item: { type: 'imageGeneration', id: callId, name: 'generate_image', detail: 'a test pattern', startedAt: Date.now() },
+          threadId,
+          turnId
+        })
+      );
+      steps.push(() => {
+        const image = { id: E2E_IMAGE_ID, threadId, mime: 'image/png', width: 96, height: 64, prompt: 'a test pattern' };
+        turn.images = [...(turn.images ?? []), image];
+        this.emitEvent('item/completed', {
+          item: { type: 'imageGeneration', id: callId, name: 'generate_image', detail: 'a test pattern', status: 'ok', image },
+          threadId,
+          turnId
+        });
+      });
+    }
     // What run_command answered, appended to the reply so a test can assert on
     // the rendered turn rather than on the card alone. Empty for every turn that
     // does not ask for a command.
@@ -528,7 +603,8 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
       role: 'assistant',
       content: text,
       turnId: turn.turnId,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ...(turn.images?.length ? { images: turn.images } : {})
     });
   }
 

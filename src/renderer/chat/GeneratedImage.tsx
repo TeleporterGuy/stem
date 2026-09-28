@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ImageIcon, TriangleAlert, X } from 'lucide-react';
+import { Check, Copy, Download, FolderInput, ImageIcon, ImagePlus, TriangleAlert, X } from 'lucide-react';
 import type { ActivityItem, GeneratedImageRef } from '../../shared/types';
 
 // Pictures generate_image made, shown under the assistant reply. The history
@@ -128,7 +128,87 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
   );
 }
 
-export function GeneratedImageCard({ image }: { image: GeneratedImageRef }) {
+/** A data URL as a File the composer can attach (the "Use as reference" path). */
+export function dataUrlToFile(dataUrl: string, name: string): File | null {
+  const m = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl);
+  if (!m) return null;
+  const bin = atob(m[2]);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new File([bytes], name, { type: m[1] });
+}
+
+function fileName(image: GeneratedImageRef): string {
+  const words = (image.prompt || 'Stem image').replace(/[^\p{L}\p{N} ]+/gu, ' ').trim().split(/\s+/).slice(0, 6).join(' ');
+  return words || 'Stem image';
+}
+
+/** Download / Save to Files / Copy / Use as reference, under one image. */
+function ImageActions({
+  image,
+  url,
+  onUseAsReference
+}: {
+  image: GeneratedImageRef;
+  url: string;
+  onUseAsReference?: (file: File) => void;
+}) {
+  const [flash, setFlash] = useState<string | null>(null);
+  const say = (text: string) => {
+    setFlash(text);
+    setTimeout(() => setFlash((cur) => (cur === text ? null : cur)), 1800);
+  };
+  const run = (label: string, fn: () => Promise<unknown>) => () =>
+    void fn().then(
+      (res) => res !== null && say(label),
+      (e) => say(String((e as Error)?.message ?? e))
+    );
+  const ext = image.mime === 'image/jpeg' ? 'jpg' : 'png';
+  return (
+    <div className="gen-image-actions">
+      <button type="button" title="Download" aria-label="Download image" onClick={run('Saved', () => window.stem.saveImageAs(url, fileName(image)))}>
+        <Download size={13} />
+      </button>
+      <button
+        type="button"
+        title="Save to Files"
+        aria-label="Save image to Files"
+        onClick={run('Saved to Files', () => window.stem.saveChatImageToFiles(image.threadId, image.id))}
+      >
+        <FolderInput size={13} />
+      </button>
+      <button type="button" title="Copy" aria-label="Copy image" onClick={run('Copied', () => window.stem.copyImage(url))}>
+        <Copy size={13} />
+      </button>
+      {onUseAsReference && (
+        <button
+          type="button"
+          title="Use as reference"
+          aria-label="Use image as reference"
+          onClick={() => {
+            const file = dataUrlToFile(url, `${fileName(image)}.${ext}`);
+            if (file) onUseAsReference(file);
+          }}
+        >
+          <ImagePlus size={13} />
+        </button>
+      )}
+      {flash && (
+        <span className="gen-image-flash">
+          <Check size={12} /> {flash}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function GeneratedImageCard({
+  image,
+  onUseAsReference
+}: {
+  image: GeneratedImageRef;
+  onUseAsReference?: (file: File) => void;
+}) {
   const url = useChatImage(image);
   const [open, setOpen] = useState(false);
   const alt = image.revisedPrompt || image.prompt || 'Generated image';
@@ -142,7 +222,7 @@ export function GeneratedImageCard({ image }: { image: GeneratedImageRef }) {
     );
   }
   return (
-    <>
+    <div className="gen-image-wrap">
       <button
         type="button"
         className="gen-image"
@@ -152,8 +232,9 @@ export function GeneratedImageCard({ image }: { image: GeneratedImageRef }) {
       >
         {url ? <img src={url} alt={alt} /> : <span className="gen-image-loading" aria-label="Loading image" />}
       </button>
+      {url && <ImageActions image={image} url={url} onUseAsReference={onUseAsReference} />}
       {open && url && <ImageLightbox src={url} alt={alt} onClose={() => setOpen(false)} />}
-    </>
+    </div>
   );
 }
 
@@ -164,11 +245,13 @@ export function GeneratedImageCard({ image }: { image: GeneratedImageRef }) {
 export function GeneratedImages({
   images,
   activity,
-  live
+  live,
+  onUseAsReference
 }: {
   images?: GeneratedImageRef[];
   activity?: ActivityItem[];
   live: boolean;
+  onUseAsReference?: (file: File) => void;
 }) {
   const done = images ?? [];
   const pending = (activity ?? []).filter((a) => a.type === 'imageGeneration' && a.status === 'running');
@@ -176,7 +259,7 @@ export function GeneratedImages({
   return (
     <div className="gen-images">
       {done.map((img) => (
-        <GeneratedImageCard key={img.id} image={img} />
+        <GeneratedImageCard key={img.id} image={img} onUseAsReference={onUseAsReference} />
       ))}
       {pending.map((a) => (
         <PendingImageCard key={a.id} item={a} live={live} />

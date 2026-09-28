@@ -338,6 +338,10 @@ const api: StemApi = {
   openChat: (threadId: string) => ipcRenderer.invoke('chats:open', threadId),
   readChatHistory: (threadId: string) => ipcRenderer.invoke('chats:history', threadId),
   getChatImage: (threadId: string, imageId: string) => ipcRenderer.invoke('chats:image', threadId, imageId),
+  saveChatImageToFiles: (threadId: string, imageId: string) =>
+    ipcRenderer.invoke('chats:saveImageToFiles', threadId, imageId),
+  saveImageAs: (dataUrl: string, name: string) => ipcRenderer.invoke('image:saveAs', dataUrl, name),
+  copyImage: (dataUrl: string) => ipcRenderer.invoke('image:copy', dataUrl),
   rollbackToTurn: (threadId: string, turnId: string) =>
     ipcRenderer.invoke('chats:rollbackToTurn', threadId, turnId),
   forkThread: (threadId: string, turnId: string) => ipcRenderer.invoke('chats:forkThread', threadId, turnId),
