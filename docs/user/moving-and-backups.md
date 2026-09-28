@@ -34,7 +34,7 @@ Everything you made comes with you:
 
 | Comes with you | Stays behind |
 | --- | --- |
-| Chats, and everything said in them | Devices paired with the old Stem |
+| Chats, and everything said in them (generated pictures included) | Devices paired with the old Stem |
 | Memory — facts and recall | Its pairing codes |
 | Skills | This computer's Quick Chat key and window settings |
 | Your Files | The offline copy of your chats |
