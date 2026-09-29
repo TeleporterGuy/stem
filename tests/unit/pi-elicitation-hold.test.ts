@@ -107,8 +107,10 @@ function fakeOpenAI(): Promise<{ server: Server; port: number }> {
 
 const cleanups: Array<() => Promise<void> | void> = [];
 
+// Last registered runs first: pi must be dead before its home is removed, or a
+// session write still in flight fails the rm with ENOTEMPTY.
 afterEach(async () => {
-  for (const fn of cleanups.splice(0)) await fn();
+  for (const fn of cleanups.splice(0).reverse()) await fn();
 });
 
 describe('pi elicitation hold', () => {
@@ -149,8 +151,11 @@ describe('pi elicitation hold', () => {
           stdio: ['pipe', 'pipe', 'pipe']
         }
       );
-      cleanups.push(() => {
+      cleanups.push(async () => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
         child.kill('SIGKILL');
+        await exited;
       });
 
       const HOLD_MS = 3_000;
