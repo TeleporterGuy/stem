@@ -617,7 +617,7 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
         ctx.trace.push({ id: item.id, name: item.name, args });
       }
       if (ctx.isMail || ctx.isScheduled) out.push({ method: 'mail/work/activity', params: { threadId, turnId, activity: {
-        id: item.id, kind: 'tool', label: item.detail ?? item.name ?? item.type, at: Date.now(), status: 'running', input: workDetail(nested)
+        id: item.id, kind: 'tool', label: item.detail ?? item.name ?? item.type, at: ctx.activityStartedAt.get(item.id) ?? Date.now(), status: 'running', input: workDetail(nested)
       } } });
       out.push({
         method: 'item/started',
