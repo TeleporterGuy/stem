@@ -53,3 +53,12 @@ test('a reopened chat shows the picture again from history', async ({ mainWindow
   });
   expect(history).toEqual(['img_e2e0000001']);
 });
+
+test('the picture shows with plain Markdown replies too', async ({ mainWindow }) => {
+  const mdx = mainWindow.getByRole('group', { name: 'Output format' }).getByRole('button', { name: 'MDX' });
+  await mdx.click(); // pressed = MDX, so one click switches to plain Markdown
+  await expect(mdx).not.toHaveClass(/active/);
+  await send(mainWindow, '[e2e:image] draw a test pattern');
+  await expect(mainWindow.locator('.gen-image img')).toBeVisible();
+  await expect(mainWindow.locator('.message-assistant:not(.activity-row) .message-body').last()).toContainText('Echo:');
+});
