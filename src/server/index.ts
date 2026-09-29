@@ -90,7 +90,6 @@ import {
   updateMailSettings
 } from './workspace/settings';
 import { needsBackendRestart, needsWebSearchConfigWrite, writeWebSearchConfig } from './pi/web-search';
-import { addFileBytes } from './files/store';
 import type {
   ChatsSettings,
   DefaultsSettings,
@@ -530,17 +529,6 @@ function registerIpc(): void {
     return hit ? { dataUrl: `data:${hit.mimeType};base64,${hit.data}`, mime: hit.mimeType } : null;
   });
 
-  // Keep a copy of a chat image in the Files place ("Save to Files").
-  registerServer('chats:saveImageToFiles', async (_e, threadId: string, imageId: string) => {
-    const hit = await runtime!.findThreadImage(threadId, imageId);
-    if (!hit) throw new Error('This image is no longer in the chat.');
-    const ext = hit.mimeType === 'image/jpeg' ? 'jpg' : (hit.mimeType.split('/')[1] ?? 'png');
-    const d = new Date();
-    const two = (n: number) => String(n).padStart(2, '0');
-    const stamp = `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}.${two(d.getMinutes())}`;
-    const rel = await addFileBytes(`Stem image ${stamp}.${ext}`, Buffer.from(hit.data, 'base64'));
-    return { rel };
-  });
 
   // ---- settings ----
   registerServer('settings:get', () => readSettings());

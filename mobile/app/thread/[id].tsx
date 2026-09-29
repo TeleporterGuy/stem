@@ -205,12 +205,6 @@ export default function ThreadScreen(): ReactElement {
               theme={theme}
               streaming={item.id === thread.state.streamingId}
               running={thread.running}
-              onUseAsReference={(file) =>
-                void draftStore.addAttachment(file).then(
-                  () => composerInput.current?.focus(),
-                  (e) => console.warn('[images] could not attach the reference', e)
-                )
-              }
               onRestore={
                 resend && item.id === thread.state.messages.at(-1)?.id ? restoreMessage : undefined
               }
@@ -245,7 +239,6 @@ function Bubble({
   theme,
   streaming,
   running,
-  onUseAsReference,
   onRestore,
   canRestore
 }: {
@@ -253,7 +246,6 @@ function Bubble({
   theme: Theme;
   streaming: boolean;
   running: boolean;
-  onUseAsReference?: (file: { uri: string; name: string; mime: string }) => void;
   onRestore?: () => void;
   canRestore: boolean;
 }): ReactElement {
@@ -315,7 +307,6 @@ function Bubble({
         activity={running ? undefined : message.activity}
         live={false}
         theme={theme}
-        onUseAsReference={onUseAsReference}
       />
     </View>
   );

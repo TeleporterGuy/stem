@@ -29,10 +29,10 @@ there:
 - The context meter shows how full the conversation is.
 - Ask for a picture and Stem draws it with your ChatGPT subscription (see
   [Settings → Image generation](settings.md#image-generation)). Click it to enlarge.
-  Under each picture: **Download**, **Save to Files**, **Copy**, and **Use as
-  reference**, which puts it in the composer to start the next one from. On the
-  phone, tap the picture for the same actions, with **Share** in place of Download
-  and Copy. To edit a photo, attach it and say what to change.
+  Under each picture, or on right-click: **Save to Downloads** (straight into your
+  Downloads folder, no dialog) and **Copy**. On the phone, tap the picture and use
+  **Share**, which has Save Image. To change a picture, just say what to change;
+  to edit a photo, attach it and say what to change.
 
 ## Organize and find work
 

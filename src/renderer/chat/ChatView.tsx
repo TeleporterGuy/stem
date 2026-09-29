@@ -420,21 +420,6 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   // yet (reasoning / tool calls happen before the first token, when no assistant
   // bubble exists). It's replaced by the streamed reply once content arrives.
   const streamingMsg = messages.find((m) => m.id === streamingId);
-  // The composer handle, kept here too so an image's "Use as reference" can
-  // drop it into the draft; the forwarded ref still reaches App.
-  const composerRef = useRef<ComposerHandle | null>(null);
-  const setComposerRef = useCallback(
-    (handle: ComposerHandle | null) => {
-      composerRef.current = handle;
-      if (typeof ref === 'function') ref(handle);
-      else if (ref) ref.current = handle;
-    },
-    [ref]
-  );
-  const addReference = useCallback((file: File) => {
-    composerRef.current?.addAttachments([file]);
-    composerRef.current?.focus();
-  }, []);
   const lastAssistantId = [...messages].reverse().find((m) => m.role === 'assistant')?.id;
   const showActivity = running && !(streamingMsg && streamingMsg.content);
 
@@ -552,7 +537,6 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
               images={m.images}
               activity={liveTurn && !isStreaming ? undefined : m.activity}
               live={liveTurn}
-              onUseAsReference={addReference}
             />
           )}
           {m.role === 'assistant' && !isEditing && (m.sources?.length ?? 0) > 0 && (
@@ -785,7 +769,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
       )}
 
       <Composer
-        ref={setComposerRef}
+        ref={ref as React.Ref<ComposerHandle>}
         messages={messages}
         running={running}
         escapeAction={escapeAction}

@@ -1,5 +1,4 @@
-import { app, clipboard, dialog, nativeImage, shell, type BrowserWindow } from 'electron';
-import { writeFile } from 'node:fs/promises';
+import { clipboard, dialog, nativeImage, shell, type BrowserWindow } from 'electron';
 import { join } from 'node:path';
 import { handleLocal } from '../ipc-bridge';
 import { ensureFilesRoot } from '../../server/files/store';
@@ -10,6 +9,7 @@ import { exportState } from '../../server/workspace/state-transfer';
 import { readClientIdentity, storedServerUrl } from '../client-store';
 import { downloadFile } from '../file-transfer';
 import { markReleaseNotesRead, releaseNotesSnapshot } from '../release-notes';
+import { downloadsDir, saveImageToDownloads } from '../save-image';
 import { pairWithServer, useBuiltInServer, type ServerCredentials } from '../server-endpoint';
 import { updateClientReleaseNotes, updateClientTheme, updateClientUpdates, withClientSettings } from '../settings';
 import { currentThemeState, ensureThemesDir, listThemes } from '../themes';
@@ -99,14 +99,6 @@ export interface LocalIpcDeps {
   mirrorHost: MirrorHost | null;
   /** The theme changed: push the new state to all three windows at once. */
   themeChanged(state: ThemeState): void;
-}
-
-/**
- * Where a downloaded file lands. STEM_DOWNLOADS_DIR keeps a test run out of the
- * real Downloads folder; everywhere else this is the OS's own answer.
- */
-function downloadsDir(): string {
-  return process.env.STEM_DOWNLOADS_DIR?.trim() || app.getPath('downloads');
 }
 
 export function registerLocalIpc(deps: LocalIpcDeps): void {
@@ -329,24 +321,8 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
     return saved;
   });
 
-  /**
-   * Save a chat image (the data URL the renderer is already showing) wherever
-   * the user picks, Downloads by default. Only image data URLs are accepted.
-   */
-  handleLocal('image:saveAs', async (_e, dataUrl: string, name: string): Promise<string | null> => {
-    const m = /^data:(image\/(png|jpeg|webp|gif));base64,(.+)$/s.exec(dataUrl);
-    if (!m) throw new Error('Not an image.');
-    const ext = m[2] === 'jpeg' ? 'jpg' : m[2];
-    const base = (name || 'Stem image').replace(/[\\/:*?"<>|]/g, '-').slice(0, 80);
-    const chosen = await dialog.showSaveDialog(deps.mainWindow()!, {
-      title: 'Save image',
-      defaultPath: join(downloadsDir(), `${base}.${ext}`),
-      filters: [{ name: 'Image', extensions: [ext] }]
-    });
-    if (chosen.canceled || !chosen.filePath) return null;
-    await writeFile(chosen.filePath, Buffer.from(m[3], 'base64'));
-    return chosen.filePath;
-  });
+  /** Save a chat image (the data URL the renderer is already showing) straight into Downloads. */
+  handleLocal('image:saveToDownloads', (_e, dataUrl: string, name: string) => saveImageToDownloads(dataUrl, name));
 
   handleLocal('image:copy', (_e, dataUrl: string) => {
     const img = nativeImage.createFromDataURL(dataUrl);

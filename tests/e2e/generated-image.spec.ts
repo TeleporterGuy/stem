@@ -1,7 +1,7 @@
 // A generate_image turn end to end against the scripted FakeBackend: the
 // "Creating image…" card while the call runs, then the picture itself —
 // fetched by ref over chats:image, never carried in the event — which opens
-// full size and can be dropped into the composer as a reference.
+// full size and saves straight into Downloads.
 import { test, expect } from './electron';
 import type { Page } from '@playwright/test';
 
@@ -35,10 +35,10 @@ test('an image turn shows the placeholder, then the picture', async ({ mainWindo
   await mainWindow.keyboard.press('Escape');
   await expect(lightbox).toHaveCount(0);
 
-  // Use as reference: the picture lands in the composer as an attachment.
+  // Save to Downloads writes the file straight into Downloads, no dialog.
   await mainWindow.locator('.gen-image-wrap').hover();
-  await mainWindow.getByRole('button', { name: 'Use image as reference' }).click();
-  await expect(mainWindow.locator('.composer-attachments').first()).toBeVisible();
+  await mainWindow.getByRole('button', { name: 'Save image to Downloads' }).click();
+  await expect(mainWindow.locator('.gen-image-flash')).toContainText('Saved to Downloads');
 });
 
 test('a reopened chat shows the picture again from history', async ({ mainWindow }) => {

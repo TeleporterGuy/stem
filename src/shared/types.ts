@@ -4238,10 +4238,8 @@ export interface StemApi {
   readChatHistory(threadId: string): Promise<ChatHistory>;
   /** One image a thread holds (see GeneratedImageRef), as a data URL; null when gone. */
   getChatImage(threadId: string, imageId: string): Promise<{ dataUrl: string; mime: string } | null>;
-  /** Copy a chat image into the Files place; answers where it landed. */
-  saveChatImageToFiles(threadId: string, imageId: string): Promise<{ rel: string }>;
-  /** Desktop only: save an image (data URL) through a save dialog; null when cancelled. */
-  saveImageAs(dataUrl: string, name: string): Promise<string | null>;
+  /** Desktop only: write an image (data URL) straight into Downloads; answers the path. */
+  saveImageToDownloads(dataUrl: string, name: string): Promise<string>;
   /** Desktop only: put an image (data URL) on the clipboard. */
   copyImage(dataUrl: string): Promise<void>;
   /** Drop the given turn and every later turn from the thread (retry/edit re-run). */

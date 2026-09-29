@@ -60,7 +60,7 @@ function useChatImage(ref: GeneratedImageRef): string | null | undefined {
   return url;
 }
 
-/** The picture as a file in the cache folder — what the share sheet and drafts take. */
+/** The picture as a file in the cache folder — what the share sheet takes. */
 function writeTempImage(image: GeneratedImageRef, dataUrl: string): File {
   const m = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl);
   if (!m) throw new Error('Not an image.');
@@ -95,16 +95,7 @@ function PendingCard({ item, live, theme }: { item: ActivityItem; live: boolean;
   );
 }
 
-function ImageCard({
-  image,
-  theme,
-  onUseAsReference
-}: {
-  image: GeneratedImageRef;
-  theme: Theme;
-  onUseAsReference?: (file: { uri: string; name: string; mime: string }) => void;
-}): ReactElement {
-  const { connection } = useTransport();
+function ImageCard({ image, theme }: { image: GeneratedImageRef; theme: Theme }): ReactElement {
   const url = useChatImage(image);
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -133,21 +124,6 @@ function ImageCard({
       say(String((e as Error)?.message ?? e));
     }
   };
-  const saveToFiles = () =>
-    (connection.rpc as Rpc)('chats:saveImageToFiles', image.threadId, image.id).then(
-      () => say('Saved to Files'),
-      (e) => say(String((e as Error)?.message ?? e))
-    );
-  const reference = () => {
-    if (!url || !onUseAsReference) return;
-    try {
-      const file = writeTempImage(image, url);
-      onUseAsReference({ uri: file.uri, name: `${image.id}.png`, mime: image.mime });
-      setOpen(false);
-    } catch (e) {
-      say(String((e as Error)?.message ?? e));
-    }
-  };
   return (
     <View style={styles.wrap}>
       <Pressable
@@ -166,8 +142,6 @@ function ImageCard({
           </Pressable>
           <View style={styles.actions}>
             <ActionButton label="Share" onPress={share} />
-            <ActionButton label="Save to Files" onPress={() => void saveToFiles()} />
-            {onUseAsReference ? <ActionButton label="Use as reference" onPress={reference} /> : null}
             <ActionButton label="Close" onPress={() => setOpen(false)} />
           </View>
           {note ? <Text style={styles.modalNote}>{note}</Text> : null}
@@ -190,14 +164,12 @@ export function GeneratedImages({
   images,
   activity,
   live,
-  theme,
-  onUseAsReference
+  theme
 }: {
   images?: GeneratedImageRef[];
   activity?: ActivityItem[];
   live: boolean;
   theme: Theme;
-  onUseAsReference?: (file: { uri: string; name: string; mime: string }) => void;
 }): ReactElement | null {
   const done = images ?? [];
   const pending = (activity ?? []).filter((a) => a.type === 'imageGeneration' && a.status === 'running');
@@ -205,7 +177,7 @@ export function GeneratedImages({
   return (
     <View style={styles.list}>
       {done.map((img) => (
-        <ImageCard key={img.id} image={img} theme={theme} onUseAsReference={onUseAsReference} />
+        <ImageCard key={img.id} image={img} theme={theme} />
       ))}
       {pending.map((a) => (
         <PendingCard key={a.id} item={a} live={live} theme={theme} />

@@ -1,4 +1,5 @@
 import { BrowserWindow, clipboard, Menu, type MenuItemConstructorOptions, type WebContents } from 'electron';
+import { saveImageToDownloads } from './save-image';
 
 // A native right-click menu for page content: links (open/copy), selected text,
 // images, and edit actions in inputs. Without this Electron shows nothing at all
@@ -19,7 +20,21 @@ export function installContextMenu(contents: WebContents, openExternalUrl: (url:
     }
 
     if (params.mediaType === 'image') {
-      items.push({ label: 'Copy Image', click: () => contents.copyImageAt(params.x, params.y) }, { type: 'separator' });
+      items.push({ label: 'Copy Image', click: () => contents.copyImageAt(params.x, params.y) });
+      // Chat pictures are data URLs; anything else goes through Chromium's own download.
+      items.push({
+        label: 'Save Image to Downloads',
+        click: () => {
+          if (params.srcURL.startsWith('data:image/')) {
+            saveImageToDownloads(params.srcURL, params.altText).catch((e) =>
+              console.warn('[context-menu] could not save the image', e)
+            );
+          } else if (params.srcURL) {
+            contents.downloadURL(params.srcURL);
+          }
+        }
+      });
+      items.push({ type: 'separator' });
     }
 
     if (params.isEditable) {
