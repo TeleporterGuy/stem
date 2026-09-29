@@ -155,6 +155,28 @@ index cd798e4..f431de2 100644
  			}
  
  			let approvedSummary: string | undefined;
+diff --git a/node_modules/pi-web-access/openai-search.ts b/node_modules/pi-web-access/openai-search.ts
+index f562f57..9e63a9b 100644
+--- a/node_modules/pi-web-access/openai-search.ts
++++ b/node_modules/pi-web-access/openai-search.ts
+@@ -172,7 +172,7 @@ async function resolvePiAuth(ctx: ExtensionContext, responsesUrl: string, modelO
+ 					provider,
+ 					apiKey: resolved.apiKey,
+ 					model: modelOverride ?? preferred.id,
+-					headers: resolved.headers ?? {},
++					headers: definedHeaders(resolved.headers),
+ 					responsesUrl,
+ 				};
+ 			}
+@@ -472,3 +472,8 @@ export async function searchWithOpenAI(
+ 		throw redactedError;
+ 	}
+ }
++
++// pi-ai marks a header to drop with null; fetch would send the string "null".
++function definedHeaders(headers: Record<string, string | null> | undefined): Record<string, string> {
++	return Object.fromEntries(Object.entries(headers ?? {}).filter((e): e is [string, string] => e[1] !== null));
++}
 diff --git a/node_modules/pi-web-access/search-batch.ts b/node_modules/pi-web-access/search-batch.ts
 new file mode 100644
 index 0000000..ec2ec09
@@ -301,4 +323,26 @@ index 0000000..ec2ec09
 +	}
 +
 +	return entries;
++}
+diff --git a/node_modules/pi-web-access/xai-search.ts b/node_modules/pi-web-access/xai-search.ts
+index 7f515c1..ba8778b 100644
+--- a/node_modules/pi-web-access/xai-search.ts
++++ b/node_modules/pi-web-access/xai-search.ts
+@@ -81,7 +81,7 @@ async function resolvePiAuth(ctx: ExtensionContext, modelOverride?: string): Pro
+ 			if (!model) continue;
+ 			const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+ 			if (resolved.ok && resolved.apiKey) {
+-				return { apiKey: resolved.apiKey, model: modelOverride ?? modelId, headers: resolved.headers ?? {} };
++				return { apiKey: resolved.apiKey, model: modelOverride ?? modelId, headers: definedHeaders(resolved.headers) };
+ 			}
+ 		} catch {
+ 		}
+@@ -338,3 +338,8 @@ export async function searchWithXai(
+ 		throw redactedError;
+ 	}
+ }
++
++// pi-ai marks a header to drop with null; fetch would send the string "null".
++function definedHeaders(headers: Record<string, string | null> | undefined): Record<string, string> {
++	return Object.fromEntries(Object.entries(headers ?? {}).filter((e): e is [string, string] => e[1] !== null));
 +}
