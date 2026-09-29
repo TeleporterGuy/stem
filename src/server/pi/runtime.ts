@@ -166,10 +166,11 @@ const { getTurnActivitiesByThread, getTurnTimingsByThread, getTurnSystemsByThrea
 
 // Default provider/model. openai-codex is the user's working ChatGPT subscription
 // (verified streaming in the Phase-0 spike); Anthropic/Claude Max is selectable
-// but currently gated behind claude.ai "extra usage". gpt-5.3-codex-spark is the
-// exact model the spike streamed successfully.
+// but currently gated behind claude.ai "extra usage". gpt-6.1-sol matches pi's
+// own openai-codex default; gpt-5.3-codex-spark, the spike's model, is refused
+// for ChatGPT sign-ins since Sep 2026.
 const DEFAULT_PROVIDER = 'openai-codex';
-const DEFAULT_MODEL = 'gpt-5.3-codex-spark';
+const DEFAULT_MODEL = 'gpt-6.1-sol';
 
 // No provider capability set for web search any more: it is served by the vendored
 // pi-web-access extension (see ./web-search), so every model has it.

@@ -246,7 +246,7 @@ describe('spawn model resolution', () => {
       (runtime as unknown as {
         resolveDefaultModel: () => Promise<{ provider: string; modelId: string }>;
       }).resolveDefaultModel();
-    const builtIn = { provider: 'openai-codex', modelId: 'gpt-5.3-codex-spark' };
+    const builtIn = { provider: 'openai-codex', modelId: 'gpt-6.1-sol' };
     try {
       await updateDefaultModel('custom/anthropic--claude-4.8-opus');
       // No models.json at all — pi has never heard of "custom".

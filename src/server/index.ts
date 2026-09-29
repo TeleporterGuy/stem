@@ -234,7 +234,7 @@ function pushApproval(kind: ApprovalPushKind, params: unknown): void {
 /** Pick a sensible app default from the models the signed-in providers expose. */
 function chooseDefaultModel(models: ModelSummary[]): string | null {
   const pick =
-    models.find((m) => m.provider === 'openai-codex' && m.id.endsWith('gpt-5.3-codex-spark')) ??
+    models.find((m) => m.provider === 'openai-codex' && m.id.endsWith('gpt-6.1-sol')) ??
     models.find((m) => m.provider === 'anthropic' && /sonnet/i.test(m.id)) ??
     models.find((m) => m.provider === 'anthropic') ??
     // pi lists xai as 4.3 / build-0.1 / 4.5, so the models[0] fallback would put a
