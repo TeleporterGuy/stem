@@ -188,8 +188,16 @@ async function noteImagesOf(attachments: TurnAttachment[]): Promise<FactImageInp
  * described the picture. Stamped so two photo notes never collapse onto one
  * fact through the norm-unique upsert (the description replaces this anyway).
  */
-export function imageNotePlaceholder(names: string[], now = new Date()): string {
+export function imageNotePlaceholder(names: string[], now = nextStamp()): string {
   return `Image note (${names.join(', ')}) saved ${now.toISOString()}`;
+}
+
+// Strictly increasing, so two notes saved in the same millisecond still get
+// different stamps (and so different facts).
+let lastStampMs = 0;
+function nextStamp(): Date {
+  lastStampMs = Math.max(Date.now(), lastStampMs + 1);
+  return new Date(lastStampMs);
 }
 
 /**

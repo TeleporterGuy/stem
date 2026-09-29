@@ -289,8 +289,11 @@ export function saveStandingAnswer(personaId: string, question: string, answer: 
     }
     const at = store.notes.findIndex((n) => n.source === 'answer' && n.title === title);
     if (at >= 0) {
+      // Moved to the end, not replaced in place: listing breaks same-millisecond
+      // ties by file order, so a fresh answer left at its old slot sorts older.
       const note = { ...store.notes[at], body, at: Date.now() };
-      store.notes[at] = note;
+      store.notes.splice(at, 1);
+      store.notes.push(note);
       await writeNotesFile(personaId, store);
       return note;
     }
