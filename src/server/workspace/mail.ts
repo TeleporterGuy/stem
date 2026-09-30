@@ -24,6 +24,12 @@ interface MailFile {
   items: MailItem[];
   /** Read/archive/snooze per conversation id — shared/inbox.ts semantics. */
   inbox: InboxState;
+  /**
+   * ms the one-time subject pass finished (server/mail/subject.ts): the sweep
+   * that gave conversations predating written subjects a model-written name.
+   * Present = done, never run again.
+   */
+  subjectPassAt?: number;
 }
 
 function num(v: unknown): number | undefined {
@@ -221,13 +227,15 @@ function coerce(parsed: unknown): MailFile {
       if (entry && seen.has(id)) entries[id] = entry;
     }
   }
+  const subjectPassAt = num(raw.subjectPassAt);
   return {
     version: 1,
     conversations,
     items,
     // Mail starts empty on every install, so unlike the chat Inbox there is no
     // wall-of-unread problem to baseline away — 0 keeps every real mail bold.
-    inbox: { baseline: num(inboxRaw.baseline) ?? 0, entries }
+    inbox: { baseline: num(inboxRaw.baseline) ?? 0, entries },
+    ...(subjectPassAt !== undefined ? { subjectPassAt } : {})
   };
 }
 
@@ -296,8 +304,11 @@ export function readMail(): Promise<MailListResult> {
   return enqueue(async () => asResult(await readFileStore()));
 }
 
-/** Read, mutate, persist atomically. All public mutators funnel through here. */
-function update(mutate: (store: MailFile) => void): Promise<MailListResult> {
+/**
+ * Read, mutate, persist atomically. All public mutators funnel through here.
+ * A mutator returning `false` changed nothing: no write, no change event.
+ */
+function update(mutate: (store: MailFile) => void | false): Promise<MailListResult> {
   return enqueue(async () => {
     let store: MailFile;
     try {
@@ -312,7 +323,7 @@ function update(mutate: (store: MailFile) => void): Promise<MailListResult> {
       }
       store = coerce({});
     }
-    mutate(store);
+    if (mutate(store) === false) return asResult(store);
     await writeFileAtomic(store);
     announce(changeListeners, undefined);
     return asResult(store);
@@ -470,6 +481,36 @@ export function setConversationStatus(
 export function setConversationSubject(id: string, subject: string): Promise<MailListResult> {
   return update((store) => {
     conversationOf(store, id).subject = subject;
+  });
+}
+
+/**
+ * Swap a subject Stem made up for a written one — but only while the stored
+ * subject is still `expected`, checked inside the atomic write: a model call
+ * takes seconds, and a subject changed meanwhile (a task headline, a future
+ * rename) is not ours to overwrite. True when the swap landed.
+ */
+export async function replaceMailSubject(id: string, expected: string, subject: string): Promise<boolean> {
+  let replaced = false;
+  await update((store) => {
+    const conversation = store.conversations.find((c) => c.id === id);
+    if (!conversation || conversation.subject !== expected || conversation.subject === subject) return false;
+    conversation.subject = subject;
+    replaced = true;
+  });
+  return replaced;
+}
+
+/** Whether the one-time subject pass has already run on this store. */
+export function mailSubjectPassDone(): Promise<boolean> {
+  return enqueue(async () => (await readFileStore()).subjectPassAt !== undefined);
+}
+
+/** Record the one-time subject pass as run, so no later boot repeats it. */
+export async function markMailSubjectPassDone(): Promise<void> {
+  await update((store) => {
+    if (store.subjectPassAt !== undefined) return false;
+    store.subjectPassAt = Date.now();
   });
 }
 

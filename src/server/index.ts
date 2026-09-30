@@ -24,6 +24,7 @@ import { transportedRawPath } from './files/staging';
 import { piHome } from './workspace/paths';
 import type { TaskScheduler } from './scheduler';
 import { MailRouter } from './mail/router';
+import { nameAfterFirstReply, runMailSubjectPass, type MailSubjectDeps } from './mail/subject';
 import { onPersonasChanged, resolveClientPersona } from './workspace/personas';
 import { personaTurnFields } from './workspace/persona-turn';
 import { initTaskScheduler } from './startup/scheduler';
@@ -282,6 +283,14 @@ async function onAuthenticated(): Promise<RuntimeStatus> {
   return runtime!.status();
 }
 
+/** How long after the first signed-in moment the one-time mail naming sweep starts. */
+const MAIL_SUBJECT_PASS_DELAY_MS = 30_000;
+
+/** What mail naming calls the model through (see server/mail/subject.ts). */
+function mailSubjectDeps(): MailSubjectDeps {
+  return { complete: (prompt, opts) => runtime!.complete(prompt, opts) };
+}
+
 /**
  * A web-search credential only reaches the search tools on a fresh pi process
  * (see needsBackendRestart), so an edit has to respawn the backend. Debounced
@@ -302,6 +311,17 @@ let mailRecoveryDone = false;
 function recoverDroppedMail(): void {
   if (mailRecoveryDone || !mailRouter) return;
   mailRecoveryDone = true;
+  // The one-time naming sweep over older conversations rides the same moment:
+  // it needs a signed-in backend too. Held back a little so boot's own work
+  // (redeliveries, catch-up runs, prewarm) gets the completion slot first.
+  setTimeout(() => {
+    runMailSubjectPass(mailSubjectDeps()).then(
+      (n) => {
+        if (n) log('mail', 'wrote subjects for older conversations', { conversations: n });
+      },
+      (err) => degrade('mail', 'left older conversations with their first-line subjects', err)
+    );
+  }, MAIL_SUBJECT_PASS_DELAY_MS).unref();
   mailRouter.recoverDroppedDeliveries().then(
     (n) => {
       if (n) log('mail', 'redelivered mail dropped by the last shutdown', { conversations: n });
@@ -382,6 +402,12 @@ function registerIpc(): void {
   onMailChanged(() => emit('mail:changed', undefined));
   onMailWorkChanged((event) => emit('mail:workChanged', event));
   onMailReceived(pushMailReceived);
+  // The first reply in a conversation is its cue to trade a made-up subject
+  // for a written one (server/mail/subject.ts); the rewrite is a store write,
+  // so mail:changed carries it to every client's list.
+  onMailReceived((item) => {
+    if (runtime) void nameAfterFirstReply(mailSubjectDeps(), item);
+  });
   registerDevicesIpc();
   registerHarnessIpc({
     // A device announcing it runs coding agents is the wake-up the mail
