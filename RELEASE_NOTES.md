@@ -12,7 +12,7 @@ Maintainer notes:
   date, tag.
 -->
 
-## 0.5.5 — Unreleased
+## 0.5.5 — 2026-09-30
 
 ### Added
 
