@@ -133,6 +133,15 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         save: (c, v) => c.rpc('settings:updateChats', { subjects: v as ChatSubjectMode })
       },
       {
+        kind: 'toggle',
+        key: 'auto-file',
+        label: 'File idle chats into folders',
+        hint: 'A chat idle for a day moves into one of your folders if one clearly fits',
+        // Absent on an older server = its default, on.
+        read: (s) => s.chats.autoFile !== false,
+        save: (c, autoFile) => c.rpc('settings:updateChats', { autoFile })
+      },
+      {
         kind: 'choice',
         key: 'preview-lines',
         label: 'Preview lines in Chats',

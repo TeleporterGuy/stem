@@ -5,6 +5,7 @@ import dns from 'node:dns';
 import net from 'node:net';
 import { createBackend, type ChatBackend } from './backend';
 import {
+  chatListOf,
   registerAuthIpc,
   registerChatsIpc,
   registerDevicesIpc,
@@ -58,6 +59,7 @@ import { initRetrieval } from './startup/retrieval';
 import { initRecallTasks } from './startup/recall-tasks';
 import { ensureUsageTracking } from './skills/usage';
 import { initFolderIndexTasks } from './startup/folder-index-tasks';
+import { initAutoFileTasks } from './startup/autofile-tasks';
 import { closeFolderIndexes } from './folder-index';
 import { ProviderAuth } from './pi/provider-auth';
 import { isRecallEnabled } from './workspace/memory';
@@ -1015,6 +1017,20 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   const folderIndexTasks = initFolderIndexTasks({ runtime: () => runtime!, busyWithin });
   scheduleFolderIndexScan = folderIndexTasks.scheduleFolderIndexScan;
   scheduleFolderLearn = folderIndexTasks.scheduleFolderLearn;
+
+  // Filing idle chats into the user's folders (Settings → App). Off under
+  // STEM_E2E unless a spec asks for it with STEM_AUTOFILE=1: a sweep moving
+  // chats between folders behind a spec's back would make folder specs flaky.
+  // See startup/autofile-tasks.ts.
+  if (!E2E || process.env.STEM_AUTOFILE === '1') {
+    initAutoFileTasks({
+      runtime: () => runtime!,
+      busyWithin,
+      listChats: async () => (await chatListOf({ runtime: () => runtime!, scheduler: () => scheduler })).chats,
+      // The same "ask for the list again" push a background rename sends.
+      onFiled: () => emit('chats:changed', undefined)
+    });
+  }
 
   // A background subject write finished and renamed a thread. Its own channel
   // rather than a backend event: nothing about it belongs to a turn, and the

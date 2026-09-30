@@ -2200,7 +2200,8 @@ export type ActivityKind =
   | 'models.embed'
   | 'models.rerank'
   | 'tasks.run'
-  | 'mail.deliver';
+  | 'mail.deliver'
+  | 'chats.autoFile';
 
 /**
  * One background run — in flight, or finished and kept in the history buffer.
@@ -2879,6 +2880,14 @@ export interface ChatsSettings {
   subjectEffort: string | null;
   /** Lines of the latest message under each Inbox row: 0 (none), 1 or 2. */
   previewLines: 0 | 1 | 2;
+  /**
+   * File idle chats into folders: once a chat has sat untouched for a day, the
+   * subject writer's model picks one of the user's existing folders for it, or
+   * leaves it at root. Once per chat; never a chat the user placed themselves,
+   * a private chat, or a folder that doesn't exist yet. Absent (an older
+   * server) = on.
+   */
+  autoFile?: boolean;
 }
 
 /**

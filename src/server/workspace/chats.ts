@@ -32,7 +32,17 @@ interface ChatStore {
    * needs no migration and a missing map means "no private chats".
    */
   private: Record<string, true>;
+  /**
+   * threadId -> who decided where the chat sits, once somebody has (see
+   * server/chats/autofile.ts). `user` is any move the user made, root included;
+   * `auto` a folder the idle-chat filer picked; `none` a chat the filer looked
+   * at and left at root. Presence is the whole point: a chat with an entry is
+   * never auto-filed again, whatever the entry says.
+   */
+  filing: Record<string, FilingMark>;
 }
+
+export type FilingMark = 'user' | 'auto' | 'none';
 
 /**
  * A thread's place in the widening naming schedule (see server/chats/subject.ts):
@@ -47,7 +57,7 @@ export interface NamingState {
 }
 
 function emptyStore(): ChatStore {
-  return { version: 1, folders: [], assignments: {}, subjects: {}, naming: {}, private: {} };
+  return { version: 1, folders: [], assignments: {}, subjects: {}, naming: {}, private: {}, filing: {} };
 }
 
 /** Keep only string→string pairs; a hand-edited file can hold anything. */
@@ -79,8 +89,19 @@ async function loadStore(): Promise<ChatStore> {
     assignments: parsed.assignments && typeof parsed.assignments === 'object' ? parsed.assignments : {},
     subjects: coerceMap(parsed.subjects),
     naming: coerceNaming(parsed.naming),
-    private: coercePrivate(parsed.private)
+    private: coercePrivate(parsed.private),
+    filing: coerceFiling(parsed.filing)
   };
+}
+
+/** Keep only entries naming a known {@link FilingMark}. */
+function coerceFiling(raw: unknown): Record<string, FilingMark> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, FilingMark> = {};
+  for (const [threadId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value === 'user' || value === 'auto' || value === 'none') out[threadId] = value;
+  }
+  return out;
 }
 
 /** Keep only `threadId: true` entries; anything else in a hand-edited file is dropped. */
@@ -312,7 +333,12 @@ export function deleteFolder(folderId: string): Promise<Folder[]> {
   });
 }
 
-/** Assign a chat to a folder (or to root with `null`). */
+/**
+ * Assign a chat to a folder (or to root with `null`). Every caller is the user
+ * placing a chat, so the chat is theirs from here on: the idle-chat filer never
+ * touches it again, including after a move back to root — which is also how an
+ * auto-filing is undone.
+ */
 export function setChatFolder(threadId: string, folderId: string | null): Promise<void> {
   return update((store) => {
     if (folderId === null || !store.folders.some((f) => f.id === folderId)) {
@@ -320,15 +346,53 @@ export function setChatFolder(threadId: string, folderId: string | null): Promis
     } else {
       store.assignments[threadId] = folderId;
     }
+    store.filing[threadId] = 'user';
   });
 }
 
-/** Drop a chat's assignment, subject and naming schedule when the chat itself is deleted. */
+/** What the idle-chat filer reads in one go: the tree, who sits where, and who is off limits. */
+export async function getFilingState(): Promise<{
+  folders: Folder[];
+  assignments: Record<string, string>;
+  filing: Record<string, FilingMark>;
+  private: Set<string>;
+}> {
+  const store = await readStore();
+  return {
+    folders: store.folders,
+    assignments: store.assignments,
+    filing: store.filing,
+    private: new Set(Object.keys(store.private))
+  };
+}
+
+/**
+ * Record the idle-chat filer's verdict on one chat: into `folderId`, or left at
+ * root with `null`. Re-checks everything under the write lock, because the model
+ * call before it took seconds and the user may have moved the chat meanwhile —
+ * a chat that has since gained an assignment or a filing mark, or a folder that
+ * has since gone, is left exactly as it is. Returns true when the chat moved.
+ */
+export function autoFileChat(threadId: string, folderId: string | null): Promise<boolean> {
+  return update((store) => {
+    if (store.filing[threadId] || store.assignments[threadId]) return false;
+    if (folderId !== null && store.folders.some((f) => f.id === folderId)) {
+      store.assignments[threadId] = folderId;
+      store.filing[threadId] = 'auto';
+      return true;
+    }
+    store.filing[threadId] = 'none';
+    return false;
+  });
+}
+
+/** Drop a chat's assignment, subject, naming schedule and filing mark when the chat itself is deleted. */
 export function removeChat(threadId: string): Promise<void> {
   return update((store) => {
     delete store.assignments[threadId];
     delete store.subjects[threadId];
     delete store.naming[threadId];
     delete store.private[threadId];
+    delete store.filing[threadId];
   });
 }

@@ -899,7 +899,8 @@ describe('chats settings', () => {
       subjects: 'everywhere',
       subjectModel: null,
       subjectEffort: null,
-      previewLines: 2
+      previewLines: 2,
+      autoFile: true
     });
   });
 
@@ -912,6 +913,15 @@ describe('chats settings', () => {
     expect(lines.chats.previewLines).toBe(0);
     expect(lines.chats.subjects).toBe('inbox');
     expect((await readSettings()).chats.previewLines).toBe(0);
+  });
+
+  it('files idle chats unless the file says an explicit false', async () => {
+    writeFileSync(path, JSON.stringify({ chats: { autoFile: false } }));
+    expect((await readSettings()).chats.autoFile).toBe(false);
+    writeFileSync(path, JSON.stringify({ chats: { autoFile: 'no' } }));
+    expect((await readSettings()).chats.autoFile).toBe(true);
+    expect((await updateChatsSettings({ autoFile: false })).chats.autoFile).toBe(false);
+    expect((await updateChatsSettings({ previewLines: 1 })).chats.autoFile).toBe(false);
   });
 
   it('keeps every valid previewLines value, including the one that equals the default', async () => {
@@ -932,7 +942,8 @@ describe('chats settings', () => {
       subjects: 'everywhere',
       subjectModel: null,
       subjectEffort: null,
-      previewLines: 2
+      previewLines: 2,
+      autoFile: true
     });
   });
 });

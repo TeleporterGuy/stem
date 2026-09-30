@@ -115,9 +115,10 @@ function tailExcerpt(messages: ChatMessage[], userTurns: number, cap = EXCERPT_C
 /**
  * The whole thread at a glance: how it opened, then where it has got to. What
  * the "Write a subject" action is asked to name — an explicit rename is the one
- * time it is worth paying to re-read a thread from both ends.
+ * time it is worth paying to re-read a thread from both ends. The idle-chat
+ * filer (autofile.ts) reads a chat the same way.
  */
-function wholeThreadExcerpt(messages: ChatMessage[]): string {
+export function wholeThreadExcerpt(messages: ChatMessage[]): string {
   const opening = openingExcerpt(messages);
   const tail = tailExcerpt(messages, messages.length, Math.max(0, EXCERPT_CAP - opening.length - 2));
   // On a short thread the tail has already walked back to the opening; only a

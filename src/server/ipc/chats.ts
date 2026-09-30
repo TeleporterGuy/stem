@@ -53,44 +53,51 @@ const CHAT_SEARCH_COMPLETION_TIMEOUT_MS = 4_000;
  */
 const RENAME_GRACE_MS = 2_000;
 
+/**
+ * The sidebar payload: every chat the list shows, merged with its folder,
+ * subject and privacy, plus the folder tree and Inbox state. Exported for the
+ * idle-chat filer, which has to see exactly the chats the user sees.
+ */
+export async function chatListOf(deps: Pick<IpcDeps, 'runtime' | 'scheduler'>): Promise<ChatListResult> {
+  const [allChats, folders, assignments, subjects, privateChats, inbox, mailThreads] = await Promise.all([
+    deps.runtime().listThreads(),
+    listFolders(),
+    getAssignments(),
+    getSubjects(),
+    getPrivateChats(),
+    readInbox(),
+    // The hidden persona sessions behind mail conversations, and the threads
+    // scheduled runs left behind on their mail, are backend threads like any
+    // other — the Inbox shows them as mail, so the chat list must not show
+    // them again as chats.
+    mailSessionThreadIds()
+  ]);
+  // A scheduled run in flight is on no mail yet; its thread is hidden all the same.
+  const running = deps.scheduler()?.activeRunThreadId() ?? null;
+  const chats = allChats.filter((chat) => !mailThreads.has(chat.threadId) && chat.threadId !== running);
+  const valid = new Set(folders.map((f) => f.id));
+  for (const chat of chats) {
+    const folderId = assignments[chat.threadId];
+    chat.folderId = folderId && valid.has(folderId) ? folderId : null;
+    const subject = subjects[chat.threadId];
+    if (subject) chat.subject = subject;
+    if (privateChats.has(chat.threadId)) chat.private = true;
+    // A write nobody should notice (a no-op rename; historically a silent
+    // scheduled run) still moved the file's mtime. List the chat as of the last
+    // write that meant something, so it stays where the user left it — see
+    // shared/inbox.ts.
+    chat.updatedAt = listedUpdatedAt(chat, inbox);
+  }
+  // The runtime sorted by real mtime; the listed stamps above can move a chat
+  // back weeks (quiet windows from before runs had their own threads). Sort by what is shown,
+  // or the client's date headers ("Previous 7 Days", "Yesterday", "Previous
+  // 7 Days" again) follow the mtime order while the labels follow the stamp.
+  chats.sort((a, b) => toMs(b.updatedAt) - toMs(a.updatedAt));
+  return { chats, folders, inbox };
+}
+
 export function registerChatsIpc(deps: IpcDeps): void {
-  const chatList = async (): Promise<ChatListResult> => {
-    const [allChats, folders, assignments, subjects, privateChats, inbox, mailThreads] = await Promise.all([
-      deps.runtime().listThreads(),
-      listFolders(),
-      getAssignments(),
-      getSubjects(),
-      getPrivateChats(),
-      readInbox(),
-      // The hidden persona sessions behind mail conversations, and the threads
-      // scheduled runs left behind on their mail, are backend threads like any
-      // other — the Inbox shows them as mail, so the chat list must not show
-      // them again as chats.
-      mailSessionThreadIds()
-    ]);
-    // A scheduled run in flight is on no mail yet; its thread is hidden all the same.
-    const running = deps.scheduler()?.activeRunThreadId() ?? null;
-    const chats = allChats.filter((chat) => !mailThreads.has(chat.threadId) && chat.threadId !== running);
-    const valid = new Set(folders.map((f) => f.id));
-    for (const chat of chats) {
-      const folderId = assignments[chat.threadId];
-      chat.folderId = folderId && valid.has(folderId) ? folderId : null;
-      const subject = subjects[chat.threadId];
-      if (subject) chat.subject = subject;
-      if (privateChats.has(chat.threadId)) chat.private = true;
-      // A write nobody should notice (a no-op rename; historically a silent
-      // scheduled run) still moved the file's mtime. List the chat as of the last
-      // write that meant something, so it stays where the user left it — see
-      // shared/inbox.ts.
-      chat.updatedAt = listedUpdatedAt(chat, inbox);
-    }
-    // The runtime sorted by real mtime; the listed stamps above can move a chat
-    // back weeks (quiet windows from before runs had their own threads). Sort by what is shown,
-    // or the client's date headers ("Previous 7 Days", "Yesterday", "Previous
-    // 7 Days" again) follow the mtime order while the labels follow the stamp.
-    chats.sort((a, b) => toMs(b.updatedAt) - toMs(a.updatedAt));
-    return { chats, folders, inbox };
-  };
+  const chatList = (): Promise<ChatListResult> => chatListOf(deps);
 
   registerServer('chats:list', () => chatList());
   // Cross-language chat search: expand the query across Slovak+English (via the same

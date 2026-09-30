@@ -12,7 +12,7 @@ export {
 } from './guard';
 export type { IpcDeps } from './deps';
 export { registerAuthIpc } from './auth';
-export { registerChatsIpc } from './chats';
+export { chatListOf, registerChatsIpc } from './chats';
 export { registerDevicesIpc } from './devices';
 export { registerMcpIpc } from './mcp';
 export { registerMailIpc } from './mail';

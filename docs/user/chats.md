@@ -45,6 +45,12 @@ there:
 - Use **Search**, `⌘F` on Mac, or `Ctrl+F` on Linux to search titles and message
   text across every chat.
 
+Once a chat has sat untouched for a day, Stem files it into one of your folders if
+one clearly fits, and otherwise leaves it where it is. It only uses folders you
+made, looks at each chat once, and never moves a chat you placed yourself or a
+private chat. To undo a move, drag the chat back; it then stays wherever you put
+it. Turn this off in **Settings → App → File idle chats into folders**.
+
 ## Change a conversation
 
 Hover over a message to reveal its actions:
