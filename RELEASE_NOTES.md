@@ -12,10 +12,28 @@ Maintainer notes:
   date, tag.
 -->
 
-## 0.5.3 — Unreleased
+## 0.5.5 — Unreleased
 
 ### Added
 
+- **Pictures.** Ask for a picture and the assistant makes it, through your ChatGPT sign-in rather
+  than an API key, so it costs nothing beyond your subscription. The picture shows in the chat
+  on the desktop and the phone. Click it to enlarge, and ask for changes to it in the same chat.
+  **Download** saves it straight to your Downloads folder, and right-clicking offers the same. A
+  persona's mail and a scheduled run's report carry the pictures they made. Settings →
+  Features → Image generation turns it off.
+- **Chats file themselves.** A chat that has sat untouched for a day is moved into whichever of
+  your folders fits it, or left where it is when none does. Stem only uses folders you made and
+  never creates one. A chat you already filed or moved yourself, even back out of a folder, is
+  never touched again. Each chat is looked at once. Existing chats from the last 30 days get sorted
+  too. Settings → App turns it off.
+- **Forward a mail.** Any mail in a conversation can now be forwarded to other personas as a new
+  conversation, with the original quoted under a note of your own. Pictures travel with it. Attached
+  files are listed by name only, because Stem doesn't keep a file's contents after delivering it.
+  Desktop only for now.
+- **Coding agents and computer control in plain chats.** A chat that runs as no persona, Quick
+  Chat included, can now hand work to a coding agent or drive your Mac, once you allow it under
+  Settings → Features. It is off by default and never applies to mail or scheduled runs.
 - **Computer control.** A persona pinned to your Mac can now see its screen and drive the mouse
   and keyboard, so it can work in apps that offer no other way in. It stays off until you turn it
   on — **Let Stem control this Mac**, in Settings → App on that Mac, and only offered when your
@@ -51,6 +69,23 @@ Maintainer notes:
 
 ### Changed
 
+- **Mail subjects name the topic.** A mail you sent without a subject used to be titled with the
+  first sixty characters of your message, cut off mid-sentence. Stem now writes a short subject
+  once the first reply arrives, the way it names chats. A subject you typed is left alone. On
+  the first start of this version it also renames up to 100 of your recent conversations
+  that still carry a cut-off subject.
+- **Settings: App, Features, Models.** The Chat tab is now App, and mail, commands, coding agents,
+  computer control and image generation sit together under Features. The phone follows the same
+  layout. Models are picked only under Models: the duplicate pickers under Conversation and Quick
+  Chat are gone.
+- **Mail reads newest first.** On the desktop, a mail conversation opens at the top with the
+  latest mail first.
+- **Mac permissions at a glance.** Each macOS permission that computer control needs is now its own
+  line in Settings, with a check or a cross and what a missing one is for. The list refreshes when
+  you come back from System Settings.
+- **Scripting your Mac goes through its persona.** When a persona is pinned to a computer, other
+  personas can no longer script that computer's apps with shell commands. They are told to hand the
+  job to the pinned persona instead, so the consent switch and the banner can't be bypassed.
 - **Scheduled runs start fresh.** Every firing of a scheduled task now runs in a thread of its
   own, with nothing but the task's prompt, its persona and your memory — instead of appending
   to the chat it was scheduled from, run after run, until the context filled up and a morning
@@ -98,6 +133,11 @@ Maintainer notes:
 
 ### Fixed
 
+- **New chats on a ChatGPT login.** Every chat started on the built-in default model failed,
+  because OpenAI stopped accepting that model on ChatGPT accounts. The default is now GPT-6.1 Sol.
+  If you picked the old model yourself, pick another under Models.
+- **A new chat on the phone opens.** Starting a chat on the phone showed "Could not read this chat"
+  until the first reply arrived.
 - **Web search on a ChatGPT login.** For five days, every web search from a Stem signed in with a
   ChatGPT account failed. Stem was asking for one particular search model, and OpenAI stopped
   accepting that name on that kind of login; Stem no longer names one.
