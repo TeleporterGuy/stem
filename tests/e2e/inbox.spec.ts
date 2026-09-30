@@ -40,11 +40,11 @@ async function sendChat(win: Page, text: string): Promise<void> {
 test('composing a mail delivers it and the reply lands as one conversation', async ({ mainWindow }) => {
   await compose(mainWindow, 'First errand', 'fetch the thing');
 
-  // The conversation view reads like email: your mail, then the persona's reply.
+  // The conversation view reads newest first: the persona's reply above your mail.
   const items = mainWindow.locator('.mail-view .mail-item');
   await expect(items).toHaveCount(2);
-  await expect(items.first()).toContainText('You');
-  await expect(items.last()).toContainText('Normal');
+  await expect(items.first()).toContainText('Normal');
+  await expect(items.last()).toContainText('You');
 
   // One row in the Inbox; opening it marked it read, so it is not bold.
   await expect(mainWindow.locator('.mail-row')).toHaveCount(1);
