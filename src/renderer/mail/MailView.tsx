@@ -8,7 +8,7 @@ import {
   useRef,
   useState
 } from 'react';
-import { File, Paperclip, Plus, Send, Square, X } from 'lucide-react';
+import { File, Forward, Paperclip, Plus, Send, Square, X } from 'lucide-react';
 import { MAIL_BETA_TITLE } from '../chats/ChatList';
 import type {
   MailComposeInput,
@@ -21,6 +21,7 @@ import type {
 } from '../../shared/types';
 import { MdxView } from '../chat/MdxView';
 import { formatSystemVersion, sameSystem } from '../../shared/sys-version';
+import { forwardAttachments, forwardCompose, forwardQuote, forwardSubject } from '../../shared/mail-forward';
 import { groupMailTimeline } from './grouping';
 import { personaName } from './useMail';
 import { useMailWork } from './useMailWork';
@@ -49,8 +50,8 @@ function fileToAttachment(file: globalThis.File): Promise<TurnAttachment> {
  * The chat composer's attachment handling, distilled for the mail surfaces:
  * paperclip picker, image paste, drag-drop — chips rendered by AttachmentChips.
  */
-function useAttachmentDraft() {
-  const [attachments, setAttachments] = useState<TurnAttachment[]>([]);
+function useAttachmentDraft(initial?: TurnAttachment[]) {
+  const [attachments, setAttachments] = useState<TurnAttachment[]>(initial ?? []);
 
   const addFiles = useCallback(async (files: globalThis.File[]) => {
     if (!files.length) return;
@@ -95,6 +96,19 @@ function useAttachmentDraft() {
   const clear = useCallback(() => setAttachments([]), []);
 
   return { attachments, addFiles, pickFiles, onPaste, onDrop, remove, clear };
+}
+
+/**
+ * A mail being forwarded, as the compose form opens with it: the "Fwd:"
+ * subject, the quoted original (read-only under the user's note) and the
+ * original's images, carried from their stored bytes (shared/mail-forward).
+ */
+export interface MailForwardDraft {
+  /** The forwarded item's id — a fresh form per forward. */
+  key: string;
+  subject: string;
+  quote: string;
+  attachments: TurnAttachment[];
 }
 
 /** Lets App route DropOverlay drops into the open mail view's draft. */
@@ -143,6 +157,8 @@ export const MailConversationView = forwardRef<MailViewHandle, {
   onAddParticipant: (personaId: string) => Promise<void>;
   /** Stop the working personas: queued deliveries dropped, running turns interrupted. */
   onStop: () => void;
+  /** Open the compose form forwarding one of this conversation's mails. */
+  onForward: (draft: MailForwardDraft) => void;
   /**
    * The serving system's version (MailListResult.sys). A mail stamped with a
    * different one was made by older persona / skills / memory code and says so,
@@ -150,7 +166,7 @@ export const MailConversationView = forwardRef<MailViewHandle, {
    */
   currentSys?: SystemVersion;
 }>(function MailConversationView(
-  { conversation, items, personas, onReply, onAddParticipant, onStop, currentSys },
+  { conversation, items, personas, onReply, onAddParticipant, onStop, onForward, currentSys },
   ref
 ) {
   const [draft, setDraft] = useState('');
@@ -208,6 +224,28 @@ export const MailConversationView = forwardRef<MailViewHandle, {
     files.clear();
   };
 
+  const forward = (m: MailItem) => {
+    // The quote is read by a persona: "User", not the renderer's "You".
+    const who = (id: string) => (id === 'user' ? 'User' : personaName(personas, id));
+    onForward({
+      key: m.id,
+      subject: forwardSubject(conversation.subject),
+      quote: forwardQuote(
+        {
+          from: who(m.from),
+          to: m.to.map(who),
+          at: m.at,
+          subject: m.subject ?? conversation.subject,
+          // A scheduled run's report is part of the mail as the user reads it.
+          body: m.result ? `${m.body}\n\n${m.result}` : m.body,
+          attachments: m.attachments
+        },
+        (at) => new Date(at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+      ),
+      attachments: forwardAttachments(m.attachments).attachments
+    });
+  };
+
   const toggleExchange = (key: string) => {
     setOpenExchanges((prev) => {
       const next = new Set(prev);
@@ -242,6 +280,15 @@ export const MailConversationView = forwardRef<MailViewHandle, {
           </span>
         )}
         <span className="mail-item-at">{formatAt(m.at, now)}</span>
+        <button
+          type="button"
+          className="icon-action sm mail-item-forward"
+          onClick={() => forward(m)}
+          title="Forward — send this mail on to personas in a new conversation"
+          aria-label="Forward this mail"
+        >
+          <Forward size={13} />
+        </button>
       </div>
       {m.subject && <h2 className="mail-item-subject">{m.subject}</h2>}
       {m.from === 'user' ? <p className="mail-item-body-plain">{m.body}</p> : <MdxView text={m.body} />}
@@ -405,15 +452,19 @@ export const MailComposeView = forwardRef<MailViewHandle, {
   /** Resolves once sent; rejection shows its message inline. */
   onCompose: (input: MailComposeInput) => Promise<void>;
   onCancel: () => void;
-}>(function MailComposeView({ personas, onCompose, onCancel }, ref) {
+  /** Open as a forward: the subject prefilled, the original quoted under the note. */
+  forward?: MailForwardDraft;
+}>(function MailComposeView({ personas, onCompose, onCancel, forward }, ref) {
   // The To: list in SELECTION ORDER — the first-picked persona is the driver
   // (it receives the mail and owns returning to the user); the rest are
   // participants the driver can consult with send_mail.
   const [to, setTo] = useState<string[]>(['normal']);
-  const [subject, setSubject] = useState('');
+  const [subject, setSubject] = useState(forward?.subject ?? '');
   const [body, setBody] = useState('');
   const [isPrivate, setIsPrivate] = useState(false);
-  const files = useAttachmentDraft();
+  const files = useAttachmentDraft(forward?.attachments);
+  // A forward always has something to send — the quote — even with no note.
+  const empty = !forward && !body.trim() && !files.attachments.length;
   useImperativeHandle(ref, () => ({
     addAttachments: (dropped) => void files.addFiles(dropped)
   }));
@@ -425,17 +476,21 @@ export const MailComposeView = forwardRef<MailViewHandle, {
   };
 
   const send = async () => {
-    if (sending || (!body.trim() && !files.attachments.length)) return;
+    if (sending || empty) return;
     setSending(true);
     setError(null);
     try {
-      await onCompose({
-        to,
-        subject,
-        body,
-        ...(isPrivate ? { private: true } : {}),
-        ...(files.attachments.length ? { attachments: files.attachments } : {})
-      });
+      await onCompose(
+        forward
+          ? forwardCompose({ to, subject, note: body, quote: forward.quote, attachments: files.attachments, private: isPrivate })
+          : {
+              to,
+              subject,
+              body,
+              ...(isPrivate ? { private: true } : {}),
+              ...(files.attachments.length ? { attachments: files.attachments } : {})
+            }
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setSending(false);
@@ -446,7 +501,7 @@ export const MailComposeView = forwardRef<MailViewHandle, {
     <div className="mail-view mail-compose">
       <header className="mail-head">
         <h1>
-          New mail
+          {forward ? 'Forward' : 'New mail'}
           <span className="beta-pill" aria-hidden="true" title={MAIL_BETA_TITLE}>
             Beta
           </span>
@@ -496,8 +551,12 @@ export const MailComposeView = forwardRef<MailViewHandle, {
           className="mail-compose-body"
           value={body}
           onChange={(e) => setBody(e.target.value)}
-          placeholder="Write the task. The personas work it unattended and the reply lands in your Inbox."
-          rows={10}
+          placeholder={
+            forward
+              ? 'Add a note for the personas (optional) — the forwarded mail follows below.'
+              : 'Write the task. The personas work it unattended and the reply lands in your Inbox.'
+          }
+          rows={forward ? 4 : 10}
           autoFocus
           onPaste={(e) => void files.onPaste(e)}
           onDragOver={(e) => e.preventDefault()}
@@ -509,6 +568,11 @@ export const MailComposeView = forwardRef<MailViewHandle, {
             }
           }}
         />
+        {forward && (
+          <pre className="mail-forward-quote" aria-label="The forwarded mail">
+            {forward.quote}
+          </pre>
+        )}
         <AttachmentChips attachments={files.attachments} onRemove={files.remove} />
         {error && <p className="task-failed">{error}</p>}
         <div className="mail-compose-actions">
@@ -523,7 +587,7 @@ export const MailComposeView = forwardRef<MailViewHandle, {
           <button
             className="mail-send"
             onClick={() => void send()}
-            disabled={sending || (!body.trim() && !files.attachments.length) || to.length === 0}
+            disabled={sending || empty || to.length === 0}
           >
             <Send size={14} /> {sending ? 'Sending…' : 'Send'}
           </button>

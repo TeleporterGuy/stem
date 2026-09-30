@@ -41,7 +41,7 @@ import {
 } from './chats/return-chat';
 import { SnoozeMenu } from './chats/SnoozeMenu';
 import { hasMailWaiting, useMail } from './mail/useMail';
-import { MailComposeView, MailConversationView, type MailViewHandle } from './mail/MailView';
+import { MailComposeView, MailConversationView, type MailForwardDraft, type MailViewHandle } from './mail/MailView';
 import { ActivityIndicator } from './ui/ActivityIndicator';
 import { TaskAlertModal } from './TaskAlertModal';
 import { ReleaseNotesModal } from './ReleaseNotesModal';
@@ -122,9 +122,9 @@ export default function App() {
   // The centre pane's mail surface: an open conversation or the compose form.
   // Set → MailView replaces ChatView; opening a chat (or ⌘N) clears it. The
   // chat slice underneath is untouched, so nothing is lost by switching over.
-  const [mailView, setMailView] = useState<{ kind: 'conversation'; id: string } | { kind: 'compose' } | null>(
-    null
-  );
+  const [mailView, setMailView] = useState<
+    { kind: 'conversation'; id: string } | { kind: 'compose'; forward?: MailForwardDraft } | null
+  >(null);
   // The sidebar's Inbox | Chats sub-tab. Owned here (not remembered inside
   // ChatList) because the open-a-chat handlers below need to know whether the
   // Inbox was selected at that moment — that is what pins the Return-to-chat row.
@@ -1722,7 +1722,9 @@ export default function App() {
           />
           {mailView?.kind === 'compose' && (
             <MailComposeView
+              key={mailView.forward ? `forward:${mailView.forward.key}` : 'new'}
               ref={mailPaneRef}
+              forward={mailView.forward}
               personas={mailApi.personas}
               onCompose={onComposeSend}
               onCancel={() => setMailView(null)}
@@ -1747,6 +1749,7 @@ export default function App() {
                     mailApi.addParticipant(conversation.id, personaId)
                   }
                   onStop={() => void mailApi.stop(conversation.id)}
+                  onForward={(forward) => setMailView({ kind: 'compose', forward })}
                 />
               );
             })()}
