@@ -218,6 +218,9 @@ export interface TurnTimingRecord {
   ttftMs: number | null;
   buildMs: number | null;
   recallMs: number | null;
+  /** Output tokens + stream time of the turn's timed model calls (pi/generation-speed.ts). */
+  outputTokens?: number | null;
+  generationMs?: number | null;
 }
 
 
@@ -677,7 +680,9 @@ export class RecallStore {
         ttft_ms       INTEGER,
         build_ms      INTEGER,
         recall_ms     INTEGER,
-        created_at    INTEGER NOT NULL
+        created_at    INTEGER NOT NULL,
+        output_tokens INTEGER,
+        generation_ms INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_turn_timings_thread ON turn_timings(thread_id);
 
@@ -953,6 +958,14 @@ export class RecallStore {
     if (!messageColumns.has('web')) {
       handle.exec(`ALTER TABLE messages ADD COLUMN web INTEGER NOT NULL DEFAULT 0`);
     }
+    // Real generation speed, added after turn_timings shipped. Nullable: older
+    // turns have none and keep the renderer's phase-based estimate.
+    const timingColumns = new Set(
+      (handle.prepare(`PRAGMA table_info(turn_timings)`).all() as Array<{ name: string }>).map((r) => r.name)
+    );
+    for (const name of ['output_tokens', 'generation_ms']) {
+      if (!timingColumns.has(name)) handle.exec(`ALTER TABLE turn_timings ADD COLUMN ${name} INTEGER`);
+    }
     // Existing v1 rows predate the external-content FTS table. Populate it before
     // the metadata backfill below fires the UPDATE trigger; deleting an absent FTS
     // row from that trigger can otherwise report a malformed index.
@@ -1159,8 +1172,9 @@ export class RecallStore {
     handle
       .prepare(
         `INSERT INTO turn_timings
-           (turn_entry_id, thread_id, total_ms, thinking_ms, tool_ms, answer_ms, ttft_ms, build_ms, recall_ms, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (turn_entry_id, thread_id, total_ms, thinking_ms, tool_ms, answer_ms, ttft_ms, build_ms, recall_ms,
+            output_tokens, generation_ms, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(turn_entry_id) DO UPDATE SET
            thread_id = excluded.thread_id,
            total_ms = excluded.total_ms,
@@ -1169,7 +1183,9 @@ export class RecallStore {
            answer_ms = excluded.answer_ms,
            ttft_ms = excluded.ttft_ms,
            build_ms = excluded.build_ms,
-           recall_ms = excluded.recall_ms`
+           recall_ms = excluded.recall_ms,
+           output_tokens = excluded.output_tokens,
+           generation_ms = excluded.generation_ms`
       )
       .run(
         rec.turnEntryId,
@@ -1181,6 +1197,8 @@ export class RecallStore {
         rec.ttftMs,
         rec.buildMs,
         rec.recallMs,
+        rec.outputTokens ?? null,
+        rec.generationMs ?? null,
         this.nowSeconds()
       );
   };
@@ -1193,7 +1211,8 @@ export class RecallStore {
       .prepare(
         `SELECT turn_entry_id AS entryId, total_ms AS totalMs, thinking_ms AS thinkingMs,
                 tool_ms AS toolMs, answer_ms AS answerMs, ttft_ms AS ttftMs,
-                build_ms AS buildMs, recall_ms AS recallMs
+                build_ms AS buildMs, recall_ms AS recallMs,
+                output_tokens AS outputTokens, generation_ms AS generationMs
          FROM turn_timings WHERE thread_id = ?`
       )
       .all(threadId) as Array<{
@@ -1205,6 +1224,8 @@ export class RecallStore {
       ttftMs: number | null;
       buildMs: number | null;
       recallMs: number | null;
+      outputTokens: number | null;
+      generationMs: number | null;
     }>;
     const out = new Map<string, TurnTiming>();
     for (const r of rows) {
@@ -1215,7 +1236,10 @@ export class RecallStore {
         answerMs: r.answerMs,
         ttftMs: r.ttftMs,
         buildMs: r.buildMs,
-        recallMs: r.recallMs
+        recallMs: r.recallMs,
+        ...(r.outputTokens !== null && r.generationMs !== null
+          ? { outputTokens: r.outputTokens, generationMs: r.generationMs }
+          : {})
       });
     }
     return out;

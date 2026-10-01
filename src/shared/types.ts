@@ -53,6 +53,13 @@ export interface TurnTiming {
   buildMs?: number | null;
   /** Recall context assembly portion of buildMs. */
   recallMs?: number | null;
+  /**
+   * Output tokens and stream time summed over the turn's model calls, each timed
+   * from its own stream (server/pi/generation-speed.ts): the real tok/s. Absent on
+   * turns from before it was measured.
+   */
+  outputTokens?: number;
+  generationMs?: number;
 }
 
 /**
@@ -668,6 +675,9 @@ export interface TurnTimingParams {
   sendToFirstTokenMs: number | null;
   firstTokenToEndMs: number | null;
   totalMs: number | null;
+  /** Output tokens and stream time of the turn's timed model calls (null when none was). */
+  outputTokens?: number | null;
+  generationMs?: number | null;
 }
 
 /** `turn/usage` — per-turn token usage emitted when an assistant message completes. */

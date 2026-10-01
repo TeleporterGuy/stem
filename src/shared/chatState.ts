@@ -445,7 +445,10 @@ export function applyBackendEventToThread(
         answerMs: p.answerMs,
         ttftMs: p.sendToFirstTokenMs,
         buildMs: p.buildMs,
-        recallMs: p.recall?.total ?? null
+        recallMs: p.recall?.total ?? null,
+        ...(p.outputTokens != null && p.generationMs != null
+          ? { outputTokens: p.outputTokens, generationMs: p.generationMs }
+          : {})
       };
       // turn/timing lands as the turn ends, so it also stamps when the reply finished.
       // Replay reads the same moment from the session entry's timestamp.

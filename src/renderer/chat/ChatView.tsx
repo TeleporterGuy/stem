@@ -210,20 +210,26 @@ function messageStamp(iso: string): { time: string; day?: string; full: string }
 // Tooltip on the answer-time label: the breakdown legend plus speed and output size.
 function timingTitle(m: ChatMessage): string {
   const tps = tokensPerSecond(m);
-  const out = m.usage?.output;
+  const out = m.timing?.outputTokens ?? m.usage?.output;
   const lines = ['total · thinking · tool execution'];
   if (tps !== undefined) lines.push(`${tps.toFixed(0)} tok/s`);
   if (out) lines.push(`${out.toLocaleString()} output tokens`);
   return lines.join('\n');
 }
 
-// Generation speed for the timing tooltip. Only for turns without tool time:
-// a tool turn is several model calls, and its usage covers just the last one.
-// Thinking counts because reasoning tokens are part of `output`.
+// Generation speed: the turn's output tokens over the time its model calls spent
+// streaming them, measured per call on the server (pi/generation-speed.ts), so a
+// tool turn has one too. Turns from before that measurement fall back to the old
+// estimate, which only holds without tool time: a tool turn is several model
+// calls, and its usage covers just the last one.
 function tokensPerSecond(m: ChatMessage): number | undefined {
   const t = m.timing;
+  if (!t) return undefined;
+  if (t.outputTokens && t.generationMs) {
+    return t.generationMs >= 200 ? t.outputTokens / (t.generationMs / 1000) : undefined;
+  }
   const out = m.usage?.output;
-  if (!t || !out || t.toolMs >= 100) return undefined;
+  if (!out || t.toolMs >= 100) return undefined;
   const ms = t.thinkingMs + t.answerMs;
   return ms >= 200 ? out / (ms / 1000) : undefined;
 }

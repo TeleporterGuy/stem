@@ -137,6 +137,7 @@ import {
   type TurnContext,
   type TurnTimingBreakdown
 } from './normalize';
+import { trackGeneration } from './generation-speed';
 
 import { PiWorker } from './worker';
 import { findImageInEntries, newImageId, parseImagesMarker, stemImageOf } from './image-gen.mjs';
@@ -3432,6 +3433,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
     const { events, done } = normalizePiEvent(ev, turn);
     const now = Date.now();
+    trackGeneration(turn.generation, ev, now);
     if (events.length) {
       if (turn.firstActivityAt === undefined) turn.firstActivityAt = now;
       if (turn.firstTokenAt === undefined && events.some((e) => e.method === 'item/agentMessage/delta')) {
@@ -3644,7 +3646,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       sendToFirstActivityMs: ms(promptSentAt, firstActivityAt),
       sendToFirstTokenMs: ms(promptSentAt, firstTokenAt),
       firstTokenToEndMs: ms(firstTokenAt, endedAt),
-      totalMs: ms(startedAt, endedAt)
+      totalMs: ms(startedAt, endedAt),
+      outputTokens: turn.generation.ms > 0 ? turn.generation.tokens : null,
+      generationMs: turn.generation.ms > 0 ? turn.generation.ms : null
     };
     const fmt = (n: number | null): string => (n === null ? '—' : `${n}ms`);
     const recallStr =
@@ -3657,6 +3661,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       `think=${fmt(breakdown.thinkingMs)} tools=${fmt(breakdown.toolMs)} answer=${fmt(breakdown.answerMs)} ` +
       `send→first=${fmt(breakdown.sendToFirstTokenMs)} ` +
       `first→end=${fmt(breakdown.firstTokenToEndMs)} total=${fmt(breakdown.totalMs)}` +
+      (breakdown.outputTokens !== null && breakdown.generationMs !== null
+        ? ` gen=${breakdown.outputTokens}tok/${breakdown.generationMs}ms` +
+          `(${Math.round(breakdown.outputTokens / (breakdown.generationMs / 1000))}tok/s)`
+        : '') +
       (breakdown.ensureMs ? ` (ensure=${breakdown.ensureMs}ms)` : '');
     console.log(`[turn timing] ${line}`);
     // Also to stem.log, with the per-tool split. console.log only reaches a dev
@@ -3693,7 +3701,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           answerMs: b.answerMs,
           ttftMs: b.sendToFirstTokenMs,
           buildMs: b.buildMs,
-          recallMs: b.recall.total
+          recallMs: b.recall.total,
+          outputTokens: b.outputTokens,
+          generationMs: b.generationMs
         });
       }
       // Persist the turn's tool activity + web sources next to the timing (same

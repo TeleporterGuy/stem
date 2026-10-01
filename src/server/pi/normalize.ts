@@ -9,6 +9,7 @@ import type { CodingGrant, ComputerGrant } from '../harness/chat-grants';
 import type { SkillIssue } from '../skills/grade';
 import { extractSources } from './web-search';
 import { IMAGE_TOOL_NAME } from './image-gen.mjs';
+import { newGenerationClock, type GenerationClock } from './generation-speed';
 
 // Translate pi's RPC event stream into Stem's canonical backend events (the
 // { method, params } envelopes the renderer/HUD/recall consume).
@@ -69,6 +70,8 @@ export interface TurnContext {
   thinkingMs: number;
   toolMs: number;
   answerMs: number;
+  /** Each model call timed with its exact output tokens: the real tok/s (generation-speed.ts). */
+  generation: GenerationClock;
   /**
    * Canonical absolute roots of connected folders flagged memorize:false, captured
    * at turn start. If the assistant reads inside any of them this turn, the turn is
@@ -323,6 +326,9 @@ export interface TurnTimingBreakdown {
   sendToFirstTokenMs: number | null;
   firstTokenToEndMs: number | null;
   totalMs: number | null;
+  /** Output tokens and stream time of the turn's timed model calls; null when none was. */
+  outputTokens: number | null;
+  generationMs: number | null;
 }
 
 export function newTurnContext(threadId: string, turnId: string): TurnContext {
@@ -337,6 +343,7 @@ export function newTurnContext(threadId: string, turnId: string): TurnContext {
     thinkingMs: 0,
     toolMs: 0,
     answerMs: 0,
+    generation: newGenerationClock(),
     phase: 'pending',
     activity: [],
     activityStartedAt: new Map(),
