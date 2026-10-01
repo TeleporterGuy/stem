@@ -7,6 +7,21 @@ import { saveImageToDownloads } from './save-image';
 // MailList, …) call preventDefault() on the DOM contextmenu event, which
 // suppresses this webContents event — so the two never stack.
 
+/**
+ * The right-clicked image's URL. Chromium drops any URL over 2 MB on its way out
+ * of the renderer, so a full-size generated picture's data URL arrives here as
+ * '' — read it off the element under the cursor instead.
+ */
+async function imageSource(contents: WebContents, params: Electron.ContextMenuParams): Promise<string> {
+  if (params.srcURL) return params.srcURL;
+  const zoom = contents.getZoomFactor();
+  const src: unknown = await contents.executeJavaScript(
+    `(() => { const el = document.elementFromPoint(${params.x / zoom}, ${params.y / zoom});
+      return el instanceof HTMLImageElement ? el.currentSrc || el.src : ''; })()`
+  );
+  return typeof src === 'string' ? src : '';
+}
+
 export function installContextMenu(contents: WebContents, openExternalUrl: (url: string) => void): void {
   contents.on('context-menu', (_event, params) => {
     const items: MenuItemConstructorOptions[] = [];
@@ -25,13 +40,12 @@ export function installContextMenu(contents: WebContents, openExternalUrl: (url:
       items.push({
         label: 'Save Image to Downloads',
         click: () => {
-          if (params.srcURL.startsWith('data:image/')) {
-            saveImageToDownloads(params.srcURL, params.altText).catch((e) =>
-              console.warn('[context-menu] could not save the image', e)
-            );
-          } else if (params.srcURL) {
-            contents.downloadURL(params.srcURL);
-          }
+          void imageSource(contents, params)
+            .then((src) => {
+              if (src.startsWith('data:image/')) return saveImageToDownloads(src, params.altText);
+              if (src) contents.downloadURL(src);
+            })
+            .catch((e) => console.warn('[context-menu] could not save the image', e));
         }
       });
       items.push({ type: 'separator' });
