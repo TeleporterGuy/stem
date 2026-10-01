@@ -2080,6 +2080,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             ...(meta ? { meta } : {}),
             ...(timing ? { timing } : {}),
             ...(usage ? { usage } : {}),
+            ...(entry.timestamp ? { createdAt: entry.timestamp } : {}),
             ...(activity ? { activity } : {}),
             ...(sources ? { sources } : {}),
             ...(turnImages.length ? { images: [...turnImages] } : {})

@@ -187,7 +187,7 @@ function formatTiming(t: TurnTiming): string | undefined {
   return parts.length ? parts.join(' · ') : undefined;
 }
 
-// Shared cached formatter — constructing an Intl.DateTimeFormat per call is one of
+// Shared cached formatters — constructing an Intl.DateTimeFormat per call is one of
 // the slowest common ops in JS, and the timeline re-renders on every stream delta.
 const STAMP_FORMAT = new Intl.DateTimeFormat(undefined, {
   month: 'short',
@@ -195,13 +195,36 @@ const STAMP_FORMAT = new Intl.DateTimeFormat(undefined, {
   hour: '2-digit',
   minute: '2-digit'
 });
+const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
 
-// Hover-revealed authored time on a user bubble, e.g. "Jun 28, 14:09". The full
-// localized date/time rides in the span's title attribute.
+// When a message was sent (user) or finished (assistant), shown beside the
+// sender label: "14:09" today, "Jun 28, 14:09" otherwise. The full localized
+// date/time rides in the span's title attribute.
 function formatStamp(iso: string): string | undefined {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return undefined;
-  return STAMP_FORMAT.format(d);
+  return d.toDateString() === new Date().toDateString() ? TIME_FORMAT.format(d) : STAMP_FORMAT.format(d);
+}
+
+// Tooltip on the answer-time label: the breakdown legend plus speed and output size.
+function timingTitle(m: ChatMessage): string {
+  const tps = tokensPerSecond(m);
+  const out = m.usage?.output;
+  const lines = ['total · thinking · tool execution'];
+  if (tps !== undefined) lines.push(`${tps.toFixed(0)} tok/s`);
+  if (out) lines.push(`${out.toLocaleString()} output tokens`);
+  return lines.join('\n');
+}
+
+// Generation speed for the timing tooltip. Only for turns without tool time:
+// a tool turn is several model calls, and its usage covers just the last one.
+// Thinking counts because reasoning tokens are part of `output`.
+function tokensPerSecond(m: ChatMessage): number | undefined {
+  const t = m.timing;
+  const out = m.usage?.output;
+  if (!t || !out || t.toolMs >= 100) return undefined;
+  const ms = t.thinkingMs + t.answerMs;
+  return ms >= 200 ? out / (ms / 1000) : undefined;
 }
 
 // Local time-of-day for a scheduled run's collapsed header, e.g. "Jun 29, 09:00".
@@ -491,6 +514,11 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
         <div className="message-body">
           <div className="message-who">
             {a.label}
+            {m.role !== 'system' && m.createdAt && formatStamp(m.createdAt) && (
+              <span className="message-stamp" title={new Date(m.createdAt).toLocaleString()}>
+                {formatStamp(m.createdAt)}
+              </span>
+            )}
             {metaText && (
               <span
                 className="message-meta"
@@ -500,13 +528,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
               </span>
             )}
             {m.role === 'assistant' && m.timing && formatTiming(m.timing) && (
-              <span className="message-timing" title="total · thinking · tool execution">
+              <span className="message-timing" title={timingTitle(m)}>
                 {formatTiming(m.timing)}
-              </span>
-            )}
-            {m.role === 'user' && m.createdAt && formatStamp(m.createdAt) && (
-              <span className="message-meta" title={new Date(m.createdAt).toLocaleString()}>
-                {formatStamp(m.createdAt)}
               </span>
             )}
           </div>

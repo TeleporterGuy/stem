@@ -447,7 +447,13 @@ export function applyBackendEventToThread(
         buildMs: p.buildMs,
         recallMs: p.recall?.total ?? null
       };
-      return { ...state, messages: state.messages.map((m, i) => (i === idx ? { ...m, timing } : m)) };
+      // turn/timing lands as the turn ends, so it also stamps when the reply finished.
+      // Replay reads the same moment from the session entry's timestamp.
+      const createdAt = new Date().toISOString();
+      return {
+        ...state,
+        messages: state.messages.map((m, i) => (i === idx ? { ...m, timing, createdAt: m.createdAt ?? createdAt } : m))
+      };
     }
     case 'turn/usage': {
       const p = event.params as TurnUsageParams;

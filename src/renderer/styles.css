@@ -522,6 +522,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 }
 .message:hover .message-meta,
 .message:focus-within .message-meta { opacity: 1; }
+/* When the message was sent or finished — always visible, same muted size. */
+.message-stamp { font-weight: 400; color: var(--muted); font-size: var(--fs-11); font-variant-numeric: tabular-nums; }
 /* Answer-time breakdown (total · thinking · tools) — same muted, hover-revealed
    treatment as .message-meta so it sits quietly next to the model label. */
 .message-timing {
