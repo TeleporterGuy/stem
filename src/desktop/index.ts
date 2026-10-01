@@ -27,7 +27,7 @@ import { createComputerHost, type ComputerHost } from './computer-host';
 import { createComputerBanner } from './computer-host/banner';
 import { createMirrorHost, type MirrorHost } from './mirror-host';
 import { createOAuthCourier, type OAuthCourier } from './oauth-courier';
-import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, requestAttention } from './platform';
+import { enableGlobalShortcutPortal, isLinux, isMac, mainWindowChromeOptions, requestAttention, timeLocaleArguments } from './platform';
 import { createPresenceHeartbeat, type PresenceHeartbeat } from './presence';
 import { createServerProxy, type ServerProxy } from './proxy';
 import { clientCredentials, resolveServerUrl } from './server-endpoint';
@@ -227,7 +227,8 @@ function createWindow(hidden = false): void {
       preload: PRELOAD_SCRIPT,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      additionalArguments: timeLocaleArguments()
     }
   });
 

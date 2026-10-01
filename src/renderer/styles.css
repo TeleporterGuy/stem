@@ -522,8 +522,38 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 }
 .message:hover .message-meta,
 .message:focus-within .message-meta { opacity: 1; }
-/* When the message was sent or finished — always visible, same muted size. */
-.message-stamp { font-weight: 400; color: var(--muted); font-size: var(--fs-11); font-variant-numeric: tabular-nums; }
+/* When the message was sent or finished, hover-revealed in the gutter left of the
+   avatar so the header keeps its room for long model names. The gutter is the
+   .messages padding plus whatever the centred measure leaves; under ~50px it
+   can't hold "21:50", so narrow panes (and the clipped scheduled-run cards)
+   tuck a smaller stamp under the avatar instead. */
+.messages { container: messages / inline-size; }
+.message { position: relative; }
+.message-stamp {
+  position: absolute;
+  right: calc(100% + var(--sp-4));
+  top: 5px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  font-size: var(--fs-11);
+  line-height: 1.25;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--motion-fast) ease;
+}
+.message-stamp-tps { font-size: var(--fs-10); }
+.message:hover .message-stamp,
+.message:focus-within .message-stamp { opacity: 1; }
+@container messages (width < 820px) {
+  .message-stamp { right: auto; left: 0; top: 30px; width: 26px; align-items: center; font-size: var(--fs-10); }
+  .message-stamp-tps { display: none; }
+}
+.sched-run .message-stamp { right: auto; left: 0; top: 30px; width: 26px; align-items: center; font-size: var(--fs-10); }
+.sched-run .message-stamp-tps { display: none; }
 /* Answer-time breakdown (total · thinking · tools) — same muted, hover-revealed
    treatment as .message-meta so it sits quietly next to the model label. */
 .message-timing {

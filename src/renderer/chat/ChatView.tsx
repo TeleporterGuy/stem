@@ -189,21 +189,22 @@ function formatTiming(t: TurnTiming): string | undefined {
 
 // Shared cached formatters — constructing an Intl.DateTimeFormat per call is one of
 // the slowest common ops in JS, and the timeline re-renders on every stream delta.
-const STAMP_FORMAT = new Intl.DateTimeFormat(undefined, {
-  month: 'short',
-  day: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit'
-});
-const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
+// They take the OS clock format (region + 12/24-hour), not Chromium's app locale.
+const OS_TIME = typeof window !== 'undefined' ? window.stem?.timeLocale : undefined;
+const osFormat = (options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat =>
+  new Intl.DateTimeFormat(OS_TIME?.locale, { ...options, ...(OS_TIME?.hourCycle ? { hourCycle: OS_TIME.hourCycle } : {}) });
+const STAMP_FORMAT = osFormat({ month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const TIME_FORMAT = osFormat({ hour: '2-digit', minute: '2-digit' });
+const DAY_FORMAT = osFormat({ month: 'short', day: 'numeric' });
+const FULL_FORMAT = osFormat({ dateStyle: 'medium', timeStyle: 'medium' });
 
-// When a message was sent (user) or finished (assistant), shown beside the
-// sender label: "14:09" today, "Jun 28, 14:09" otherwise. The full localized
-// date/time rides in the span's title attribute.
-function formatStamp(iso: string): string | undefined {
+// When a message was sent (user) or finished (assistant), revealed on hover in
+// the gutter left of the avatar: the time, the day under it when it isn't today.
+function messageStamp(iso: string): { time: string; day?: string; full: string } | undefined {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return undefined;
-  return d.toDateString() === new Date().toDateString() ? TIME_FORMAT.format(d) : STAMP_FORMAT.format(d);
+  const today = d.toDateString() === new Date().toDateString();
+  return { time: TIME_FORMAT.format(d), ...(today ? {} : { day: DAY_FORMAT.format(d) }), full: FULL_FORMAT.format(d) };
 }
 
 // Tooltip on the answer-time label: the breakdown legend plus speed and output size.
@@ -487,6 +488,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     const renderRich =
       m.role === 'assistant' && (!isStreaming || (format === 'md' && !!m.content));
     const metaText = m.role === 'assistant' ? metaTooltip(m.meta, models) : undefined;
+    const stamp = m.role !== 'system' && m.createdAt ? messageStamp(m.createdAt) : undefined;
+    const tps = m.role === 'assistant' ? tokensPerSecond(m) : undefined;
     const isEditing = editingId === m.id;
     // The bubble of the turn still in flight (the last assistant message).
     const liveTurn = running && m.role === 'assistant' && m.id === lastAssistantId;
@@ -510,15 +513,17 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     const canAct = !running && (!!m.turnId || failedSend || m.role === 'system');
     return (
       <div key={m.id} className={`message message-${m.role}`}>
+        {stamp && (
+          <div className="message-stamp" title={stamp.full}>
+            <span>{stamp.time}</span>
+            {stamp.day && <span>{stamp.day}</span>}
+            {tps !== undefined && <span className="message-stamp-tps">{tps.toFixed(0)} tok/s</span>}
+          </div>
+        )}
         <div className={`msg-avatar ${a.cls}`}>{a.icon}</div>
         <div className="message-body">
           <div className="message-who">
             {a.label}
-            {m.role !== 'system' && m.createdAt && formatStamp(m.createdAt) && (
-              <span className="message-stamp" title={new Date(m.createdAt).toLocaleString()}>
-                {formatStamp(m.createdAt)}
-              </span>
-            )}
             {metaText && (
               <span
                 className="message-meta"

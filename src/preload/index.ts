@@ -69,10 +69,12 @@ import type {
   UpdateStatus,
   UpdatesSettings
 } from '../shared/types';
+import { parseTimeLocaleArgs } from '../shared/time-locale';
 
 const api: StemApi = {
   // Sandboxed preloads still see process.platform; exotic platforms never ship.
   platform: process.platform as StemApi['platform'],
+  timeLocale: parseTimeLocaleArgs(process.argv),
   rendererReady: () => ipcRenderer.send('renderer:ready'),
   runtimeStatus: () => ipcRenderer.invoke('runtime:status'),
   login: () => ipcRenderer.invoke('runtime:login'),

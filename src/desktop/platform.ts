@@ -1,5 +1,6 @@
-import { app, type BrowserWindow, type BrowserWindowConstructorOptions, type Rectangle } from 'electron';
+import { app, systemPreferences, type BrowserWindow, type BrowserWindowConstructorOptions, type Rectangle } from 'electron';
 import { spawn } from 'node:child_process';
+import { resolveTimeLocale, timeLocaleArgs } from '../shared/time-locale';
 
 // Per-platform branching for the window chrome, overlay behavior, and small OS
 // affordances. Everything platform-specific that main needs lives behind these
@@ -196,4 +197,17 @@ export function playFinishChime(hudWindow: BrowserWindow | null): void {
     return;
   }
   if (hudWindow && !hudWindow.isDestroyed()) hudWindow.webContents.send('hud:playChime');
+}
+
+/**
+ * webPreferences.additionalArguments carrying the OS clock format to the
+ * preload (see shared/time-locale.ts). macOS's "24-hour time" switch overrides
+ * the region; elsewhere the system locale alone decides.
+ */
+export function timeLocaleArguments(): string[] {
+  const force = (key: string): boolean =>
+    isMac ? systemPreferences.getUserDefault(key, 'boolean') === true : false;
+  return timeLocaleArgs(
+    resolveTimeLocale(app.getSystemLocale(), force('AppleICUForce24HourTime'), force('AppleICUForce12HourTime'))
+  );
 }

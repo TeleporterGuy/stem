@@ -1,5 +1,5 @@
 import { BrowserWindow, screen } from 'electron';
-import { overlayOuterBounds, overlayWindowOptions, workspaceVisibilityOptions } from '../platform';
+import { overlayOuterBounds, overlayWindowOptions, timeLocaleArguments, workspaceVisibilityOptions } from '../platform';
 import { loadRenderer, PRELOAD_SCRIPT } from '../renderer-assets';
 
 // The two windows Quick Chat owns, and where on screen they go. Construction
@@ -53,7 +53,8 @@ export function createOverlayWindow(deps: {
       preload: PRELOAD_SCRIPT,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      additionalArguments: timeLocaleArguments()
     }
   });
 
@@ -119,7 +120,8 @@ export function createHudWindow(deps: { installNavigationGuards(win: BrowserWind
       preload: PRELOAD_SCRIPT,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      additionalArguments: timeLocaleArguments()
     }
   });
 

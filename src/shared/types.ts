@@ -1,6 +1,7 @@
 // Shared contracts between main, preload, and renderer. Single source of truth.
 
 import type { InboxState } from './inbox';
+import type { TimeLocale } from './time-locale';
 
 export type { InboxEntry, InboxState } from './inbox';
 
@@ -3894,6 +3895,8 @@ export interface ConnectionState {
 export interface StemApi {
   /** The OS the main process runs on; drives per-platform UI (mod key, glyphs, CSS). */
   platform: 'darwin' | 'linux' | 'win32';
+  /** The OS clock format (locale with region, forced 12/24-hour) for message times. */
+  timeLocale: TimeLocale;
   /** Signal that the main renderer has installed all push-event listeners. */
   rendererReady(): void;
   runtimeStatus(): Promise<RuntimeStatus>;
