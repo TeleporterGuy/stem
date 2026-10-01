@@ -1,6 +1,7 @@
 import { clipboard, dialog, nativeImage, shell, type BrowserWindow } from 'electron';
 import { join } from 'node:path';
 import { handleLocal } from '../ipc-bridge';
+import { openLink } from '../open-link';
 import { ensureFilesRoot } from '../../server/files/store';
 import { imagePreviewDataUrl, imagePreviewFromBytes } from '../../server/pi/attachments';
 import { connectedFolderPath } from '../../server/workspace/connected-folders';
@@ -267,6 +268,10 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
     return folders;
   });
   handleLocal('mirror:localState', (): MirrorFolderLocalState[] => deps.mirrorHost?.localState() ?? []);
+
+  // A link clicked in a chat message (file: ones cannot ride window.open — see
+  // desktop/open-link.ts). Opens on THIS machine, wherever the server is.
+  handleLocal('link:open', (_event, url: string) => openLink(shell, url));
 
   handleLocal('dialog:openFiles', () =>
     dialog

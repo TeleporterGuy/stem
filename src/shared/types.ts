@@ -3943,6 +3943,8 @@ export interface StemApi {
 
   /** Open a native file picker; returns chosen absolute paths ([] if canceled). */
   openFiles(): Promise<string[]>;
+  /** Open a chat link on this machine: browser, default app, or (for runnable files) Finder. */
+  openLink(url: string): Promise<void>;
   /** Resolve the on-disk path of a dropped File (empty string if unavailable). */
   getPathForFile(file: File): string;
 

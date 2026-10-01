@@ -99,6 +99,7 @@ const api: StemApi = {
   interruptTurn: (turnId: string) => ipcRenderer.invoke('backend:interruptTurn', turnId),
   newConversation: () => ipcRenderer.invoke('backend:newConversation'),
   openFiles: () => ipcRenderer.invoke('dialog:openFiles'),
+  openLink: (url: string) => ipcRenderer.invoke('link:open', url),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   listModels: () => ipcRenderer.invoke('backend:listModels'),
   onBackendEvent: (listener: (event: BackendEventEnvelope) => void) => {

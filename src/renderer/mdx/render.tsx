@@ -90,6 +90,13 @@ function renderNode(node: MdNode, key: string): ReactNode {
         : <li key={key}>{renderChildren(node, key)}</li>;
     case 'link': {
       const href = safeUrl(node.url, true);
+      if (href && /^file:/i.test(href)) {
+        const open = (e: { preventDefault(): void }) => {
+          e.preventDefault();
+          void window.stem.openLink(href);
+        };
+        return <a key={key} href={href} title={href} onClick={open}>{renderChildren(node, key)}</a>;
+      }
       return href
         ? <a key={key} href={href} target="_blank" rel="noreferrer">{renderChildren(node, key)}</a>
         : <Fragment key={key}>{renderChildren(node, key)}</Fragment>;

@@ -36,6 +36,7 @@ const CLIENT_OWNED = [
   'updates:install',
   'settings:updateUpdates',
   'dialog:openFiles',
+  'link:open',
   'dialog:openDirectory',
   'files:reveal',
   'files:preview',

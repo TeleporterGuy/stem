@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { extname } from 'node:path';
+import type { Shell } from 'electron';
 
 // How a link clicked in the renderer leaves the app. Web and mail links go to
 // the browser / mail client. file:// links (an agent pointing at a CSV it just
@@ -41,4 +42,19 @@ export function classifyLink(url: string): LinkAction {
   // reading the extension so Foo.app/ is still recognized as runnable.
   const ext = extname(path.replace(/[/\\]+$/, '')).toLowerCase();
   return RUNNABLE_EXTENSIONS.has(ext) ? { kind: 'reveal', path } : { kind: 'open', path };
+}
+
+/**
+ * Act on a renderer link. Two ways in: window.open / navigation (the guards in
+ * desktop/index.ts) and the `link:open` channel. The channel exists for file:
+ * links — Chromium refuses a file: navigation from a page not itself served
+ * from file: (the dev server) before Electron is ever asked.
+ */
+export function openLink(shell: Pick<Shell, 'openExternal' | 'openPath' | 'showItemInFolder'>, url: string): void {
+  const action = classifyLink(url);
+  if (action.kind === 'external') void shell.openExternal(action.url).catch(() => undefined);
+  // openPath resolves with an error string (never rejects) when the file is
+  // missing, e.g. a link to another device's Downloads; nothing to open then.
+  else if (action.kind === 'open') void shell.openPath(action.path);
+  else if (action.kind === 'reveal') shell.showItemInFolder(action.path);
 }

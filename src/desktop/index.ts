@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { installAppMenu } from './app-menu';
 import { installContextMenu } from './context-menu';
-import { classifyLink } from './open-link';
+import { openLink } from './open-link';
 import { electronHost } from './host';
 import { setHost } from '../server/host';
 import { startServer, type ServerHandle } from '../server';
@@ -143,12 +143,7 @@ const E2E = !!process.env.STEM_E2E;
 // ---- navigation ----
 
 function openExternalUrl(url: string): void {
-  const action = classifyLink(url);
-  if (action.kind === 'external') void shell.openExternal(action.url).catch(() => undefined);
-  // openPath resolves with an error string (never rejects) when the file is
-  // missing, e.g. a link to another device's Downloads; nothing to open then.
-  else if (action.kind === 'open') void shell.openPath(action.path);
-  else if (action.kind === 'reveal') shell.showItemInFolder(action.path);
+  openLink(shell, url);
 }
 
 function isAppNavigation(win: BrowserWindow, url: string): boolean {
