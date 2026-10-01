@@ -28,6 +28,12 @@ Add a provider with:
 - **API key**: Anthropic, OpenAI, OpenRouter, or xAI.
 - **Local server**: Ollama or LM Studio. Stem hides Ollama models without tool
   support; they cannot complete Stem turns.
+- **Custom endpoint**: any other OpenAI- or Anthropic-compatible server, named by
+  you. This is also how you add a second Ollama — one on your laptop as the local
+  server, one on the office PC as a Custom endpoint with its address and a name.
+  Leave **Model IDs** empty and Stem uses whatever the endpoint lists, re-checked
+  every half minute, so a model pulled there later shows up by itself. Type IDs
+  to pin a fixed set, which an endpoint that lists no models needs.
 
 The selected model receives the prompt, attachments, and context Stem adds to that
 turn. A cloud model receives that data on its provider’s service. A local model

@@ -462,8 +462,9 @@ const IS_DEFAULT_URL = (url: string): boolean =>
  * Local-only onboarding: point Stem at a running Ollama / LM Studio server, or at
  * an arbitrary OpenAI-compatible endpoint. The Test probe must find at least one
  * model before Continue unlocks, so the wizard can't finish into an empty
- * catalog — except for a custom endpoint, which may not serve a model listing at
- * all and so gates on the typed model IDs instead.
+ * catalog. A custom endpoint may not serve a model listing at all, so typed
+ * model IDs unlock it too — and when the probe does list models, the IDs stay
+ * untyped so the endpoint keeps being discovered after setup, like Ollama is.
  */
 function LocalServerForm({
   onDone,
@@ -523,7 +524,6 @@ function LocalServerForm({
         current.baseUrl.trim() === tested.baseUrl
       ) {
         setTest(result);
-        if (custom && result.ok && result.models?.length && !models.trim()) setModels(result.models.join(', '));
       }
     } catch {
       if (testGateRef.current.isCurrent(request)) {
@@ -552,7 +552,7 @@ function LocalServerForm({
 
   const modelCount = test?.ok ? test.models?.length ?? 0 : 0;
   const canContinue = custom
-    ? !!baseUrl.trim() && modelList.length > 0 && !saving
+    ? !!baseUrl.trim() && (modelList.length > 0 || modelCount > 0) && !saving
     : !!test?.ok && modelCount > 0 && !saving;
 
   return (
@@ -612,12 +612,13 @@ function LocalServerForm({
             <input
               type="text"
               aria-label="Model IDs"
-              placeholder="Model IDs, comma-separated"
+              placeholder="Model IDs, comma-separated — or empty to use the server’s own list"
               value={models}
               onChange={(e) => setModels(e.target.value)}
             />
             <p className="gate-hint">
-              Test connection fills these in when the endpoint lists its models; otherwise type them yourself.
+              Leave these empty when Test connection finds models: Stem then keeps using whatever the endpoint
+              lists. Type them yourself when the endpoint lists nothing.
             </p>
           </>
         )}

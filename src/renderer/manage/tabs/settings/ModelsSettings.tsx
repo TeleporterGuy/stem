@@ -1411,10 +1411,14 @@ function CustomOverridesForm({
  * later = disconnect (−) and re-add, matching the MCP servers list — except for
  * the per-model overrides, which are editable in place on the connected row.
  *
- * The custom endpoint adds a key field and swaps model discovery for a typed
- * list: an arbitrary endpoint may not serve GET /v1/models at all (or may serve
- * far more than the key can reach), so Test becomes a convenience that fills the
- * field in rather than the thing that decides the catalog.
+ * The custom endpoint adds a key field and an optional typed model list. Left
+ * empty, the endpoint is discovered like Ollama and LM Studio are: the sync
+ * probes GET /v1/models every 30 s, so a second Ollama on another machine (the
+ * reason this exists, issue #18) keeps its catalog current. Typed ids pin the
+ * catalog instead — for an endpoint that serves no listing, or one that lists
+ * far more than the key can reach. Test therefore only reports what it found;
+ * it never writes the list, since a filled box is a frozen catalog. The "Pin
+ * these" link next to a green result is the deliberate way to freeze it.
  *
  * The how-it-works prose for all three lives in the header InfoTip, not inline —
  * the fields differ by selection and a paragraph per branch buries the form.
@@ -1537,12 +1541,9 @@ function LocalServerAddForm({
       if (speaksForTheForm()) {
         setTest(result);
         // Auto-detect success snaps the dropdown to what actually answered, so
-        // Enable writes the flavor that just tested green.
+        // Enable writes the flavor that just tested green. The model ids it
+        // found stay out of the box: see the "Pin these" link below.
         if (custom && result.ok && result.api && api === null) setApi(result.api);
-        // A listing endpoint that does answer saves the typing — but never
-        // overwrite ids the user already chose.
-        if (custom && result.ok && result.models?.length && !formRef.current.models.trim())
-          setModels(result.models.join(', '));
       }
     } catch {
       if (speaksForTheForm()) setTest({ ok: false, error: 'request failed' });
@@ -1610,8 +1611,9 @@ function LocalServerAddForm({
           flavor by hand if the server is picky about that OPTIONS probe. Stem strips a trailing <code>/v1</code>
           from your URL and lets the client add the versioned path itself. The key goes on the wire the way the
           target API expects (<code>Authorization: Bearer</code> for OpenAI-flavored servers, <code>X-Api-Key</code>
-          for Anthropic). Test connection fills the model IDs in when the endpoint lists them; endpoints that serve
-          no listing just need the IDs typed in.
+          for Anthropic). Leave the model IDs empty and Stem uses whatever the endpoint lists, re-checked every
+          half minute like Ollama and LM Studio — the way to add a second Ollama running on another machine.
+          Type IDs to pin a fixed set instead; endpoints that serve no listing need that.
         </InfoTip>
       </span>
       <select
@@ -1673,7 +1675,7 @@ function LocalServerAddForm({
           <input
             className="ifield"
             aria-label="Model IDs"
-            placeholder="Model IDs, comma-separated"
+            placeholder="Model IDs, comma-separated — or empty to use the server’s own list"
             value={models}
             onChange={(e) => setModels(e.target.value)}
           />
@@ -1712,6 +1714,19 @@ function LocalServerAddForm({
             {testLabel}
           </span>
         )}
+        {/* Opt-in freeze: the ids a green probe found, copied into the box on
+            request only. Shown while the box is empty — once it holds ids, the
+            user has made the choice this link offers. */}
+        {!testing && custom && test?.ok && !!test.models?.length && modelList.length === 0 && (
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => setModels(test.models!.join(', '))}
+            title="Copy the model IDs found into the box, so this list stays fixed"
+          >
+            Pin these
+          </button>
+        )}
       </div>
       <div className="push-row">
         <button type="button" className="push" onClick={onCancel}>
@@ -1724,7 +1739,6 @@ function LocalServerAddForm({
             saving ||
             !baseUrl.trim() ||
             (custom && !customName.trim()) ||
-            (custom && modelList.length === 0) ||
             (custom && api === null) ||
             (custom && !parsedOverrides.ok)
           }

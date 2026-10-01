@@ -12,6 +12,18 @@ Maintainer notes:
   date, tag.
 -->
 
+## 0.5.6 — Unreleased
+
+### Changed
+
+- **A second Ollama, on another machine.** Settings → Models → Add server only knows one Ollama
+  and one LM Studio, so adding a second overwrote the first. Add the other one as a **Custom
+  endpoint** instead, with its address and a name of your own — and now you can leave the model
+  IDs empty: Stem keeps asking that server what models it has, every half minute, exactly as it
+  does for the local Ollama, so a model you pull there later appears on its own. Typing IDs still
+  pins a fixed list, which a server that lists no models needs; **Pin these** next to a green
+  Test connection copies the found IDs in when that is what you want.
+
 ## 0.5.5 — 2026-09-30
 
 ### Added
