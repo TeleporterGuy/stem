@@ -25,10 +25,15 @@ interface MdNode {
 const mdxProcessor = unified().use(remarkParse).use(remarkGfm).use(remarkMdx);
 const plainProcessor = unified().use(remarkParse).use(remarkGfm);
 
-/** Only allow safe URL schemes; everything else (e.g. javascript:) is dropped. */
-function safeUrl(url: string | undefined): string | undefined {
+/**
+ * Only allow safe URL schemes; everything else (e.g. javascript:) is dropped.
+ * file: links are allowed for links only, never images: the main process
+ * opens them on this machine (src/desktop/open-link.ts).
+ */
+function safeUrl(url: string | undefined, allowFile = false): string | undefined {
   if (!url) return undefined;
   if (/^(https?:|mailto:|tel:|#|\/)/i.test(url)) return url;
+  if (allowFile && /^file:/i.test(url)) return url;
   if (/^data:image\//i.test(url)) return url;
   return undefined;
 }
@@ -84,7 +89,7 @@ function renderNode(node: MdNode, key: string): ReactNode {
         ? <TaskItem key={key} checked={node.checked}>{renderChildren(node, key)}</TaskItem>
         : <li key={key}>{renderChildren(node, key)}</li>;
     case 'link': {
-      const href = safeUrl(node.url);
+      const href = safeUrl(node.url, true);
       return href
         ? <a key={key} href={href} target="_blank" rel="noreferrer">{renderChildren(node, key)}</a>
         : <Fragment key={key}>{renderChildren(node, key)}</Fragment>;
