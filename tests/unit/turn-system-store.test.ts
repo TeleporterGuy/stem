@@ -1,5 +1,5 @@
 // turn_system: the per-turn system-version stamp in recall.sqlite, keyed like
-// turn_timings by the final assistant entry id so readThread can hang it on the
+// turn_timings by the turn's user entry id so readThread can hang it on the
 // rebuilt assistant bubble.
 import { describe, expect, it } from 'vitest';
 import { recallStore as store } from '../../src/server/recall/store';

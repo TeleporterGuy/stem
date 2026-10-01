@@ -208,7 +208,7 @@ const FACT_SELECT_F = `f.id, f.text, f.source, f.category, f.sensitivity, f.conf
 
 
 export interface TurnTimingRecord {
-  /** pi's final assistant entry id for the turn — the persistence key. */
+  /** The turn's user entry id in pi's session (get_fork_messages) — the persistence key. */
   turnEntryId: string;
   threadId: string;
   totalMs: number | null;
@@ -665,8 +665,8 @@ export class RecallStore {
       );
 
       -- Per-turn answer-time breakdown, surfaced on the assistant message. Keyed by
-      -- the FINAL assistant entry id (pi's session entry id) so readThread can attach
-      -- it to the rebuilt assistant bubble on reopen. Independent of recall capture.
+      -- the turn's USER entry id (pi's session entry id) so readThread can attach
+      -- it to the turn's rebuilt assistant bubble on reopen. Independent of recall capture.
       CREATE TABLE IF NOT EXISTS turn_timings (
         turn_entry_id TEXT PRIMARY KEY,
         thread_id     TEXT NOT NULL,
@@ -682,8 +682,8 @@ export class RecallStore {
       CREATE INDEX IF NOT EXISTS idx_turn_timings_thread ON turn_timings(thread_id);
 
       -- Per-turn tool-call activity + web sources, surfaced as collapsible rows on
-      -- the assistant message. Same keying discipline as turn_timings: the FINAL
-      -- assistant entry id, so readThread can attach it on reopen. payload is a JSON
+      -- the assistant message. Same keying discipline as turn_timings: the turn's
+      -- user entry id, so readThread can attach it on reopen. payload is a JSON
       -- { activity: ActivityItem[], sources: SourceRef[] } blob.
       CREATE TABLE IF NOT EXISTS turn_activities (
         turn_entry_id TEXT PRIMARY KEY,
@@ -1186,7 +1186,7 @@ export class RecallStore {
   };
 
 
-  /** Load a thread's persisted turn timings, keyed by final assistant entry id. */
+  /** Load a thread's persisted turn timings, keyed by the turn's user entry id. */
   getTurnTimingsByThread = (threadId: string): Map<string, TurnTiming> => {
     const handle = this.open();
     const rows = handle
@@ -1266,7 +1266,7 @@ export class RecallStore {
       );
   };
 
-  /** Load a thread's per-turn system versions, keyed by final assistant entry id. */
+  /** Load a thread's per-turn system versions, keyed by the turn's user entry id. */
   getTurnSystemsByThread = (threadId: string): Map<string, SystemVersion> => {
     const handle = this.open();
     const rows = handle
@@ -1279,7 +1279,7 @@ export class RecallStore {
     return out;
   };
 
-  /** Load a thread's persisted turn activities, keyed by final assistant entry id. */
+  /** Load a thread's persisted turn activities, keyed by the turn's user entry id. */
   getTurnActivitiesByThread = (threadId: string): Map<string, TurnActivityPayload> => {
     const handle = this.open();
     const rows = handle

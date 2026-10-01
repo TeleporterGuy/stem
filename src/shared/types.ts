@@ -40,7 +40,7 @@ export interface MessageMeta {
  * headline (send→end). `thinkingMs`/`toolMs`/`answerMs` are measured wall-time
  * sub-segments and intentionally do NOT sum to the total — pre-first-token wait
  * and recall/build time sit in no segment. Persisted in recall.sqlite keyed by
- * the final assistant entry id so it survives reopen.
+ * the turn's user entry id so it survives reopen.
  */
 export interface TurnTiming {
   totalMs: number | null;

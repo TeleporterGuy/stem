@@ -1893,9 +1893,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     let runtimeTurnId: string | undefined;
     let committedText = '';
     let aggregateIndex = -1;
+    // A turn without a runtime id rebuilds as one bubble per assistant entry:
+    // the newest of them, which alone carries the turn's persisted rows.
+    let turnBubbleIndex = -1;
     let pendingFailure: ChatMessage | undefined;
-    // Persisted answer-time breakdowns + tool activity, keyed by the final
-    // assistant entry id.
+    // Persisted answer-time breakdowns, tool activity and system stamps, keyed
+    // by the turn's USER entry id (what recordTurnEntry gets from
+    // get_fork_messages), not by any assistant entry.
     const timings = getTurnTimingsByThread(threadId);
     const activities = getTurnActivitiesByThread(threadId);
     const systems = getTurnSystemsByThread(threadId);
@@ -2021,6 +2025,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         runtimeTurnId = this.runtimeIdentity(entry.message.content);
         committedText = '';
         aggregateIndex = -1;
+        turnBubbleIndex = -1;
         pendingActivity = [];
         if (content.trim() || images.length)
           messages.push({
@@ -2049,9 +2054,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           }
         }
         if (content.trim() || turnImages.length > placedImages) {
-          const timing = entry.id ? timings.get(entry.id) : undefined;
+          const turnKey = lastUserId || entry.id;
+          const timing = turnKey ? timings.get(turnKey) : undefined;
           const usage = toTurnUsage(entry.message.usage);
-          const persisted = entry.id ? activities.get(entry.id) : undefined;
+          const persisted = turnKey ? activities.get(turnKey) : undefined;
           const activity = persisted?.activity?.length
             ? persisted.activity
             : pendingActivity.length
@@ -2062,7 +2068,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             entry.message.provider && entry.message.model
               ? `${entry.message.provider}/${entry.message.model}`
               : modelNow;
-          const sys = entry.id ? systems.get(entry.id) : undefined;
+          const sys = turnKey ? systems.get(turnKey) : undefined;
           const meta: MessageMeta | undefined =
             model || effortNow || sys
               ? {
@@ -2102,7 +2108,23 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
                 images: answer.images ?? previous.images
               };
             }
-          } else messages.push(answer);
+          } else {
+            // The turn's rows describe the whole turn, as its single live bubble
+            // showed them: move them off this turn's earlier bubble.
+            const previous = turnBubbleIndex >= 0 ? messages[turnBubbleIndex] : undefined;
+            if (previous) {
+              const bare: ChatMessage = { ...previous, ...(previous.meta ? { meta: { ...previous.meta } } : {}) };
+              delete bare.timing;
+              delete bare.meta?.sys;
+              if (persisted) {
+                delete bare.activity;
+                delete bare.sources;
+              }
+              messages[turnBubbleIndex] = bare;
+            }
+            turnBubbleIndex = messages.length;
+            messages.push(answer);
+          }
         }
         // A provider error can be retried within the same user turn. Only
         // expose its last outcome; a later clean assistant message recovers it.
@@ -3641,7 +3663,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // terminal, so a shipped build left no trace of where a slow turn went — a
     // two-minute web-search turn logged nothing at all.
     log('perf', `turn ${line}`, slowestTools(turn));
-    // Stash for recordTurnEntry to persist once the assistant entry id resolves.
+    // Stash for recordTurnEntry to persist once the turn's entry id resolves.
     turn.timing = breakdown;
     this.emitEvent('turn/timing', breakdown);
   }
@@ -3658,8 +3680,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // stamp a debugging pass filters on. Written before timing so a turn that
       // never produced a breakdown still says what produced it.
       upsertTurnSystem({ turnEntryId: last.entryId, threadId: turn.threadId, sys: systemVersion() });
-      // Persist timing keyed by the FINAL assistant entry id — readThread rebuilds
-      // that same bubble from entry.id on reopen, so the lookup matches.
+      // Persist timing keyed by the turn's USER entry id (get_fork_messages lists
+      // user messages only) — readThread looks the turn's bubble up by it on reopen.
       const b = turn.timing;
       if (b) {
         upsertTurnTiming({
