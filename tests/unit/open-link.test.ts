@@ -12,11 +12,15 @@ describe('classifyLink', () => {
       kind: 'open',
       path: '/Users/me/Downloads/pigs farms.csv',
     });
-    expect(classifyLink('file:///Users/me/Downloads/')).toEqual({ kind: 'open', path: '/Users/me/Downloads/' });
+    expect(classifyLink('file:///tmp/Report.PDF')).toEqual({ kind: 'open', path: '/tmp/Report.PDF' });
   });
 
-  it('only reveals files that would run code when opened', () => {
-    for (const p of ['/tmp/x.command', '/Applications/Evil.app/', '/tmp/x.SH', '/tmp/x.webloc', '/tmp/x.scpt']) {
+  it('only reveals anything that is not a known document type', () => {
+    for (const p of [
+      '/tmp/x.command', '/Applications/Evil.app/', '/Applications/Evil.app', '/tmp/x.SH', '/tmp/x.webloc',
+      '/tmp/x.scpt', '/tmp/payload', '/tmp/x.mobileconfig', '/tmp/x.xlsm', '/tmp/x.prefPane', '/Users/me/Downloads/',
+      '/tmp/x.csv/', '/tmp/x.csv.command',
+    ]) {
       expect(classifyLink(`file://${p}`)).toEqual({ kind: 'reveal', path: p });
     }
   });
