@@ -12,7 +12,7 @@ Maintainer notes:
   date, tag.
 -->
 
-## 0.5.6 — Unreleased
+## 0.5.6 — 2026-10-02
 
 ### Added
 
@@ -23,6 +23,10 @@ Maintainer notes:
   touched keep every server, as before, and so do chats without a persona. A helper persona that
   an Orchestrator creates inherits the Orchestrator’s list, so a restriction cannot be sidestepped
   by delegating. Stem’s own memory tools are separate: that is still **Sees your memory**.
+- **Open files the assistant links.** When a persona writes a file on your Mac, a CSV in
+  Downloads for instance, and links it in the chat, clicking the link now opens it in its default
+  app. Only documents open this way. Anything that could run when opened, like an app, a script,
+  an installer or a folder, is shown in Finder instead.
 
 ### Changed
 
@@ -33,6 +37,23 @@ Maintainer notes:
   does for the local Ollama, so a model you pull there later appears on its own. Typing IDs still
   pins a fixed list, which a server that lists no models needs; **Pin these** next to a green
   Test connection copies the found IDs in when that is what you want.
+- **Message times.** Hover a message to see when it was sent, to the left of its avatar, with the
+  day under it when it wasn't today. Times follow your computer's region and its 12/24-hour
+  setting, so English on a Slovak Mac no longer shows 09:50 PM.
+- **Honest tok/s.** An answer's speed is now measured per model call, with time spent running tools
+  left out, so replies that used tools get a number too. Models that think silently, like GPT,
+  are timed with that thinking included and no longer look several times faster than they are.
+- **Read-only commands stay in your folders.** The assistant runs commands like `cat`, `ls` and
+  `grep` without asking only while they read inside the folders its file tools can already reach.
+  Reading anywhere else on the computer now asks first, and `find` always does.
+
+### Fixed
+
+- **Save Image on large pictures.** Right-click → Save Image to Downloads silently did nothing on
+  a full-size generated picture.
+- **A stuck Linux update says so.** When the AppImage found a new Stem but couldn't download it,
+  nothing told you, and the old version kept running for weeks. The update dialog and banner now
+  say what went wrong and offer the release page.
 
 ## 0.5.5 — 2026-09-30
 
