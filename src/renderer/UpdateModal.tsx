@@ -3,9 +3,10 @@ import { ArrowUpCircle } from 'lucide-react';
 import type { UpdateStatus } from '../shared/types';
 
 // The "there's a newer Stem" dialog. Raised once per launch per version from
-// App, for the two states worth interrupting for: a build sitting downloaded
-// (the AppImage — restart to finish) or one sitting on a web page (mac and deb,
-// which cannot fetch it themselves). Mirrors the TaskAlertModal markup. "Later"
+// App, for the states worth interrupting for (shared/updates.ts): a build
+// sitting downloaded (the AppImage — restart to finish) or one sitting on a web
+// page (mac and deb, which cannot fetch it themselves, and an AppImage whose
+// download or swap failed). Mirrors the TaskAlertModal markup. "Later"
 // is a real answer: the banner under the title bar and the row in Settings → App
 // keep the offer open, and a downloaded build installs itself on the next quit.
 export function UpdateModal({
@@ -55,7 +56,9 @@ export function UpdateModal({
         <p className="task-alert-message">
           {ready
             ? `It's downloaded. Restart Stem to finish updating — or keep working, and it installs when you quit.`
-            : `You're running ${update.appVersion}. This build can't update itself, so grab the new one from the release page and install it over this one.`}
+            : update.state === 'error'
+              ? `You're running ${update.appVersion}. Stem tried to update itself but couldn't (${update.error}), so grab the new one from the release page and install it over this one.`
+              : `You're running ${update.appVersion}. This build can't update itself, so grab the new one from the release page and install it over this one.`}
         </p>
         <div className="mcp-approval-actions">
           <button className="push" onClick={onLater}>

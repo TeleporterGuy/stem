@@ -46,6 +46,7 @@ import { ActivityIndicator } from './ui/ActivityIndicator';
 import { TaskAlertModal } from './TaskAlertModal';
 import { ReleaseNotesModal } from './ReleaseNotesModal';
 import { UpdateModal } from './UpdateModal';
+import { updateOffer } from '../shared/updates';
 import { RecallRecommendation } from './RecallRecommendation';
 import { RECALL_DEFAULTS_RELEASE, recommendedRetrievalPatch } from '../shared/recall-recommended';
 import { DropOverlay } from './files/DropOverlay';
@@ -1680,9 +1681,8 @@ export default function App() {
       {update &&
         onboardingCompleted &&
         !releaseNotes &&
-        update.available !== null &&
         update.available !== updatePromptedFor &&
-        (update.state === 'ready' || (update.mode === 'manual' && !!update.available)) && (
+        updateOffer(update) !== null && (
           <UpdateModal
             update={update}
             onInstall={() => {
@@ -1694,19 +1694,22 @@ export default function App() {
         )}
       {update &&
         !updateDismissed &&
-        (update.state === 'ready' || (update.mode === 'manual' && !!update.available)) && (
+        updateOffer(update) !== null && (
           // Good news, said once: the update is either sitting downloaded (the
-          // AppImage) or sitting on a web page (everywhere else). "Later" is a
-          // real answer — a ready build installs itself on the next quit anyway,
-          // and the row in Settings → App keeps the offer open.
+          // AppImage) or sitting on a web page (everywhere else, and an AppImage
+          // whose download failed). "Later" is a real answer — a ready build
+          // installs itself on the next quit anyway, and the row in Settings →
+          // App keeps the offer open.
           <div className="update-banner" role="status">
             <span className="update-banner-msg">
-              {update.state === 'ready'
+              {updateOffer(update) === 'restart'
                 ? `Stem ${update.available} is ready — it installs when you restart.`
-                : `Stem ${update.available} is out. Yours keeps working; update when it suits you.`}
+                : update.state === 'error'
+                  ? `Stem ${update.available} is out, but the download didn't finish. Get it from the release page.`
+                  : `Stem ${update.available} is out. Yours keeps working; update when it suits you.`}
             </span>
             <button className="update-banner-btn" onClick={() => void window.stem.installUpdate()}>
-              {update.state === 'ready' ? 'Restart now' : 'Get the update'}
+              {updateOffer(update) === 'restart' ? 'Restart now' : 'Get the update'}
             </button>
             <button className="update-banner-later" onClick={() => setUpdateDismissed(true)}>
               Later
