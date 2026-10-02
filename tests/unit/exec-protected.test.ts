@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanCommandAgainstRoots, scanProtected, msysToWindows } from '../../src/server/exec/protected';
+import {
+  execReadRoots,
+  firstPathOutside,
+  msysToWindows,
+  readGrantedReadRoots,
+  scanCommandAgainstRoots,
+  scanProtected
+} from '../../src/server/exec/protected';
+import { execWorkspaceDir, workspaceRoot } from '../../src/server/workspace/paths';
 
 // The main-side fail-closed guard for read-only connected folders: any command
 // or cwd referencing a protected root is blocked; unreadable gate state blocks
@@ -165,5 +173,50 @@ describe('msysToWindows', () => {
     expect(msysToWindows('/c/Users/me/vault')).toBe('C:\\Users\\me\\vault');
     expect(msysToWindows('/b')).toBeNull();
     expect(msysToWindows('/usr/bin')).toBeNull();
+  });
+});
+
+// The readable roots a tier-1 read is confined to (H-01): the gate's `read`
+// list plus the two app-owned folders, failing closed to just those two.
+describe('readGrantedReadRoots / execReadRoots', () => {
+  it('reads the gate\'s read list, canonicalized', () => {
+    writeFileSync(rootsPath, JSON.stringify({ roots: [], read: [join(dir, 'granted')] }));
+    expect(readGrantedReadRoots(rootsPath, 'zsh')).toEqual([join(dir, 'granted')]);
+    expect(execReadRoots('zsh', rootsPath)).toEqual([
+      expect.stringContaining(workspaceRoot()),
+      expect.stringContaining(execWorkspaceDir()),
+      join(dir, 'granted')
+    ]);
+  });
+
+  it('a missing gate, or one from before the read list, grants nothing beyond the app folders', () => {
+    expect(readGrantedReadRoots(join(dir, 'nope.json'), 'zsh')).toEqual([]);
+    expect(readGrantedReadRoots(rootsPath, 'zsh')).toEqual([]); // the beforeEach gate has roots only
+    expect(execReadRoots('zsh', join(dir, 'nope.json'))).toHaveLength(2);
+  });
+
+  it('a corrupt gate throws for the direct reader and narrows execReadRoots to the app folders', () => {
+    writeFileSync(rootsPath, '{not json');
+    expect(() => readGrantedReadRoots(rootsPath, 'zsh')).toThrow();
+    expect(execReadRoots('zsh', rootsPath)).toHaveLength(2);
+    writeFileSync(rootsPath, JSON.stringify({ roots: [], read: 'everything' }));
+    expect(() => readGrantedReadRoots(rootsPath, 'zsh')).toThrow();
+  });
+});
+
+describe('firstPathOutside', () => {
+  it('names the offending argument, or the cwd, or nothing', () => {
+    expect(firstPathOutside(['-n', '/etc/hosts'], '/w', ['/w'], 'zsh')).toBe('/etc/hosts');
+    expect(firstPathOutside(['--file=/etc/hosts'], '/w', ['/w'], 'zsh')).toBe('--file=/etc/hosts');
+    expect(firstPathOutside(['a.txt'], '/elsewhere', ['/w'], 'zsh')).toBe('/elsewhere');
+    expect(firstPathOutside(['a.txt', 'sub/b.txt', '-la'], '/w', ['/w'], 'zsh')).toBeNull();
+  });
+
+  it('with an unknown cwd, checks absolute paths and refuses to guess at climbing ones', () => {
+    expect(firstPathOutside(['/Users/me/proj/a'], null, ['/Users/me/proj'], 'zsh')).toBeNull();
+    expect(firstPathOutside(['/Users/me/.ssh/x'], null, ['/Users/me/proj'], 'zsh')).toBe('/Users/me/.ssh/x');
+    expect(firstPathOutside(['../x'], null, ['/Users/me/proj'], 'zsh')).toBe('../x');
+    expect(firstPathOutside(['sub/x'], null, [], 'zsh')).toBeNull();
+    expect(firstPathOutside(['~/x'], null, [], 'zsh')).toBe('~/x');
   });
 });

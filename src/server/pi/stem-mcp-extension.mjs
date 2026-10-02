@@ -2739,7 +2739,8 @@ function registerExecTool(pi) {
       'access instead). Quote with double quotes there: cmd does not treat `\'` as a quote, so a ' +
       'single-quoted argument goes to the safety check instead of running. ' +
       'Use this to drive CLIs, git, build tools, or quick scripts — NOT to read files ' +
-      '(use the dedicated read/grep/find/ls tools). By default the command runs in a scratch folder ' +
+      '(use the dedicated read/grep/find/ls tools; a shell read aimed outside the folders those tools may ' +
+      'reach is screened like any other command). By default the command runs in a scratch folder ' +
       'belonging to THIS conversation: other chats cannot see it, and it is deleted when the user ' +
       'deletes this chat or once it has sat untouched for the period set in Settings. Treat it as ' +
       'working space, not storage — anything the user asked you to keep goes in the Files place, ' +

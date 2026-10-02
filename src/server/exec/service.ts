@@ -17,7 +17,7 @@ import { clampTimeout, execEnv, resolveLoginPath, runCommand } from './executor'
 import { gitBashPathEnv, resolveHostShellTarget, type HostShellTarget } from './git-bash';
 import { SafetyJudge } from './judge';
 import { classify, deviceShellLabel, drivesGui } from './policy';
-import { scanCommandAgainstRoots, scanProtected } from './protected';
+import { execReadRoots, scanCommandAgainstRoots, scanProtected } from './protected';
 import { execDeviceRouter, resolveExecTarget } from '../exec-device/router';
 import { clientFoldersForDevice } from '../workspace/connected-folders';
 import { listPersonas } from '../workspace/personas';
@@ -159,8 +159,11 @@ export class ExecService implements ExecBridge {
     // Yolo mode: everything runs — the protected-roots guard above is the only gate.
     if (settings.approvalMode === 'yolo') return this.run(command, cwd, req, host);
 
-    // Tier 1: static + user allowlist (every chained segment must clear it).
-    const cls = classify(command, settings, host.shell);
+    // Tier 1: static + user allowlist (every chained segment must clear it), and
+    // a read-only probe only inside the folders the file tools may read (H-01).
+    const cls = classify(command, settings, host.shell, {
+      confine: { cwd, roots: execReadRoots(host.shell) }
+    });
     if (cls.tier !== 'run') {
       // Tier 2 (assisted mode only): one-word LLM judge classification (intent-aware
       // when the turn's user message is known); errors/timeouts escalate. Manual mode
@@ -363,11 +366,19 @@ export class ExecService implements ExecBridge {
 
     if (settings.approvalMode === 'yolo') return dispatch();
 
+    // A learned reader on that machine still only auto-runs inside its own
+    // scratch (cwd unknown here) and the folders it connected read & write.
     const cls = classify(
       command,
       { allowlist: (settings.deviceAllowlists ?? {})[target.deviceId] ?? [] },
       host.platform,
-      { includeBuiltins: false }
+      {
+        includeBuiltins: false,
+        confine: {
+          cwd: cwd ?? null,
+          roots: clientFolders.filter((f) => f.mode === 'readwrite' && f.origin).map((f) => f.origin!.clientPath)
+        }
+      }
     );
     if (cls.tier !== 'run') {
       let judgeVerdict: 'unsafe' | 'unsure' | 'failed' | null = null;

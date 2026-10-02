@@ -16,7 +16,7 @@ import { ensureThreadScratch } from '../exec/scratch';
 import type { JudgeFn } from '../exec/judge';
 import { hostShellFromPlatform } from '../exec/host-shell';
 import { classify, deviceShellLabel } from '../exec/policy';
-import { scanCommandAgainstRoots, scanProtected } from '../exec/protected';
+import { execReadRoots, scanCommandAgainstRoots, scanProtected } from '../exec/protected';
 import { resolveHarnessTarget } from '../exec-device/router';
 import { clientFoldersForDevice } from '../workspace/connected-folders';
 import { previewFacts } from '../recall/inject';
@@ -540,14 +540,18 @@ export class HarnessService implements HarnessBridge {
 
       // Tier 1: the shared allowlist — the device's own zero-trust bucket for
       // device-hosted runs (exec/service.ts device posture).
+      // Reads auto-run only inside the readable roots (H-01): the server's file
+      // tool roots here, the device's read & write folders there.
       const cls = ctx.deviceId
         ? classify(
             command,
             { allowlist: (all.exec.deviceAllowlists ?? {})[ctx.deviceId] ?? [] },
             ctx.platform ?? hostShellFromPlatform(),
-            { includeBuiltins: false }
+            { includeBuiltins: false, confine: { cwd: ctx.cwd || null, roots: await this.deviceWriteRoots(ctx) } }
           )
-        : classify(command, { allowlist: all.exec.allowlist }, hostShellFromPlatform());
+        : classify(command, { allowlist: all.exec.allowlist }, hostShellFromPlatform(), {
+            confine: { cwd: ctx.cwd, roots: execReadRoots() }
+          });
       if (cls.tier === 'run') return allowVia('allowlist', command);
 
       // Tier 2: the LLM judge, before any card exists — the card never flashes.
@@ -581,6 +585,13 @@ export class HarnessService implements HarnessBridge {
   }
 
   /** The guard reason when the command references a read-only folder, else undefined. */
+  /** The folders a device connected read & write — where its own reads may auto-run. */
+  private async deviceWriteRoots(ctx: RunContext): Promise<string[]> {
+    if (!ctx.deviceId) return [];
+    const folders = await (this.deps.clientFolders ?? clientFoldersForDevice)(ctx.deviceId);
+    return folders.filter((f) => f.mode === 'readwrite' && f.origin).map((f) => f.origin!.clientPath);
+  }
+
   private async protectedGuardReason(ctx: RunContext, command: string): Promise<string | undefined> {
     if (!ctx.deviceId) {
       const scan = scanProtected(command, ctx.cwd);

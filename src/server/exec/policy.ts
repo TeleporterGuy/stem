@@ -1,6 +1,7 @@
 import type { ExecSettings, HostShell } from '../../shared/types';
 import { unixShell } from './executor';
 import { hostShellFromPlatform, isCmdShell } from './host-shell';
+import { firstPathOutside } from './protected';
 
 export { hostShellFromPlatform };
 
@@ -76,21 +77,44 @@ function agentBrowserFlagsSafe(tokens: string[]): boolean {
   return tokens.every((t) => !t.startsWith('-') || AGENT_BROWSER_SAFE_FLAGS.has(t));
 }
 
-/** POSIX (zsh) read-only probes. */
-const POSIX_ALLOWLIST = [
-  'ls',
-  'cat',
-  'pwd',
-  'head',
-  'tail',
-  'wc',
-  'grep',
-  'find',
-  'which',
-  'file',
-  'stat',
-  'date'
-];
+/**
+ * POSIX (zsh) read-only probes. `find` is deliberately NOT here (H-01): its
+ * -exec/-ok/-delete family turns a listing into arbitrary execution, and the
+ * assistant has a dedicated find tool — so it is judged like any other command,
+ * and screened by PRIVILEGED_FLAGS even when a user learns it.
+ */
+const POSIX_ALLOWLIST = ['ls', 'cat', 'pwd', 'head', 'tail', 'wc', 'grep', 'which', 'file', 'stat', 'date'];
+
+/**
+ * Flags that turn a read-only probe into execution or a write, whoever
+ * allowlisted the command word: `find . -exec sh -c id ';'` is a shell, not a
+ * listing, and `rg --pre` runs a program per file. Checked on every segment, so
+ * a learned `find` does not reopen the hole. Long flags match exactly or with
+ * `=value`; a short flag also matches with its value attached (`-snow`).
+ */
+const PRIVILEGED_FLAGS: Record<string, string[]> = {
+  find: ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls'],
+  rg: ['--pre', '--pre-glob'],
+  date: ['-s', '--set'],
+  git: ['--output']
+};
+
+function carriesPrivilegedFlag(tokens: string[]): boolean {
+  const flags = PRIVILEGED_FLAGS[tokens[0] ?? ''];
+  if (!flags) return false;
+  return tokens.some((t) =>
+    flags.some((f) => t === f || t.startsWith(`${f}=`) || (f.length === 2 && t.startsWith(f)))
+  );
+}
+
+/**
+ * Probes whose only justification for tier 1 is "it just reads": they auto-run
+ * only while every path they name stays inside the folders the dedicated file
+ * tools may read (H-01). `cat /run/secrets/x` or `ls ~/.ssh` is the same
+ * disclosure whichever tool makes it, and the tool text asking the model to
+ * prefer the file tools is advice, not enforcement.
+ */
+const PATH_READERS = new Set(['cat', 'ls', 'head', 'tail', 'wc', 'grep', 'rg', 'file', 'stat', 'find', 'type', 'dir']);
 
 /**
  * cmd.exe equivalents. Deliberately NOT merged into one cross-platform set: the
@@ -262,6 +286,22 @@ export interface Classification {
    */
   prefixes: string[];
   hasShellMeta: boolean;
+  /**
+   * Set when an otherwise tier-1 read was judged for naming a path (or cwd)
+   * outside the readable roots — the argument that did it, for the card.
+   */
+  outside?: string;
+}
+
+/**
+ * Where a tier-1 read may point. `cwd` null = unknown folder (a device's own
+ * scratch): absolute paths are still checked against `roots`, relative ones
+ * pass unless they climb. The default — no roots, no cwd — is the zero-trust
+ * posture: any absolute, `~` or climbing path sends the read to the judge.
+ */
+export interface ReadConfinement {
+  cwd: string | null;
+  roots: string[];
 }
 
 /**
@@ -276,7 +316,7 @@ export function classify(
   command: string,
   settings: Pick<ExecSettings, 'allowlist'>,
   shell: ShellArg = hostShellFromPlatform(),
-  opts: { includeBuiltins?: boolean } = {}
+  opts: { includeBuiltins?: boolean; confine?: ReadConfinement } = {}
 ): Classification {
   const host = toHostShell(shell);
   const parsed = parseCommand(command, host);
@@ -293,10 +333,22 @@ export function classify(
       // Even an allowlisted (or user-learned) agent-browser action falls to the
       // judge when a privileged flag rides along — --executable-path next to
       // `get text` is arbitrary code, not a read (SEC-003).
-      (seg.tokens[0] === 'agent-browser' && !agentBrowserFlagsSafe(seg.tokens))
+      (seg.tokens[0] === 'agent-browser' && !agentBrowserFlagsSafe(seg.tokens)) ||
+      // Likewise a read-only probe carrying its execution flag (H-01).
+      carriesPrivilegedFlag(seg.tokens)
   );
   const prefixes = [...new Set(uncovered.map((seg) => seg.prefix).filter(Boolean))];
-  return { tier: uncovered.length ? 'judge' : 'run', prefixes, hasShellMeta: false };
+  if (uncovered.length) return { tier: 'judge', prefixes, hasShellMeta: false };
+  // Every segment is allowlisted. A reader still only auto-runs inside the
+  // readable roots; outside them it is judged, and no prefix is offered —
+  // learning `cat` would not change the answer.
+  const confine = opts.confine ?? { cwd: null, roots: [] };
+  for (const seg of parsed.segments) {
+    if (!PATH_READERS.has(seg.tokens[0] ?? '')) continue;
+    const outside = firstPathOutside(seg.tokens.slice(1), confine.cwd, confine.roots, host);
+    if (outside !== null) return { tier: 'judge', prefixes: [], hasShellMeta: false, outside };
+  }
+  return { tier: 'run', prefixes, hasShellMeta: false };
 }
 
 /**

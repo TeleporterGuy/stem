@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { win32 as pathWin32, posix as pathPosix } from 'node:path';
 import type { HostShell } from '../../shared/types';
-import { protectedRootsPath } from '../workspace/paths';
+import { execWorkspaceDir, protectedRootsPath, workspaceRoot } from '../workspace/paths';
 import { hostShellFromPlatform } from './host-shell';
 
 // Main-side twin of the bridge extension's protected-roots gate (which cannot be
@@ -57,7 +57,24 @@ function canonicalish(p: string, h: Host): string {
   try {
     return realpathSync(resolved);
   } catch {
-    return resolved;
+    // Not on disk (yet, or not on this machine): canonicalize the nearest
+    // existing ancestor and append the missing tail, so a symlinked parent —
+    // `scratch/link -> /run/secrets` with `link/key` never stat'ed — still
+    // resolves to where it points rather than to where it was written.
+  }
+  const P = h.win ? pathWin32 : pathPosix;
+  let head = resolved;
+  const tail: string[] = [];
+  for (;;) {
+    const parent = P.dirname(head);
+    if (parent === head) return resolved;
+    tail.unshift(P.basename(head));
+    head = parent;
+    try {
+      return P.join(realpathSync(head), ...tail);
+    } catch {
+      // keep climbing
+    }
   }
 }
 
@@ -98,6 +115,147 @@ export function readProtectedRoots(
   const parsed = JSON.parse(raw) as { roots?: unknown };
   if (!Array.isArray(parsed.roots)) throw new Error('protected-roots.json has no roots array');
   return parsed.roots.filter((r): r is string => typeof r === 'string' && !!r).map((r) => canonicalish(r, h));
+}
+
+/**
+ * The `read` list of the same gate: every folder the built-in read tools may
+ * reach beyond pi's cwd (connected folders, mirrors, the exec scratch root).
+ * Missing file = nothing granted; a gate written before the list existed = the
+ * same; a corrupt file throws — the caller must fail closed.
+ */
+export function readGrantedReadRoots(
+  path: string = protectedRootsPath(),
+  shell: HostShell = hostShellFromPlatform()
+): string[] {
+  const h = host(shell);
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return [];
+  }
+  const parsed = JSON.parse(raw) as { read?: unknown };
+  if (parsed.read === undefined) return [];
+  if (!Array.isArray(parsed.read)) throw new Error('protected-roots.json has a malformed read list');
+  return parsed.read.filter((r): r is string => typeof r === 'string' && !!r).map((r) => canonicalish(r, h));
+}
+
+/**
+ * Where a tier-1 READ (cat/ls/grep/… auto-run without a card) may point: the
+ * same folders the dedicated file tools are confined to — pi's cwd, the exec
+ * scratch root and the granted read roots. A corrupt gate yields only the two
+ * app-owned folders, so an unreadable grant list narrows tier 1 rather than
+ * widening it (the protected-roots scan ahead of this blocks outright anyway).
+ */
+export function execReadRoots(
+  shell: HostShell = hostShellFromPlatform(),
+  gatePath: string = protectedRootsPath()
+): string[] {
+  const h = host(shell);
+  const own = [canonicalish(workspaceRoot(), h), canonicalish(execWorkspaceDir(), h)];
+  try {
+    return [...own, ...readGrantedReadRoots(gatePath, shell)];
+  } catch {
+    return own;
+  }
+}
+
+/** Sentinel for an argument that names a path nobody here can resolve (`~other`, `%UNSET%`). */
+const UNRESOLVABLE = Symbol('unresolvable');
+
+/**
+ * A command argument that names a path, as the shell will see it. Plain words
+ * and flags are null; a flag carrying a path (`--file=/etc/x`, `-f/etc/x`) is
+ * the path. Shell-specific like the token scan above: under cmd a leading `/`
+ * is a flag, `\` is the separator and `%VAR%` expands before parsing.
+ */
+function argPath(token: string, shell: HostShell, h: Host): string | null | typeof UNRESOLVABLE {
+  if (!token) return null;
+  if (h.win && shell === 'cmd') {
+    let t = token;
+    if (WINDOWS_ENV_RE.test(t)) {
+      WINDOWS_ENV_RE.lastIndex = 0;
+      let unknown = false;
+      t = t.replace(WINDOWS_ENV_RE, (whole, name: string) => {
+        const v = process.env[name];
+        if (v === undefined) unknown = true;
+        return v ?? whole;
+      });
+      if (unknown) return UNRESOLVABLE;
+    }
+    WINDOWS_ENV_RE.lastIndex = 0;
+    if (/^~[\\/]?/.test(t)) return t;
+    if (/^(?:[A-Za-z]:[\\/]|\\\\)/.test(t) || t.includes('\\') || t.includes('..')) return t;
+    return null;
+  }
+  // POSIX tokens (zsh, Git Bash). A flag's value rides after `=` or, for short
+  // flags, right behind the letter — only the part that looks like a path counts.
+  let t = token;
+  if (t.startsWith('-')) {
+    const eq = t.indexOf('=');
+    if (eq >= 0) t = t.slice(eq + 1);
+    else {
+      const i = t.search(/[/~]/);
+      if (i < 0) return null;
+      t = t.slice(i);
+    }
+  }
+  if (t.startsWith('~') || t.includes('/') || t === '..') return t;
+  return null;
+}
+
+/** Expand a leading `~`; `~other` is somebody else's home — unresolvable, so outside. */
+function expandHome(p: string, h: Host): string | typeof UNRESOLVABLE {
+  if (!p.startsWith('~')) return p;
+  const home = process.env[h.homeVar] ?? '';
+  if (!home) return UNRESOLVABLE;
+  if (p === '~') return home;
+  if (p[1] === '/' || (h.win && p[1] === '\\')) return home + p.slice(1).replace(/\//g, h.sep);
+  return UNRESOLVABLE;
+}
+
+/**
+ * The first argument of a parsed command that names a path outside every root —
+ * or the cwd itself when that is what lies outside. null = everything stays
+ * inside. `cwd` null means the folder is unknown (a device's own scratch): then
+ * only absolute paths can be checked, and a relative one that climbs (`..`) is
+ * taken as outside. Relative paths otherwise resolve against the cwd through
+ * symlinks, so a link planted in scratch cannot point a tier-1 read elsewhere.
+ */
+export function firstPathOutside(
+  tokens: string[],
+  cwd: string | null,
+  rawRoots: string[],
+  shell: HostShell
+): string | null {
+  const h = host(shell);
+  const roots = rawRoots.map((r) => canonicalish(r, h));
+  const inside = (p: string): boolean => {
+    const canonical = canonicalish(p, h);
+    return roots.some((root) => isInside(canonical, root, h));
+  };
+  if (cwd !== null && !inside(cwd)) return cwd;
+  for (const token of tokens) {
+    const arg = argPath(token, shell, h);
+    if (arg === null) continue;
+    if (arg === UNRESOLVABLE) return token;
+    let p: string | typeof UNRESOLVABLE = arg;
+    if (shell === 'git-bash' && !p.startsWith('~')) p = msysToWindows(p) ?? p;
+    p = expandHome(p, h);
+    if (p === UNRESOLVABLE) return token;
+    const absolute = h.win ? pathWin32.isAbsolute(p) : pathPosix.isAbsolute(p);
+    if (cwd === null) {
+      if (!absolute) {
+        if (p.split(/[\\/]/).includes('..')) return token;
+        continue;
+      }
+      if (!inside(p)) return token;
+      continue;
+    }
+    const resolved = h.win ? pathWin32.resolve(cwd, p) : pathPosix.resolve(cwd, p);
+    if (!inside(resolved)) return token;
+  }
+  return null;
 }
 
 /** Every path-looking token in a command, with ~ and (on Windows) %VAR% expanded. */

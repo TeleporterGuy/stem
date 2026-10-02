@@ -219,6 +219,79 @@ describe('ExecService judge', () => {
   });
 });
 
+// H-01: the tier-1 readers are confined to the readable roots at the service
+// level too — a `cat` aimed outside them reaches the judge, one inside runs.
+describe('ExecService read confinement (H-01)', () => {
+  let approvals: ExecApprovalRequest[];
+  let judged: string[];
+  let settings: AppSettings;
+  let service: ExecService;
+
+  beforeEach(() => {
+    rmSync(execWorkspaceDir(), { recursive: true, force: true });
+    settings = baseSettings();
+    approvals = [];
+    judged = [];
+    service = new ExecService({
+      runtime: () =>
+        ({
+          listModels: async () => [model('anthropic/claude-opus-4', 'anthropic', true)],
+          complete: async (prompt: string) => {
+            judged.push(prompt);
+            return 'unsafe';
+          }
+        }) as unknown as ChatBackend,
+      readSettings: async () => settings,
+      updateExecSettings: async () => settings,
+      emitApprovalRequest: (request) => {
+        approvals.push(request);
+        queueMicrotask(() => service.resolveApproval(request.id, 'deny'));
+      },
+      emitApprovalResolved: () => undefined
+    });
+  });
+
+  afterEach(() => {
+    rmSync(execWorkspaceDir(), { recursive: true, force: true });
+  });
+
+  it('a read outside the roots goes to the judge and then the card, never straight to the shell', async () => {
+    const result = await service.handleExecRequest({
+      command: 'cat /etc/hosts',
+      threadId: 'chat-h01',
+      isScheduled: false,
+      currentModel: 'anthropic/claude-opus-4'
+    });
+    expect(result.ok).toBe(false);
+    expect(judged).toHaveLength(1);
+    expect(approvals).toHaveLength(1);
+  });
+
+  it("find -exec is judged even though find's output would be harmless", async () => {
+    settings.exec.allowlist = ['find'];
+    await service.handleExecRequest({
+      command: "find . -maxdepth 0 -exec sh -c id ';'",
+      threadId: 'chat-h01',
+      isScheduled: false,
+      currentModel: 'anthropic/claude-opus-4'
+    });
+    expect(judged).toHaveLength(1);
+  });
+
+  it('a read inside the chat\'s scratch runs without judge or card', async () => {
+    mkdirSync(threadWorkspaceDir('chat-h01'), { recursive: true });
+    const result = await service.handleExecRequest({
+      command: 'ls -la',
+      threadId: 'chat-h01',
+      isScheduled: false,
+      currentModel: 'anthropic/claude-opus-4'
+    });
+    expect(result.ok).toBe(true);
+    expect(judged).toHaveLength(0);
+    expect(approvals).toHaveLength(0);
+  });
+});
+
 // Where a command actually runs. The default is no longer one folder shared by
 // every chat — it is the chat's own scratch folder (see server/exec/scratch.ts),
 // which is what makes scratch attributable, sizable and deletable per chat.

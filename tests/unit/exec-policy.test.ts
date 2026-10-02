@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildJudgePrompt,
   classify,
@@ -221,11 +224,12 @@ describe('classify', () => {
   });
 
   it('keeps Windows paths on tier 1 (\\ is a separator to cmd, not an escape)', () => {
-    // The protected-roots scan is what gates paths on Windows; making `\` meta
+    // The root confinement is what gates paths on Windows; making `\` meta
     // here would push every `type C:\…` onto the judge and stop the allowlist
     // from doing anything useful.
-    expect(classify('type C:\\Users\\me\\notes.txt', settings, 'cmd').tier).toBe('run');
-    expect(classify('dir "C:\\Program Files"', settings, 'cmd').tier).toBe('run');
+    const me = { cwd: 'C:\\Users\\me', roots: ['C:\\Users\\me', 'C:\\Program Files'] };
+    expect(classify('type C:\\Users\\me\\notes.txt', settings, 'cmd', { confine: me }).tier).toBe('run');
+    expect(classify('dir "C:\\Program Files"', settings, 'cmd', { confine: me }).tier).toBe('run');
     // Still meta on zsh, where it really is an escape.
     expect(classify('cat a\\ b', settings, 'zsh').tier).toBe('judge');
   });
@@ -255,6 +259,137 @@ describe('classify', () => {
 
   it('judges an empty command', () => {
     expect(classify('', settings, 'zsh').tier).toBe('judge');
+  });
+});
+
+// H-01 (security review 2026-10-02): the tier-1 "read-only probes" could run a
+// shell (`find -exec`) and read any file on the host (`cat /run/secrets/…`)
+// without a card. Two closures: execution flags are screened whoever
+// allowlisted the word, and a reader auto-runs only inside the readable roots.
+describe('classify: read-only probes stay read-only (H-01)', () => {
+  const none = { allowlist: [] };
+  const learnedFind = { allowlist: ['find'] };
+
+  it('find is no longer a built-in tier-1 word', () => {
+    expect(classify('find . -name "*.md"', none, 'zsh').tier).toBe('judge');
+  });
+
+  it('judges find with an execution or write flag even when the user learned find', () => {
+    const inside = { cwd: '/w/scratch', roots: ['/w'] };
+    expect(classify('find . -name "*.md"', learnedFind, 'zsh', { confine: inside }).tier).toBe('run');
+    for (const cmd of [
+      "find . -maxdepth 0 -exec sh -c id ';'",
+      "find . -execdir sh -c id ';'",
+      "find . -name x -ok sh ';'",
+      'find . -name x -okdir rm {} +',
+      'find . -name "*.tmp" -delete',
+      'find . -fprint out.txt',
+      'find . -fprintf log.txt "%p"',
+      'find . -fls listing'
+    ]) {
+      expect(classify(cmd, learnedFind, 'zsh', { confine: inside }).tier, cmd).toBe('judge');
+    }
+  });
+
+  it('judges the other probes that can run a program or write (rg --pre, date -s, git --output)', () => {
+    const inside = { cwd: '/w/scratch', roots: ['/w'] };
+    expect(classify('rg needle', none, 'zsh', { confine: inside }).tier).toBe('run');
+    expect(classify('rg --pre ./decode needle', none, 'zsh', { confine: inside }).tier).toBe('judge');
+    expect(classify('rg --pre=./decode needle', none, 'zsh', { confine: inside }).tier).toBe('judge');
+    expect(classify('date', none, 'zsh', { confine: inside }).tier).toBe('run');
+    expect(classify('date -s "2026-01-01"', none, 'zsh', { confine: inside }).tier).toBe('judge');
+    expect(classify('date --set=2026-01-01', none, 'zsh', { confine: inside }).tier).toBe('judge');
+    expect(classify('git log --output=/tmp/x', none, 'zsh', { confine: inside }).tier).toBe('judge');
+    expect(classify('git log -3', none, 'zsh', { confine: inside }).tier).toBe('run');
+  });
+
+  it('without known roots, a reader naming an absolute, ~ or climbing path is judged', () => {
+    for (const cmd of [
+      'cat /run/secrets/stem_key',
+      'cat ~/.ssh/id_ed25519',
+      'cat ~',
+      'ls /',
+      'ls ~other/',
+      'head -c 100 /etc/passwd',
+      'tail -n 5 /var/log/syslog',
+      'grep -r KEY /etc',
+      'grep -f/etc/passwd notes.txt',
+      'grep --file=/etc/passwd notes.txt',
+      'cat ../../etc/passwd',
+      'wc -l ..',
+      'stat /',
+      'file /bin/sh'
+    ]) {
+      const cls = classify(cmd, none, 'zsh');
+      expect(cls.tier, cmd).toBe('judge');
+      // Learning `cat` would not change the answer, so no prefix is offered.
+      expect(cls.prefixes, cmd).toEqual([]);
+      expect(cls.outside, cmd).toBeTruthy();
+    }
+  });
+
+  it('relative reads with no roots still auto-run (the folder is a sandbox the device picked)', () => {
+    expect(classify('cat notes.txt', none, 'zsh').tier).toBe('run');
+    expect(classify('ls -la', none, 'zsh').tier).toBe('run');
+    expect(classify('grep -n foo/bar src/a.ts', none, 'zsh').tier).toBe('run');
+    expect(classify('grep foo x.txt | head -5', none, 'zsh').tier).toBe('run');
+  });
+
+  it('with roots, a reader auto-runs inside them and is judged outside them', () => {
+    const inside = { cwd: '/w/scratch/chat-1', roots: ['/w/scratch', '/granted/project'] };
+    expect(classify('cat /w/scratch/chat-1/out.txt', none, 'zsh', { confine: inside }).tier).toBe('run');
+    expect(classify('ls /granted/project/src', none, 'zsh', { confine: inside }).tier).toBe('run');
+    expect(classify('cat ../chat-2/out.txt', none, 'zsh', { confine: inside }).tier).toBe('run');
+    expect(classify('cat /granted/project-evil/x', none, 'zsh', { confine: inside }).tier).toBe('judge');
+    expect(classify('cat ../../../run/secrets/stem_key', none, 'zsh', { confine: inside }).tier).toBe('judge');
+    expect(classify('ls /', none, 'zsh', { confine: inside }).tier).toBe('judge');
+    expect(classify('ls && cat /etc/hosts', none, 'zsh', { confine: inside }).tier).toBe('judge');
+  });
+
+  it('a cwd outside the roots judges even an argument-less reader', () => {
+    const elsewhere = { cwd: '/run/secrets', roots: ['/w/scratch'] };
+    expect(classify('ls', none, 'zsh', { confine: elsewhere }).tier).toBe('judge');
+    expect(classify('cat stem_key', none, 'zsh', { confine: elsewhere }).tier).toBe('judge');
+    // Non-readers are not the concern of this gate.
+    expect(classify('pwd', none, 'zsh', { confine: elsewhere }).tier).toBe('run');
+    expect(classify('git status', none, 'zsh', { confine: elsewhere }).tier).toBe('run');
+  });
+
+  it('confinement applies to a user-learned reader too', () => {
+    expect(classify('cat /etc/passwd', { allowlist: ['cat'] }, 'zsh').tier).toBe('judge');
+    expect(classify('cat notes.txt', { allowlist: ['cat'] }, 'zsh').tier).toBe('run');
+  });
+
+  it('follows a symlink planted inside the sandbox', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'stem-exec-h01-')));
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'stem-exec-h01-out-')));
+    try {
+      symlinkSync(outside, join(dir, 'link'));
+      const confine = { cwd: dir, roots: [dir] };
+      expect(classify('cat link/secret', none, 'zsh', { confine }).tier).toBe('judge');
+      expect(classify('cat real.txt', none, 'zsh', { confine }).tier).toBe('run');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('cmd.exe: drive, UNC, %VAR% and climbing paths are checked; /flags are not paths', () => {
+    const me = { cwd: 'C:\\Users\\me\\scratch', roots: ['C:\\Users\\me\\scratch'] };
+    expect(classify('dir /b', none, 'cmd', { confine: me }).tier).toBe('run');
+    expect(classify('type notes.txt', none, 'cmd', { confine: me }).tier).toBe('run');
+    expect(classify('type C:\\Windows\\win.ini', none, 'cmd', { confine: me }).tier).toBe('judge');
+    expect(classify('type c:\\users\\me\\scratch\\a.txt', none, 'cmd', { confine: me }).tier).toBe('run');
+    expect(classify('dir \\\\server\\share', none, 'cmd', { confine: me }).tier).toBe('judge');
+    expect(classify('dir ..\\..\\.ssh', none, 'cmd', { confine: me }).tier).toBe('judge');
+    expect(classify('type %STEM_UNSET_VAR_FOR_TEST%\\x', none, 'cmd', { confine: me }).tier).toBe('judge');
+  });
+
+  it('Git Bash: MSYS paths resolve to Windows roots', () => {
+    const me = { cwd: 'C:\\Users\\me\\scratch', roots: ['C:\\Users\\me\\scratch'] };
+    expect(classify('cat /c/Users/me/scratch/a.txt', none, 'git-bash', { confine: me }).tier).toBe('run');
+    expect(classify('cat /c/Users/me/.ssh/id_rsa', none, 'git-bash', { confine: me }).tier).toBe('judge');
+    expect(classify('cat /etc/passwd', none, 'git-bash', { confine: me }).tier).toBe('judge');
   });
 });
 
