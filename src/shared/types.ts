@@ -3581,10 +3581,11 @@ export interface ThemeState {
 /**
  * How a new release reaches this install.
  *
- * `auto` — the AppImage: Stem downloads the new build itself and swaps it in on
- * restart. `manual` — the mac and deb builds, which can only be told: Stem
- * points at the release page and the user installs the way they installed the
- * first time. `none` — a dev run or a test, where there is nothing to update.
+ * `auto` — the AppImage, and a mac build in an Applications folder: Stem
+ * downloads the new build itself and swaps it in on restart. `manual` — the deb,
+ * and a mac build run from the dmg or translocated out of Downloads, which can
+ * only be told: Stem points at the release page and the user installs the way
+ * they installed the first time. `none` — a dev run or a test, where there is nothing to update.
  */
 export type UpdateMode = 'auto' | 'manual' | 'none';
 

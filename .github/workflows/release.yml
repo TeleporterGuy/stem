@@ -124,15 +124,23 @@ jobs:
           spctl --assess --type execute --verbose=4 "$app"
       - name: Notarize and verify final DMG
         run: bash scripts/notarize-mac-dmg.sh release/*-arm64.dmg
+      # Stapling changed the DMG bytes after electron-builder wrote the feed;
+      # re-hash so latest-mac.yml describes the files actually published.
+      - name: Refresh the update feed
+        run: node scripts/refresh-mac-update-feed.mjs release/latest-mac.yml
       - uses: actions/upload-artifact@v4
         with:
           name: mac
           if-no-files-found: error
-          # Stapling changes the DMG bytes. Do not publish electron-builder's
-          # earlier DMG blockmap/update metadata; macOS uses manual downloads.
+          # latest-mac.yml + the zip (and its blockmap, for differential
+          # downloads) are what a mac install in /Applications updates from
+          # (src/desktop/updates.ts). The zip is untouched by stapling, so its
+          # blockmap stays valid; the DMG's does not and is left out.
           path: |
             release/*-arm64.dmg
             release/*-arm64-mac.zip
+            release/*-arm64-mac.zip.blockmap
+            release/latest-mac.yml
       - name: Remove temporary notarization key
         if: always()
         run: rm -f "$RUNNER_TEMP/AuthKey.p8"

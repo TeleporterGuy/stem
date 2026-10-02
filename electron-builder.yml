@@ -8,13 +8,15 @@ directories:
 
 # Where updates come from. At build time this block does two things: it embeds
 # resources/app-update.yml into the packaged app (how electron-updater knows
-# where to look) and writes latest-linux*.yml beside the artifacts (what it finds
-# there). The build itself never uploads — the dist scripts say `--publish never`
-# and the release workflow attaches these files to the GitHub Release instead.
-# Only the AppImage self-updates; macOS stays notify-and-download for now (the
-# app is signed since 2026-09, so Squirrel updates are possible later) and a deb
-# belongs to dpkg, so both get a notify-and-download-yourself check against the
-# same releases page (src/desktop/updates.ts).
+# where to look) and writes latest-linux*.yml / latest-mac.yml beside the
+# artifacts (what it finds there). The build itself never uploads — the dist
+# scripts say `--publish never` and the release workflow attaches these files to
+# the GitHub Release instead. The AppImage self-updates, and so does a mac build
+# installed in an Applications folder (Squirrel.Mac, from the zip — the app is
+# signed since 2026-09, which Squirrel requires). A deb belongs to dpkg, and a
+# mac build run off the dmg has nowhere writable to swap into, so both get a
+# notify-and-download-yourself check against the same releases page
+# (src/desktop/updates.ts).
 publish:
   provider: github
   owner: join3r

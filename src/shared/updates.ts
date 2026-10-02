@@ -5,9 +5,10 @@ import type { UpdateStatus } from './types';
  * answer the dialog, the banner under the title bar and Settings → App all
  * agree on:
  *
- *   restart — the AppImage has the build downloaded; a restart finishes it.
- *   page    — the build sits on the release page: every mac and deb install,
- *             and an AppImage whose download or swap failed. The failure used
+ *   restart — an auto install (AppImage, mac in Applications) has the build
+ *             downloaded; a restart finishes it.
+ *   page    — the build sits on the release page: every manual install (deb,
+ *             mac off the dmg), and an auto one whose download or swap failed. The failure used
  *             to show only as a row in Settings, which is a build that announces
  *             itself to nobody; it is still a newer Stem, so it is offered the
  *             way a deb's is.

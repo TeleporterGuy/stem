@@ -227,7 +227,8 @@ function updateLine(u: UpdateStatus): string {
       return `Stem ${u.available} is downloaded — it installs when you restart`;
     case 'error':
       // A newer build is known but the download or the swap failed (the
-      // AppImage sits somewhere this user can't write, most often): the page
+      // AppImage sits somewhere this user can't write, most often, or
+      // Squirrel.Mac rejected the bundle): the page
       // is the way out, and the button beside this line opens it.
       if (u.available) return `Stem ${u.available} couldn't be installed automatically (${u.error}) — get it from the release page`;
       return `The last check didn't get through — it'll try again later`;

@@ -4,7 +4,7 @@
 // check that answers without reaching for the network.
 
 import { describe, expect, it } from 'vitest';
-import { createUpdates, parseLatestRelease } from '../../src/desktop/updates';
+import { createUpdates, parseLatestRelease, updateModeFor, type UpdateModeFacts } from '../../src/desktop/updates';
 
 describe('parseLatestRelease', () => {
   it('reads the tag out of the redirect, with or without the v', () => {
@@ -30,6 +30,36 @@ describe('parseLatestRelease', () => {
     expect(parseLatestRelease('https://github.com/join3r/stem/releases')).toBeNull();
     expect(parseLatestRelease('https://github.com/join3r/stem/releases/tag/nightly')).toBeNull();
     expect(parseLatestRelease('https://github.com/join3r/stem/releases/tag/v1.0.0/extra')).toBeNull();
+  });
+});
+
+describe('updateModeFor', () => {
+  const packaged: UpdateModeFacts = {
+    packaged: true,
+    e2e: false,
+    platform: 'darwin',
+    appImage: undefined,
+    inApplicationsFolder: true
+  };
+
+  it('self-updates a mac build installed in an Applications folder', () => {
+    expect(updateModeFor(packaged)).toBe('auto');
+  });
+
+  it('only points a mac build at the page when Squirrel has nowhere to write', () => {
+    // Straight off the mounted dmg, or translocated out of Downloads.
+    expect(updateModeFor({ ...packaged, inApplicationsFolder: false })).toBe('manual');
+  });
+
+  it('self-updates an AppImage and leaves a deb to dpkg', () => {
+    const linux = { ...packaged, platform: 'linux' as const, inApplicationsFolder: false };
+    expect(updateModeFor({ ...linux, appImage: '/home/u/Stem.AppImage' })).toBe('auto');
+    expect(updateModeFor(linux)).toBe('manual');
+  });
+
+  it('never updates a dev run or a test', () => {
+    expect(updateModeFor({ ...packaged, packaged: false })).toBe('none');
+    expect(updateModeFor({ ...packaged, e2e: true })).toBe('none');
   });
 });
 
