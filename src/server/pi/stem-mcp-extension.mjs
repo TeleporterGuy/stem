@@ -1323,8 +1323,15 @@ export function capToolContent(content) {
   return out;
 }
 
-/** Register the router meta-tools over the connected (non-eager) clients map. */
-function registerRouterTools(pi, clients, protectedRoots) {
+/**
+ * Register the router meta-tools over the connected (non-eager) clients map.
+ * `turnContext` (the per-turn gate) narrows the map to the persona's MCP
+ * allowlist on every call: hidden servers are absent from discovery and
+ * refused by invoke_tool — the backstop for a name the model remembers from
+ * another persona's turn or simply invents.
+ */
+function registerRouterTools(pi, clients, protectedRoots, turnContext) {
+  const visible = () => visibleMcpClients(clients, turnContext ? turnContext() : null);
   pi.registerTool({
     name: 'find_tools',
     label: 'Find tools',
@@ -1348,10 +1355,11 @@ function registerRouterTools(pi, clients, protectedRoots) {
       if (!String(options.query ?? '').trim() && !String(options.server ?? '').trim()) {
         return errText('Provide a task query, or a server name with an empty query to browse.');
       }
-      if (options.server && !clients.has(String(options.server).trim())) {
+      const seen = visible();
+      if (options.server && !seen.has(String(options.server).trim())) {
         return errText('No such available integration. Check the integration list; names are exact.');
       }
-      const found = searchMcpTools(clients, options);
+      const found = searchMcpTools(seen, options);
       // Fetch only the chosen schemas, in parallel. Device-hosted schemas stay
       // on their computer until this point; server-hosted ones are already here.
       const candidates = await Promise.all(found.matches.map(async ({ server, tool, entry }) => {
@@ -1419,6 +1427,9 @@ function registerRouterTools(pi, clients, protectedRoots) {
       const toolName = String((params && params.tool) || '');
       const entry = clients.get(server);
       if (!entry) return errText(`No connected MCP server named "${server}". See the available integrations.`);
+      // Checked after the existence test on purpose: the refusal names the
+      // persona's setup, so it must only ever stand for a server that exists.
+      if (!mcpServerAllowed(server, turnContext ? turnContext() : null)) return errText(MCP_SERVER_HIDDEN_REFUSAL);
       const def = entry.tools.find((t) => t.name === toolName);
       if (!def) return errText(`Server "${server}" has no tool "${toolName}".`);
       // Preserve the per-call trusted gate (parity with the eager path): untrusted
@@ -1455,7 +1466,7 @@ function registerRouterTools(pi, clients, protectedRoots) {
     async execute(_id, params) {
       const server = String((params && params.server) || '');
       const toolName = String((params && params.tool) || '');
-      const entry = clients.get(server);
+      const entry = visible().get(server);
       const def = entry && entry.tools.find((t) => t.name === toolName);
       if (!def) return errText(`No such tool "${toolName}" on server "${server}".`);
       let description = def.description || '';
@@ -1801,10 +1812,11 @@ export default async function stemMcpBridge(pi) {
   // Register the router meta-tools over the connected servers. `clients` fills in
   // live as background connects land, so their tools become invokable without
   // re-running this factory.
-  registerRouterTools(pi, clients, protectedRoots);
+  registerRouterTools(pi, clients, protectedRoots, turnContextGate);
 
-  // Stem self-management tools (list/add/remove MCP servers). Always available.
-  registerAdminTools(pi, cfgPath);
+  // Stem self-management tools (list/add/remove MCP servers). Always available;
+  // the list honours the persona's MCP allowlist like the router does.
+  registerAdminTools(pi, cfgPath, turnContextGate);
 
   // Self-editable standing custom instructions. The tool only PROPOSES; the user
   // approves in a card (editing the text + choosing the surface) and the MAIN process
@@ -2063,7 +2075,12 @@ export function makeTurnContextGate(path) {
         relay: parsed.relay === true,
         // generate_image defaults to OFF when absent (an older main never wrote it).
         imageGen: parsed.imageGen === true,
-        imageGenRefusal: typeof parsed.imageGenRefusal === 'string' ? parsed.imageGenRefusal : null
+        imageGenRefusal: typeof parsed.imageGenRefusal === 'string' ? parsed.imageGenRefusal : null,
+        // The persona's MCP allowlist by server name; null (absent, or an
+        // older main) is every configured server.
+        mcpServers: Array.isArray(parsed.mcpServers)
+          ? parsed.mcpServers.filter((n) => typeof n === 'string')
+          : null
       };
     } catch {
       return {
@@ -2078,11 +2095,42 @@ export function makeTurnContextGate(path) {
         recall: true,
         relay: false,
         imageGen: false,
-        imageGenRefusal: null
+        imageGenRefusal: null,
+        mcpServers: null
       };
     }
   };
 }
+
+/**
+ * Whether the turn may see and call the MCP server `name` — true unless the
+ * gate carries an allowlist that leaves it out. Stem's own servers never go
+ * through here (recall has its own gate, admin is always on), so the question
+ * is only ever about the user's integrations.
+ */
+export function mcpServerAllowed(name, turnCtx) {
+  const allow = turnCtx && Array.isArray(turnCtx.mcpServers) ? turnCtx.mcpServers : null;
+  return !allow || allow.includes(name);
+}
+
+/**
+ * The routed clients this turn is allowed to see: the whole map when the gate
+ * has no allowlist (the common case — same object, no copy), else a fresh map
+ * of the allowed entries. find_tools, describe_tool and the catalog read this
+ * view so a restricted persona never learns a hidden server exists.
+ */
+export function visibleMcpClients(clients, turnCtx) {
+  const allow = turnCtx && Array.isArray(turnCtx.mcpServers) ? turnCtx.mcpServers : null;
+  if (!allow) return clients;
+  const out = new Map();
+  for (const [name, entry] of clients) if (allow.includes(name)) out.set(name, entry);
+  return out;
+}
+
+/** What invoke_tool answers for a server the persona's allowlist leaves out. */
+export const MCP_SERVER_HIDDEN_REFUSAL =
+  'This persona is not set up to use that integration. Only the servers in the available integrations list can be ' +
+  'called from here; the user chooses them per persona in Settings → Personas.';
 
 /**
  * Refusal for any tool a code persona calls that is not part of relaying to
@@ -2223,7 +2271,7 @@ function buildServerEntry(params) {
   return { name, entry, input };
 }
 
-function registerAdminTools(pi, cfgPath) {
+function registerAdminTools(pi, cfgPath, turnContext) {
   pi.registerTool({
     name: 'list_mcp_servers',
     label: 'List MCP servers',
@@ -2247,8 +2295,13 @@ function registerAdminTools(pi, cfgPath) {
       } catch {
         // No status yet (fresh profile) — the list still stands on its own.
       }
+      // A persona's allowlist hides the rest here too: the list is the one
+      // other place a server is named to the model, and naming one the
+      // router then refuses would be the "visible but denied" chatter the
+      // hiding exists to avoid.
+      const turnCtx = turnContext ? turnContext() : null;
       const lines = Object.entries(servers)
-        .filter(([n]) => !ADMIN_RESERVED.has(n))
+        .filter(([n]) => !ADMIN_RESERVED.has(n) && mcpServerAllowed(n, turnCtx))
         .map(([n, def]) => {
           const how = def.url
             ? `(http): ${def.url}`

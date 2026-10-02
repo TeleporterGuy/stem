@@ -27,6 +27,16 @@ describe('personaTurnFields', () => {
     });
   });
 
+  it('carries the MCP allowlist as its own copy, and nothing when the persona is unrestricted', async () => {
+    const allow = ['notes'];
+    const fields = await personaTurnFields({ ...base, id: 'p-mcp', mcpServers: allow });
+    expect(fields.persona.mcpServers).toEqual(['notes']);
+    expect(fields.persona.mcpServers).not.toBe(allow);
+    // An empty list is a restriction (no servers), so it travels too.
+    expect((await personaTurnFields({ ...base, id: 'p-none', mcpServers: [] })).persona.mcpServers).toEqual([]);
+    expect((await personaTurnFields(base)).persona).not.toHaveProperty('mcpServers');
+  });
+
   it('carries the computer pin for a persona that controls a Mac', async () => {
     const computer = { device: 'mac-1' };
     const fields = await personaTurnFields({ ...base, id: 'p-screen', computer });

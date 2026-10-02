@@ -1274,7 +1274,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             // tools are off for the turn (codeRelayRefusal in the extension).
             relay: !!turn.personaHarness,
             imageGen: imageGen.ok,
-            imageGenRefusal: imageGen.ok ? null : imageGen.refusal
+            imageGenRefusal: imageGen.ok ? null : imageGen.refusal,
+            // The persona's MCP allowlist; buildMessage filters the catalog
+            // from the same list, so the model never hears of a server the
+            // bridge would refuse. A no-persona chat sees everything.
+            mcpServers: input.persona?.mcpServers ?? null
           },
           w.gateDir
         ).catch(
@@ -4127,7 +4131,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     if (connected) blocks.push(connected);
     // Cheap names+signatures catalog of routed MCP tools (schemas fetched on demand
     // via describe_tool). Keeps the prompt floor flat as more servers are added.
-    const catalog = await buildMcpCatalogContext();
+    const catalog = await buildMcpCatalogContext(input.persona?.mcpServers ?? null);
     if (catalog) blocks.push(catalog);
     // Right after the catalog, and gated the same way as the tools themselves: the
     // MCP list can run to hundreds of entries (browser automation among them), and

@@ -533,6 +533,13 @@ export interface StartTurnInput {
      * then skips the recall block for this turn (see Persona.recall).
      */
     recall?: false;
+    /**
+     * The persona's MCP allowlist (server names from mcp.json), present only
+     * when the persona is restricted: the catalog, find_tools/describe_tool
+     * and list_mcp_servers show these servers only, and invoke_tool refuses
+     * the rest (see Persona.mcpServers). Absent = every configured server.
+     */
+    mcpServers?: string[];
   };
   /**
    * Server-internal (stripped at the transport handler like `persona`): this
@@ -2401,6 +2408,22 @@ export interface Persona {
    * worker, role prompt, and coding-agent pin from any paired device.
    */
   clients?: boolean;
+  /**
+   * Which MCP servers this persona's turns may use, by server name (the key
+   * in mcp.json, which is the server's id). Absent = all configured servers,
+   * today's behaviour; `[]` = none. Only Stem's own servers (stem-recall,
+   * stem-admin) are outside this list — they have their own gates. A server
+   * that is not allowed is hidden from the turn rather than refused: it is
+   * left out of the prompt's integration catalog, of find_tools and of
+   * list_mcp_servers, and invoke_tool refuses it as the backstop. Pinned and
+   * server-hosted servers are one flat list — the question is which
+   * integrations, not which machine. Names that no longer match a configured
+   * server stay inert (the editor flags them). Editor-only, like every other
+   * capability: the mail bridge cannot set it, and a persona an agent creates
+   * inherits its creator's list so a restriction cannot be laundered through
+   * add_persona.
+   */
+  mcpServers?: string[];
   /** Seeded by Stem. Editable like any persona, but cannot be deleted. */
   builtin?: boolean;
 }

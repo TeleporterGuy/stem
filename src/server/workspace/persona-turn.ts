@@ -45,7 +45,8 @@ export async function personaTurnFields(persona: Persona, opts: { notes?: boolea
       ...(persona.computer ? { computer: persona.computer } : {}),
       ...(notes ? { notes } : {}),
       ...(answers ? { answers } : {}),
-      ...(persona.recall === false ? { recall: false as const } : {})
+      ...(persona.recall === false ? { recall: false as const } : {}),
+      ...(persona.mcpServers ? { mcpServers: [...persona.mcpServers] } : {})
     }
   };
 }

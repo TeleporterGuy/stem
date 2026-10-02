@@ -3119,6 +3119,12 @@ summary.mail-work-action { cursor: pointer; }
 .persona-model-hint { font-size: var(--fs-12); color: var(--muted); }
 .persona-cap { display: flex; align-items: flex-start; gap: var(--sp-4); font-size: var(--fs-12); color: var(--muted); cursor: pointer; }
 .persona-cap input { margin-top: var(--sp-1); }
+/* The per-persona MCP allowlist: the server checklist under "Uses every MCP server", grouped by machine like the MCP tab. */
+.persona-mcp { display: flex; flex-direction: column; gap: var(--sp-3); padding-left: var(--sp-7); }
+.persona-mcp-group { display: flex; flex-direction: column; gap: var(--sp-2); }
+.persona-mcp-head { font-size: var(--fs-11); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.persona-mcp-note { font-size: var(--fs-12); color: var(--muted); }
+.persona-mcp-stale { color: var(--warn); }
 
 /* Clock badge on a chat row that owns a scheduled task. */
 .chat-sched-badge { flex: none; display: inline-flex; align-items: center; color: var(--muted); margin-left: var(--sp-3); }

@@ -147,8 +147,26 @@ function coercePersona(raw: unknown): Persona | null {
   }
   // Off is the default and stored as absence, like the flags above.
   if (r.clients === true) persona.clients = true;
+  const mcpServers = coerceMcpServers(r.mcpServers);
+  if (mcpServers) persona.mcpServers = mcpServers;
   if (r.builtin === true) persona.builtin = true;
   return persona;
+}
+
+/**
+ * The MCP allowlist, or undefined for "all". Only an array counts — an empty
+ * one is a real restriction (no servers), so it is kept. Entries that are not
+ * names are dropped, duplicates collapse, order is the editor's.
+ */
+function coerceMcpServers(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const names: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    const name = entry.trim();
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
 }
 
 /**
@@ -371,7 +389,10 @@ function requireUniqueName(store: PersonasFile, name: string, exceptId: string):
 /**
  * Create a persona on an agent's behalf (the save_persona bridge op). Only the
  * bridge fields land, `createdBy` is stamped from the caller, and everything
- * privileged (harness, flags, budget) starts absent.
+ * privileged (harness, flags, budget) starts absent — except the MCP
+ * allowlist, which the helper inherits from its creator: a persona kept away
+ * from a server must not be able to reach it by spawning an unrestricted
+ * helper and mailing it the request.
  */
 export async function savePersonaFor(creatorId: string, fields: BridgePersonaFields): Promise<Persona> {
   const name = fields.name?.trim();
@@ -386,6 +407,8 @@ export async function savePersonaFor(creatorId: string, fields: BridgePersonaFie
   if (fields.effort?.trim()) persona.effort = fields.effort.trim();
   await update((store) => {
     requireUniqueName(store, persona.name, persona.id);
+    const creator = store.personas.find((p) => p.id === creatorId);
+    if (creator?.mcpServers) persona.mcpServers = [...creator.mcpServers];
     store.personas.push(persona);
   });
   return persona;

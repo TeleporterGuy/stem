@@ -14,6 +14,16 @@ Maintainer notes:
 
 ## 0.5.6 — Unreleased
 
+### Added
+
+- **Choose which MCP servers each persona may use.** Settings → Personas → a persona → turn off
+  **Uses every MCP server** and tick the ones it gets, grouped by the machine they run on like the
+  MCP tab. The rest are hidden from that persona entirely — not in its tool list, not searchable,
+  refused if it guesses a name — in chats, mail and scheduled runs alike. Personas you have not
+  touched keep every server, as before, and so do chats without a persona. A helper persona that
+  an Orchestrator creates inherits the Orchestrator’s list, so a restriction cannot be sidestepped
+  by delegating. Stem’s own memory tools are separate: that is still **Sees your memory**.
+
 ### Changed
 
 - **A second Ollama, on another machine.** Settings → Models → Add server only knows one Ollama

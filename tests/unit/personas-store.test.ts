@@ -139,6 +139,19 @@ describe('save', () => {
     expect((await getPersona('p1'))?.recall).toBeUndefined();
   });
 
+  it('round-trips the MCP allowlist: absent is all, an empty list is none, junk entries are dropped', async () => {
+    await savePersona(persona({ mcpServers: ['notes', 'logs'] }));
+    expect((await getPersona('p1'))?.mcpServers).toEqual(['notes', 'logs']);
+    await savePersona(persona({ mcpServers: [] }));
+    expect((await getPersona('p1'))?.mcpServers).toEqual([]);
+    await savePersona({ ...persona(), mcpServers: ['notes', 7, ' ', 'notes', 'logs '] } as unknown as Persona);
+    expect((await getPersona('p1'))?.mcpServers).toEqual(['notes', 'logs']);
+    await savePersona({ ...persona(), mcpServers: 'notes' } as unknown as Persona);
+    expect((await getPersona('p1'))?.mcpServers).toBeUndefined();
+    await savePersona(persona());
+    expect((await getPersona('p1'))?.mcpServers).toBeUndefined();
+  });
+
   it('a v2 file switches the stored Critic to no-recall once; turning it back on sticks on v3', async () => {
     await listPersonas(); // seed
     const raw = onDisk();
@@ -284,6 +297,22 @@ describe('bridge mutators', () => {
     });
     expect(stored?.harness).toBeUndefined();
     expect(stored?.canManagePersonas).toBeUndefined();
+  });
+
+  it('savePersonaFor hands the creator’s MCP allowlist down, and never widens it', async () => {
+    await savePersona({ id: 'boss', name: 'boss', prompt: '', mcpServers: ['notes'] });
+    const helper = await savePersonaFor('boss', { name: 'helper', prompt: '' });
+    expect(helper.mcpServers).toEqual(['notes']);
+    expect((await getPersona(helper.id))?.mcpServers).toEqual(['notes']);
+    // A copy: tightening the creator later does not reach back into the helper.
+    await savePersona({ id: 'boss', name: 'boss', prompt: '', mcpServers: [] });
+    expect((await getPersona(helper.id))?.mcpServers).toEqual(['notes']);
+    // An unrestricted creator makes an unrestricted helper, as before.
+    const free = await savePersonaFor('orchestrator', { name: 'free', prompt: '' });
+    expect(free.mcpServers).toBeUndefined();
+    // The bridge edit path cannot touch the list.
+    await updatePersonaFields(helper.id, { name: 'helper', prompt: '', mcpServers: ['logs'] } as never);
+    expect((await getPersona(helper.id))?.mcpServers).toEqual(['notes']);
   });
 
   it('savePersonaFor enforces name uniqueness', async () => {

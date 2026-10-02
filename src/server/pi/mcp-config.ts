@@ -195,9 +195,9 @@ export function forgetMcpCatalogCaches(): void {
  * source parses the other: they are concatenated, and the sentence at the end
  * covers both.
  */
-export async function buildMcpCatalogContext(): Promise<string | null> {
-  const bridge = bridgeCatalogText().trim();
-  const device = await buildDeviceCatalogSection();
+export async function buildMcpCatalogContext(allow?: readonly string[] | null): Promise<string | null> {
+  const bridge = filterCatalogSections(bridgeCatalogText(), allow).trim();
+  const device = await buildDeviceCatalogSection(allow);
   const exec = await buildExecHostSection();
   const text = [bridge, device.text].filter(Boolean).join('\n\n');
   const mcpBlock = text
@@ -215,6 +215,27 @@ export async function buildMcpCatalogContext(): Promise<string | null> {
   const parts = [mcpBlock, exec].filter(Boolean);
   if (!parts.length) return null;
   return parts.join('\n\n');
+}
+
+/**
+ * Keep only the allowlisted servers' sections of the bridge's catalog text, or
+ * all of it when the turn has no allowlist (`allow` absent or null). The text
+ * is the bridge's own `### name (N tools)` blocks, so the server name is read
+ * back off each heading — the same split compactCatalogText does. A section
+ * whose heading does not parse is kept: hiding is for servers the persona was
+ * kept away from, never for a line this parser did not expect.
+ */
+export function filterCatalogSections(text: string, allow?: readonly string[] | null): string {
+  if (!allow) return text;
+  const allowed = new Set(allow);
+  return text
+    .split(/(?=^### )/m)
+    .filter((section) => {
+      const heading = /^### (.+?) \(\d+ tools?\)\s*$/m.exec(section.trim().split('\n')[0] ?? '');
+      return !heading || allowed.has(heading[1]);
+    })
+    .join('')
+    .trim();
 }
 
 /**
@@ -259,7 +280,7 @@ async function buildExecHostSection(): Promise<string> {
  * was away. mcp.json is the authority on what may be called, so a stale
  * announcement never puts a tool in the prompt that invoke_tool would refuse.
  */
-async function buildDeviceCatalogSection(): Promise<DeviceCatalogBlock> {
+async function buildDeviceCatalogSection(allow?: readonly string[] | null): Promise<DeviceCatalogBlock> {
   const catalog = deviceCatalog();
   if (Object.keys(catalog.devices).length === 0) return { text: '', anyAway: false };
   // A corrupt mcp.json throws, and every entry is unverifiable when it does —
@@ -283,6 +304,10 @@ async function buildDeviceCatalogSection(): Promise<DeviceCatalogBlock> {
     label: (deviceId) => labels.get(deviceId) ?? deviceId,
     include: (deviceId, name) => {
       const server = servers[name];
+      // The persona's allowlist is the same flat name set as for the servers
+      // the bridge hosts: a pinned server it was kept away from is left out
+      // of the prompt exactly like a server-hosted one.
+      if (allow && !allow.includes(name)) return false;
       return !!server && !server.disabled && server.location?.deviceId === deviceId;
     }
   });
@@ -357,6 +382,7 @@ export async function writeTurnContextGate(
     relay: boolean;
     imageGen?: boolean;
     imageGenRefusal?: string | null;
+    mcpServers?: readonly string[] | null;
   },
   gateDir?: string
 ): Promise<void> {
@@ -394,7 +420,13 @@ export async function writeTurnContextGate(
         // `imageGen`: whether generate_image is offered this turn (the bridge
         // also hides it from the tool set when false). Defaults to false.
         imageGen: ctx.imageGen === true,
-        imageGenRefusal: ctx.imageGenRefusal ?? null
+        imageGenRefusal: ctx.imageGenRefusal ?? null,
+        // `mcpServers`: the persona's MCP allowlist by server name, or null for
+        // every configured server (a no-persona chat, an unrestricted persona,
+        // an older main). The bridge hides the rest from find_tools /
+        // describe_tool / list_mcp_servers and refuses them in invoke_tool;
+        // the prompt's catalog is filtered in main from the same list.
+        mcpServers: ctx.mcpServers ? [...ctx.mcpServers] : null
       },
       null,
       2

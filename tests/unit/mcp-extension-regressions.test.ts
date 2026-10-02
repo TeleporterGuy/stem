@@ -18,7 +18,10 @@ import stemMcpBridge, {
   mcpConnectionsSettledForTests,
   recallToolRefusal,
   resetMcpConnectionCacheForTests,
-  withServiceTier
+  withServiceTier,
+  mcpServerAllowed,
+  visibleMcpClients,
+  MCP_SERVER_HIDDEN_REFUSAL
 } from '../../src/server/pi/stem-mcp-extension.mjs';
 import { mcpServerAuthIdentity, writeTurnContextGate } from '../../src/server/pi/mcp-config';
 
@@ -572,7 +575,8 @@ describe('recall search tools in a recall-off turn', () => {
       recall: true,
       relay: false,
       imageGen: false,
-      imageGenRefusal: null
+      imageGenRefusal: null,
+      mcpServers: null
     });
     // What main writes for a Critic delivery.
     await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: false, relay: false }, root);
@@ -581,6 +585,114 @@ describe('recall search tools in a recall-off turn', () => {
     // An older main's file, written before the field existed.
     await writeFile(join(root, 'turn-context.json'), JSON.stringify({ mail: false, scheduled: false, coding: true }));
     expect(gate().recall).toBe(true);
+  });
+});
+
+describe('per-persona MCP allowlist', () => {
+  // A persona's `mcpServers` names the servers its turns may use. Hidden, not
+  // refused: the catalog in the prompt is filtered in main, and here the
+  // router's discovery and the admin list leave the rest out, with invoke_tool
+  // refusing as the backstop for a name the model remembers or invents.
+  const cleanup: string[] = [];
+  afterEach(async () => {
+    for (const p of cleanup.splice(0)) await rm(p, { recursive: true, force: true });
+    vi.unstubAllGlobals();
+  });
+
+  it('allows everything without a list, and exactly the listed names with one', () => {
+    expect(mcpServerAllowed('notes', null)).toBe(true);
+    expect(mcpServerAllowed('notes', { mcpServers: null })).toBe(true);
+    expect(mcpServerAllowed('notes', { mcpServers: ['notes'] })).toBe(true);
+    expect(mcpServerAllowed('notes', { mcpServers: ['logs'] })).toBe(false);
+    // An empty list is a real restriction: no servers at all.
+    expect(mcpServerAllowed('notes', { mcpServers: [] })).toBe(false);
+    const clients = new Map([['notes', { tools: [] }], ['logs', { tools: [] }]]);
+    expect(visibleMcpClients(clients, null)).toBe(clients);
+    expect([...visibleMcpClients(clients, { mcpServers: ['logs'] }).keys()]).toEqual(['logs']);
+    expect(visibleMcpClients(clients, { mcpServers: [] }).size).toBe(0);
+  });
+
+  it('reads the list from the gate main writes, and defaults to all when the field is missing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'stem-mcp-allow-gate-'));
+    cleanup.push(root);
+    const gate = makeTurnContextGate(join(root, 'turn-context.json'));
+    await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: true, relay: false, mcpServers: ['logs'] }, root);
+    expect(gate().mcpServers).toEqual(['logs']);
+    await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: true, relay: false, mcpServers: [] }, root);
+    expect(gate().mcpServers).toEqual([]);
+    await writeTurnContextGate({ mail: false, scheduled: false, coding: true, recall: true, relay: false }, root);
+    expect(gate().mcpServers).toBeNull();
+    await writeFile(join(root, 'turn-context.json'), JSON.stringify({ mail: false, scheduled: false, coding: true }));
+    expect(gate().mcpServers).toBeNull();
+  });
+
+  it('hides a server outside the list from find_tools, describe_tool and list_mcp_servers, and refuses it in invoke_tool', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'stem-mcp-allow-bridge-'));
+    cleanup.push(root);
+    const configPath = join(root, 'mcp.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        servers: {
+          logs: { url: 'https://logs.test', trusted: true },
+          notes: { url: 'https://notes.test', trusted: true }
+        }
+      })
+    );
+    await writeFile(join(root, 'protected-roots.json'), JSON.stringify({ roots: [], read: [], write: [] }));
+    process.env.STEM_MCP_CONFIG = configPath;
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const host = new URL(String(input instanceof Request ? input.url : input)).hostname;
+        const request = JSON.parse(String(init?.body ?? '{}')) as { id?: number; method?: string };
+        const server = host.split('.')[0];
+        if (request.method === 'tools/call') calls.push(server);
+        const result =
+          request.method === 'tools/list'
+            ? { tools: [{ name: `search_${server}`, description: `Search ${server}`, inputSchema: { type: 'object' } }] }
+            : request.method === 'tools/call'
+              ? { content: [{ type: 'text', text: 'found' }] }
+              : {};
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      })
+    );
+    type RegisteredTool = { name: string; execute: (...args: unknown[]) => Promise<{ isError?: boolean; content: Array<{ text?: string }> }> };
+    const registered: RegisteredTool[] = [];
+    await stemMcpBridge({ registerTool: (t: RegisteredTool) => registered.push(t), on: () => {}, getActiveTools: () => [], setActiveTools: () => {} });
+    await mcpConnectionsSettledForTests();
+    const tool = (name: string) => registered.find((t) => t.name === name)!;
+    const text = (r: { content: Array<{ text?: string }> }) => String(r.content[0]?.text ?? '');
+
+    // The gate file sits next to mcp.json: a persona allowed logs only.
+    await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: true, relay: false, mcpServers: ['logs'] }, root);
+    const across = JSON.parse(text(await tool('find_tools').execute('f1', { query: 'search' })));
+    expect(across.tools.map((t: { server: string }) => t.server)).toEqual(['logs']);
+    expect((await tool('find_tools').execute('f2', { query: '', server: 'notes' })).isError).toBe(true);
+    expect((await tool('describe_tool').execute('d1', { server: 'notes', tool: 'search_notes' })).isError).toBe(true);
+    expect((await tool('describe_tool').execute('d2', { server: 'logs', tool: 'search_logs' })).isError).not.toBe(true);
+    const refused = await tool('invoke_tool').execute('i1', { server: 'notes', tool: 'search_notes', args: {} });
+    expect(refused.isError).toBe(true);
+    expect(text(refused)).toBe(MCP_SERVER_HIDDEN_REFUSAL);
+    expect(calls).toEqual([]);
+    expect(text(await tool('invoke_tool').execute('i2', { server: 'logs', tool: 'search_logs', args: {} }))).toBe('found');
+    expect(calls).toEqual(['logs']);
+    const listed = text(await tool('list_mcp_servers').execute('l1', {}));
+    expect(listed).toContain('- logs ');
+    expect(listed).not.toContain('notes');
+    // A server that does not exist at all keeps the generic answer: the
+    // persona refusal must only ever stand for a real, hidden server.
+    expect(text(await tool('invoke_tool').execute('i3', { server: 'ghost', tool: 'x', args: {} }))).toContain('No connected MCP server');
+
+    // The same worker, next turn, an unrestricted persona: everything is back.
+    await writeTurnContextGate({ mail: false, scheduled: false, coding: true, recall: true, relay: false }, root);
+    const all = JSON.parse(text(await tool('find_tools').execute('f3', { query: 'search', limit: 5 })));
+    expect(all.tools.map((t: { server: string }) => t.server).sort()).toEqual(['logs', 'notes']);
+    expect(text(await tool('list_mcp_servers').execute('l2', {}))).toContain('- notes ');
   });
 });
 

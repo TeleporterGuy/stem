@@ -4,6 +4,7 @@ import type {
   ClientInfo,
   DeviceInfo,
   HarnessModelsResult,
+  McpServerSummary,
   ModelSummary,
   Persona,
   PersonaHarnessPin,
@@ -59,7 +60,53 @@ function summaryLabel(
   if (p.memory === false) parts.push(p.harness ? 'no standing answers' : 'no private memory');
   if (p.recall === false) parts.push('no recall');
   if (p.clients) parts.push('open to chats');
+  if (p.mcpServers) {
+    parts.push(
+      p.mcpServers.length === 0
+        ? 'no integrations'
+        : `${p.mcpServers.length} integration${p.mcpServers.length === 1 ? '' : 's'}`
+    );
+  }
   return parts.join(' · ');
+}
+
+/** Same set of allowed servers, where "absent" (all) differs from every list. */
+function sameMcpServers(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.length === b.length && a.every((n) => b.includes(n));
+}
+
+/**
+ * The configured servers grouped the way the MCP tab groups them — by the
+ * machine they run on — so the two tabs read alike. The data stays a flat
+ * list of names: where a server runs is a label here, never part of the pin.
+ * Reserved Stem servers never reach the renderer, so nothing is hidden here.
+ */
+function groupMcpServers(
+  servers: McpServerSummary[],
+  client: ClientInfo | null
+): { head: string; items: McpServerSummary[] }[] {
+  const here = (s: McpServerSummary) => !!client?.deviceId && s.location?.deviceId === client.deviceId;
+  const groups: { head: string; items: McpServerSummary[] }[] = [];
+  const push = (head: string, items: McpServerSummary[]) => {
+    if (items.length > 0) groups.push({ head, items });
+  };
+  const unpinned = servers.filter((s) => !s.location);
+  if (client?.remote) {
+    push('On your Stem server', unpinned);
+    push('On this computer', servers.filter(here));
+  } else {
+    push('On this computer', [...unpinned, ...servers.filter(here)]);
+  }
+  const others = new Map<string, { head: string; items: McpServerSummary[] }>();
+  for (const s of servers) {
+    if (!s.location || here(s)) continue;
+    const group = others.get(s.location.deviceId) ?? { head: `On ${s.location.label}`, items: [] };
+    group.items.push(s);
+    others.set(s.location.deviceId, group);
+  }
+  groups.push(...[...others.values()].sort((a, b) => a.head.localeCompare(b.head)));
+  return groups;
 }
 
 /** A name not already taken (case-insensitively): "code copy", "code copy 2", … */
@@ -98,7 +145,8 @@ function sameEdit(a: Persona, b: Persona): boolean {
     (a.memory ?? true) === (b.memory ?? true) &&
     (a.recall ?? true) === (b.recall ?? true) &&
     (a.sendBudget ?? 0) === (b.sendBudget ?? 0) &&
-    (a.clients ?? false) === (b.clients ?? false)
+    (a.clients ?? false) === (b.clients ?? false) &&
+    sameMcpServers(a.mcpServers, b.mcpServers)
   );
 }
 
@@ -372,10 +420,18 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
   // Who THIS client is: its device id (to spot a pin targeting this very
   // computer) and whether the server runs in-process (its disk = this disk).
   const [client, setClient] = useState<ClientInfo | null>(null);
+  // Configured MCP servers, for the per-persona allowlist picker. Read once
+  // like the devices: a server added while this tab is open shows up on the
+  // next visit, which is also when the persona would first be able to use it.
+  const [mcpServers, setMcpServers] = useState<McpServerSummary[]>([]);
 
   useEffect(() => {
     void window.stem.listPersonas().then(setPersonas);
     window.stem.listCodingAgents().then(setAgents).catch(() => setAgents([]));
+    window.stem
+      .listMcpServers()
+      .then(setMcpServers)
+      .catch(() => setMcpServers([]));
     window.stem
       .listDevices()
       .then((s) => setDevices(s.devices))
@@ -822,6 +878,71 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
                       </InfoTip>
                     </span>
                   </label>
+                  <label className="persona-cap">
+                    <input
+                      type="checkbox"
+                      checked={p.mcpServers === undefined}
+                      onChange={(e) => setDraft({ ...p, mcpServers: e.target.checked ? undefined : [] })}
+                    />
+                    <span>
+                      Uses every MCP server{' '}
+                      <InfoTip label="About MCP servers for this persona">
+                        Which of your MCP servers this persona may use, in chats, mail and
+                        scheduled runs alike. With this on it gets every server you configure,
+                        including ones you add later. Turn it off to pick a subset: the rest are
+                        hidden from the persona entirely — not listed, not searchable, refused if
+                        it guesses a name. Stem’s own memory tools are separate (see “Sees your
+                        memory”). Helper personas this one creates inherit the same list.
+                      </InfoTip>
+                    </span>
+                  </label>
+                  {p.mcpServers !== undefined && (
+                    <div className="persona-mcp">
+                      {groupMcpServers(mcpServers, client).map((group) => (
+                        <div key={group.head} className="persona-mcp-group">
+                          <div className="persona-mcp-head">{group.head}</div>
+                          {group.items.map((s) => (
+                            <label key={s.name} className="persona-cap">
+                              <input
+                                type="checkbox"
+                                checked={p.mcpServers?.includes(s.name) ?? false}
+                                onChange={(e) => {
+                                  const rest = (p.mcpServers ?? []).filter((n) => n !== s.name);
+                                  setDraft({ ...p, mcpServers: e.target.checked ? [...rest, s.name] : rest });
+                                }}
+                              />
+                              <span>
+                                {s.name}
+                                {!s.enabled && <span className="persona-mcp-note"> · switched off</span>}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      ))}
+                      {/* Names the list carries that no configured server answers to any
+                          more (removed, or renamed by re-adding). They do nothing at run
+                          time; shown so they can be cleared rather than silently kept. */}
+                      {(p.mcpServers ?? [])
+                        .filter((n) => !mcpServers.some((s) => s.name === n))
+                        .map((n) => (
+                          <label key={`stale-${n}`} className="persona-cap persona-mcp-stale">
+                            <input
+                              type="checkbox"
+                              checked
+                              onChange={() =>
+                                setDraft({ ...p, mcpServers: (p.mcpServers ?? []).filter((x) => x !== n) })
+                              }
+                            />
+                            <span>
+                              {n} <span className="persona-mcp-note">· no longer configured</span>
+                            </span>
+                          </label>
+                        ))}
+                      {mcpServers.length === 0 && (p.mcpServers ?? []).length === 0 && (
+                        <div className="persona-mcp-note">No MCP servers are configured yet.</div>
+                      )}
+                    </div>
+                  )}
                   <label className="persona-cap">
                     <input
                       type="number"

@@ -210,6 +210,28 @@ describe('the block main injects each turn', () => {
     expect(text.match(/through `invoke_tool`/g)).toHaveLength(1);
   });
 
+  it('filters both sources by a persona’s MCP allowlist, and says nothing when the list empties them', async () => {
+    await writeFile(bridgeCatalogPath(), JSON.stringify({ text: '### notes (1 tool)\n  - search: Find a note. — (q)' }));
+    forgetMcpCatalogCaches();
+    connected.add(deviceId);
+
+    // The list is one flat set of names: a pinned server and a server-hosted
+    // one are hidden by the same rule.
+    const notesOnly = (await buildMcpCatalogContext(['notes'])) ?? '';
+    expect(notesOnly).toContain('### notes (1 tool)');
+    expect(notesOnly).not.toContain('### files');
+    const filesOnly = (await buildMcpCatalogContext(['files'])) ?? '';
+    expect(filesOnly).toContain('### files (2 tools) — runs on');
+    expect(filesOnly).not.toContain('### notes');
+    // A name nothing answers to is inert, not an error.
+    expect(await buildMcpCatalogContext(['gone'])).toBeNull();
+    expect(await buildMcpCatalogContext([])).toBeNull();
+    // No list (a no-persona chat, an unrestricted persona): both, as before.
+    const all = (await buildMcpCatalogContext(null)) ?? '';
+    expect(all).toContain('### notes');
+    expect(all).toContain('### files');
+  });
+
   it('says nothing at all when there is nothing to say', async () => {
     rmSync(piMcpDeviceCatalogPath(), { force: true });
     forgetMcpCatalogCaches();
