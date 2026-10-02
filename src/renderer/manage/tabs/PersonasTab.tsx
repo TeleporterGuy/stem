@@ -100,12 +100,15 @@ function groupMcpServers(
   }
   const others = new Map<string, { head: string; items: McpServerSummary[] }>();
   for (const s of servers) {
-    if (!s.location || here(s)) continue;
+    if (!s.location || s.location.orphaned || here(s)) continue;
     const group = others.get(s.location.deviceId) ?? { head: `On ${s.location.label}`, items: [] };
     group.items.push(s);
     others.set(s.location.deviceId, group);
   }
   groups.push(...[...others.values()].sort((a, b) => a.head.localeCompare(b.head)));
+  // Pinned to a computer that is no longer paired: it runs nowhere, so allowing
+  // it does nothing today — listed under the same words the MCP tab uses.
+  push('Nowhere — that computer is gone', servers.filter((s) => s.location?.orphaned));
   return groups;
 }
 
