@@ -4,9 +4,9 @@ import type { UpdateStatus } from '../shared/types';
 
 // The "there's a newer Stem" dialog. Raised once per launch per version from
 // App, for the states worth interrupting for (shared/updates.ts): a build
-// sitting downloaded (the AppImage — restart to finish) or one sitting on a web
-// page (mac and deb, which cannot fetch it themselves, and an AppImage whose
-// download or swap failed). Mirrors the TaskAlertModal markup. "Later"
+// sitting downloaded (the AppImage or a mac build in Applications — restart to
+// finish) or one sitting on a web page (a deb or a mac build off the dmg, which
+// cannot fetch it themselves, and an auto install whose download or swap failed). Mirrors the TaskAlertModal markup. "Later"
 // is a real answer: the banner under the title bar and the row in Settings → App
 // keep the offer open, and a downloaded build installs itself on the next quit.
 export function UpdateModal({

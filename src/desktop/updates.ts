@@ -16,20 +16,24 @@ import { readClientSettings } from './settings';
 // What "update" means depends on how Stem got here, and the split is decided
 // once, at startup:
 //
-//   auto — the AppImage. electron-updater reads the feed electron-builder put
-//     beside the release (latest-linux*.yml), downloads the new build into
-//     ~/.cache on its own, and swaps the file on restart — or silently on quit,
-//     whichever comes first. No signature requirement stands in the way: the
-//     AppImage is one file the user already owns.
+//   auto — the AppImage, and a mac build installed in an Applications folder.
+//     electron-updater reads the feed electron-builder put beside the release
+//     (latest-linux*.yml, latest-mac.yml) and downloads the new build on its
+//     own. The AppImage swaps the file on restart — or silently on quit,
+//     whichever comes first; no signature requirement stands in the way, the
+//     AppImage is one file the user already owns. On a mac it fetches the zip
+//     and hands it to Squirrel.Mac, which checks that the new bundle is signed
+//     by the same Developer ID as the running one (mac builds are signed since
+//     2026-09, see the `mac` block in electron-builder.yml) and replaces
+//     Stem.app after the app quits.
 //
-//   manual — the mac and deb builds. Squirrel validates code signatures, and
-//     mac builds were unsigned until 2026-09; they are signed now (see the
-//     `mac` block in electron-builder.yml) but the self-update path has not
-//     been switched on yet, and a deb belongs to dpkg. So the most honest
-//     thing this install can do is find out and say so: the
-//     check is one HTTPS request for where github.com/…/releases/latest
-//     redirects to, which names the newest tag without spending anyone's API
-//     rate limit, and "install" means opening that page.
+//   manual — the deb, and a mac build running from anywhere Squirrel cannot
+//     write: straight off the mounted dmg, or a copy macOS translocated out of
+//     Downloads. A deb belongs to dpkg. So the most honest thing this install
+//     can do is find out and say so: the check is one HTTPS request for where
+//     github.com/…/releases/latest redirects to, which names the newest tag
+//     without spending anyone's API rate limit, and "install" means opening
+//     that page.
 //
 //   none — a dev run or a test. There is nothing on disk a release could
 //     replace, so the timer never starts and the Settings row keeps quiet.
@@ -66,13 +70,38 @@ export interface Updates {
   close(): void;
 }
 
+/** What decides the update mode — the facts of this artifact and where it runs. */
+export interface UpdateModeFacts {
+  packaged: boolean;
+  e2e: boolean;
+  platform: NodeJS.Platform;
+  /** Set by the AppImage runtime (its path). */
+  appImage: string | undefined;
+  /** macOS: running from /Applications or ~/Applications. */
+  inApplicationsFolder: boolean;
+}
+
 /** How a release reaches this install. Decided once — it is a fact of the artifact. */
-function updateMode(): UpdateMode {
-  if (process.env.STEM_E2E || !app.isPackaged) return 'none';
+export function updateModeFor(f: UpdateModeFacts): UpdateMode {
+  if (f.e2e || !f.packaged) return 'none';
   // Set by the AppImage runtime, and required by electron-updater's AppImage
   // path — a packaged Linux build without it is a deb (or an unpacked dir).
-  if (process.env.APPIMAGE) return 'auto';
+  if (f.appImage) return 'auto';
+  // Squirrel.Mac replaces the bundle where it sits, so it needs a writable
+  // home: an Applications folder. Off the read-only dmg, or translocated out
+  // of Downloads, the swap could only fail — the release page still works.
+  if (f.platform === 'darwin' && f.inApplicationsFolder) return 'auto';
   return 'manual';
+}
+
+function updateMode(): UpdateMode {
+  return updateModeFor({
+    packaged: app.isPackaged,
+    e2e: Boolean(process.env.STEM_E2E),
+    platform: process.platform,
+    appImage: process.env.APPIMAGE,
+    inApplicationsFolder: process.platform === 'darwin' && app.isPackaged && app.isInApplicationsFolder()
+  });
 }
 
 /**
@@ -125,11 +154,11 @@ export function createUpdates(deps: UpdatesDeps): Updates {
     deps.send({ ...current });
   }
 
-  // ---- mode `auto`: electron-updater over the AppImage ----
+  // ---- mode `auto`: electron-updater (AppImage, or Squirrel.Mac) ----
 
   /**
-   * Loaded on first use, and only under `auto` — the mac and deb builds never
-   * pay for the module, and a dev run never trips over its APPIMAGE check.
+   * Loaded on first use, and only under `auto` — a deb or a mac build off the dmg
+   * never pays for the module, and a dev run never trips over its APPIMAGE check.
    */
   let autoUpdaterReady: Promise<typeof import('electron-updater').autoUpdater> | null = null;
 
@@ -156,7 +185,8 @@ export function createUpdates(deps: UpdatesDeps): Updates {
       // unlistened 'error' on an emitter takes the process down. Same shape as
       // a failed check: a fact for Settings, retried on the next tick. An
       // install can fail too — the AppImage sits in a folder this user cannot
-      // write, most often — and that one is worth more than a log line: the
+      // write, most often, or Squirrel.Mac refuses a bundle whose signature
+      // does not match — and that one is worth more than a log line: the
       // build is still `available`, so Settings falls back to offering the page.
       autoUpdater.on('error', (e) => {
         log('updates', 'auto-update failed', { error: e.message });
@@ -242,9 +272,10 @@ export function createUpdates(deps: UpdatesDeps): Updates {
     check,
     async install() {
       if (mode === 'auto' && current.state === 'ready') {
-        // quitAndInstall swaps the file first and quits second, so the graceful
-        // shutdown in index.ts (before-quit → drain → app.exit) keeps working
-        // exactly as it does for an ordinary quit.
+        // The AppImage swaps the file first and quits second; Squirrel.Mac
+        // closes the windows, quits, and replaces Stem.app once the process is
+        // gone. Either way the graceful shutdown in index.ts (before-quit →
+        // drain → app.exit) runs exactly as it does for an ordinary quit.
         log('updates', 'installing', { version: current.available });
         const updater = await loadAutoUpdater();
         updater.quitAndInstall(false, true);

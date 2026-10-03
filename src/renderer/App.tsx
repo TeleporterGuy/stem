@@ -1696,8 +1696,8 @@ export default function App() {
         !updateDismissed &&
         updateOffer(update) !== null && (
           // Good news, said once: the update is either sitting downloaded (the
-          // AppImage) or sitting on a web page (everywhere else, and an AppImage
-          // whose download failed). "Later" is a real answer — a ready build
+          // AppImage, a mac build in Applications) or sitting on a web page
+          // (everywhere else, and an auto install whose download failed). "Later" is a real answer — a ready build
           // installs itself on the next quit anyway, and the row in Settings →
           // App keeps the offer open.
           <div className="update-banner" role="status">
