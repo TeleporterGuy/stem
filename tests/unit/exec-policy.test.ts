@@ -303,7 +303,9 @@ describe('classify: read-only probes stay read-only (H-01)', () => {
     expect(classify('git log -3', none, 'zsh', { confine: inside }).tier).toBe('run');
   });
 
-  it('without known roots, a reader naming an absolute, ~ or climbing path is judged', () => {
+  // POSIX-host scenarios: on a Windows runner HOME and tmpdir are Windows paths, which a
+  // zsh host never sees. The cmd.exe case below covers that host.
+  it.skipIf(process.platform === 'win32')('without known roots, a reader naming an absolute, ~ or climbing path is judged', () => {
     for (const cmd of [
       'cat /run/secrets/stem_key',
       'cat ~/.ssh/id_ed25519',
@@ -360,7 +362,7 @@ describe('classify: read-only probes stay read-only (H-01)', () => {
     expect(classify('cat notes.txt', { allowlist: ['cat'] }, 'zsh').tier).toBe('run');
   });
 
-  it('follows a symlink planted inside the sandbox', () => {
+  it.skipIf(process.platform === 'win32')('follows a symlink planted inside the sandbox', () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'stem-exec-h01-')));
     const outside = realpathSync(mkdtempSync(join(tmpdir(), 'stem-exec-h01-out-')));
     try {

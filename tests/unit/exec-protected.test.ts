@@ -179,7 +179,8 @@ describe('msysToWindows', () => {
 // The readable roots a tier-1 read is confined to (H-01): the gate's `read`
 // list plus the two app-owned folders, failing closed to just those two.
 describe('readGrantedReadRoots / execReadRoots', () => {
-  it('reads the gate\'s read list, canonicalized', () => {
+  // zsh-host paths: skipped on a Windows runner, whose temp dirs are drive paths.
+  it.skipIf(process.platform === 'win32')('reads the gate\'s read list, canonicalized', () => {
     writeFileSync(rootsPath, JSON.stringify({ roots: [], read: [join(dir, 'granted')] }));
     expect(readGrantedReadRoots(rootsPath, 'zsh')).toEqual([join(dir, 'granted')]);
     expect(execReadRoots('zsh', rootsPath)).toEqual([
@@ -212,7 +213,8 @@ describe('firstPathOutside', () => {
     expect(firstPathOutside(['a.txt', 'sub/b.txt', '-la'], '/w', ['/w'], 'zsh')).toBeNull();
   });
 
-  it('with an unknown cwd, checks absolute paths and refuses to guess at climbing ones', () => {
+  // zsh-host paths: on a Windows runner HOME is a drive path, so `~/x` stops looking absolute.
+  it.skipIf(process.platform === 'win32')('with an unknown cwd, checks absolute paths and refuses to guess at climbing ones', () => {
     expect(firstPathOutside(['/Users/me/proj/a'], null, ['/Users/me/proj'], 'zsh')).toBeNull();
     expect(firstPathOutside(['/Users/me/.ssh/x'], null, ['/Users/me/proj'], 'zsh')).toBe('/Users/me/.ssh/x');
     expect(firstPathOutside(['../x'], null, ['/Users/me/proj'], 'zsh')).toBe('../x');

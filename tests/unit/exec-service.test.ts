@@ -281,7 +281,8 @@ describe('ExecService read confinement (H-01)', () => {
   it('a read inside the chat\'s scratch runs without judge or card', async () => {
     mkdirSync(threadWorkspaceDir('chat-h01'), { recursive: true });
     const result = await service.handleExecRequest({
-      command: 'ls -la',
+      // cmd.exe is the Windows default, and `ls` is not one of its reads.
+      command: process.platform === 'win32' ? 'dir' : 'ls -la',
       threadId: 'chat-h01',
       isScheduled: false,
       currentModel: 'anthropic/claude-opus-4'
