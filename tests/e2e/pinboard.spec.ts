@@ -12,6 +12,15 @@ async function send(win: Page, text: string): Promise<void> {
   await composer.press('Enter');
 }
 
+/**
+ * A press outside the board. The composer is always on screen and never under
+ * the board, whatever the window size — a fixed spot in the transcript is not:
+ * on a small CI window it lands on the composer's overlap and never arrives.
+ */
+async function clickOutside(win: Page): Promise<void> {
+  await win.getByPlaceholder('Ask Stem…').click();
+}
+
 /** Pin the latest reply, a passage of it, and a note, through the bridge. */
 async function seedPins(win: Page): Promise<void> {
   await win.evaluate(async () => {
@@ -57,8 +66,8 @@ test('the pinboard strip opens, floats, closes on an outside click, and docks', 
   await expect(win.locator('.pinboard-item')).toHaveCount(3);
   await win.screenshot({ path: testInfo.outputPath('2-open.png') });
 
-  // A click in the transcript closes a floating board.
-  await win.locator('.messages').click({ position: { x: 20, y: 300 } });
+  // A click outside closes a floating board.
+  await clickOutside(win);
   await expect(win.locator('.pinboard-drop')).toHaveCount(0);
 
   // Jump: "Show in chat" scrolls to the source and flashes it, and closes the list.
@@ -72,7 +81,7 @@ test('the pinboard strip opens, floats, closes on an outside click, and docks', 
   // Docked: stays open through outside clicks, and survives a reload.
   await strip.click();
   await win.getByRole('button', { name: 'Keep open' }).click();
-  await win.locator('.messages').click({ position: { x: 20, y: 300 } });
+  await clickOutside(win);
   await expect(win.locator('.pinboard.docked .pinboard-drop')).toBeVisible();
   await win.screenshot({ path: testInfo.outputPath('3-docked.png') });
 
@@ -177,7 +186,7 @@ test('pins from the chat: /pin, the Pin action, a selected passage, and reorder 
   await first.getByLabel('Pin name').fill('Mix ratio');
   await first.getByLabel('Pin name').press('Enter');
   await expect(first.locator('.pinboard-item-label')).toHaveText('Mix ratio');
-  await win.locator('.messages').click({ position: { x: 20, y: 500 } });
+  await clickOutside(win);
   await expect(win.locator('.pinboard-summary')).toContainText('(Mix ratio · bought 1 L of');
   await win.screenshot({ path: testInfo.outputPath('7-renamed.png') });
 });
