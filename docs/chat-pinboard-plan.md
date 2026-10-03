@@ -1,6 +1,6 @@
 # Chat pinboard
 
-Status: shape agreed, implementation planned (branch `chat-pinboard`). Not implemented yet.
+Status: in progress on branch `chat-pinboard` — phase 1 (store and API) done.
 
 ## Purpose
 
