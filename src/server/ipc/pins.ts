@@ -3,6 +3,7 @@ import type { IpcDeps } from './deps';
 import { addPin, listPins, removePin, reorderPins, updatePin } from '../pins/store';
 import { LABEL_TIMEOUT_MS, queuePinLabel, type PinLabelDeps } from '../pins/label';
 import { backgroundRunOf } from '../workspace/settings';
+import { reindexChatThread } from '../chatsearch/index-sync';
 import type { ChatMessage, ChatPin, ChatPinInput, ChatPinPatch } from '../../shared/types';
 
 /**
@@ -11,8 +12,14 @@ import type { ChatMessage, ChatPin, ChatPinInput, ChatPinPatch } from '../../sha
  * `pins:changed` so another window or device looking at the same chat refetches.
  */
 export function registerPinsIpc(deps: IpcDeps): void {
-  const changed = (threadId: string): ChatPin[] => {
+  // Every board change: tell clients looking at the chat, and refresh the
+  // chat's search entry, which includes its pins.
+  const announce = (threadId: string): void => {
     deps.emit('pins:changed', { threadId });
+    void reindexChatThread(deps.runtime(), threadId);
+  };
+  const changed = (threadId: string): ChatPin[] => {
+    announce(threadId);
     return listPins(threadId);
   };
   // Labels are written in the background on the quick-tasks model chat subjects
@@ -23,7 +30,7 @@ export function registerPinsIpc(deps: IpcDeps): void {
         ...(await backgroundRunOf('subject', (s) => ({ model: s.chats.subjectModel, effort: s.chats.subjectEffort }))),
         timeoutMs: LABEL_TIMEOUT_MS
       }),
-    changed: (threadId) => deps.emit('pins:changed', { threadId })
+    changed: announce
   };
 
   registerServer('pins:list', (_e, threadId: string) => listPins(threadId));

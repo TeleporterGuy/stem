@@ -181,3 +181,25 @@ test('pins from the chat: /pin, the Pin action, a selected passage, and reorder 
   await expect(win.locator('.pinboard-summary')).toContainText('(Mix ratio · bought 1 L of');
   await win.screenshot({ path: testInfo.outputPath('7-renamed.png') });
 });
+
+test('pins survive a reload and leave with their chat', async ({ mainWindow: win }) => {
+  test.setTimeout(120_000);
+  await send(win, 'Reply with exactly the word KEEP and nothing else.');
+  await expect(win.locator('.message-assistant:not(.activity-row) .message-body').last()).toContainText(/keep/i, {
+    timeout: 60_000
+  });
+  const composer = win.getByPlaceholder('Ask Stem…');
+  await composer.fill('/pin survives a reload');
+  await composer.press('Enter');
+  await expect(win.locator('.pinboard-count')).toHaveText('1');
+
+  // A fresh renderer: whatever it shows now came from the server, not from memory.
+  await win.reload();
+  const threadId = await win.evaluate(async () => (await (window as any).stem.listChats()).chats[0].threadId as string);
+  await expect
+    .poll(() => win.evaluate(async (id) => (await (window as any).stem.listPins(id)).length, threadId))
+    .toBe(1);
+
+  await win.evaluate((id) => (window as any).stem.deleteChat(id), threadId);
+  expect(await win.evaluate(async (id) => (await (window as any).stem.listPins(id)).length, threadId)).toBe(0);
+});

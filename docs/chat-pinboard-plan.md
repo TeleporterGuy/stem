@@ -1,6 +1,6 @@
 # Chat pinboard
 
-Status: in progress on branch `chat-pinboard` — phases 1–4 done (store and API, the board, pinning, model context and labels).
+Status: implemented on branch `chat-pinboard` (phases 1–5). Mobile UI and the "Ideas for later" are not.
 
 ## Purpose
 
