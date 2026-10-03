@@ -23,7 +23,15 @@ import {
   Clock,
   Lock
 } from 'lucide-react';
-import type { ActivityItem, ChatMessage, EscapeAction, ModelSummary, TurnAttachment, TurnTiming } from '../../shared/types';
+import type {
+  ActivityItem,
+  ChatMessage,
+  ChatPin,
+  EscapeAction,
+  ModelSummary,
+  TurnAttachment,
+  TurnTiming
+} from '../../shared/types';
 import { formatSystemVersion } from '../../shared/sys-version';
 import { ActivityRows, SourcesList } from './ActivityRows';
 import { GeneratedImages } from './GeneratedImage';
@@ -38,6 +46,8 @@ import { useAutoHideScroll } from '../hooks/useAutoHideScroll';
 import { INITIAL_FOLLOW, onScrollEvent, type FollowState } from './followBottom';
 import { EFFORT_LABELS } from '../modelLabels';
 import { EmptyTips } from './EmptyTips';
+import { PinBoard } from './PinBoard';
+import { useChatPins } from '../hooks/useChatPins';
 
 const AVATAR: Record<ChatMessage['role'], { cls: string; icon: ReactNode; label: string }> = {
   user: { cls: 'you', icon: <User size={15} />, label: 'You' },
@@ -156,6 +166,8 @@ interface ChatViewProps {
   /** Called after a memory note is saved and its confirmation flash has shown
    *  (Quick Chat collapses the overlay here). */
   onNoteSaved?: () => void;
+  /** Show the chat's pinboard. Main window only — Quick Chat is too narrow and too brief. */
+  pinboard?: boolean;
 }
 
 // Build the inline meta label: "Claude Opus · Claude · High". Resolves the model
@@ -372,8 +384,10 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   onToggleWebSearch,
   reportDraft = false,
   onDraftChange,
-  onNoteSaved
+  onNoteSaved,
+  pinboard = false
 }: ChatViewProps, ref) {
+  const board = useChatPins(pinboard ? threadId : null);
   // Which user message is being edited inline (the working text lives in the box).
   const [editingId, setEditingId] = useState<string | null>(null);
   // Transient per-message UI: which bubble just got copied (check icon), and which
@@ -434,6 +448,20 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     },
     [onSend]
   );
+
+  // Bring a pin's source message into view and flash it. Scrolling up is
+  // reading history, so the follow-the-stream behaviour lets go of the bottom.
+  const jumpToPin = useCallback((_pin: ChatPin, source: ChatMessage) => {
+    const el = messagesRef.current?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(source.id)}"]`);
+    if (!el) return;
+    follow.current = { ...follow.current, following: false };
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.remove('pin-flash');
+    // Restart the animation when the same message is jumped to twice in a row.
+    void el.offsetWidth;
+    el.classList.add('pin-flash');
+    window.setTimeout(() => el.classList.remove('pin-flash'), 1600);
+  }, [messagesRef]);
 
   function saveEdit(m: ChatMessage, rawText: string) {
     const text = rawText.trim();
@@ -518,7 +546,11 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     })();
     const canAct = !running && (!!m.turnId || failedSend || m.role === 'system');
     return (
-      <div key={m.id} className={`message message-${m.role}`}>
+      <div
+        key={m.id}
+        className={`message message-${m.role}`}
+        data-message-id={m.id}
+      >
         {stamp && (
           <div className="message-stamp" title={stamp.full}>
             <span>{stamp.time}</span>
@@ -721,6 +753,9 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   return (
     <MdxActionContext.Provider value={mdxActions}>
     <div className="chat">
+      {pinboard && threadId && (
+        <PinBoard threadId={threadId} board={board} messages={messages} onJump={jumpToPin} />
+      )}
       <div className="messages" ref={messagesRef}>
         {messages.length === 0 && (
           <div className="empty">
