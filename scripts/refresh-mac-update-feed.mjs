@@ -36,7 +36,11 @@ function sha512(file) {
   });
 }
 
-const feed = YAML.parse(await readFile(feedPath, 'utf8'));
+// Edited as a document, not re-serialized from a plain object: the rest of the
+// feed keeps electron-builder's formatting — releaseDate stays a quoted string
+// rather than an unquoted timestamp a YAML 1.1 reader would turn into a Date.
+const doc = YAML.parseDocument(await readFile(feedPath, 'utf8'));
+const feed = doc.toJS();
 if (!Array.isArray(feed?.files) || feed.files.length === 0) {
   throw new Error(`${feedPath} lists no files`);
 }
@@ -45,19 +49,19 @@ if (!feed.files.some((f) => f.url.endsWith('.zip'))) {
   throw new Error(`${feedPath} lists no zip`);
 }
 
-for (const entry of feed.files) {
+let changed = false;
+for (const [i, entry] of feed.files.entries()) {
   const file = path.join(dir, entry.url);
   const [digest, { size }] = await Promise.all([sha512(file), stat(file)]);
   if (digest === entry.sha512 && size === entry.size) continue;
   console.log(`refreshed ${entry.url} (bytes changed after the feed was written)`);
-  entry.sha512 = digest;
-  entry.size = size;
-  delete entry.blockMapSize;
+  doc.setIn(['files', i, 'sha512'], digest);
+  doc.setIn(['files', i, 'size'], size);
+  doc.deleteIn(['files', i, 'blockMapSize']);
+  // The legacy top-level pair mirrors the entry for `path`.
+  if (entry.url === feed.path) doc.set('sha512', digest);
+  changed = true;
 }
 
-// The legacy top-level pair mirrors the entry for `path`.
-const primary = feed.files.find((f) => f.url === feed.path);
-if (primary) feed.sha512 = primary.sha512;
-
-await writeFile(feedPath, YAML.stringify(feed, { lineWidth: 0 }));
+if (changed) await writeFile(feedPath, doc.toString({ lineWidth: 0 }));
 console.log(`${feedPath} matches the files beside it.`);

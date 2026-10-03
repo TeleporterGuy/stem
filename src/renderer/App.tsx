@@ -1697,9 +1697,10 @@ export default function App() {
         updateOffer(update) !== null && (
           // Good news, said once: the update is either sitting downloaded (the
           // AppImage, a mac build in Applications) or sitting on a web page
-          // (everywhere else, and an auto install whose download failed). "Later" is a real answer — a ready build
-          // installs itself on the next quit anyway, and the row in Settings →
-          // App keeps the offer open.
+          // (everywhere else, and an auto install whose download failed).
+          // "Later" is a real answer — a ready build installs itself on the
+          // next quit anyway, and the row in Settings → App keeps the offer
+          // open.
           <div className="update-banner" role="status">
             <span className="update-banner-msg">
               {updateOffer(update) === 'restart'
