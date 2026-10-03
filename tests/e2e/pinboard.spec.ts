@@ -97,3 +97,76 @@ test('the pinboard strip opens, floats, closes on an outside click, and docks', 
   await expect(win.locator('.pinboard-item.kind-note')).toContainText('Buy more accelerator');
   await expect(win.locator('.pinboard-count')).toHaveText('3');
 });
+
+test('pins from the chat: /pin, the Pin action, a selected passage, and reorder by drag', async ({ mainWindow: win }, testInfo) => {
+  test.setTimeout(120_000);
+  await send(win, 'Reply with exactly the words MIX THREE TO ONE and nothing else.');
+  const reply = win.locator('.message-assistant:not(.activity-row)').last();
+  await expect(reply.locator('.message-body')).toContainText(/MIX THREE TO ONE/, { timeout: 60_000 });
+  await expect(win.locator('.message-user').last().locator('.message-actions')).toBeAttached({ timeout: 20_000 });
+
+  // `/pin <text>` starts the board without starting a turn.
+  const composer = win.getByPlaceholder('Ask Stem…');
+  await composer.fill('/pin bought 1 L of oil');
+  await composer.press('Enter');
+  await expect(win.getByText('Pinned to this chat')).toBeVisible();
+  await expect(win.locator('.pinboard-count')).toHaveText('1');
+  await expect(composer).toHaveValue('');
+  await expect(win.locator('.message-user')).toHaveCount(1);
+
+  // The Pin action pins the whole reply, stays lit, and toggles back off.
+  await reply.hover();
+  await reply.getByLabel('Pin to this chat').click();
+  await expect(win.locator('.pinboard-count')).toHaveText('2');
+  await expect(reply.getByLabel('Unpin from this chat')).toBeVisible();
+  await reply.getByLabel('Unpin from this chat').click();
+  await expect(win.locator('.pinboard-count')).toHaveText('1');
+  await reply.hover();
+  await reply.getByLabel('Pin to this chat').click();
+  await expect(win.locator('.pinboard-count')).toHaveText('2');
+
+  // Select a passage of the reply → the floating Pin button pins exactly it.
+  const body = reply.locator('.message-body .mdx, .message-body .message-plain').first();
+  await body.evaluate((el) => {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let node: Text | null = null;
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if ((n as Text).data.includes('THREE TO')) {
+        node = n as Text;
+        break;
+      }
+    }
+    if (!node) throw new Error('reply text not found');
+    const start = node.data.indexOf('THREE TO');
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, start + 'THREE TO'.length);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+  const offer = win.locator('.selection-pin');
+  await expect(offer).toBeVisible();
+  await win.screenshot({ path: testInfo.outputPath('4-selection.png') });
+  await offer.click();
+  await expect(win.locator('.pinboard-count')).toHaveText('3');
+  await expect(offer).toHaveCount(0);
+
+  // The passage jumps to exactly its text.
+  await win.locator('.pinboard-strip').click();
+  const passage = win.locator('.pinboard-item.kind-passage');
+  await expect(passage).toContainText('THREE TO');
+  await passage.hover();
+  await passage.getByLabel('Show in chat').click();
+  expect(await win.evaluate(() => (CSS as any).highlights?.has('pin-passage'))).toBe(true);
+  await win.screenshot({ path: testInfo.outputPath('5-passage-jump.png') });
+
+  // Drag the passage to the top of the board.
+  await win.locator('.pinboard-strip').click();
+  const items = win.locator('.pinboard-item');
+  await expect(items.first()).toHaveClass(/kind-note/);
+  await passage.dragTo(items.first(), { targetPosition: { x: 40, y: 4 } });
+  await expect(items.first()).toHaveClass(/kind-passage/);
+  await win.screenshot({ path: testInfo.outputPath('6-reordered.png') });
+});

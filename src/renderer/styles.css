@@ -699,6 +699,39 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 }
 .pinboard-editor textarea:focus { outline: none; box-shadow: var(--shadow-focus); }
 .pinboard-editor-actions { display: flex; justify-content: flex-end; gap: var(--sp-6); }
+/* Drag to reorder: the moving row dims, a rule marks where it would land. */
+.pinboard-item[draggable='true'] { cursor: grab; }
+.pinboard-item.dragging { opacity: 0.4; }
+.pinboard-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.pinboard-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+/* A pinned message says so at rest, beside its author; the toggle lives in the hover row. */
+.message-action.on { color: var(--accent); }
+.message-pinned { display: inline-flex; margin-left: var(--sp-3); color: var(--accent); vertical-align: -1px; }
+/* Select text in a message → this floats over the selection. Fixed to the
+   viewport because the selection rect is; withdrawn on scroll. */
+.selection-pin {
+  position: fixed;
+  z-index: var(--z-popover);
+  transform: translate(-50%, calc(-100% - var(--sp-3)));
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--ctl-h-sm);
+  padding: 0 var(--sp-4);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-12);
+  box-shadow: var(--shadow-pop);
+  cursor: pointer;
+}
+.selection-pin:hover { color: var(--accent); border-color: var(--accent); }
+.selection-pin svg { color: var(--accent); }
+/* A pinned passage the user jumped to, lit where it stands. */
+::highlight(pin-passage) { background-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+
 /* The source of a pin the user jumped to: a brief accent wash, then back. */
 .message.pin-flash { animation: pin-flash 1.6s ease-out; border-radius: var(--radius-md); }
 @keyframes pin-flash {

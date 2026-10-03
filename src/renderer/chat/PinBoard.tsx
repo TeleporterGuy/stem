@@ -43,6 +43,9 @@ export function PinBoard({
   // The note being written or edited: `new` for the composer under the list.
   const [editing, setEditing] = useState<string | 'new' | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Drag to reorder: which row is moving, and where it would land.
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropAt, setDropAt] = useState<{ id: string; after: boolean } | null>(null);
 
   // Floating: a press anywhere outside the board — the transcript, the
   // composer, the sidebar — closes it. Docked boards stay put.
@@ -64,6 +67,17 @@ export function PinBoard({
   }, [pins.length, editing, docked]);
 
   if (pins.length === 0 && editing !== 'new') return null;
+
+  const drop = () => {
+    if (dragId && dropAt && dragId !== dropAt.id) {
+      const ids = pins.map((p) => p.id).filter((id) => id !== dragId);
+      const at = ids.indexOf(dropAt.id) + (dropAt.after ? 1 : 0);
+      ids.splice(at, 0, dragId);
+      if (ids.join() !== pins.map((p) => p.id).join()) void board.reorder(ids);
+    }
+    setDragId(null);
+    setDropAt(null);
+  };
 
   const toggleDocked = () => {
     const next = !docked;
@@ -112,6 +126,16 @@ export function PinBoard({
               <PinRow
                 key={pin.id}
                 pin={pin}
+                draggable={pins.length > 1 && editing === null}
+                dragging={dragId === pin.id}
+                dropMark={dropAt?.id === pin.id && dragId !== pin.id ? (dropAt.after ? 'after' : 'before') : null}
+                onDragStart={() => setDragId(pin.id)}
+                onDragOverRow={(after) => setDropAt({ id: pin.id, after })}
+                onDrop={drop}
+                onDragEnd={() => {
+                  setDragId(null);
+                  setDropAt(null);
+                }}
                 source={pinSource(pin, messages)}
                 editing={editing === pin.id}
                 onEdit={() => setEditing(pin.id)}
@@ -157,6 +181,13 @@ export function PinBoard({
 
 function PinRow({
   pin,
+  draggable,
+  dragging,
+  dropMark,
+  onDragStart,
+  onDragOverRow,
+  onDrop,
+  onDragEnd,
   source,
   editing,
   onEdit,
@@ -166,6 +197,14 @@ function PinRow({
   onJump
 }: {
   pin: ChatPin;
+  draggable: boolean;
+  dragging: boolean;
+  dropMark: 'before' | 'after' | null;
+  onDragStart: () => void;
+  /** The dragged row is over this one; `after` = its lower half. */
+  onDragOverRow: (after: boolean) => void;
+  onDrop: () => void;
+  onDragEnd: () => void;
   source: ChatMessage | null;
   editing: boolean;
   onEdit: () => void;
@@ -188,7 +227,28 @@ function PinRow({
   const gone = quoted && !source;
 
   return (
-    <li className={`pinboard-item kind-${pin.kind}${gone ? ' gone' : ''}`}>
+    <li
+      className={`pinboard-item kind-${pin.kind}${gone ? ' gone' : ''}${dragging ? ' dragging' : ''}${
+        dropMark ? ` drop-${dropMark}` : ''
+      }`}
+      draggable={draggable}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'move';
+        // Some engines start no drag without data.
+        e.dataTransfer.setData('text/plain', pin.id);
+        onDragStart();
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        const box = e.currentTarget.getBoundingClientRect();
+        onDragOverRow(e.clientY > box.top + box.height / 2);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        onDrop();
+      }}
+      onDragEnd={onDragEnd}
+    >
       <Icon size={13} className="pinboard-item-icon" aria-label={KIND_TITLE[pin.kind]} />
       <div className="pinboard-item-body">
         {/* Until a label is written the text itself is the name: no echo of its first words. */}

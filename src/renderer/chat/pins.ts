@@ -76,3 +76,41 @@ export function writeDocked(threadId: string, docked: boolean): void {
     // Not remembered; the board still docks for this session.
   }
 }
+
+/** Where a passage starts and ends among a run of text pieces (a message's text nodes). */
+export interface PieceRange {
+  startPiece: number;
+  startOffset: number;
+  endPiece: number;
+  /** Exclusive. */
+  endOffset: number;
+}
+
+/**
+ * Find `needle` in the concatenation of `pieces`, ignoring whitespace on both
+ * sides. A selection's toString() and the rendered text disagree on exactly
+ * that: a selection across two list items or paragraphs reads with a line
+ * break the DOM's text nodes do not have, and an inline `<strong>` can split a
+ * word across nodes with nothing between. Dropping whitespace from the
+ * comparison handles both; the range still covers the original text, spaces
+ * included. Null when the passage is no longer there.
+ */
+export function locatePassage(pieces: string[], needle: string): PieceRange | null {
+  const want = needle.replace(/\s+/g, '');
+  if (!want) return null;
+  // The haystack without whitespace, and for each of its characters where it came from.
+  let flat = '';
+  const origin: Array<[number, number]> = [];
+  pieces.forEach((piece, p) => {
+    for (let i = 0; i < piece.length; i++) {
+      if (/\s/.test(piece[i])) continue;
+      flat += piece[i];
+      origin.push([p, i]);
+    }
+  });
+  const at = flat.indexOf(want);
+  if (at === -1) return null;
+  const [startPiece, startOffset] = origin[at];
+  const [endPiece, lastOffset] = origin[at + want.length - 1];
+  return { startPiece, startOffset, endPiece, endOffset: lastOffset + 1 };
+}

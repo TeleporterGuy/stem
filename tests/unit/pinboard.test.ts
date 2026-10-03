@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { messageAnchor, pinLabel, pinSource, pinSummary } from '../../src/renderer/chat/pins';
+import { detectPinCommand } from '../../src/renderer/chat/Composer';
+import { locatePassage, messageAnchor, pinLabel, pinSource, pinSummary } from '../../src/renderer/chat/pins';
 import type { ChatMessage, ChatPin } from '../../src/shared/types';
 
 const pin = (over: Partial<ChatPin>): ChatPin => ({
@@ -58,5 +59,45 @@ describe('pin sources', () => {
   it('has no source for a note, or once the turn left the chat', () => {
     expect(pinSource(pin({ kind: 'note' }), messages)).toBeNull();
     expect(pinSource(pin({ kind: 'message', anchor: 'r9', role: 'assistant' }), messages)).toBeNull();
+  });
+});
+
+describe('locatePassage', () => {
+  it('finds a passage that spans text nodes', () => {
+    expect(locatePassage(['Mix 3 parts ', 'oil', ' : 1 part accelerator.'], 'parts oil : 1')).toEqual({
+      startPiece: 0,
+      startOffset: 6,
+      endPiece: 2,
+      endOffset: 4
+    });
+  });
+
+  it('ignores whitespace, which a selection and the rendered text disagree on', () => {
+    // A selection across two list items reads "dry 24 h\ncure 5 days"; the DOM has no newline.
+    expect(locatePassage(['dry 24 h', 'cure   5 days'], 'h\ncure 5')).toEqual({
+      startPiece: 0,
+      startOffset: 7,
+      endPiece: 1,
+      endOffset: 8
+    });
+  });
+
+  it('is null when the passage is gone or empty', () => {
+    expect(locatePassage(['something else'], 'Mix 3 : 1')).toBeNull();
+    expect(locatePassage(['x'], '   ')).toBeNull();
+  });
+});
+
+describe('detectPinCommand', () => {
+  it('reads /pin <text> as a note, and a bare /pin as nothing to pin', () => {
+    expect(detectPinCommand('/pin buy accelerator')).toEqual({ note: 'buy accelerator' });
+    expect(detectPinCommand('/pin    padded  ')).toEqual({ note: 'padded' });
+    expect(detectPinCommand('/pin')).toEqual({ note: '' });
+  });
+
+  it('leaves everything else to the normal send path', () => {
+    expect(detectPinCommand('/pinned it')).toBeNull();
+    expect(detectPinCommand('please /pin this')).toBeNull();
+    expect(detectPinCommand('/learn')).toBeNull();
   });
 });
