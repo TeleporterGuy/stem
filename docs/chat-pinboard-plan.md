@@ -1,6 +1,6 @@
 # Chat pinboard
 
-Status: in progress on branch `chat-pinboard` — phases 1 (store and API), 2 (the board) and 3 (pinning) done.
+Status: in progress on branch `chat-pinboard` — phases 1–4 done (store and API, the board, pinning, model context and labels).
 
 ## Purpose
 

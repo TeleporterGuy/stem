@@ -169,4 +169,15 @@ test('pins from the chat: /pin, the Pin action, a selected passage, and reorder 
   await passage.dragTo(items.first(), { targetPosition: { x: 40, y: 4 } });
   await expect(items.first()).toHaveClass(/kind-passage/);
   await win.screenshot({ path: testInfo.outputPath('6-reordered.png') });
+
+  // Rename: the label becomes the item's name and the collapsed summary's.
+  const first = items.first();
+  await first.hover();
+  await first.getByLabel('Rename').click();
+  await first.getByLabel('Pin name').fill('Mix ratio');
+  await first.getByLabel('Pin name').press('Enter');
+  await expect(first.locator('.pinboard-item-label')).toHaveText('Mix ratio');
+  await win.locator('.messages').click({ position: { x: 20, y: 500 } });
+  await expect(win.locator('.pinboard-summary')).toContainText('(Mix ratio · bought 1 L of');
+  await win.screenshot({ path: testInfo.outputPath('7-renamed.png') });
 });

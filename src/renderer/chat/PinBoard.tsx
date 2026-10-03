@@ -8,6 +8,7 @@ import {
   Pin,
   Plus,
   StickyNote,
+  Tag,
   TextQuote,
   X
 } from 'lucide-react';
@@ -144,6 +145,7 @@ export function PinBoard({
                   if (await board.update(pin.id, { text })) setEditing(null);
                 }}
                 onRemove={() => void board.remove(pin.id)}
+                onRename={(label) => board.update(pin.id, { label })}
                 onJump={(source) => {
                   onJump(pin, source);
                   if (!docked) setOpen(false);
@@ -194,6 +196,7 @@ function PinRow({
   onCancelEdit,
   onSave,
   onRemove,
+  onRename,
   onJump
 }: {
   pin: ChatPin;
@@ -211,8 +214,11 @@ function PinRow({
   onCancelEdit: () => void;
   onSave: (text: string) => void;
   onRemove: () => void;
+  /** Write the pin's label; null clears it (and a fresh one is written in the background). */
+  onRename: (label: string | null) => Promise<boolean>;
   onJump: (source: ChatMessage) => void;
 }) {
+  const [renaming, setRenaming] = useState(false);
   const Icon = KIND_ICON[pin.kind];
   // A note is the user's own writing: removing it takes a second click. A pinned
   // message or passage can be pinned again from the chat, so one click does.
@@ -251,8 +257,18 @@ function PinRow({
     >
       <Icon size={13} className="pinboard-item-icon" aria-label={KIND_TITLE[pin.kind]} />
       <div className="pinboard-item-body">
-        {/* Until a label is written the text itself is the name: no echo of its first words. */}
-        {pin.label && <div className="pinboard-item-label">{pin.label}</div>}
+        {renaming ? (
+          <LabelEditor
+            initial={pin.label ?? ''}
+            onCancel={() => setRenaming(false)}
+            onSave={async (label) => {
+              if (await onRename(label.trim() ? label : null)) setRenaming(false);
+            }}
+          />
+        ) : (
+          // Until a label is written the text itself is the name: no echo of its first words.
+          pin.label && <div className="pinboard-item-label">{pin.label}</div>
+        )}
         {editing ? (
           <NoteEditor initial={pin.text} onCancel={onCancelEdit} onSave={onSave} />
         ) : (
@@ -260,8 +276,17 @@ function PinRow({
         )}
         {gone && <div className="pinboard-item-gone">No longer in this chat</div>}
       </div>
-      {!editing && (
+      {!editing && !renaming && (
         <div className="pinboard-item-actions">
+          <button
+            type="button"
+            className="message-action"
+            aria-label="Rename"
+            title="Rename — the short name in the collapsed board"
+            onClick={() => setRenaming(true)}
+          >
+            <Tag size={13} />
+          </button>
           {quoted && source && (
             <button
               type="button"
@@ -293,6 +318,41 @@ function PinRow({
         </div>
       )}
     </li>
+  );
+}
+
+/** One-line label editor; empty clears the label so a fresh one is written. */
+function LabelEditor({
+  initial,
+  onSave,
+  onCancel
+}: {
+  initial: string;
+  onSave: (label: string) => void;
+  onCancel: () => void;
+}) {
+  const [label, setLabel] = useState(initial);
+  return (
+    <input
+      className="pinboard-label-input"
+      autoFocus
+      value={label}
+      maxLength={60}
+      placeholder="Short name — leave empty to let Stem name it"
+      aria-label="Pin name"
+      onChange={(e) => setLabel(e.target.value)}
+      onBlur={onCancel}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          onSave(label);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          onCancel();
+        }
+      }}
+    />
   );
 }
 

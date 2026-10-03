@@ -698,6 +698,18 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   resize: vertical;
 }
 .pinboard-editor textarea:focus { outline: none; box-shadow: var(--shadow-focus); }
+.pinboard-label-input {
+  width: 100%;
+  max-width: 320px;
+  font: inherit;
+  font-weight: 600;
+  padding: var(--sp-1) var(--sp-3);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+}
+.pinboard-label-input:focus { outline: none; box-shadow: var(--shadow-focus); }
 .pinboard-editor-actions { display: flex; justify-content: flex-end; gap: var(--sp-6); }
 /* Drag to reorder: the moving row dims, a rule marks where it would land. */
 .pinboard-item[draggable='true'] { cursor: grab; }

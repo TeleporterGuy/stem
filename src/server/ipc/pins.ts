@@ -1,6 +1,8 @@
 import { registerServer } from './guard';
 import type { IpcDeps } from './deps';
 import { addPin, listPins, removePin, reorderPins, updatePin } from '../pins/store';
+import { LABEL_TIMEOUT_MS, queuePinLabel, type PinLabelDeps } from '../pins/label';
+import { backgroundRunOf } from '../workspace/settings';
 import type { ChatMessage, ChatPin, ChatPinInput, ChatPinPatch } from '../../shared/types';
 
 /**
@@ -13,14 +15,28 @@ export function registerPinsIpc(deps: IpcDeps): void {
     deps.emit('pins:changed', { threadId });
     return listPins(threadId);
   };
+  // Labels are written in the background on the quick-tasks model chat subjects
+  // use; the board shows the item's first words until one lands.
+  const labeller: PinLabelDeps = {
+    complete: async (prompt) =>
+      deps.runtime().complete(prompt, {
+        ...(await backgroundRunOf('subject', (s) => ({ model: s.chats.subjectModel, effort: s.chats.subjectEffort }))),
+        timeoutMs: LABEL_TIMEOUT_MS
+      }),
+    changed: (threadId) => deps.emit('pins:changed', { threadId })
+  };
 
   registerServer('pins:list', (_e, threadId: string) => listPins(threadId));
   registerServer('pins:add', (_e, threadId: string, input: ChatPinInput) => {
-    addPin(threadId, input);
+    const pin = addPin(threadId, input);
+    if (!pin.label) queuePinLabel(threadId, pin.id, labeller);
     return changed(threadId);
   });
   registerServer('pins:update', (_e, threadId: string, pinId: string, patch: ChatPinPatch) => {
-    updatePin(threadId, pinId, patch);
+    const pin = updatePin(threadId, pinId, patch);
+    // A rewritten note loses a model label that no longer fits; so does a label
+    // the user cleared. Either way, ask for a fresh one.
+    if (!pin.label) queuePinLabel(threadId, pin.id, labeller);
     return changed(threadId);
   });
   registerServer('pins:remove', (_e, threadId: string, pinId: string) => {
