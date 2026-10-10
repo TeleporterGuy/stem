@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 /// One open chat: its transcript, live turn state, and the actions the
 /// composer can take on it. Port of src/shared/chatState.ts.
@@ -33,6 +34,11 @@ final class ThreadStore {
     @ObservationIgnored private var sub: UUID?
     /// The turn this phone just started, before startTurn answered with a thread.
     @ObservationIgnored private var pendingTurnId: String?
+    /// A send whose answer the connection lost. The server may well have run it
+    /// (switching apps mid-send cuts the request, not the turn), so sending the
+    /// same message again reuses its turn id and the server answers with the
+    /// turn it already started instead of a duplicate chat.
+    @ObservationIgnored private var unanswered: (text: String, files: Int, turnId: String)?
 
     init(session: Session, threadId: String?) {
         self.session = session
@@ -325,7 +331,11 @@ final class ThreadStore {
     /// The message shows before `upload` runs, so the bubble doesn't wait on the attachments.
     func send(text: String, previews: [MessageAttachment], upload: () async throws -> [TurnAttachment],
               personaId: String?, private isPrivate: Bool) async -> Bool {
-        let turnId = UUID().uuidString.lowercased()
+        let turnId = unanswered.flatMap { $0.text == text && $0.files == previews.count ? $0.turnId : nil }
+            ?? UUID().uuidString.lowercased()
+        // Ask for time to finish if the user switches apps right after sending.
+        let background = UIApplication.shared.beginBackgroundTask(withName: "startTurn")
+        defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
         let localId = "local-\(turnId)"
         messages.append(ChatMessage(id: localId, role: "user", content: text,
                                     attachments: previews.isEmpty ? nil : previews,
@@ -354,6 +364,7 @@ final class ThreadStore {
             attachments: attachments.isEmpty ? nil : attachments, personaId: personaId)
         do {
             let r = try await client.call("backend:startTurn", [.from(input)], as: StartTurnResult.self)
+            unanswered = nil
             if threadId == nil, let t = r.threadId {
                 threadId = t
                 self.isPrivate = isPrivate
@@ -378,7 +389,12 @@ final class ThreadStore {
             pendingTurnId = nil
             messages.removeAll { $0.id == localId }
             settleLocally()
-            self.error = error.localizedDescription
+            if (error as? StemError)?.unreachable == true {
+                unanswered = (text, previews.count, turnId)
+                self.error = "The connection dropped while sending, so it may have gone through. Send it again: it won't run twice."
+            } else {
+                self.error = error.localizedDescription
+            }
             return false
         }
     }

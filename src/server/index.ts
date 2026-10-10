@@ -52,6 +52,7 @@ import {
 } from './startup/transport';
 import { setActivityEmitter } from './activity';
 import { foldTurnEvent, liveTurnCount, noteTurnStart } from './live-turns';
+import { startTurnOnce } from './start-turn-once';
 import { pushApprovalRequest, pushMailReceived, pushTurnFinished, type ApprovalPushKind } from './push';
 import { onMailChanged, onMailReceived, taskMailHistory, taskRunThreadIds } from './workspace/mail';
 import { closeApns } from './push/apns';
@@ -116,8 +117,10 @@ import type {
   MailSettings,
   QuickChatSettings,
   RuntimeStatus,
-  StartTurnInput
+  StartTurnInput,
+  StartTurnResult
 } from '../shared/types';
+import type { CallerContext } from './ipc/guard';
 
 // The headless composition root. Everything Stem does that is not a window lives
 // under this directory, and startServer() is where the pieces are wired together:
@@ -426,7 +429,10 @@ function registerIpc(): void {
     }
   });
 
-  registerServer('backend:startTurn', async (e, input: StartTurnInput) => {
+  registerServer('backend:startTurn', (e, input: StartTurnInput) =>
+    startTurnOnce(input.turnId, () => startTurnNow(e, input))
+  );
+  async function startTurnNow(e: CallerContext, input: StartTurnInput): Promise<StartTurnResult> {
     // From a transported device, an attachment path can only name a file on
     // the SERVER — the remote clients upload first and pass staging handles
     // (desktop/proxy.ts), so a bare path from one is a request to read
@@ -501,7 +507,7 @@ function registerIpc(): void {
       noteTurnStart(started.threadId, started.turnId, input.scheduled ? { kind: 'background' } : { kind: 'interactive', deviceId: e?.deviceId });
     }
     return started;
-  });
+  }
   registerServer('backend:interruptTurn', (e, turnId: string) => {
     lastInteractiveAt = Date.now();
     log('pi.interrupt', 'client requested interruption', { turnId, deviceId: e?.deviceId ?? 'local' });

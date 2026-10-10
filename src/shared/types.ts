@@ -426,7 +426,8 @@ export interface StartTurnInput {
    * is sent — even while the start call is still queued behind the foreground
    * gate or building its prompt — instead of waiting for this call to return an
    * id. The backend validates the format and mints its own when absent or
-   * malformed (scheduled runs and the mobile client never send one).
+   * malformed (scheduled runs never send one). A resend with the same id gets
+   * the turn already started (server/start-turn-once.ts).
    */
   turnId?: string;
   threadId?: string;
