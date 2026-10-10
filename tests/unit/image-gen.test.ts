@@ -136,7 +136,7 @@ describe('image-gen helpers', () => {
       details: { stemImage: { id: `img_${String(n).repeat(10)}` } }
     });
     const messages = [gen(1), gen(2), { role: 'user', content: 'more' }, gen(3), gen(4), gen(5)];
-    const out = stubOldImages(messages, 2) as typeof messages;
+    const out = stubOldImages(messages, 2, 1) as typeof messages;
     const hasImage = (m: (typeof messages)[number]) =>
       Array.isArray(m.content) && m.content.some((p) => (p as { type: string }).type === 'image');
     // 3–5 are after the last user message (this turn): all kept; 1–2 stubbed.
@@ -144,6 +144,26 @@ describe('image-gen helpers', () => {
     expect(JSON.stringify(out[0])).toContain('img_1111111111');
     const untouched = [gen(1)];
     expect(stubOldImages(untouched, 3)).toBe(untouched);
+  });
+
+  it('stubs older images in whole blocks, so the cached prefix moves once per block', () => {
+    const gen = (n: number) => ({
+      role: 'toolResult',
+      toolName: 'generate_image',
+      content: [{ type: 'image', data: `D${n}`, mimeType: 'image/png' }],
+      details: { stemImage: { id: `img_${String(n % 10).repeat(10)}` } }
+    });
+    const hasImage = (m: { content?: unknown }) =>
+      Array.isArray(m.content) && m.content.some((p) => (p as { type: string }).type === 'image');
+    const turn = (count: number) => {
+      const messages: Array<Record<string, unknown>> = [];
+      for (let n = 1; n <= count; n++) messages.push(gen(n), { role: 'user', content: `next ${n}` });
+      return (stubOldImages(messages, 3, 4) as typeof messages).filter((m) => m.role === 'toolResult').map(hasImage);
+    };
+    // Up to keep + block - 1 = 6 images keep their pixels; the 7th stubs the oldest four at once.
+    expect(turn(6)).toEqual([true, true, true, true, true, true]);
+    expect(turn(7)).toEqual([false, false, false, false, true, true, true]);
+    expect(turn(10)).toEqual([false, false, false, false, true, true, true, true, true, true]);
   });
 });
 

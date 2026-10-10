@@ -2038,7 +2038,7 @@ export default async function stemMcpBridge(pi) {
     // Screenshots from computer/browser control get the same treatment.
     pi.on('context', (event) => {
       const messages = event && event.messages;
-      const next = stubOldScreenshots(stubOldImages(messages, IMAGE_CONTEXT_KEEP));
+      const next = stubOldScreenshots(stubOldImages(messages, IMAGE_CONTEXT_KEEP, IMAGE_CONTEXT_DROP_BLOCK));
       return next !== messages ? { messages: next } : undefined;
     });
     // Service tier ("Fast"): see withServiceTier for which requests accept it.
@@ -3644,6 +3644,8 @@ function registerBrowserTool(pi, turnContext) {
 
 // Newest generated images whose pixels the model keeps seeing (stubOldImages).
 const IMAGE_CONTEXT_KEEP = 3;
+// Older ones lose their pixels this many at a time, as screenshots do (SCREENSHOT_DROP_BLOCK).
+const IMAGE_CONTEXT_DROP_BLOCK = 4;
 const IMAGE_TIMEOUT_MS = 180_000;
 
 // Fallback only: main writes the exact reason into the turn-context gate.

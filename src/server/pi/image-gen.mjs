@@ -244,12 +244,14 @@ export function knownImageIds(entries) {
 }
 
 /**
- * The context the model sees keeps the pixels of only the newest `keep`
- * generated images (plus every one made after the last user message); older
- * ones become a one-line stub. The session file keeps every byte, so an old
- * image stays usable through `references`.
+ * The context the model sees keeps the pixels of only the newest generated
+ * images (between `keep` and `keep + block - 1` of them, plus every one made
+ * after the last user message); older ones become a one-line stub. They are
+ * stubbed in blocks of `block`, so the prefix the provider caches changes once
+ * per block rather than with every new image. The session file keeps every
+ * byte, so an old image stays usable through `references`.
  */
-export function stubOldImages(messages, keep = 3) {
+export function stubOldImages(messages, keep = 3, block = 4) {
   if (!Array.isArray(messages)) return messages;
   let lastUser = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -262,11 +264,13 @@ export function stubOldImages(messages, keep = 3) {
   messages.forEach((m, i) => {
     if (stemImageOf(m) && imagesOf(m.content).length) generated.push(i);
   });
-  const keepIdx = new Set(generated.slice(-keep));
-  for (const i of generated) if (i > lastUser) keepIdx.add(i);
+  const drop = Math.floor(Math.max(0, generated.length - keep) / block) * block;
+  // This turn's images are never stubbed, so the dropped set is always the
+  // oldest stretch of the earlier ones.
+  const dropIdx = new Set(generated.filter((i) => i < lastUser).slice(0, drop));
   let changed = false;
   const out = messages.map((m, i) => {
-    if (!generated.includes(i) || keepIdx.has(i)) return m;
+    if (!dropIdx.has(i)) return m;
     changed = true;
     const id = stemImageOf(m).id;
     const content = m.content.filter((p) => !(p && p.type === 'image'));
