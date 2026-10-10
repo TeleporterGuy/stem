@@ -28,4 +28,4 @@ export function parseImagesMarker(text: string): string[];
 export function stemImageOf(message: unknown): StemImageDetails | null;
 export function findImageInEntries(entries: readonly unknown[], id: string): ImageData | null;
 export function knownImageIds(entries: readonly unknown[]): string[];
-export function stubOldImages<T>(messages: T[], keep?: number): T[];
+export function stubOldImages<T>(messages: T[], keep?: number, block?: number): T[];
