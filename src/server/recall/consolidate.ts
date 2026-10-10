@@ -2,11 +2,15 @@
 import { isRecallEnabled } from '../workspace/memory';
 import { degrade } from '../degrade';
 import { PENDING_KEY } from './distill';
+import { cosineFloorsFor } from './embed-scale';
 import { getEmbeddingsClient } from './retrieval';
 import { cosineSim } from './vector';
 import type { LlmClient } from './llm';
 import { recallStore, type ConsolidationOps, type ConsolidationResult, type Fact } from './store';
-const { applyConsolidation, getAllFacts, getConsolidateChunkSize, getFactsGeneration, getFactsMissingVector, getFactVectors, getNewestEvidenceTsByFact, setMeta, upsertFactVectorForSnapshot } = recallStore;
+const {
+  applyConsolidation, getAllFacts, getConsolidateChunkSize, getFactsGeneration, getFactsMissingVector, getFactVectors,
+  getMeta, getNewestEvidenceTsByFact, getTidyThreshold, setMeta, upsertFactVectorForSnapshot
+} = recallStore;
 
 // Level 1 cleanup: the consolidation pass. Distillation only ever ADDS facts and
 // can only dedup byte-for-byte (normalizeFact), so over time the set accumulates
@@ -15,13 +19,22 @@ const { applyConsolidation, getAllFacts, getConsolidateChunkSize, getFactsGenera
 // Default posture is KEEP: only ids the model names are touched, so a flaky/lazy
 // reply is a no-op, never a memory wipe.
 //
-// For large sets the prompt is bounded by SMART chunking: facts are grouped into
-// similarity clusters (via the embeddings seam) so likely duplicates/contradictions
-// land in the same prompt. Naive size-chunking would scatter a duplicate pair
-// across two prompts and never merge them; clustering keeps them together. With no
-// embeddings configured it falls back to sequential size-chunks (still bounded,
-// best effort). Each chunk is clamped independently — which also bounds the
-// aggregate removal to MAX_DROP_FRACTION of the whole set.
+// For large sets the prompt is bounded by NEIGHBOURHOOD grouping: every fact is
+// put in a prompt together with its nearest embedding neighbours, so a duplicate
+// or contradicting pair is always side by side. Groups may overlap (a fact can be
+// some other fact's neighbour too); the final apply lets each fact be touched by
+// one op only. Greedy disjoint clustering, the previous scheme, split 890 of the
+// VPS store's 1,469 close pairs (cosine ≥ 0.85) across prompts, and the clearest
+// surviving duplicates were all among them. With no embeddings configured it
+// falls back to sequential size-chunks (still bounded, best effort). Each group
+// is clamped independently, against MAX_DROP_FRACTION of its own size.
+//
+// Two scopes. 'recent' (the automatic pass after new facts arrive) reviews only
+// the facts added since the last pass, each with its neighbours; 'full' (the
+// Tidy up button, and automatically once a day) reviews every fact. Folder
+// facts never enter either: they are condensed document contents, not things
+// the user said, sit below the injection floor, and their documents are
+// searchable on their own — on the VPS they were a third of every pass.
 
 // Below this many facts there's nothing worth consolidating.
 const MIN_FACTS = 6;
@@ -59,6 +72,38 @@ const EMPTY_OPS: ConsolidationOps = { merge: [], correct: [], drop: [] };
 
 function isProtected(f: Fact): boolean {
   return f.source === 'explicit';
+}
+
+/** The facts tidy-up is responsible for: active, and not condensed from a folder document. */
+function tidyPool(facts: Fact[]): Fact[] {
+  return facts.filter((f) => f.status === 'active' && !f.source.startsWith('folder:'));
+}
+
+/**
+ * Each fact's nearest neighbours that must share a prompt with it, among those
+ * at or above the embedder's strongRaw floor (Gemma 2: 0.72). On the VPS store
+ * (733 chat facts) 3 neighbours above that floor puts every pair at cosine
+ * ≥ 0.88 side by side in 34 prompts; 5 neighbours cost 47 for one more pair.
+ */
+const TIDY_NEIGHBOURS = 3;
+/** How often the automatic pass widens to the whole store. */
+const FULL_TIDY_INTERVAL_S = 24 * 3600;
+const FULL_TIDY_KEY = 'consolidate_full_at';
+/** `<facts generation>:<highest fact id reviewed>` — ids restart after a reset. */
+const SEED_WATERMARK_KEY = 'consolidate_seed_watermark';
+
+export type TidyScope = 'recent' | 'full';
+
+/** Is the daily whole-store pass due? Never when auto tidy-up is off. */
+export function fullTidyDue(nowSeconds = Date.now() / 1000): boolean {
+  if (getTidyThreshold() === 0) return false;
+  const last = Number.parseInt(getMeta(FULL_TIDY_KEY) ?? '0', 10) || 0;
+  return nowSeconds - last >= FULL_TIDY_INTERVAL_S;
+}
+
+function seedWatermark(factsGeneration: number): number {
+  const [gen, id] = (getMeta(SEED_WATERMARK_KEY) ?? '').split(':').map((n) => Number.parseInt(n, 10));
+  return gen === factsGeneration && Number.isFinite(id) ? id : 0;
 }
 
 /** Parse the model's reply into consolidation ops. Defensive: any malformation → no-op. */
@@ -190,7 +235,7 @@ let consolidationQueue: Promise<void> = Promise.resolve();
 
 export function consolidateFacts(
   llm: LlmClient,
-  opts: { force?: boolean } = {}
+  opts: { force?: boolean; scope?: TidyScope } = {}
 ): Promise<ConsolidationResult> {
   const run = consolidationQueue.then(
     () => runConsolidation(llm, opts),
@@ -216,39 +261,92 @@ function sizeChunks(facts: Fact[], size: number): Fact[][] {
 }
 
 /**
- * Greedy similarity clustering: take the next unassigned fact as a seed and pull
- * in its nearest unassigned neighbours by cosine, up to `size`. Near-duplicates
- * (which are semantically close) therefore land in the same chunk where the model
- * can actually merge them. Deterministic — seeds are visited in id order.
+ * Neighbourhood groups: each seed's "star" (the seed plus its TIDY_NEIGHBOURS
+ * nearest pool facts at ≥ `floor`) goes into one group, so every
+ * seed-neighbour pair shares a prompt. A star brings only the neighbours not
+ * already sharing a group with its seed, and a seed already placed with all of
+ * them adds nothing. Stars are visited breadth-first along the neighbour graph
+ * and packed into the open group while the union fits, which keeps related
+ * stars together.
  */
-function greedyClusters(facts: Fact[], vectors: Map<number, Float32Array>, size: number): Fact[][] {
-  const byId = new Map(facts.map((f) => [f.id, f]));
-  const withVec = facts.filter((f) => vectors.has(f.id));
-  const without = facts.filter((f) => !vectors.has(f.id));
-  const unassigned = new Set(withVec.map((f) => f.id));
-  const chunks: Fact[][] = [];
-
-  for (const seed of withVec) {
-    if (!unassigned.has(seed.id)) continue;
-    unassigned.delete(seed.id);
-    const sv = vectors.get(seed.id)!;
-    const neighbours = [...unassigned]
-      .map((id) => ({ id, score: cosineSim(sv, vectors.get(id)!) }))
+function neighbourhoodGroups(
+  seeds: Fact[],
+  pool: Fact[],
+  vectors: Map<number, Float32Array>,
+  size: number,
+  floor: number
+): Fact[][] {
+  const byId = new Map(pool.map((f) => [f.id, f]));
+  const pooled = pool.filter((f) => vectors.has(f.id));
+  const k = Math.min(TIDY_NEIGHBOURS, size - 1);
+  const stars = new Map<number, number[]>();
+  for (const seed of seeds) {
+    const sv = vectors.get(seed.id);
+    if (!sv) continue;
+    const near = pooled
+      .filter((f) => f.id !== seed.id)
+      .map((f) => ({ id: f.id, score: cosineSim(sv, vectors.get(f.id)!) }))
+      .filter((n) => n.score >= floor)
       .sort((a, b) => b.score - a.score)
-      .slice(0, size - 1);
-    for (const n of neighbours) unassigned.delete(n.id);
-    chunks.push([seed, ...neighbours.map((n) => byId.get(n.id)!)]);
+      .slice(0, k)
+      .map((n) => n.id);
+    stars.set(seed.id, [seed.id, ...near]);
   }
-  // Facts without a vector (e.g. an embedding gap) still get cleaned, via size-chunks.
-  if (without.length > 0) chunks.push(...sizeChunks(without, size));
-  return chunks;
+
+  const groups: Fact[][] = [];
+  let open = new Set<number>();
+  // Group indexes each fact belongs to; the open group is index groups.length.
+  const memberOf = new Map<number, Set<number>>();
+  const together = (a: number, b: number): boolean => {
+    const ga = memberOf.get(a);
+    const gb = memberOf.get(b);
+    return !!ga && !!gb && [...ga].some((g) => gb.has(g));
+  };
+  const place = ([seed, ...near]: number[]): void => {
+    const missing = near.filter((id) => !together(seed, id));
+    if (missing.length === 0 && memberOf.has(seed)) return;
+    const star = [seed, ...missing];
+    const union = new Set([...open, ...star]);
+    if (union.size > size && open.size > 0) {
+      groups.push([...open].map((id) => byId.get(id)!));
+      open = new Set(star);
+    } else {
+      open = union;
+    }
+    for (const id of open) {
+      const set = memberOf.get(id) ?? new Set<number>();
+      set.add(groups.length);
+      memberOf.set(id, set);
+    }
+  };
+  const visited = new Set<number>();
+  for (const first of stars.keys()) {
+    if (visited.has(first)) continue;
+    const queue = [first];
+    visited.add(first);
+    while (queue.length > 0) {
+      const star = stars.get(queue.shift()!)!;
+      place(star);
+      for (const id of star) {
+        if (stars.has(id) && !visited.has(id)) {
+          visited.add(id);
+          queue.push(id);
+        }
+      }
+    }
+  }
+  if (open.size > 0) groups.push([...open].map((id) => byId.get(id)!));
+  // Seeds without a vector (an embedding gap) still get reviewed, via size-chunks.
+  const without = seeds.filter((f) => !vectors.has(f.id));
+  if (without.length > 0) groups.push(...sizeChunks(without, size));
+  return groups;
 }
 
-/** Split facts into bounded chunks: similarity clusters when embeddings are available. */
-async function chunkFacts(facts: Fact[], factsGeneration: number): Promise<Fact[][]> {
-  const size = chunkTarget(facts.length, getConsolidateChunkSize());
+/** Split the seeds into bounded prompts: neighbourhood groups when embeddings are available. */
+async function groupFacts(seeds: Fact[], pool: Fact[], factsGeneration: number): Promise<Fact[][]> {
+  const size = getConsolidateChunkSize();
   const emb = getEmbeddingsClient();
-  if (!emb || !(await emb.available())) return sizeChunks(facts, size);
+  if (!emb || !(await emb.available())) return sizeChunks(seeds, chunkTarget(seeds.length, size));
   if (getFactsGeneration() !== factsGeneration) return [];
   try {
     const model = (await emb.modelId()) ?? '';
@@ -266,12 +364,12 @@ async function chunkFacts(facts: Fact[], factsGeneration: number): Promise<Fact[
         upsertFactVectorForSnapshot(f.id, f.text, factsGeneration, model, vecs[i])
       );
     }
-    return greedyClusters(facts, getFactVectors(model), size);
+    return neighbourhoodGroups(seeds, pool, getFactVectors(model), size, cosineFloorsFor(model).strongRaw);
   } catch {
-    // quiet: the size-chunk fallback still puts every fact in front of the
-    // model — only the clustering that would have put a duplicate pair in the
-    // same prompt is lost, and the next pass re-clusters from scratch.
-    return sizeChunks(facts, size); // endpoint hiccup → still bounded, best effort
+    // quiet: the size-chunk fallback still puts every seed in front of the
+    // model — only the grouping that would have put a duplicate pair in the
+    // same prompt is lost, and the next pass groups from scratch.
+    return sizeChunks(seeds, chunkTarget(seeds.length, size)); // endpoint hiccup → still bounded, best effort
   }
 }
 
@@ -280,20 +378,35 @@ async function chunkFacts(facts: Fact[], factsGeneration: number): Promise<Fact[
  * changed. Always resets the pending counter when it actually ran the model (so a
  * no-change result doesn't re-trigger immediately), but NOT when the model call
  * threw — those messages should be retried next cycle.
+ *
+ * `force` (the Tidy up button) bypasses the size floor and always reviews the
+ * whole store; otherwise `scope` picks recent (default) or full.
  */
 async function runConsolidation(
   llm: LlmClient,
-  opts: { force?: boolean } = {}
+  opts: { force?: boolean; scope?: TidyScope } = {}
 ): Promise<ConsolidationResult> {
   if (!isRecallEnabled()) return ZERO;
   const factsGeneration = getFactsGeneration();
-  const facts = getAllFacts().filter((f) => f.status === 'active');
+  const facts = tidyPool(getAllFacts());
   // The automatic pass skips small sets (nothing worth a model call); a manual
   // trigger (`force`) still needs at least two facts to merge anything.
   if (facts.length < (opts.force ? 2 : MIN_FACTS)) return ZERO;
+  const full = opts.force || opts.scope === 'full';
+  const highestId = Math.max(...facts.map((f) => f.id));
+  const watermark = seedWatermark(factsGeneration);
+  const seeds = full ? facts : facts.filter((f) => f.id > watermark);
+  // Stamped up front, failures included: a group the model keeps failing must
+  // not re-run the whole store on every distill cycle. New facts it missed are
+  // still behind the watermark for the next recent pass.
+  if (full) setMeta(FULL_TIDY_KEY, String(Math.floor(Date.now() / 1000)));
+  if (seeds.length === 0) {
+    setMeta(PENDING_KEY, '0');
+    return ZERO;
+  }
 
-  // One prompt while small; cluster into bounded chunks once the set is large.
-  const chunks = facts.length <= getConsolidateChunkSize() ? [facts] : await chunkFacts(facts, factsGeneration);
+  // One prompt while small; neighbourhood groups once the set is large.
+  const chunks = facts.length <= getConsolidateChunkSize() ? [facts] : await groupFacts(seeds, facts, factsGeneration);
   if (getFactsGeneration() !== factsGeneration) return ZERO;
   const protectedIds = new Set(facts.filter(isProtected).map((f) => f.id));
   const evidenceTs = getNewestEvidenceTsByFact();
@@ -364,9 +477,16 @@ async function runConsolidation(
     combined.drop.push(...revalidated.drop);
   }
 
-  const result = applyConsolidation(combined);
+  // Groups overlap, so two of them can act on the same fact. First op wins;
+  // a merge that loses any member to an earlier op is dropped whole. The
+  // drop ceiling here is the whole pool's — each group was already held to
+  // its own share above.
+  const result = applyConsolidation(clampOps(combined, currentProtectedIds, facts.length));
   // Only clear the pending counter when every chunk ran — a failed chunk (model
   // error) should be retried next cycle rather than marked done.
-  if (failedChunks === 0) setMeta(PENDING_KEY, '0');
+  if (failedChunks === 0) {
+    setMeta(PENDING_KEY, '0');
+    setMeta(SEED_WATERMARK_KEY, `${factsGeneration}:${highestId}`);
+  }
   return { ...result, failedChunks };
 }

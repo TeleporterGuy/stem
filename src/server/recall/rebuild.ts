@@ -8,7 +8,7 @@ import {
   parseClaims,
   type DistillCursor
 } from './distill';
-import { classifyRelation, evidenceDateOf } from './reconcile';
+import { classifyRelation, evidenceDateOf, isDuplicateVerdict, mergeDuplicatePair } from './reconcile';
 import type { LlmClient } from './llm';
 import { recallStore, V1_FACTS_MIGRATED_KEY, type StoredMessage } from './store';
 const {
@@ -165,11 +165,16 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
         if (verdict === null || verdict === 'compatible') return true;
         const current = getFactDetails(targetId);
         if (current && current.status === 'active' && current.text === target.text) {
-          createFactConflict(targetId, factId, reason);
+          if (isDuplicateVerdict(verdict)) mergeDuplicatePair(targetId, factId, verdict);
+          else createFactConflict(targetId, factId, reason);
         }
         return true;
       };
+      // A duplicate verdict can retire the rebuilt fact itself; it then has no
+      // standing to supersede or dispute anything further.
+      const retired = (): boolean => getFactDetails(factId)?.status === 'superseded';
       for (const targetId of claim.supersedesFactIds) {
+        if (retired()) break;
         const target = getFactDetails(targetId);
         if (!target || target.id === factId) continue;
         if (directUser && target.source !== 'explicit') {
@@ -179,6 +184,7 @@ export async function runMemoryRebuildStep(llm: LlmClient): Promise<MemoryRebuil
         }
       }
       for (const targetId of claim.conflictsWithFactIds) {
+        if (retired()) break;
         if (claim.supersedesFactIds.includes(targetId)) continue;
         if (!(await raiseVerified(targetId, 'Rebuilt evidence is ambiguous.'))) {
           return getMemoryRebuildStatus();

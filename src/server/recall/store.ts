@@ -2096,6 +2096,41 @@ export class RecallStore {
   };
 
 
+  /**
+   * Retire `loserId` as a duplicate of `survivorId`: the survivor absorbs the
+   * loser's evidence (copy, as applyConsolidation does for merge losers — the
+   * loser keeps its own provenance for restore) so the merge keeps the absorbed
+   * assertion's truth-recency, then the loser is superseded pointing at it.
+   * Both must still be active; callers own the authority checks.
+   */
+  absorbDuplicateFact = (loserId: number, survivorId: number): boolean => {
+    if (loserId === survivorId) return false;
+    const handle = this.open();
+    handle.exec('BEGIN');
+    try {
+      const live = handle.prepare(
+        `SELECT COUNT(*) AS n FROM facts WHERE id IN (?, ?) AND status = 'active'`
+      ).get(loserId, survivorId) as { n: number };
+      if (live.n !== 2) {
+        handle.exec('ROLLBACK');
+        return false;
+      }
+      handle.prepare(
+        `INSERT OR IGNORE INTO fact_evidence
+           (fact_id, message_id, thread_id, role, ts, excerpt, origin, folder_id, rel_path)
+         SELECT ?, message_id, thread_id, role, ts, excerpt, origin, folder_id, rel_path
+         FROM fact_evidence WHERE fact_id = ?`
+      ).run(survivorId, loserId);
+      const changed = this.supersedeFact(loserId, survivorId);
+      handle.exec('COMMIT');
+      return changed;
+    } catch (err) {
+      handle.exec('ROLLBACK');
+      throw err;
+    }
+  };
+
+
   restoreSupersededFact = (id: number): boolean => {
     const handle = this.open();
     const row = handle.prepare(`SELECT text FROM facts WHERE id = ? AND status = 'superseded'`).get(id) as

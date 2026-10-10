@@ -5,7 +5,9 @@ import { cosineSim } from './vector';
 import { isRecallEnabled } from '../workspace/memory';
 import * as activity from '../activity';
 import { degrade } from '../degrade';
-import { classifyRelation, evidenceDateOf, sweepFactAgainstNeighbours, type SweepBudget } from './reconcile';
+import {
+  classifyRelation, evidenceDateOf, isDuplicateVerdict, mergeDuplicatePair, sweepFactAgainstNeighbours, type SweepBudget
+} from './reconcile';
 import type { FactCategory, FactSensitivity } from '../../shared/types';
 import type { LlmClient } from './llm';
 import { recallStore, type StoredMessage, type TurnInjectedFacts } from './store';
@@ -891,10 +893,15 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
         const current = getFactDetails(targetId);
         if (!current || current.status !== 'active' || current.text !== target.text) return true;
         recordRelationResult(id, targetId, verdict, 'sweep');
-        if (verdict !== 'compatible') createFactConflict(target.id, id, reason);
+        if (isDuplicateVerdict(verdict)) mergeDuplicatePair(target.id, id, verdict);
+        else if (verdict !== 'compatible') createFactConflict(target.id, id, reason);
         return true;
       };
+      // A duplicate verdict can retire the new fact itself; it then has no
+      // standing to supersede or dispute anything further.
+      const retired = (): boolean => getFactDetails(id)?.status === 'superseded';
       for (const targetId of claim.supersedesFactIds) {
+        if (retired()) break;
         const target = getFactDetails(targetId);
         if (!target || target.id === id) continue;
         if (directUser && target.source !== 'explicit') {
@@ -904,6 +911,7 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
         }
       }
       for (const targetId of claim.conflictsWithFactIds) {
+        if (retired()) break;
         if (claim.supersedesFactIds.includes(targetId)) continue;
         if (!(await raiseVerified(targetId, 'The available evidence is ambiguous.'))) {
           return advanceWithoutWriting();

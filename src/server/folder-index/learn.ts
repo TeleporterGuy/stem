@@ -10,7 +10,7 @@ import {
   parseDistillOutput,
   scoreCandidatesAgainstFacts
 } from '../recall/distill';
-import { classifyRelation, evidenceDateOf } from '../recall/reconcile';
+import { classifyRelation, evidenceDateOf, isDuplicateVerdict, mergeDuplicatePair } from '../recall/reconcile';
 import { recallStore } from '../recall/store';
 import type { FolderIndexStore, PendingLearnDoc } from './store';
 
@@ -248,6 +248,11 @@ export async function learnFolderBatch(
       if (!currentTarget || currentTarget.status !== 'active' || currentTarget.text !== target.text) continue;
       const currentNew = getFactDetails(id);
       if (!currentNew || currentNew.status === 'superseded') break;
+      if (isDuplicateVerdict(verdict)) {
+        // The incoming fact may be the one retired; it then relates to nothing more.
+        if (mergeDuplicatePair(target.id, id, verdict) === id) break;
+        continue;
+      }
       const bothDocs = target.source.startsWith('folder:');
       if (verdict === 'b_supersedes_a' && bothDocs) {
         supersedeFact(target.id, id);

@@ -150,7 +150,7 @@ describe('processPendingRelationChecks', () => {
     const b = seedFact('The fee is 134 euro per month.', [0.99, 0.1, 0]);
     store.enqueueRelationChecks([[a, b]], 'backfill');
     const res = await processPendingRelationChecks(verdictLlm('b_supersedes_a'));
-    expect(res).toEqual({ checked: 1, conflicts: 1 });
+    expect(res).toEqual({ checked: 1, conflicts: 1, merged: 0 });
     expect(store.getFactDetails(a)?.status).toBe('conflicted');
     expect(store.getFactDetails(b)?.status).toBe('conflicted');
     expect(relationRows()[0].verdict).toBe('b_supersedes_a');
@@ -164,7 +164,7 @@ describe('processPendingRelationChecks', () => {
     const llm = verdictLlm('contradicts');
     const res = await processPendingRelationChecks(llm);
     expect(llm.calls).toBe(0);
-    expect(res).toEqual({ checked: 0, conflicts: 0 });
+    expect(res).toEqual({ checked: 0, conflicts: 0, merged: 0 });
     expect(relationRows()[0].verdict).toBe('stale');
   });
 
@@ -173,7 +173,7 @@ describe('processPendingRelationChecks', () => {
     const b = seedFact('A Slovak interpreter was secured for the appointment.', [0.99, 0.1, 0]);
     store.enqueueRelationChecks([[a, b]], 'coinject');
     const res = await processPendingRelationChecks(verdictLlm('compatible'));
-    expect(res).toEqual({ checked: 1, conflicts: 0 });
+    expect(res).toEqual({ checked: 1, conflicts: 0, merged: 0 });
     expect(store.getMemoryConflicts()).toHaveLength(0);
     expect(store.getFactDetails(a)?.status).toBe('active');
   });
@@ -287,11 +287,11 @@ describe('conflict lifecycle fixes', () => {
     expect(store.countOpenConflicts()).toBe(1);
     const gated = verdictLlm('contradicts');
     // Before the fix this settled the (a, b) row as terminal 'stale', killing it unjudged.
-    expect(await processPendingRelationChecks(gated)).toEqual({ checked: 0, conflicts: 0 });
+    expect(await processPendingRelationChecks(gated)).toEqual({ checked: 0, conflicts: 0, merged: 0 });
     expect(gated.calls).toBe(0);
     expect(relationRows()[0].verdict).toBeNull();
     store.resolveMemoryConflict(conflictId, 'keep_both');
-    expect(await processPendingRelationChecks(verdictLlm('contradicts'))).toEqual({ checked: 1, conflicts: 1 });
+    expect(await processPendingRelationChecks(verdictLlm('contradicts'))).toEqual({ checked: 1, conflicts: 1, merged: 0 });
   });
 
   // Note: supersedeFact mangles the norm key, so a restatement after a

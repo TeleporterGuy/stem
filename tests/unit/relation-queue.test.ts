@@ -66,7 +66,7 @@ describe('processPendingRelationChecks does not re-litigate a settled pair', () 
     // Before the fix this classified the pair and called createFactConflict
     // again — idx_fact_conflict_pair is partial on status='open', so a second
     // open conflict was inserted and the user's decision came back.
-    expect(await processPendingRelationChecks(llm)).toEqual({ checked: 0, conflicts: 0 });
+    expect(await processPendingRelationChecks(llm)).toEqual({ checked: 0, conflicts: 0, merged: 0 });
     expect(llm.calls).toBe(0);
     expect(store.getMemoryConflicts()).toHaveLength(0);
     expect(relationRows()[0].verdict).toBe('stale');
@@ -82,7 +82,7 @@ describe('processPendingRelationChecks spends calls only on rows it can still us
     // flips a and b to 'conflicted' and invalidates (a, c) mid-batch.
     store.enqueueRelationChecks([[a, b], [a, c]], 'sweep');
     const llm = verdictLlm('contradicts');
-    expect(await processPendingRelationChecks(llm)).toEqual({ checked: 1, conflicts: 1 });
+    expect(await processPendingRelationChecks(llm)).toEqual({ checked: 1, conflicts: 1, merged: 0 });
     // Before the fix the second pair was classified first and re-checked after,
     // so the call was made and then thrown away.
     expect(llm.calls).toBe(1);
@@ -104,7 +104,7 @@ describe('processPendingRelationChecks spends calls only on rows it can still us
     });
     // The verdict is discarded (a is no longer active), but the call was paid
     // for: before the fix this reported "Checked 0 pairs" after a real call.
-    expect(await processPendingRelationChecks(llm)).toEqual({ checked: 1, conflicts: 0 });
+    expect(await processPendingRelationChecks(llm)).toEqual({ checked: 1, conflicts: 0, merged: 0 });
     expect(llm.calls).toBe(1);
     expect(relationRows()[0].verdict).toBeNull();
   });

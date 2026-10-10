@@ -6,7 +6,7 @@ import { backfillSummaries, refreshRecentSummaries } from '../recall/summarize';
 import { distillNewMessages, shouldConsolidate } from '../recall/distill';
 import { processPendingRelationChecks, relationSweepBackfillDone, stepRelationSweepBackfill } from '../recall/reconcile';
 import { MAX_ADJUDICATE_ATTEMPTS, adjudicateOpenConflicts } from '../recall/adjudicate';
-import { consolidateFacts } from '../recall/consolidate';
+import { consolidateFacts, fullTidyDue } from '../recall/consolidate';
 import { getMemoryRebuildStatus, runMemoryRebuildStep } from '../recall/rebuild';
 import { summarizeFactTexts } from '../recall/audit';
 import { recallStore } from '../recall/store';
@@ -141,14 +141,14 @@ export function initRecallTasks(deps: {
         // the backlog drain first (the queue keeps the pairs).
         await activity.track('memory.relationCheck', 'Cross-checking memory', () => {
           if (recallStore.countAdjudicableConflicts(MAX_ADJUDICATE_ATTEMPTS) > OPEN_CONFLICT_GATE) {
-            return Promise.resolve({ checked: 0, conflicts: 0, gated: true });
+            return Promise.resolve({ checked: 0, conflicts: 0, merged: 0, gated: true });
           }
           return processPendingRelationChecks(recallLlm);
         }, (r) => ({
           worked: r.checked > 0,
           detail: 'gated' in r && r.gated
             ? 'Paused while conflicts drain'
-            : `Checked ${r.checked} pair${r.checked === 1 ? '' : 's'}, raised ${r.conflicts} conflict${r.conflicts === 1 ? '' : 's'}`
+            : `Checked ${r.checked} pair${r.checked === 1 ? '' : 's'}, merged ${r.merged} duplicate${r.merged === 1 ? '' : 's'}, raised ${r.conflicts} conflict${r.conflicts === 1 ? '' : 's'}`
         }));
         // Auto-resolve open fact conflicts (non-explicit pairs only) before the
         // consolidation check, so reactivated winners and rewrite replacements
@@ -160,8 +160,11 @@ export function initRecallTasks(deps: {
         // Once enough new facts have piled up, clean the set: merge reworded
         // duplicates, apply corrections, drop superseded facts. Same hidden
         // LlmClient seam, so it's invisible to the user like distillation.
-        if (shouldConsolidate()) {
-          await activity.track('memory.consolidate', 'Tidying memory', () => consolidateFacts(recallLlm), (r) => ({
+        // The new facts (and their neighbours) normally; the whole store once a day.
+        const full = fullTidyDue();
+        if (full || shouldConsolidate()) {
+          const scope = full ? 'full' : 'recent';
+          await activity.track('memory.consolidate', 'Tidying memory', () => consolidateFacts(recallLlm, { scope }), (r) => ({
             worked: r.merged + r.corrected + r.dropped > 0,
             detail: `Merged ${r.merged}, corrected ${r.corrected}, dropped ${r.dropped}`
           }));

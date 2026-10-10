@@ -6,7 +6,7 @@ import { getEmbeddingsClient } from './retrieval';
 import { cosineSim } from './vector';
 import { newestEvidenceTs, recallStore } from './store';
 const {
-  createFactConflict, enqueueRelationChecks, getAllFacts, getFactDetails, getFactsGeneration,
+  absorbDuplicateFact, createFactConflict, enqueueRelationChecks, getAllFacts, getFactDetails, getFactsGeneration,
   getFactsMissingVector, getFactVectors, getInjectableFacts, getMeta, getPendingRelationChecks,
   isRelationChecked, recordRelationResult, recordRelationVerdict, setMeta, supersedeFact,
   upsertFactVectorForSnapshot
@@ -17,8 +17,20 @@ interface ReconcileReply {
   conflictIds?: unknown;
 }
 
-/** How two fact texts relate; the `supersedes` verdicts carry direction. */
-export type FactRelation = 'compatible' | 'contradicts' | 'a_supersedes_b' | 'b_supersedes_a';
+/**
+ * How two fact texts relate; the `supersedes` and `covers` verdicts carry
+ * direction. `a_covers_b`: the same fact, and A already says everything B says.
+ */
+export type FactRelation =
+  | 'compatible' | 'contradicts' | 'a_supersedes_b' | 'b_supersedes_a' | 'a_covers_b' | 'b_covers_a';
+
+const VERDICTS: ReadonlySet<string> = new Set<FactRelation>([
+  'compatible', 'contradicts', 'a_supersedes_b', 'b_supersedes_a', 'a_covers_b', 'b_covers_a'
+]);
+
+export function isDuplicateVerdict(verdict: FactRelation | null): verdict is 'a_covers_b' | 'b_covers_a' {
+  return verdict === 'a_covers_b' || verdict === 'b_covers_a';
+}
 
 export interface RelationSide {
   text: string;
@@ -69,19 +81,20 @@ A (evidence dated ${a.evidenceDate ?? 'unknown'}): ${a.text}
 B (evidence dated ${b.evidenceDate ?? 'unknown'}): ${b.text}
 
 Classify:
-- "compatible": they add different details about the same subject (a payment, an interpreter, a companion), or they concern DIFFERENT things entirely (different invoice numbers, different contracts, different policies). Both can be true at once.
+- "a_covers_b" / "b_covers_a": they state the SAME fact — a rewording, or one repeats the other plus more detail — and nothing changed over time. "a_covers_b" means A already says everything B says, so B adds nothing; if they say exactly the same, either is fine.
+- "compatible": EACH adds a detail the other lacks about the same subject (a payment, an interpreter, a companion), or they concern DIFFERENT things entirely (different invoice numbers, different contracts, different hosts, different policies). Both can be true at once.
 - "b_supersedes_a" / "a_supersedes_b": both state the same attribute of the SAME thing (the same domain, contract, policy, recurring fee) and one is clearly the newer state — a renewal, a price change, an update. Prefer dates stated INSIDE the statements over the evidence dates; evidence dates are file or message times and can lie.
 - "contradicts": they assert different values for the same attribute and there is no way to tell which is current.
 
-Return ONLY JSON {"verdict":"compatible"|"contradicts"|"a_supersedes_b"|"b_supersedes_a"}.`;
+Return ONLY JSON {"verdict":"compatible"|"contradicts"|"a_supersedes_b"|"b_supersedes_a"|"a_covers_b"|"b_covers_a"}.`;
   try {
     const raw = await llm.complete(prompt);
     const start = raw.indexOf('{');
     const end = raw.lastIndexOf('}');
     if (start === -1 || end <= start) return 'compatible';
     const parsed = JSON.parse(raw.slice(start, end + 1)) as { verdict?: unknown };
-    return parsed.verdict === 'contradicts' || parsed.verdict === 'a_supersedes_b' || parsed.verdict === 'b_supersedes_a'
-      ? parsed.verdict
+    return typeof parsed.verdict === 'string' && VERDICTS.has(parsed.verdict)
+      ? parsed.verdict as FactRelation
       : 'compatible';
   } catch (error) {
     // Not 'compatible': that verdict is what callers write into
@@ -90,6 +103,32 @@ Return ONLY JSON {"verdict":"compatible"|"contradicts"|"a_supersedes_b"|"b_super
     degrade('recall.reconcile', 'left the pair unclassified', error);
     return null;
   }
+}
+
+/** Folder facts merge only within their own folder: disconnecting it must still take exactly its facts. */
+function mergeClass(source: string): string {
+  return source.startsWith('folder:') ? source : 'chat';
+}
+
+/**
+ * Act on a `covers` verdict between A and B (A = the classify call's first
+ * side): the covered side is retired into the covering one. Never a conflict —
+ * a duplicate pair agrees by definition. Skipped (both stay; tidy-up may still
+ * merge them with a combined wording) when the covered side is explicit or
+ * pinned, when the two come from different sources (chat vs a folder, or two
+ * folders), or when the covered side is the more trusted one: the survivor's
+ * extra detail is not what the user said, so it must not inherit their
+ * confidence. Returns the retired id, or null.
+ */
+export function mergeDuplicatePair(aId: number, bId: number, verdict: 'a_covers_b' | 'b_covers_a'): number | null {
+  const [survivorId, loserId] = verdict === 'a_covers_b' ? [aId, bId] : [bId, aId];
+  const survivor = getFactDetails(survivorId);
+  const loser = getFactDetails(loserId);
+  if (!survivor || !loser || survivor.status !== 'active' || loser.status !== 'active') return null;
+  if (loser.source === 'explicit' || loser.pinned) return null;
+  if (mergeClass(survivor.source) !== mergeClass(loser.source)) return null;
+  if (survivor.confidence < loser.confidence) return null;
+  return absorbDuplicateFact(loserId, survivorId) ? loserId : null;
 }
 
 function ids(value: unknown): number[] {
@@ -221,7 +260,8 @@ function neighbourIdsOf(factId: number, vectors: Map<number, Float32Array>, acti
  * may auto-supersede a neighbour only when the model says the NEW fact
  * supersedes it, the new fact is directly user-stated AND still undisputed,
  * and the neighbour is neither explicit nor pinned. Every other non-compatible
- * verdict raises an ordinary conflict for the adjudicator/Conflicts card.
+ * verdict raises an ordinary conflict for the adjudicator/Conflicts card,
+ * except a `covers` (duplicate) verdict, which merges the pair instead.
  * Pairs beyond the pass's classify budget are queued for the background pass
  * instead of judged inline, so a chatty session can't stall distillation.
  *
@@ -281,6 +321,11 @@ export async function sweepFactAgainstNeighbours(
     if (!currentFresh || currentFresh.text !== fresh.text) return true;
     recordRelationResult(factId, targetId, verdict, 'sweep');
     if (verdict === 'compatible') continue;
+    if (isDuplicateVerdict(verdict)) {
+      // The fresh fact itself may be the one retired; then its sweep is over.
+      if (mergeDuplicatePair(targetId, factId, verdict) === factId) return true;
+      continue;
+    }
     // Re-read the fresh fact's status at act time: a conflict raised earlier in
     // this very loop flips it to 'conflicted', and a disputed fact must not
     // retire neighbours on its own say-so.
@@ -298,17 +343,19 @@ export async function sweepFactAgainstNeighbours(
 
 /**
  * Classify queued pairs (sweep overflow, co-injection discoveries, backfill).
- * Deliberately conflict-only: rows here have no directUser authority attached,
- * so a supersede-direction verdict still just raises a conflict and lets the
- * adjudicator — which runs right after this pass in the distill chain — apply
- * its own, capped authority.
+ * Deliberately conflict-only for disagreements: rows here have no directUser
+ * authority attached, so a supersede-direction verdict still just raises a
+ * conflict and lets the adjudicator — which runs right after this pass in the
+ * distill chain — apply its own, capped authority. Duplicates are merged: that
+ * retires nothing the survivor doesn't already say (mergeDuplicatePair).
  */
 export async function processPendingRelationChecks(
   llm: LlmClient,
   limit = 25
-): Promise<{ checked: number; conflicts: number }> {
+): Promise<{ checked: number; conflicts: number; merged: number }> {
   let checked = 0;
   let conflicts = 0;
+  let merged = 0;
   const factsGeneration = getFactsGeneration();
   // Is this row still worth judging? The batch is hydrated in one shot, so it
   // is evaluated twice per row: before the classify call, because queue pairs
@@ -356,12 +403,14 @@ export async function processPendingRelationChecks(
     if (after === 'stale') recordRelationVerdict(pending.id, 'stale');
     if (after !== 'ok') continue;
     recordRelationVerdict(pending.id, verdict);
-    if (verdict !== 'compatible') {
+    if (isDuplicateVerdict(verdict)) {
+      if (mergeDuplicatePair(pending.factA.id, pending.factB.id, verdict) !== null) merged += 1;
+    } else if (verdict !== 'compatible') {
       createFactConflict(pending.factA.id, pending.factB.id, SWEEP_CONFLICT_REASON);
       conflicts += 1;
     }
   }
-  return { checked, conflicts };
+  return { checked, conflicts, merged };
 }
 
 /**

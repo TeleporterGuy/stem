@@ -204,7 +204,7 @@ describe('Stem Recall', () => {
     const correctLlm = {
       complete: async () => JSON.stringify({ merge: [], correct: [{ id: engId, text: 'The user works as a data scientist' }], drop: [] })
     };
-    const corrRes = await consolidate.consolidateFacts(correctLlm);
+    const corrRes = await consolidate.consolidateFacts(correctLlm, { force: true });
     expect(store.getAllFacts().some((f) => /data scientist/.test(f.text))).toBe(true);
     expect(corrRes.corrected).toBe(1);
   });
