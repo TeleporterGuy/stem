@@ -1836,6 +1836,7 @@ export default function App() {
           messages={cur.messages}
           running={cur.running}
           streamingId={cur.streamingId}
+          activeTurnId={cur.activeTurnId}
           activity={cur.activity}
           activities={cur.activities}
           onSend={onSend}

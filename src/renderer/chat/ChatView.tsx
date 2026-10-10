@@ -108,6 +108,8 @@ interface ChatViewProps {
   messages: ChatMessage[];
   running: boolean;
   streamingId: string | null;
+  /** The in-flight turn, so its bubble can show the live tool rows. */
+  activeTurnId?: string | null;
   activity: string | null;
   /** Tool calls/web searches of the in-flight turn (live activity rows). */
   activities?: ActivityItem[];
@@ -389,6 +391,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   messages,
   running,
   streamingId,
+  activeTurnId = null,
   activity,
   activities = [],
   onSend,
@@ -552,12 +555,22 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     setEditingId(null);
   }
 
-  // Show the working indicator while a turn runs and no answer text is streaming
-  // yet (reasoning / tool calls happen before the first token, when no assistant
-  // bubble exists). It's replaced by the streamed reply once content arrives.
-  const streamingMsg = messages.find((m) => m.id === streamingId);
+  // The working indicator shows while a turn runs and no answer text has arrived
+  // yet (reasoning / tool calls happen before the first token): inside the live
+  // bubble below, or standing alone before that bubble exists.
   const lastAssistantId = [...messages].reverse().find((m) => m.role === 'assistant')?.id;
-  const showActivity = running && !(streamingMsg && streamingMsg.content);
+  // The in-flight turn's bubble, once it exists. It owns the live tool rows and
+  // the working indicator, so a turn reads as one Stem row: a bubble that settled
+  // an empty text block mid-turn used to show its still-running tool as "Used 1
+  // tool" while a second Stem row below repeated it live.
+  const liveBubbleId = running
+    ? (activeTurnId
+        ? messages.find(
+            (m) => m.role === 'assistant' && (m.runtimeTurnId === activeTurnId || m.turnId === activeTurnId)
+          )?.id
+        : undefined) ?? streamingId
+    : null;
+  const toolRunning = activities.some((a) => a.status === 'running');
 
   // The pulsing-dots "Thinking…" indicator. It lives inside the assistant bubble
   // while that turn has no text yet (so there's a single Stem row, not two), and
@@ -597,7 +610,8 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     // that is still being written out of sight behind a placeholder, so no
     // half-written tag ever shows. Settled replies get the exact full parse.
     const isStreaming = m.id === streamingId;
-    const renderRich = m.role === 'assistant' && (!isStreaming || !!m.content);
+    const isLive = m.id === liveBubbleId;
+    const renderRich = m.role === 'assistant' && (!!m.content || (!isStreaming && !isLive));
     const metaText = m.role === 'assistant' ? metaTooltip(m.meta, models) : undefined;
     const stamp = m.role !== 'system' && m.createdAt ? messageStamp(m.createdAt) : undefined;
     const tps = m.role === 'assistant' ? tokensPerSecond(m) : undefined;
@@ -659,7 +673,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
             )}
           </div>
           {m.role === 'assistant' && !isEditing && (m.activity?.length ?? 0) > 0 && (
-            <ActivityRows items={m.activity!} running={running && isStreaming} />
+            <ActivityRows items={m.activity!} running={isLive} />
           )}
           {isEditing ? (
             <MessageEditBox
@@ -677,17 +691,18 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                 <MdxView text={m.content} />
               </MdxMessageContext.Provider>
             )
-          ) : isStreaming && !m.content && showActivity ? (
-            activityIndicator
+          ) : isLive && !m.content ? (
+            // The generic dots only when no tool row is already spinning.
+            toolRunning ? null : activityIndicator
           ) : (
             <div className="message-plain">{m.content}</div>
           )}
           {m.role === 'assistant' && !isEditing && (
-            // While the turn runs, its placeholders live in the activity area
-            // below — unless this bubble is the one streaming, which hides it.
+            // While the turn runs, its placeholders live with its activity rows:
+            // here once the bubble exists, in the standalone row below until then.
             <GeneratedImages
               images={m.images}
-              activity={liveTurn && !isStreaming ? undefined : m.activity}
+              activity={liveTurn && !isLive ? undefined : m.activity}
               live={liveTurn}
             />
           )}
@@ -918,14 +933,18 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
         {recordingDrafts.map((d) => (
           <RecordingDraftCard key={d.id} draft={d} />
         ))}
-        {showActivity && !streamingMsg && (
+        {running && !liveBubbleId && (
           <div className="message message-assistant activity-row">
             <div className="msg-avatar stem">{AVATAR.assistant.icon}</div>
             <div className="message-body">
+              {/* Named like the bubble that replaces it, so nothing jumps. */}
+              <div className="message-who">
+                <span className="message-who-name">{AVATAR.assistant.label}</span>
+              </div>
               {activities.length > 0 && <ActivityRows items={activities} running />}
               <GeneratedImages activity={activities} live />
               {/* The generic dots only when no tool row is already pulsing. */}
-              {!activities.some((a) => a.status === 'running') && activityIndicator}
+              {!toolRunning && activityIndicator}
             </div>
           </div>
         )}

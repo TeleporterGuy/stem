@@ -11,6 +11,7 @@ import type {
   TaskBridge
 } from './types';
 import type {
+  ActivityItem,
   ChatMessage,
   ChatSummary,
   CompactChatResult,
@@ -94,6 +95,8 @@ function cannedSubject(prompt: string): string {
 //   [e2e:hang] — stream one delta, then stay running until interrupted
 //   [e2e:fail] — fail the turn after one delta
 //   [e2e:exec] — call run_command mid-turn, through the real ExecService
+//   [e2e:tools] — two tool rows (a command, then a file read) around an empty
+//                 text block, the shape a model gives when it calls a tool first
 //   [e2e:burst] — stream BURST_DELTAS deltas back to back, with no pacing
 //   [e2e:slow]  — the same script, paced slowly enough that a test can take the
 //                 network away underneath it and put it back
@@ -157,6 +160,8 @@ interface ActiveTurn {
   stepMs: number;
   /** Pictures an `[e2e:image]` turn made, recorded with its reply. */
   images?: GeneratedImageRef[];
+  /** Settled tool rows of an `[e2e:tools]` turn, recorded with its reply. */
+  activity?: ActivityItem[];
 }
 
 export interface FakeBackendOptions {
@@ -503,6 +508,22 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
         });
       });
     }
+    // [e2e:tools]: a command row, an empty text block settling while it runs
+    // (which creates the turn's bubble before any words), then a file read.
+    if (!fail && !turn.hang && text.includes('[e2e:tools]')) {
+      const cmd = { type: 'commandExecution', id: `e2e-cmd-${turnId}`, name: 'run_command', detail: 'for i in $(seq 1 10); do sleep 2; done' };
+      const read = { type: 'commandExecution', id: `e2e-read-${turnId}`, name: 'read', detail: 'notes.md' };
+      steps.push(() => this.emitEvent('item/started', { item: cmd, threadId, turnId }));
+      steps.push(() =>
+        this.emitEvent('item/completed', { item: { type: 'agentMessage', id: turnId, text: '' }, threadId, turnId })
+      );
+      steps.push(() => this.emitEvent('item/completed', { item: { ...cmd, status: 'ok' }, threadId, turnId }));
+      steps.push(() => this.emitEvent('item/started', { item: read, threadId, turnId }));
+      steps.push(() => {
+        this.emitEvent('item/completed', { item: { ...read, status: 'ok' }, threadId, turnId });
+        turn.activity = [cmd, read].map((item) => ({ ...item, kind: 'tool' as const, status: 'ok' as const }));
+      });
+    }
     // What run_command answered, appended to the reply so a test can assert on
     // the rendered turn rather than on the card alone. Empty for every turn that
     // does not ask for a command.
@@ -626,7 +647,8 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
       content: text,
       turnId: turn.turnId,
       createdAt: new Date().toISOString(),
-      ...(turn.images?.length ? { images: turn.images } : {})
+      ...(turn.images?.length ? { images: turn.images } : {}),
+      ...(turn.activity?.length ? { activity: turn.activity } : {})
     });
   }
 

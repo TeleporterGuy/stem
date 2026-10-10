@@ -530,6 +530,7 @@ export function QuickChat() {
           messages={messages}
           running={running}
           streamingId={streamingId}
+          activeTurnId={chatState.activeTurnId}
           activity={activity}
           activities={chatState.activities}
           onSend={onSend}

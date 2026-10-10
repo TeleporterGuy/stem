@@ -1,33 +1,65 @@
-import { useEffect, useState } from 'react';
-import { Bot, ChevronRight, FileText, Globe, GraduationCap, ImageIcon, Pencil, Shrink, Terminal, Wrench } from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Bot, ChevronRight, FileText, Globe, GraduationCap, ImageIcon, Pencil, Search, Shrink, Terminal, Wrench } from 'lucide-react';
 import type { ActivityItem, SourceRef } from '../../shared/types';
 import { activityLabel, settledActivityLabel } from '../../shared/activity';
 
 // Per-turn tool activity, rendered above the assistant reply. While the turn runs
-// every tool call is a live row (the running one pulses); once the turn settles the
-// rows collapse into a single "Used N tools" summary, expandable on click.
+// every tool call is a live row in a small card (the running one spins and counts
+// up); once the turn settles the card folds into one summary line, expandable on
+// click. A turn with a single tool call names it in that line instead of the
+// count, since "Used 1 tool" says less than the row it hides.
 
-function iconFor(item: ActivityItem) {
-  // The same cap the skills migration dialog uses, so the two surfaces that talk
-  // about skills look like they are talking about the same thing.
-  if (item.kind === 'skill') return <GraduationCap size={13} />;
-  if (item.type === 'webSearch') return <Globe size={13} />;
-  if (item.type === 'fileChange') return <Pencil size={13} />;
-  if (item.type === 'compaction') return <Shrink size={13} />;
-  if (item.type === 'codingAgent') return <Bot size={13} />;
-  if (item.type === 'imageGeneration') return <ImageIcon size={13} />;
-  if (item.name === 'read') return <FileText size={13} />;
-  if (item.type === 'commandExecution') return <Terminal size={13} />;
-  return <Wrench size={13} />;
+type IconKind = 'skill' | 'web' | 'edit' | 'compact' | 'agent' | 'image' | 'read' | 'search' | 'command' | 'tool';
+
+function iconKind(item: ActivityItem): IconKind {
+  const n = (item.name ?? '').toLowerCase();
+  if (item.kind === 'skill') return 'skill';
+  if (item.type === 'webSearch') return 'web';
+  if (item.type === 'fileChange') return 'edit';
+  if (item.type === 'compaction') return 'compact';
+  if (item.type === 'codingAgent') return 'agent';
+  if (item.type === 'imageGeneration') return 'image';
+  if (n === 'read') return 'read';
+  if (n === 'grep' || n === 'glob' || n === 'ls') return 'search';
+  if (item.type === 'commandExecution') return 'command';
+  return 'tool';
 }
 
-function RowDots() {
+function KindIcon({ kind, size = 12 }: { kind: IconKind; size?: number }) {
+  // The same cap the skills migration dialog uses, so the two surfaces that talk
+  // about skills look like they are talking about the same thing.
+  if (kind === 'skill') return <GraduationCap size={size} />;
+  if (kind === 'web') return <Globe size={size} />;
+  if (kind === 'edit') return <Pencil size={size} />;
+  if (kind === 'compact') return <Shrink size={size} />;
+  if (kind === 'agent') return <Bot size={size} />;
+  if (kind === 'image') return <ImageIcon size={size} />;
+  if (kind === 'read') return <FileText size={size} />;
+  if (kind === 'search') return <Search size={size} />;
+  if (kind === 'command') return <Terminal size={size} />;
+  return <Wrench size={size} />;
+}
+
+// Targets that are code-shaped (a command, a path, a pattern) read best in mono;
+// a search query or an MCP argument stays in the body face.
+const MONO_KINDS = new Set<IconKind>(['command', 'read', 'edit', 'search']);
+
+/**
+ * The label with its target picked out, so the verb stays quiet and the thing
+ * it acted on carries the weight. Falls back to the plain label when the
+ * phrasing does not contain the detail verbatim.
+ */
+function Label({ text, item }: { text: string; item: ActivityItem }) {
+  const detail = item.detail?.trim();
+  const at = detail ? text.indexOf(detail) : -1;
+  if (!detail || at === -1) return <>{text}</>;
+  const mono = MONO_KINDS.has(iconKind(item));
   return (
-    <span className="activity-dots" aria-hidden="true">
-      <span className="activity-dot" />
-      <span className="activity-dot" />
-      <span className="activity-dot" />
-    </span>
+    <>
+      {text.slice(0, at)}
+      <span className={`activity-target${mono ? ' mono' : ''}`}>{detail}</span>
+      {text.slice(at + detail.length)}
+    </>
   );
 }
 
@@ -38,9 +70,76 @@ function formatDuration(ms: number): string {
   return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 }
 
+/** A live row's counter: whole seconds, so it ticks calmly rather than flickers. */
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+// When each running row was first seen. Only generate_image calls carry a
+// server-side start time; for the rest the first render is close enough, and
+// keeping it here leaves the shared reducer pure.
+const firstSeen = new Map<string, number>();
+function startOf(item: ActivityItem): number {
+  if (item.startedAt !== undefined) return item.startedAt;
+  let at = firstSeen.get(item.id);
+  if (at === undefined) {
+    at = Date.now();
+    firstSeen.set(item.id, at);
+  }
+  return at;
+}
+
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
+}
+
+function Row({ item, live, now }: { item: ActivityItem; live: boolean; now: number }) {
+  const label = live
+    ? activityLabel(item.type, item.name, item.detail).replace(/…$/, '')
+    : settledActivityLabel(item.type, item.name, item.detail);
+  const failed = item.status === 'error';
+  const elapsed = live ? now - startOf(item) : undefined;
+  let time: ReactNode = null;
+  if (failed) time = <span className="activity-row-tag">failed</span>;
+  else if (elapsed !== undefined && elapsed >= 1000) time = formatElapsed(elapsed);
+  // Only the slow ones once settled: a turn that felt slow should say where it
+  // went, without turning every file read into a stopwatch.
+  else if (!live && item.ms !== undefined && item.ms >= 2000) time = formatDuration(item.ms);
+  return (
+    <div className={`activity-row-item${failed ? ' error' : ''}${live ? ' live' : ''}`}>
+      <span className="activity-glyph" aria-hidden="true">
+        <KindIcon kind={iconKind(item)} />
+      </span>
+      <span className="activity-row-label" title={label}>
+        <Label text={label} item={item} />
+      </span>
+      {time && <span className="activity-row-ms">{time}</span>}
+    </div>
+  );
+}
+
 export function ActivityRows({ items, running }: { items: ActivityItem[]; running: boolean }) {
   const [open, setOpen] = useState(false);
+  const anyLive = running && items.some((i) => i.status === 'running');
+  const now = useNow(anyLive);
   if (!items.length) return null;
+  const expanded = running || open;
+  const rows = (
+    <div className="activity-card">
+      {items.map((item) => (
+        <Row key={item.id} item={item} live={running && item.status === 'running'} now={now} />
+      ))}
+    </div>
+  );
+  if (running) return <div className="activity-rows open">{rows}</div>;
+
   // Skills are counted apart from tools. Folding them into "Used 3 tools" would
   // be a lie about a row that is right there saying otherwise, and a turn whose
   // only row is a skill would read "Used 1 tool" with no tool in sight.
@@ -49,44 +148,38 @@ export function ActivityRows({ items, running }: { items: ActivityItem[]; runnin
   const counts: string[] = [];
   if (tools) counts.push(`${tools} ${tools === 1 ? 'tool' : 'tools'}`);
   if (skills) counts.push(`${skills} ${skills === 1 ? 'skill' : 'skills'}`);
-  const summary = `Used ${counts.join(' and ')}`;
-  const expanded = running || open;
+  const single = items.length === 1 ? items[0] : null;
+  const failures = items.filter((i) => i.status === 'error').length;
+  const totalMs = items.reduce((sum, i) => sum + (i.ms ?? 0), 0);
+  // Distinct kinds, in order of first use: the turn's shape at a glance.
+  const kinds = [...new Set(items.map(iconKind))].slice(0, 4);
+  const singleLabel = single ? settledActivityLabel(single.type, single.name, single.detail) : '';
   return (
     <div className={`activity-rows${expanded ? ' open' : ''}`}>
-      {!running && (
-        <button
-          type="button"
-          className="activity-rows-summary"
-          aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-        >
-          <ChevronRight size={12} className="activity-rows-chevron" />
-          {summary}
-        </button>
-      )}
-      {expanded &&
-        items.map((item) => {
-          const live = running && item.status === 'running';
-          const label = live
-            ? activityLabel(item.type, item.name, item.detail)
-            : settledActivityLabel(item.type, item.name, item.detail);
-          return (
-            <div
-              key={item.id}
-              className={`activity-row-item${item.status === 'error' ? ' error' : ''}${live ? ' live' : ''}`}
-            >
-              {live ? <RowDots /> : iconFor(item)}
-              <span className="activity-row-label" title={label}>
-                {label}
-              </span>
-              {/* Only the slow ones: a turn that felt slow should say where it
-                  went, without turning every file read into a stopwatch. */}
-              {!live && item.ms !== undefined && item.ms >= 2000 && (
-                <span className="activity-row-ms">{formatDuration(item.ms)}</span>
-              )}
-            </div>
-          );
-        })}
+      <button
+        type="button"
+        className="activity-rows-summary"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        title={single ? singleLabel : undefined}
+      >
+        <ChevronRight size={12} className="activity-rows-chevron" />
+        <span className="activity-stack" aria-hidden="true">
+          {kinds.map((k) => (
+            <span key={k} className="activity-glyph">
+              <KindIcon kind={k} size={11} />
+            </span>
+          ))}
+        </span>
+        <span className="activity-summary-text">
+          {single ? <Label text={singleLabel} item={single} /> : `Used ${counts.join(' and ')}`}
+        </span>
+        {failures > 0 && (
+          <span className="activity-row-tag">{single ? 'failed' : `${failures} failed`}</span>
+        )}
+        {totalMs >= 1000 && <span className="activity-row-ms">{formatDuration(totalMs)}</span>}
+      </button>
+      {open && rows}
     </div>
   );
 }

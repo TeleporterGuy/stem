@@ -30,7 +30,7 @@ function labelForTool(name: string, detail?: string): string | undefined {
   }
   if (n === 'generate_image') return 'Creating an image…';
   if (n === 'read') return detail ? `Reading ${detail}…` : 'Reading a file…';
-  if (n === 'bash' || n === 'cmd') return detail ? `Running ${detail}…` : 'Running a command…';
+  if (n === 'bash' || n === 'cmd' || n === 'run_command') return detail ? `Running ${detail}…` : 'Running a command…';
   if (n === 'grep') return detail ? `Searching for ${detail}…` : 'Searching files…';
   if (n === 'glob' || n === 'ls') return 'Listing files…';
   if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'apply_patch')
@@ -54,7 +54,7 @@ export function settledActivityLabel(type: string, name?: string, detail?: strin
   if (n === 'coding_agent' || type === 'codingAgent') return 'Ran a coding agent';
   if (n === 'generate_image' || type === 'imageGeneration') return 'Created an image';
   if (n === 'read') return detail ? `Read ${detail}` : 'Read a file';
-  if (n === 'bash' || n === 'cmd') return detail ? `Ran ${detail}` : 'Ran a command';
+  if (n === 'bash' || n === 'cmd' || n === 'run_command') return detail ? `Ran ${detail}` : 'Ran a command';
   if (n === 'grep') return detail ? `Searched for ${detail}` : 'Searched files';
   if (n === 'glob' || n === 'ls') return 'Listed files';
   if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'apply_patch')
