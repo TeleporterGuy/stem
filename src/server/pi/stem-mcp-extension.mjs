@@ -1946,6 +1946,13 @@ export default async function stemMcpBridge(pi) {
         }
       };
       pi.on('session_start', enableBrowseTools);
+      // The one that counts for a prompt: main switches the worker onto the
+      // thread (session_start, above) BEFORE it writes this turn's gates, and pi
+      // fixes the first request's tools before turn_start fires. Without this
+      // hook the first request ran on the previous thread's tool set and the
+      // second corrected it — two tool-list changes, each a full prompt-cache
+      // miss (seen on mail turns as generate_image dropped and re-added).
+      pi.on('before_agent_start', enableBrowseTools);
       // Backstop: also enable right before each turn, in case session_start didn't fire
       // for an already-active session (e.g. a hot runtime reload mid-session).
       pi.on('turn_start', enableBrowseTools);

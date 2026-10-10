@@ -210,6 +210,19 @@ describe('generate_image bridge tool', () => {
     expect(res.content[0].text).toContain('switched off');
   });
 
+  it('settles the tool set at before_agent_start, from gates written after the session switch', async () => {
+    // Main switches the worker onto the thread (session_start) while the gate
+    // still holds the previous turn's context, then writes this turn's gate.
+    gate({ imageGen: false });
+    const { handlers, active } = await bridge();
+    for (const fn of handlers.session_start ?? []) fn({});
+    expect(active()).not.toContain('generate_image');
+    gate({ imageGen: true });
+    // pi picks the first request's tools before turn_start; this is the last hook in time.
+    for (const fn of handlers.before_agent_start ?? []) fn({});
+    expect(active()).toContain('generate_image');
+  });
+
   it('makes one Codex call and returns the image block plus a ref', async () => {
     gate({ imageGen: true });
     const { tool, handlers, active } = await bridge();
