@@ -35,15 +35,19 @@ function verdictLlm(verdict: FactRelation): LlmClient & { calls: number } {
 function seedFact(
   text: string,
   vec: number[],
-  over: { source?: string; confidence?: number; pinned?: boolean; excerpt?: string } = {}
+  over: {
+    source?: string; confidence?: number; pinned?: boolean; excerpt?: string;
+    sensitive?: boolean; origin?: 'folder_doc' | 'assistant_claim' | 'assistant_claim_web';
+  } = {}
 ): number {
   const id = store.upsertFact(text, {
     source: over.source ?? 'distilled',
     confidence: over.confidence ?? 0.9,
+    sensitivity: over.sensitive ? 'sensitive' : 'standard',
     evidence: [{
       messageId: null, threadId: null, role: null,
       timestamp: Math.floor(Date.now() / 1000) - 86_400,
-      excerpt: over.excerpt ?? `evidence: ${text}`, origin: 'folder_doc', folderId: 'f', relPath: 'x.pdf'
+      excerpt: over.excerpt ?? `evidence: ${text}`, origin: over.origin ?? 'folder_doc', folderId: 'f', relPath: 'x.pdf'
     }]
   })!;
   if (over.pinned) store.setFactPinned(id, true);
@@ -92,6 +96,30 @@ describe('duplicate verdicts in the relation check', () => {
     expect(store.getFactDetails(pinned)?.status).toBe('active');
     expect(store.getFactDetails(doc)?.status).toBe('active');
     expect(store.getMemoryConflicts()).toHaveLength(0);
+  });
+
+  it('a sensitive covered fact makes the survivor sensitive', async () => {
+    const full = seedFact('The user takes Betmiga for an overactive bladder, prescribed in 2026.', [1, 0, 0]);
+    const thin = seedFact('The user takes Betmiga.', [0.98, 0.1, 0], { sensitive: true });
+    await sweepFactAgainstNeighbours(thin, MODEL, verdictLlm('a_covers_b'), { directUser: false });
+    expect(store.getFactDetails(thin)?.status).toBe('superseded');
+    expect(store.getFactDetails(full)?.sensitivity).toBe('sensitive');
+  });
+
+  it('a web-only fact never retires one from the user\'s chats, even at equal confidence', async () => {
+    const chat = seedFact('The user banks with Tatra banka.', [1, 0, 0], { confidence: 0.55, origin: 'assistant_claim' });
+    const web = seedFact('The user banks with Tatra banka, account SK12 3456.', [0.98, 0.1, 0], {
+      confidence: 0.55, origin: 'assistant_claim_web'
+    });
+    await sweepFactAgainstNeighbours(web, MODEL, verdictLlm('b_covers_a'), { directUser: false });
+    expect(store.getFactDetails(chat)?.status).toBe('active');
+    expect(store.getFactDetails(web)?.status).toBe('active');
+
+    // Web-only into web-only is still a plain duplicate merge.
+    const webThin = seedFact('The user banks at Tatra.', [0.97, 0.15, 0], { confidence: 0.55, origin: 'assistant_claim_web' });
+    store.enqueueRelationChecks([[web, webThin]], 'backfill');
+    await processPendingRelationChecks(verdictLlm(web < webThin ? 'a_covers_b' : 'b_covers_a'));
+    expect(store.getFactDetails(webThin)?.status).toBe('superseded');
   });
 
   it('the background queue merges duplicates and counts them', async () => {

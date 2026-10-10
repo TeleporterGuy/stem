@@ -110,6 +110,11 @@ function mergeClass(source: string): string {
   return source.startsWith('folder:') ? source : 'chat';
 }
 
+/** Every evidence row is restated web content: the weakest authority a fact can have. */
+function webOnly(fact: FactDetails): boolean {
+  return fact.evidence.length > 0 && fact.evidence.every((e) => e.origin === 'assistant_claim_web');
+}
+
 /**
  * Act on a `covers` verdict between A and B (A = the classify call's first
  * side): the covered side is retired into the covering one. Never a conflict —
@@ -118,7 +123,11 @@ function mergeClass(source: string): string {
  * pinned, when the two come from different sources (chat vs a folder, or two
  * folders), or when the covered side is the more trusted one: the survivor's
  * extra detail is not what the user said, so it must not inherit their
- * confidence. Returns the retired id, or null.
+ * confidence. Equal confidence is not equal trust for web content: a fact
+ * resting only on web pages may retire only another web-only fact, so a
+ * planted page cannot silently replace what came up in the user's chats
+ * (that pair used to raise a visible conflict at most). Returns the retired
+ * id, or null.
  */
 export function mergeDuplicatePair(aId: number, bId: number, verdict: 'a_covers_b' | 'b_covers_a'): number | null {
   const [survivorId, loserId] = verdict === 'a_covers_b' ? [aId, bId] : [bId, aId];
@@ -128,6 +137,7 @@ export function mergeDuplicatePair(aId: number, bId: number, verdict: 'a_covers_
   if (loser.source === 'explicit' || loser.pinned) return null;
   if (mergeClass(survivor.source) !== mergeClass(loser.source)) return null;
   if (survivor.confidence < loser.confidence) return null;
+  if (webOnly(survivor) && !webOnly(loser)) return null;
   return absorbDuplicateFact(loserId, survivorId) ? loserId : null;
 }
 

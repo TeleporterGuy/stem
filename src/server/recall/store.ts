@@ -2101,7 +2101,8 @@ export class RecallStore {
    * loser's evidence (copy, as applyConsolidation does for merge losers — the
    * loser keeps its own provenance for restore) so the merge keeps the absorbed
    * assertion's truth-recency, then the loser is superseded pointing at it.
-   * Both must still be active; callers own the authority checks.
+   * A sensitive loser makes the survivor sensitive. Both must still be active;
+   * callers own the authority checks.
    */
   absorbDuplicateFact = (loserId: number, survivorId: number): boolean => {
     if (loserId === survivorId) return false;
@@ -2120,6 +2121,12 @@ export class RecallStore {
            (fact_id, message_id, thread_id, role, ts, excerpt, origin, folder_id, rel_path)
          SELECT ?, message_id, thread_id, role, ts, excerpt, origin, folder_id, rel_path
          FROM fact_evidence WHERE fact_id = ?`
+      ).run(survivorId, loserId);
+      // The survivor now carries the loser's content, so it inherits its
+      // sensitivity (same rule as an adjudication rewrite).
+      handle.prepare(
+        `UPDATE facts SET sensitivity = 'sensitive'
+         WHERE id = ? AND (SELECT sensitivity FROM facts WHERE id = ?) = 'sensitive'`
       ).run(survivorId, loserId);
       const changed = this.supersedeFact(loserId, survivorId);
       handle.exec('COMMIT');
