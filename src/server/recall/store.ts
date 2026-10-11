@@ -2090,16 +2090,12 @@ export class RecallStore {
               updated_at = ? WHERE id = ?`
     ).run(supersededBy, this.nowSeconds(), id).changes as number) > 0;
     if (changed) {
-      const others = (handle.prepare(
-        `SELECT CASE WHEN fact_a = ? THEN fact_b ELSE fact_a END AS other
-         FROM fact_conflicts WHERE status = 'open' AND (fact_a = ? OR fact_b = ?)`
-      ).all(id, id, id) as Array<{ other: number }>).map((r) => r.other);
       handle.prepare(
         `UPDATE fact_conflicts SET status = 'resolved', resolved_at = ?, resolution = 'superseded'
          WHERE status = 'open' AND (fact_a = ? OR fact_b = ?)`
       ).run(this.nowSeconds(), id, id);
-      // The other side wins: back to active unless another conflict still holds it.
-      for (const other of others) this.settleConflictSide(other);
+      // The other side stays 'conflicted' (never injected): retiring one side is
+      // not a verdict for the other. Only the user releases it (releaseConflictSide).
     }
     return changed;
   };
@@ -2280,6 +2276,15 @@ export class RecallStore {
     return true;
   };
 
+
+  /**
+   * The user picked this fact as the true side of a conflict whose other side
+   * they retired: back to active unless another open conflict still holds it.
+   * User-driven paths only — a model or pass retiring one side never releases the other.
+   */
+  releaseConflictSide = (factId: number): void => {
+    this.settleConflictSide(factId);
+  };
 
   /** Reactivate a conflict side unless it's still in another open conflict (or superseded). */
   private settleConflictSide = (factId: number): void => {

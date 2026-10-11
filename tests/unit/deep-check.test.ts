@@ -387,4 +387,22 @@ describe('the deep check', () => {
     expect(body).toContain(`fact="${home}"`);
     expect(checkForConversation('conv-1')!.questions.filter((q) => q.conflict).every((q) => q.status === 'answered')).toBe(true);
   });
+
+  it('never releases a conflict side unless the user picked it', async () => {
+    const mine = seed('The user is called Vlado.', 'user_message', { source: 'explicit' });
+    const web = seed('The user is called Vladimir Putin.', 'assistant_claim_web');
+    const other = seed('The user owns a red bike.', 'user_message');
+    const rival = seed('The user owns a blue bike.', 'assistant_claim');
+    store.createFactConflict(mine, web, 'May contradict.');
+    store.createFactConflict(other, rival, 'May contradict.');
+    // Any other path retiring one side resolves the conflict but leaves the other quarantined.
+    store.supersedeFact(mine);
+    expect(statusOf(web)).toBe('conflicted');
+
+    // The model cannot auto-fix a conflicted fact: it becomes a proposal.
+    const { check } = await runWith({ fixes: [{ kind: 'wrong_subject', fact: rival, reason: 'Web.' }], proposals: [], questions: [] });
+    expect(statusOf(rival)).toBe('conflicted');
+    expect(statusOf(other)).toBe('conflicted');
+    expect(check.changes.find((c) => c.fact === rival)?.status).toBe('proposed');
+  });
 });

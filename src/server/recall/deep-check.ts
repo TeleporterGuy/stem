@@ -178,10 +178,17 @@ function settleConflict(q: CheckQuestion, answer: string): { changes: CheckChang
     case BOTH:
       resolveMemoryConflict(q.conflict!, 'keep_both');
       return { changes: [], note: 'Kept both facts that disagreed: you said both are true.' };
-    case FIRST:
-      return { changes: retire(b, a, 'You said only the other fact is true.') };
-    case SECOND:
-      return { changes: retire(a, b, 'You said only the other fact is true.') };
+    // The user's pick is the verdict, so the kept side is released back to active.
+    case FIRST: {
+      const changes = retire(b, a, 'You said only the other fact is true.');
+      if (changes.length) recallStore.releaseConflictSide(a);
+      return { changes };
+    }
+    case SECOND: {
+      const changes = retire(a, b, 'You said only the other fact is true.');
+      if (changes.length) recallStore.releaseConflictSide(b);
+      return { changes };
+    }
     case NEITHER:
       return { changes: [...retire(a, null, 'You said neither is true.'), ...retire(b, null, 'You said neither is true.')] };
     default:
@@ -325,6 +332,11 @@ function triage(
     if (!fact || untouchable(fact) || claimed.has(fact.id)) continue;
     const kind = str(raw.kind);
     const reason = str(raw.reason) || 'Looks wrong.';
+    // A fact in an open conflict waits for the user's pick (asked as a conflict question).
+    if (fact.status === 'conflicted') {
+      propose(fact, reason);
+      continue;
+    }
     if (!autoLeft()) {
       if (kind === 'duplicate' || kind === 'overruled' || kind === 'wrong_subject') propose(fact, reason);
       continue;
@@ -334,7 +346,7 @@ function triage(
       const into = intoId != null ? byId.get(intoId) : undefined;
       // The tidy-up's merge rules decide: same source, the keeper at least as
       // trusted, never a web-only keeper over a fact from the user's chats.
-      if (!into || into.id === fact.id || claimed.has(into.id) || mergeDuplicatePair(into.id, fact.id, 'a_covers_b') == null) {
+      if (!into || into.id === fact.id || claimed.has(into.id) || into.status === 'conflicted' || mergeDuplicatePair(into.id, fact.id, 'a_covers_b') == null) {
         propose(fact, reason);
         continue;
       }
