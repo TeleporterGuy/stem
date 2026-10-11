@@ -1833,10 +1833,15 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .fact-change-acts { display: flex; gap: var(--sp-3); flex: none; }
 .fact-change-btn {
   font: inherit; font-size: var(--fs-12); height: var(--ctl-h-sm); padding: 0 var(--sp-5);
+  display: inline-flex; align-items: center; justify-content: center;
   border-radius: var(--radius); border: 0.5px solid var(--line); background: var(--content); color: var(--ink); cursor: pointer;
 }
 .fact-change-btn:hover:not(:disabled) { border-color: var(--muted); }
-.fact-change-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+/* Restates size and padding: the global button.primary outranks .fact-change-btn and would push the label down. */
+.fact-change-btn.primary {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600;
+  font-size: var(--fs-12); padding: 0 var(--sp-5); box-shadow: none;
+}
 .fact-change-btn:disabled { opacity: 0.5; cursor: default; }
 @media (max-width: 520px) { .fact-change { flex-direction: column; } }
 
