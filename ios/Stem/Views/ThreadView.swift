@@ -7,6 +7,9 @@ struct ThreadView: View {
     @State private var store: ThreadStore
     @State private var draft: Draft
     @State private var draftKey: String
+    /// Forms in this chat send from the answer bar over the composer.
+    @State private var formHost = MdxFormHost(place: .below)
+    @State private var focusRequest = 0
 
     init(session: Session, threadId: String?) {
         _store = State(initialValue: ThreadStore(session: session, threadId: threadId))
@@ -16,48 +19,59 @@ struct ThreadView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
-                if store.threadId == nil && store.messages.isEmpty { newChatHeader }
-                if store.loading { ProgressView().frame(maxWidth: .infinity).padding() }
-                let latest = latestReplyId
-                ForEach(store.messages) { m in
-                    MessageRow(message: m, store: store, isLatest: m.id == latest, submit: submitFromReply)
-                        .id(m.id)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if store.threadId == nil && store.messages.isEmpty { newChatHeader }
+                    if store.loading { ProgressView().frame(maxWidth: .infinity).padding() }
+                    let latest = latestReplyId
+                    ForEach(Array(store.messages.enumerated()), id: \.element.id) { i, m in
+                        MessageRow(message: m, store: store, isLatest: m.id == latest, submit: submitFromReply)
+                            .environment(\.mdxSource, MdxSource(key: "chat:\(store.threadId ?? ""):\(m.turnId ?? m.id)",
+                                                                scrollId: m.id, order: Double(i)))
+                            .id(m.id)
+                    }
+                    if store.busy {
+                        LiveActivity(label: store.activityLabel, activities: store.activities)
+                    }
                 }
-                if store.busy {
-                    LiveActivity(label: store.activityLabel, activities: store.activities)
-                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-        }
-        .defaultScrollAnchor(.bottom)
-        .scrollDismissesKeyboard(.interactively)
-        // On the message list only: `.refreshable` reaches every ScrollView
-        // below it, so placed after the inset it put a refresh control on the
-        // composer's chip strip and let it be pulled down.
-        .refreshable { await store.reload() }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                ForEach(session.approvals.forThread(store.threadId)) { a in
-                    ApprovalCard(approval: a).padding(.horizontal, 12).padding(.bottom, 6)
+            .environment(\.mdxFormHost, formHost)
+            .onAppear {
+                formHost.scrollTo = { id in withAnimation { proxy.scrollTo(id, anchor: .top) } }
+                formHost.ask = { label in askAbout(label) }
+            }
+            .defaultScrollAnchor(.bottom)
+            .scrollDismissesKeyboard(.interactively)
+            // On the message list only: `.refreshable` reaches every ScrollView
+            // below it, so placed after the inset it put a refresh control on the
+            // composer's chip strip and let it be pulled down.
+            .refreshable { await store.reload() }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    ForEach(session.approvals.forThread(store.threadId)) { a in
+                        ApprovalCard(approval: a).padding(.horizontal, 12).padding(.bottom, 6)
+                    }
+                    if let e = store.error {
+                        ErrorBanner(text: e) { store.error = nil }
+                    }
+                    if session.connection.status == .offline {
+                        Text("Offline — your draft is saved").font(.footnote).foregroundStyle(.secondary).padding(.bottom, 4)
+                    }
+                    MdxAnswerBar(host: formHost, running: store.busy)
+                    Composer(
+                        kind: .chat, draftKey: draftKey, draft: $draft, busy: store.busy,
+                        placeholder: store.threadId == nil ? "Ask anything" : "Message",
+                        onSend: send,
+                        onStop: { await store.stop() },
+                        onRetract: retract,
+                        onNote: note,
+                        onLearn: store.threadId == nil ? nil : { await store.learn(focus: $0) },
+                        chatFormat: store.format.map { (value: $0, set: switchFormat) },
+                        focusRequest: focusRequest)
                 }
-                if let e = store.error {
-                    ErrorBanner(text: e) { store.error = nil }
-                }
-                if session.connection.status == .offline {
-                    Text("Offline — your draft is saved").font(.footnote).foregroundStyle(.secondary).padding(.bottom, 4)
-                }
-                Composer(
-                    kind: .chat, draftKey: draftKey, draft: $draft, busy: store.busy,
-                    placeholder: store.threadId == nil ? "Ask anything" : "Message",
-                    onSend: send,
-                    onStop: { await store.stop() },
-                    onRetract: retract,
-                    onNote: note,
-                    onLearn: store.threadId == nil ? nil : { await store.learn(focus: $0) },
-                    chatFormat: store.format.map { (value: $0, set: switchFormat) })
             }
         }
         .navigationTitle(navTitle)
@@ -142,6 +156,13 @@ struct ThreadView: View {
     private var latestReplyId: String? {
         guard !store.busy, let last = store.messages.last(where: { $0.role != "system" }), last.role != "user" else { return nil }
         return last.id
+    }
+
+    /// A form's Ask: start the message with the question and put the caret after it.
+    private func askAbout(_ label: String) {
+        let prefix = "About “\(label)”: "
+        if !draft.text.hasPrefix(prefix) { draft.text = prefix + draft.text }
+        focusRequest += 1
     }
 
     /// A tap on a Quiz, Form or suggested reply: sent like a typed message.

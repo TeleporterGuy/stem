@@ -120,6 +120,22 @@ I need a couple of things before planning.
 <Field name="notes" label="Anything else?" type="textarea" />
 </Form>
 """##),
+        ("form-choice", ##"""
+I read all 733 facts learned from your chats.
+
+<FactChange check="c-1" change="c1" fact="2833" label="Retired" kind="retire" text="The user works as a cloud engineer for VPC." reason="From a course intro in your Documents folder." status="applied" />
+
+<Form prompt="Answers to the memory check" submitLabel="Send answers">
+<Field type="choice" name="q1" label="How is Súmračná 30 connected to you?" hint="From a chat you pasted." other="true">
+<Option>Ivka's parents' flat</Option>
+<Option>I live there</Option>
+</Field>
+<Field type="choice" name="q2" label="Which projects are still active?" multiple="true">
+<Option>Join</Option>
+<Option>joinvc</Option>
+</Field>
+</Form>
+"""##),
         ("nested", ##"""
 Press <Kbd>Cmd</Kbd> and K to search.
 
@@ -230,6 +246,7 @@ sudo apt install ./stem.deb
     ]
 
     @State private var lastSubmit: String?
+    @State private var formHost = MdxFormHost(place: .below)
 
     var body: some View {
         NavigationStack {
@@ -237,11 +254,13 @@ sudo apt install ./stem.deb
                 LazyVStack(alignment: .leading, spacing: 24) {
                     // `-mdxOnly <name>` (a launch argument, read through UserDefaults) shows one sample.
                     let only = UserDefaults.standard.string(forKey: "mdxOnly")
-                    ForEach(Self.samples.filter { only == nil || $0.0 == only }, id: \.0) { name, mdx in
+                    ForEach(Array(Self.samples.filter { only == nil || $0.0 == only }.enumerated()), id: \.element.0) { i, sample in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(name).font(.caption.monospaced()).foregroundStyle(.tertiary)
-                            MarkdownView(mdx)
+                            Text(sample.0).font(.caption.monospaced()).foregroundStyle(.tertiary)
+                            MarkdownView(sample.1)
+                                .environment(\.mdxSource, MdxSource(key: "gallery:\(sample.0)", scrollId: sample.0, order: Double(i)))
                         }
+                        .id(sample.0)
                     }
                     if let lastSubmit {
                         Text("Would send:\n\(lastSubmit)").font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -251,7 +270,10 @@ sudo apt install ./stem.deb
             }
             .navigationTitle("MDX gallery")
             .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) { MdxAnswerBar(host: formHost, running: false) }
         }
+        .environment(\.mdxFormHost, formHost)
+        .onAppear { formHost.ask = { lastSubmit = "About “\($0)”: " } }
         .environment(\.mdxActions, MdxActions(submit: { lastSubmit = $0; print("MDX submit:", $0) }, running: false))
         .environment(\.mdxIsLatest, true)
     }

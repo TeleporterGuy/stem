@@ -114,51 +114,28 @@ struct MdxForm: View {
     let submitLabel: String?
     let children: [MdxBlock]
     @Environment(\.mdxActions) private var actions
-    @State private var values: [String: String] = [:]
-    @State private var sent = false
+    @Environment(\.mdxFormHost) private var host
+    @Environment(\.mdxSource) private var source
+    /// The field whose "Other…" was just picked: its text field takes the caret.
+    @FocusState private var otherFocus: String?
 
-    private struct Field { var key, label: String; var placeholder: String?; var type: String }
-
-    private var fields: [Field] {
-        MdxText.components(children, named: "Field").enumerated().map { i, f in
-            let key = f.attrs["name"] ?? f.attrs["label"] ?? "field-\(i)"
-            return Field(key: key, label: f.attrs["label"] ?? f.attrs["name"] ?? key,
-                         placeholder: f.attrs["placeholder"], type: f.attrs["type"] ?? "text")
-        }
-    }
+    private var drafts: FormDrafts { FormDrafts.shared }
 
     var body: some View {
-        let fs = fields
+        let fs = MdxFieldSpec.list(children)
         if fs.isEmpty {
             MdxBlocksView(blocks: children)
         } else if let actions {
-            VStack(alignment: .leading, spacing: 12) {
-                if let prompt, !prompt.isEmpty { Text(prompt).font(.subheadline.weight(.semibold)) }
-                ForEach(fs, id: \.key) { f in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(f.label).font(.caption).foregroundStyle(.secondary)
-                        input(f)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(.separator), lineWidth: 0.5))
-                            .disabled(sent)
-                    }
-                }
-                Button(sent ? "Sent" : submitLabel ?? "Submit") { submit(fs, actions) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(actions.running || sent)
-            }
-            .mdxCard()
+            live(fs, actions)
         } else {
-            // Read where nothing can be sent back (mail, approvals): what is
-            // being asked, and how to answer.
+            // Read where nothing can be sent back (a fact's source, approvals):
+            // what is being asked, and how to answer.
             VStack(alignment: .leading, spacing: 6) {
                 if let prompt, !prompt.isEmpty { Text(prompt).font(.subheadline.weight(.semibold)) }
                 ForEach(fs, id: \.key) { f in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("•").foregroundStyle(.secondary)
-                        Text(f.label)
+                        Text(f.label) + Text(f.options.isEmpty ? "" : " (\(f.options.joined(separator: " / ")))").foregroundStyle(.secondary)
                     }
                     .font(.subheadline)
                 }
@@ -168,8 +145,123 @@ struct MdxForm: View {
         }
     }
 
-    @ViewBuilder private func input(_ f: Field) -> some View {
-        let binding = Binding(get: { values[f.key] ?? "" }, set: { values[f.key] = $0 })
+    private func key(_ fs: [MdxFieldSpec]) -> String {
+        "\(source?.key ?? "")|\(prompt ?? "")|\(fs.map(\.key).joined(separator: ","))"
+    }
+
+    private func live(_ fs: [MdxFieldSpec], _ actions: MdxActions) -> some View {
+        let key = key(fs)
+        let draft = drafts.draft(key)
+        let locked = draft.sent
+        let answered = draft.answered(fs)
+        return VStack(alignment: .leading, spacing: 14) {
+            if let prompt, !prompt.isEmpty { Text(prompt).font(.subheadline.weight(.semibold)) }
+            ForEach(fs, id: \.key) { f in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(f.label).font(.subheadline)
+                        Spacer(minLength: 6)
+                        if let host, !locked {
+                            Button { host.ask(f.label) } label: {
+                                Label("Ask", systemImage: "questionmark.bubble").font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityHint("Ask about this question. Your answers so far are kept.")
+                        }
+                    }
+                    if let hint = f.hint, !hint.isEmpty {
+                        Text(hint).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if f.type == "choice" {
+                        choices(f, key: key, draft: draft, locked: locked)
+                    } else {
+                        input(f, key: key, draft: draft)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(.separator), lineWidth: 0.5))
+                            .disabled(locked)
+                    }
+                }
+            }
+            if locked {
+                Label("Answers sent", systemImage: "checkmark").font(.caption).foregroundStyle(.secondary)
+            } else if let host {
+                Text("\(answered) of \(fs.count) answered · skip any you are unsure about · send from the bar \(host.place == .below ? "below" : "above")")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button(submitLabel ?? "Submit") { submit(fs, key: key, actions) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(actions.running || answered == 0)
+            }
+        }
+        .mdxCard()
+        .opacity(locked ? 0.75 : 1)
+        .overlay(RoundedRectangle(cornerRadius: 10)
+            .strokeBorder(Color.accentColor, lineWidth: 2)
+            .opacity(host?.flashKey == key ? 1 : 0)
+            .animation(.easeOut(duration: 0.4), value: host?.flashKey == key))
+        .onAppear { register(fs, key: key, locked: locked, actions) }
+        .onChange(of: locked) { _, now in register(fs, key: key, locked: now, actions) }
+    }
+
+    private func register(_ fs: [MdxFieldSpec], key: String, locked: Bool, _ actions: MdxActions) {
+        guard let host else { return }
+        if locked { host.unregister(key); return }
+        host.register(key: key, prompt: prompt, fields: fs,
+                      source: source ?? MdxSource(key: "", scrollId: "", order: 0), submit: actions.submit)
+    }
+
+    private func update(_ key: String, _ change: (inout MdxFormDraft) -> Void) {
+        var d = drafts.draft(key)
+        change(&d)
+        drafts.set(key, d, persist: !(source?.key ?? "").isEmpty)
+    }
+
+    private func choices(_ f: MdxFieldSpec, key: String, draft: MdxFormDraft, locked: Bool) -> some View {
+        let picked = draft.values[f.key] ?? []
+        let options = f.options + (f.other ? [MdxFormDraft.other] : [])
+        return VStack(alignment: .leading, spacing: 8) {
+            MdxFlowLayout(spacing: 6) {
+                ForEach(options, id: \.self) { o in
+                    Button {
+                        update(key) { d in
+                            let cur = d.values[f.key] ?? []
+                            if f.multiple {
+                                d.values[f.key] = cur.contains(o) ? cur.filter { $0 != o } : cur + [o]
+                            } else {
+                                d.values[f.key] = cur == [o] ? [] : [o]
+                            }
+                        }
+                        if o == MdxFormDraft.other, !picked.contains(o) { otherFocus = f.key }
+                    } label: {
+                        Text(o == MdxFormDraft.other ? "Other…" : o).multilineTextAlignment(.leading)
+                    }
+                    .chipStyle(on: picked.contains(o))
+                    .font(.subheadline)
+                    .overlay(Capsule().strokeBorder(Color(.separator), lineWidth: picked.contains(o) ? 0 : 0.5))
+                    .accessibilityAddTraits(picked.contains(o) ? .isSelected : [])
+                    .disabled(locked)
+                }
+            }
+            if f.other, picked.contains(MdxFormDraft.other) {
+                TextField("Your answer", text: Binding(
+                    get: { drafts.draft(key).others[f.key] ?? "" },
+                    set: { v in update(key) { $0.others[f.key] = v } }))
+                    .focused($otherFocus, equals: f.key)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(.separator), lineWidth: 0.5))
+                    .disabled(locked)
+            }
+        }
+    }
+
+    @ViewBuilder private func input(_ f: MdxFieldSpec, key: String, draft: MdxFormDraft) -> some View {
+        let binding = Binding(
+            get: { drafts.draft(key).values[f.key]?.first ?? "" },
+            set: { v in update(key) { $0.values[f.key] = [v] } })
         switch f.type {
         case "textarea":
             TextField(f.placeholder ?? "", text: binding, axis: .vertical).lineLimit(3...8)
@@ -180,11 +272,12 @@ struct MdxForm: View {
         }
     }
 
-    private func submit(_ fs: [Field], _ actions: MdxActions) {
-        guard !actions.running, !sent else { return }
-        let lines = fs.map { "- \($0.label): \(values[$0.key] ?? "")" }
-        actions.submit((prompt.map { "\($0)\n" } ?? "") + lines.joined(separator: "\n"))
-        sent = true
+    /// Without a host (no input on screen to send beside): the form's own button.
+    private func submit(_ fs: [MdxFieldSpec], key: String, _ actions: MdxActions) {
+        let d = drafts.draft(key)
+        guard !actions.running, !d.sent, d.answered(fs) > 0 else { return }
+        actions.submit(d.text(prompt: prompt, fields: fs))
+        update(key) { $0.sent = true }
     }
 }
 

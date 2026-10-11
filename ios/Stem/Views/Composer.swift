@@ -30,6 +30,9 @@ struct Composer: View {
     /// The open chat's own format and how to switch it. Nil on a draft, where
     /// the MDX chip sets the default for new chats instead.
     var chatFormat: (value: String, set: (String) -> Void)?
+    /// Bump to put the caret in the text field (a form's Ask button). Above
+    /// zero on first show, it focuses at once.
+    var focusRequest = 0
 
     @Environment(Session.self) private var session
     @State private var noteMode = false
@@ -93,6 +96,12 @@ struct Composer: View {
         .padding(.vertical, 8)
         .background(.bar)
         .onChange(of: draft) { _, d in DraftStore.save(draftKey, d) }
+        .task(id: focusRequest) {
+            guard focusRequest > 0 else { return }
+            // In a sheet the field can't take focus until the sheet has settled.
+            try? await Task.sleep(for: .milliseconds(450))
+            focused = true
+        }
         .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: 10, matching: .images)
         .onChange(of: photoItems) { _, items in Task { await addPhotos(items) } }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { r in
