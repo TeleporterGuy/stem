@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import * as activity from '../activity';
 import { degrade } from '../degrade';
 import type { LlmClient } from './llm';
 import { mergeDuplicatePair } from './reconcile';
@@ -393,6 +394,19 @@ function checkMail(check: MemoryCheck, byId: Map<number, Fact>): string {
   return parts.join('\n\n');
 }
 
+/** The activity row's one line: what the check found. */
+function checkSummary(check: MemoryCheck): string {
+  const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+  const fixed = check.changes.filter((c) => c.status === 'applied').length;
+  const proposed = check.changes.filter((c) => c.status === 'proposed').length;
+  const parts = [
+    fixed && `${fixed} fixed`,
+    proposed && n(proposed, 'proposal', 'proposals'),
+    check.questions.length && n(check.questions.length, 'question', 'questions')
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : `Nothing to fix in ${check.factCount} facts`;
+}
+
 /**
  * Run the whole check and hand its mail to `deliver` (which returns the
  * conversation id). One at a time; a second start while one runs is refused.
@@ -403,6 +417,7 @@ export async function runMemoryCheck(
 ): Promise<MemoryCheckJob> {
   if (job.running) return job;
   job = { running: true, startedAt: Date.now(), done: 0, total: 0 };
+  const handle = activity.begin('memory.deepCheck', 'Checking memory');
   try {
     const pool = auditPool();
     const byId = new Map(pool.map((f) => [f.id, f]));
@@ -411,6 +426,7 @@ export async function runMemoryCheck(
     const chunks: Fact[][] = [];
     for (let i = 0; i < ordered.length; i += CHUNK) chunks.push(ordered.slice(i, i + CHUNK));
     job = { ...job, total: chunks.length };
+    activity.progress(handle, { done: 0, total: chunks.length });
     const check: MemoryCheck = { id: randomUUID(), startedAt: Date.now(), factCount: pool.length, changes: [], questions: [] };
     const claimed = new Set<number>();
     const auto = { left: MAX_AUTO_FIXES };
@@ -428,6 +444,7 @@ export async function runMemoryCheck(
         degrade('recall.deep-check', 'skipped one group of facts', error);
       }
       job = { ...job, done: (job.done ?? 0) + 1 };
+      activity.progress(handle, { done: job.done ?? 0, total: chunks.length });
     }
     // Questions left open last time come back first, when their facts still stand.
     const previous = getMeta(LATEST_KEY);
@@ -448,8 +465,10 @@ export async function runMemoryCheck(
     setMeta(LATEST_KEY, check.id);
     setMeta(conversationKey(conversationId), check.id);
     job = { running: false, finishedAt: Date.now(), conversationId };
+    activity.end(handle, { worked: true, detail: checkSummary(check), conversationId });
   } catch (error) {
     job = { running: false, finishedAt: Date.now(), error: error instanceof Error ? error.message : String(error) };
+    activity.fail('memory.deepCheck', error);
   }
   return job;
 }

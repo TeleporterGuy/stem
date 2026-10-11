@@ -4,6 +4,7 @@
 // recall suites.
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { recallStore as store } from '../../src/server/recall/store';
+import { snapshot as activitySnapshot } from '../../src/server/activity';
 import {
   actOnMemoryCheckChange,
   answerMemoryCheck,
@@ -85,6 +86,13 @@ describe('the deep check', () => {
     });
 
     expect(job).toMatchObject({ running: false, conversationId: 'conv-1' });
+    // The run shows in background jobs, and its history row opens the mail.
+    expect(activitySnapshot().history[0]).toMatchObject({
+      kind: 'memory.deepCheck',
+      state: 'done',
+      conversationId: 'conv-1',
+      detail: '3 fixed · 2 proposals · 1 question'
+    });
     // Proven: no user words behind it; a duplicate; a quote really in a newer user message.
     expect(statusOf(safe)).toBe('superseded');
     expect(statusOf(dup)).toBe('superseded');

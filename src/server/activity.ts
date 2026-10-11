@@ -152,7 +152,7 @@ export function yieldStep(handle: ActivityHandle): void {
  * unchanged watermark, and a history of "Summaries · 0 ms" would bury the rows
  * that matter. The run is still closed and its icon contribution removed.
  */
-export function end(handle: ActivityHandle, result: { worked: boolean; detail?: string }): void {
+export function end(handle: ActivityHandle, result: { worked: boolean; detail?: string; conversationId?: string }): void {
   const entry = open.get(handle.id);
   if (!entry) return;
   open.delete(handle.id);
@@ -162,6 +162,8 @@ export function end(handle: ActivityHandle, result: { worked: boolean; detail?: 
   if (result.worked) {
     entry.state = 'done';
     if (result.detail !== undefined) entry.detail = result.detail;
+    // A run that wrote its result as mail (the deep check) opens it from history.
+    if (result.conversationId) entry.conversationId = result.conversationId;
     entry.progress = undefined;
     remember(publicEntry(entry));
   }

@@ -2667,6 +2667,7 @@ export type ActivityKind =
   | 'memory.relationSweepBackfill'
   | 'memory.adjudicate'
   | 'memory.consolidate'
+  | 'memory.deepCheck'
   | 'memory.episodicEmbed'
   | 'memory.factEmbed'
   | 'memory.summaryEmbed'
@@ -2705,8 +2706,8 @@ export interface ActivityEntry {
   progress?: { done: number; total: number };
   error?: string;
   /**
-   * Mail rows only: the conversation this run works. Makes the row a doorway —
-   * clicking opens the conversation, and a running row carries a Stop control.
+   * The mail conversation this run works or wrote to. Makes the row a doorway —
+   * clicking opens the conversation, and a running mail row carries a Stop control.
    */
   conversationId?: string;
 }
