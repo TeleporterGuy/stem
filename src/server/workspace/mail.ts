@@ -197,6 +197,7 @@ function coerceConversation(raw: unknown): MailConversation | null {
     sessions,
     ...(agents.length ? { agents } : {}),
     ...(r.private === true ? { private: true as const } : {}),
+    ...(r.owner === 'memory-check' ? { owner: 'memory-check' as const } : {}),
     status,
     exchangeCount: num(r.exchangeCount) ?? 0,
     sendCounts,
@@ -410,7 +411,7 @@ export function createConversation(
   subject: string,
   participants: string[],
   bodyForSubject = '',
-  opts: { private?: boolean } = {}
+  opts: { private?: boolean; owner?: MailConversation['owner'] } = {}
 ): Promise<MailConversation> {
   const conversation: MailConversation = {
     id: randomUUID(),
@@ -418,6 +419,7 @@ export function createConversation(
     participants,
     sessions: {},
     ...(opts.private ? { private: true as const } : {}),
+    ...(opts.owner ? { owner: opts.owner } : {}),
     status: 'idle',
     exchangeCount: 0,
     sendCounts: {},

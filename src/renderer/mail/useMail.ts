@@ -272,6 +272,7 @@ export function hasMailWaiting(c: MailConversation): boolean {
  */
 export function personaName(personas: Persona[], id: string): string {
   if (id.startsWith('task:')) return 'Scheduled task';
+  if (id === 'memory-check') return 'Memory check';
   const at = id.lastIndexOf('~');
   if (at > 0) {
     const role = personas.find((p) => p.id === id.slice(0, at))?.name;

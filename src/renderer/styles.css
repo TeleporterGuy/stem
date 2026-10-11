@@ -1767,6 +1767,78 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
   cursor: pointer;
 }
 .mdx-form-submit:disabled { opacity: 0.5; cursor: default; }
+/* Choice fields: one-tap answers, plus "Other…" for an answer in words. */
+.mdx-field-head { display: flex; align-items: baseline; gap: var(--sp-4); }
+.mdx-form .mdx-field-head .mdx-field-label { flex: 1; min-width: 0; font-size: var(--fs-13); color: var(--ink); font-weight: 600; }
+.mdx-field-hint { font-size: var(--fs-12); color: var(--muted); }
+.mdx-field-ask {
+  flex: none; display: inline-flex; align-items: center; gap: var(--sp-2);
+  border: 0; background: none; color: var(--muted); font: inherit; font-size: var(--fs-12);
+  padding: 1px var(--sp-3); border-radius: var(--radius-sm); cursor: pointer;
+}
+.mdx-field-ask:hover { color: var(--accent); background: var(--sel); }
+.mdx-choices { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+.mdx-choice {
+  border: 0.5px solid var(--line); background: var(--content); color: var(--ink);
+  border-radius: var(--radius-pill); padding: 3px 12px; font: inherit; font-size: var(--fs-13); cursor: pointer;
+}
+.mdx-choice:hover:not(:disabled) { border-color: var(--accent); }
+.mdx-choice[aria-pressed='true'] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.mdx-choice:disabled { cursor: default; }
+.mdx-choice:disabled:not([aria-pressed='true']) { opacity: 0.5; }
+.mdx-field input.mdx-choice-other { max-width: 420px; }
+.mdx-form-foot { font-size: var(--fs-12); color: var(--muted); }
+.mdx-form-foot.sent { display: inline-flex; align-items: center; gap: var(--sp-2); color: var(--success); }
+.mdx-form-flash { animation: mdx-form-flash 1.4s ease-out; }
+@keyframes mdx-form-flash { from { box-shadow: 0 0 0 3px var(--sel); } to { box-shadow: 0 0 0 3px transparent; } }
+
+/* The answer bar: a form's one Send button, against the view's input. */
+.answer-bar {
+  display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap;
+  border: 0.5px solid var(--line); border-radius: var(--radius-md); background: var(--surface);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-5);
+}
+.answer-bar.below { width: calc(100% - 2 * var(--sp-12)); max-width: var(--measure); margin: var(--sp-4) auto 0; }
+.answer-bar-dots { display: inline-flex; gap: var(--sp-2); }
+.answer-bar-dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted); }
+.answer-bar-dot.on { background: var(--accent); border-color: var(--accent); }
+.answer-bar-label { font-size: var(--fs-12); }
+.answer-bar-spacer { flex: 1; }
+.answer-bar-send {
+  font: inherit; font-size: var(--fs-13); font-weight: 600; height: var(--ctl-h);
+  padding: 0 var(--sp-7); border-radius: var(--radius); border: 1px solid transparent;
+  background: var(--accent); color: var(--accent-ink); cursor: pointer; box-shadow: var(--shadow-btn);
+}
+.answer-bar-send:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+
+/* A memory check's change to one fact: what, why, and Undo / Retire / Keep. */
+.fact-change {
+  margin: var(--sp-4) 0; border: 0.5px solid var(--line); border-radius: var(--radius-md); background: var(--surface);
+  padding: var(--sp-4) var(--sp-6); display: flex; gap: var(--sp-6); align-items: flex-start;
+}
+.fact-change-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-1); }
+.fact-change-top { display: flex; align-items: center; gap: var(--sp-3); }
+.fact-change-pill {
+  font-size: var(--fs-10); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 0 var(--sp-3); border-radius: var(--radius-pill); border: 1px solid currentColor;
+}
+.fact-change-pill.done { color: var(--success); }
+.fact-change-pill.open { color: var(--warn); }
+.fact-change-pill.off { color: var(--muted); }
+.fact-change-id { font-family: var(--font-mono); font-size: var(--fs-11); color: var(--muted); }
+.fact-change-text.gone { text-decoration: line-through; color: var(--muted); }
+.fact-change-why { font-size: var(--fs-12); color: var(--muted); }
+.fact-change-why q { margin-left: var(--sp-2); font-style: italic; }
+.fact-change-error { font-size: var(--fs-12); color: var(--danger); }
+.fact-change-acts { display: flex; gap: var(--sp-3); flex: none; }
+.fact-change-btn {
+  font: inherit; font-size: var(--fs-12); height: var(--ctl-h-sm); padding: 0 var(--sp-5);
+  border-radius: var(--radius); border: 0.5px solid var(--line); background: var(--content); color: var(--ink); cursor: pointer;
+}
+.fact-change-btn:hover:not(:disabled) { border-color: var(--muted); }
+.fact-change-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.fact-change-btn:disabled { opacity: 0.5; cursor: default; }
+@media (max-width: 520px) { .fact-change { flex-direction: column; } }
 
 /* ---- inspector / manage ---- */
 /* The inspector column is a fixed 320px; a classic scrollbar would eat 10px of

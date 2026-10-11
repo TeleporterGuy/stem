@@ -47,6 +47,8 @@ import { MdxView } from './MdxView';
 import { StreamingMdxView } from './StreamingMdxView';
 import { HoverTip } from '../ui/InfoTip';
 import { EARLIER_MESSAGE, LATEST_MESSAGE, MdxActionContext, MdxMessageContext } from '../mdx/ActionContext';
+import { FormHostContext, MdxSourceContext, createFormHost } from '../mdx/FormHost';
+import { AnswerBar } from '../mdx/AnswerBar';
 import { useAutoHideScroll } from '../hooks/useAutoHideScroll';
 import { INITIAL_FOLLOW, onScrollEvent, type FollowState } from './followBottom';
 import { EFFORT_LABELS } from '../modelLabels';
@@ -592,6 +594,21 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
     () => ({ submit: (text: string) => sendAndFollow(text, []), running }),
     [sendAndFollow, running]
   );
+  // Forms in this chat send from the answer bar over the composer; asking
+  // about one of their questions starts a message in the composer.
+  const composerRef = useRef<ComposerHandle | null>(null);
+  const setComposer = useCallback(
+    (handle: ComposerHandle | null) => {
+      composerRef.current = handle;
+      if (typeof ref === 'function') ref(handle);
+      else if (ref) ref.current = handle;
+    },
+    [ref]
+  );
+  const formHost = useMemo(
+    () => createFormHost('below', (label) => composerRef.current?.prefill(`About “${label}”: `)),
+    []
+  );
 
   // Welcome-screen subtext: lead with what Stem does (memory, rich replies), not
   // with the output format — the format toggle already lives in the composer.
@@ -688,7 +705,9 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
               <MdxMessageContext.Provider
                 value={m.id === lastAssistantId && !running ? LATEST_MESSAGE : EARLIER_MESSAGE}
               >
-                <MdxView text={m.content} />
+                <MdxSourceContext.Provider value={`chat:${threadId ?? ''}:${m.turnId ?? m.id}`}>
+                  <MdxView text={m.content} />
+                </MdxSourceContext.Provider>
               </MdxMessageContext.Provider>
             )
           ) : isLive && !m.content ? (
@@ -870,6 +889,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
 
   return (
     <MdxActionContext.Provider value={mdxActions}>
+    <FormHostContext.Provider value={formHost}>
     <div className="chat">
       {pinboard && threadId && (
         <PinBoard threadId={threadId} board={board} messages={messages} onJump={jumpToPin} />
@@ -965,8 +985,9 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
         />
       )}
 
+      <AnswerBar host={formHost} running={running} />
       <Composer
-        ref={ref as React.Ref<ComposerHandle>}
+        ref={setComposer}
         messages={messages}
         running={running}
         escapeAction={escapeAction}
@@ -995,6 +1016,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
         onPinNote={pinsOn ? pinNote : undefined}
       />
     </div>
+    </FormHostContext.Provider>
     </MdxActionContext.Provider>
   );
 });

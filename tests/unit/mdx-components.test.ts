@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { renderMdx } from '../../src/renderer/mdx/render';
+import { FormHostContext, MdxSourceContext, createFormHost } from '../../src/renderer/mdx/FormHost';
 import {
   EARLIER_MESSAGE,
   LATEST_MESSAGE,
@@ -84,6 +85,63 @@ describe('Form outside a chat', () => {
     expect(html(doc)).toContain('Reply with these to answer.');
     expect(html(doc)).not.toContain('<input');
     expect(html(doc, { actions: true })).toContain('<input');
+  });
+});
+
+describe('Form choice fields', () => {
+  const doc = [
+    '<Form prompt="Memory check">',
+    '<Field type="choice" name="q1" label="Which launcher?" hint="Two facts disagree." other="true">',
+    '<Option>Raycast</Option>',
+    '<Option>Alfred</Option>',
+    '</Field>',
+    '</Form>'
+  ].join('\n');
+  const hosted = (text: string) =>
+    renderToStaticMarkup(
+      createElement(
+        MdxActionContext.Provider,
+        { value: actions },
+        createElement(
+          FormHostContext.Provider,
+          { value: createFormHost('above', () => undefined) },
+          createElement(MdxSourceContext.Provider, { value: 'mail:test' }, createElement('div', null, renderMdx(text)))
+        )
+      )
+    );
+
+  it('shows each option as a chip, plus Other…, with its own submit outside a host', () => {
+    const out = html(doc, { actions: true });
+    expect(out).toContain('>Raycast</button>');
+    expect(out).toContain('>Alfred</button>');
+    expect(out).toContain('>Other…</button>');
+    expect(out).toContain('Two facts disagree.');
+    expect(out).toContain('mdx-form-submit');
+  });
+
+  it('in a host, leaves sending to the answer bar and offers Ask on each question', () => {
+    const out = hosted(doc);
+    expect(out).not.toContain('mdx-form-submit');
+    expect(out).toContain('0 of 1 answered');
+    expect(out).toContain('send from the bar above');
+    expect(out).toContain('mdx-field-ask');
+  });
+
+  it('lists the options where nothing can be sent', () => {
+    expect(html(doc)).toContain('(Raycast / Alfred)');
+  });
+});
+
+describe('FactChange', () => {
+  it('shows the fact, why, and the action its status allows', () => {
+    const applied = html('<FactChange check="k" change="c1" fact="2833" text="The user is a cloud engineer." reason="From a course intro." status="applied" />');
+    expect(applied).toContain('#2833');
+    expect(applied).toContain('fact-change-text gone');
+    expect(applied).toContain('>Undo</button>');
+    const proposed = html('<FactChange check="k" change="c2" fact="2744" text="Favourite VR games." reason="Only a list." status="proposed" />');
+    expect(proposed).toContain('Retire?');
+    expect(proposed).toContain('>Keep</button>');
+    expect(proposed).toContain('>Retire</button>');
   });
 });
 

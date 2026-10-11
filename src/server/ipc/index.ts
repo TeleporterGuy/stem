@@ -17,6 +17,7 @@ export { registerDevicesIpc } from './devices';
 export { registerMcpIpc } from './mcp';
 export { registerMailIpc } from './mail';
 export { registerMemoryIpc } from './memory';
+export { memoryCheckLlm, registerMemoryCheckIpc } from './memory-check';
 export { registerPersonasIpc } from './personas';
 export { registerPinsIpc } from './pins';
 export { registerWorkspaceIpc } from './workspace';

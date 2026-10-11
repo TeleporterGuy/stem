@@ -39,6 +39,7 @@ import { useFactRerankStatus, useRetrievalHealth } from '../../hooks/useRetrieva
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { createJobStore, holdFullSpin, useJob, type ActiveFactsViewProps } from './shared';
+import { DeepCheckButton, DeepCheckStatus } from './DeepCheck';
 
 // Module-level so a running consolidation survives the tab unmounting: leave for
 // another tab mid-run and come back, and the button is still spinning — and the
@@ -653,7 +654,15 @@ function orderedConflictFacts(c: MemoryConflict): [FactDetails, FactDetails] {
   return aIsNewer ? [c.factA, c.factB] : [c.factB, c.factA];
 }
 
-export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts: ActiveFactsViewProps }) {
+export function FactsTab({
+  models,
+  activeFacts,
+  onOpenMail
+}: {
+  models: ModelSummary[];
+  activeFacts: ActiveFactsViewProps;
+  onOpenMail?: (conversationId: string) => void;
+}) {
   const { activeThreadId, activeRunning, previewActive, previewDraft, onTogglePreview } = activeFacts;
   const [settings, setSettings] = useState<MemorySettings | null>(null);
   const [contents, setContents] = useState<MemoryContents | null>(null);
@@ -1333,6 +1342,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
             >
               <Wand2 size={15} className={consolidating ? 'spin' : undefined} />
             </button>
+            <DeepCheckButton disabled={!settings.enabled || notes.length < 2} />
             <button
               className="link-btn icon-only"
               onClick={refreshContents}
@@ -1358,6 +1368,7 @@ export function FactsTab({ models, activeFacts }: { models: ModelSummary[]; acti
           </p>
         )}
         {consolidateMsg && <p className="muted">{consolidateMsg}</p>}
+        <DeepCheckStatus onOpenMail={onOpenMail} />
         {!contents && (
           <p className="muted">
             {offline ? 'Your memory lives on Stem’s server, which can’t be reached right now.' : 'Loading…'}

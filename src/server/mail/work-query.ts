@@ -10,7 +10,9 @@ import { readHarnessActivities } from '../harness/activities';
 export async function getMailWork(runtime: ChatBackend, conversationId: string): Promise<MailWorkResult> {
   const mail = await readMail();
   const conversation = mail.conversations.find((c) => c.id === conversationId);
-  if (!conversation) return { groups: [] };
+  // A conversation a server feature answers (the memory check) runs no turns:
+  // there is no work to show, and no "unavailable" rows to invent for it.
+  if (!conversation || conversation.owner) return { groups: [] };
   const items = mail.items.filter((i) => i.conversationId === conversationId);
   const recorded = await readRecordedWork(conversationId);
   const groups = recorded.flatMap((g) => g.notificationItemIds?.length

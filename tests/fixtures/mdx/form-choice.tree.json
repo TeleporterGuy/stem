@@ -1,0 +1,102 @@
+{
+  "blocks": [
+    {
+      "kind": "md",
+      "text": "I read all 733 facts learned from your chats."
+    },
+    {
+      "kind": "component",
+      "name": "FactChange",
+      "attrs": {
+        "check": "c-1",
+        "change": "c1",
+        "fact": "2833",
+        "label": "Retired",
+        "kind": "retire",
+        "text": "The user works as a cloud engineer for VPC.",
+        "reason": "From a course intro in your Documents folder.",
+        "status": "applied"
+      },
+      "children": []
+    },
+    {
+      "kind": "component",
+      "name": "Form",
+      "attrs": {
+        "prompt": "Answers to the memory check",
+        "submitLabel": "Send answers"
+      },
+      "children": [
+        {
+          "kind": "component",
+          "name": "Field",
+          "attrs": {
+            "type": "choice",
+            "name": "q1",
+            "label": "How is Súmračná 30 connected to you?",
+            "hint": "From a chat you pasted.",
+            "other": "true"
+          },
+          "children": [
+            {
+              "kind": "component",
+              "name": "Option",
+              "attrs": {},
+              "children": [
+                {
+                  "kind": "md",
+                  "text": "Ivka's parents' flat"
+                }
+              ]
+            },
+            {
+              "kind": "component",
+              "name": "Option",
+              "attrs": {},
+              "children": [
+                {
+                  "kind": "md",
+                  "text": "I live there"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "component",
+          "name": "Field",
+          "attrs": {
+            "type": "choice",
+            "name": "q2",
+            "label": "Which projects are still active?",
+            "multiple": "true"
+          },
+          "children": [
+            {
+              "kind": "component",
+              "name": "Option",
+              "attrs": {},
+              "children": [
+                {
+                  "kind": "md",
+                  "text": "Join"
+                }
+              ]
+            },
+            {
+              "kind": "component",
+              "name": "Option",
+              "attrs": {},
+              "children": [
+                {
+                  "kind": "md",
+                  "text": "joinvc"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

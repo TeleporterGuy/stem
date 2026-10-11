@@ -75,8 +75,11 @@ flowchart LR
 </Quiz>
 
 <Form prompt="A few details first" submitLabel="Plan my trip">
-<Field name="dates" label="Travel dates" />
-<Field name="budget" label="Budget (€)" type="number" />
+<Field label="Travel dates" />
+<Field type="choice" label="Pace">
+<Option>Easy</Option>
+<Option>Packed</Option>
+</Field>
 </Form>
 
 <Replies>

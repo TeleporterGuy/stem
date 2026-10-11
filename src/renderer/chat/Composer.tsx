@@ -91,6 +91,8 @@ export interface ComposerHandle {
   addAttachments(files: File[]): void;
   /** Put the caret in the text field — used when a new chat opens. */
   focus(): void;
+  /** Start the message with `text` (kept ahead of any draft) and put the caret after it. */
+  prefill(text: string): void;
 }
 
 interface ComposerProps {
@@ -427,7 +429,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     ref,
     () => ({
       addAttachments: (files) => void addFilesToComposer(files),
-      focus: () => textareaRef.current?.focus()
+      focus: () => textareaRef.current?.focus(),
+      prefill: (text) => {
+        setDraft((cur) => (cur.startsWith(text) ? cur : `${text}${cur}`));
+        requestAnimationFrame(() => {
+          const el = textareaRef.current;
+          if (!el) return;
+          el.focus();
+          el.setSelectionRange(el.value.length, el.value.length);
+        });
+      }
     }),
     [addFilesToComposer]
   );

@@ -116,7 +116,17 @@ function ManagePanelImpl({
       </div>
       <div className={`manage-body${tab === 'chats' ? ' chats' : ''}`}>
         {tab === 'chats' && <ChatList {...chatProps} activeThreadId={activeThreadId} />}
-        {tab === 'memory' && <MemoryTab models={models} activeFacts={activeFacts} />}
+        {tab === 'memory' && (
+          <MemoryTab
+            models={models}
+            activeFacts={activeFacts}
+            onOpenMail={(id) => {
+              setTab('chats');
+              chatProps.onChatsTabChange('inbox');
+              chatProps.onOpenMail(id);
+            }}
+          />
+        )}
         {tab === 'mcp' && <McpSkillsTab models={models} />}
         {tab === 'personas' && <PersonasTab models={models} />}
         {tab === 'folders' && <SourcesTab models={models} />}

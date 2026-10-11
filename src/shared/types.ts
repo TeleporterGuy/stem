@@ -3131,6 +3131,12 @@ export interface MailConversation {
    */
   private?: true;
   /**
+   * Owned by a server feature instead of a persona: replies go to that
+   * feature, never to a model turn with tools. 'memory-check' is the Memory
+   * tab's deep check (server/recall/deep-check.ts).
+   */
+  owner?: 'memory-check';
+  /**
    * 'working' while a delivery is in flight; 'awaiting-user' when the wave is
    * held on the user rather than answered (a paired computer offline, the
    * exchange cap spent) — a persona's answer, explicit or implicit, settles
@@ -4941,6 +4947,13 @@ export interface StemApi {
   resetEpisodicMemory(): Promise<EpisodicStats>;
   /** Run a consolidation pass now (merge/correct/drop duplicates + stale facts). */
   consolidateMemory(): Promise<MemoryConsolidateResult>;
+  /** Start the deep check of every chat fact; its findings arrive as a mail. */
+  startMemoryCheck(): Promise<MemoryCheckJob>;
+  memoryCheckJob(): Promise<MemoryCheckJob>;
+  /** Live status of a memory check's changes (the FactChange cards). */
+  memoryCheckState(checkId: string): Promise<MemoryCheckChangeState[]>;
+  actOnMemoryCheckChange(checkId: string, changeId: string, action: MemoryCheckAction): Promise<MemoryCheckChangeState[]>;
+  onMemoryCheckChanged(listener: (checkId: string) => void): () => void;
   /** Episodic-store metadata for the Memory → Recall sub-tab (count + size only). */
   getEpisodicStats(): Promise<EpisodicStats>;
   /** Rolling thread summaries (Level 1.5) for the Memory → Recall sub-tab. */
@@ -5294,4 +5307,24 @@ export interface StemApi {
   onQuickChatSessionStarted(listener: (payload: QuickChatSessionStarted) => void): () => void;
   /** HUD window only: play the bundled finish chime (used where there's no system sound to spawn). */
   onHudPlayChime(listener: () => void): () => void;
+}
+
+/** One change a memory check made or proposes: applied, undone, proposed, or kept as is (dismissed). */
+export type MemoryCheckChangeStatus = 'applied' | 'undone' | 'proposed' | 'dismissed';
+export type MemoryCheckAction = 'undo' | 'redo' | 'apply' | 'dismiss' | 'reopen';
+export interface MemoryCheckChangeState {
+  id: string;
+  status: MemoryCheckChangeStatus;
+}
+/** The deep check's run, as the Memory tab shows it. */
+export interface MemoryCheckJob {
+  running: boolean;
+  startedAt?: number;
+  finishedAt?: number;
+  /** Groups of facts read so far, of total. */
+  done?: number;
+  total?: number;
+  /** The mail thread the finished check wrote to. */
+  conversationId?: string;
+  error?: string;
 }

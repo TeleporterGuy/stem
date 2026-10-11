@@ -91,3 +91,17 @@ describe('exchangeLabel', () => {
     expect(exchangeLabel(x, 'normal', (id) => id[0].toUpperCase() + id.slice(1))).toBe('Consulted Verifier · 2 mails');
   });
 });
+
+describe('mails holding a form', () => {
+  const formBody = 'Check.\n\n<Form prompt="Answers to the memory check">\n<Field type="choice" name="q1" label="Which?">\n<Option>A</Option>\n</Field>\n</Form>';
+
+  it('stay open until the user sends that form’s answers, whatever else they write', () => {
+    const check = mail('memory-check', ['user'], { body: formBody });
+    const askAbout = mail('user', ['memory-check'], { body: 'About “Which?”: why?' });
+    const explain = mail('memory-check', ['user']);
+    expect(layoutThread([check, askAbout, explain], []).defaultOpen.has(check.id)).toBe(true);
+    const answers = mail('user', ['memory-check'], { body: 'Answers to the memory check\n- Which?: A' });
+    const done = mail('memory-check', ['user']);
+    expect(layoutThread([check, askAbout, explain, answers, done], []).defaultOpen.has(check.id)).toBe(false);
+  });
+});

@@ -1,7 +1,9 @@
 import type { ReactElement, ReactNode } from 'react';
-import { Check, Copy } from 'lucide-react';
-import { Children, Fragment, isValidElement, useMemo, useState } from 'react';
+import { Check, Copy, MessageCircleQuestion } from 'lucide-react';
+import { Children, Fragment, isValidElement, useEffect, useMemo, useRef, useState } from 'react';
 import { useMdxActions } from './ActionContext';
+import { readFormDraft, useFormHost, useMdxSource, writeFormDraft, type FieldValue, type FormDraft } from './FormHost';
+import { FactChange } from './FactChange';
 import { parseTable } from './data';
 import { Chart } from './chart/Chart';
 import { Stats } from './Stats';
@@ -389,15 +391,77 @@ export function Quiz({ topic, children }: { topic?: string; children?: ReactNode
 
 // ---- Interactive: Form (collects fields, sends them to the assistant) ------
 
-// Marker: <Form> reads these and renders the real inputs itself.
+// Markers: <Form> reads these and renders the real inputs itself.
 export function FormField(_props: {
   name?: string;
   label?: string;
   placeholder?: string;
   type?: string;
+  hint?: string;
+  multiple?: string;
+  other?: string;
+  children?: ReactNode;
 }) {
   return null;
 }
+
+export function FormOption({ children }: { children?: ReactNode }) {
+  return <>{children}</>;
+}
+
+type FieldProps = Parameters<typeof FormField>[0];
+
+interface FieldSpec {
+  key: string;
+  label: string;
+  type: 'text' | 'textarea' | 'number' | 'choice';
+  placeholder?: string;
+  hint?: string;
+  options: string[];
+  multiple: boolean;
+  other: boolean;
+}
+
+function fieldSpecs(children: ReactNode): FieldSpec[] {
+  return collectByType<FieldProps>(children, FormField).map((f, i) => {
+    const p = f.props;
+    const key = p.name ?? p.label ?? `field-${i}`;
+    const options = collectByType<{ children?: ReactNode }>(p.children, FormOption)
+      .map((o) => nodeText(o.props.children).trim())
+      .filter(Boolean);
+    const type = p.type === 'textarea' || p.type === 'number' ? p.type : p.type === 'choice' || options.length ? 'choice' : 'text';
+    return {
+      key,
+      label: p.label ?? p.name ?? key,
+      type,
+      placeholder: p.placeholder,
+      hint: p.hint,
+      options,
+      multiple: p.multiple === 'true',
+      other: p.other === 'true'
+    };
+  });
+}
+
+const OTHER = '__other';
+
+function answerOf(f: FieldSpec, draft: FormDraft): string {
+  const v = draft.values[f.key];
+  if (f.type !== 'choice') return typeof v === 'string' ? v.trim() : '';
+  const picked = Array.isArray(v) ? v : typeof v === 'string' && v ? [v] : [];
+  return picked
+    .map((x) => (x === OTHER ? (draft.others[f.key] ?? '').trim() : x))
+    .filter(Boolean)
+    .join(', ');
+}
+
+/** The answers as one readable message: the prompt, then a line per field. */
+export function formAnswerText(prompt: string | undefined, fields: FieldSpec[], draft: FormDraft): string {
+  const lines = fields.map((f) => `- ${f.label}: ${answerOf(f, draft) || '(skipped)'}`);
+  return `${prompt ? `${prompt}\n` : ''}${lines.join('\n')}`;
+}
+
+const ASK_TITLE = 'Ask about this question. Your answers so far are kept.';
 
 export function Form({
   prompt,
@@ -409,25 +473,60 @@ export function Form({
   children?: ReactNode;
 }) {
   const actions = useMdxActions();
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [sent, setSent] = useState(false);
+  const host = useFormHost();
+  const source = useMdxSource();
+  const fields = fieldSpecs(children);
+  const key = `${source}|${prompt ?? ''}|${fields.map((f) => f.key).join(',')}`;
+  const [draft, setDraftState] = useState<FormDraft>(() => readFormDraft(key));
+  const rootRef = useRef<HTMLDivElement>(null);
+  const setDraft = (next: FormDraft) => {
+    setDraftState(next);
+    if (source) writeFormDraft(key, next);
+  };
+  const answered = fields.filter((f) => answerOf(f, draft)).length;
+  const live = !!actions && !draft.sent;
 
-  const fields = collectByType<{ name?: string; label?: string; placeholder?: string; type?: string }>(
-    children,
-    FormField
-  );
+  const submit = () => {
+    if (!actions || actions.running || draft.sent || answered === 0) return;
+    actions.submit(formAnswerText(prompt, fields, draft));
+    setDraft({ ...draft, sent: true });
+  };
+  // Latest closures for the host: it calls send() from the answer bar.
+  const submitRef = useRef(submit);
+  submitRef.current = submit;
+
+  useEffect(() => {
+    if (!host || !live || fields.length === 0) return;
+    return host.register({
+      key,
+      answered,
+      total: fields.length,
+      send: () => submitRef.current(),
+      reveal: () => {
+        const el = rootRef.current;
+        if (!el) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        el.classList.remove('mdx-form-flash');
+        void el.offsetWidth;
+        el.classList.add('mdx-form-flash');
+      },
+      el: () => rootRef.current
+    });
+  }, [host, live, key, answered, fields.length]);
+
   if (fields.length === 0) return <div className="mdx-form">{children}</div>;
-  const keyOf = (f: ReactElement<{ name?: string; label?: string }>, i: number) =>
-    f.props.name ?? f.props.label ?? `field-${i}`;
-  // Read where nothing can be sent back (the Inbox, a fact's source): show what
-  // is being asked, and how to answer, instead of inputs that go nowhere.
+  // Read where nothing can be sent back (a fact's source): show what is being
+  // asked, and how to answer, instead of inputs that go nowhere.
   if (!actions) {
     return (
       <div className="mdx-form mdx-form-readonly">
         {prompt && <div className="mdx-form-prompt">{prompt}</div>}
         <ul>
-          {fields.map((f, i) => (
-            <li key={keyOf(f, i)}>{f.props.label ?? f.props.name ?? keyOf(f, i)}</li>
+          {fields.map((f) => (
+            <li key={f.key}>
+              {f.label}
+              {f.options.length > 0 && <span className="mdx-field-hint"> ({f.options.join(' / ')})</span>}
+            </li>
           ))}
         </ul>
         <div className="mdx-form-note">Reply with these to answer.</div>
@@ -435,56 +534,111 @@ export function Form({
     );
   }
 
-
-  const submit = () => {
-    if (!actions || actions.running || sent) return;
-    const lines = fields.map((f, i) => {
-      const key = keyOf(f, i);
-      const label = f.props.label ?? f.props.name ?? key;
-      return `- ${label}: ${values[key] ?? ''}`;
-    });
-    actions.submit(`${prompt ? `${prompt}\n` : ''}${lines.join('\n')}`);
-    setSent(true);
+  const setValue = (f: FieldSpec, value: FieldValue) =>
+    setDraft({ ...draft, values: { ...draft.values, [f.key]: value } });
+  const pick = (f: FieldSpec, option: string) => {
+    const cur = draft.values[f.key];
+    if (f.multiple) {
+      const list = Array.isArray(cur) ? cur : [];
+      setValue(f, list.includes(option) ? list.filter((x) => x !== option) : [...list, option]);
+    } else {
+      setValue(f, cur === option ? '' : option);
+    }
   };
+  const isPicked = (f: FieldSpec, option: string) => {
+    const cur = draft.values[f.key];
+    return Array.isArray(cur) ? cur.includes(option) : cur === option;
+  };
+  const locked = draft.sent;
 
   return (
-    <div className="mdx-form">
+    <div className={`mdx-form${locked ? ' sent' : ''}`} ref={rootRef}>
       {prompt && <div className="mdx-form-prompt">{prompt}</div>}
-      {fields.map((f, i) => {
-        const key = keyOf(f, i);
-        const label = f.props.label ?? f.props.name ?? key;
-        const type = f.props.type ?? 'text';
-        return (
-          <label className="mdx-field" key={key}>
-            <span className="mdx-field-label">{label}</span>
-            {type === 'textarea' ? (
-              <textarea
-                value={values[key] ?? ''}
-                placeholder={f.props.placeholder}
-                rows={3}
-                disabled={sent}
-                onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
-              />
-            ) : (
-              <input
-                type={type === 'number' ? 'number' : 'text'}
-                value={values[key] ?? ''}
-                placeholder={f.props.placeholder}
-                disabled={sent}
-                onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
-              />
+      {fields.map((f) => (
+        <div className="mdx-field" key={f.key}>
+          <div className="mdx-field-head">
+            <span className="mdx-field-label">{f.label}</span>
+            {host && !locked && (
+              <button type="button" className="mdx-field-ask" title={ASK_TITLE} onClick={() => host.ask(f.label)}>
+                <MessageCircleQuestion size={13} /> Ask
+              </button>
             )}
-          </label>
-        );
-      })}
-      {actions && (
+          </div>
+          {f.hint && <div className="mdx-field-hint">{f.hint}</div>}
+          {f.type === 'choice' ? (
+            <>
+              <div className="mdx-choices" role="group" aria-label={f.label}>
+                {f.options.map((o) => (
+                  <button
+                    key={o}
+                    type="button"
+                    className="mdx-choice"
+                    aria-pressed={isPicked(f, o)}
+                    disabled={locked}
+                    onClick={() => pick(f, o)}
+                  >
+                    {o}
+                  </button>
+                ))}
+                {f.other && (
+                  <button
+                    type="button"
+                    className="mdx-choice"
+                    aria-pressed={isPicked(f, OTHER)}
+                    disabled={locked}
+                    onClick={() => pick(f, OTHER)}
+                  >
+                    Other…
+                  </button>
+                )}
+              </div>
+              {f.other && isPicked(f, OTHER) && (
+                <input
+                  className="mdx-choice-other"
+                  value={draft.others[f.key] ?? ''}
+                  placeholder="Your answer"
+                  disabled={locked}
+                  autoFocus={!locked}
+                  onChange={(e) => setDraft({ ...draft, others: { ...draft.others, [f.key]: e.target.value } })}
+                />
+              )}
+            </>
+          ) : f.type === 'textarea' ? (
+            <textarea
+              value={typeof draft.values[f.key] === 'string' ? (draft.values[f.key] as string) : ''}
+              placeholder={f.placeholder}
+              rows={3}
+              disabled={locked}
+              onChange={(e) => setValue(f, e.target.value)}
+            />
+          ) : (
+            <input
+              type={f.type === 'number' ? 'number' : 'text'}
+              value={typeof draft.values[f.key] === 'string' ? (draft.values[f.key] as string) : ''}
+              placeholder={f.placeholder}
+              disabled={locked}
+              onChange={(e) => setValue(f, e.target.value)}
+            />
+          )}
+        </div>
+      ))}
+      {locked ? (
+        <div className="mdx-form-foot sent">
+          <Check size={13} /> Answers sent
+        </div>
+      ) : host ? (
+        <div className="mdx-form-foot">
+          {answered} of {fields.length} answered · skip any you are unsure about · send from the bar{' '}
+          {host.place === 'below' ? 'below' : 'above'}
+        </div>
+      ) : (
         <button
           type="button"
           className="mdx-form-submit"
           onClick={submit}
-          disabled={actions.running || sent}
+          disabled={actions.running || answered === 0}
         >
-          {sent ? 'Sent' : submitLabel ?? 'Submit'}
+          {submitLabel ?? 'Submit'}
         </button>
       )}
     </div>
@@ -518,9 +672,21 @@ export const componentMap: Record<string, ComponentEntry> = {
   Form: (props, children) => (
     <Form prompt={props.prompt} submitLabel={props.submitLabel}>{children}</Form>
   ),
-  Field: (props) => (
-    <FormField name={props.name} label={props.label} placeholder={props.placeholder} type={props.type} />
+  Field: (props, children) => (
+    <FormField
+      name={props.name}
+      label={props.label}
+      placeholder={props.placeholder}
+      type={props.type}
+      hint={props.hint}
+      multiple={props.multiple}
+      other={props.other}
+    >
+      {children}
+    </FormField>
   ),
+  Option: (_props, children) => <FormOption>{children}</FormOption>,
+  FactChange: (props) => <FactChange {...props} />,
   Stats: (_props, _children, data) => <Stats data={data?.value} />,
   Compare: (props, _children, data) => <Compare recommend={props.recommend} data={data?.value} />,
   Diagram: (props, _children, data) => <Diagram title={props.title} source={data?.value} />,

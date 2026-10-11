@@ -11,6 +11,8 @@ import {
   registerDevicesIpc,
   registerMcpIpc,
   registerMemoryIpc,
+  registerMemoryCheckIpc,
+  memoryCheckLlm,
   registerMailIpc,
   registerPersonasIpc,
   registerPinsIpc,
@@ -26,6 +28,7 @@ import { transportedRawPath } from './files/staging';
 import { piHome } from './workspace/paths';
 import type { TaskScheduler } from './scheduler';
 import { MailRouter } from './mail/router';
+import { answerMemoryCheck } from './recall/deep-check';
 import { nameAfterFirstReply, runMailSubjectPass, type MailSubjectDeps } from './mail/subject';
 import { onPersonasChanged, resolveClientPersona } from './workspace/personas';
 import { personaTurnFields } from './workspace/persona-turn';
@@ -405,6 +408,7 @@ function registerIpc(): void {
   // persona list (the composer's To: field included) stays current.
   onPersonasChanged(() => emit('personas:changed', undefined));
   registerMailIpc({ router: () => mailRouter, runtime: () => runtime! });
+  registerMemoryCheckIpc({ router: () => mailRouter, runtime: () => runtime!, emit });
   onMailChanged(() => emit('mail:changed', undefined));
   onMailWorkChanged((event) => emit('mail:workChanged', event));
   onMailReceived(pushMailReceived);
@@ -832,6 +836,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     // Late bound like agentReplies: exec and harness are built after the router.
     grantOnce: (kind, threadId, grant) =>
       kind === 'exec' ? execService?.grantOnce(threadId, grant) : harness?.service.grantOnce(threadId, grant),
+    // The memory check's thread: replies are read against its open questions.
+    ownedReply: (_owner, conversationId, body) => answerMemoryCheck(memoryCheckLlm(() => runtime!), conversationId, body),
     resumeScheduledRun: async (taskId, threadId, body) => {
       if (!scheduler) throw new Error('The scheduler is not running.');
       await scheduler.resumeParkedRun(taskId, threadId, body);

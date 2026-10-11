@@ -166,6 +166,8 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'memory:restoreFact': [a.number],
   'memory:deleteSummary': [a.number],
   'memory:activeFacts': [a.nullish(a.string)],
+  'memory:checkState': [a.string],
+  'memory:checkAct': [a.string, a.string, a.oneOf(['undo', 'redo', 'apply', 'dismiss', 'reopen'])],
   'memory:previewFacts': [a.string],
   'memory:setEpisodicLimit': [a.number],
   'memory:setTidyThreshold': [a.number],

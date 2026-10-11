@@ -12,7 +12,15 @@ const SUBS = ['facts', 'recall'] as const;
 // Memory lives under the Brain icon as two sub-tabs: durable facts (Level 1) and
 // the episodic recall store (Level 2, shown as metadata only — it's searched, not
 // browsed). Mirrors the MCP + Skills sub-tab pattern below.
-export function MemoryTab({ models, activeFacts }: { models: ModelSummary[]; activeFacts: ActiveFactsViewProps }) {
+export function MemoryTab({
+  models,
+  activeFacts,
+  onOpenMail
+}: {
+  models: ModelSummary[];
+  activeFacts: ActiveFactsViewProps;
+  onOpenMail?: (conversationId: string) => void;
+}) {
   const [sub, setSub] = useRememberedTab('stem.memory.sub', SUBS, 'facts');
   // Sub-tab echo of the rail's alert dot: the broken retrieval model lives
   // under Facts, so the marker keeps pointing once you're inside Memory.
@@ -28,7 +36,7 @@ export function MemoryTab({ models, activeFacts }: { models: ModelSummary[]; act
           Recall
         </button>
       </div>
-      {sub === 'facts' ? <FactsTab models={models} activeFacts={activeFacts} /> : <EpisodicTab />}
+      {sub === 'facts' ? <FactsTab models={models} activeFacts={activeFacts} onOpenMail={onOpenMail} /> : <EpisodicTab />}
     </div>
   );
 }

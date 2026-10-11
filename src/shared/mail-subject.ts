@@ -105,7 +105,8 @@ export function mailPreviewText(body: string): string {
   const lines: string[] = [];
   let length = 0;
   for (const rawLine of text.split('\n')) {
-    const line = stripMarkup(rawLine);
+    // Component tags (<FactChange … />, <Form …>) are markup, not words.
+    const line = stripMarkup(rawLine.replace(/<\/?[A-Z][\w.]*(?:\s[^>]*)?\/?>/g, ' '));
     if (!line) continue;
     lines.push(line);
     length += line.length + 1;

@@ -133,6 +133,11 @@ describe('resolveMailSubject', () => {
 });
 
 describe('mailPreviewText', () => {
+  it('leaves component tags out', () => {
+    const body = 'I read all 672 facts.\n\n### Fixed\n<FactChange check="k" change="c1" fact="2833" text="The user is a cloud engineer." />\n<Option>Raycast</Option>';
+    expect(mailPreviewText(body)).toBe('I read all 672 facts. Fixed Raycast');
+  });
+
   it('strips Markdown across lines and joins them into one run of text', () => {
     const body = [
       'Published to **TestFlight**.',

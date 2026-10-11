@@ -39,6 +39,7 @@ import type {
   McpServerStatus,
   MemoryModelSettings,
   MemoryRebuildStatus,
+  MemoryCheckAction,
   WebSearchSettings,
   PartialRetrievalSettings,
   ReleaseNotesSettings,
@@ -384,6 +385,16 @@ const api: StemApi = {
   resetFactsMemory: () => ipcRenderer.invoke('memory:resetFacts'),
   resetEpisodicMemory: () => ipcRenderer.invoke('memory:resetEpisodic'),
   consolidateMemory: () => ipcRenderer.invoke('memory:consolidate'),
+  startMemoryCheck: () => ipcRenderer.invoke('memory:checkStart'),
+  memoryCheckJob: () => ipcRenderer.invoke('memory:checkJob'),
+  memoryCheckState: (checkId: string) => ipcRenderer.invoke('memory:checkState', checkId),
+  actOnMemoryCheckChange: (checkId: string, changeId: string, action: MemoryCheckAction) =>
+    ipcRenderer.invoke('memory:checkAct', checkId, changeId, action),
+  onMemoryCheckChanged: (listener: (checkId: string) => void) => {
+    const handler = (_e: unknown, payload: { checkId: string }): void => listener(payload.checkId);
+    ipcRenderer.on('memory:checkChanged', handler);
+    return () => ipcRenderer.removeListener('memory:checkChanged', handler);
+  },
   getEpisodicStats: () => ipcRenderer.invoke('memory:episodicStats'),
   getThreadSummaries: () => ipcRenderer.invoke('memory:summaries'),
   deleteThreadSummary: (id: number) => ipcRenderer.invoke('memory:deleteSummary', id),

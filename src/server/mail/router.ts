@@ -266,6 +266,11 @@ export interface MailRouterOptions {
   ) => void;
   /** Resume a scheduled run the user answered (the scheduler owns its threads). */
   resumeScheduledRun?: (taskId: string, threadId: string, body: string) => Promise<void>;
+  /**
+   * Answer a reply in a conversation a server feature owns (MailConversation
+   * .owner): returns the mail to send back. No persona turn runs.
+   */
+  ownedReply?: (owner: NonNullable<MailConversation['owner']>, conversationId: string, body: string) => Promise<string>;
 }
 
 /**
@@ -390,6 +395,7 @@ export class MailRouter {
     const { conversations, items } = await readMail();
     const conversation = conversations.find((c) => c.id === conversationId);
     if (!conversation) throw new Error('That mail conversation no longer exists.');
+    if (conversation.owner) return this.replyToOwner(conversation, trimmed);
     const driver = conversation.participants[0];
     // A code persona's driver just relayed the agent's question and this is
     // the answer: keep it as a standing answer (never in a private
@@ -435,6 +441,45 @@ export class MailRouter {
       return result;
     }
     this.enqueueDelivery(conversationId, driver, trimmed, 'user', source.at, source.id, files);
+    return result;
+  }
+
+  /**
+   * A mail from a server feature (the memory check), in a conversation that
+   * feature owns: its replies come back to the feature, not to a persona.
+   */
+  async deliverOwnedMail(owner: NonNullable<MailConversation['owner']>, subject: string, body: string): Promise<string> {
+    const conversation = await createConversation(subject, [owner], body, { owner });
+    await appendMailItem({ conversationId: conversation.id, from: owner, to: ['user'], body });
+    this.opts.onChange();
+    return conversation.id;
+  }
+
+  /** The user's reply in an owned conversation: appended, answered by the owner off the request. */
+  private async replyToOwner(conversation: MailConversation, body: string): Promise<MailListResult> {
+    const owner = conversation.owner!;
+    if (!body) throw new Error('Write the reply before sending it.');
+    await appendMailItem({ conversationId: conversation.id, from: 'user', to: [owner], body });
+    const result = await setConversationStatus(conversation.id, 'working');
+    this.opts.onChange();
+    void (async () => {
+      let answer: string;
+      let status: MailConversation['status'] = 'idle';
+      try {
+        if (!this.opts.ownedReply) throw new Error('Nothing on this server answers this conversation.');
+        answer = await this.opts.ownedReply(owner, conversation.id, body);
+      } catch (error) {
+        answer = `That reply could not be handled: ${error instanceof Error ? error.message : String(error)} Nothing was changed.`;
+        status = 'failed';
+      }
+      try {
+        await appendMailItem({ conversationId: conversation.id, from: owner, to: ['user'], body: answer });
+        await setConversationStatus(conversation.id, status);
+      } catch (error) {
+        degrade('mail', 'lost the answer to a reply in an owned conversation', error);
+      }
+      this.opts.onChange();
+    })();
     return result;
   }
 
@@ -624,6 +669,10 @@ export class MailRouter {
    * gets no turn of its own until someone mails it.
    */
   async addParticipant(conversationId: string, personaId: string): Promise<MailListResult> {
+    const { conversations } = await readMail();
+    if (conversations.find((c) => c.id === conversationId)?.owner) {
+      throw new Error('Personas cannot join this conversation: Stem answers it itself.');
+    }
     const persona = await getPersona(personaId);
     if (!persona) throw new Error(`No persona "${personaId}" exists.`);
     const result = await addParticipant(conversationId, persona.id);

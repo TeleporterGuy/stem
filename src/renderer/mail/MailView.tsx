@@ -38,6 +38,9 @@ import type {
   SystemVersion
 } from '../../shared/types';
 import { MdxView } from '../chat/MdxView';
+import { EARLIER_MESSAGE, LATEST_MESSAGE, MdxActionContext, MdxMessageContext } from '../mdx/ActionContext';
+import { FormHostContext, MdxSourceContext, createFormHost } from '../mdx/FormHost';
+import { AnswerBar } from '../mdx/AnswerBar';
 import { formatSystemVersion, sameSystem } from '../../shared/sys-version';
 import { forwardAttachments, forwardCompose, forwardQuote, forwardSubject } from '../../shared/mail-forward';
 import { mailPreviewText } from '../../shared/mail-subject';
@@ -455,7 +458,15 @@ export const MailConversationView = forwardRef<MailViewHandle, {
             )}
           </div>
           {m.subject && <h2 className="mail-item-subject">{m.subject}</h2>}
-          {m.from === 'user' ? <p className="mail-item-body-plain">{m.body}</p> : <MdxView text={m.body} />}
+          {m.from === 'user' ? (
+            <p className="mail-item-body-plain">{m.body}</p>
+          ) : (
+            <MdxMessageContext.Provider value={m.id === newestFromThem && !working ? LATEST_MESSAGE : EARLIER_MESSAGE}>
+              <MdxSourceContext.Provider value={`mail:${m.id}`}>
+                <MdxView text={m.body} />
+              </MdxSourceContext.Provider>
+            </MdxMessageContext.Provider>
+          )}
           {m.result && (
             <section className="mail-item-result" aria-label="The run’s reply">
               <MdxView text={m.result} />
@@ -507,9 +518,29 @@ export const MailConversationView = forwardRef<MailViewHandle, {
   };
 
   const working = conversation.status === 'working';
+  // Forms and suggested replies in this thread answer by mail: a submit is a
+  // reply, sent from the answer bar under the reply box; asking about a
+  // question starts one in the box.
+  const replyFocus = useRef<() => void>(() => undefined);
+  const mdxActions = useMemo(
+    () => ({ submit: (text: string) => onReply(text), running: working }),
+    [onReply, working]
+  );
+  const formHost = useMemo(
+    () =>
+      createFormHost('above', (label) => {
+        const prefix = `About “${label}”: `;
+        setDraft((cur) => (cur.startsWith(prefix) ? cur : `${prefix}${cur}`));
+        requestAnimationFrame(() => replyFocus.current());
+      }),
+    []
+  );
+  const newestFromThem = [...mails].reverse().find((m) => m.from !== 'user')?.id;
   const showOthers = conversation.participants.filter((p) => p !== recipient);
 
   return (
+    <MdxActionContext.Provider value={mdxActions}>
+    <FormHostContext.Provider value={formHost}>
     <div className="mail-view">
       <header className="mail-head">
         <div className="mail-head-main">
@@ -577,7 +608,9 @@ export const MailConversationView = forwardRef<MailViewHandle, {
           parked={!!parkedBy}
           working={working}
           onSend={send}
+          focusRef={replyFocus}
         />
+        <AnswerBar host={formHost} running={working} />
         {[...pending].reverse().map(pendingCard)}
         {working && (
           <LiveCard
@@ -617,6 +650,8 @@ export const MailConversationView = forwardRef<MailViewHandle, {
         {mails.length === 0 && pending.length === 0 && <p className="muted">This conversation has no mail yet.</p>}
       </div>
     </div>
+    </FormHostContext.Provider>
+    </MdxActionContext.Provider>
   );
 });
 
@@ -632,7 +667,8 @@ function ReplyBox({
   others,
   parked,
   working,
-  onSend
+  onSend,
+  focusRef
 }: {
   draft: string;
   setDraft: (text: string) => void;
@@ -642,9 +678,20 @@ function ReplyBox({
   parked: boolean;
   working: boolean;
   onSend: () => void;
+  /** Filled with a function that puts the caret at the end of the reply. */
+  focusRef?: React.MutableRefObject<() => void>;
 }) {
   const [focused, setFocused] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  if (focusRef) {
+    focusRef.current = () => {
+      const el = textRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    };
+  }
   const dictation = useDictation(draft, setDraft);
   const hasDraft = !!draft.trim() || files.attachments.length > 0;
   const send = () => {
@@ -686,6 +733,7 @@ function ReplyBox({
         </p>
       )}
       <textarea
+        ref={textRef}
         value={draft}
         onChange={(e) => {
           dictation.freeze();

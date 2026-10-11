@@ -85,6 +85,11 @@ export function layoutThread(mails: MailItem[], work: MailWorkGroup[]): ThreadLa
     }
   }
   for (const entry of entries) if (entry.item.approval?.status === 'pending') defaultOpen.add(entry.item.id);
+  // A form still waiting for its answers stays open: folded, it would take
+  // the answer bar (and the way to send the picks) with it.
+  entries.forEach((entry, i) => {
+    if (openForm(entry.item, entries.slice(i + 1).map((e) => e.item))) defaultOpen.add(entry.item.id);
+  });
 
   return { entries: entries.reverse(), trailingExchange: pending, liveWork, unlinkedWork, defaultOpen };
 }
@@ -112,4 +117,17 @@ export function exchangeLabel(exchange: MailItem[], author: string, name: (id: s
   const who = others.size ? [...others] : [...new Set(exchange.map((m) => m.from))];
   const n = exchange.length;
   return `Consulted ${who.map(name).join(', ')} · ${n} ${n === 1 ? 'mail' : 'mails'}`;
+}
+
+/**
+ * Does this mail hold a <Form> not yet answered? A form's answers go out as a
+ * reply that starts with its prompt (mdx/components formAnswerText), so a
+ * later mail of the user's starting with it answers it. A form with no prompt
+ * counts as answered by any later mail of theirs.
+ */
+export function openForm(item: MailItem, later: MailItem[]): boolean {
+  if (item.from === 'user' || !/<Form[\s>]/.test(item.body)) return false;
+  const prompt = /<Form\b[^>]*\bprompt="([^"]*)"/.exec(item.body)?.[1];
+  const mine = later.filter((m) => m.from === 'user');
+  return prompt ? !mine.some((m) => m.body.startsWith(`${prompt}\n`)) : mine.length === 0;
 }
