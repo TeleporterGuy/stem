@@ -96,12 +96,15 @@ export function DeepCheckCard({
           <span>
             <b>{last.fixed}</b> fixed
           </span>
+          {/* Answered questions count as done, so the label must say so: a bare
+              "5 questions" read as five still waiting. */}
           <span className={last.openQuestions ? 'open' : undefined}>
             <b>{last.openQuestions ? `${last.openQuestions} of ${last.questions}` : last.questions}</b>{' '}
-            {last.openQuestions ? 'questions open' : last.questions === 1 ? 'question' : 'questions'}
+            {last.openQuestions ? 'unanswered' : last.questions === 1 ? 'question answered' : 'questions answered'}
           </span>
+          {/* The mail lists these under "Your call" (Still current? / Retire?). */}
           <span className={last.openProposals ? 'open' : undefined}>
-            <b>{last.openProposals}</b> {last.openProposals === 1 ? 'proposal' : 'proposals'} open
+            <b>{last.openProposals}</b> for you to decide
           </span>
         </div>
       )}
