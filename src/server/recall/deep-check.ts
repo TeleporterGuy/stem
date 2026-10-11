@@ -73,6 +73,8 @@ export interface CheckChange {
   ongoing?: boolean;
   /** Settled as Ended (it was true, and stopped) rather than never true. */
   ended?: boolean;
+  /** Started as a proposal: Undo puts the choice back instead of offering Redo. */
+  asked?: boolean;
   status: MemoryCheckChangeStatus;
 }
 
@@ -257,7 +259,7 @@ function triage(
     claimed.add(fact.id);
     changes.push({
       id: `c${randomUUID().slice(0, 8)}`, kind: 'retire', fact: fact.id, text: fact.text, reason,
-      ...(ongoing ? { ongoing: true } : {}), status: 'proposed'
+      ...(ongoing ? { ongoing: true } : {}), asked: true, status: 'proposed'
     });
   };
   for (const raw of arr(findings.fixes) as RawFix[]) {
@@ -514,8 +516,19 @@ function undoChange(c: CheckChange): boolean {
 }
 
 /** A change whose fact no longer exists (its folder was disconnected, or it was deleted) reads 'removed'. */
+/**
+ * A proposal the user settled. Older checks have no 'asked' mark; 'ended' is
+ * written whenever a proposal is settled with a button, so it tells them apart.
+ */
+const asked = (c: CheckChange) => c.asked === true || c.ended !== undefined;
+
+/** A settled proposal undone under the old rule (to Redo) is open again. */
+function reopenUndone(c: CheckChange): CheckChange {
+  return asked(c) && c.status === 'undone' ? { ...c, status: 'proposed' } : c;
+}
+
 export function memoryCheckState(checkId: string): MemoryCheckChangeState[] {
-  const changes = loadCheck(checkId)?.changes ?? [];
+  const changes = (loadCheck(checkId)?.changes ?? []).map(reopenUndone);
   const present = new Set(getFactsByIds(changes.map((c) => c.fact)).map((f) => f.id));
   return changes.map((c) => ({ id: c.id, status: present.has(c.fact) ? c.status : 'removed' }));
 }
@@ -529,9 +542,11 @@ export function actOnMemoryCheckChange(checkId: string, changeId: string, action
   const c = check?.changes.find((x) => x.id === changeId);
   if (!check || !c) throw new Error('That memory check change no longer exists.');
   if (getFactsByIds([c.fact]).length === 0) throw new Error('That fact was removed, so there is nothing left to change.');
+  if (asked(c) && c.status === 'undone') c.status = 'proposed';
   // Ended retires the fact like Retire does; it only records why, so the card reads Ended.
   const next: Record<MemoryCheckAction, [MemoryCheckChangeStatus[], MemoryCheckChangeStatus]> = {
-    undo: [['applied', 'ended'], 'undone'],
+    // Undoing a settled proposal puts its choice back, so it can be answered differently.
+    undo: [['applied', 'ended'], asked(c) ? 'proposed' : 'undone'],
     redo: [['undone'], c.ended ? 'ended' : 'applied'],
     apply: [['proposed'], 'applied'],
     end: [['proposed'], 'ended'],

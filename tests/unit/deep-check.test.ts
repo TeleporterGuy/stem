@@ -147,6 +147,12 @@ describe('the deep check', () => {
     actOnMemoryCheckChange(check.id, prop.id, 'apply');
     expect(statusOf(vr)).toBe('superseded');
     expect(memoryCheckState(check.id).find((s) => s.id === prop.id)?.status).toBe('applied');
+    // Undo on a settled proposal reopens the choice; Keep then holds.
+    actOnMemoryCheckChange(check.id, prop.id, 'undo');
+    expect(statusOf(vr)).toBe('active');
+    expect(memoryCheckState(check.id).find((s) => s.id === prop.id)?.status).toBe('proposed');
+    actOnMemoryCheckChange(check.id, prop.id, 'dismiss');
+    expect(memoryCheckState(check.id).find((s) => s.id === prop.id)?.status).toBe('dismissed');
   });
 
   it('saves an answer as an explicit fact replacing the facts it settles, and Undo puts them back', async () => {
@@ -338,10 +344,10 @@ describe('the deep check', () => {
 
     expect(actOnMemoryCheckChange(check.id, change.id, 'end')).toEqual([{ id: change.id, status: 'ended' }]);
     expect(statusOf(sheet)).toBe('superseded');
-    actOnMemoryCheckChange(check.id, change.id, 'undo');
+    // Undo puts the choice back, so the user can answer differently.
+    expect(actOnMemoryCheckChange(check.id, change.id, 'undo')).toEqual([{ id: change.id, status: 'proposed' }]);
     expect(statusOf(sheet)).toBe('active');
-    // Redo returns to what the user chose: Ended, not a plain retirement.
-    expect(actOnMemoryCheckChange(check.id, change.id, 'redo')).toEqual([{ id: change.id, status: 'ended' }]);
-    expect(statusOf(sheet)).toBe('superseded');
+    expect(actOnMemoryCheckChange(check.id, change.id, 'dismiss')).toEqual([{ id: change.id, status: 'dismissed' }]);
+    expect(statusOf(sheet)).toBe('active');
   });
 });
