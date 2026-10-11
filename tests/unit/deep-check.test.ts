@@ -324,4 +324,24 @@ describe('the deep check', () => {
     const change = check.changes.find((c) => c.fact === note)!;
     expect(() => actOnMemoryCheckChange(check.id, change.id, 'apply')).toThrow(/removed/);
   });
+
+  it('asks whether an ongoing state is still current, and Ended retires it as finished', async () => {
+    const sheet = seed('The user is working on a Cloudfarms Private Cloud fact sheet.', 'user_message');
+    const { mail, check } = await runWith({
+      fixes: [],
+      proposals: [{ fact: sheet, reason: 'Last mentioned in June.', ongoing: true }],
+      questions: []
+    });
+    expect(mail).toContain('label="Still current?"');
+    expect(mail).toContain('ongoing="true"');
+    const change = check.changes.find((c) => c.fact === sheet)!;
+
+    expect(actOnMemoryCheckChange(check.id, change.id, 'end')).toEqual([{ id: change.id, status: 'ended' }]);
+    expect(statusOf(sheet)).toBe('superseded');
+    actOnMemoryCheckChange(check.id, change.id, 'undo');
+    expect(statusOf(sheet)).toBe('active');
+    // Redo returns to what the user chose: Ended, not a plain retirement.
+    expect(actOnMemoryCheckChange(check.id, change.id, 'redo')).toEqual([{ id: change.id, status: 'ended' }]);
+    expect(statusOf(sheet)).toBe('superseded');
+  });
 });

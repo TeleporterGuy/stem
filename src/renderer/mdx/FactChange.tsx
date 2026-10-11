@@ -58,7 +58,7 @@ function useCheckStatus(checkId: string, changeId: string, initial: Status): Sta
   return cache.get(checkId)?.states.get(changeId) ?? initial;
 }
 
-const STATUSES: Status[] = ['applied', 'undone', 'proposed', 'dismissed', 'removed'];
+const STATUSES: Status[] = ['applied', 'undone', 'proposed', 'dismissed', 'removed', 'ended'];
 
 export function FactChange(props: Record<string, string>) {
   const { check = '', change = '', fact, label, kind, text, reason, quote } = props;
@@ -82,6 +82,7 @@ export function FactChange(props: Record<string, string>) {
   };
 
   const saved = kind === 'save';
+  const ongoing = props.ongoing === 'true';
   let pill: string;
   let tone: 'done' | 'open' | 'off';
   let gone: boolean;
@@ -99,14 +100,27 @@ export function FactChange(props: Record<string, string>) {
       gone = saved;
       buttons = [{ label: 'Redo', action: 'redo' }];
       break;
+    case 'ended':
+      pill = 'Ended';
+      tone = 'done';
+      gone = true;
+      buttons = [{ label: 'Undo', action: 'undo' }];
+      break;
     case 'proposed':
-      pill = 'Retire?';
+      // Something that runs for a while: it may have been true and stopped.
+      pill = ongoing ? 'Still current?' : 'Retire?';
       tone = 'open';
       gone = false;
-      buttons = [
-        { label: 'Keep', action: 'dismiss' },
-        { label: 'Retire', action: 'apply', primary: true }
-      ];
+      buttons = ongoing
+        ? [
+            { label: 'Still current', action: 'dismiss' },
+            { label: 'Never true', action: 'apply' },
+            { label: 'Ended', action: 'end', primary: true }
+          ]
+        : [
+            { label: 'Keep', action: 'dismiss' },
+            { label: 'Retire', action: 'apply', primary: true }
+          ];
       break;
     case 'removed':
       // The fact is gone (its folder was disconnected): nothing left to act on.

@@ -61,7 +61,7 @@ struct MdxFactChange: View {
     @State private var busy = false
     @State private var error: String?
 
-    private static let statuses: Set<String> = ["applied", "undone", "proposed", "dismissed", "removed"]
+    private static let statuses: Set<String> = ["applied", "undone", "proposed", "dismissed", "removed", "ended"]
 
     private struct Act { var label: String; var action: String; var primary = false }
 
@@ -71,6 +71,7 @@ struct MdxFactChange: View {
         let initial = attrs["status"].flatMap { Self.statuses.contains($0) ? $0 : nil } ?? "applied"
         let status = MemoryChecks.shared.status(check, change) ?? initial
         let saved = attrs["kind"] == "save"
+        let ongoing = attrs["ongoing"] == "true"
         let label = attrs["label"]
 
         let pill: String, tone: Color, gone: Bool, acts: [Act]
@@ -85,11 +86,20 @@ struct MdxFactChange: View {
             tone = .secondary
             gone = saved
             acts = [Act(label: "Redo", action: "redo")]
+        case "ended":
+            pill = "Ended"
+            tone = .green
+            gone = true
+            acts = [Act(label: "Undo", action: "undo")]
         case "proposed":
-            pill = "Retire?"
+            // Something that runs for a while: it may have been true and stopped.
+            pill = ongoing ? "Still current?" : "Retire?"
             tone = .orange
             gone = false
-            acts = [Act(label: "Keep", action: "dismiss"), Act(label: "Retire", action: "apply", primary: true)]
+            acts = ongoing
+                ? [Act(label: "Still current", action: "dismiss"), Act(label: "Never true", action: "apply"),
+                   Act(label: "Ended", action: "end", primary: true)]
+                : [Act(label: "Keep", action: "dismiss"), Act(label: "Retire", action: "apply", primary: true)]
         case "removed":
             // The fact is gone (its folder was disconnected): nothing left to act on.
             pill = "Removed"
