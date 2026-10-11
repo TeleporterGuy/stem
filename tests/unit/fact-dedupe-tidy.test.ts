@@ -204,16 +204,36 @@ describe('tidy-up grouping and scope', () => {
     expect(prompts[0].length).toBeLessThan(old.length);
   });
 
-  it('the daily full pass is due once a day, and never with auto tidy-up off', async () => {
+  it('the full pass is paced by learning, not the clock, and never with auto tidy-up off', async () => {
     for (let i = 0; i < 8; i++) seedTopic(i, i);
-    store.setMeta('consolidate_full_at', '0');
-    expect(fullTidyDue()).toBe(true);
+    expect(fullTidyDue()).toBe(true); // never run on this store
     await consolidateFacts(recordingLlm, { scope: 'full' });
     expect(fullTidyDue()).toBe(false);
-    expect(fullTidyDue(Date.now() / 1000 + 25 * 3600)).toBe(true);
+    // Threshold 5 outweighs a quarter of 8: four new facts are not enough.
+    for (let i = 0; i < 4; i++) seedTopic(10 + i, 20 + i);
+    expect(fullTidyDue()).toBe(false);
+    seedTopic(15, 30);
+    expect(fullTidyDue()).toBe(true);
     const threshold = store.getTidyThreshold();
     store.setTidyThreshold(0);
-    expect(fullTidyDue(Date.now() / 1000 + 25 * 3600)).toBe(false);
+    expect(fullTidyDue()).toBe(false);
     store.setTidyThreshold(threshold);
+  });
+});
+
+describe('repair of facts learned from documents alone', () => {
+  it('retires unpinned conversation facts whose only evidence is a document, once', () => {
+    store.setMeta('doc_only_chat_facts_retired', '');
+    const docOnly = seedFact('The user is a cloud engineer for VPC.', [1, 0, 0]);
+    const discussed = seedFact('The user rents a cottage for 450 euro.', [0, 1, 0], { origin: 'assistant_claim' });
+    const pinned = seedFact('The user likes Beat Saber.', [0, 0, 1], { pinned: true });
+    const folder = seedFact('The user issued invoice 20260004.', [1, 1, 0], { source: 'folder:abc' });
+    expect(store.retireDocOnlyChatFacts()).toEqual([docOnly]);
+    expect(store.getFactDetails(docOnly)?.status).toBe('superseded');
+    for (const id of [discussed, pinned, folder]) expect(store.getFactDetails(id)?.status).toBe('active');
+    // A later doc-only fact is left to the distiller's new rule, not re-swept.
+    const later = seedFact('The user plays VR games.', [0.5, 0.5, 0]);
+    expect(store.retireDocOnlyChatFacts()).toEqual([]);
+    expect(store.getFactDetails(later)?.status).toBe('active');
   });
 });

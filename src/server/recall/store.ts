@@ -429,6 +429,9 @@ export const DEFAULT_TIDY_THRESHOLD = 5;
  */
 export const V1_FACTS_MIGRATED_KEY = 'recall_v1_facts_migrated';
 
+/** Set once retireDocOnlyChatFacts() has run (see there). */
+const DOC_ONLY_RETIRED_KEY = 'doc_only_chat_facts_retired';
+
 
 // ---- fact-ranking tunables (inject-time relevance selection) ----
 
@@ -2135,6 +2138,36 @@ export class RecallStore {
       handle.exec('ROLLBACK');
       throw err;
     }
+  };
+
+
+  /**
+   * One-shot repair: retire conversation facts whose ONLY evidence is a folder
+   * document. The distiller used to learn from document excerpts merely injected
+   * into a turn, filing other authors' first person and lists as the user's own
+   * (a course intro's "I'm a cloud engineer for VPC" became the user's job).
+   * Pinned facts stay; retired rows are superseded, so they remain restorable.
+   * Returns the ids retired (empty after the first run).
+   */
+  retireDocOnlyChatFacts = (): number[] => {
+    if (this.getMeta(DOC_ONLY_RETIRED_KEY) === '1') return [];
+    const handle = this.open();
+    const ids = (handle.prepare(
+      `SELECT f.id FROM facts f
+       WHERE f.status = 'active' AND f.source = 'distilled' AND f.pinned = 0
+         AND EXISTS (SELECT 1 FROM fact_evidence e WHERE e.fact_id = f.id)
+         AND NOT EXISTS (SELECT 1 FROM fact_evidence e WHERE e.fact_id = f.id AND e.origin != 'folder_doc')`
+    ).all() as Array<{ id: number }>).map((r) => r.id);
+    handle.exec('BEGIN');
+    try {
+      for (const id of ids) this.supersedeFact(id);
+      this.setMeta(DOC_ONLY_RETIRED_KEY, '1');
+      handle.exec('COMMIT');
+    } catch (err) {
+      handle.exec('ROLLBACK');
+      throw err;
+    }
+    return ids;
   };
 
 

@@ -44,6 +44,7 @@ Rules:
 - Be STRICT — most documents contain nothing durable. Drafts, reference material, how-tos, and generic content yield NO facts. When in doubt, leave it out. If nothing qualifies, output {"claims":[]}.
 - Write every fact in ENGLISH, regardless of the documents' language. Keep proper names, place names, and quoted identifiers as-is.
 - Phrase each as a short third-person statement ("The user ...", "The user's client Acme ...").
+- A file in the user's folder is not always about the user. A document's "I", "my" or "we" may be another author (a course intro, received mail, a colleague's notes), and a company, person or list merely named in it (a tax-designation recipient, a game list) is not the user's business, role or preference. Say "The user" only when the document shows the fact is about them; otherwise describe the document ("The user's note 'VR.md' lists ...") or leave it out.
 - These are the user's own files: personal details in them ARE wanted. But never include credentials, payment secrets, recovery phrases, or government identifiers. Addresses, contact details, health, and finance are allowed but must use sensitivity "sensitive".
 - Include only things likely still true in future conversations. Resolve relative dates using each document's modified date. Use validUntil for facts that expire (bookings, deadlines).
 - Do NOT record standing behavioral directives or response-style preferences.

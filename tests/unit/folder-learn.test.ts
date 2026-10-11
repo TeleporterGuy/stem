@@ -337,7 +337,7 @@ describe('forgetFactsBySource', () => {
 });
 
 describe('learn on use: injected-doc log → distill citation', () => {
-  it('folds unconsumed doc excerpts into the distill batch and writes folder_doc evidence', async () => {
+  it('folds unconsumed doc excerpts into the distill batch, keeps discussed ones with folder_doc evidence, drops doc-only claims', async () => {
     // Two captured messages under one turn, plus an injected-doc log row.
     recallStore.recordMessage({ threadId: 'th-use', turnId: 'turn-use-1', role: 'user', text: 'How much was the cottage deposit again?', ts: 1_700_000_100 });
     recallStore.recordMessage({ threadId: 'th-use', turnId: 'turn-use-1', role: 'assistant', text: 'Your notes say the cottage deposit was 450 euro.', ts: 1_700_000_101 });
@@ -346,6 +346,7 @@ describe('learn on use: injected-doc log → distill citation', () => {
     ]);
 
     const firstId = recallStore.getMessagesForDistillFrom(1, 1)[0].id;
+    const assistantId = firstId + 1;
     const batch = buildDistillBatch({ messageId: firstId, offset: 0 })!;
     expect(batch.docs).toHaveLength(1);
     expect(batch.docs[0].key).toBe(1);
@@ -366,6 +367,17 @@ describe('learn on use: injected-doc log → distill citation', () => {
             category: 'finance',
             sensitivity: 'standard',
             validUntil: null,
+            evidenceMessageIds: [assistantId],
+            evidenceDocIds: [1],
+            supersedesFactIds: [],
+            conflictsWithFactIds: []
+          },
+          // Resting on the excerpt alone, which nobody discussed: dropped.
+          {
+            text: 'The user is a cloud engineer for VPC.',
+            category: 'work',
+            sensitivity: 'standard',
+            validUntil: null,
             evidenceMessageIds: [],
             evidenceDocIds: [1],
             supersedesFactIds: [],
@@ -375,11 +387,12 @@ describe('learn on use: injected-doc log → distill citation', () => {
       }
     };
     expect(await distillNewMessages(llm)).toBe(1);
+    expect(recallStore.getAllFacts().some((f) => f.text.includes('cloud engineer'))).toBe(false);
     expect(sawDocsSection).toBe(true);
 
     const fact = recallStore.getAllFacts().find((f) => f.text.includes('cottage rental deposit'))!;
     expect(fact).toBeDefined();
-    // Doc-only citations never earn the direct-user treatment.
+    // An assistant-and-doc citation never earns the direct-user treatment.
     expect(fact.confidence).toBeCloseTo(0.55, 5);
     const details = recallStore.getFactDetails(fact.id)!;
     const docEvidence = details.evidence.filter((e) => e.origin === 'folder_doc');

@@ -96,7 +96,8 @@ Rules:
 - If a new claim clearly replaces a known fact, include that fact id in supersedesFactIds. If the conflict is ambiguous, include it in conflictsWithFactIds instead.
 - Never include credentials, payment secrets, recovery phrases, or government identifiers. Addresses, contact details, health, and finance are allowed but must use sensitivity "sensitive".
 - For every claim cite only message ids present in the transcript.
-- The prompt may include a "Documents shown to the assistant" section: excerpts from the user's own files that were surfaced during these conversations. Treat their content as information about the user's life retrieved on their behalf; durable facts grounded in them ARE wanted. When a claim rests on a document, cite its doc id in evidenceDocIds (alongside any message ids). Only cite doc ids present in that section.
+- The prompt may include a "Documents shown to the assistant" section: excerpts from the user's files that were surfaced during these conversations. Use a document ONLY when the conversation itself engaged with it — the user or the assistant discussed what it says. A claim must then cite that message in evidenceMessageIds and the document in evidenceDocIds; a claim resting on a document alone is discarded (the folder's own learning covers documents). Only cite doc ids present in that section.
+- Documents are often written by someone else or quote other people: course intros, received mail, notes about clients, reference lists. A document's "I", "my" or "we" is the user ONLY when the transcript shows the user wrote it. A name, company or list merely appearing in a file is not the user's business, role, or preference.
 - SECOND DUTY — fact-usage grading. The prompt may include an "Injected facts per assistant reply" section listing, for some assistant messages, the stored facts that were available when that reply was written. For each listed message, judge which of those facts VISIBLY informed the reply's content (its recommendations, specifics, or phrasing) and report them in factUsage. Merely being available does not count; when none were used, report an empty usedFactIds. Grade only the listed messages and only their listed fact ids.
 - Output ONLY {"claims":[...],"factUsage":[...]} where each claim is:
   {"text":"The user ...","category":"identity|preference|relationship|work|project|health|finance|location|schedule|other","sensitivity":"standard|sensitive","validUntil":"YYYY-MM-DD or null","evidenceMessageIds":[1],"evidenceDocIds":[],"supersedesFactIds":[],"conflictsWithFactIds":[]}
@@ -764,8 +765,9 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
   for (const claim of claims) {
     claim.evidenceMessageIds = claim.evidenceMessageIds.filter((id) => byId.has(id));
     claim.evidenceDocIds = claim.evidenceDocIds.filter((key) => docByKey.has(key));
-    // A claim resting only on valid doc citations is cited, not uncited — it
-    // just never earns the direct-user treatment (docs aren't the user's words).
+    // A claim resting only on doc citations is dropped after this loop: an injected
+    // excerpt nobody discussed is not the user telling us anything, and these
+    // were how a course intro's "I'm a cloud engineer" became the user's job.
     if (claim.evidenceMessageIds.length === 0 && claim.evidenceDocIds.length === 0) {
       uncited.add(claim);
       // Segment-level provenance, not a citation: cap it to the last few user
@@ -781,6 +783,7 @@ export async function distillNewMessages(llm: LlmClient): Promise<number> {
       if (claim.evidenceMessageIds.length === 0) claim.evidenceMessageIds = source.map((m) => m.id).slice(-3);
     }
   }
+  claims = claims.filter((c) => c.evidenceMessageIds.length > 0);
 
   // Write-time semantic dedup — never a silent drop. A near-duplicate is still
   // inserted (the LLM consolidation pass stays the only thing that ever removes

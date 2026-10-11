@@ -13,6 +13,7 @@ import { recallStore } from '../recall/store';
 import { curateSkills } from '../skills/curate';
 import { migrateSkillProvenance } from '../skills/provenance';
 import { degrade } from '../degrade';
+import { log } from '../log';
 import { applyAutomaticTransitions } from '../skills/lifecycle';
 import { isSettlePassRunning } from './skills';
 import { getEmbeddingsClient } from '../recall/retrieval';
@@ -119,6 +120,10 @@ export function initRecallTasks(deps: {
         // an unattended write into durable memory, and the activity feed is the
         // only place the user learns it happened at all — a bare "Learned 2
         // facts" is unauditable without opening the Facts tab.
+        // One-shot repair of facts learned from document excerpts alone (see
+        // retireDocOnlyChatFacts); a no-op once it has run.
+        const repaired = recallStore.retireDocOnlyChatFacts();
+        if (repaired.length > 0) log('recall', 'retired facts learned from documents alone', { ids: repaired });
         const distillFrom = Math.floor(Date.now() / 1000);
         await activity.track('memory.distill', 'Distilling facts', () => distillNewMessages(recallLlm), (n) => ({
           worked: n > 0,
@@ -160,7 +165,8 @@ export function initRecallTasks(deps: {
         // Once enough new facts have piled up, clean the set: merge reworded
         // duplicates, apply corrections, drop superseded facts. Same hidden
         // LlmClient seam, so it's invisible to the user like distillation.
-        // The new facts (and their neighbours) normally; the whole store once a day.
+        // The new facts (and their neighbours) normally; the whole store once it has
+        // grown by a quarter since the last full pass.
         const full = fullTidyDue();
         if (full || shouldConsolidate()) {
           const scope = full ? 'full' : 'recent';

@@ -31,7 +31,8 @@ const {
 //
 // Two scopes. 'recent' (the automatic pass after new facts arrive) reviews only
 // the facts added since the last pass, each with its neighbours; 'full' (the
-// Tidy up button, and automatically once a day) reviews every fact. Folder
+// Tidy up button, and automatically once the store has grown by a quarter
+// since the last full pass) reviews every fact. Folder
 // facts never enter either: they are condensed document contents, not things
 // the user said, sit below the injection floor, and their documents are
 // searchable on their own — on the VPS they were a third of every pass.
@@ -86,23 +87,40 @@ function tidyPool(facts: Fact[]): Fact[] {
  * ≥ 0.88 side by side in 34 prompts; 5 neighbours cost 47 for one more pair.
  */
 const TIDY_NEIGHBOURS = 3;
-/** How often the automatic pass widens to the whole store. */
-const FULL_TIDY_INTERVAL_S = 24 * 3600;
-const FULL_TIDY_KEY = 'consolidate_full_at';
+/**
+ * The automatic pass widens to the whole store once the facts learned since the
+ * last full pass reach this share of the store. Paced by learning, not the
+ * clock: a week offline costs nothing, and someone writing hundreds of messages
+ * a day gets proportionally more passes. On the VPS store (~730 chat facts,
+ * ~25 new a day) that is roughly one full pass a week.
+ */
+const FULL_TIDY_GROWTH = 0.25;
+/** `<facts generation>:<highest fact id at the last full pass>`. */
+const FULL_TIDY_KEY = 'consolidate_full_watermark';
 /** `<facts generation>:<highest fact id reviewed>` — ids restart after a reset. */
 const SEED_WATERMARK_KEY = 'consolidate_seed_watermark';
 
 export type TidyScope = 'recent' | 'full';
 
-/** Is the daily whole-store pass due? Never when auto tidy-up is off. */
-export function fullTidyDue(nowSeconds = Date.now() / 1000): boolean {
-  if (getTidyThreshold() === 0) return false;
-  const last = Number.parseInt(getMeta(FULL_TIDY_KEY) ?? '0', 10) || 0;
-  return nowSeconds - last >= FULL_TIDY_INTERVAL_S;
+/**
+ * Is a whole-store pass due? Yes on the first pass ever, then whenever enough
+ * new facts have been learned since the last one (FULL_TIDY_GROWTH). Retired
+ * facts count as learned: churn is new material too. Never when auto tidy-up is off.
+ */
+export function fullTidyDue(): boolean {
+  const threshold = getTidyThreshold();
+  if (threshold === 0) return false;
+  const all = getAllFacts().filter((f) => !f.source.startsWith('folder:'));
+  const active = all.filter((f) => f.status === 'active').length;
+  if (active < MIN_FACTS) return false;
+  const last = readWatermark(FULL_TIDY_KEY, getFactsGeneration());
+  if (last === 0) return true;
+  const learned = all.filter((f) => f.id > last).length;
+  return learned >= Math.max(threshold, Math.ceil(active * FULL_TIDY_GROWTH));
 }
 
-function seedWatermark(factsGeneration: number): number {
-  const [gen, id] = (getMeta(SEED_WATERMARK_KEY) ?? '').split(':').map((n) => Number.parseInt(n, 10));
+function readWatermark(key: string, factsGeneration: number): number {
+  const [gen, id] = (getMeta(key) ?? '').split(':').map((n) => Number.parseInt(n, 10));
   return gen === factsGeneration && Number.isFinite(id) ? id : 0;
 }
 
@@ -394,12 +412,12 @@ async function runConsolidation(
   if (facts.length < (opts.force ? 2 : MIN_FACTS)) return ZERO;
   const full = opts.force || opts.scope === 'full';
   const highestId = Math.max(...facts.map((f) => f.id));
-  const watermark = seedWatermark(factsGeneration);
+  const watermark = readWatermark(SEED_WATERMARK_KEY, factsGeneration);
   const seeds = full ? facts : facts.filter((f) => f.id > watermark);
   // Stamped up front, failures included: a group the model keeps failing must
   // not re-run the whole store on every distill cycle. New facts it missed are
   // still behind the watermark for the next recent pass.
-  if (full) setMeta(FULL_TIDY_KEY, String(Math.floor(Date.now() / 1000)));
+  if (full) setMeta(FULL_TIDY_KEY, `${factsGeneration}:${Math.max(...getAllFacts().map((f) => f.id))}`);
   if (seeds.length === 0) {
     setMeta(PENDING_KEY, '0');
     return ZERO;
