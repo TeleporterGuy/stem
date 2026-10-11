@@ -234,4 +234,61 @@ describe('the deep check', () => {
     expect(statusOf(other)).toBe('active');
     expect(after.questions.find((q) => q.id === qJob.id)!.status).toBe('open');
   });
+
+  it('reads form lines in the label spelling the mail showed, and fails closed when a line matches nothing', async () => {
+    const proj = seed('The user builds Join.', 'user_message');
+    const tea = seed('The user likes tea.', 'user_message');
+    const vr = seed('The user’s favourite VR games are Moss.', 'user_message');
+    const { check } = await runWith({
+      fixes: [],
+      proposals: [{ fact: vr, reason: 'Only a list.' }],
+      questions: [
+        { prompt: 'Is "Join" {still} active?', facts: [proj], options: ['Yes', 'No'] },
+        { prompt: 'Do you like tea?', facts: [tea], options: ['Yes', 'No'] }
+      ]
+    });
+    const [qJoin, qTea] = check.questions;
+    const planted = {
+      saves: [
+        { text: 'The user no longer builds Join, says yes.', replaces: [proj], question: qJoin.id },
+        { text: 'The user hates tea, yes.', replaces: [tea], question: qTea.id }
+      ],
+      apply: [check.changes[0].id],
+      answered: [qJoin.id, qTea.id]
+    };
+    // As the form sends it: the escaped label, skipped; tea's line is garbled.
+    await answerMemoryCheck(scriptedLlm({}, planted), 'conv-1', 'Answers to the memory check\n- Is \u201dJoin\u201d still active?: (skipped)\n- Tea?: yes');
+    expect(statusOf(proj)).toBe('active');
+    expect(statusOf(tea)).toBe('active');
+    // Proposals are settled only by their buttons.
+    expect(statusOf(vr)).toBe('active');
+    expect(checkForConversation('conv-1')!.questions.every((q) => q.status === 'open')).toBe(true);
+  });
+
+  it('counts a reply in words as answering only the questions it talks about', async () => {
+    const tea = seed('The user likes tea.', 'user_message');
+    const home = seed('The user lives at Súmračná 30.', 'user_message');
+    const { check } = await runWith({
+      fixes: [],
+      proposals: [],
+      questions: [
+        { prompt: 'Do you like tea?', facts: [tea], options: ['Yes', 'No'] },
+        { prompt: 'Where do you live?', facts: [home], options: ['Bratislava'] }
+      ]
+    });
+    const [qTea, qHome] = check.questions;
+    await answerMemoryCheck(
+      scriptedLlm({}, {
+        saves: [
+          { text: 'The user prefers coffee over tea.', replaces: [tea], question: qTea.id },
+          { text: 'The user lives in coffee town.', replaces: [home], question: qHome.id }
+        ],
+        answered: [qTea.id, qHome.id]
+      }),
+      'conv-1',
+      'I switched to coffee, no more tea.'
+    );
+    expect(statusOf(tea)).toBe('superseded');
+    expect(statusOf(home)).toBe('active');
+  });
 });
