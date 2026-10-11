@@ -49,7 +49,7 @@ Today's date: ${today}.
 
 Decide:
 - "a_wins" / "b_wins": one statement is the current truth and the other is outdated or wrong.
-- "both_true": both can hold at once — different things (different invoices, contracts), or complementary details about the same thing.
+- "both_true": both can hold at once — different things (different invoices, contracts), or complementary details about the same thing. A statement bounded to a past period ("worked at X from 2022 to 2024", "used to") is history, not outdated: it stays true beside a different present, even one involving the same company or thing in a new role.
 - "rewrite": both are partially right, or a statement bundles several claims of which only some are contested. Replace BOTH with 1-${MAX_REWRITE_FACTS} short atomic third-person statements ("The user ..."), carrying over the natural identifiers and dates from the originals.
 - "unclear": you cannot tell — leave the conflict for the user.
 
