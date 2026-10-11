@@ -11,8 +11,8 @@ import type {
   MemoryCheckJob
 } from '../../shared/types';
 
-// The deep check: a manual, whole-store audit of the facts learned from chats,
-// started from the Memory tab. Where the tidy-up pass sees a fact's text and
+// The deep check: a manual, whole-store audit of the active facts (learned
+// from chats and from connected folders), started from the Memory tab. Where the tidy-up pass sees a fact's text and
 // neighbours, this sees every fact with its provenance (where it was learned,
 // from whom, how often it was offered and used) — the view that let a mail
 // audit find a course intro filed as the user's job and a pasted chat filed as
@@ -30,10 +30,12 @@ import type {
 // call reads the answers against the open questions and proposals and may only
 // save the user's answer as a fact, retire listed facts, or settle a proposal.
 // Explicit and pinned facts are never touched; every retirement is a
-// supersede, so Undo restores it.
+// supersede, so Undo restores it. A folder fact is never retired as about
+// someone else without asking: the folder may hold the user's own notes.
+// Disconnecting a folder deletes its facts; their cards then read Removed.
 
 const {
-  absorbDuplicateFact, getAllFacts, getFactEvidence, getMeta, restoreSupersededFact, setMeta, supersedeFact,
+  absorbDuplicateFact, getAllFacts, getFactEvidence, getFactsByIds, getMeta, restoreSupersededFact, setMeta, supersedeFact,
   upsertFact, dbHandle
 } = recallStore;
 
@@ -115,10 +117,12 @@ export function memoryCheckJob(): MemoryCheckJob {
   return job;
 }
 
-/** Facts the check audits: active, learned from chats (folder facts are the folder's own). */
+/** Facts the check audits: every active one, folder facts included. */
 function auditPool(): Fact[] {
-  return getAllFacts().filter((f) => f.status === 'active' && !f.source.startsWith('folder:'));
+  return getAllFacts().filter((f) => f.status === 'active');
 }
+
+const fromFolder = (f: Fact) => f.source.startsWith('folder:');
 
 const untouchable = (f: Fact | undefined) => !f || f.pinned || f.source === 'explicit';
 
@@ -132,7 +136,7 @@ function factBlock(f: Fact): string {
   const ev = getFactEvidence(f.id);
   const lines = [`[${f.id}] ${f.text}${untouchable(f) ? ' (PROTECTED)' : ''}`];
   lines.push(
-    `   ${f.source}, learned ${day(f.createdAt)}, offered ${f.timesInjected}× used ${f.timesUsed}×`
+    `   ${fromFolder(f) ? 'folder' : f.source}, learned ${day(f.createdAt)}, offered ${f.timesInjected}× used ${f.timesUsed}×`
   );
   // The oldest and the newest piece of evidence: where it started, and what last backed it.
   const picks = ev.length > 2 ? [ev[0], ev[ev.length - 1]] : ev;
@@ -148,6 +152,7 @@ const AUDIT_INSTRUCTIONS = `You are auditing a long-term memory of facts about o
 [id] text
    source, when it was learned, how often it was offered to the assistant and used
    evidence: origin date "excerpt"   (origin: user_message = the user wrote it; explicit_user = the user asked to remember it; assistant_claim = the assistant said it; segment_context = surrounding conversation; folder_doc = a file in the user's folders)
+A "folder" fact was condensed from a file in the user's connected folders. Many such files are the user's own notes, so "I" there is often the user, but not always: a course intro, someone else's CV, an invoice or a tax form naming another business. When a folder fact may be about someone else, propose it; do not put it in fixes as wrong_subject.
 
 Sort the problems you find into three buckets.
 
@@ -156,7 +161,7 @@ Sort the problems you find into three buckets.
   {"kind": "duplicate", "fact": id, "into": id, "reason": "..."} the fact says the same thing as fact "into", which is the one to keep (better worded or better evidenced).
   {"kind": "overruled", "fact": id, "quote": "...", "reason": "..."} the user's own words contradict it. "quote" must be copied VERBATIM from a user_message excerpt listed above, newer than any user_message evidence behind this fact.
 "proposals" — facts that look wrong, stale or about someone else but cannot be proven: {"fact": id, "reason": "..."}. Accepting a proposal retires the fact.
-"questions" — things only the user can settle, where one answer fixes or confirms several facts: {"prompt": "...", "facts": [ids], "options": ["2 to 4 short likely answers"], "multiple": false, "why": "one sentence: where these facts came from and what the answer changes"}. Use "multiple": true when several options can be true at once.
+"questions" — things only the user can settle, about facts that shape many future answers (who the user is, family, home, work, current projects, devices, tools, standing preferences; facts offered often matter most). Never ask to confirm a one-off detail such as a setting, a purchase or a ranked list. Do not ask what the listed evidence already settles. One answer should fix or confirm several facts where possible: {"prompt": "...", "facts": [ids], "options": ["2 to 4 short likely answers"], "multiple": false, "why": "one sentence: where these facts came from and what the answer changes"}. Use "multiple": true when several options can be true at once.
 
 Rules:
 - Most facts are fine. Leave them out. Do not invent problems.
@@ -278,7 +283,8 @@ function triage(
     } else if (kind === 'wrong_subject') {
       // The user's own words behind it (typed, or a paste the distiller took
       // for theirs) make it a question of fact, not a provable error.
-      const own = getFactEvidence(fact.id).some((e) => e.origin === 'user_message' || e.origin === 'explicit_user');
+      // A folder may hold the user's own notes, so a document's "I" is never proof.
+      const own = fromFolder(fact) || getFactEvidence(fact.id).some((e) => e.origin === 'user_message' || e.origin === 'explicit_user');
       if (own) {
         propose(fact, reason);
         continue;
@@ -302,7 +308,7 @@ function triage(
   return { changes, questions };
 }
 
-const PICK_INSTRUCTIONS = `Below are candidate questions to ask a user about the facts their assistant remembers. Merge any that ask about the same thing (even in other words), then pick at most ${MAX_QUESTIONS}: the ones whose answers would fix or confirm the most. Questions marked CARRIED were asked before and left unanswered; prefer keeping them when they still matter. Keep each question's shape and its fact ids (merge the ids of merged questions). Return ONLY JSON: {"questions": [{"prompt": "...", "facts": [ids], "options": ["..."], "multiple": false, "why": "..."}]}`;
+const PICK_INSTRUCTIONS = `Below are candidate questions to ask a user about the facts their assistant remembers. Merge any that ask about the same thing (even in other words), then pick at most ${MAX_QUESTIONS}: the ones where a wrong fact would mislead the assistant in the most future conversations. Who the user is, their family, home, work, current projects, devices, tools and standing preferences beat one-off details; how many facts a question touches only breaks ties. Drop questions about trivia. Questions marked CARRIED were asked before and left unanswered; prefer keeping them when they still matter. Keep each question's shape and its fact ids (merge the ids of merged questions). Return ONLY JSON: {"questions": [{"prompt": "...", "facts": [ids], "options": ["..."], "multiple": false, "why": "..."}]}`;
 
 /** The same question raised from two groups of facts is one question about all of them. */
 function mergeSame(questions: CheckQuestion[]): CheckQuestion[] {
@@ -379,8 +385,8 @@ function checkMail(check: MemoryCheck, byId: Map<number, Fact>): string {
   ].filter(Boolean);
   parts.push(
     counts.length
-      ? `I read all ${check.factCount} facts learned from your chats: ${counts.join(', ')}.`
-      : `I read all ${check.factCount} facts learned from your chats and found nothing wrong.`
+      ? `I read all ${check.factCount} facts I remember about you: ${counts.join(', ')}.`
+      : `I read all ${check.factCount} facts I remember about you and found nothing wrong.`
   );
   if (applied.length) parts.push('### Fixed', 'Each fix can be undone.', ...applied.map((c) => factChangeTag(check.id, c)));
   if (open.length) {
@@ -492,9 +498,11 @@ function undoChange(c: CheckChange): boolean {
   return restoreSupersededFact(c.fact);
 }
 
+/** A change whose fact no longer exists (its folder was disconnected, or it was deleted) reads 'removed'. */
 export function memoryCheckState(checkId: string): MemoryCheckChangeState[] {
-  const check = loadCheck(checkId);
-  return (check?.changes ?? []).map((c) => ({ id: c.id, status: c.status }));
+  const changes = loadCheck(checkId)?.changes ?? [];
+  const present = new Set(getFactsByIds(changes.map((c) => c.fact)).map((f) => f.id));
+  return changes.map((c) => ({ id: c.id, status: present.has(c.fact) ? c.status : 'removed' }));
 }
 
 /**
@@ -505,6 +513,7 @@ export function actOnMemoryCheckChange(checkId: string, changeId: string, action
   const check = loadCheck(checkId);
   const c = check?.changes.find((x) => x.id === changeId);
   if (!check || !c) throw new Error('That memory check change no longer exists.');
+  if (getFactsByIds([c.fact]).length === 0) throw new Error('That fact was removed, so there is nothing left to change.');
   const next: Record<MemoryCheckAction, [MemoryCheckChangeStatus[], MemoryCheckChangeStatus]> = {
     undo: [['applied'], 'undone'],
     redo: [['undone'], 'applied'],

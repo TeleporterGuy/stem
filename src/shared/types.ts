@@ -5311,7 +5311,8 @@ export interface StemApi {
 }
 
 /** One change a memory check made or proposes: applied, undone, proposed, or kept as is (dismissed). */
-export type MemoryCheckChangeStatus = 'applied' | 'undone' | 'proposed' | 'dismissed';
+/** 'removed': the fact is gone (its folder was disconnected, or it was deleted); read-only. */
+export type MemoryCheckChangeStatus = 'applied' | 'undone' | 'proposed' | 'dismissed' | 'removed';
 export type MemoryCheckAction = 'undo' | 'redo' | 'apply' | 'dismiss' | 'reopen';
 export interface MemoryCheckChangeState {
   id: string;

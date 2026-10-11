@@ -58,7 +58,7 @@ function useCheckStatus(checkId: string, changeId: string, initial: Status): Sta
   return cache.get(checkId)?.states.get(changeId) ?? initial;
 }
 
-const STATUSES: Status[] = ['applied', 'undone', 'proposed', 'dismissed'];
+const STATUSES: Status[] = ['applied', 'undone', 'proposed', 'dismissed', 'removed'];
 
 export function FactChange(props: Record<string, string>) {
   const { check = '', change = '', fact, label, kind, text, reason, quote } = props;
@@ -108,6 +108,13 @@ export function FactChange(props: Record<string, string>) {
         { label: 'Retire', action: 'apply', primary: true }
       ];
       break;
+    case 'removed':
+      // The fact is gone (its folder was disconnected): nothing left to act on.
+      pill = 'Removed';
+      tone = 'off';
+      gone = true;
+      buttons = [];
+      break;
     default:
       pill = 'Kept';
       tone = 'off';
@@ -131,7 +138,7 @@ export function FactChange(props: Record<string, string>) {
         )}
         {error && <div className="fact-change-error">{error}</div>}
       </div>
-      {check && change && (
+      {check && change && buttons.length > 0 && (
         <div className="fact-change-acts">
           {buttons.map((b) => (
             <button

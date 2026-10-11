@@ -61,7 +61,7 @@ struct MdxFactChange: View {
     @State private var busy = false
     @State private var error: String?
 
-    private static let statuses: Set<String> = ["applied", "undone", "proposed", "dismissed"]
+    private static let statuses: Set<String> = ["applied", "undone", "proposed", "dismissed", "removed"]
 
     private struct Act { var label: String; var action: String; var primary = false }
 
@@ -90,6 +90,12 @@ struct MdxFactChange: View {
             tone = .orange
             gone = false
             acts = [Act(label: "Keep", action: "dismiss"), Act(label: "Retire", action: "apply", primary: true)]
+        case "removed":
+            // The fact is gone (its folder was disconnected): nothing left to act on.
+            pill = "Removed"
+            tone = .secondary
+            gone = true
+            acts = []
         default:
             pill = "Kept"
             tone = .secondary
@@ -122,7 +128,7 @@ struct MdxFactChange: View {
                     .foregroundStyle(.secondary)
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
-            if !check.isEmpty, !change.isEmpty {
+            if !check.isEmpty, !change.isEmpty, !acts.isEmpty {
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
                     ForEach(acts, id: \.action) { a in

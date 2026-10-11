@@ -299,4 +299,29 @@ describe('the deep check', () => {
     expect(statusOf(tea)).toBe('superseded');
     expect(statusOf(home)).toBe('active');
   });
+
+  it('reads folder facts, proposes rather than retires them as someone else’s, and reads Removed once the folder is gone', async () => {
+    const note = seed('The user is a cloud engineer for VPC.', 'folder_doc', { source: 'folder:f1' });
+    const a = seed('The user designs Join, a tab organizer.', 'folder_doc', { source: 'folder:f1' });
+    const b = seed('The user is designing Join, a tab organiser.', 'folder_doc', { source: 'folder:f1' });
+    const { mail, check } = await runWith({
+      fixes: [
+        { kind: 'wrong_subject', fact: note, reason: 'A course intro.' },
+        { kind: 'duplicate', fact: b, into: a, reason: 'Same project.' }
+      ],
+      proposals: [],
+      questions: []
+    });
+    expect(mail).toContain('I read all 3 facts');
+    // A document's "I" may be the user's own note: asked, not retired.
+    expect(statusOf(note)).toBe('active');
+    expect(check.changes.find((c) => c.fact === note)?.status).toBe('proposed');
+    // Duplicates within one folder still merge.
+    expect(statusOf(b)).toBe('superseded');
+
+    store.forgetFactsBySource('folder:f1');
+    expect(memoryCheckState(check.id).map((s) => s.status)).toEqual(['removed', 'removed']);
+    const change = check.changes.find((c) => c.fact === note)!;
+    expect(() => actOnMemoryCheckChange(check.id, change.id, 'apply')).toThrow(/removed/);
+  });
 });
