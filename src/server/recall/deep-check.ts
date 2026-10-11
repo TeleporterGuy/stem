@@ -35,13 +35,16 @@ import type {
 // Disconnecting a folder deletes its facts; their cards then read Removed.
 
 const {
-  absorbDuplicateFact, getAllFacts, getFactEvidence, getFactsByIds, getMeta, restoreSupersededFact, setMeta, supersedeFact,
+  absorbDuplicateFact, getAllFacts, getFactEvidence, getFactsByIds, getMemoryConflicts, getMeta, resolveMemoryConflict, restoreSupersededFact, setMeta, supersedeFact,
   upsertFact, dbHandle
 } = recallStore;
 
 export const MEMORY_CHECK_OWNER = 'memory-check';
 const CHUNK = 90;
 const MAX_QUESTIONS = 5;
+// Open conflicts asked about per check, ahead of the model's questions: the
+// background adjudicator already gave up on them, so only the user can settle them.
+const MAX_CONFLICT_QUESTIONS = 3;
 const MAX_PROPOSALS = 12;
 // Fixes applied without asking, per check. Past this, findings wait as
 // proposals: a run steered by planted text can only do this much unasked.
@@ -85,6 +88,8 @@ export interface CheckQuestion {
   options: string[];
   multiple: boolean;
   why: string;
+  /** A question made from an open conflict (its id): settled in code from the option picked. */
+  conflict?: number;
   status: 'open' | 'answered';
 }
 
@@ -127,9 +132,61 @@ export function memoryCheckJob(): MemoryCheckJob {
   return job;
 }
 
-/** Facts the check audits: every active one, folder facts included. */
+/** Facts the check audits: every live one (active or in an open conflict), folder facts included. */
 function auditPool(): Fact[] {
-  return getAllFacts().filter((f) => f.status === 'active');
+  return getAllFacts().filter((f) => f.status === 'active' || f.status === 'conflicted');
+}
+
+const live = (f: Fact | undefined) => !!f && (f.status === 'active' || f.status === 'conflicted');
+
+// ---- open conflicts ---------------------------------------------------------------
+
+const BOTH = 'Both are true';
+const FIRST = 'Only the first';
+const SECOND = 'Only the second';
+const NEITHER = 'Neither';
+
+/** Each open conflict, both sides still live, as a question with fixed options. */
+function conflictQuestions(byId: Map<number, Fact>): CheckQuestion[] {
+  return getMemoryConflicts()
+    .filter((c) => byId.has(c.factA.id) && byId.has(c.factB.id))
+    .slice(0, MAX_CONFLICT_QUESTIONS)
+    .map((c) => ({
+      id: `q${randomUUID().slice(0, 8)}`,
+      prompt: `These disagree: “${clip(c.factA.text, 90)}” and “${clip(c.factB.text, 90)}”. Which is true now?`,
+      facts: [c.factA.id, c.factB.id],
+      options: [BOTH, FIRST, SECOND, NEITHER],
+      multiple: false,
+      why: 'Stem could not settle these two on its own.',
+      conflict: c.id,
+      status: 'open'
+    }));
+}
+
+/**
+ * Settle a conflict question from the option the user picked. Null when the
+ * answer is not one of the options (words go to the model like any answer).
+ */
+function settleConflict(q: CheckQuestion, answer: string): { changes: CheckChange[]; note?: string } | null {
+  const [a, b] = q.facts;
+  const retire = (id: number, keep: number | null, reason: string): CheckChange[] => {
+    const f = getFactsByIds([id])[0];
+    if (!live(f) || !supersedeFact(id, keep)) return [];
+    return [{ id: `c${randomUUID().slice(0, 8)}`, kind: 'retire', fact: id, text: f.text, reason, status: 'applied' }];
+  };
+  switch (answer) {
+    case BOTH:
+      resolveMemoryConflict(q.conflict!, 'keep_both');
+      return { changes: [], note: 'Kept both facts that disagreed: you said both are true.' };
+    case FIRST:
+      return { changes: retire(b, a, 'You said only the other fact is true.') };
+    case SECOND:
+      return { changes: retire(a, b, 'You said only the other fact is true.') };
+    case NEITHER:
+      return { changes: [...retire(a, null, 'You said neither is true.'), ...retire(b, null, 'You said neither is true.')] };
+    default:
+      return null;
+  }
 }
 
 const fromFolder = (f: Fact) => f.source.startsWith('folder:');
@@ -471,11 +528,14 @@ export async function runMemoryCheck(
     }
     // Questions left open last time come back first, when their facts still stand.
     const previous = getMeta(LATEST_KEY);
+    // Conflict questions are not carried: they are made afresh from what is still open.
     const carried = (previous ? loadCheck(previous)?.questions ?? [] : []).filter(
-      (q) => q.status === 'open' && q.facts.some((id) => byId.has(id))
+      (q) => q.status === 'open' && !q.conflict && q.facts.some((id) => byId.has(id))
     );
     const all = [...carried, ...candidates];
-    check.questions = await pickQuestions(llm, all, new Set(carried.map((q) => q.id)), new Set(byId.keys()));
+    const conflicts = conflictQuestions(byId);
+    const picked = await pickQuestions(llm, all, new Set(carried.map((q) => q.id)), new Set(byId.keys()));
+    check.questions = [...conflicts, ...picked.slice(0, MAX_QUESTIONS - conflicts.length)];
     const proposals = check.changes.filter((c) => c.status === 'proposed');
     if (proposals.length > MAX_PROPOSALS) {
       const keep = new Set(proposals.slice(0, MAX_PROPOSALS).map((c) => c.id));
@@ -598,18 +658,22 @@ const words = (t: string) =>
  * has no such lines and may answer anything.
  */
 function answersIn(reply: string, questions: CheckQuestion[]): { formLines: boolean; byQuestion: Map<string, string> } {
-  const lines = new Map<string, string>();
-  for (const m of reply.matchAll(/^- (.+?): (.*)$/gmu)) lines.set(attr(m[1]), m[2].trim());
+  const lines = [...reply.matchAll(/^- (.+?: .*)$/gmu)].map((m) => m[1]);
   const byQuestion = new Map<string, string>();
   // The form shows each question as its escaped label (attr), so the line
-  // comes back in that spelling; compare in it.
+  // comes back in that spelling; compare in it. A label may hold ": " itself,
+  // so the line is matched by its whole label, not split at the first colon.
   for (const q of questions) {
-    const a = lines.get(attr(q.prompt));
-    if (a !== undefined) byQuestion.set(q.id, a === '(skipped)' ? '' : a);
+    const label = `${attr(q.prompt)}: `;
+    const line = lines.find((l) => l.startsWith(label));
+    if (line !== undefined) {
+      const a = line.slice(label.length).trim();
+      byQuestion.set(q.id, a === '(skipped)' ? '' : a);
+    }
   }
   // Fail closed: a reply that is a form submit (any "- x: y" line) answers
   // only the questions it has a line for, never every question at once.
-  return { formLines: lines.size > 0, byQuestion };
+  return { formLines: lines.length > 0, byQuestion };
 }
 
 /**
@@ -625,6 +689,19 @@ function answersIn(reply: string, questions: CheckQuestion[]): { formLines: bool
 export async function answerMemoryCheck(llm: LlmClient, conversationId: string, reply: string): Promise<string> {
   const check = checkForConversation(conversationId);
   if (!check) throw new Error('This memory check is no longer on file. Start a new one from the Memory tab.');
+  const made: CheckChange[] = [];
+  const notes: string[] = [];
+  // Conflict questions answered with one of their options are settled here,
+  // without the model; anything else about them goes to it like any answer.
+  const formAnswers = answersIn(reply, check.questions.filter((q) => q.status === 'open')).byQuestion;
+  for (const q of check.questions) {
+    if (q.status !== 'open' || !q.conflict) continue;
+    const settled = settleConflict(q, formAnswers.get(q.id) ?? '');
+    if (!settled) continue;
+    q.status = 'answered';
+    made.push(...settled.changes);
+    if (settled.note) notes.push(settled.note);
+  }
   const open = check.questions.filter((q) => q.status === 'open');
   const proposals = check.changes.filter((c) => c.status === 'proposed');
   const context = [
@@ -634,9 +711,15 @@ export async function answerMemoryCheck(llm: LlmClient, conversationId: string, 
     ...proposals.map((c) => `${c.id}: retire ${factLine(c.fact)} — ${c.reason}`)
   ].join('\n');
   const parsed = parseObject(await llm.complete(`${ANSWER_INSTRUCTIONS}\n\n${context}\n\nThe user's reply:\n"""\n${reply}\n"""`));
-  if (!parsed) return 'I could not read that reply. Nothing was changed. Try again, or answer one question per line.';
+  if (!parsed) {
+    if (made.length || notes.length) {
+      check.changes.push(...made);
+      saveCheck(check);
+      return [...notes.map(text), ...(made.length ? ['### Changed', ...made.map((c) => factChangeTag(check.id, c))] : [])].join('\n\n');
+    }
+    return 'I could not read that reply. Nothing was changed. Try again, or answer one question per line.';
+  }
 
-  const made: CheckChange[] = [];
   const { formLines, byQuestion } = answersIn(reply, open);
   // What the user said about a question: its form line, or the whole reply
   // when they answered in words. Empty means they did not answer it.
@@ -654,7 +737,7 @@ export async function answerMemoryCheck(llm: LlmClient, conversationId: string, 
   const answeredFacts = new Set(open.filter((q) => answered.has(q.id)).flatMap((q) => q.facts));
   const canTouch = (id: number, within: Set<number>) => {
     const f = recallStore.getFactsByIds([id])[0];
-    return within.has(id) && !!f && f.status === 'active' && !untouchable(f);
+    return within.has(id) && live(f) && !untouchable(f);
   };
   for (const raw of arr(parsed.saves)) {
     const s = raw as { text?: unknown; replaces?: unknown; question?: unknown };
@@ -689,6 +772,7 @@ export async function answerMemoryCheck(llm: LlmClient, conversationId: string, 
   const parts: string[] = [];
   const said = str(parsed.reply);
   if (said) parts.push(text(said));
+  parts.push(...notes.map(text));
   const changed = made.filter((c) => c.status === 'applied');
   if (changed.length) parts.push('### Changed', ...changed.map((c) => factChangeTag(check.id, c)));
   const still = check.questions.filter((q) => q.status === 'open');

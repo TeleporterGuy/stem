@@ -2090,10 +2090,16 @@ export class RecallStore {
               updated_at = ? WHERE id = ?`
     ).run(supersededBy, this.nowSeconds(), id).changes as number) > 0;
     if (changed) {
+      const others = (handle.prepare(
+        `SELECT CASE WHEN fact_a = ? THEN fact_b ELSE fact_a END AS other
+         FROM fact_conflicts WHERE status = 'open' AND (fact_a = ? OR fact_b = ?)`
+      ).all(id, id, id) as Array<{ other: number }>).map((r) => r.other);
       handle.prepare(
         `UPDATE fact_conflicts SET status = 'resolved', resolved_at = ?, resolution = 'superseded'
          WHERE status = 'open' AND (fact_a = ? OR fact_b = ?)`
       ).run(this.nowSeconds(), id, id);
+      // The other side wins: back to active unless another conflict still holds it.
+      for (const other of others) this.settleConflictSide(other);
     }
     return changed;
   };

@@ -350,4 +350,41 @@ describe('the deep check', () => {
     expect(actOnMemoryCheckChange(check.id, change.id, 'dismiss')).toEqual([{ id: change.id, status: 'dismissed' }]);
     expect(statusOf(sheet)).toBe('active');
   });
+
+  it('asks about open conflicts and settles them from the option picked, without the model', async () => {
+    const now1 = seed('The user works in DevOps for Cloudfarms through Awantech.', 'user_message');
+    const past = seed('The user worked at Cloudfarms from 2022 through 2024.', 'user_message');
+    const home = seed('The user lives on Pražská.', 'user_message');
+    const moved = seed('The user lives on Podjavorinskej.', 'user_message');
+    store.createFactConflict(now1, past, 'May contradict.');
+    store.createFactConflict(home, moved, 'May contradict.');
+    const { mail, check } = await runWith({ fixes: [], proposals: [], questions: [] });
+
+    // Conflicted facts are read, and each open conflict is asked first.
+    expect(check.factCount).toBe(4);
+    const [qa, qb] = check.questions.filter((q) => q.conflict);
+    expect(qa && qb).toBeTruthy();
+    expect(mail).toContain('<Option>Both are true</Option>');
+    const byFacts = (ids: number[]) => check.questions.find((q) => ids.every((id) => q.facts.includes(id)))!;
+    const work = byFacts([now1, past]);
+    const addr = byFacts([home, moved]);
+    const firstIsHome = addr.facts[0] === home;
+
+    const llm = scriptedLlm({}, { reply: 'Thanks.', answered: [] });
+    const body = await answerMemoryCheck(llm, 'conv-1', [
+      `- ${work.prompt}: Both are true`,
+      `- ${addr.prompt}: ${firstIsHome ? 'Only the second' : 'Only the first'}`
+    ].join('\n'));
+
+    // Both true: both live again, conflict closed.
+    expect(statusOf(now1)).toBe('active');
+    expect(statusOf(past)).toBe('active');
+    // One side: the loser retired, the winner back to active.
+    expect(statusOf(home)).toBe('superseded');
+    expect(statusOf(moved)).toBe('active');
+    expect(store.countOpenConflicts()).toBe(0);
+    expect(body).toContain('Kept both');
+    expect(body).toContain(`fact="${home}"`);
+    expect(checkForConversation('conv-1')!.questions.filter((q) => q.conflict).every((q) => q.status === 'answered')).toBe(true);
+  });
 });
