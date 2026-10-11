@@ -55,6 +55,7 @@ struct MdxComponentView: View {
         case "Quiz": MdxQuiz(topic: c.attrs["topic"], children: c.children)
         case "Form": MdxForm(prompt: c.attrs["prompt"], submitLabel: c.attrs["submitLabel"], children: c.children)
         case "Replies": if c.closed { MdxReplies(children: c.children) }
+        case "FactChange": MdxFactChange(attrs: c.attrs)
         case "Reply", "Field": EmptyView()
         // Unknown tags (and parts shown outside their parent): the tag goes, its content stays.
         default: MdxBlocksView(blocks: c.children)
@@ -80,7 +81,9 @@ enum MdxText {
     /// markup go, and lines join with spaces so emphasis that wraps still parses.
     static func preview(_ body: String) -> String {
         let lines = MdxTreeParser.stripCiteMarkers(body).components(separatedBy: .newlines).compactMap { raw -> String? in
-            var t = raw.trimmingCharacters(in: .whitespaces)
+            // Component tags (<FactChange … />, <Form …>) are markup, not words.
+            var t = raw.replacingOccurrences(of: #"</?[A-Z][\w.]*(?:\s[^>]*)?/?>"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
             if t.hasPrefix("```") || t.hasPrefix("~~~") { return nil }
             if t.range(of: #"^\|?\s*:?-{3,}"#, options: .regularExpression) != nil { return nil }
             if t.range(of: #"^([-*_]\s*){3,}$"#, options: .regularExpression) != nil { return nil }

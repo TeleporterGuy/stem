@@ -116,3 +116,66 @@ final class MdxDataTests: XCTestCase {
     }
 }
 
+
+/// Choice forms answer in the desktop's exact wording: mail reads the prompt
+/// line back to tell an answered form from an open one.
+final class MdxFormTests: XCTestCase {
+    private let source = """
+    <Form prompt="Answers to the memory check">
+    <Field type="choice" name="q1" label="Where?" hint="A hint." other="true">
+    <Option>Home</Option>
+    <Option>Work</Option>
+    </Field>
+    <Field name="q2" label="Which projects?" multiple="true">
+    <Option>Join</Option>
+    <Option>joinvc</Option>
+    </Field>
+    <Field name="q3" label="Notes" type="textarea" />
+    </Form>
+    """
+
+    private var fields: [MdxFieldSpec] {
+        guard case .component(let form) = MdxTreeParser.parse(source).blocks.first else { return [] }
+        return MdxFieldSpec.list(form.children)
+    }
+
+    func testFieldsReadOptionsAndFlags() {
+        let fs = fields
+        XCTAssertEqual(fs.map(\.type), ["choice", "choice", "textarea"])
+        XCTAssertEqual(fs[0].options, ["Home", "Work"])
+        XCTAssertEqual(fs[0].hint, "A hint.")
+        XCTAssertTrue(fs[0].other)
+        XCTAssertTrue(fs[1].multiple)
+    }
+
+    func testAnswerTextMatchesTheDesktop() {
+        var d = MdxFormDraft()
+        d.values["q1"] = [MdxFormDraft.other]
+        d.others["q1"] = " Ivka's flat "
+        d.values["q2"] = ["Join", "joinvc"]
+        XCTAssertEqual(d.answered(fields), 2)
+        XCTAssertEqual(d.text(prompt: "Answers to the memory check", fields: fields),
+                       "Answers to the memory check\n- Where?: Ivka's flat\n- Which projects?: Join, joinvc\n- Notes: (skipped)")
+        XCTAssertEqual(MdxFormDraft().text(prompt: nil, fields: Array(fields.prefix(1))), "- Where?: (skipped)")
+    }
+
+    private func mail(_ from: String, _ body: String, at: Double) -> MailItem {
+        MailItem(id: "m\(Int(at))", conversationId: "c", from: from, to: from == "user" ? ["memory-check"] : ["user"],
+                 body: body, at: at)
+    }
+
+    func testMailWithAnOpenFormStaysOpenUntilItsAnswersArrive() {
+        let check = mail("memory-check", "Check.\n\n" + source, at: 1)
+        let ask = mail("user", "About “Where?”: why?", at: 2)
+        let explain = mail("memory-check", "Because.", at: 3)
+        XCTAssertTrue(MailThread.layout([check, ask, explain]).open.contains(check.id))
+        let answers = mail("user", "Answers to the memory check\n- Where?: Home", at: 4)
+        let done = mail("memory-check", "Saved.", at: 5)
+        XCTAssertFalse(MailThread.layout([check, ask, explain, answers, done]).open.contains(check.id))
+    }
+
+    func testPreviewDropsComponentTags() {
+        let body = "I read all 672 facts.\n\n### Fixed\n<FactChange check=\"k\" change=\"c1\" fact=\"2833\" text=\"The user is a cloud engineer.\" />\n<Option>Raycast</Option>"
+        XCTAssertEqual(MdxText.preview(body), "I read all 672 facts. Fixed Raycast")
+    }
+}

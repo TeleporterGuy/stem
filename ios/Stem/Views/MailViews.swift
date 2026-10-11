@@ -125,56 +125,84 @@ struct MailConversationView: View {
     @Environment(Session.self) private var session
     let conversationId: String
     @State private var showAdd = false
-    @State private var replying = false
+    /// The open Reply sheet; `focus` when a form's Ask opened it.
+    @State private var replying: ReplyRequest?
     /// Mails the user opened or folded, flipping their default (see MailThread.layout).
     @State private var flipped: Set<String> = []
     /// Replies whose folded-in persona exchange is shown.
     @State private var shownExchanges: Set<String> = []
+    /// Forms in this conversation answer by mail, sent from the answer bar
+    /// over the Reply button; asking about a question starts a reply.
+    @State private var formHost = MdxFormHost(place: .below)
+    @State private var formError: String?
 
     private var conversation: MailConversation? { session.mail.conversation(conversationId) }
     private var working: Bool { conversation?.status == "working" }
     private var lead: String { conversation?.participants.first ?? "normal" }
 
     var body: some View {
-        let layout = MailThread.layout(session.mail.items(conversationId))
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10) {
-                if let c = conversation { header(c) }
-                if working { liveRow }
-                if !layout.trailing.isEmpty { exchange(key: "trailing", layout.trailing, author: lead) }
-                ForEach(layout.entries) { entry in
-                    if layout.open.contains(entry.id) != flipped.contains(entry.id) {
-                        MailItemCard(item: entry.item, onFold: entry.item.approval?.status == "pending" ? nil : { flip(entry.id) })
-                    } else {
-                        foldedRow(entry)
+        let items = session.mail.items(conversationId)
+        let layout = MailThread.layout(items)
+        let newestFromThem = items.last { $0.from != "user" }?.id
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if let c = conversation { header(c) }
+                    if working { liveRow }
+                    if !layout.trailing.isEmpty { exchange(key: "trailing", layout.trailing, author: lead) }
+                    ForEach(layout.entries) { entry in
+                        Group {
+                            if layout.open.contains(entry.id) != flipped.contains(entry.id) {
+                                MailItemCard(item: entry.item, onFold: entry.item.approval?.status == "pending" ? nil : { flip(entry.id) })
+                                    .environment(\.mdxActions, entry.item.from == "user" ? nil : mdxActions)
+                                    .environment(\.mdxIsLatest, entry.id == newestFromThem && !working)
+                                    .environment(\.mdxSource, MdxSource(key: "mail:\(entry.id)", scrollId: entry.id, order: entry.item.at))
+                            } else {
+                                foldedRow(entry)
+                            }
+                        }
+                        .id(entry.id)
+                        if !entry.exchange.isEmpty { exchange(key: entry.id, entry.exchange, author: entry.item.from) }
                     }
-                    if !entry.exchange.isEmpty { exchange(key: entry.id, entry.exchange, author: entry.item.from) }
                 }
+                .padding(14)
             }
-            .padding(14)
+            .environment(\.mdxFormHost, formHost)
+            .onAppear {
+                formHost.scrollTo = { id in
+                    let layout = MailThread.layout(session.mail.items(conversationId))
+                    if layout.open.contains(id) == flipped.contains(id) { flip(id) }
+                    withAnimation { proxy.scrollTo(id, anchor: .top) }
+                }
+                formHost.ask = { label in askAbout(label) }
+            }
         }
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack {
-                Button { Task { await session.mail.setArchived([conversationId], true) } } label: {
-                    Image(systemName: "archivebox").font(.title3)
+            VStack(spacing: 0) {
+                if let formError { ErrorBanner(text: formError) { self.formError = nil } }
+                MdxAnswerBar(host: formHost, running: working)
+                HStack {
+                    Button { Task { await session.mail.setArchived([conversationId], true) } } label: {
+                        Image(systemName: "archivebox").font(.title3)
+                    }
+                    .accessibilityLabel("Archive")
+                    .frame(minWidth: 44, minHeight: 44)
+                    Spacer()
+                    Button { replying = ReplyRequest(focus: false) } label: {
+                        Label("Reply", systemImage: "arrowshape.turn.up.left").font(.body.weight(.semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
                 }
-                .accessibilityLabel("Archive")
-                .frame(minWidth: 44, minHeight: 44)
-                Spacer()
-                Button { replying = true } label: {
-                    Label("Reply", systemImage: "arrowshape.turn.up.left").font(.body.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.capsule)
-                .controlSize(.large)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.bar)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(.bar)
         }
-        .sheet(isPresented: $replying) {
-            MailReplySheet(conversationId: conversationId).environment(session)
+        .sheet(item: $replying) { r in
+            MailReplySheet(conversationId: conversationId, focusRequest: r.focus ? 1 : 0).environment(session)
         }
         .navigationTitle(conversation?.subject ?? "Mail")
         .navigationBarTitleDisplayMode(.inline)
@@ -248,7 +276,7 @@ struct MailConversationView: View {
         Button { flip(entry.id) } label: {
             HStack(spacing: 10) {
                 Text(session.personaName(entry.item.from)).font(.subheadline.weight(.semibold))
-                Text(entry.item.body.replacingOccurrences(of: "\n", with: " "))
+                Text(MdxText.preview(entry.item.body))
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 Spacer(minLength: 4)
                 Text(RelativeTime.short(entry.item.at)).font(.caption).foregroundStyle(.secondary)
@@ -279,6 +307,33 @@ struct MailConversationView: View {
         }
     }
 
+    /// Forms and suggested replies in this conversation answer by mail: a
+    /// submit is a reply, the same one the Reply sheet sends.
+    private var mdxActions: MdxActions {
+        let id = conversationId
+        let mail = session.mail
+        return MdxActions(submit: { text in
+            Task {
+                do {
+                    try await mail.reply(id, body: text, attachments: [])
+                    formError = nil
+                } catch {
+                    formError = error.localizedDescription
+                }
+            }
+        }, running: working)
+    }
+
+    /// A form's Ask: start the reply with the question and open it, caret after.
+    private func askAbout(_ label: String) {
+        let key = "mail:\(conversationId)"
+        var draft = DraftStore.load(key)
+        let prefix = "About “\(label)”: "
+        if !draft.text.hasPrefix(prefix) { draft.text = prefix + draft.text }
+        DraftStore.save(key, draft)
+        replying = ReplyRequest(focus: true)
+    }
+
     private func flip(_ id: String) {
         if flipped.contains(id) { flipped.remove(id) } else { flipped.insert(id) }
     }
@@ -290,17 +345,25 @@ struct MailConversationView: View {
     }
 }
 
+struct ReplyRequest: Identifiable {
+    let id = UUID()
+    var focus: Bool
+}
+
 /// Reply, Apple Mail style: a sheet with your text on top and the mail you are
 /// answering quoted beneath it. Cancel keeps the draft.
 struct MailReplySheet: View {
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
     let conversationId: String
+    /// Above zero: the caret goes into the reply at once (a form's Ask).
+    var focusRequest = 0
     @State private var draft: Draft
     @State private var error: String?
 
-    init(conversationId: String) {
+    init(conversationId: String, focusRequest: Int = 0) {
         self.conversationId = conversationId
+        self.focusRequest = focusRequest
         _draft = State(initialValue: DraftStore.load("mail:\(conversationId)"))
     }
 
@@ -338,7 +401,8 @@ struct MailReplySheet: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
                 if let error { ErrorBanner(text: error) { self.error = nil } }
                 Composer(kind: .mail, draftKey: "mail:\(conversationId)", draft: $draft, busy: false,
-                         placeholder: "Reply to \(session.personaName(recipient))", onSend: send)
+                         placeholder: "Reply to \(session.personaName(recipient))", onSend: send,
+                         focusRequest: focusRequest)
                 ScrollView {
                     if let q = quoted {
                         VStack(alignment: .leading, spacing: 6) {

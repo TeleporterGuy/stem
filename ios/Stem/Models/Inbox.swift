@@ -119,7 +119,28 @@ enum MailThread {
         if let newest = entries.last { open.insert(newest.id) }
         if let reply = entries.last(where: { $0.item.from != "user" && $0.item.to.contains("user") }) { open.insert(reply.id) }
         for e in entries where e.item.approval?.status == "pending" { open.insert(e.id) }
+        // A form still waiting for its answers stays open: folded, it would take
+        // the answer bar (and the way to send the picks) with it.
+        for (i, e) in entries.enumerated() where openForm(e.item, later: entries[(i + 1)...].map(\.item)) {
+            open.insert(e.id)
+        }
         return Layout(entries: entries.reversed(), trailing: pending, open: open)
+    }
+
+    /// Does this mail hold a <Form> not yet answered? A form's answers go out
+    /// as a reply that starts with its prompt (MdxFormDraft.text), so a later
+    /// mail of the user's starting with it answers it. A form with no prompt
+    /// counts as answered by any later mail of theirs.
+    static func openForm(_ item: MailItem, later: [MailItem]) -> Bool {
+        guard item.from != "user", item.body.range(of: #"<Form[\s>]"#, options: .regularExpression) != nil else { return false }
+        let mine = later.filter { $0.from == "user" }
+        if let r = item.body.range(of: #"<Form\b[^>]*\bprompt="[^"]*""#, options: .regularExpression) {
+            let tag = item.body[r]
+            let start = tag.range(of: "prompt=\"")!.upperBound
+            let prompt = String(tag[start..<tag.index(before: tag.endIndex)])
+            if !prompt.isEmpty { return !mine.contains { $0.body.hasPrefix("\(prompt)\n") } }
+        }
+        return mine.isEmpty
     }
 
     /// "Consulted Verifier · 2 mails".

@@ -134,6 +134,7 @@ final class Session {
     func personaName(_ id: String) -> String {
         if id == "user" { return "You" }
         if id.hasPrefix("task:") { return "Scheduled task" }
+        if id == "memory-check" { return "Memory check" }
         // An agent (`<roleId>~<name>`) reads as its name and its role.
         if let sep = id.range(of: "~", options: .backwards), sep.lowerBound > id.startIndex {
             let name = String(id[sep.upperBound...])
@@ -153,8 +154,11 @@ final class Session {
         switch e {
         case .snapshot, .resync:
             Task { await refreshShared() }
-        case .push(let channel, _):
+        case .push(let channel, let payload):
             if channel == "personas:changed" { Task { await loadPersonas() } }
+            if channel == "memory:checkChanged", let id = payload["checkId"]?.stringValue {
+                MemoryChecks.shared.changed(id, client: client)
+            }
         }
     }
 
