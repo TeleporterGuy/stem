@@ -1,45 +1,31 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plug, ChevronRight, X, Check, Trash2, Wand2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send, TriangleAlert, FolderInput, Image, Pencil, Pause, Play } from 'lucide-react';
+import { ChevronRight, Trash2, Eye, RefreshCw, Pin, RotateCcw, ShieldCheck, Lock, Send, Check, TriangleAlert, Image, Pause, Play, Search, ArrowUpRight } from 'lucide-react';
 import type {
-  DefaultsSettings,
+  ActivityEntry,
+  ActivitySnapshot,
   MemoryContents,
   MemorySettings,
-  ModelSummary,
-  EmbeddingsMode,
-  EmbeddingsSettings,
-  LocalEmbedModelId,
-  LocalEmbedStatus,
-  LocalRerankModelId,
-  LocalRerankStatus,
-  RerankerMode,
-  RerankerSettings,
-  RetrievalSettings,
-  RetrievalTestResult,
   ActiveFacts,
   FactTier,
   FactDetails,
   FactStatus,
   MemoryConflict,
   AutoResolvedConflict,
-  MemoryRebuildStatus,
-  ImportedModelInfo,
-  CustomEmbedModel,
-  CustomImportCandidate,
-  CustomRerankModel
+  MemoryRebuildStatus
 } from '../../../shared/types';
-import { GTE_EMBED_MODELS, RECOMMENDED_FACT_MODEL, recallSetupStatus } from '../../../shared/recall-recommended';
-import { resolveMemoryModel } from '../../../shared/modelRoles';
-import { clampEffort, EffortSelect, effortsOf } from '../../ui/EffortSelect';
 import { MdxView } from '../../chat/MdxView';
 import { useOffline } from '../../hooks/useServerReachable';
-import { useRemoteServer } from '../../hooks/useRemoteServer';
-import { ImportModelDialog } from '../ImportModelDialog';
-import { ServerFolderPicker } from '../ServerFolderPicker';
-import { useFactRerankStatus, useRetrievalHealth } from '../../hooks/useRetrievalHealth';
+import { useRetrievalHealth } from '../../hooks/useRetrievalHealth';
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
-import { ModelPicker } from '../../ui/ModelPicker';
 import { createJobStore, holdFullSpin, useJob, type ActiveFactsViewProps } from './shared';
-import { DeepCheckButton, DeepCheckStatus } from './DeepCheck';
+import { DeepCheckCard } from './DeepCheck';
+
+// Memory → Facts. Ordered by what asks something of the user: the switch and a
+// one-line status, the deep check (the one memory job worth starting by hand),
+// conflicts waiting on an answer, then the facts themselves. Everything that
+// runs by itself — tidy-up, provenance rebuild, what was replaced or settled
+// automatically — folds into History and Housekeeping at the bottom. Which
+// models memory runs on lives in Settings → Models.
 
 // Module-level so a running consolidation survives the tab unmounting: leave for
 // another tab mid-run and come back, and the button is still spinning — and the
@@ -55,539 +41,6 @@ const TIDY_PRESETS: { label: string; value: number; hint: string }[] = [
   { label: 'Manual', value: 0, hint: 'never automatically' }
 ];
 
-const FACT_INJECT_PRESETS: { label: string; value: number }[] = [
-  { label: '4', value: 4 },
-  { label: '8', value: 8 },
-  { label: '12', value: 12 },
-  { label: '16', value: 16 }
-];
-
-// The curated local models, mirrored from server/recall/embed-catalog.ts (labels +
-// sizes only — the specs live in main; the id is the contract).
-const LOCAL_EMBED_MODELS: { id: LocalEmbedModelId; label: string; detail: string }[] = [
-  { id: 'embeddinggemma-2', label: 'EmbeddingGemma 2', detail: '~315 MB · recommended · best measured' },
-  { id: 'qwen3-embedding-0.6b', label: 'Qwen3 Embedding 0.6B', detail: '~640 MB · previous default' },
-  { id: 'multilingual-e5-small', label: 'Multilingual E5 Small', detail: '~120 MB · smallest' }
-];
-
-const EMBED_MODES: { id: EmbeddingsMode; label: string; hint: string }[] = [
-  { id: 'local', label: 'Built-in', hint: 'Bundled multilingual model, runs on this Mac' },
-  { id: 'off', label: 'Off', hint: 'Rank facts by keywords/recency only' }
-];
-
-// The curated local rerankers, mirrored from server/recall/rerank-catalog.ts.
-const LOCAL_RERANK_MODELS: { id: LocalRerankModelId; label: string; detail: string }[] = [
-  { id: 'qwen3-reranker-0.6b', label: 'Qwen3 Reranker 0.6B', detail: '~1.2 GB · multilingual' },
-  { id: 'bge-reranker-v2-m3', label: 'BGE Reranker v2 M3', detail: '~570 MB · multilingual' }
-];
-
-const GTE_FACT_MODEL = RECOMMENDED_FACT_MODEL;
-
-/**
- * An imported model as a picker entry. Its size came off the disk it was copied
- * from and its dimension from the load probe, so the line says what is actually
- * known — no dimension yet simply means it has not run once.
- */
-function customOption(m: CustomEmbedModel | CustomRerankModel): { id: string; label: string; detail: string } {
-  const dim = 'dim' in m && m.dim ? ` · ${m.dim}-dim` : '';
-  // An imported embedder that cosineScaleFor (server/recall/embed-scale.ts) has no
-  // measured scale for borrows e5's similarity floors, which can over- or
-  // under-fetch on another model, so the picker says so.
-  const untuned = 'dim' in m && !/qwen3|embeddinggemma-2(?![0-9])/i.test(m.repo) ? ' · thresholds not tuned' : '';
-  return { id: m.id, label: m.label, detail: `~${m.approxSizeMB} MB${dim} · imported${untuned}` };
-}
-
-const RERANK_MODES: { id: RerankerMode; label: string; hint: string }[] = [
-  { id: 'off', label: 'Off', hint: 'Rank facts by embedding similarity only' },
-  { id: 'local', label: 'Built-in', hint: 'Bundled cross-encoder re-scores the top matches, runs on this Mac' }
-];
-
-/**
- * One line describing where a local retrieval model (embedder/reranker) is right
- * now. Deliberately state-only: the download percentage and the play-by-play
- * belong to the toolbar activity indicator, which is the single place that
- * answers "is Stem busy". What stays here is what this panel is for — did my
- * model switch take effect, what dimension did it produce, and did it break.
- */
-function localStatusLabel(
-  status: { state: LocalEmbedStatus['state']; dim?: number; error?: string } | null
-): string {
-  switch (status?.state) {
-    case 'downloading':
-    case 'loading':
-      return 'Preparing model…';
-    case 'ready':
-      return `Ready${status.dim ? ` · ${status.dim}-dim` : ''}`;
-    case 'error':
-      return `Error: ${status.error ?? 'model failed to load'}`;
-    default:
-      // 'idle' is transient in local mode (the startup kick lands ~1.5 s after
-      // launch), and we can't tell cached-from-not-yet-downloaded from here — so
-      // don't claim either.
-      return 'Starting up… (first use downloads the model once)';
-  }
-}
-
-/** The status line under a local model picker — red with a warning mark on error,
- *  muted otherwise. Errors here must not look like just another muted state: a
- *  down model silently degrades every recall pass until someone notices. */
-function LocalStatusLine({
-  status
-}: {
-  status: { state: LocalEmbedStatus['state']; dim?: number; error?: string } | null;
-}) {
-  if (status?.state === 'error') {
-    return (
-      <p className="retrieval-status-error">
-        <TriangleAlert size={12} /> {localStatusLabel(status)}
-      </p>
-    );
-  }
-  return <p className="muted">{localStatusLabel(status)}</p>;
-}
-
-/** What to say after an import that worked. */
-function importedSummary(models: ImportedModelInfo[]): string {
-  const names = models.map((m) => m.label).join(', ');
-  return models.every((m) => m.alreadyPresent) ? `${names} was already here.` : `Imported ${names}.`;
-}
-
-/**
- * Bring model weights in from a folder the user already has, and keep whatever
- * came in that way. Stem does not ship or download models on anyone's behalf, so
- * on a machine that cannot reach Hugging Face this is the only way a local model
- * ever loads: point at a copy of someone else's cache, a `huggingface-cli
- * download`, or a USB stick.
- *
- * A model Stem has an entry for is copied and that is the whole interaction. One
- * it doesn't — any other ONNX embedder or cross-encoder — comes back as a
- * candidate instead of a refusal, and {@link ImportModelDialog} asks the few
- * things the folder could not say. What that produces is listed here afterwards,
- * to edit or to forget.
- *
- * The folder has to be on the machine that RUNS the models. When that is another
- * computer, the native dialog would browse the wrong disk — same branch the
- * connected-folders picker takes.
- */
-function ImportedModels({
-  stage,
-  models,
-  onRetrieval
-}: {
-  stage: 'embed' | 'rerank';
-  /** This stage's imported models, as retrieval settings hold them. */
-  models: (CustomEmbedModel | CustomRerankModel)[];
-  /** Anything that changed the lists — the picker above is rebuilt from it. */
-  onRetrieval: (retrieval: RetrievalSettings) => void;
-}) {
-  const remote = useRemoteServer();
-  const [picking, setPicking] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
-  // Unrecognised folders wait their turn: one dialog each, in order, so pointing
-  // Stem at a directory of several models is not a choice between them.
-  const [queue, setQueue] = useState<CustomImportCandidate[]>([]);
-  const [editing, setEditing] = useState<CustomEmbedModel | CustomRerankModel | null>(null);
-
-  async function importFrom(dir: string): Promise<void> {
-    setPicking(false);
-    setBusy(true);
-    setResult(null);
-    try {
-      const r = await window.stem.importModels(dir);
-      if (r.ok) setResult({ ok: true, text: importedSummary(r.models) });
-      else if (r.unknown?.length) setQueue(r.unknown);
-      else setResult({ ok: false, text: r.error });
-    } catch (e) {
-      setResult({ ok: false, text: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function choose(): Promise<void> {
-    if (remote) {
-      setPicking(true);
-      return;
-    }
-    const dirs = await window.stem.pickDirectory();
-    if (dirs[0]) await importFrom(dirs[0]);
-  }
-
-  async function drop(model: CustomEmbedModel | CustomRerankModel): Promise<void> {
-    const r = await window.stem.removeCustomModel(stage, model.id);
-    if (r.ok) {
-      onRetrieval(r.retrieval);
-      setResult({ ok: true, text: `Removed ${model.label}. Its files are still on disk.` });
-    } else {
-      setResult({ ok: false, text: r.error });
-    }
-  }
-
-  return (
-    <>
-      {models.length > 0 && (
-        <div className="custom-models">
-          {models.map((m) => (
-            <div key={m.id} className="custom-model-row">
-              <span className="muted">{m.label}</span>
-              <button className="link-btn icon-only" data-label="Edit" aria-label="Edit" onClick={() => setEditing(m)}>
-                <Pencil size={13} />
-              </button>
-              <button
-                className="link-btn icon-only danger"
-                data-label="Remove"
-                aria-label="Remove"
-                onClick={() => void drop(m)}
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="retrieval-test">
-        {picking && (
-          <ServerFolderPicker onConnect={(path) => void importFrom(path)} onClose={() => setPicking(false)} />
-        )}
-        {(queue[0] || editing) && (
-          <ImportModelDialog
-            stage={stage}
-            candidate={editing ? undefined : queue[0]}
-            model={editing ?? undefined}
-            onSaved={(retrieval) => {
-              onRetrieval(retrieval);
-              setResult({ ok: true, text: editing ? `Saved ${editing.label}.` : `Imported ${queue[0]!.label}.` });
-              if (editing) setEditing(null);
-              else setQueue((q) => q.slice(1));
-            }}
-            onClose={() => (editing ? setEditing(null) : setQueue((q) => q.slice(1)))}
-          />
-        )}
-        <button
-          className="retrieval-test-btn"
-          onClick={() => void choose()}
-          disabled={busy}
-          title="Copy model files in from a folder instead of downloading them"
-          aria-label="Import model files"
-        >
-          <FolderInput size={14} />
-          <span>{busy ? 'Importing…' : 'Import model files'}</span>
-        </button>
-        {!busy && result && (
-          <span className={`retrieval-test-status ${result.ok ? 'ok' : 'err'}`} title={result.text}>
-            {result.ok ? <Check size={12} /> : <X size={12} />}
-            {result.text}
-          </span>
-        )}
-      </div>
-    </>
-  );
-}
-
-// Embeddings-stage controls: an exclusive Built-in / Off mode plus the local
-// model picker + live download/ready status. Mode/model switches persist
-// immediately.
-function EmbeddingsFields({
-  value,
-  custom,
-  onPatch,
-  onRetrieval
-}: {
-  value: EmbeddingsSettings;
-  /** Embedders the user imported — they join the picker below the curated ones. */
-  custom: CustomEmbedModel[];
-  onPatch: (patch: Partial<EmbeddingsSettings>) => void;
-  onRetrieval: (retrieval: RetrievalSettings) => void;
-}) {
-  const [testing, setTesting] = useState(false);
-  const [test, setTest] = useState<RetrievalTestResult | null>(null);
-  const [status, setStatus] = useState<LocalEmbedStatus | null>(null);
-  useEffect(() => {
-    window.stem.getLocalEmbedStatus().then(setStatus);
-    return window.stem.onLocalEmbedStatus(setStatus);
-  }, []);
-
-  async function runTest() {
-    setTesting(true);
-    setTest(null);
-    try {
-      setTest(await window.stem.testRetrievalEndpoint('embeddings'));
-    } catch {
-      setTest({ ok: false, detail: 'request failed' });
-    } finally {
-      setTesting(false);
-    }
-  }
-
-  const mode = value.mode;
-
-  return (
-    <div className="set-block fg-divider">
-      <div className="group-row">
-        <span className="row-main">
-          <strong>Embeddings</strong>
-          <em>{EMBED_MODES.find((m) => m.id === mode)?.hint}</em>
-        </span>
-      </div>
-      <div className="seg-ctl">
-        {EMBED_MODES.map((m) => (
-          <button
-            key={m.id}
-            className={mode === m.id ? 'active' : ''}
-            onClick={() => {
-              setTest(null);
-              onPatch({ mode: m.id });
-            }}
-            title={m.hint}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
-      {mode === 'local' && (
-        <>
-          <select
-            className="ifield"
-            aria-label="Local embedding model"
-            value={value.localModel}
-            onChange={(e) => {
-              setTest(null);
-              onPatch({ localModel: e.target.value });
-            }}
-          >
-            {[...LOCAL_EMBED_MODELS, ...custom.map(customOption)].map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} ({m.detail})
-              </option>
-            ))}
-          </select>
-          <LocalStatusLine status={status} />
-          <ImportedModels stage="embed" models={custom} onRetrieval={onRetrieval} />
-        </>
-      )}
-      {mode !== 'off' && (
-        <div className="retrieval-test">
-          <button
-            className="retrieval-test-btn"
-            onClick={runTest}
-            disabled={testing}
-            title={testing ? 'Testing…' : 'Test model'}
-            aria-label="Test embeddings"
-          >
-            <Plug size={14} />
-            <span>{testing ? 'Testing…' : 'Test model'}</span>
-          </button>
-          {!testing && test && (
-            <span className={`retrieval-test-status ${test.ok ? 'ok' : 'err'}`} title={test.detail}>
-              {test.ok ? <Check size={12} /> : <X size={12} />}
-              {test.detail}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Reranker-stage controls, mirroring EmbeddingsFields: an exclusive Off /
-// Built-in mode plus the local model + live download/ready status. The
-// reranker re-scores the embedding shortlist with a cross-encoder — the
-// precision stage that catches cross-language matches cosine ranking misses.
-function RerankerFields({
-  value,
-  embeddings,
-  custom,
-  onPatch,
-  onRetrieval
-}: {
-  value: RerankerSettings;
-  embeddings: EmbeddingsSettings;
-  /** Rerankers the user imported — they join the picker below the curated ones. */
-  custom: CustomRerankModel[];
-  onPatch: (patch: Partial<RerankerSettings>) => void;
-  onRetrieval: (retrieval: RetrievalSettings) => void;
-}) {
-  const [testing, setTesting] = useState(false);
-  const [test, setTest] = useState<RetrievalTestResult | null>(null);
-  const [status, setStatus] = useState<LocalRerankStatus | null>(null);
-  const factStatus = useFactRerankStatus();
-  useEffect(() => {
-    let active = true;
-    let receivedEvent = false;
-    const off = window.stem.onLocalRerankStatus((next) => {
-      receivedEvent = true;
-      if (active) setStatus(next);
-    });
-    window.stem.getLocalRerankStatus().then((next) => {
-      if (active && !receivedEvent) setStatus(next);
-    }).catch(() => {});
-    return () => {
-      active = false;
-      off();
-    };
-  }, []);
-
-  async function runTest() {
-    setTesting(true);
-    setTest(null);
-    try {
-      setTest(await window.stem.testRetrievalEndpoint('reranker'));
-    } catch {
-      setTest({ ok: false, detail: 'request failed' });
-    } finally {
-      setTesting(false);
-    }
-  }
-
-  const mode = value.mode;
-  const gteSelected = value.factModel === GTE_FACT_MODEL;
-  const gteEmbedding = embeddings.mode === 'local' && GTE_EMBED_MODELS.includes(embeddings.localModel);
-  const gteAvailable = (factStatus?.installed === true || factStatus?.downloadable === true) && gteEmbedding;
-
-  return (
-    <div className="set-block fg-divider">
-      <div className="group-row">
-        <span className="row-main">
-          <strong>
-            Reranker{' '}
-            <InfoTip label="What the reranker does">
-              A second, precision pass: a cross-encoder re-scores the top embedding matches before
-              injection, which is what catches cross-language matches (a Slovak question finding an
-              English fact). While off or not ready, ranking uses embedding similarity alone.
-            </InfoTip>
-          </strong>
-          <em>{RERANK_MODES.find((m) => m.id === mode)?.hint}</em>
-        </span>
-      </div>
-      <div className="seg-ctl">
-        {RERANK_MODES.map((m) => (
-          <button
-            key={m.id}
-            className={mode === m.id ? 'active' : ''}
-            onClick={() => {
-              setTest(null);
-              onPatch({ mode: m.id });
-            }}
-            title={m.hint}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
-      {mode === 'local' && (
-        <>
-          <select
-            className="ifield"
-            aria-label="Local reranker model"
-            value={gteSelected ? GTE_FACT_MODEL : value.localModel}
-            onChange={(e) => {
-              setTest(null);
-              onPatch(e.target.value === GTE_FACT_MODEL
-                ? { localModel: 'qwen3-reranker-0.6b', factModel: GTE_FACT_MODEL }
-                : { localModel: e.target.value, factModel: 'configured' });
-            }}
-          >
-            {[...LOCAL_RERANK_MODELS, ...custom.map(customOption)].map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} ({m.detail})
-              </option>
-            ))}
-            <option value={GTE_FACT_MODEL} disabled={!gteAvailable}>
-              Stem GTE Memory (~342 MB · recommended · best measured recall · fastest · CS/SK/DE/EN){!gteAvailable ? ' — unavailable' : ''}
-            </option>
-          </select>
-          {gteSelected ? (
-            <>
-              <p className="muted">
-                Trained for Czech, Slovak, German, and English. Best recall and fastest reranking
-                measured in Stem benchmarks; the default for new installs. Runs on top of the Qwen3
-                reranker, which stays the fallback while this model prepares.
-              </p>
-              {!factStatus ? <p className="muted">Checking GTE availability…</p>
-                : !factStatus.installed && !factStatus.downloadable ? <p className="retrieval-status-error">Stem GTE Memory is unavailable on the connected host. Update Stem to download this model.</p>
-                  : !gteEmbedding ? <p className="retrieval-status-error">Stem GTE Memory requires built-in EmbeddingGemma 2 or Qwen3 Embedding 0.6B. Choose one of those embedding models to use GTE.</p>
-                    : factStatus.status.state === 'idle' ? <p className="muted">Starting Stem GTE Memory…</p>
-                      : <LocalStatusLine status={factStatus.status} />}
-            </>
-          ) : <LocalStatusLine status={status?.model === value.localModel ? status : { state: 'loading' }} />}
-          {!gteSelected && !gteAvailable && (
-            <p className="muted">{!factStatus ? 'Checking GTE availability…' : !factStatus.installed && !factStatus.downloadable
-              ? 'Update the connected Stem host to download Stem GTE Memory.'
-              : 'To try Stem GTE Memory, select built-in EmbeddingGemma 2 above.'}</p>
-          )}
-          <ImportedModels stage="rerank" models={custom} onRetrieval={onRetrieval} />
-        </>
-      )}
-      {mode !== 'off' && (
-        <div className="retrieval-test">
-          <button
-            className="retrieval-test-btn"
-            onClick={runTest}
-            disabled={testing}
-            title={testing ? 'Testing…' : 'Test model'}
-            aria-label="Test reranker"
-          >
-            <Plug size={14} />
-            <span>{testing ? 'Testing…' : 'Test model'}</span>
-          </button>
-          {!testing && test && (
-            <span className={`retrieval-test-status ${test.ok ? 'ok' : 'err'}`} title={test.detail}>
-              {test.ok ? <Check size={12} /> : <X size={12} />}
-              {test.detail}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Nudge toward the recommended recall setup, outside the collapsed advanced
- * section. Rendered only while the configured models differ from the
- * recommendation (EmbeddingGemma 2 → Qwen3 reranker → Stem GTE Memory): a setup that
- * already matches has nothing to review, so the row is gone rather than
- * confirming the default back to the user.
- */
-function RecallQualityRow({
-  retrieval,
-  onReview
-}: {
-  retrieval: RetrievalSettings;
-  onReview: () => void;
-}) {
-  const { embedOk: embedBest, rerankOk: rerankBest, factOk } = recallSetupStatus(retrieval);
-  if (embedBest && rerankBest && factOk) return null;
-  const rerankOn = retrieval.reranker.mode !== 'off';
-  const hint = embedBest && rerankBest
-    ? 'Stem GTE Memory is recommended — best measured recall, fastest'
-    : embedBest && !rerankOn
-      ? 'Reranker is off'
-      : embedBest
-        ? 'Compare reranker models for your conversations'
-        : rerankOn
-          ? 'EmbeddingGemma 2 is recommended — finds more of the memories that matter'
-          : 'Compare embedding and reranker models for your conversations';
-  return (
-    <div className="group-row">
-      <span className="row-main">
-        <strong>
-          Recall quality{' '}
-          <InfoTip label="About recall ranking">
-            Embeddings find candidate facts, and the reranker checks their relevance to your message.
-            Compare models using your own conversations; Test model measures a small reranking probe,
-            while full reply timing also includes the LLM and any tools.
-          </InfoTip>
-        </strong>
-        <em>{hint}</em>
-      </span>
-      <button className="link-btn" onClick={onReview}>
-        Review setup
-      </button>
-    </div>
-  );
-}
 
 /** Human label for a fact-selection tier, shown in the active-facts summary. */
 function tierLabel(t: FactTier): string {
@@ -654,27 +107,65 @@ function orderedConflictFacts(c: MemoryConflict): [FactDetails, FactDetails] {
   return aIsNewer ? [c.factA, c.factB] : [c.factB, c.factA];
 }
 
+type FactFilter = 'all' | 'chat' | 'pinned' | 'unconfirmed';
+
+const FACT_FILTERS: { id: FactFilter; label: string; title: string }[] = [
+  { id: 'all', label: 'All', title: 'Every active fact' },
+  { id: 'chat', label: 'This chat', title: "Facts this chat's last message used, or your draft would use" },
+  { id: 'pinned', label: 'Pinned', title: 'Facts sent with every message' },
+  { id: 'unconfirmed', label: 'Unconfirmed', title: 'Facts Stem is unsure of — confirm or forget them' }
+];
+
+/** Facts drawn at a time; the store can hold a thousand, and the list is open by default. */
+const PAGE = 50;
+
+/** "3 h ago" style, for the last tidy-up. */
+function ago(ms: number): string {
+  const min = Math.round((Date.now() - ms) / 60_000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} h ago`;
+  return new Date(ms).toLocaleDateString();
+}
+
+/** The newest tidy-up pass the activity log knows of (running first). */
+function latestTidy(snapshot: ActivitySnapshot): ActivityEntry | null {
+  return (
+    snapshot.running.find((e) => e.kind === 'memory.consolidate') ??
+    snapshot.history.find((e) => e.kind === 'memory.consolidate') ??
+    null
+  );
+}
+
 export function FactsTab({
-  models,
   activeFacts,
-  onOpenMail
+  onOpenMail,
+  onReviewRecall
 }: {
-  models: ModelSummary[];
   activeFacts: ActiveFactsViewProps;
   onOpenMail?: (conversationId: string) => void;
+  /** Open Settings → Models at the Memory recall group. */
+  onReviewRecall: () => void;
 }) {
   const { activeThreadId, activeRunning, previewActive, previewDraft, onTogglePreview } = activeFacts;
   const [settings, setSettings] = useState<MemorySettings | null>(null);
   const [contents, setContents] = useState<MemoryContents | null>(null);
   const offline = useOffline();
   const health = useRetrievalHealth();
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<FactFilter>('all');
+  const [limit, setLimit] = useState(PAGE);
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyView, setHistoryView] = useState<'replaced' | 'auto'>('replaced');
+  const [showHousekeeping, setShowHousekeeping] = useState(false);
   const [showTech, setShowTech] = useState(false);
-  const [showSuperseded, setShowSuperseded] = useState(false);
-  const [showMemories, setShowMemories] = useState(false);
+  const [lastTidy, setLastTidy] = useState<ActivityEntry | null>(null);
   // Durable facts injected on this chat's last turn, and (when toggled) the set the
-  // current draft would inject. Both annotate + sort the stored-facts list below.
+  // current draft would inject. Both annotate + sort the facts list below.
   const [lastTurn, setLastTurn] = useState<ActiveFacts | null>(null);
   const [preview, setPreview] = useState<ActiveFacts | null>(null);
+  const housekeepingRef = useRef<HTMLDivElement>(null);
 
   // Refetch the last injected set when the chat changes or finishes a turn (the row
   // is written at turn start, so a running-flag flip means a fresh set is available).
@@ -687,11 +178,6 @@ export function FactsTab({
       cancelled = true;
     };
   }, [activeThreadId, activeRunning]);
-
-  // Reveal the stored list when preview turns on, so the re-sorted badges are visible.
-  useEffect(() => {
-    if (previewActive) setShowMemories(true);
-  }, [previewActive]);
 
   // Debounced draft preview — only runs the (embedding/rerank) selection while the
   // toggle is on; clears immediately when off so stale draft badges don't linger.
@@ -709,34 +195,9 @@ export function FactsTab({
   const { running: consolidating, msg: consolidateMsg } = useJob(consolidateJob);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
-  // null => use the backend default model for distillation/tidy-up.
-  const [memoryModel, setMemoryModel] = useState<string | null>(null);
-  const [retrieval, setRetrieval] = useState<RetrievalSettings | null>(null);
-  // How hard memory is allowed to think; null = the model's own default.
-  const [memoryEffort, setMemoryEffort] = useState<string | null>(null);
-  // What "Same as main" means today. Read here so the note under the picker is
-  // the same answer the server will reach.
-  const [defaults, setDefaults] = useState<DefaultsSettings>({
-    model: null,
-    backgroundModel: null,
-    backgroundEffort: null
-  });
-  const [showRetrieval, setShowRetrieval] = useState(false);
-  const retrievalSetupRef = useRef<HTMLDivElement>(null);
-
-  /** Open the collapsed ranking controls and scroll them into view. Review
-   *  setup used to only flip the flag — the section sits below Memory, facts,
-   *  and conflicts, so the switch looked missing. */
-  function openRetrievalSetup() {
-    setShowRetrieval(true);
-    setTimeout(() => {
-      retrievalSetupRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 0);
-  }
   const [rebuild, setRebuild] = useState<MemoryRebuildStatus | null>(null);
   const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
   const [autoResolved, setAutoResolved] = useState<AutoResolvedConflict[]>([]);
-  const [showAutoResolved, setShowAutoResolved] = useState(false);
   const [details, setDetails] = useState<Record<number, FactDetails | null>>({});
   const sensitivePinAcknowledged = useRef(false);
 
@@ -762,12 +223,6 @@ export function FactsTab({
 
   useEffect(() => {
     window.stem.getMemorySettings().then(setSettings);
-    window.stem.getSettings().then((s) => {
-      setMemoryModel(s.memory.model);
-      setMemoryEffort(s.memory.effort);
-      setRetrieval(s.retrieval);
-      setDefaults(s.defaults);
-    });
     loadTrustState();
   }, []);
 
@@ -778,6 +233,13 @@ export function FactsTab({
   useEffect(() => {
     loadContents();
   }, [consolidating]);
+
+  // When the background tidy-up last ran, for the Housekeeping line. The
+  // activity log is the one place that already knows, and it pushes changes.
+  useEffect(() => {
+    void window.stem.getActivity().then((s) => setLastTidy(latestTidy(s)));
+    return window.stem.onActivity((s) => setLastTidy(latestTidy(s)));
+  }, []);
 
   // Main pushes a status after every rebuild step, so the panel follows along
   // without a poll — and without a manual Refresh action to compensate for one.
@@ -791,31 +253,13 @@ export function FactsTab({
     });
   }, []);
 
-  function selectMemoryModel(id: string | null) {
-    setMemoryModel(id);
-    // A level the new model can't do is a setting that reads as chosen and isn't.
-    const effort = clampEffort(models, resolveMemoryModel(id, defaults.model), memoryEffort);
-    setMemoryEffort(effort);
-    window.stem.updateMemorySettings({ model: id, effort }).then((s) => {
-      setMemoryModel(s.memory.model);
-      setMemoryEffort(s.memory.effort);
-    });
-  }
-
-  function patchEmbeddings(patch: Partial<EmbeddingsSettings>) {
-    window.stem.updateRetrievalSettings({ embeddings: patch }).then((s) => setRetrieval(s.retrieval));
-  }
-
-  function patchReranker(patch: Partial<RerankerSettings>) {
-    window.stem.updateRetrievalSettings({ reranker: patch }).then((s) => setRetrieval(s.retrieval));
-  }
+  // A new search or filter starts at the top of the list again.
+  useEffect(() => {
+    setLimit(PAGE);
+  }, [query, filter]);
 
   function selectTidyThreshold(n: number) {
     window.stem.setTidyThreshold(n).then(setSettings);
-  }
-
-  function selectFactThreshold(n: number) {
-    window.stem.setMaxRelevantFacts(n).then(setSettings);
   }
 
   async function toggle() {
@@ -884,12 +328,12 @@ export function FactsTab({
         const outcome =
           changed === 0
             ? 'No duplicates or stale facts found'
-            : `Merged ${r.merged}, corrected ${r.corrected}, retired ${r.dropped} — retired facts move to Superseded below`;
+            : `Merged ${r.merged}, corrected ${r.corrected}, retired ${r.dropped} — retired facts move to History`;
         return r.failedChunks > 0
           ? `${outcome}. The memory model failed on ${r.failedChunks} ${r.failedChunks === 1 ? 'batch' : 'batches'} of facts — those weren't reviewed; try again.`
           : `${outcome}.`;
       } catch {
-        return 'Consolidation failed — try again.';
+        return 'Tidy-up failed — try again.';
       }
     });
   }
@@ -907,7 +351,7 @@ export function FactsTab({
 
   const allNotes = contents?.files.filter((f) => f.kind === 'note' && f.content.trim()) ?? [];
   // Superseded facts are history, not memory: they never inject, so they don't
-  // belong in the live list or its count. They collapse into their own section.
+  // belong in the live list or its count. They live under History.
   const notes = allNotes.filter((f) => f.status !== 'superseded');
   const supersededNotes = allNotes.filter((f) => f.status === 'superseded');
   const techFiles = contents?.files.filter((f) => f.kind === 'native' && f.exists && f.content.trim()) ?? [];
@@ -923,15 +367,47 @@ export function FactsTab({
     if (lastIds.has(id)) return 1;
     return 2;
   };
-  const orderedNotes = notes
+  // Same rule the Confirm button uses: a guess Stem holds loosely, not something you asked it to keep.
+  const unconfirmed = (f: (typeof allNotes)[number]) => f.source !== 'On request' && (f.confidence ?? 1) < 0.7;
+  const needle = query.trim().toLowerCase();
+  const visibleNotes = notes
+    .filter((f) => {
+      if (filter === 'chat' && groupOf(f.id) === 2) return false;
+      if (filter === 'pinned' && !f.pinned) return false;
+      if (filter === 'unconfirmed' && !unconfirmed(f)) return false;
+      if (!needle) return true;
+      return [f.statement ?? f.content, f.category, f.source].some((t) => t?.toLowerCase().includes(needle));
+    })
     .map((f, i) => ({ f, i, g: groupOf(f.id) }))
     .sort((a, b) => a.g - b.g || a.i - b.i)
     .map((x) => x.f);
 
+  const dayStart = new Date().setHours(0, 0, 0, 0) / 1000;
+  const learnedToday = notes.filter((f) => (f.createdAt ?? 0) >= dayStart).length;
+  const status = !settings.enabled
+    ? 'Off — nothing new is learned or recalled'
+    : [
+        contents ? `${notes.length.toLocaleString()} ${notes.length === 1 ? 'fact' : 'facts'}` : null,
+        learnedToday ? `${learnedToday} learned today` : null,
+        settings.tidyThreshold === 0 ? 'tidy-up is manual' : 'kept tidy automatically'
+      ]
+        .filter(Boolean)
+        .join(' · ');
+
+  const tidyLine = consolidating
+    ? 'tidying now…'
+    : lastTidy
+      ? `last tidy-up ${ago(lastTidy.startedAt)}`
+      : null;
+  const rebuildBusy = rebuild && (rebuild.state === 'running' || rebuild.state === 'paused' || rebuild.state === 'failed');
+  const housekeepingLine = rebuildBusy
+    ? `adding sources · ${rebuild.processedMessages} of ${rebuild.totalMessages}${rebuild.state === 'running' ? '' : ` · ${rebuild.state}`}`
+    : tidyLine;
+  const tidyPreset = TIDY_PRESETS.find((p) => p.value === settings.tidyThreshold);
+
   function renderNote(f: (typeof allNotes)[number]) {
     const active = f.id != null && draftIds?.has(f.id) ? 'draft' : f.id != null && lastIds.has(f.id) ? 'injected' : null;
     return (
-
               <div key={f.name} className={`memory-note${active ? ' active' : ''}`}>
                 <div className="memory-note-body">
                   {f.statement ? (
@@ -1007,7 +483,7 @@ export function FactsTab({
                       </button>
                     ) : (
                       <>
-                        {f.source !== 'On request' && (f.confidence ?? 1) < 0.7 && (
+                        {unconfirmed(f) && (
                           <button
                             className="memory-note-action"
                             title="Confirm"
@@ -1046,10 +522,9 @@ export function FactsTab({
     <div>
       {health.broken && (
         // A down retrieval stage, said out loud at the top of the tab — the
-        // controls live in the collapsed advanced section below, and an error
-        // only visible there is an error nobody sees. Recall keeps working
-        // while this shows, just worse: the summary line names what the
-        // ranking has degraded to.
+        // controls live in Settings → Models, and an error only visible there
+        // is an error nobody sees. Recall keeps working while this shows, just
+        // worse: the summary line names what the ranking has degraded to.
         <div className="retrieval-alert" role="alert">
           <TriangleAlert size={16} />
           <div className="retrieval-alert-msg">
@@ -1071,17 +546,16 @@ export function FactsTab({
                 : 'Until this is fixed, memories rank by embedding similarity alone — cross-language matches are missed.'}
             </span>
           </div>
-          <button className="link-btn" onClick={openRetrievalSetup}>
+          <button className="link-btn" onClick={onReviewRecall}>
             Review setup
           </button>
         </div>
       )}
-      <div className="grp-head">Memory</div>
-      <div className="group">
+      <div className="group memory-switch">
         <div className="group-row">
           <span className="row-main">
             <strong>Memory</strong>
-            <em>Remember across conversations</em>
+            <em>{status}</em>
           </span>
           <button
             className={`switch${settings.enabled ? ' on' : ''}`}
@@ -1091,107 +565,21 @@ export function FactsTab({
             onClick={toggle}
           />
         </div>
-        {settings.enabled && retrieval && (
-          <RecallQualityRow retrieval={retrieval} onReview={openRetrievalSetup} />
-        )}
       </div>
 
-      <div className="grp-head grp-head-row">
-        Model
-        <InfoTip label="About the memory model">
-          Used to distill and tidy up memories in the background. Left unset it follows the model
-          you chat with — deliberately <em>not</em> the shared Quick tasks model in Settings →
-          Models, because this job reads a whole transcript plus everything already remembered, and
-          a model too small to hold that stops learning without ever reporting an error. Pin a
-          solid mid-tier model here if you would rather not spend your best one on it.
-        </InfoTip>
-      </div>
-      <div className="formgroup">
-        <ModelPicker
-          models={models}
-          value={memoryModel}
-          onChange={selectMemoryModel}
-          emptyLabel="Same as main"
-          ariaLabel="Memory model"
-          resolvedDefault={defaults.model}
-        />
-        <EffortSelect
-          label="Memory effort"
-          value={memoryEffort}
-          efforts={effortsOf(models, resolveMemoryModel(memoryModel, defaults.model))}
-          onChange={(effort) => {
-            setMemoryEffort(effort);
-            window.stem.updateMemorySettings({ effort }).then((s) => setMemoryEffort(s.memory.effort));
-          }}
-        />
-        <div className="set-block fg-divider">
-          <span className="set-sub">Tidy up automatically</span>
-          <div className="seg-ctl">
-            {TIDY_PRESETS.map((p) => (
-              <button
-                key={p.label}
-                className={settings.tidyThreshold === p.value ? 'active' : ''}
-                onClick={() => selectTidyThreshold(p.value)}
-                title={`Tidy up ${p.hint}`}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-          <p className="muted">Stem merges duplicates and drops stale facts once this many new ones accumulate.</p>
-        </div>
-      </div>
-
-      {rebuild && rebuild.state !== 'complete' && (
-        <>
-          <div className="grp-head">Memory upgrade</div>
-          <div className="formgroup memory-rebuild-card">
-            <strong>Rebuild provenance for existing memory</strong>
-            <p className="muted">
-              {rebuild.totalMessages} stored messages can be reprocessed to attach evidence, sensitivity,
-              validity, and conflict information. This uses the selected memory model; a remote model sends
-              transcript segments to that provider and may incur usage costs. Existing memories remain usable.
-            </p>
-            {rebuild.state !== 'available' && (
-              <p className="muted">
-                {rebuild.processedMessages} of {rebuild.totalMessages} messages · {rebuild.state}
-                {rebuild.lastError ? ` · ${rebuild.lastError}` : ''}
-              </p>
-            )}
-            <div className="memory-view-actions">
-              {rebuild.state === 'available' && (
-                <button className="link-btn" onClick={() => window.stem.startMemoryRebuild().then(setRebuild)}>
-                  Start rebuild
-                </button>
-              )}
-              {rebuild.state === 'running' && (
-                <button
-                  className="link-btn icon-only"
-                  data-label="Pause"
-                  aria-label="Pause rebuild"
-                  onClick={() => window.stem.pauseMemoryRebuild().then(setRebuild)}
-                >
-                  <Pause size={13} />
-                </button>
-              )}
-              {(rebuild.state === 'paused' || rebuild.state === 'failed') && (
-                <button
-                  className="link-btn icon-only"
-                  data-label={rebuild.state === 'failed' ? 'Retry' : 'Resume'}
-                  aria-label={rebuild.state === 'failed' ? 'Retry rebuild' : 'Resume rebuild'}
-                  onClick={() => window.stem.resumeMemoryRebuild().then(setRebuild)}
-                >
-                  {rebuild.state === 'failed' ? <RotateCcw size={13} /> : <Play size={13} />}
-                </button>
-              )}
-            </div>
-          </div>
-        </>
-      )}
+      <div className="grp-head">Check my memory</div>
+      <DeepCheckCard disabled={!settings.enabled || notes.length < 2} onOpenMail={onOpenMail} />
 
       {conflicts.length > 0 && (
         <>
-          <div className="grp-head">Conflicts ({conflicts.length})</div>
+          <div className="grp-head grp-head-row">
+            Needs your answer · {conflicts.length}
+            <InfoTip label="About conflicts">
+              Two facts that cannot both be true, which the background check could not settle on
+              its own. Until you pick, either side may still be sent — marked as conflicting, so the
+              model treats it as uncertain.
+            </InfoTip>
+          </div>
           <div className="formgroup memory-conflicts">
             {conflicts.map((c) => (
               <div key={c.id} className="memory-conflict">
@@ -1216,225 +604,286 @@ export function FactsTab({
         </>
       )}
 
-      {autoResolved.length > 0 && (
-        <>
-          <div className="grp-head grp-head-row">
-            <button
-              className="memory-view-toggle"
-              aria-expanded={showAutoResolved}
-              onClick={() => setShowAutoResolved((v) => !v)}
-            >
-              <ChevronRight size={14} className={showAutoResolved ? 'open' : ''} />
-              <strong>Recently auto-resolved ({autoResolved.length})</strong>
-            </button>
-            <InfoTip label="About auto-resolved conflicts">
-              Conflicts between non-protected memories are adjudicated in the background:
-              one side superseded, both kept, or both rewritten into clearer facts.
-              Anything superseded here is recoverable from the superseded list below.
-            </InfoTip>
-          </div>
-          {showAutoResolved && (
-            <div className="formgroup memory-conflicts">
-              {autoResolved.map((c) => (
-                <div key={c.id} className="memory-conflict">
-                  {[c.factA, c.factB].map((f) => (
-                    <div key={f.id} className="memory-conflict-side">
-                      <span className="chip">{f.status === 'superseded' ? 'Superseded' : 'Kept'}</span>
-                      <p className={f.status === 'superseded' ? 'muted' : undefined}>{f.text}</p>
-                    </div>
-                  ))}
-                  <em>
-                    {AUTO_RESOLUTION_LABEL[c.resolution]} ·{' '}
-                    {new Date(c.resolvedAt * 1000).toLocaleDateString()}
-                  </em>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-
-      {retrieval && (
-        <>
-          <div className="grp-head grp-head-row" ref={retrievalSetupRef} id="memory-retrieval-setup">
-            <button
-              className="memory-view-toggle"
-              aria-expanded={showRetrieval}
-              onClick={() => setShowRetrieval((v) => !v)}
-            >
-              <ChevronRight size={14} className={showRetrieval ? 'open' : ''} />
-              <strong>Relevance ranking (advanced)</strong>
-            </button>
-            <InfoTip label="How facts are selected">
-              Stem always selects relevant active facts instead of sending the whole memory store.
-              Sensitive facts require a direct keyword match or a stronger semantic match, and expired
-              or unconfirmed assistant claims are excluded. While two facts conflict, one side may still
-              be sent — marked conflicting, so the model treats it as uncertain instead of forgetting both.
-            </InfoTip>
-          </div>
-          {showRetrieval && (
-            <div className="formgroup">
-              <div className="set-block">
-                <span className="set-sub">
-                  Relevant facts per message{' '}
-                  <InfoTip label="About pinned facts and matching">
-                    Up to five facts can be pinned for every message. All other memories need a
-                    positive semantic or lexical match; there is no recency filler.
-                  </InfoTip>
-                </span>
-                <div className="seg-ctl">
-                  {FACT_INJECT_PRESETS.map((p) => (
-                    <button
-                      key={p.label}
-                      className={settings.maxRelevantFacts === p.value ? 'active' : ''}
-                      onClick={() => selectFactThreshold(p.value)}
-                      title={`Select at most ${p.value} relevant facts, plus up to five pinned facts`}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <EmbeddingsFields
-                value={retrieval.embeddings}
-                custom={retrieval.customEmbedModels}
-                onPatch={patchEmbeddings}
-                onRetrieval={setRetrieval}
-              />
-              <RerankerFields
-                value={retrieval.reranker}
-                embeddings={retrieval.embeddings}
-                custom={retrieval.customRerankModels}
-                onPatch={patchReranker}
-                onRetrieval={setRetrieval}
-              />
-            </div>
-          )}
-        </>
-      )}
-
-      <div className="memory-view">
-        <div className="memory-view-head">
+      <div className="grp-head with-actions">
+        Facts
+        <span className="memory-view-actions">
           <button
-            className="memory-view-toggle"
-            aria-expanded={showMemories}
-            onClick={() => setShowMemories((v) => !v)}
+            className={`link-btn icon-only${previewActive ? ' on' : ''}`}
+            onClick={onTogglePreview}
+            data-label="Preview draft"
+            aria-label="Preview which facts your current draft would send"
+            aria-pressed={previewActive}
           >
-            <ChevronRight size={14} className={showMemories ? 'open' : ''} />
-            <strong>Stored memory{notes.length ? ` (${notes.length})` : ''}</strong>
+            <Eye size={15} />
           </button>
-          <span className="memory-view-actions">
-            <button
-              className={`link-btn icon-only${previewActive ? ' on' : ''}`}
-              onClick={onTogglePreview}
-              data-label="Preview draft"
-              aria-label="Preview which facts your current draft would inject"
-              aria-pressed={previewActive}
-            >
-              <Eye size={15} />
+          <button
+            className="link-btn icon-only"
+            onClick={refreshContents}
+            disabled={refreshing}
+            data-label="Refresh"
+            aria-label="Refresh facts"
+          >
+            <RefreshCw size={15} className={refreshing ? 'spin' : undefined} />
+          </button>
+        </span>
+      </div>
+      <div className="memory-facts-tools">
+        <label className="memory-search">
+          <Search size={13} aria-hidden="true" />
+          <input
+            type="search"
+            aria-label="Search facts"
+            placeholder={notes.length ? `Search ${notes.length.toLocaleString()} facts` : 'Search facts'}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </label>
+        <div className="seg-ctl">
+          {FACT_FILTERS.map((x) => (
+            <button key={x.id} className={filter === x.id ? 'active' : ''} onClick={() => setFilter(x.id)} title={x.title}>
+              {x.label}
             </button>
-            <button
-              className="link-btn icon-only"
-              onClick={consolidate}
-              disabled={consolidating || !settings.enabled || notes.length < 2}
-              data-label={consolidating ? 'Tidying…' : 'Tidy up'}
-              aria-label="Tidy up: merge duplicates and drop stale facts"
-            >
-              <Wand2 size={15} className={consolidating ? 'spin' : undefined} />
-            </button>
-            <DeepCheckButton disabled={!settings.enabled || notes.length < 2} />
-            <button
-              className="link-btn icon-only"
-              onClick={refreshContents}
-              disabled={refreshing}
-              data-label="Refresh"
-              aria-label="Refresh facts"
-            >
-              <RefreshCw size={15} className={refreshing ? 'spin' : undefined} />
-            </button>
-          </span>
+          ))}
         </div>
         {activeThreadId && lastTurn && (
           <p className="muted active-facts-summary">
-            Last turn: {lastTurn.facts.length} {lastTurn.facts.length === 1 ? 'fact' : 'facts'} via{' '}
+            This chat's last message used {lastTurn.facts.length} {lastTurn.facts.length === 1 ? 'fact' : 'facts'} via{' '}
             {tierLabel(lastTurn.tier)}.
           </p>
         )}
         {previewActive && (
           <p className="muted active-facts-summary">
             {preview
-              ? `Draft preview: ${preview.facts.length} ${preview.facts.length === 1 ? 'fact' : 'facts'} via ${tierLabel(preview.tier)}.`
+              ? `Your draft would use ${preview.facts.length} ${preview.facts.length === 1 ? 'fact' : 'facts'} via ${tierLabel(preview.tier)}.`
               : 'Draft preview: computing…'}
           </p>
         )}
-        {consolidateMsg && <p className="muted">{consolidateMsg}</p>}
-        <DeepCheckStatus onOpenMail={onOpenMail} />
-        {!contents && (
-          <p className="muted">
-            {offline ? 'Your memory lives on Stem’s server, which can’t be reached right now.' : 'Loading…'}
-          </p>
-        )}
-        {showMemories && contents && notes.length === 0 && (
-          <p className="muted">No memories stored yet — Stem builds these as you chat.</p>
-        )}
-        {showMemories && orderedNotes.map(renderNote)}
+      </div>
+      {!contents && (
+        <p className="muted">
+          {offline ? 'Your memory lives on Stem’s server, which can’t be reached right now.' : 'Loading…'}
+        </p>
+      )}
+      {contents && notes.length === 0 && (
+        <p className="muted">No memories stored yet — Stem builds these as you chat.</p>
+      )}
+      {contents && notes.length > 0 && visibleNotes.length === 0 && (
+        <p className="muted">No facts match.</p>
+      )}
+      {visibleNotes.slice(0, limit).map(renderNote)}
+      {visibleNotes.length > limit && (
+        <button className="link-btn memory-more" onClick={() => setLimit((n) => n + PAGE * 4)}>
+          Show more ({(visibleNotes.length - limit).toLocaleString()} left)
+        </button>
+      )}
 
-        {showMemories && supersededNotes.length > 0 && (
-          <div className="memory-tech">
+      <div className="memory-footer">
+        {(supersededNotes.length > 0 || autoResolved.length > 0) && (
+          <>
             <button
               className="memory-tech-head"
-              aria-expanded={showSuperseded}
-              onClick={() => setShowSuperseded((v) => !v)}
+              aria-expanded={showHistory}
+              onClick={() => setShowHistory((v) => !v)}
             >
-              <ChevronRight size={14} className={showSuperseded ? 'open' : ''} />
-              <span>Superseded ({supersededNotes.length})</span>
-            </button>
-            {showSuperseded && supersededNotes.map(renderNote)}
-          </div>
-        )}
-
-        {techFiles.length > 0 && (
-          <div className="memory-tech">
-            <button
-              className="memory-tech-head"
-              aria-expanded={showTech}
-              onClick={() => setShowTech((v) => !v)}
-            >
-              <ChevronRight size={14} className={showTech ? 'open' : ''} />
-              <span>Technical details ({techFiles.length})</span>
-            </button>
-            {showTech &&
-              techFiles.map((f) => (
-                <div key={f.name} className="memory-doc">
-                  <h4>{f.label}</h4>
-                  <MdxView text={f.content} />
-                </div>
-              ))}
-          </div>
-        )}
-
-        {(notes.length > 0 || techFiles.length > 0) && (
-          <div className="memory-reset">
-            {confirmReset ? (
-              <span className="memory-reset-confirm">
-                <span className="muted">
-                  Erase all {notes.length} {notes.length === 1 ? 'fact' : 'facts'}? This can’t be undone.
-                </span>
-                <button className="link-btn danger" onClick={reset} disabled={resetting}>
-                  {resetting ? 'Resetting…' : 'Erase facts'}
-                </button>
-                <button className="link-btn" onClick={() => setConfirmReset(false)} disabled={resetting}>
-                  Cancel
-                </button>
+              <ChevronRight size={14} className={showHistory ? 'open' : ''} />
+              <span>
+                <b>History</b>
+                {supersededNotes.length > 0 && ` · ${supersededNotes.length.toLocaleString()} replaced`}
+                {autoResolved.length > 0 && ` · ${autoResolved.length} settled automatically`}
               </span>
-            ) : (
+            </button>
+            {showHistory && (
+              <div className="memory-footer-body">
+                {supersededNotes.length > 0 && autoResolved.length > 0 && (
+                  <div className="seg-ctl">
+                    <button className={historyView === 'replaced' ? 'active' : ''} onClick={() => setHistoryView('replaced')}>
+                      Replaced
+                    </button>
+                    <button className={historyView === 'auto' ? 'active' : ''} onClick={() => setHistoryView('auto')}>
+                      Settled automatically
+                    </button>
+                  </div>
+                )}
+                {(historyView === 'replaced' || autoResolved.length === 0) && supersededNotes.length > 0 ? (
+                  <>
+                    <p className="muted">Facts Stem no longer uses. Restore one to bring it back.</p>
+                    {supersededNotes.map(renderNote)}
+                  </>
+                ) : (
+                  <>
+                    <p className="muted">
+                      Conflicts between non-protected memories, settled in the background: one side
+                      replaced, both kept, or both rewritten into clearer facts.
+                    </p>
+                    <div className="formgroup memory-conflicts">
+                      {autoResolved.map((c) => (
+                        <div key={c.id} className="memory-conflict">
+                          {[c.factA, c.factB].map((f) => (
+                            <div key={f.id} className="memory-conflict-side">
+                              <span className="chip">{f.status === 'superseded' ? 'Replaced' : 'Kept'}</span>
+                              <p className={f.status === 'superseded' ? 'muted' : undefined}>{f.text}</p>
+                            </div>
+                          ))}
+                          <em>
+                            {AUTO_RESOLUTION_LABEL[c.resolution]} ·{' '}
+                            {new Date(c.resolvedAt * 1000).toLocaleDateString()}
+                          </em>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        <button
+          className="memory-tech-head"
+          aria-expanded={showHousekeeping}
+          onClick={() => setShowHousekeeping((v) => !v)}
+        >
+          <ChevronRight size={14} className={showHousekeeping ? 'open' : ''} />
+          <span>
+            <b>Housekeeping</b>
+            {housekeepingLine && ` · ${housekeepingLine}`}
+          </span>
+        </button>
+        {showHousekeeping && (
+          <div className="group memory-footer-body" ref={housekeepingRef}>
+            <div className="group-row">
+              <span className="row-main">
+                <strong>Tidy-up</strong>
+                <em>
+                  Runs by itself as Stem learns: merges duplicates and retires stale facts.
+                  {lastTidy && !consolidating && ` Last pass ${ago(lastTidy.startedAt)}${lastTidy.detail ? `: ${lastTidy.detail}` : ''}.`}
+                </em>
+                {consolidateMsg && <em>{consolidateMsg}</em>}
+              </span>
               <button
-                className="link-btn danger memory-reset-trigger"
-                onClick={reset}
-                title="Permanently erase all durable facts (keeps episodic recall + your files)"
+                className="link-btn"
+                onClick={consolidate}
+                disabled={consolidating || !settings.enabled || notes.length < 2}
               >
-                <Trash2 size={12} /> Reset facts
+                {consolidating ? 'Tidying…' : 'Tidy now'}
               </button>
+            </div>
+            <div className="group-row">
+              <span className="row-main">
+                <strong>How often</strong>
+                <em>{tidyPreset?.value ? `A pass starts ${tidyPreset.hint}.` : 'Only when you press Tidy now.'}</em>
+              </span>
+              <select
+                className="vfield"
+                aria-label="Automatic tidy-up"
+                value={settings.tidyThreshold}
+                onChange={(e) => selectTidyThreshold(Number(e.target.value))}
+              >
+                {TIDY_PRESETS.map((p) => (
+                  <option key={p.label} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {rebuild && rebuild.state !== 'complete' && (
+              <div className="group-row">
+                <span className="row-main">
+                  <strong>Add sources to older memory</strong>
+                  <em>
+                    {rebuild.totalMessages} stored messages were learned before Stem kept sources.
+                    Re-reading them attaches evidence, sensitivity, validity and conflicts, using the
+                    memory model (a remote one sends transcript parts to its provider). Existing
+                    memories stay usable meanwhile.
+                  </em>
+                  {rebuild.state !== 'available' && (
+                    <em>
+                      {rebuild.processedMessages} of {rebuild.totalMessages} messages · {rebuild.state}
+                      {rebuild.lastError ? ` · ${rebuild.lastError}` : ''}
+                    </em>
+                  )}
+                </span>
+                {rebuild.state === 'available' && (
+                  <button className="link-btn" onClick={() => window.stem.startMemoryRebuild().then(setRebuild)}>
+                    Start
+                  </button>
+                )}
+                {rebuild.state === 'running' && (
+                  <button
+                    className="link-btn icon-only"
+                    data-label="Pause"
+                    aria-label="Pause rebuild"
+                    onClick={() => window.stem.pauseMemoryRebuild().then(setRebuild)}
+                  >
+                    <Pause size={13} />
+                  </button>
+                )}
+                {(rebuild.state === 'paused' || rebuild.state === 'failed') && (
+                  <button
+                    className="link-btn icon-only"
+                    data-label={rebuild.state === 'failed' ? 'Retry' : 'Resume'}
+                    aria-label={rebuild.state === 'failed' ? 'Retry rebuild' : 'Resume rebuild'}
+                    onClick={() => window.stem.resumeMemoryRebuild().then(setRebuild)}
+                  >
+                    {rebuild.state === 'failed' ? <RotateCcw size={13} /> : <Play size={13} />}
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="group-row">
+              <span className="row-main">
+                <strong>Models</strong>
+                <em>What learns, tidies and picks relevant facts is set in Settings → Models.</em>
+              </span>
+              <button className="link-btn" onClick={onReviewRecall}>
+                Open <ArrowUpRight size={12} />
+              </button>
+            </div>
+            {techFiles.length > 0 && (
+              <div className="group-row memory-tech-row">
+                <button
+                  className="memory-tech-head"
+                  aria-expanded={showTech}
+                  onClick={() => setShowTech((v) => !v)}
+                >
+                  <ChevronRight size={14} className={showTech ? 'open' : ''} />
+                  <span>Technical details ({techFiles.length})</span>
+                </button>
+                {showTech &&
+                  techFiles.map((f) => (
+                    <div key={f.name} className="memory-doc">
+                      <h4>{f.label}</h4>
+                      <MdxView text={f.content} />
+                    </div>
+                  ))}
+              </div>
+            )}
+            {(notes.length > 0 || techFiles.length > 0) && (
+              <div className="group-row">
+                {confirmReset ? (
+                  <span className="memory-reset-confirm">
+                    <span className="muted">
+                      Erase all {notes.length} {notes.length === 1 ? 'fact' : 'facts'}? This can’t be undone.
+                    </span>
+                    <button className="link-btn danger" onClick={reset} disabled={resetting}>
+                      {resetting ? 'Erasing…' : 'Erase facts'}
+                    </button>
+                    <button className="link-btn" onClick={() => setConfirmReset(false)} disabled={resetting}>
+                      Cancel
+                    </button>
+                  </span>
+                ) : (
+                  <>
+                    <span className="row-main">
+                      <strong>Erase all facts</strong>
+                      <em>Keeps past chats and your files. Can’t be undone.</em>
+                    </span>
+                    <button className="link-btn danger" onClick={reset}>
+                      Erase…
+                    </button>
+                  </>
+                )}
+              </div>
             )}
           </div>
         )}

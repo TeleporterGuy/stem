@@ -10,7 +10,7 @@ const { addFactImages, deleteFact, deleteThreadSummary, getAllFacts, getEpisodic
 //
 // This module owns:
 //  - the explicit "remember that …" fast-path (writes a durable Level-1 fact),
-//  - the on/off toggle + the Manage-panel "Stored memory" view.
+//  - the on/off toggle + the Manage-panel Memory → Facts list.
 // Episodic capture/search/injection live in src/server/recall/.
 
 const RECALL_ENABLED_KEY = 'recall_enabled';
@@ -238,7 +238,7 @@ export async function addMemoryNote(text: string, attachments: TurnAttachment[] 
   return { saved: true, factId };
 }
 
-// ---- Manage panel "Stored memory" view ----
+// ---- Manage panel Memory → Facts list ----
 
 function sourceLabel(source: string, folderLabels: Map<string, string>): string {
   if (source === 'explicit') return 'On request';
@@ -284,7 +284,8 @@ export async function readMemoryFiles(): Promise<MemoryContents> {
     imageCount: imageCounts.get(f.id) ?? 0,
     timesInjected: f.timesInjected,
     timesUsed: f.timesUsed,
-    lastUsedAt: f.lastUsedAt
+    lastUsedAt: f.lastUsedAt,
+    createdAt: f.createdAt
   }));
   return {
     files,

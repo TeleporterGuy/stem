@@ -2954,6 +2954,51 @@ button.inbox-return-main:focus-visible { outline: none; box-shadow: var(--shadow
 .memory-tech-head svg { transition: transform var(--motion-fast) ease; }
 .memory-tech-head svg.open { transform: rotate(90deg); }
 
+/* Memory → Facts: the switch row, the Deep check card, search + filters, and the
+   quiet footer (History, Housekeeping) that holds everything that runs by itself. */
+.memory-switch { margin-top: var(--sp-6); }
+.deep-check-card { display: grid; gap: var(--sp-5); padding: var(--sp-6); }
+.deep-check-head { display: flex; align-items: flex-start; gap: var(--sp-5); }
+.deep-check-head .row-main em { line-height: 1.4; margin-top: var(--sp-1); }
+.deep-check-icon {
+  flex: none; width: 30px; height: 30px; border-radius: var(--radius-md);
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--accent); background: var(--sel);
+}
+.deep-check-icon .spin { animation: link-btn-spin 1.6s linear infinite; }
+.deep-check-bar { height: 4px; border-radius: 2px; background: var(--inline-bg); overflow: hidden; }
+.deep-check-bar span { display: block; height: 100%; background: var(--accent); transition: width var(--motion-fast) ease; }
+.deep-check-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-4); }
+.deep-check-stats span { padding: var(--sp-4) var(--sp-5); border-radius: var(--radius); background: var(--inline-bg); font-size: var(--fs-11); color: var(--muted); line-height: 1.3; }
+.deep-check-stats b { display: block; font-size: var(--fs-16); font-weight: 600; color: var(--ink); }
+.deep-check-stats span.open { background: var(--sel); }
+.deep-check-stats span.open b { color: var(--accent); }
+.deep-check-foot {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-4);
+  padding-top: var(--sp-5); border-top: 0.5px solid var(--hair);
+}
+.deep-check-foot .muted { font-size: var(--fs-11); }
+.deep-check-actions { display: inline-flex; gap: var(--sp-4); margin-left: auto; }
+.deep-check-actions .push { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.memory-facts-tools { display: grid; gap: var(--sp-4); }
+.memory-search {
+  display: flex; align-items: center; gap: var(--sp-3);
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--field);
+  padding: 0 9px; color: var(--muted);
+}
+.memory-search:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.memory-search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; font: inherit; font-size: var(--fs-13); color: var(--ink); padding: var(--sp-3) 0; }
+.memory-more { margin-top: var(--sp-6); font-size: var(--fs-12); }
+.memory-footer { margin-top: var(--sp-10); padding-top: var(--sp-4); border-top: 0.5px solid var(--line); display: grid; gap: var(--sp-1); }
+.memory-footer .memory-tech-head { text-align: left; }
+.memory-footer .memory-tech-head b { font-weight: 500; color: var(--ink); }
+.memory-footer-body { display: grid; gap: var(--sp-4); margin: var(--sp-2) 0 var(--sp-6); }
+.memory-footer-body.group { gap: 0; }
+.memory-footer-body .group-row { align-items: flex-start; }
+.memory-footer-body .group-row .link-btn { font-size: var(--fs-12); flex: none; }
+.memory-footer-body .group-row select.vfield { flex: none; }
+.memory-tech-row { flex-direction: column; align-items: stretch; }
+
 .fatal-renderer-error { padding: 40px; color: var(--danger); font-family: monospace; }
 
 /* Auto-hiding scrollbars: invisible at rest, fading in only while the user
@@ -4319,6 +4364,10 @@ select.vfield:focus { outline: none; border-radius: var(--radius-sm); box-shadow
   text-align: right;
 }
 .role-group-body { border-top: 0.5px solid var(--hair); padding: 11px; display: flex; flex-direction: column; gap: var(--sp-4); }
+/* Settings → Models → Memory recall reuses the stage blocks the Memory tab had:
+   flush their header rows with the group's own sub-labels, and divide stages. */
+.role-group-body .set-block > .group-row { padding: 0 0 var(--sp-2); }
+.role-group-body .set-block.fg-divider { padding-top: 9px; border-top: 0.5px solid var(--hair); }
 
 /* Provider tiles (Settings → Models). */
 .prov-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }

@@ -89,14 +89,25 @@ export function SettingSection({
   title,
   summary,
   defaultOpen,
+  open: openProp,
+  onOpenChange,
   children
 }: {
   title: string;
   summary: ReactNode;
   defaultOpen?: boolean;
+  /** Controlled open state, for a group something else can open (a deep link). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(!!defaultOpen);
+  const [openState, setOpenState] = useState(!!defaultOpen);
+  const open = openProp ?? openState;
+  const setOpen = (next: (v: boolean) => boolean) => {
+    const value = next(open);
+    setOpenState(value);
+    onOpenChange?.(value);
+  };
   return (
     <div className="role-group">
       <button type="button" className="role-group-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>

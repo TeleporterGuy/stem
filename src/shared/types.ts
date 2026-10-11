@@ -2521,6 +2521,8 @@ export interface MemoryFile {
   lastUsedAt?: number | null;
   /** Notes only: how many images were saved with this fact. */
   imageCount?: number;
+  /** Notes only: when the fact was first learned (unix seconds). */
+  createdAt?: number;
 }
 
 /** One thread's rolling episodic summary (Level 1.5), shown in Memory → Recall. */
@@ -5330,4 +5332,21 @@ export interface MemoryCheckJob {
   /** The mail thread the finished check wrote to. */
   conversationId?: string;
   error?: string;
+  /**
+   * The newest finished check, read back from the store — so the Memory tab can
+   * say what it found after a restart, and how much of it still waits on you.
+   */
+  last?: MemoryCheckSummary;
+}
+
+export interface MemoryCheckSummary {
+  startedAt: number;
+  conversationId?: string;
+  factCount: number;
+  /** Changes applied by the check itself (each has Undo in the mail). */
+  fixed: number;
+  /** Proposals still waiting for Retire / Keep. */
+  openProposals: number;
+  questions: number;
+  openQuestions: number;
 }

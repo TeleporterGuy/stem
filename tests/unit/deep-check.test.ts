@@ -9,6 +9,7 @@ import {
   actOnMemoryCheckChange,
   answerMemoryCheck,
   checkForConversation,
+  memoryCheckJob,
   memoryCheckState,
   runMemoryCheck
 } from '../../src/server/recall/deep-check';
@@ -153,6 +154,28 @@ describe('the deep check', () => {
     expect(memoryCheckState(check.id).find((s) => s.id === prop.id)?.status).toBe('proposed');
     actOnMemoryCheckChange(check.id, prop.id, 'dismiss');
     expect(memoryCheckState(check.id).find((s) => s.id === prop.id)?.status).toBe('dismissed');
+  });
+
+  it('reports the newest check from the store, counting what still waits on the user', async () => {
+    const safe = seed('The user is a cloud engineer for VPC.', 'assistant_claim');
+    const vr = seed('The user’s favourite VR games are Beat Saber and Moss.', 'user_message');
+    const car = seed('The user drives a Skoda.', 'user_message');
+    const { check } = await runWith({
+      fixes: [{ kind: 'wrong_subject', fact: safe, reason: 'Course intro.' }],
+      proposals: [{ fact: vr, reason: 'Only a list in VR.md.' }],
+      questions: [{ prompt: 'Do you still drive the Skoda?', facts: [car], options: ['Yes', 'No'], why: 'Old.' }]
+    });
+    expect(memoryCheckJob().last).toMatchObject({
+      conversationId: 'conv-1',
+      factCount: 3,
+      fixed: 1,
+      openProposals: 1,
+      questions: 1,
+      openQuestions: 1
+    });
+    // Settling the proposal (Retire) leaves the self-applied count alone.
+    actOnMemoryCheckChange(check.id, check.changes.find((c) => c.fact === vr)!.id, 'apply');
+    expect(memoryCheckJob().last).toMatchObject({ fixed: 1, openProposals: 0 });
   });
 
   it('saves an answer as an explicit fact replacing the facts it settles, and Undo puts them back', async () => {

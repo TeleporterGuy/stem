@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { useRetrievalHealth } from '../../../hooks/useRetrievalHealth';
 import { useRememberedTab } from '../../../hooks/useRememberedTab';
 import { AppSettings } from './AppSettings';
 import { FeaturesSettings } from './FeaturesSettings';
@@ -31,8 +32,13 @@ export function SettingsTab({
   models,
   modelId,
   onSelectModel,
-  deadProvider
-}: ModelTabProps & { deadProvider?: string | null }) {
+  deadProvider,
+  recallFocus
+}: ModelTabProps & {
+  deadProvider?: string | null;
+  /** Bumped by the Memory tab's Review setup: land on Models with Memory recall open. */
+  recallFocus?: number;
+}) {
   // A new key since the Chat/App → App/Features rename (2026-09-27): under the
   // old one a remembered 'app' would now open Features.
   const [sub, setSub] = useRememberedTab<Sub>('stem.settings.tab', SUB_IDS, 'app');
@@ -46,13 +52,21 @@ export function SettingsTab({
     if (deadProvider) setSub('models');
   }, [deadProvider, setSub]);
 
+  useEffect(() => {
+    if (recallFocus) setSub('models');
+  }, [recallFocus, setSub]);
+
+  // The recall models live under Models now, so a failed one marks that segment
+  // the way a dead sign-in does (the Memory rail keeps its own dot and banner).
+  const retrievalBroken = useRetrievalHealth().broken;
+
   return (
     <div>
       <div className="seg-ctl">
         {SUBS.map(({ id, label }) => (
           <button key={id} className={sub === id ? 'active' : ''} onClick={() => setSub(id)}>
             {label}
-            {id === 'models' && deadProvider && <span className="seg-alert-dot" />}
+            {id === 'models' && (deadProvider || retrievalBroken) && <span className="seg-alert-dot" />}
           </button>
         ))}
       </div>
@@ -65,6 +79,7 @@ export function SettingsTab({
           modelId={modelId}
           onSelectModel={onSelectModel}
           deadProvider={deadProvider}
+          recallFocus={recallFocus}
         />
       )}
     </div>

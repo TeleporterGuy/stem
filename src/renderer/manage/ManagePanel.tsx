@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { Brain, Plug, FolderTree, CalendarClock, Settings, MessageSquare, Users } from 'lucide-react';
 import { ChatList, type ChatListProps } from '../chats/ChatList';
 import { MemoryTab } from './tabs/MemoryTab';
@@ -64,6 +64,9 @@ function ManagePanelImpl({
     onTogglePreview
   };
   const [tab, setTab] = useRememberedTab<Tab>('stem.manage.tab', TAB_IDS, 'chats');
+  // Bumped when the Memory tab asks for its recall models, which live under
+  // Settings → Models: a counter, so asking twice still re-opens the group.
+  const [recallFocus, setRecallFocus] = useState(0);
   // A down retrieval model degrades recall silently (selection falls back to
   // lexical/recency), so it gets the same red dot a dead provider does.
   const retrievalBroken = useRetrievalHealth().broken;
@@ -118,12 +121,15 @@ function ManagePanelImpl({
         {tab === 'chats' && <ChatList {...chatProps} activeThreadId={activeThreadId} />}
         {tab === 'memory' && (
           <MemoryTab
-            models={models}
             activeFacts={activeFacts}
             onOpenMail={(id) => {
               setTab('chats');
               chatProps.onChatsTabChange('inbox');
               chatProps.onOpenMail(id);
+            }}
+            onReviewRecall={() => {
+              setRecallFocus((n) => n + 1);
+              setTab('settings');
             }}
           />
         )}
@@ -153,6 +159,7 @@ function ManagePanelImpl({
             modelId={modelId}
             onSelectModel={onSelectModel}
             deadProvider={authDeadProvider}
+            recallFocus={recallFocus}
           />
         )}
       </div>

@@ -37,6 +37,7 @@ import { InfoTip } from '../../../ui/InfoTip';
 import { ModelPicker } from '../../../ui/ModelPicker';
 import type { ModelTabProps } from '../shared';
 import { SettingSection } from './rows';
+import { MemoryRecallSection } from './RecallSettings';
 import { ProviderChip } from './ProviderChip';
 import {
   backendOptionLabel,
@@ -63,7 +64,7 @@ import {
  * so a ChatGPT sign-in made here is also a search backend below, and the picker
  * says so.
  */
-export function ModelsSettings({ models, modelId, onSelectModel, deadProvider }: ModelsSettingsProps) {
+export function ModelsSettings({ models, modelId, onSelectModel, deadProvider, recallFocus }: ModelsSettingsProps) {
   // Connected AI providers, so the search picker can tell you which backends
   // already work on a sign-in you have. Kept in step with the Providers section,
   // which broadcasts on every connect/disconnect.
@@ -82,12 +83,13 @@ export function ModelsSettings({ models, modelId, onSelectModel, deadProvider }:
     <div>
       <ProvidersSection deadProvider={deadProvider} />
       <ModelRolesSection models={models} modelId={modelId} onSelectModel={onSelectModel} />
+      <MemoryRecallSection focus={recallFocus} />
       <WebSearchSection providers={providers} />
     </div>
   );
 }
 
-type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null };
+type ModelsSettingsProps = ModelTabProps & { deadProvider?: string | null; recallFocus?: number };
 
 /**
  * Every job Stem runs a model for, in one list.

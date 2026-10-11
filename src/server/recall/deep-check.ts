@@ -8,7 +8,8 @@ import type {
   MemoryCheckAction,
   MemoryCheckChangeState,
   MemoryCheckChangeStatus,
-  MemoryCheckJob
+  MemoryCheckJob,
+  MemoryCheckSummary
 } from '../../shared/types';
 
 // The deep check: a manual, whole-store audit of the active facts (learned
@@ -129,7 +130,23 @@ export function checkForConversation(conversationId: string): MemoryCheck | null
 let job: MemoryCheckJob = { running: false };
 
 export function memoryCheckJob(): MemoryCheckJob {
-  return job;
+  if (job.running) return job;
+  const latest = getMeta(LATEST_KEY);
+  const check = latest ? loadCheck(latest) : null;
+  return check ? { ...job, last: summarizeCheck(check) } : job;
+}
+
+/** What the newest check found, counted from its stored state (so answers and Undo show). */
+function summarizeCheck(check: MemoryCheck): MemoryCheckSummary {
+  return {
+    startedAt: check.startedAt,
+    conversationId: check.conversationId,
+    factCount: check.factCount,
+    fixed: check.changes.filter((c) => c.status === 'applied' && !c.asked).length,
+    openProposals: check.changes.filter((c) => c.status === 'proposed').length,
+    questions: check.questions.length,
+    openQuestions: check.questions.filter((q) => q.status === 'open').length
+  };
 }
 
 /** Facts the check audits: every live one (active or in an open conflict), folder facts included. */
