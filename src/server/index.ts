@@ -246,11 +246,11 @@ function chooseDefaultModel(models: ModelSummary[]): string | null {
     models.find((m) => m.provider === 'openai-codex' && m.id.endsWith('gpt-6.1-sol')) ??
     models.find((m) => m.provider === 'anthropic' && /sonnet/i.test(m.id)) ??
     models.find((m) => m.provider === 'anthropic') ??
-    // pi lists xai as 4.3 / build-0.1 / 4.5, so the models[0] fallback would put a
-    // Grok-only user on a non-flagship model. 4.5 is pi's own default for xai; the
-    // bare-provider rung behind it survives the catalog churn xAI is prone to (pi
-    // has already dropped Grok 3 and the 4.20 variants).
-    models.find((m) => m.provider === 'xai' && m.id.endsWith('grok-4.5')) ??
+    // pi lists xai as 4.3 / build-0.1 / 4.5 / 4.6 / 4.7, so the models[0] fallback
+    // would put a Grok-only user on a non-flagship model. 4.7 is pi's own default for
+    // xai; the bare-provider rung behind it survives the catalog churn xAI is prone
+    // to (pi has already dropped Grok 3 and the 4.20 variants).
+    models.find((m) => m.provider === 'xai' && m.id.endsWith('grok-4.7')) ??
     models.find((m) => m.provider === 'xai') ??
     models[0];
   return pick?.id ?? null;
