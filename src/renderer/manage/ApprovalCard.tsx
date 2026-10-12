@@ -3,6 +3,7 @@ import { Bot, ShieldAlert, Terminal } from 'lucide-react';
 import type { ExecApprovalRequest, ExecDecision, HarnessApprovalOption, HarnessApprovalRequest } from '../../shared/types';
 import { approvalKey, type PendingApproval } from './approvalQueue';
 import { decideApproval, dismissMissedApproval, useApprovals } from './approvalStore';
+import { plainLine } from '../../shared/plain-text';
 
 // The permission card: a run_command call or a coding agent's tool call fell
 // through the auto-approve tiers, the backend holds it open, and the turn that
@@ -101,7 +102,7 @@ function ExecBody({ request, busy, error, countdown, decide }: BodyProps<ExecApp
 
       <p className="muted">
         {verdictLine(request.judgeVerdict)}
-        {request.judgeReason ? `: ${request.judgeReason}` : '.'}
+        {request.judgeReason ? `: ${plainLine(request.judgeReason)}` : '.'}
       </p>
 
       <pre className="exec-approval-command">{request.command}</pre>
@@ -164,17 +165,17 @@ function HarnessBody({ request, busy, error, countdown, decide }: BodyProps<Harn
       <p className="muted">
         {/* Where it acts is as much what is being approved as what it does. */}
         Running on <strong>{request.hostLabel}</strong>
-        {request.description ? ` — ${request.description}` : '.'}
+        {request.description ? ` — ${plainLine(request.description)}` : '.'}
       </p>
 
       {/* Why the tiers escalated: the guard beats the judge; absent on
           non-command asks, which carry neither field. */}
       {request.guardReason ? (
-        <p className="muted">{request.guardReason} Allowing it here lets the agent run it anyway.</p>
+        <p className="muted">{plainLine(request.guardReason)} Allowing it here lets the agent run it anyway.</p>
       ) : request.judgeVerdict !== undefined ? (
         <p className="muted">
           {verdictLine(request.judgeVerdict)}
-          {request.judgeReason ? `: ${request.judgeReason}` : '.'}
+          {request.judgeReason ? `: ${plainLine(request.judgeReason)}` : '.'}
         </p>
       ) : null}
 

@@ -27,6 +27,7 @@ import {
 import { ModelPicker } from '../../ui/ModelPicker';
 import { clampEffort, effortsOf, EffortSelect } from '../../ui/EffortSelect';
 import { EFFORT_LABELS } from '../../modelLabels';
+import { plainLine } from '../../../shared/plain-text';
 
 // ---- Tasks tab: scheduled autonomous re-runs ----
 //
@@ -280,7 +281,7 @@ export function TasksTab({
         </DetailHeader>
         <DetailIdent
           glyph={<Glyph icon={t.schedule.kind === 'once' ? <CalendarClock size={17} /> : <Clock size={17} />} tone={t.lastStatus === 'failed' ? 'danger' : 'plain'} size="lg" />}
-          name={<span className="ld-name-static">{t.title}</span>}
+          name={<span className="ld-name-static">{plainLine(t.title)}</span>}
           caption={
             t.lastStatus === 'running'
               ? 'Running now…'
@@ -536,7 +537,7 @@ export function TasksTab({
                       tone={t.enabled && t.lastStatus === 'failed' ? 'danger' : 'plain'}
                     />
                   }
-                  name={t.title}
+                  name={plainLine(t.title)}
                   sub={`${scheduleWords(t.schedule)} · ${runsAsName(t)}`}
                   right={stateChip(t)}
                   dim={!t.enabled}

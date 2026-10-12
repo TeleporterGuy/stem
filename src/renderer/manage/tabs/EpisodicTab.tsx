@@ -7,6 +7,7 @@ import type {
   ThreadSummary,
   MemorySettings
 } from '../../../shared/types';
+import { plainParagraphs } from '../../../shared/plain-text';
 
 // Episodic-store size caps. 0 = unlimited. Default is 100 MB (see the recall store).
 const MB = 1024 * 1024;
@@ -49,7 +50,7 @@ function SummaryRow({ summary, onDelete }: { summary: ThreadSummary; onDelete: (
           onClick={() => setExpanded((e) => !e)}
           title={expanded ? 'Collapse' : 'Show the full summary'}
         >
-          {summary.text}
+          {plainParagraphs(summary.text)}
         </button>
         <span className="chip">{summaryDateRange(summary.firstTs, summary.lastTs)}</span>
         <span className="chip">{summary.messageCount} {summary.messageCount === 1 ? 'message' : 'messages'}</span>

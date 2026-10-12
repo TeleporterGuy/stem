@@ -15,6 +15,7 @@ import {
 import type { ChatMessage, ChatPin } from '../../shared/types';
 import type { ChatPins } from '../hooks/useChatPins';
 import { pinSource, pinSummary, readDocked, writeDocked } from './pins';
+import { plainLine, plainParagraphs } from '../../shared/plain-text';
 
 // The chat's pinboard (docs/chat-pinboard-plan.md): a strip under the chat
 // header that names what the user kept from this chat, and opens into a list.
@@ -267,12 +268,12 @@ function PinRow({
           />
         ) : (
           // Until a label is written the text itself is the name: no echo of its first words.
-          pin.label && <div className="pinboard-item-label">{pin.label}</div>
+          pin.label && <div className="pinboard-item-label">{plainLine(pin.label)}</div>
         )}
         {editing ? (
           <NoteEditor initial={pin.text} onCancel={onCancelEdit} onSave={onSave} />
         ) : (
-          <div className="pinboard-item-text">{pin.text}</div>
+          <div className="pinboard-item-text">{plainParagraphs(pin.text)}</div>
         )}
         {gone && <div className="pinboard-item-gone">No longer in this chat</div>}
       </div>

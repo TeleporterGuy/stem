@@ -94,7 +94,10 @@ function coerceItem(raw: unknown): MailItem | null {
   };
   if (typeof r.taskId === 'string' && r.taskId) item.taskId = r.taskId;
   if (typeof r.runThreadId === 'string' && r.runThreadId) item.runThreadId = r.runThreadId;
-  if (typeof r.subject === 'string' && r.subject) item.subject = r.subject;
+  // Cleaned on read like the conversation's subject: a per-mail subject is a
+  // model-written line too (a run's headline), and rows print it as text.
+  const subject = typeof r.subject === 'string' ? cleanMailSubject(r.subject) : '';
+  if (subject) item.subject = subject;
   if (typeof r.result === 'string' && r.result) item.result = r.result;
   if (r.stale === true) item.stale = true;
   if (r.filed === true) item.filed = true;

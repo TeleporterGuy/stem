@@ -115,10 +115,11 @@ export function previewText(raw: string, cap = MAX_PREVIEW): string {
 }
 
 /**
- * A chat title or subject as a line of plain text: the same stripping, no cap
- * (titles are capped where they are written). '' when nothing readable is left.
+ * Any short model-written label — a chat title, a subject, a reason — as one
+ * line of plain text: the same stripping, no cap (callers cap where they need
+ * to). '' when nothing readable is left.
  */
-export function plainTitle(raw: string): string {
+export function plainLine(raw: string): string {
   return previewText(raw, Number.POSITIVE_INFINITY);
 }
 
@@ -133,5 +134,21 @@ export function snippetText(raw: string): string {
     .replace(/\]\([^)\s]*\)?/g, '')
     .replace(/\*{2,}|~~|`+/g, '')
     .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Multi-line text (a note, a summary, a task's message) stripped of Markdown
+ * but keeping its line breaks, for surfaces that print it with pre-line
+ * wrapping. Blank-line paragraph breaks survive as one blank line.
+ */
+export function plainParagraphs(raw: string): string {
+  const parked = (raw ?? '').replace(ESCAPED, (_m, c: string) => `\uE000${c.charCodeAt(0)}\uE000`);
+  return stripInline(stripBlocks(parked))
+    .replace(PARKED, (_m, code: string) => String.fromCharCode(Number(code)))
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

@@ -11,6 +11,7 @@ import { InfoTip } from '../../ui/InfoTip';
 import { appDefaultModel, resolveSkillsModel } from '../../../shared/modelRoles';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { createJobStore, holdFullSpin, useJob } from './shared';
+import { plainLine } from '../../../shared/plain-text';
 
 // Module-level so a running tidy pass survives the tab unmounting: leave for
 // another tab mid-run and come back, and the button is still spinning — and the
@@ -188,12 +189,12 @@ export function SkillsTab({ models }: { models: ModelSummary[] }) {
                   <span
                     className="muted"
                     style={{ marginLeft: 6, fontWeight: 400, fontSize: '0.8em' }}
-                    title={s.lastFailure ? `Last report: ${s.lastFailure.reason}` : undefined}
+                    title={s.lastFailure ? `Last report: ${plainLine(s.lastFailure.reason)}` : undefined}
                   >
                     {usageLabel(s)}
                   </span>
                 </strong>
-                <em>{s.description}</em>
+                <em>{plainLine(s.description)}</em>
               </span>
               <button
                 className={`switch${s.enabled ? ' on' : ''}`}

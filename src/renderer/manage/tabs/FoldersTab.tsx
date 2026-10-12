@@ -46,6 +46,7 @@ import { InfoTip } from '../../ui/InfoTip';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { FilesTab } from './FilesTab';
 import { useRememberedTab } from '../../hooks/useRememberedTab';
+import { plainLine } from '../../../shared/plain-text';
 
 const SUBS = ['files', 'folders'] as const;
 
@@ -544,7 +545,7 @@ function ConnectedFoldersTab({ models }: { models: ModelSummary[] }) {
           <p className="ld-advice" role="status">
             <Sparkles size={13} />
             <span>
-              Suggested from what’s in the folder{advice.reason ? `: ${advice.reason}` : '.'} Review the tabs, then Save.
+              Suggested from what’s in the folder{advice.reason ? `: ${plainLine(advice.reason)}` : '.'} Review the tabs, then Save.
             </span>
           </p>
         )}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Code2, FileText, FolderPlus, FolderSearch, Laptop, Lock, NotebookPen, Server, Sparkles } from 'lucide-react';
 import type { ConnectedFolder, ConnectedFolderKind, ConnectedFolderPatch, FolderSuggestion } from '../../shared/types';
 import { ServerFolderPicker } from './ServerFolderPicker';
+import { plainLine } from '../../shared/plain-text';
 
 // Connecting a folder, as a short walk instead of a "+" that drops the folder in
 // with defaults and leaves its settings for later. Each setting decides
@@ -389,7 +390,7 @@ export function ConnectFolderWizard({
                   {suggesting ? 'Looking at the folder…' : 'Suggest for me'}
                 </button>
               </span>
-              {advice?.reason && <p className="muted folder-dialog-hint wizard-advice">{advice.reason}</p>}
+              {advice?.reason && <p className="muted folder-dialog-hint wizard-advice">{plainLine(advice.reason)}</p>}
               <div className="wizard-kinds">
                 {KINDS.map((k) => (
                   <span key={k.value}>{option(kind?.value === k.value, () => pickKind(k), k.label, k.body, k.icon)}</span>

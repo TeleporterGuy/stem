@@ -64,7 +64,7 @@ struct ApprovalCard: View {
                 .onTapGesture { expanded.toggle() }
             Text("in \(r.cwd)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             if let reason = r.judgeReason, !reason.isEmpty {
-                Label(reason, systemImage: r.judgeVerdict == "unsafe" ? "exclamationmark.triangle" : "questionmark.circle")
+                Label(MdxText.preview(reason), systemImage: r.judgeVerdict == "unsafe" ? "exclamationmark.triangle" : "questionmark.circle")
                     .font(.caption)
                     .foregroundStyle(r.judgeVerdict == "unsafe" ? .red : .secondary)
             }

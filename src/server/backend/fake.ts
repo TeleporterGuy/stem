@@ -24,7 +24,7 @@ import type {
   ChatFormat,
   StartTurnResult
 } from '../../shared/types';
-import { plainTitle, previewText } from '../../shared/plain-text';
+import { plainLine, previewText } from '../../shared/plain-text';
 import { autoTitle, KEEP, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
 import { setNaming } from '../workspace/chats';
 import { turnFailureMessage } from '../../shared/chatState';
@@ -317,7 +317,7 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
         const preview = previewText(t.messages[t.messages.length - 1]?.content ?? '');
         return {
           threadId,
-          title: plainTitle(t.title) || 'New chat',
+          title: plainLine(t.title) || 'New chat',
           ...(preview ? { preview } : {}),
           folderId: null,
           createdAt: t.createdAt,

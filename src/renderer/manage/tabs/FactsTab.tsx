@@ -20,6 +20,7 @@ import { HoverTip, InfoTip } from '../../ui/InfoTip';
 import { createJobStore, holdFullSpin, useJob, type ActiveFactsViewProps } from './shared';
 import { DeepCheckCard } from './DeepCheck';
 import { UserSummaryCard } from './UserSummary';
+import { plainLine } from '../../../shared/plain-text';
 
 // Memory → Facts. Ordered by what asks something of the user: the switch and a
 // one-line status, the summary of the user, the deep check (the one memory job worth starting by hand),
@@ -413,7 +414,7 @@ export function FactsTab({
                 <div className="memory-note-body">
                   {f.statement ? (
                     <button className="memory-statement" onClick={() => f.id != null && void toggleDetails(f.id)}>
-                      {f.statement}
+                      {plainLine(f.statement)}
                     </button>
                   ) : <MdxView text={f.content} />}
                   {active && <span className={`chip active-${active}`}>{active}</span>}
@@ -455,7 +456,7 @@ export function FactsTab({
                       {details[f.id]!.evidence.map((e) => (
                         <blockquote key={e.id}>
                           {new Date(e.timestamp * 1000).toLocaleDateString()} ·{' '}
-                          {e.origin === 'folder_doc' ? `file ${e.relPath ?? '(unknown)'}` : EVIDENCE_ORIGIN_LABEL[e.origin] ?? e.origin}: {e.excerpt}
+                          {e.origin === 'folder_doc' ? `file ${e.relPath ?? '(unknown)'}` : EVIDENCE_ORIGIN_LABEL[e.origin] ?? e.origin}: {plainLine(e.excerpt)}
                         </blockquote>
                       ))}
                       {details[f.id]!.images.length > 0 && (
@@ -590,13 +591,13 @@ export function FactsTab({
                 {orderedConflictFacts(c).map((f, i) => (
                   <div key={f.id} className="memory-conflict-side">
                     <span className="chip">{i === 0 ? 'Newer' : 'Older'}</span>
-                    <p>{f.text}</p>
+                    <p>{plainLine(f.text)}</p>
                     <span className="muted">
                       Learned {new Date(f.updatedAt * 1000).toLocaleDateString()}
                     </span>
                   </div>
                 ))}
-                <em>{c.reason}</em>
+                <em>{plainLine(c.reason)}</em>
                 <div className="memory-view-actions">
                   <button className="link-btn" onClick={() => resolveConflict(c.id, 'keep_newer')}>Keep newer</button>
                   <button className="link-btn" onClick={() => resolveConflict(c.id, 'keep_older')}>Keep older</button>
@@ -725,7 +726,7 @@ export function FactsTab({
                           {[c.factA, c.factB].map((f) => (
                             <div key={f.id} className="memory-conflict-side">
                               <span className="chip">{f.status === 'superseded' ? 'Replaced' : 'Kept'}</span>
-                              <p className={f.status === 'superseded' ? 'muted' : undefined}>{f.text}</p>
+                              <p className={f.status === 'superseded' ? 'muted' : undefined}>{plainLine(f.text)}</p>
                             </div>
                           ))}
                           <em>
@@ -760,7 +761,7 @@ export function FactsTab({
                 <strong>Tidy-up</strong>
                 <em>
                   Runs by itself as Stem learns: merges duplicates and retires stale facts.
-                  {lastTidy && !consolidating && ` Last pass ${ago(lastTidy.startedAt)}${lastTidy.detail ? `: ${lastTidy.detail}` : ''}.`}
+                  {lastTidy && !consolidating && ` Last pass ${ago(lastTidy.startedAt)}${lastTidy.detail ? `: ${plainLine(lastTidy.detail)}` : ''}.`}
                 </em>
                 {consolidateMsg && <em>{consolidateMsg}</em>}
               </span>

@@ -60,6 +60,7 @@ import { useMailWork } from './useMailWork';
 import { MailWork } from './MailWork';
 import { GeneratedImages } from '../chat/GeneratedImage';
 import { DictateButton, useDictation } from '../chat/dictation';
+import { plainLine } from '../../shared/plain-text';
 
 // The centre pane's mail surface: a conversation read like the Inbox (newest
 // on top, the reply box above the mail it answers, older mails folded to one
@@ -1088,7 +1089,7 @@ function MailApprovalBlock({ itemId, approval }: { itemId: string; approval: Mai
         <strong>{approval.kind === 'harness' ? 'The coding agent wants to run' : 'Run this command'}{approval.deviceLabel ? ` on ${approval.deviceLabel}` : ''}?</strong>
       </div>
       <pre className="exec-approval-command">{approval.command}</pre>
-      {approval.reason && <p className="muted">Safety check: {approval.reason}</p>}
+      {approval.reason && <p className="muted">Safety check: {plainLine(approval.reason)}</p>}
       {approval.cwd && <p className="muted">In {approval.cwd}</p>}
       {error && <p className="error">{error}</p>}
       {approval.status === 'pending' ? (

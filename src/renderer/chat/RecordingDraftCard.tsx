@@ -4,6 +4,7 @@ import type { RecordingDraft } from '../../shared/types';
 import { noteDraft, prefillComposer, requestSheet, startPractice } from './recorder-store';
 import { practiceMessage } from '../../shared/practice-message';
 import { RECORDER_ALPHA_TITLE } from './RecordSheet';
+import { plainLine, plainParagraphs } from '../../shared/plain-text';
 
 // The card a recording becomes in its chat: the skill Stem wrote from it, what
 // it worked out changes each run ("Delivery date ← the date in the supplier's
@@ -140,7 +141,7 @@ export function RecordingDraftCard({
             <>
               <div className="record-title">
                 <code>{draft.skill.name}</code>
-                <span>{draft.skill.description}</span>
+                <span>{plainLine(draft.skill.description)}</span>
               </div>
               {draft.variables.length > 0 && (
                 <div className="record-vars">
@@ -167,7 +168,7 @@ export function RecordingDraftCard({
           <div className="record-label">Changed after practice</div>
           <ul>
             {draft.changes.map((c, i) => (
-              <li key={i}>{c}</li>
+              <li key={i}>{plainLine(c)}</li>
             ))}
           </ul>
         </div>
@@ -243,7 +244,7 @@ export function RecordingDraftCard({
         </div>
       )}
 
-      {draft.message && <p className="record-message">{draft.message}</p>}
+      {draft.message && <p className="record-message">{plainParagraphs(draft.message)}</p>}
       {notice && notice !== draft.message && <p className="record-message">{notice}</p>}
 
       {open && (

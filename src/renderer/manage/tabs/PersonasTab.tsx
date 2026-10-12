@@ -48,6 +48,7 @@ import {
   shortPath,
   type GlyphTone
 } from '../ListDetail';
+import { plainLine, plainParagraphs } from '../../../shared/plain-text';
 
 // ---- Personas tab: the named agent configurations mail addresses ----
 //
@@ -256,7 +257,7 @@ function PersonaNotes({ personaId, kind }: { personaId: string; kind: keyof type
         setTidied(
           outcome.ok
             ? `Tidied: ${outcome.before} → ${outcome.after} notes (${outcome.rewritten} merged or rewritten, ${outcome.dropped} dropped).`
-            : `Nothing changed: ${outcome.reason ?? 'no reason given'}.`
+            : `Nothing changed: ${plainLine(outcome.reason ?? '') || 'no reason given'}.`
         );
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
@@ -329,7 +330,7 @@ function PersonaNotes({ personaId, kind }: { personaId: string; kind: keyof type
                   onClick={() => setOpenId(openId === n.id ? null : n.id)}
                   title={openId === n.id ? 'Collapse' : 'Show this note'}
                 >
-                  {n.title}
+                  {plainLine(n.title)}
                 </strong>
                 <em>
                   {NOTE_SOURCE_LABELS[n.source]} · {new Date(n.at).toLocaleDateString()}
@@ -351,7 +352,7 @@ function PersonaNotes({ personaId, kind }: { personaId: string; kind: keyof type
                 onClick={() => setEditing({ id: n.id, title: n.title, body: n.body })}
                 title="Edit this note"
               >
-                {n.body}
+                {plainParagraphs(n.body)}
               </p>
             )}
           </div>

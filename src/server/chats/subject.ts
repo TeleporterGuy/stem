@@ -3,7 +3,7 @@ import type { NamingState } from '../workspace/chats';
 import { bumpNaming, getNaming, getSubjects, setNaming, setSubject } from '../workspace/chats';
 import { backgroundRunOf, readSettings } from '../workspace/settings';
 import { log } from '../log';
-import { plainTitle } from '../../shared/plain-text';
+import { plainLine } from '../../shared/plain-text';
 
 // Naming a thread. pi never names a session, so Stem always has to; the cheap
 // answer is the first line the user typed (autoTitle, below), and the good one
@@ -63,7 +63,7 @@ function gapFor(step: number): number {
 export function autoTitle(input: string): string {
   // The first line that still says something once its Markdown is gone — a
   // message that opens with a fence or a rule is named by what follows it.
-  const line = input.split('\n').map(plainTitle).find((l) => l.length > 0) ?? '';
+  const line = input.split('\n').map(plainLine).find((l) => l.length > 0) ?? '';
   return line.length > MAX_AUTO_TITLE ? `${line.slice(0, MAX_AUTO_TITLE - 1).trimEnd()}…` : line;
 }
 
@@ -195,7 +195,7 @@ export function sanitizeSubject(raw: string): string {
     if (stripped === text) break;
     text = stripped;
   }
-  text = plainTitle(text).replace(/[.,;:]+$/, '').trim();
+  text = plainLine(text).replace(/[.,;:]+$/, '').trim();
   // A reply this long isn't a subject line — it's the model ignoring the brief.
   if (text.length > MAX_SUBJECT * 3) return '';
   if (text.length > MAX_SUBJECT) text = `${text.slice(0, MAX_SUBJECT - 1).trimEnd()}…`;
@@ -228,12 +228,12 @@ function stillOurs(current: string | null, stored: string | null, firstMessage: 
   if (stored !== null && name === stored) return true;
   // Titles are listed stripped of Markdown, while names written before the
   // stripping are stored raw — so both sides are compared as plain text.
-  const plain = plainTitle(name);
-  if (stored !== null && plain === plainTitle(stored)) return true;
+  const plain = plainLine(name);
+  if (stored !== null && plain === plainLine(stored)) return true;
   if (plain === autoTitle(firstMessage)) return true;
   // The raw first line, which is what autoTitle used to write.
   const firstLine = firstMessage.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
-  return plain === plainTitle(firstLine.length > MAX_AUTO_TITLE ? `${firstLine.slice(0, MAX_AUTO_TITLE - 1).trimEnd()}…` : firstLine);
+  return plain === plainLine(firstLine.length > MAX_AUTO_TITLE ? `${firstLine.slice(0, MAX_AUTO_TITLE - 1).trimEnd()}…` : firstLine);
 }
 
 /** A re-check that answered "the name still fits", however it phrased it. */

@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatPin } from '../../shared/types';
+import { plainLine } from '../../shared/plain-text';
 
 // The chat pinboard's pure parts (docs/chat-pinboard-plan.md): what the collapsed
 // strip says, which message a pin points at, and the per-chat docked flag. Kept
@@ -18,8 +19,9 @@ export function messageAnchor(m: ChatMessage): string | null {
 
 /** A pin's short name: its label, or its first few words until one is written. */
 export function pinLabel(pin: ChatPin): string {
-  if (pin.label) return pin.label;
-  const words = pin.text.replace(/\s+/g, ' ').trim().split(' ');
+  const label = plainLine(pin.label ?? '');
+  if (label) return label;
+  const words = plainLine(pin.text).split(' ');
   const head = words.slice(0, FALLBACK_WORDS).join(' ');
   return words.length > FALLBACK_WORDS ? `${head}…` : head;
 }

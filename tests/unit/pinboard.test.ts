@@ -22,6 +22,7 @@ describe('pinboard summary', () => {
     expect(pinLabel(pin({ label: 'Rubio mix', text: 'anything' }))).toBe('Rubio mix');
     expect(pinLabel(pin({ text: '  12–24 h\nschnutie, 5 dní vytvrdnutie, bez vody' }))).toBe('12–24 h schnutie, 5…');
     expect(pinLabel(pin({ text: 'cure five days' }))).toBe('cure five days');
+    expect(pinLabel(pin({ text: '**Cure** five `days` then sand' }))).toBe('Cure five days then…');
   });
 
   it('joins the names in board order for the collapsed strip', () => {

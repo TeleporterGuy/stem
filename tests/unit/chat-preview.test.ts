@@ -2,7 +2,7 @@
 // mean something has to come off before it gets there — and the words it was
 // decorating have to survive.
 import { describe, expect, it } from 'vitest';
-import { MAX_PREVIEW, plainTitle, previewText, snippetText } from '../../src/shared/plain-text';
+import { MAX_PREVIEW, plainLine, plainParagraphs, previewText, snippetText } from '../../src/shared/plain-text';
 
 describe('previewText', () => {
   it('leaves plain prose alone, flattened to one line', () => {
@@ -109,10 +109,10 @@ describe('previewText', () => {
   });
 });
 
-describe('plainTitle', () => {
+describe('plainLine', () => {
   it('strips a title without capping it', () => {
-    expect(plainTitle('# Fix the **retry** bug')).toBe('Fix the retry bug');
-    expect(plainTitle('x'.repeat(300))).toHaveLength(300);
+    expect(plainLine('# Fix the **retry** bug')).toBe('Fix the retry bug');
+    expect(plainLine('x'.repeat(300))).toHaveLength(300);
   });
 });
 
@@ -129,5 +129,13 @@ describe('snippetText', () => {
 
   it('leaves a lone asterisk alone', () => {
     expect(snippetText('…3 * «4»…')).toBe('…3 * «4»…');
+  });
+});
+
+describe('plainParagraphs', () => {
+  it('strips Markdown but keeps lines and paragraph breaks', () => {
+    expect(plainParagraphs('## Work context\nBuilds **Stem**.\n\n\n\n- one\n- `two`')).toBe(
+      'Work context\nBuilds Stem.\n\none\ntwo'
+    );
   });
 });

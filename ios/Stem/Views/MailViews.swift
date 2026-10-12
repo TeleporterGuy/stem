@@ -502,7 +502,7 @@ struct MailApprovalView: View {
             Text(approval.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                 .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-            if let reason = approval.reason { Text("Safety check: \(reason)").font(.caption).foregroundStyle(.secondary) }
+            if let reason = approval.reason { Text("Safety check: \(MdxText.preview(reason))").font(.caption).foregroundStyle(.secondary) }
             if approval.status == "pending" {
                 HStack {
                     Button("Deny", role: .destructive) { answer(false) }.buttonStyle(.bordered)

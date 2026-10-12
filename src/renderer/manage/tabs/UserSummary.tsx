@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { UserRound } from 'lucide-react';
 import type { UserProfile } from '../../../shared/types';
 import { createJobStore, holdFullSpin, useJob } from './shared';
+import { plainParagraphs } from '../../../shared/plain-text';
 
 // The user summary (server: recall/profile.ts): a few paragraphs on who the
 // user is and how they write, from the facts and their own messages, sent with every chat that may see
@@ -16,7 +17,7 @@ const HEADINGS = new Set(['Work context', 'Personal context', 'How they communic
 function SummaryText({ text }: { text: string }) {
   return (
     <div className="user-summary-text">
-      {text.split(/\n{2,}/).map((block, i) => {
+      {plainParagraphs(text).split(/\n{2,}/).map((block, i) => {
         const [first, ...rest] = block.split('\n');
         return HEADINGS.has(first.trim()) && rest.length ? (
           <section key={i}>

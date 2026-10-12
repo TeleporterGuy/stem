@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Bell } from 'lucide-react';
 import type { TaskNotifyPayload } from '../shared/types';
+import { plainLine, plainParagraphs } from '../shared/plain-text';
 
 // Prominent alert raised when a scheduled run calls notify_user. Mirrors the
 // McpApprovalCard / DeleteThreadDialog modal markup. "Open mail" jumps to the
@@ -50,9 +51,9 @@ export function TaskAlertModal({
           <span className="row-icon">
             <Bell size={15} />
           </span>
-          <strong>{payload.title?.trim() || 'Scheduled task'}</strong>
+          <strong>{plainLine(payload.title ?? '') || 'Scheduled task'}</strong>
         </div>
-        <p className="task-alert-message">{payload.message}</p>
+        <p className="task-alert-message">{plainParagraphs(payload.message ?? '')}</p>
         <div className="mcp-approval-actions">
           <button ref={conversationId ? undefined : defaultRef} className={conversationId ? 'push' : 'push default'} onClick={onDismiss}>
             Dismiss
