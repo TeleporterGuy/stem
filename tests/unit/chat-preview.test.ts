@@ -2,7 +2,7 @@
 // mean something has to come off before it gets there — and the words it was
 // decorating have to survive.
 import { describe, expect, it } from 'vitest';
-import { MAX_PREVIEW, previewText } from '../../src/server/chats/preview';
+import { MAX_PREVIEW, plainTitle, previewText, snippetText } from '../../src/shared/plain-text';
 
 describe('previewText', () => {
   it('leaves plain prose alone, flattened to one line', () => {
@@ -106,5 +106,28 @@ describe('previewText', () => {
     expect(previewText('<Form prompt="A few details first">\n<Field name="d" label="Dates" />\n</Form>')).toBe(
       'A few details first'
     );
+  });
+});
+
+describe('plainTitle', () => {
+  it('strips a title without capping it', () => {
+    expect(plainTitle('# Fix the **retry** bug')).toBe('Fix the retry bug');
+    expect(plainTitle('x'.repeat(300))).toHaveLength(300);
+  });
+});
+
+describe('snippetText', () => {
+  it('strips a search snippet and keeps the match marks', () => {
+    expect(snippetText('…lístka. **ID chatu:** `«01a1153f»-9d2d`')).toBe('…lístka. ID chatu: «01a1153f»-9d2d');
+    expect(snippetText('**«Done»** — see [the «run»](https://x.example/1)')).toBe('«Done» — see the «run»');
+  });
+
+  it('sweeps up the halves of a pair the snippet window cut', () => {
+    expect(snippetText('…it was «fixed»** and `then')).toBe('…it was «fixed» and then');
+    expect(snippetText('…the [«label»](https://exa')).toBe('…the [«label»');
+  });
+
+  it('leaves a lone asterisk alone', () => {
+    expect(snippetText('…3 * «4»…')).toBe('…3 * «4»…');
   });
 });

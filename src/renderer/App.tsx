@@ -21,6 +21,7 @@ import type {
 } from '../shared/types';
 import { AUTH_PROVIDER_IDS, providerName } from '../shared/providers';
 import { emptyInboxState, isUnread, placement, withRead, type InboxState } from '../shared/inbox';
+import { previewText } from '../shared/plain-text';
 import { resendAttachments } from './attachments';
 import { ChatView, type ChatViewHandle } from './chat/ChatView';
 import { OnboardingGate } from './onboarding/OnboardingGate';
@@ -896,7 +897,7 @@ export default function App() {
               ...p,
               [realId]: {
                 threadId: realId,
-                title: text.trim() || 'New chat',
+                title: previewText(text) || 'New chat',
                 folderId: sendFolder ?? null,
                 ...(sendPrivate ? { private: true as const } : {}),
                 createdAt: Date.now(),
@@ -971,7 +972,7 @@ export default function App() {
         ...p,
         [threadId]: {
           threadId,
-          title: adopted.find((m) => m.role === 'user')?.content.trim() || 'New chat',
+          title: previewText(adopted.find((m) => m.role === 'user')?.content ?? '') || 'New chat',
           folderId: null,
           createdAt: Date.now(),
           updatedAt: Date.now()
@@ -988,7 +989,7 @@ export default function App() {
     return window.stem.onQuickChatSessionStarted(({ threadId, title }) => {
       setPendingChats((p) => ({
         ...p,
-        [threadId]: { threadId, title: title.trim() || 'New chat', folderId: null, createdAt: Date.now(), updatedAt: Date.now() }
+        [threadId]: { threadId, title: previewText(title) || 'New chat', folderId: null, createdAt: Date.now(), updatedAt: Date.now() }
       }));
     });
   }, []);

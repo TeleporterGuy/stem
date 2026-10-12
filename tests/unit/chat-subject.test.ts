@@ -93,6 +93,11 @@ describe('autoTitle', () => {
   it('is empty for a message with nothing in it', () => {
     expect(autoTitle('   \n \n')).toBe('');
   });
+
+  it('strips Markdown, and skips a line that is only markup', () => {
+    expect(autoTitle('# Fix the **retry** bug\nbody')).toBe('Fix the retry bug');
+    expect(autoTitle('```ts\nconst x = 1;\n```')).toBe('const x = 1;');
+  });
 });
 
 describe('sanitizeSubject', () => {
@@ -113,6 +118,7 @@ describe('sanitizeSubject', () => {
     expect(sanitizeSubject('"CI flake"')).toBe('CI flake');
     expect(sanitizeSubject('“CI flake”')).toBe('CI flake');
     expect(sanitizeSubject('**`CI flake`**')).toBe('CI flake');
+    expect(sanitizeSubject('CI flake in the **retry** path')).toBe('CI flake in the retry path');
   });
 
   it('drops trailing punctuation and collapses inner whitespace', () => {
@@ -376,6 +382,14 @@ describe('the naming schedule', () => {
     // thread's name is no longer the first line the user typed, and a re-check
     // must not read its own work as a name the user chose.
     await setSubject('a', 'Quarterly revenue breakdown');
+    const s = stub({ title: 'Quarterly revenue breakdown', messages: drifted, reply: 'Staging deploy timeouts' });
+    await turns(s.deps, 'a', 2);
+    expect(s.rename).toHaveBeenCalledWith('a', 'Staging deploy timeouts');
+  });
+
+  it('still recognises its own subject when it was stored with Markdown', async () => {
+    // Listed titles are stripped; subjects written before the stripping are not.
+    await setSubject('a', 'Quarterly **revenue** breakdown');
     const s = stub({ title: 'Quarterly revenue breakdown', messages: drifted, reply: 'Staging deploy timeouts' });
     await turns(s.deps, 'a', 2);
     expect(s.rename).toHaveBeenCalledWith('a', 'Staging deploy timeouts');

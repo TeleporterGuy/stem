@@ -43,6 +43,7 @@ import { mailSessionThreadIds } from '../workspace/mail';
 import { memoryRunOf } from '../workspace/settings';
 import type { LlmClient } from '../recall/llm';
 import type { ChatListResult, FolderSettings } from '../../shared/types';
+import { plainTitle } from '../../shared/plain-text';
 
 /**
  * Chats + chat folders. Chats come from the backend's thread store;
@@ -93,7 +94,8 @@ export async function chatListOf(deps: Pick<IpcDeps, 'runtime' | 'scheduler'>): 
   for (const chat of chats) {
     const folderId = assignments[chat.threadId];
     chat.folderId = folderId && valid.has(folderId) ? folderId : null;
-    const subject = subjects[chat.threadId];
+    // Stored as the model wrote it; subjects from before the stripping can carry Markdown.
+    const subject = plainTitle(subjects[chat.threadId] ?? '');
     if (subject) chat.subject = subject;
     if (privateChats.has(chat.threadId)) chat.private = true;
     if (plainChats.has(chat.threadId)) chat.format = 'md';

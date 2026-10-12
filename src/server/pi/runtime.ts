@@ -65,7 +65,7 @@ import { readMail } from '../workspace/mail';
 import { formatPastChat, pastChatLink } from './past-chat';
 import { clampPinnedCwd } from '../harness/pin';
 import { hostShellAgentHint } from '../exec/host-shell';
-import { previewText } from '../chats/preview';
+import { plainTitle, previewText } from '../../shared/plain-text';
 import { autoTitle, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
 import { getChatFormat, isChatPrivate, markTurnTainted, setChatFormat, setChatPrivate, setNaming, taintedTurns } from '../workspace/chats';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
@@ -2212,7 +2212,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((f) => ({
         threadId: f.id,
-        title: (f.name || 'New chat').trim() || 'New chat',
+        // Names are stored as written; a title that came out of a message can
+        // carry its Markdown, and every surface prints the title as text.
+        title: plainTitle(f.name ?? '') || 'New chat',
         ...(f.preview ? { preview: f.preview } : {}),
         folderId: null,
         createdAt: f.createdAt,
@@ -2360,7 +2362,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         continue;
       }
       if (entry.type === 'session_info' && typeof entry.name === 'string') {
-        title = entry.name.trim() || title;
+        title = plainTitle(entry.name) || title;
         continue;
       }
       if (entry.type === 'model_change' && entry.provider && entry.modelId) {
@@ -5130,7 +5132,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     }
     if (pendingFailure) messages.push(pendingFailure);
     const state = await worker.proc!.request({ type: 'get_state' });
-    const title = ((state.data as { sessionName?: string } | undefined)?.sessionName || 'New chat').trim() || 'New chat';
+    const title = plainTitle((state.data as { sessionName?: string } | undefined)?.sessionName ?? '') || 'New chat';
     return { title, messages, complete: false };
   }
 

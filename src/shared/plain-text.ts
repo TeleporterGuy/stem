@@ -1,4 +1,8 @@
-// The one or two lines under an Inbox row. The text comes out of a transcript,
+// Markdown in, plain words out — for every surface that prints message text
+// as a bare string (an Inbox row, a chat title, a search hit). Shared so the
+// server and the renderer strip the same way.
+//
+// It began as the one or two lines under an Inbox row. The text comes out of a transcript,
 // so it is Markdown (and sometimes MDX) — but the row renders it as plain text in
 // a clamped span, so every marker in it is noise at best and a lie at worst:
 // `**done**` would read as literal asterisks, and a table would arrive as a hedge
@@ -108,4 +112,26 @@ export function previewText(raw: string, cap = MAX_PREVIEW): string {
     .trim();
   if (text.length <= cap) return text;
   return `${text.slice(0, cap - 1).trimEnd()}…`;
+}
+
+/**
+ * A chat title or subject as a line of plain text: the same stripping, no cap
+ * (titles are capped where they are written). '' when nothing readable is left.
+ */
+export function plainTitle(raw: string): string {
+  return previewText(raw, Number.POSITIVE_INFINITY);
+}
+
+/**
+ * An FTS5 snippet as plain text, keeping its «…» match marks. A snippet is a
+ * window cut out of a message, so it can open or close inside an emphasis
+ * pair or a link — the halves the paired strippers cannot see are swept up
+ * here. A lone `*` survives: in a fragment it is likelier arithmetic.
+ */
+export function snippetText(raw: string): string {
+  return previewText(raw, Number.POSITIVE_INFINITY)
+    .replace(/\]\([^)\s]*\)?/g, '')
+    .replace(/\*{2,}|~~|`+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

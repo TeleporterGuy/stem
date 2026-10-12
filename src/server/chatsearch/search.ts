@@ -1,4 +1,5 @@
 import type { ChatSearchHit } from '../../shared/types';
+import { snippetText } from '../../shared/plain-text';
 import { degrade } from '../degrade';
 import type { LlmClient } from '../recall/llm';
 import { buildMatchQuery } from '../recall/search';
@@ -49,7 +50,9 @@ async function runMatch(terms: string[], deps: ChatSearchDeps, limit: number): P
       // Drop threads that vanished between indexing and now (deleted chat) — no title.
       const title = titles.get(r.threadId);
       if (title === undefined) continue;
-      hits.push({ threadId: r.threadId, title, snippet: r.snippet, score: r.score, ts: r.ts });
+      // The index holds messages as written, Markdown and all; the row prints
+      // the snippet as text, so it is stripped here, after FTS5 has cut it.
+      hits.push({ threadId: r.threadId, title, snippet: snippetText(r.snippet), score: r.score, ts: r.ts });
       if (hits.length >= requestedLimit) break;
     }
 
