@@ -55,7 +55,7 @@ import {
   computerControlInstructions,
   stemAssistantInstructions
 } from '../workspace/bootstrap';
-import { readSettings } from '../workspace/settings';
+import { memoryRunOf, readSettings } from '../workspace/settings';
 import { resolveBrowserGrant, resolveCodingGrant, resolveComputerGrant } from '../harness/chat-grants';
 import { browserChoicesText, codingChoicesText, computerChoicesText } from '../harness/chat-hosts';
 import { resolveHostShell } from '../exec/git-bash';
@@ -80,7 +80,8 @@ import { buildConnectedFoldersContext } from '../connected-folders/inject';
 import { getPrivateFolderLabels, getPrivateRoots } from '../workspace/connected-folders';
 import { resolveAttachments, saveAttachmentsTo, type PiImageContent } from './attachments';
 import { readPdfText } from './pdf-read';
-import { captureUserMessage } from '../recall/capture';
+import { captureUserImages, captureUserMessage, MAX_DESCRIBED_IMAGES } from '../recall/capture';
+import type { LlmClient } from '../recall/llm';
 import type {
   ApprovalId,
   BrowserBridge,
@@ -1354,6 +1355,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       w.skillsRevAtTurnStart = this.readSkillsRev();
       w.gate.claimTurn();
 
+      // The prompt's resolved pictures, kept for the held-back user capture below.
+      let promptImages: PiImageContent[] = [];
       try {
         // Gate native web search for THIS turn (surfaces sharing one process
         // can't be told apart by the bridge — we set the gate just before the
@@ -1421,6 +1424,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
 
         const buildStart = Date.now();
         const { message, images } = await this.buildMessage(input, threadId, turn, turnId, w);
+        promptImages = images;
         turn.buildMs = Date.now() - buildStart;
         // Canceled while the prompt was being prepared (gates, recall build) —
         // abandon before pi sees anything. finishTurn drops the claim taken above.
@@ -1480,7 +1484,17 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         // role 'user' gets distilled into "The user wants/did ..." facts. So
         // persona-authored deliveries skip the user capture entirely; their
         // assistant replies are still captured normally.
-        turn.pendingUserCapture = { text: input.input, cwd: this.options.workspaceRoot };
+        //
+        // Attached pictures ride along under the same gates: once the message
+        // is captured they are described into recall (captureUserImages), so a
+        // chat whose point was a photo can still be found by what it showed.
+        turn.pendingUserCapture = {
+          text: input.input,
+          cwd: this.options.workspaceRoot,
+          ...(promptImages.length
+            ? { images: promptImages.slice(0, MAX_DESCRIBED_IMAGES).map(({ data, mimeType }) => ({ data, mimeType })) }
+            : {})
+        };
       }
       return { threadId, turnId };
       });
@@ -1819,6 +1833,36 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // never reaches Recall, and its reply is captured without it.
       degrade('pi.capture', 'dropped one user message from Recall', e);
     }
+    this.describeCapturedImages(turn, pending);
+  }
+
+  /**
+   * Describe the pictures of a just-captured user message into Recall, off the
+   * turn's path: a memory-model call that may take seconds, and whose failure
+   * only costs findability (captureUserImages never rejects). Called only where
+   * the user message itself was captured, so the private/taint/recall gates
+   * that kept the text out keep the pictures out too.
+   */
+  private describeCapturedImages(
+    turn: Pick<TurnContext, 'threadId' | 'turnId' | 'isPrivate' | 'memoryTainted'>,
+    pending: NonNullable<TurnContext['pendingUserCapture']>
+  ): void {
+    if (!pending.images?.length || turn.isPrivate || turn.memoryTainted || !isRecallEnabled()) return;
+    const llm: LlmClient = {
+      complete: async (prompt, images) =>
+        this.complete(prompt, { ...(await memoryRunOf((s) => s.memory.model)), images })
+    };
+    void captureUserImages(
+      {
+        threadId: turn.threadId,
+        turnId: turn.turnId,
+        text: pending.text,
+        cwd: pending.cwd,
+        ts: Math.floor(Date.now() / 1000),
+        images: pending.images
+      },
+      llm
+    );
   }
 
   /**
@@ -4100,6 +4144,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         // not in Recall, indistinguishable from a turn that was never asked.
         degrade('pi.capture', 'dropped one user message from Recall', e);
       }
+      this.describeCapturedImages(turn, pending);
     }
     this.advancePhase(turn, [], now); // flush the trailing segment
     // Usually already done as turn/completed went out; this covers the turns

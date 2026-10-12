@@ -110,8 +110,10 @@ export interface TurnContext {
    * verdict is knowable (the taint is set when the assistant reads a private
    * folder — after the prompt). Flushed on the first unsuppressed capture event
    * of the turn, or at settle; never captured when the turn ends tainted.
+   * `images` are the attached pictures (capped, see MAX_DESCRIBED_IMAGES),
+   * described into recall once the message itself is captured.
    */
-  pendingUserCapture?: { text: string; cwd?: string };
+  pendingUserCapture?: { text: string; cwd?: string; images?: Array<{ data: string; mimeType: string }> };
   /**
    * Skills whose full body was inlined into this turn's context. Set by the
    * message builder and graded at turn end (skills/grade.ts). NOT a routing
