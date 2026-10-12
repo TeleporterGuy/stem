@@ -80,10 +80,10 @@ jobs:
             release/latest-linux-arm64.yml
 
   mac:
-    # Standard Apple Silicon runner; release only arm64 installers. macos-26 for
-    # its SDK: the helper's dictation uses SpeechAnalyzer, which the macOS 15 SDK
-    # lacks (the code itself is gated @available(macOS 26) and still targets 14).
-    runs-on: macos-26
+    # Standard Apple Silicon runner; release only arm64 installers. Not macos-26:
+    # electron-builder's temporary signing keychain will not unlock there
+    # (set-key-partition-list: "passphrase not correct").
+    runs-on: macos-15
     env:
       # Release builds require signing and notarization. CSC_LINK is the base64 .p12 of the
       # "Developer ID Application" certificate; APPLE_API_KEY is the .p8 of an
@@ -102,6 +102,11 @@ jobs:
           for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_API_KEY_P8; do
             if [ -z "${!name}" ]; then echo "::error::Missing release credential: $name"; exit 1; fi
           done
+      # The macOS 26 SDK: the helper's dictation uses SpeechAnalyzer, which the
+      # image's default Xcode 16 lacks (the code is gated @available(macOS 26)
+      # and still targets macOS 14).
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app && xcrun swiftc --version
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
