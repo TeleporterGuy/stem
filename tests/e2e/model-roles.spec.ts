@@ -64,12 +64,12 @@ test('each role falls back to its own group, and the judgment roles are not in t
 }) => {
   await openModelRoles(mainWindow);
 
-  // The cheap group holds exactly the two extraction jobs. Skills used to be
-  // the third member, which meant "point Background work at something small"
-  // silently had every skill authored by that small model.
-  for (const role of ['Subject model', 'Safety-check model']) {
-    await expect(mainWindow.getByLabel(role, { exact: true })).toContainText('Quick tasks');
-  }
+  // The cheap group holds the subject writer alone. Skills used to be in it,
+  // which meant "point Background work at something small" silently had every
+  // skill authored by that small model. The safety check's quick pass runs on
+  // Quick tasks, but its picker is the review model, which follows the chat.
+  await expect(mainWindow.getByLabel('Subject model', { exact: true })).toContainText('Quick tasks');
+  await expect(mainWindow.getByLabel('Safety-check review model', { exact: true })).toContainText('Same as chat');
   // The rest follow the model you chat with, each for its own reason: you read
   // Quick Chat's output word for word; memory and skills are judgment work that
   // CANNOT be made cheap safely — memory reads whole transcripts, and skills
@@ -141,13 +141,15 @@ test('each background job can be told how hard to think, without leaving the gro
       }))
     );
 
-  for (const label of ['Subject effort', 'Safety-check effort']) {
-    const select = mainWindow.getByLabel(label, { exact: true });
-    await expect(select).toHaveValue('');
-    // The empty option has to name the rung above it. "Model default" would be a
-    // lie here: these two follow Quick tasks, not pi.
-    await expect(select.locator('option', { hasText: 'Quick tasks' })).toHaveCount(1);
-  }
+  const subjectEffort = mainWindow.getByLabel('Subject effort', { exact: true });
+  await expect(subjectEffort).toHaveValue('');
+  // The empty option has to name the rung above it. "Model default" would be a
+  // lie here: the subject writer follows Quick tasks, not pi.
+  await expect(subjectEffort.locator('option', { hasText: 'Quick tasks' })).toHaveCount(1);
+  // The safety check's quick pass has a level of its own, set for it.
+  const judgeEffort = mainWindow.getByLabel('Quick check effort', { exact: true });
+  await expect(judgeEffort).toHaveValue('');
+  await expect(judgeEffort.locator('option', { hasText: 'Default' })).toHaveCount(1);
   // Skills is not in the group, and its empty option says what unset really
   // means there — the model's own default.
   const skillsEffort = mainWindow.getByLabel('Skills effort', { exact: true });
@@ -167,11 +169,11 @@ test('each background job can be told how hard to think, without leaving the gro
   await expect(rows.filter({ has: mainWindow.getByLabel('Subject effort', { exact: true }) })).toContainText(
     'uses Low'
   );
-  await expect(rows.filter({ has: mainWindow.getByLabel('Safety-check effort', { exact: true }) })).toContainText(
+  await expect(rows.filter({ has: mainWindow.getByLabel('Quick check effort', { exact: true }) })).toContainText(
     'uses Low'
   );
 
-  await mainWindow.getByLabel('Safety-check effort', { exact: true }).selectOption('low');
+  await mainWindow.getByLabel('Quick check effort', { exact: true }).selectOption('low');
   await expect.poll(async () => (await roleEfforts()).judge).toBe('low');
   // One role's level is one role's: the others stay unset, and the
   // group's own level is untouched.

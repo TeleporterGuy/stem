@@ -225,7 +225,11 @@ test('typing / lists the composer commands and completes one', async ({ mainWind
   const menu = win.getByRole('listbox', { name: 'Commands' });
   await composer.click();
   await composer.pressSequentially('/');
-  await expect(menu.getByRole('option')).toHaveText([/\/pin/, /\/note/, /\/learn/]);
+  // /record is offered only on a Mac that can record.
+  const offered = [/\/pin/, /\/note/, /\/learn/, /\/compact/];
+  await expect(menu.getByRole('option')).toHaveText(
+    process.platform === 'darwin' ? [...offered, /\/record/] : offered
+  );
   await win.screenshot({ path: testInfo.outputPath('slash-menu.png') });
 
   // Typing narrows it; Enter completes the name instead of sending.
