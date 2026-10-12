@@ -16,19 +16,61 @@ Maintainer notes:
 
 ### Added
 
-- **Rich answers, for real.** In an MDX chat Stem now answers with a chart, table, comparison,
+- **Rich answers with MDX.** In an MDX chat Stem now answers with a chart, table, comparison,
   step list, diagram or form whenever the question calls for one; before, it almost never did.
-  Short and conversational replies stay plain.
-- **Charts, redrawn.** Charts fit the window at any size, show several series with a legend, and
-  come as line, area, bar (turned on their side when labels are long), stacked, donut or scatter.
-  Hover for exact values, or click **Table** to see the numbers.
-- **Stats, comparisons, diagrams and suggested replies.** Headline numbers come as tiles with the
-  change since last time; a choice between options is laid out side by side with the recommended
-  one marked; flows and architectures come as diagrams. A longer answer can end with a few
-  follow-ups you click to send.
-- **Rich answers on the phone.** The iPhone app draws charts, tables, tiles, comparisons, steps,
-  tabs, quizzes, forms and suggested replies itself instead of saying "Open on the desktop".
-  Diagrams still show their source there.
+  Charts fit the window at any size, show several series with a legend, and come as line, area,
+  bar, stacked, donut or scatter; hover for exact values, or click **Table** to see the numbers.
+  Headline numbers come as tiles with the change since last time, a choice between options is laid
+  out side by side with the recommended one marked, and flows and architectures come as diagrams.
+  A longer answer can end with a few follow-ups you click to send. Short and conversational
+  replies stay plain.
+- **Stem in your browser.** With the new Stem extension in Arc, Chrome, Dia or Brave, Stem can
+  work in your own browser, signed in as you: open pages in background tabs, read them, click,
+  fill in forms, upload files you gave it, download, and look at a page's console and network
+  requests. The tab it works in shows a border and a Stop button, and your view never switches.
+  Give it to a persona with its new browser pin, or to plain chats under Settings → Features →
+  Browser control, where **Set up** also installs the extension. No special browser launch, and
+  no open debugging port.
+- **Computer control, faster and on every Mac (Alpha).** "Let Stem control this Mac" now shows
+  when Stem runs entirely on your Mac too, not only when its server is elsewhere. Stem can do
+  several steps in one go and switches between windows more cheaply, so tasks finish sooner.
+  Typing now works in apps like DaVinci Resolve that ignored it.
+- **A new iPhone app.** The phone app is rebuilt as a native iPhone app and arrives as an update
+  to the one you have. It does chats, mail, approvals, pairing and notifications, and its composer
+  has what the desktop's has: model and effort, Fast, Web, MDX, `/note`, `/learn`, pictures from
+  Photos, the camera, Files or the clipboard, Stop, and Stop and edit. New chats can pick a persona
+  and be private, and each chat keeps its own draft. Rich answers are drawn on the phone itself:
+  charts, tables, tiles, comparisons, steps, tabs, quizzes, forms, suggested replies and diagrams.
+  Phone numbers in a reply can be tapped to call.
+- **Agents.** A persona can now start agents for a job: a named copy of one of your personas
+  ("Ana (Verifier)"), with that persona's instructions and model but no memory, that reports back
+  to whoever started it and exists only in that conversation. A conversation holds up to six, and
+  one place always stays free for the personas you added. The persona in charge picks how to work:
+  one agent, one agent and a checker, a council, or several independent attempts. When a coding
+  agent writes code, a second agent that hasn't seen the brief reviews the change, on another model
+  where one is available. Agents replace the helper personas the Orchestrator used to create.
+- **Memory check.** **Deep check** in the Memory tab reads everything Stem learned from your chats
+  and mails you what it found. Mistakes it can prove, like a fact about someone else filed under
+  you or a duplicate, are fixed at once with **Undo**. It asks up to five questions you answer by
+  picking an option, including which side of a conflict is right and whether something ongoing is
+  still true. Anything it can't prove comes as a proposal with **Retire** and **Keep**. Facts you
+  saved yourself or pinned are never touched. Works in the iPhone app too.
+- **A summary of you.** Stem writes a short summary of who you are from what it has learned and
+  from your own messages: your work, your personal life, what's on your mind, and how you like to
+  communicate. It goes with every chat that uses memory, never with private ones, and leaves out
+  sensitive facts and facts learned from folders. Read it, edit it or switch it off under Memory →
+  Facts → **Show summary**. Your edits survive its later rewrites; **Rewrite from facts** starts
+  over.
+- **Show Stem how you do something (Alpha).** On the Mac, click **Record** in the composer, type
+  `/record` or press ⌃⌥R, then do the task once. Stem writes it up as a draft skill that says what
+  changes each time and asks about anything unclear. **Practice run** lets the agent try the draft
+  and stop before the steps you name. **Record another example** sharpens it, and **Save** adds it
+  to your skills. Passwords, one-time codes, card numbers and keys are masked, and password
+  managers are never recorded.
+- **Dictation.** A microphone button in the chat composer on the Mac and the iPhone, and in mail
+  on the Mac, turns speech into text with Apple's on-device model. The audio never leaves your
+  device. Slovak and Czech work too. Pick the language in Settings → App on the Mac, or hold the
+  microphone on the phone. Needs macOS 26 or iOS 26.
 - **Pinboard.** Keep what matters from a chat at the top of it: hover a message and click the
   pin, select a few words of a reply and click **Pin**, or type `/pin` and a note of your own. A
   strip under the chat title shows how many things are pinned and a short name for each, written
@@ -37,15 +79,10 @@ Maintainer notes:
   the chat, or stays put with **Keep open**. Stem also keeps everything on the board in mind for
   the rest of that chat, so a measurement or setting you pinned early on isn't forgotten once the
   conversation gets long. Chat search finds pinned notes too.
-- **Stem in your browser.** With the new Stem extension in Arc, Chrome, Dia or Brave, Stem can
-  work in your own browser, signed in as you: open pages in background tabs, read them, click,
-  fill in forms, upload files you gave it, download, and look at a page's console and network
-  requests. The tab it works in shows a border and a Stop button, and your view never switches.
-  Give it to a persona with its new browser pin, or to plain chats under Settings → Features →
-  Browser control, where **Set up** also installs the extension. No special browser launch, and
-  no open debugging port.
-- **Computer control without a server.** "Let Stem control this Mac" now shows when Stem runs
-  entirely on your Mac too, not only when its server is elsewhere.
+- **Nine more themes.** Catppuccin, Gruvbox, Solarized, Nord, Rosé Pine, One, Everforest and
+  Kanagawa come in light and dark, and Dracula in dark. For a theme with both, **Light or dark**
+  follows your Mac or stays on one. Themes now color code too, and code blocks are highlighted. Settings → App → Appearance, now at the top, also offers **Chat layout**: *Rows* as
+  before, or *Bubbles* with your messages on the right. On the Mac, the sidebar can be translucent.
 - **Wider chats on big screens.** Settings → App → Appearance → **Chat width** lets the
   conversation use the room a large monitor has: *Comfortable* (as before), *Wide*, *Wider* or
   *Full*. It's set per computer.
@@ -53,15 +90,37 @@ Maintainer notes:
   the memories worth checking for each message. In Stem's benchmarks it found about 70% of the
   relevant memories where Qwen3 found under 40%, in English, Slovak, Czech and German, with half
   the RAM. It is the default for new installs, and Stem GTE Memory picks from what it finds. If
-  you're upgrading, Stem offers the switch once. Switching re-indexes your memory in the background,
-  and Manage → Memory switches back. Multilingual E5 Base and EmbeddingGemma 300M are gone from
-  the list: anyone still on one moves to EmbeddingGemma 2, and their old download is deleted.
-- **Commands at a slash.** Type `/` at the start of a message to see what the box can do —
-  `/pin`, `/note` and `/learn` — narrow it by typing, and pick one with Enter, Tab or a click.
+  you're upgrading, Stem offers the switch once. Switching re-indexes your memory in the
+  background, and Settings → Models → Memory recall switches back. Multilingual E5 Base and
+  EmbeddingGemma 300M are gone from the list: anyone still on one moves to EmbeddingGemma 2, and
+  their old download is deleted.
+- **Commands at a slash.** Type `/` at the start of a message to see what the box can do
+  (`/pin`, `/note`, `/learn`, `/compact`, and `/record` on the Mac), narrow it by typing, and pick
+  one with Enter, Tab or a click.
+- **Make room in a long chat.** `/compact` condenses the chat's history so far into a summary and
+  shows how much room that freed, for example 142k → 31k tokens. Add a few words after it to say
+  what the summary should keep.
 - **Stem reopens earlier chats.** Ask about something from an older chat and Stem reads that whole
-  chat, photos you sent there included, instead of asking you to send them again. When it
-  mentions another chat or mail, the name is a link: click it to open that chat, on the desktop
-  or the phone. Private chats are never read into other ones.
+  chat, photos you sent there included, instead of asking you to send them again. Photos are also
+  searchable now, so a chat whose point was a picture can be found by what's in it. When Stem
+  mentions another chat or mail, the name is a link: click it to open that chat, on the desktop or
+  the phone. Private chats are never read into other ones.
+- **Work on several chats at once.** ⌘-click picks chats one by one, Shift-click picks a range.
+  Mark them read or unread, move them to a folder, drag them, or delete them together. A folder's
+  menu also has **Mark all as read**.
+- **Connect a folder in a few steps.** A new wizard starts by asking what kind of folder it is (a
+  notes vault, a code project, documents, or confidential files) and fills in the rest to match.
+  **Suggest for me** looks at what's in the folder and proposes the settings, with its reasons.
+  Learning can now go through a folder's **Full history**.
+- **Add an MCP server by pasting.** **Paste JSON** in the MCP tab reads the server entry a
+  project's README gives for Claude Desktop, Cursor or VS Code.
+- **Each scheduled task keeps a run log.** A task's **Runs** tab lists every firing with its time
+  and outcome, and links the ones that sent mail.
+- **Claude Code can approve its own steps.** A persona that runs Claude Code has a new **Auto**
+  switch. Claude Code then decides every step itself and stops asking, which also means Stem shows
+  no approval cards for that persona. Off by default.
+- **Stem updates itself on the Mac.** From this version on, a Stem in your Applications folder
+  downloads the next update in the background and installs it when you restart or quit.
 
 ### Changed
 
@@ -69,6 +128,40 @@ Maintainer notes:
   sets it for new chats and switches the chat you have open. Markdown chats no longer carry the
   instructions for rich answers, so they send the model less. An iPhone app older than this
   version can only set the format of new chats.
+- **Manage, redesigned.** Personas, MCP servers, Connected folders and Scheduled tasks are now
+  searchable lists, and opening one shows its editor in place. Personas are grouped by what they
+  run as, MCP servers show their state at a glance with a bar when one needs you, and tasks read
+  their schedule in words ("Weekdays at 08:00") and save with one **Save**.
+- **The Memory tab leads with what needs you.** Deep check and the conflicts waiting for an answer
+  come first, then your facts. Tidy-up and the other things that run on their own fold away at the
+  bottom. The recall models moved to Settings → Models → Memory recall, and the Recall tab is now
+  called Past chats.
+- **Mail reads newest first.** A conversation opens on its newest mail with the reply box above
+  it, which says who gets your reply. While personas work, a live card shows who is on it and
+  their latest steps, with Stop. Mail between personas folds under the answer it produced. A draft
+  stays with its own conversation, a reply the server refuses stays as **Not sent** with Retry, and
+  a new mail starts addressed to whoever you last wrote to. In the Inbox, **Waiting on you** comes
+  before **Working**. The phone matches.
+- **Personas stop mailing each other in circles.** A persona's answer goes back to whoever asked
+  for it, so no more chains of "Confirmed" and "Acknowledged", and no empty mails at the end. A
+  mail sent to a persona that is already working reaches it during that run.
+- **The command safety check rarely gets in the way.** It now judges a command by your own words
+  in the chat or mail, and asks a second, more careful model before it blocks anything. In Stem's
+  tests it held back about 1 command in 100 that should run, where it used to hold back nearly a
+  third. You can add your own rules for it, and the always-allowed list under Settings → Features
+  takes regular expressions as well as prefixes (thanks, Lubomir Jacisko). Long jobs such as
+  installs and benchmarks may now run for up to an hour.
+- **Tool calls, tidier.** Each step shows as a small card with a live timer while it runs, and a
+  finished reply folds its steps into one line.
+- **Coding agents start fresh for a new task.** Asking for something unrelated in the same chat or
+  mail starts a new coding-agent session instead of carrying on in the old one.
+- **Cleaner memory.** Stem merges duplicate facts as it finds them, no longer learns "facts about
+  you" from documents it only read (a file's "I" isn't you), and keeps "worked there in 2023"
+  next to "works here now" instead of calling them a conflict.
+- **Skills, one job each.** Stem's own skill tidying splits a skill that tries to cover several
+  jobs and merges only true duplicates. Skills you asked for or imported are never changed. A short
+  follow-up like "Try again" now finds the same skill as the message before it.
+- **Grok 4.7.** Grok 4.6 and 4.7 are available, and a Grok-only setup now starts on Grok 4.7.
 - **Sources as cards.** Under a web answer, the cited sites' icons show at a glance; open the
   list for a card per source.
 - **Folders file chats only when you ask them to.** Making a folder now asks for a name, an
@@ -76,20 +169,27 @@ Maintainer notes:
   dialog opens again from the folder's **Settings…**. Switching auto-filing on asks whether chats
   you already have should be looked at too. The old all-folders switch in Settings → App is gone,
   so existing folders stay as they are until you switch them on.
+- **Quick Chat.** ⌘N starts a new thread, and the panel shrinks back to the bar when it empties.
+- **On the iPhone, a full swipe left archives** a chat or mail instead of deleting it.
 
 ### Removed
 
-- **Own server for memory search removed.** Settings → Memory no longer offers **Server** for
-  embeddings or the reranker. If you had pointed either at your own endpoint, Stem switches it to
-  the built-in models, which download in the background.
+- **Own server for memory search removed.** Settings no longer offers **Server** for embeddings or
+  the reranker. If you had pointed either at your own endpoint, Stem switches it to the built-in
+  models, which download in the background.
+- **The Orchestrator persona is retired.** Every persona that may start agents now does what it
+  did. If you never changed it, it is removed; if you edited it, it stays as your own persona.
 
 ### Fixed
 
+- **Coding agents start when Stem is opened from the Dock.** A coding persona on the Mac failed to
+  start whenever Stem was opened from Finder or the Dock rather than a terminal.
 - **MDX answers render while they stream.** An MDX answer used to show as raw text, tags and all,
   until it finished. It now renders as it arrives, with a short placeholder where a chart or
   table is still being written.
-- **Chat previews no longer show chart data.** A reply that opened with a chart or table showed
-  up in the chat list as a line of raw data; it now shows the chart's title.
+- **Chat previews no longer show chart data or Markdown.** A reply that opened with a chart showed
+  up in the chat list as a line of raw data; it now shows the chart's title. Titles, subjects and
+  previews across chats, mail, tasks and memory no longer show stray `**` or `#`.
 - **Stem reads PDFs in your folders.** Asked to look at a PDF in a connected folder, Stem used to
   get unreadable raw data and asked you to upload the file instead. It now reads the document's
   text, read-only folders included. Scanned PDFs without a text layer still can't be read.
@@ -99,6 +199,16 @@ Maintainer notes:
   the first few hundred characters of each command. Work done a reply or two earlier, or by a long
   script, was lost, so `/learn` often saved nothing. It now reads the whole conversation, with
   your corrections along the way, and still skips anything from folders Stem may not memorise.
+- **Read is read everywhere.** A chat you read on the phone, or in Quick Chat, no longer stays bold
+  in the desktop's chat list.
+- **No duplicate chat after switching apps.** Leaving the iPhone app while a message was sending
+  showed it as failed, and sending it again opened a second chat.
+- **No notification for the chat you're watching.** The phone no longer shows a "Stem finished"
+  banner for the chat already on screen.
+- **A folder's first scan respects "New & changed".** Choosing it before the first scan no longer
+  made Stem learn from the whole folder.
+- **Long commands finish.** Commands were stopped after 5 minutes, which cut off installs and
+  downloads in mail and scheduled runs.
 
 ## 0.5.6 — 2026-10-02
 
