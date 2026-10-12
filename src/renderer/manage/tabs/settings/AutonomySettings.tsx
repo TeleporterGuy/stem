@@ -954,7 +954,9 @@ function extensionWaiting(state: BrowserHostLocalState): boolean {
  * The extension's status as one row with one button: Set up before there is a
  * copy, Show folder while waiting for Load unpacked, Set up again once a
  * browser is connected. Status first, so the row reads at a glance. While it
- * waits, the Load unpacked steps sit right under it.
+ * waits, the Load unpacked steps sit right under it — and after Set up again
+ * too, since that is how another browser or profile gets added: a new profile
+ * of a known browser never changes `browsers`, so those steps stay until Done.
  */
 function BrowserExtensionRow({
   state,
@@ -975,6 +977,14 @@ function BrowserExtensionRow({
           ? 'Waiting for Load unpacked'
           : 'Not set up yet';
   const waiting = extensionWaiting(state);
+  const [adding, setAdding] = useState(false);
+  // Lead with a browser that has not called in yet: that is the likelier one
+  // being added. A second profile of a known browser still picks it by hand.
+  const known = new Set(state.browsers.map((b) => b.name));
+  const setupBrowsers = state.setupBrowsers ?? [];
+  const steps = adding
+    ? [...setupBrowsers.filter((b) => !known.has(b.name)), ...setupBrowsers.filter((b) => known.has(b.name))]
+    : setupBrowsers;
   return (
     <>
       <ValueRow
@@ -1000,13 +1010,24 @@ function BrowserExtensionRow({
             <FolderOpen size={14} />
           </button>
         ) : (
-          <button className="btn sm" disabled={busy} onClick={onSetUp}>
+          <button
+            className="btn sm"
+            disabled={busy}
+            onClick={() => {
+              if (state.extensionPath) setAdding(true);
+              onSetUp();
+            }}
+          >
             {state.extensionPath ? 'Set up again' : 'Set up…'}
           </button>
         )}
       </ValueRow>
-      {waiting && state.extensionPath && (
-        <LoadUnpackedSteps extensionPath={state.extensionPath} browsers={state.setupBrowsers ?? []} />
+      {(waiting || adding) && state.extensionPath && (
+        <LoadUnpackedSteps
+          extensionPath={state.extensionPath}
+          browsers={steps}
+          onDone={waiting ? undefined : () => setAdding(false)}
+        />
       )}
     </>
   );
@@ -1039,7 +1060,16 @@ function CopyIcon({ text, label }: { text: string; label: string }) {
  * to type and the path to paste with ⌘⇧G (Set up already put it on the
  * clipboard). The picker starts on the default browser, the one Set up opened.
  */
-function LoadUnpackedSteps({ extensionPath, browsers }: { extensionPath: string; browsers: SetupBrowser[] }) {
+function LoadUnpackedSteps({
+  extensionPath,
+  browsers,
+  onDone
+}: {
+  extensionPath: string;
+  browsers: SetupBrowser[];
+  /** Set when adding a browser or profile to a working setup: there is nothing to wait for. */
+  onDone?: () => void;
+}) {
   const [app, setApp] = useState<string | null>(null);
   const browser = browsers.find((b) => b.app === app) ?? browsers[0] ?? null;
   const url = browser?.extensionsUrl ?? 'chrome://extensions';
@@ -1058,6 +1088,7 @@ function LoadUnpackedSteps({ extensionPath, browsers }: { extensionPath: string;
       )}
       <ol>
         <li>
+          {onDone && 'Adding a profile? Switch the browser to it first. '}
           Open {browser ? `${browser.name}’s` : 'your browser’s'} extensions page: type this into the address bar.
           <div className="ext-line">
             <code>{url}</code>
@@ -1089,7 +1120,16 @@ function LoadUnpackedSteps({ extensionPath, browsers }: { extensionPath: string;
           </div>
         </li>
       </ol>
-      <div className="muted">This turns green as soon as the extension connects. Do it once in each browser.</div>
+      {onDone ? (
+        <div className="ext-line">
+          <span className="muted">Do this in each browser and profile you want Stem to use.</span>
+          <button className="btn sm" onClick={onDone}>
+            Done
+          </button>
+        </div>
+      ) : (
+        <div className="muted">This turns green as soon as the extension connects. Do it once in each browser.</div>
+      )}
     </div>
   );
 }
