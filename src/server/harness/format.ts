@@ -24,6 +24,16 @@ export interface HarnessEvent {
 export interface HarnessTurnSummary {
   /** The agent's end-turn reply (output stream only, thoughts dropped). */
   text: string;
+  /**
+   * Just the agent's last message: the output text after its last tool call
+   * or message boundary. `text` runs every "Let me…" / "Waiting on agents…"
+   * line of the turn together with the report; this is the report alone.
+   */
+  lastMessage: string;
+  /** The messageId of the text `lastMessage` is collecting, when the adapter sends one. */
+  lastMessageId?: string;
+  /** A tool call came after `lastMessage`: the next text starts a new message. */
+  messageClosed?: boolean;
   toolCalls: number;
   /** Paths the agent's tool calls named, deduped in first-seen order. */
   files: string[];
@@ -37,13 +47,32 @@ export interface HarnessTurnSummary {
 const GENERIC_TITLES = new Set(['tool call', 'Terminal']);
 
 export function newTurnSummary(): HarnessTurnSummary {
-  return { text: '', toolCalls: 0, files: [] };
+  return { text: '', lastMessage: '', toolCalls: 0, files: [] };
+}
+
+/**
+ * The agent's final message: `lastMessage` when the event stream gave one that
+ * the host's own reply text actually ends with (a dropped event batch must not
+ * truncate the report), else the whole reply.
+ */
+export function finalMessage(summary: HarnessTurnSummary): string {
+  const last = summary.lastMessage.trim();
+  const whole = summary.text.trim();
+  return last && whole.endsWith(last) ? last : whole;
 }
 
 /** Fold one event into the summary (mutates and returns it). */
 export function noteEvent(summary: HarnessTurnSummary, event: HarnessEvent): HarnessTurnSummary {
   if (event.type === 'text_delta') {
-    if (event.stream !== 'thought' && typeof event.text === 'string') summary.text += event.text;
+    if (event.stream !== 'thought' && typeof event.text === 'string') {
+      summary.text += event.text;
+      const newMessage =
+        summary.messageClosed === true ||
+        (event.messageId !== undefined && summary.lastMessageId !== undefined && event.messageId !== summary.lastMessageId);
+      summary.lastMessage = newMessage ? event.text : summary.lastMessage + event.text;
+      summary.messageClosed = false;
+      if (event.messageId !== undefined) summary.lastMessageId = event.messageId;
+    }
     return summary;
   }
   if (event.type === 'status') {
@@ -53,7 +82,10 @@ export function noteEvent(summary: HarnessTurnSummary, event: HarnessEvent): Har
     return summary;
   }
   if (event.type === 'tool_call') {
-    if (event.tag === 'tool_call') summary.toolCalls += 1;
+    if (event.tag === 'tool_call') {
+      summary.toolCalls += 1;
+      if (summary.lastMessage) summary.messageClosed = true;
+    }
     for (const location of event.locations ?? []) {
       if (location?.path && !summary.files.includes(location.path)) summary.files.push(location.path);
     }
@@ -130,7 +162,7 @@ export function formatRunResult(input: HarnessResultInput): string {
   if (summary.toolCalls > 0) stats.push(`${summary.toolCalls} tool call${summary.toolCalls === 1 ? '' : 's'}`);
   if (typeof summary.costUsd === 'number') stats.push(`session cost ${formatCost(summary.costUsd)}`);
   const files = summary.files.length ? `\nFiles touched: ${summary.files.join(', ')}` : '';
-  const reply = summary.text.trim() || '(the agent ended its turn without a reply)';
+  const reply = finalMessage(summary) || '(the agent ended its turn without a reply)';
   return (
     `${reply}\n\n[${stats.join(' · ')}]${files}\n` +
     'This session continues: call coding_agent again with the same agent and cwd to send a follow-up ' +

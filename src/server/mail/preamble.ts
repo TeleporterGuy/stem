@@ -117,6 +117,18 @@ const NO_ACKS =
   'turn without writing anything: an empty turn sends nothing.';
 
 /**
+ * The first real driver answers built on a coding agent's report (Cloudfarms
+ * scraping + WAL-G threads, 2026-10-12) turned its evidence into generic
+ * advice: an unauthenticated, possibly enumerable export link and committed
+ * AWS key ids the agent had flagged never reached the user.
+ */
+const FOLD_IN =
+  'When it folds in a report from a persona or agent, lead with that report’s specific findings that change ' +
+  'what the user does or decides — risks it flagged (security ones always, with the file or endpoint), ' +
+  'numbers, estimates, open questions — named concretely, not generalised into advice; the full report stays ' +
+  'readable in the thread, so point to it rather than restating it whole.';
+
+/**
  * The model-visible mail-delivery preamble, fenced for replay stripping +
  * detection. `self` is the persona this delivery runs as, kept out of the
  * "other personas" line — the first smoke test told Normal that "normal" was
@@ -260,7 +272,8 @@ export function mailPreamble(
         'A consulted persona’s reply arrives as a later ' +
         'mail to you, and your current turn ends after sending. Your plain final message always goes to the ' +
         'user, whoever mailed you: once the consultations are in, write the one answer there, folding in what ' +
-        'they added — never repeat a reply the user can already read, and never mail a persona just to ' +
+        'they added (never re-paste a report the user can already read in the thread — pick out what matters ' +
+        'from it), and never mail a persona just to ' +
         'acknowledge it. Mail that reaches you after you have answered is filed in the thread without waking ' +
         `you; the user's next mail brings it to you.${spawning ? ` ${spawning}` : ''}`
       : 'Your plain final message goes to the user. send_mail can also reach the user directly (to ["user"]) — ' +
@@ -306,7 +319,7 @@ export function mailPreamble(
   const writing = writesToModels
     ? [
         isDriver && !mail.agent
-          ? `${modelMail(blind)} ${blind ? 'Your final message' : 'Your answer to the user'} is read by a person: write that one normally. ${NO_ACKS}`
+          ? `${modelMail(blind)} ${blind ? 'Your final message is read by a person: write that one normally.' : `Your answer to the user is read by a person: write that one normally. ${FOLD_IN}`} ${NO_ACKS}`
           : `${modelMail(blind)} That includes your final message. ${NO_ACKS}`
       ]
     : [];

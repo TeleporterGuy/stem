@@ -33,6 +33,15 @@ describe('historical mail work', () => {
     expect(JSON.stringify(run)).not.toMatch(/PRIVATE_REASONING|PRIVATE_IMAGE|HIDDEN_TOKEN/);
   });
 
+  it('ends a code persona’s relay turn ok on the agent reply its coding_agent result carries', () => {
+    const runs = parseWorkHistory(jsonl(
+      entry('u1', 'user', [text('Review the backups')]),
+      entry('a1', 'assistant', [text('Handing over.'), call('c1', 'coding_agent', { prompt: 'Review' })], { stopReason: 'toolUse' }, 1),
+      entry('r1', 'toolResult', [text('Report\n\n[claude · on mac]')], { toolCallId: 'c1', isError: false, details: { relayReply: 'Report' } }, 300)
+    ), 'thread');
+    expect(runs[0]).toMatchObject({ status: 'ok', endedAt: base + 300000, finalText: 'Report' });
+  });
+
   it('retains partial text and incomplete calls on failure and keeps follow-ups separate', () => {
     const runs = parseWorkHistory(jsonl(
       entry('u1', 'user', [text('First request')]),

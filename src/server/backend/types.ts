@@ -82,7 +82,15 @@ export interface ExecRequest {
 
 /** What the ExecService answers a run_command round-trip with. */
 export type ExecBridgeResult =
-  | { ok: true; text: string }
+  | {
+      ok: true;
+      text: string;
+      /**
+       * The agent's last message alone, verbatim — only when its turn ended
+       * normally. A code persona's mail turn ends on it (see coding_agent).
+       */
+      reply?: string;
+    }
   | {
       ok: false;
       error: string;

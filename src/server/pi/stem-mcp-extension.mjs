@@ -3859,7 +3859,9 @@ function registerHarnessTools(pi, turnContext) {
       'code — so the old conversation does not steer the new work; the agent then remembers nothing, so the ' +
       'brief must carry everything. When unsure, continue. When the sender asks for a new or fresh session, ' +
       'always pass it; when they ask to keep the same one, never. ' +
-      "The agent's reply comes back as this tool's result. When it asks a question, answer it in a follow-up " +
+      "In a mail delivery to a code persona, the agent's final message goes out verbatim as your reply mail and " +
+      'your turn ends with the call. Otherwise the agent\'s reply comes back as this tool\'s result. When it ' +
+      'asks a question, answer it in a follow-up ' +
       'call only if the conversation already gives the answer; otherwise relay the question as your ' +
       'reply and call again when the answer arrives. ' +
       'Risky actions (commands, publishes) may pause on an approval card for the user — that time counts ' +
@@ -3919,7 +3921,17 @@ function registerHarnessTools(pi, turnContext) {
         fresh_session: params && params.fresh_session === true ? true : undefined
       });
       if (!res.ok) return taskErr(res.error || 'The coding agent could not run.');
-      return taskOk(res.text || '(the agent ended its turn without a reply)');
+      const text = res.text || '(the agent ended its turn without a reply)';
+      // A code persona's mail turn ends here: the agent's last message IS the
+      // reply mail, verbatim (main reads it off `details.relayReply`). Letting
+      // the wrapper model write the reply cost 1–2 minutes per report and
+      // reworded it on the way (the Cloudfarms threads, 2026-10-12). A question
+      // the agent asks reaches the driver the same way, and its answer comes
+      // back as the next mail.
+      if (turnCtx && turnCtx.relay && turnCtx.mail && typeof res.reply === 'string' && res.reply.trim()) {
+        return { content: [{ type: 'text', text }], details: { relayReply: res.reply }, terminate: true };
+      }
+      return taskOk(text);
     }
   });
 }

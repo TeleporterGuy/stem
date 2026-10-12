@@ -1997,7 +1997,7 @@ export class MailRouter {
   ): Promise<void> {
     // Taken once, up front: the cap-spent fallback below appends a second time
     // after the first append threw, and the replies must ride whichever lands.
-    const agentReplies = await this.agentRepliesFor(conversationId, personaId);
+    const agentReplies = await this.agentRepliesFor(conversationId, personaId, reply);
     if (initiator !== 'user') {
       const { conversations } = await readMail();
       const conversation = conversations.find((c) => c.id === conversationId);
@@ -2071,13 +2071,21 @@ export class MailRouter {
     return { ...(replies.length ? { agentReplies: replies } : {}), ...(images.length ? { images } : {}) };
   }
 
+  /**
+   * `body` drops the agent reply the item's body already is: a code persona's
+   * mail turn ends on the agent's last message, verbatim, as its reply.
+   */
   private async agentRepliesFor(
     conversationId: string,
-    personaId: string
+    personaId: string,
+    body?: string
   ): Promise<{ agentReplies?: string[]; images?: GeneratedImageRef[] }> {
     if (!this.opts.agentReplies && !this.opts.generatedImages) return {};
     const { conversations } = await readMail();
-    return this.agentRepliesField(conversations.find((c) => c.id === conversationId)?.sessions[personaId]);
+    const field = this.agentRepliesField(conversations.find((c) => c.id === conversationId)?.sessions[personaId]);
+    if (!body || !field.agentReplies) return field;
+    const kept = field.agentReplies.filter((r) => r.trim() !== body.trim());
+    return { ...(kept.length ? { agentReplies: kept } : {}), ...(field.images ? { images: field.images } : {}) };
   }
 
   private imagesField(threadId: string | undefined): { images?: GeneratedImageRef[] } {

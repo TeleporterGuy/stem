@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   activityDetail,
+  finalMessage,
   formatCost,
   formatRunResult,
   newTurnSummary,
@@ -27,6 +28,34 @@ describe('turn summary', () => {
       { type: 'text_delta', text: 'The flag is added.', stream: 'output' }
     ]);
     expect(summary.text).toBe('Done. The flag is added.');
+  });
+
+  it('keeps the last message apart from the progress notes before it', () => {
+    const summary = summarize([
+      { type: 'text_delta', text: 'Let me look.', messageId: 'm1' },
+      { type: 'tool_call', tag: 'tool_call', toolCallId: 't1', status: 'pending', title: 'Read' },
+      { type: 'text_delta', text: 'Waiting on agents.', messageId: 'm2' },
+      { type: 'text_delta', text: '# Report\n', messageId: 'm3' },
+      { type: 'text_delta', text: 'All done.', messageId: 'm3' }
+    ]);
+    expect(summary.text).toBe('Let me look.Waiting on agents.# Report\nAll done.');
+    expect(finalMessage(summary)).toBe('# Report\nAll done.');
+  });
+
+  it('splits on tool calls when the adapter sends no message ids', () => {
+    const summary = summarize([
+      { type: 'text_delta', text: 'Checking. ' },
+      { type: 'tool_call', tag: 'tool_call', toolCallId: 't1', status: 'pending', title: 'Read' },
+      { type: 'tool_call', tag: 'tool_call_update', toolCallId: 't1', status: 'completed' },
+      { type: 'text_delta', text: 'Found it.' }
+    ]);
+    expect(finalMessage(summary)).toBe('Found it.');
+  });
+
+  it('falls back to the whole reply when the host text does not end with the last message', () => {
+    const summary = summarize([{ type: 'text_delta', text: 'partial' }]);
+    summary.text = 'The host saw something else entirely.';
+    expect(finalMessage(summary)).toBe('The host saw something else entirely.');
   });
 
   it('counts initial tool calls, not their updates', () => {

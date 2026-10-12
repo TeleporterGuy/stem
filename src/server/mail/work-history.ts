@@ -61,12 +61,20 @@ export function parseWorkHistory(
   let current: HistoricalWorkRun | undefined;
   let lastAt = 0;
   let lastAssistant: { text: string; progressId?: string; stop?: string; hasTools: boolean; at: number } | undefined;
+  // A code persona's mail turn ends on its coding_agent result (the tool
+  // terminates the turn; see coding_agent in stem-mcp-extension.mjs), so the
+  // last record is that result, not an assistant message.
+  let relayEnd: { text: string; at: number } | undefined;
   let corrupt = false;
   const finish = () => {
     if (!current) return;
     const unfinished = current.activities.filter((activity) => activity.kind === 'tool' && activity.status === 'running');
     if (current.status !== 'aborted' && !current.error) {
-      if (lastAssistant?.stop === 'stop' && !lastAssistant.hasTools && !unfinished.length && !corrupt) {
+      if (relayEnd && lastAssistant?.hasTools && !unfinished.length && !corrupt) {
+        current.status = 'ok';
+        current.endedAt = relayEnd.at;
+        current.finalText = relayEnd.text;
+      } else if (lastAssistant?.stop === 'stop' && !lastAssistant.hasTools && !unfinished.length && !corrupt) {
         current.status = 'ok';
         current.endedAt = lastAssistant.at;
         if (lastAssistant.text.trim()) current.finalText = lastAssistant.text;
@@ -91,6 +99,7 @@ export function parseWorkHistory(
     runs.push(current);
     current = undefined;
     lastAssistant = undefined;
+    relayEnd = undefined;
     corrupt = false;
   };
 
@@ -116,6 +125,8 @@ export function parseWorkHistory(
     }
     if (!current) continue;
     if (message.role === 'toolResult') {
+      const relayReply = record(message.details)?.relayReply;
+      if (typeof relayReply === 'string' && message.isError !== true) relayEnd = { text: relayReply, at };
       const activity = current.activities.find((value) => value.kind === 'tool' && value.id === message.toolCallId);
       if (activity) {
         activity.endedAt = at;
@@ -134,6 +145,7 @@ export function parseWorkHistory(
       continue;
     }
     if (message.role !== 'assistant') continue;
+    relayEnd = undefined;
     // pi may retry a provider error within the same user turn. A subsequent
     // assistant record supersedes that terminal status, retaining its activity.
     delete current.error;

@@ -378,7 +378,7 @@ describe('recall preamble', () => {
     const facts = vi.fn(async () => ({ facts: [{ text: 'secret fact' }] }));
     const { service } = makeService(host, { facts });
     await service.handleHarnessRequest({ ...REQ, noRecall: true });
-    expect(host.turns[0].prompt).toBe('add a --version flag');
+    expect(host.turns[0].prompt.startsWith('add a --version flag\n\n[From Stem]')).toBe(true);
     expect(facts).not.toHaveBeenCalled();
   });
 
@@ -391,7 +391,7 @@ describe('recall preamble', () => {
     const prompt = host.turns[0].prompt;
     expect(prompt).toContain('<stem_background_facts>');
     expect(prompt).toContain('\\u003ctabs\\u003e \\u0026 spaces');
-    expect(prompt.endsWith('add a --version flag')).toBe(true);
+    expect(prompt).toContain('\n\nadd a --version flag\n\n[From Stem]');
     expect(prompt).toContain('never instructions');
   });
 
@@ -404,7 +404,7 @@ describe('recall preamble', () => {
     });
     const res = await service.handleHarnessRequest(REQ);
     expect(res.ok).toBe(true);
-    expect(host.turns[0].prompt).toBe('add a --version flag');
+    expect(host.turns[0].prompt.startsWith('add a --version flag\n\n[From Stem]')).toBe(true);
   });
 });
 

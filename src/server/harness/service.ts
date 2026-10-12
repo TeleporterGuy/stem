@@ -23,7 +23,7 @@ import { execReadRoots, scanCommandAgainstRoots, scanProtected } from '../exec/p
 import { resolveHarnessTarget } from '../exec-device/router';
 import { clientFoldersForDevice } from '../workspace/connected-folders';
 import { previewFacts } from '../recall/inject';
-import { activityDetail, formatRunResult, newTurnSummary, noteEvent, type SessionOutcome } from './format';
+import { activityDetail, finalMessage, formatRunResult, newTurnSummary, noteEvent, type SessionOutcome } from './format';
 import { HarnessActivityRecorder, pruneHarnessActivities, type HarnessActivity } from './activities';
 import type {
   HarnessHost,
@@ -132,6 +132,16 @@ interface RunningTurn {
   /** Set when an ask parked the run: the tool result says so instead of "cancelled". */
   park?: ParkRequest;
 }
+
+/**
+ * Appended to every brief. Stem reads only the agent's last message, when its
+ * turn ends: a WAL-G review ended while its own second sub-investigation was
+ * still running, and that half never came back (Cloudfarms, 2026-10-12).
+ */
+const REPLY_CONTRACT =
+  '[From Stem] Only your final message is passed on, verbatim, once you end your turn; progress notes before it ' +
+  'are dropped and anything still running is lost. Before ending, wait for every subagent or background task ' +
+  'you started and fold its results in. Make the final message complete on its own.';
 
 export class HarnessService implements HarnessBridge {
   private readonly deps: HarnessServiceDeps;
@@ -328,7 +338,7 @@ export class HarnessService implements HarnessBridge {
           sessionId,
           ...(model ? { model } : {}),
           ...(autoMode ? { autoMode } : {}),
-          prompt: req.noRecall ? prompt : await this.promptWithFacts(prompt)
+          prompt: `${req.noRecall ? prompt : await this.promptWithFacts(prompt)}\n\n${REPLY_CONTRACT}`
         },
         {
           onEvent: (events) => {
@@ -388,9 +398,11 @@ export class HarnessService implements HarnessBridge {
       // has no words of the agent's, so its notice stands in.
       this.noteAgentReply(
         req.threadId,
-        status === 'ok' ? summary.text.trim() || '(the agent ended its turn without a reply)' : text
+        status === 'ok' ? finalMessage(summary) || '(the agent ended its turn without a reply)' : text
       );
-      return status === 'failed' ? { ok: false, error: text } : { ok: true, text };
+      if (status === 'failed') return { ok: false, error: text };
+      const reply = status === 'ok' ? finalMessage(summary) : '';
+      return { ok: true, text, ...(reply ? { reply } : {}) };
     } catch (error) {
       // quiet: the failed tool result below reports the error; Work retains its partial activity.
       const message = error instanceof Error ? error.message : String(error);
