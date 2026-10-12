@@ -329,6 +329,55 @@ describe('the deep check', () => {
     expect(statusOf(home)).toBe('active');
   });
 
+  it('never retires a fact on a quote that is filler or about something else', async () => {
+    const car = seed('The user drives a Skoda Octavia.', 'user_message', { ts: now() - 200 * DAY });
+    const tea = seed('The user drinks green tea every morning.', 'user_message', { ts: now() - 200 * DAY });
+    store.recordMessage({ threadId: 't4', role: 'user', text: 'Ďakujem pekne, super, presne toto som potreboval.', ts: now() - 10 * DAY });
+    store.recordMessage({ threadId: 't5', role: 'user', text: 'Kúpil som nový bicykel Trek Marlin minulý týždeň.', ts: now() - 10 * DAY });
+    const { check } = await runWith({
+      fixes: [
+        // Real text from a newer message, but filler: it overrules nothing.
+        { kind: 'overruled', fact: car, quote: 'Ďakujem pekne, super', reason: 'Planted.' },
+        // Enough real words, but about a bike, not the tea.
+        { kind: 'overruled', fact: tea, quote: 'Kúpil som nový bicykel Trek Marlin', reason: 'Planted.' }
+      ],
+      proposals: [],
+      questions: []
+    });
+    expect(statusOf(car)).toBe('active');
+    expect(statusOf(tea)).toBe('active');
+    expect(check.changes.filter((c) => c.status === 'applied')).toEqual([]);
+  });
+
+  it('does not take a short thank-you in words as answering questions, nor filler as what the user said', async () => {
+    const home = seed('The user lives at Súmračná 30.', 'user_message');
+    const tea = seed('The user likes tea.', 'user_message');
+    const { check } = await runWith({
+      fixes: [],
+      proposals: [],
+      questions: [
+        { prompt: 'Is Súmračná 30 still your home and all good?', facts: [home], options: ['Yes', 'No'] },
+        { prompt: 'Do you still like tea?', facts: [tea], options: ['Yes', 'No'] }
+      ]
+    });
+    const [qHome, qTea] = check.questions;
+    await answerMemoryCheck(
+      scriptedLlm({}, {
+        saves: [
+          { text: 'The user says all mail should be forwarded, thanks.', replaces: [home], question: qHome.id },
+          { text: 'The user still wants tea removed, all good.', replaces: [tea], question: qTea.id }
+        ],
+        retire: [{ fact: home, reason: 'planted' }, { fact: tea, reason: 'planted' }],
+        answered: [qHome.id, qTea.id]
+      }),
+      'conv-1',
+      'Thanks, all good, still fine.'
+    );
+    expect(statusOf(home)).toBe('active');
+    expect(statusOf(tea)).toBe('active');
+    expect(checkForConversation('conv-1')!.changes.some((c) => c.kind === 'save')).toBe(false);
+  });
+
   it('reads folder facts, proposes rather than retires them as someone else’s, and reads Removed once the folder is gone', async () => {
     const note = seed('The user is a cloud engineer for VPC.', 'folder_doc', { source: 'folder:f1' });
     const a = seed('The user designs Join, a tab organizer.', 'folder_doc', { source: 'folder:f1' });

@@ -3,6 +3,7 @@ import * as activity from '../activity';
 import { degrade } from '../degrade';
 import type { LlmClient } from './llm';
 import { mergeDuplicatePair } from './reconcile';
+import { STOPWORDS } from './search-core';
 import { recallStore, type Fact } from './store';
 import type {
   MemoryCheckAction,
@@ -24,7 +25,8 @@ import type {
 // - fixes it can prove are applied at once, each with Undo: a fact about
 //   someone else taken from a document or an assistant claim, a duplicate, and
 //   a fact the user's own later words overrule (the quote must be found
-//   verbatim in a newer user message, or it falls back to a proposal);
+//   verbatim in a newer user message, carry at least QUOTE_MIN_WORDS real
+//   words, and name something in the fact, or it falls back to a proposal);
 // - questions only the user can settle, as a Form with choice fields;
 // - proposals it cannot prove, each with Retire / Keep.
 // Replies to that thread come back here (answerMemoryCheck): one memory-model
@@ -300,9 +302,20 @@ function toQuestion(raw: RawQuestion, known: Set<number>): CheckQuestion | null 
   };
 }
 
-/** A user message containing `quote` verbatim, newer than `after` (unix seconds). */
-function userMessageWith(quote: string, after: number): boolean {
-  if (quote.length < 8) return false;
+/** Real words an overruling quote must carry before it can retire a fact unasked. */
+const QUOTE_MIN_WORDS = 3;
+
+/**
+ * Whether `quote` proves the user overruled `fact`: it carries at least
+ * QUOTE_MIN_WORDS real words, it names something in the fact, and a user
+ * message newer than `after` (unix seconds) contains it verbatim. The model
+ * picks the quote after reading every fact, planted ones included, so a bare
+ * substring check let "ďakujem pekne" from any message retire any fact.
+ */
+function quoteOverrules(quote: string, fact: Fact, after: number): boolean {
+  const said = words(quote);
+  if (said.size < QUOTE_MIN_WORDS) return false;
+  if (![...words(fact.text)].some((w) => said.has(w))) return false;
   const row = dbHandle()
     .prepare(`SELECT id FROM messages WHERE role = 'user' AND ts > ? AND instr(text, ?) > 0 LIMIT 1`)
     .get(after, quote) as { id: number } | undefined;
@@ -372,7 +385,7 @@ function triage(
       changes.push({ id: `c${randomUUID().slice(0, 8)}`, kind: 'merge', fact: fact.id, into: into.id, text: fact.text, reason, status: 'applied' });
     } else if (kind === 'overruled') {
       const quote = str(raw.quote);
-      if (!userMessageWith(quote, lastSaidByUser(fact.id))) {
+      if (!quoteOverrules(quote, fact, lastSaidByUser(fact.id))) {
         propose(fact, reason);
         continue;
       }
@@ -678,8 +691,30 @@ function factLine(id: number): string {
   return f ? `[${id}] ${f.text}${f.status !== 'active' ? ` (${f.status})` : ''}` : `[${id}] (gone)`;
 }
 
+/**
+ * Filler that says nothing about which fact or question a text is about. The
+ * gates below compare words between the user's text and what the model
+ * proposes; with these counted, "thanks, all good" or any "the"/"som" shared
+ * with a planted fact passed for the user talking about it.
+ */
+const FILLER = new Set([
+  ...STOPWORDS,
+  'thanks', 'thank', 'all', 'good', 'fine', 'okay', 'yes', 'yeah', 'not', 'just', 'also', 'still', 'have', 'has',
+  'had', 'from', 'will', 'would', 'can', 'could', 'should', 'there', 'their', 'they', 'them', 'your', 'yours',
+  'our', 'his', 'her', 'its', 'but', 'any', 'some', 'more', 'most', 'very', 'really', 'user', 'users', 'nothing',
+  'something', 'everything', 'right', 'correct', 'wrong', 'true', 'false', 'none', 'one', 'now',
+  'nie', 'áno', 'ano', 'ďakujem', 'dakujem', 'vďaka', 'vdaka', 'ešte', 'este', 'už', 'len', 'tak', 'ten', 'tá',
+  'tie', 'toto', 'tento', 'táto', 'môj', 'moj', 'moja', 'moje', 'mám', 'mam', 'bol', 'bola', 'bolo', 'boli', 'nič',
+  'nic', 'všetko', 'vsetko', 'dobre', 'jasné', 'jasne', 'správne', 'spravne', 'teraz', 'pre', 'pri', 'aký',
+  'aká', 'aké', 'ich', 'jej', 'jeho', 'nám', 'vám', 'sme', 'ste', 'sú', 'su', 'bude', 'budem',
+  'nein', 'danke', 'auch', 'noch', 'nicht', 'ein', 'eine', 'den', 'dem'
+]);
+
+/** The words of `t` that can say what it is about: 3+ letters, filler dropped. */
 const words = (t: string) =>
-  new Set(t.toLowerCase().normalize('NFC').split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3));
+  new Set(
+    t.toLowerCase().normalize('NFC').split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3 && !FILLER.has(w))
+  );
 
 /**
  * What the user's reply says to each question. A form submit is one line per
@@ -773,8 +808,12 @@ export async function answerMemoryCheck(llm: LlmClient, conversationId: string, 
     const factText = str(s.text);
     const q = open.find((x) => x.id === str(s.question));
     if (!factText || !q || !answered.has(q.id)) continue;
-    const said = words(saidAbout(q));
-    if (![...words(factText)].some((w) => said.has(w))) continue;
+    // The saved fact must carry something the user said that the question did
+    // not already put in front of them: a reply in words is the whole reply,
+    // and sharing only the question's own words is no answer to it.
+    const asked = words(q.prompt);
+    const said = [...words(saidAbout(q))].filter((w) => formLines || !asked.has(w));
+    if (![...words(factText)].some((w) => said.includes(w))) continue;
     const own = new Set(q.facts);
     const replaces = arr(s.replaces).map(int).filter((n): n is number => n != null && canTouch(n, own));
     const id = upsertFact(factText, { source: 'explicit', reviveSuperseded: true });
