@@ -16,11 +16,12 @@ final class PhoneDictation {
     return false
   }
 
-  private static let localeKey = "dictationLocale"
-  /// The chosen language, nil for the phone's own.
+  /// The chosen language; empty for the phone's own. Views bind it with @AppStorage.
+  static let localeKey = "dictationLocale"
+  /// Set once the first-tap explainer has been read.
+  static let introKey = "dictationIntroSeen"
   static var locale: String? {
-    get { UserDefaults.standard.string(forKey: localeKey) }
-    set { UserDefaults.standard.set(newValue, forKey: localeKey) }
+    UserDefaults.standard.string(forKey: localeKey).flatMap { $0.isEmpty ? nil : $0 }
   }
 
   private(set) var phase: Phase = .idle
@@ -36,8 +37,9 @@ final class PhoneDictation {
 
   var active: Bool { phase != .idle }
 
+  /// Reloads too, so a language downloaded since shows as on the phone.
   func loadLanguages() async {
-    guard languages.isEmpty, #available(iOS 26, *) else { return }
+    guard #available(iOS 26, *) else { return }
     languages = await Transcriber.languages()
   }
 

@@ -44,6 +44,9 @@ struct Composer: View {
     @State private var showCamera = false
     @State private var showModels = false
     @State private var dictation = PhoneDictation()
+    @AppStorage(PhoneDictation.localeKey) private var dictationLocale = ""
+    @AppStorage(PhoneDictation.introKey) private var dictationIntroSeen = false
+    @State private var showDictationIntro = false
     @FocusState private var focused: Bool
 
     private var trimmed: String { draft.text.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -117,6 +120,11 @@ struct Composer: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: $showModels) { ModelSheet().environment(session) }
+        .sheet(isPresented: $showDictationIntro, onDismiss: { dictationIntroSeen = true }) {
+            DictationIntroSheet(dictation: dictation) {
+                dictation.toggle(current: draft.text) { draft.text = $0 }
+            }
+        }
     }
 
     // MARK: Slash commands
@@ -254,14 +262,12 @@ struct Composer: View {
 
     // MARK: Dictation
 
-    /// Tap to dictate, tap again to stop; hold for the language.
+    /// Tap to dictate, tap again to stop; hold for the language. The first tap
+    /// explains this instead of listening.
     private var micButton: some View {
         Menu {
-            Picker("Language", selection: Binding(
-                get: { PhoneDictation.locale ?? "" },
-                set: { PhoneDictation.locale = $0.isEmpty ? nil : $0 })
-            ) {
-                Text("Automatic").tag("")
+            Picker("Language", selection: $dictationLocale) {
+                Text("Phone language").tag("")
                 ForEach(dictation.languages, id: \.id) { Text($0.name).tag($0.id) }
             }
         } label: {
@@ -276,7 +282,11 @@ struct Composer: View {
             .frame(width: 24, height: 22)
             .contentShape(Rectangle())
         } primaryAction: {
-            dictation.toggle(current: draft.text) { draft.text = $0 }
+            if dictationIntroSeen || dictation.active {
+                dictation.toggle(current: draft.text) { draft.text = $0 }
+            } else {
+                showDictationIntro = true
+            }
         }
         .foregroundStyle(.secondary)
         .accessibilityLabel(dictation.phase == .listening ? "Stop dictating" : "Dictate")

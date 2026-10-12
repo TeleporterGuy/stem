@@ -129,6 +129,7 @@ struct SettingsView: View {
                     LabeledContent("Model", value: session.currentModel?.displayName ?? "—")
                     Toggle("Web search", isOn: Binding(get: { session.webSearch }, set: { session.setWebSearch($0) }))
                 }
+                if PhoneDictation.supported { DictationSettingsSection() }
                 Section {
                     Button("Unpair this phone", role: .destructive) { confirmUnpair = true }
                 }

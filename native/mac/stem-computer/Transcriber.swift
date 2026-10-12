@@ -33,6 +33,8 @@ enum TranscriberError: LocalizedError, CustomStringConvertible {
 struct DictationLanguage: Hashable {
   let id: String
   let name: String
+  /// Its model is already on the device, so it starts without a download.
+  var installed = false
 }
 
 @available(macOS 26, iOS 26, *)
@@ -41,8 +43,10 @@ final class Transcriber: @unchecked Sendable {
   static func languages() async -> [DictationLanguage] {
     var ids = SpeechTranscriber.isAvailable ? Set(await SpeechTranscriber.supportedLocales.map(\.identifier)) : []
     ids.formUnion(await DictationTranscriber.supportedLocales.map(\.identifier))
+    var installed = SpeechTranscriber.isAvailable ? Set(await SpeechTranscriber.installedLocales.map(\.identifier)) : []
+    installed.formUnion(await DictationTranscriber.installedLocales.map(\.identifier))
     return ids
-      .map { DictationLanguage(id: $0, name: Locale.current.localizedString(forIdentifier: $0) ?? $0) }
+      .map { DictationLanguage(id: $0, name: Locale.current.localizedString(forIdentifier: $0) ?? $0, installed: installed.contains($0)) }
       .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
   }
 
