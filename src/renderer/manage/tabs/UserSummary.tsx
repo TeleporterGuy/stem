@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { UserRound } from 'lucide-react';
+import { ChevronRight, UserRound } from 'lucide-react';
 import type { UserProfile } from '../../../shared/types';
 import { createJobStore, holdFullSpin, useJob } from './shared';
 import { plainParagraphs } from '../../../shared/plain-text';
@@ -11,6 +11,9 @@ import { plainParagraphs } from '../../../shared/plain-text';
 
 // Module-level so a rewrite still spins after a tab switch and back.
 const rewriteJob = createJobStore();
+// Folded by default: the text runs to a screenful and would push the facts
+// list out of sight. Module-level so the choice survives a tab switch.
+let shownOnce = false;
 
 const HEADINGS = new Set(['Work context', 'Personal context', 'How they communicate', 'Top of mind', 'Brief history']);
 
@@ -37,6 +40,11 @@ export function UserSummaryCard({ disabled }: { disabled: boolean }) {
   const [draft, setDraft] = useState<string | null>(null);
   const [confirmRewrite, setConfirmRewrite] = useState(false);
   const { running, msg } = useJob(rewriteJob);
+  const [shown, setShown] = useState(shownOnce);
+  const toggleShown = () => {
+    shownOnce = !shown;
+    setShown(shownOnce);
+  };
 
   useEffect(() => {
     let live = true;
@@ -119,7 +127,16 @@ export function UserSummaryCard({ disabled }: { disabled: boolean }) {
           onChange={(e) => setDraft(e.target.value)}
         />
       ) : (
-        profile.enabled && profile.text && <SummaryText text={profile.text} />
+        profile.enabled &&
+        profile.text && (
+          <>
+            <button type="button" className="memory-tech-head" aria-expanded={shown} onClick={toggleShown}>
+              <ChevronRight size={14} className={shown ? 'open' : ''} />
+              <span>{shown ? 'Hide summary' : 'Show summary'}</span>
+            </button>
+            {shown && <SummaryText text={profile.text} />}
+          </>
+        )
       )}
       {msg && <p className="muted">{msg}</p>}
       {profile.enabled && (
