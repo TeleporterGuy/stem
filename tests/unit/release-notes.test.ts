@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { compareVersions, parseReleaseNotes, selectUnseen } from '../../src/desktop/release-notes';
+import { RECALL_DEFAULTS_RELEASE } from '../../src/shared/recall-recommended';
 
 const SAMPLE = `# Stem release notes
 
@@ -109,5 +110,11 @@ describe('the shipped RELEASE_NOTES.md', () => {
 
   it('gives every section a non-empty body', () => {
     for (const entry of entries) expect(entry.body.length).toBeGreaterThan(0);
+  });
+
+  it('has the section the recall-defaults offer is pinned to', () => {
+    // The offer shows only inside the popup for that section; a pin with no
+    // matching heading means nobody is ever offered the switch.
+    expect(entries.map((e) => e.version)).toContain(RECALL_DEFAULTS_RELEASE);
   });
 });
