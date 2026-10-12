@@ -5056,6 +5056,8 @@ export interface StemApi {
   setChatFolder(threadId: string, folderId: string | null): Promise<ChatListResult>;
   /** Switch an existing chat between MDX and plain Markdown; its next turn runs on a worker of that kind. */
   setChatFormat(threadId: string, format: ChatFormat): Promise<ChatListResult>;
+  /** Mark every listed chat plain Markdown: the one-time carry-over of a pre-0.6.0 Markdown setting. */
+  adoptPlainFormat(): Promise<ChatListResult>;
   /** A cited site's favicon as a data URL (fetched by the server), or null. */
   sourceFavicon(host: string): Promise<string | null>;
 

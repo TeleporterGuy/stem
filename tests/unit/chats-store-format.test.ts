@@ -7,6 +7,7 @@ import { dirname } from 'node:path';
 import {
   getChatFormat,
   getPlainChats,
+  markChatsPlain,
   removeChat,
   setChatFolder,
   setChatFormat
@@ -42,5 +43,12 @@ describe('chat format in the chat store', () => {
   it('an older file without the map reads as all MDX', async () => {
     writeFileSync(path, JSON.stringify({ version: 1, folders: [], assignments: {}, private: {} }));
     expect(await getPlainChats()).toEqual(new Set());
+  });
+
+  it('marks several chats plain in one go (the pre-0.6.0 Markdown carry-over)', async () => {
+    await setChatFormat('t-1', 'md');
+    await markChatsPlain(['t-1', 't-2', 't-3']);
+    expect(await getPlainChats()).toEqual(new Set(['t-1', 't-2', 't-3']));
+    expect(await getChatFormat('t-4')).toBe('mdx');
   });
 });

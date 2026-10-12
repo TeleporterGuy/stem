@@ -666,6 +666,24 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('stem.format', defaultFormat);
   }, [defaultFormat]);
+  // Before 0.6.0 'stem.format' was the format of EVERY chat, sent with each
+  // turn. Chats without a stored format now count as MDX, so a client that was
+  // on Markdown marks the chats it already has, once. The marker is written
+  // only after the server took it, so a failed call retries on the next launch.
+  useEffect(() => {
+    if (localStorage.getItem('stem.format.perChat')) return;
+    if (localStorage.getItem('stem.format') !== 'md') {
+      localStorage.setItem('stem.format.perChat', '1');
+      return;
+    }
+    window.stem.adoptPlainFormat().then(
+      (list) => {
+        localStorage.setItem('stem.format.perChat', '1');
+        applyServerList(list);
+      },
+      () => undefined
+    );
+  }, [applyServerList]);
 
   // Switching models: clamp effort to what the new model supports, and drop a
   // Fast selection when the new model has no priority (Fast) tier.

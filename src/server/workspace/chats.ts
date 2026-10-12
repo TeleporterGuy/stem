@@ -315,6 +315,13 @@ export function setChatFormat(threadId: string, format: 'md' | 'mdx'): Promise<v
   });
 }
 
+/** Mark several threads plain Markdown in one write (see `chats:adoptPlainFormat`). */
+export function markChatsPlain(threadIds: string[]): Promise<void> {
+  return update((store) => {
+    for (const threadId of threadIds) store.plain[threadId] = true;
+  });
+}
+
 export async function getSubjects(): Promise<Record<string, string>> {
   return (await readStore()).subjects;
 }

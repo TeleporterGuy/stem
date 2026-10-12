@@ -24,6 +24,7 @@ import {
   renameFolder,
   setChatFolder,
   setChatFormat,
+  markChatsPlain,
   setSubject,
   updateFolder
 } from '../workspace/chats';
@@ -249,6 +250,14 @@ export function registerChatsIpc(deps: IpcDeps): void {
   // already written keep rendering as they are.
   registerServer('chats:setFormat', async (_e, threadId: string, format: 'md' | 'mdx') => {
     await setChatFormat(threadId, format === 'md' ? 'md' : 'mdx');
+    return chatList();
+  });
+  // Before 0.6.0 the format was one client-side switch sent with every turn,
+  // so a client that had it on Markdown ran every chat as Markdown. Chats
+  // without a stored format now count as MDX; that client calls this once to
+  // keep the chats it already has on Markdown.
+  registerServer('chats:adoptPlainFormat', async () => {
+    await markChatsPlain((await chatList()).chats.map((c) => c.threadId));
     return chatList();
   });
   // The Sources panel's site icons, fetched here because neither the renderer's
