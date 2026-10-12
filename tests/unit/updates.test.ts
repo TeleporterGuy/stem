@@ -4,7 +4,7 @@
 // check that answers without reaching for the network.
 
 import { describe, expect, it } from 'vitest';
-import { createUpdates, parseLatestRelease, updateModeFor, type UpdateModeFacts } from '../../src/desktop/updates';
+import { createUpdates, electronUpdaterInstance, parseLatestRelease, updateModeFor, type UpdateModeFacts } from '../../src/desktop/updates';
 
 describe('parseLatestRelease', () => {
   it('reads the tag out of the redirect, with or without the v', () => {
@@ -73,5 +73,21 @@ describe('a dev run', () => {
     await updates.install(); // a no-op, not a throw
     expect(pushed).toEqual([]); // nothing moved, so nothing was announced
     updates.close();
+  });
+});
+
+describe('electronUpdaterInstance', () => {
+  type Mod = Parameters<typeof electronUpdaterInstance>[0];
+  const updater = { checkForUpdates: () => null } as unknown as Mod['autoUpdater'];
+
+  it('finds the updater on default, where Electron\'s ESM import of the CommonJS package puts it', () => {
+    // The shape Node gives: the getter is invisible to named-export detection.
+    const mod = { default: { autoUpdater: updater } } as unknown as Mod;
+    expect(electronUpdaterInstance(mod)).toBe(updater);
+  });
+
+  it('accepts a named export too, and refuses a module with neither', () => {
+    expect(electronUpdaterInstance({ autoUpdater: updater } as unknown as Mod)).toBe(updater);
+    expect(() => electronUpdaterInstance({} as Mod)).toThrow(/no autoUpdater/);
   });
 });

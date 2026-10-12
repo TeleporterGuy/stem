@@ -127,6 +127,19 @@ async function latestRelease(): Promise<{ version: string; url: string }> {
   return latest;
 }
 
+/**
+ * The updater instance out of an `import('electron-updater')`. The package is
+ * CommonJS and defines `autoUpdater` as a lazy getter Node's ESM interop cannot
+ * see, so the named export is undefined and the real one lives on `default`.
+ * Reading the named one shipped in 0.5.x and failed every mac check.
+ */
+export function electronUpdaterInstance(mod: typeof import('electron-updater')): typeof import('electron-updater').autoUpdater {
+  const fromDefault = (mod as { default?: { autoUpdater?: typeof mod.autoUpdater } }).default?.autoUpdater;
+  const updater = fromDefault ?? mod.autoUpdater;
+  if (!updater) throw new Error('electron-updater exposed no autoUpdater');
+  return updater;
+}
+
 export function createUpdates(deps: UpdatesDeps): Updates {
   const mode = updateMode();
 
@@ -163,7 +176,8 @@ export function createUpdates(deps: UpdatesDeps): Updates {
   let autoUpdaterReady: Promise<typeof import('electron-updater').autoUpdater> | null = null;
 
   function loadAutoUpdater(): Promise<typeof import('electron-updater').autoUpdater> {
-    autoUpdaterReady ??= import('electron-updater').then(({ autoUpdater }) => {
+    autoUpdaterReady ??= import('electron-updater').then((mod) => {
+      const autoUpdater = electronUpdaterInstance(mod);
       const line = (m: unknown) => log('updates', String(m));
       autoUpdater.logger = { info: line, warn: line, error: line, debug: () => undefined };
       autoUpdater.autoDownload = true;
@@ -241,6 +255,13 @@ export function createUpdates(deps: UpdatesDeps): Updates {
       // most of them are a laptop with no network, which fixes itself.
       const message = e instanceof Error ? e.message : String(e);
       log('updates', 'check failed', { error: message });
+      // A broken auto path must still say a release exists: the redirect check
+      // shares nothing with electron-updater, and a known `available` turns the
+      // Settings row into "get it from the release page" with a button.
+      const fallback = mode === 'auto' && !current.available ? await latestRelease().catch(() => null) : null;
+      if (fallback && compareVersions(fallback.version, current.appVersion) > 0) {
+        set({ available: fallback.version, downloadUrl: fallback.url });
+      }
       set({ state: 'error', error: message, checkedAt: Date.now() });
     }
     return { ...current };
