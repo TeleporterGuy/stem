@@ -547,6 +547,35 @@ export function addParticipant(conversationId: string, personaId: string): Promi
 }
 
 /**
+ * Hand a removed persona's seats to its successor (old -> new): each
+ * conversation it was in gets the successor in its place, at the same position
+ * so a driver stays the driver, and its session and send count are dropped so
+ * the successor starts its own. Earlier mails keep their sender. Answers how
+ * many conversations changed; no write when none did.
+ */
+export async function repointParticipants(successors: ReadonlyMap<string, string>): Promise<number> {
+  let changed = 0;
+  await update((store) => {
+    for (const conversation of store.conversations) {
+      if (!conversation.participants.some((p) => successors.has(p))) continue;
+      const next: string[] = [];
+      for (const p of conversation.participants) {
+        const id = successors.get(p) ?? p;
+        if (!next.includes(id)) next.push(id);
+      }
+      conversation.participants = next;
+      for (const old of successors.keys()) {
+        delete conversation.sessions[old];
+        delete conversation.sendCounts[old];
+      }
+      changed++;
+    }
+    if (!changed) return false;
+  });
+  return changed;
+}
+
+/**
  * Record an agent started in a conversation (spawn_agent). The name and the
  * per-conversation limit are checked HERE, inside the serialized write: two
  * spawns racing in parallel turns both pass a check made on an earlier read,

@@ -199,6 +199,13 @@ const RETIRED_SEED_PROMPTS: Record<string, string[]> = {
 };
 
 /**
+ * Who takes over what pointed at a retired built-in once its row is gone:
+ * scheduled tasks that ran as it, and mail conversations it was in (see
+ * repointRetiredPersonas).
+ */
+export const RETIRED_PERSONA_SUCCESSORS: Record<string, string> = { orchestrator: 'normal' };
+
+/**
  * Reshape a whole file, then seed: any built-in missing from the stored list is
  * appended (first launch, and upgrades that add a built-in), keeping stored
  * edits to existing ones untouched. Duplicate ids keep the first occurrence.

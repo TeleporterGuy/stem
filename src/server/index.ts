@@ -33,6 +33,7 @@ import { nameAfterFirstReply, runMailSubjectPass, type MailSubjectDeps } from '.
 import { onPersonasChanged, resolveClientPersona } from './workspace/personas';
 import { personaTurnFields } from './workspace/persona-turn';
 import { initTaskScheduler } from './startup/scheduler';
+import { repointRetiredPersonas } from './startup/retired-personas';
 import type { ExecService } from './exec/service';
 import { detectGitBash } from './exec/git-bash';
 import { startScratchSweeper, stopScratchSweeper } from './exec/scratch';
@@ -795,6 +796,8 @@ function registerIpc(): void {
  */
 export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   await ensureWorkspace();
+  // Before the scheduler loads its tasks (see startup/retired-personas.ts).
+  await repointRetiredPersonas().catch((err) => degrade('personas', 'left tasks and mail pointing at a retired persona', err));
   // Publish the read-only connected-folder roots so the backend extension enforces
   // them from the first turn (also rewritten on every Folders-tab mutation).
   await publishProtectedRootsNow().catch((err) => {
