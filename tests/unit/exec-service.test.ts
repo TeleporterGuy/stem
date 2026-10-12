@@ -168,7 +168,7 @@ describe('ExecService judge', () => {
     const stage2 = ['safe', 'unsafe — no', 'safe'];
     completeImpl = async (p: string) => (p.includes('Think it through first') ? `why\n${stage2.shift()}` : 'unsure');
     const result = await service.handleExecRequest({
-      command: 'echo hi',
+      command: 'node -e 0',
       cwd,
       threadId: 't1',
       isScheduled: false,
@@ -181,7 +181,7 @@ describe('ExecService judge', () => {
   it('one safe vote of three is not enough', async () => {
     const stage2 = ['safe', 'unsafe — no', 'unsure'];
     completeImpl = async (p: string) => (p.includes('Think it through first') ? `why\n${stage2.shift()}` : 'unsure');
-    await service.handleExecRequest({ command: 'echo hi', cwd, threadId: 't1', isScheduled: false });
+    await service.handleExecRequest({ command: 'node -e 0', cwd, threadId: 't1', isScheduled: false });
     expect(approvals).toHaveLength(1);
     expect(approvals[0]?.judgeReason).toBe('no');
   });
@@ -189,7 +189,7 @@ describe('ExecService judge', () => {
   it('stage 2 can clear what stage 1 flagged, and the command runs', async () => {
     completeImpl = async (p: string) => (p.includes('Think it through first') ? 'It is the step asked for.\nsafe' : 'unsure');
     const result = await service.handleExecRequest({
-      command: 'echo hi',
+      command: 'node -e 0',
       cwd,
       threadId: 't1',
       isScheduled: false,
@@ -877,56 +877,56 @@ describe('ExecService blocking and escalation', () => {
   });
 
   it('refuses back to the agent with the reason, then asks the user on the third in a row', async () => {
-    const first = await send('echo one');
+    const first = await send('node -e 1');
     expect(first).toMatchObject({ ok: false, blocked: true });
     expect((first as { error: string }).error).toContain('not asked for');
     expect((first as { error: string }).error).toMatch(/Do not reach the same effect another way/);
-    await send('echo two');
+    await send('node -e 2');
     expect(approvals).toHaveLength(0);
-    await send('echo three');
+    await send('node -e 3');
     expect(approvals).toHaveLength(1);
   });
 
   it('counts per thread', async () => {
-    await send('echo one');
-    await send('echo two');
-    await send('echo three', { threadId: 't2' });
+    await send('node -e 1');
+    await send('node -e 2');
+    await send('node -e 3', { threadId: 't2' });
     expect(approvals).toHaveLength(0);
   });
 
   it('a command that runs breaks the streak', async () => {
-    await send('echo one');
-    await send('echo two');
+    await send('node -e 1');
+    await send('node -e 2');
     verdict = 'safe';
-    expect((await send('echo fine')).ok).toBe(true);
+    expect((await send('node -e 5')).ok).toBe(true);
     verdict = 'unsafe';
-    await send('echo three');
+    await send('node -e 3');
     expect(approvals).toHaveLength(0);
   });
 
   it('an Allow on the card starts the count over', async () => {
     answer = 'allowOnce';
-    await send('echo one');
-    await send('echo two');
-    expect((await send('echo three')).ok).toBe(true);
+    await send('node -e 1');
+    await send('node -e 2');
+    expect((await send('node -e 3')).ok).toBe(true);
     expect(approvals).toHaveLength(1);
-    await send('echo four');
+    await send('node -e 4');
     expect(approvals).toHaveLength(1);
   });
 
   it('keeps asking after a deny until the user allows something', async () => {
-    await send('echo one');
-    await send('echo two');
-    await send('echo three');
-    await send('echo four');
+    await send('node -e 1');
+    await send('node -e 2');
+    await send('node -e 3');
+    await send('node -e 4');
     expect(approvals).toHaveLength(2);
   });
 
   it('parks an unattended run at the escalation point instead of a card', async () => {
-    expect(await send('echo one', { isScheduled: true })).toMatchObject({ ok: false, blocked: true });
-    await send('echo two', { isScheduled: true });
-    const third = await send('echo three', { isScheduled: true });
-    expect(third).toMatchObject({ ok: false, park: { kind: 'exec', command: 'echo three', reason: 'not asked for' } });
+    expect(await send('node -e 1', { isScheduled: true })).toMatchObject({ ok: false, blocked: true });
+    await send('node -e 2', { isScheduled: true });
+    const third = await send('node -e 3', { isScheduled: true });
+    expect(third).toMatchObject({ ok: false, park: { kind: 'exec', command: 'node -e 3', reason: 'not asked for' } });
     expect(approvals).toHaveLength(0);
   });
 
@@ -938,32 +938,32 @@ describe('ExecService blocking and escalation', () => {
       }
     } as unknown as ChatBackend;
     (service as unknown as { deps: { runtime: () => ChatBackend } }).deps.runtime = () => runtime;
-    await send('echo one');
+    await send('node -e 1');
     // The first refusal, yet a card: a judge that failed said nothing about the command.
     expect(approvals).toHaveLength(1);
     expect(approvals[0]?.judgeVerdict).toBe('failed');
   });
 
   it('runs a command the user allowed on a parked run once, without the judge', async () => {
-    service.grantOnce('t1', { command: 'echo granted', cwd });
-    expect((await send('echo granted')).ok).toBe(true);
+    service.grantOnce('t1', { command: 'node -e 6', cwd });
+    expect((await send('node -e 6')).ok).toBe(true);
     // Once: the same command again is judged as usual.
-    expect(await send('echo granted')).toMatchObject({ ok: false, blocked: true });
+    expect(await send('node -e 6')).toMatchObject({ ok: false, blocked: true });
     // Exactly that command: another one never rides the grant.
-    service.grantOnce('t1', { command: 'echo granted', cwd });
-    expect(await send('echo other')).toMatchObject({ ok: false, blocked: true });
+    service.grantOnce('t1', { command: 'node -e 6', cwd });
+    expect(await send('node -e 7')).toMatchObject({ ok: false, blocked: true });
   });
 
   it('binds a grant to the folder and machine the user saw', async () => {
     const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'stem-exec-elsewhere-')));
     try {
-      service.grantOnce('t1', { command: 'echo granted', cwd });
+      service.grantOnce('t1', { command: 'node -e 6', cwd });
       // The same text in another folder is judged as usual…
-      expect(await send('echo granted', { cwd: elsewhere })).toMatchObject({ ok: false, blocked: true });
+      expect(await send('node -e 6', { cwd: elsewhere })).toMatchObject({ ok: false, blocked: true });
       // …and a grant for a paired computer never lets it run here.
-      service.grantOnce('t1', { command: 'echo granted', cwd, deviceId: 'mac-1' });
-      expect(await send('echo granted')).toMatchObject({ ok: true });
-      expect(await send('echo granted')).toMatchObject({ ok: false, blocked: true });
+      service.grantOnce('t1', { command: 'node -e 6', cwd, deviceId: 'mac-1' });
+      expect(await send('node -e 6')).toMatchObject({ ok: true });
+      expect(await send('node -e 6')).toMatchObject({ ok: false, blocked: true });
     } finally {
       rmSync(elsewhere, { recursive: true, force: true });
     }
@@ -975,9 +975,9 @@ describe('ExecService blocking and escalation', () => {
       approvals.push(r);
       queueMicrotask(() => service.abortThread('t1'));
     };
-    await send('echo one');
-    await send('echo two');
-    const result = await send('echo three');
+    await send('node -e 1');
+    await send('node -e 2');
+    const result = await send('node -e 3');
     expect((result as { error: string }).error).toBe('The command was cancelled.');
   });
 });
