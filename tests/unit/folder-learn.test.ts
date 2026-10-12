@@ -443,4 +443,44 @@ describe("'new' mode chosen before the first scan", () => {
 
     await updateConnectedFolder(folder.id, { index: false });
   });
+
+  it('keeps the backlog of an index a 0.5.x Stem filled (no scan marker)', async () => {
+    const { writeFileSync } = await import('node:fs');
+    const { DatabaseSync } = await import('node:sqlite');
+    const { folderIndexDbPath } = await import('../../src/server/workspace/paths');
+    const { addConnectedFolders, updateConnectedFolder } = await import('../../src/server/workspace/connected-folders');
+    const { learnAllIndexedFolders, scanAllIndexedFolders, seedFolderLearnMarks } = await import(
+      '../../src/server/folder-index'
+    );
+    const root = join(dir, 'upgraded-new-mode');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'old.md'), '# Old\nThe garage door code is 4411.');
+
+    const folder = (await addConnectedFolders([root])).find((f) => f.path.endsWith('upgraded-new-mode'))!;
+    await updateConnectedFolder(folder.id, { index: true, learnMode: 'new' });
+    await seedFolderLearnMarks(folder.id);
+    await scanAllIndexedFolders();
+    // Edited after the baseline, not learned yet when the upgrade lands.
+    writeFileSync(join(root, 'edited.md'), '# Edited\nThe boiler is serviced every November.');
+    await scanAllIndexedFolders();
+
+    // What a 0.5.x index looks like: the same rows, none of 0.6.0's markers.
+    const db = new DatabaseSync(folderIndexDbPath(folder.id));
+    db.exec(`DELETE FROM meta WHERE key IN ('scanned', 'learn_baseline')`);
+    db.close();
+
+    const seen: string[] = [];
+    const makeLlm = (): LlmClient => ({
+      complete: async (prompt: string) => {
+        seen.push(prompt);
+        return claimsReply([]);
+      }
+    });
+    await scanAllIndexedFolders();
+    await learnAllIndexedFolders({ makeLlm });
+    expect(seen.join('\n')).toContain('boiler');
+    expect(seen.join('\n')).not.toContain('garage door');
+
+    await updateConnectedFolder(folder.id, { index: false });
+  });
 });

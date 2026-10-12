@@ -341,6 +341,11 @@ export class FolderIndexStore {
   // exactly that) would otherwise index every file unstamped and sweep it all.
   // The drain skips a 'new' folder until its baseline is set.
 
+  /** True when anything is indexed at all. */
+  hasDocs(): boolean {
+    return this.open().prepare(`SELECT 1 FROM docs LIMIT 1`).get() !== undefined;
+  }
+
   /** True once a scan pass has completed over this index. */
   hasScanned(): boolean {
     return this.readMeta('scanned') !== null;

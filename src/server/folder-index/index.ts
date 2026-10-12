@@ -151,6 +151,11 @@ export async function scanAllIndexedFolders(): Promise<void> {
       const store = storeFor(f.id);
       const scanHandle = activity.begin('folders.scan', `Scanning ${f.label}`, { detail: f.label });
       try {
+        // An index filled by Stem 0.5.x has files but no scan marker. Its learn
+        // marks are already right (0.5.x stamped them when 'new' was chosen),
+        // and what is unstamped is a backlog still owed, so it is the baseline
+        // as it stands. Stamping it below would drop that backlog unlearned.
+        if (!store.hasScanned() && store.hasDocs()) store.markLearnBaseline();
         const res = await scanFolder(store, f.path);
         activity.end(scanHandle, {
           worked: res.indexed > 0 || res.removed > 0,
