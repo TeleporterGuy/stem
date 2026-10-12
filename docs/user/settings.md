@@ -13,9 +13,11 @@ instructions.
   </picture>
 </p>
 
-Settings has four tabs: **App** (the conversation, Quick Chat, appearance, the Escape
-key, notifications, About), **Features** (mail among personas, image generation, commands,
-coding agents, computer control), **Server** and **Models**.
+Settings has four tabs: **App** (appearance, the conversation, Quick Chat, dictation,
+the Escape key, notifications, About), **Features** (mail among personas, image
+generation, commands, coding agents, computer control, browser control), **Server**
+(where Stem runs, your devices, moving or backing up) and **Models** (providers, which
+model does which job, memory recall, web search).
 
 ## Providers and models
 
@@ -78,6 +80,24 @@ when you add one again.
 This box is for the **Custom** server. If you need it for LM Studio, add LM Studio
 as a Custom endpoint instead, with the URL `http://localhost:1234`.
 
+### Model roles
+
+Stem runs more than one model. Under **Model roles**, each group's header says what it
+runs on now, and a role left unset follows its group:
+
+- **You chat with these** — the model that writes your replies (give it your best one),
+  and Quick Chat's model.
+- **Judgment work** — **Memory** (learns facts, writes summaries, tidies memory, runs
+  the Deep check), **Skills** (writes skills, `/learn`, skill tidy-up) and the **Command
+  safety check**'s review. Unset, they follow the model you chat with.
+- **Quick tasks** — small jobs a fast model does well: chat subjects, filing chats into
+  folders, and the safety check's quick first pass.
+
+**Memory recall**, below the roles, sets how many facts go with each message and the
+models that pick them (see [Memory](memory/README.md#models-and-machines-that-cannot-reach-the-internet)).
+
+### Web search
+
 **Web search** works with every model, not only cloud ones, and returns cited
 sources. Under **Web search** you choose the backend that runs the search:
 **Automatic** ends at one that needs no key, or pick a named one and paste its key.
@@ -90,9 +110,9 @@ never picked automatically; select it yourself if you want it.
 
 ## Command approvals
 
-Turn **Run commands** off to disable shell commands. With **Assisted**, the selected
-safety-check model receives the command and working folder. A cloud model processes
-that text on its provider.
+Turn **Run commands** off to disable shell commands. With **Assisted**, the safety-check
+models (**Settings → Models**) receive the command, its working folder, and what you
+wrote in the conversation. A cloud model processes that text on its provider.
 
 Commands run on the machine Stem itself runs on: your own computer normally, or your
 server if you [moved Stem to one](../running-on-a-server.md) — so they see the programs
@@ -100,11 +120,27 @@ installed there, not the ones on the computer you happen to be typing on. On mac
 Linux they run under `zsh`, or `bash`/`sh` on a machine without it; on Windows under
 Git Bash when it is installed, otherwise `cmd.exe`.
 
+**Approval mode** governs every command, the ones Stem runs itself and the ones a coding
+agent asks to run:
+
 - **Manual**: known-safe and always-allowed commands run; everything else asks first.
-- **Assisted**: an AI safety check passes routine commands and asks about uncertain
-  ones. A convenience, not a security boundary.
+- **Assisted**: an AI safety check reads what you asked for (your own messages, never
+  the assistant's explanations or file contents) and runs the commands that serve it.
+  A quick first pass clears the obvious ones; the rest are reviewed more carefully
+  before anything is refused. A refused command goes back to the assistant with the
+  reason, to find a safer way. After three refusals in a row you decide: a card in a
+  chat, or, for mail and scheduled runs, an approval in the Inbox that pauses the run
+  until you answer. A convenience, not a security boundary.
 - **Yolo**: commands run without asking. Read-only connected folders remain
   protected.
+
+With **Assisted**, three boxes let you steer the safety check in your own words:
+**Always allow** (what may run without asking), **Never allow** (what must always come
+to you; it wins over everything else), and **About my setup** (which machines, folders
+and services are yours and how much they matter).
+
+A command may run for up to an hour; longer jobs are started in the background and
+checked on.
 
 On an approval card, **Always allow** saves a command prefix for future turns.
 Keep prefixes narrow; `git status` grants less access than `git`. Approval cards
@@ -156,8 +192,8 @@ immediately.
 
 Commands on a paired computer are for shell work there: files, git, scripts, opening an
 app. Driving its screen — System Settings, clicking, typing, AppleScript at its apps — is
-what a persona with a computer pin (Manage → Personas → "Computer this persona controls"),
-or a chat allowed to control that Mac (see [Coding agents and computer
+what a persona that runs as **Computer** (its editor's **Runs as** tab → **Screen and
+apps**), or a chat allowed to control that Mac (see [Coding agents and computer
 control](#coding-agents-and-computer-control)), does with its `computer` tool, under your
 consent switch and banner. Once a persona is pinned to a computer, a GUI-scripting command
 from any conversation that may not drive it is refused and told to hand the task over;
@@ -193,11 +229,12 @@ A coding agent (Claude Code, Codex, OpenCode, …) takes programming work off St
 hands; computer control lets Stem see a Mac's screen and click and type there. Both
 come from two places, and a conversation gets them from exactly one:
 
-- **A persona** gets them from its own setup in Manage → Personas: a coding setup
-  (agent, computer, folder) and a computer pin ("Computer this persona controls").
-  A persona without one has no coding agent, or no computer control — whatever the
-  switches below say. Chatting as your Secretary will not start Claude Code unless the
-  Secretary has a coding setup.
+- **A persona** gets them from its own setup, on the **Runs as** tab of its editor in
+  the Personas tab: **Coding agent** (the agent, where it runs, its folder and model)
+  or **Computer** (**Screen and apps** for a Mac's screen, **Browser** for the Stem
+  extension). A persona without one has no coding agent, or no computer control —
+  whatever the switches below say. Computer control is in **Alpha**. Chatting as your
+  Secretary will not start Claude Code unless the Secretary has a coding setup.
 - **A chat with no persona** (Quick Chat included) gets them from Settings → Features →
   Coding agents / Computer control → **Allow in chats**. Off by default. The switch
   belongs to your Stem server, so it covers chats from every device, the phone too.
@@ -221,13 +258,16 @@ Stem closed fails right away with a message saying so; nothing is queued.
 
 Each computer still has to agree for itself: **Run coding agents on this computer**
 and **Let Stem control this Mac**, in the same section *on that machine*. Command
-approvals apply to what a coding agent runs, the same as for personas.
+approvals apply to what a coding agent runs, the same as for personas. A persona that
+drives Claude Code can instead switch on **Approves its own actions**: Claude Code's own
+check then decides each step, so routine work never waits on a card, and Stem shows no
+cards and keeps no approval log for that persona.
 
 If Stem says it cannot use a coding agent or control the computer, it names the
 reason: the chat runs as a persona without that setup, or chats are switched off here.
 
 **Browser control** follows the same rules with its own pin and its own switch: a
-persona's "Browser this persona controls", or Settings → Features → Browser control →
+persona's **Browser** (Runs as → Computer), or Settings → Features → Browser control →
 Allow in chats, plus **Let Stem control this Mac's browser** on the Mac itself. Setting
 up the extension is described on the [Browser control](browser-control.md) page.
 
@@ -249,6 +289,27 @@ The assistant sees the pictures it made, so you can ask for changes. Only the ne
 three stay in its view as pictures. Older ones stay in the chat and can still be edited
 when you ask. Pictures are kept with the chat and deleted with it. Your prompt, and any
 image used as a starting point, go to OpenAI, even in a private chat.
+
+## Appearance
+
+Under **Settings → App → Appearance**, set per computer:
+
+- **Theme** — **System** follows the OS; the others include Catppuccin, Gruvbox,
+  Solarized, Nord, Rosé Pine, One, Everforest, Kanagawa and Dracula. For a theme with
+  both palettes, **Light or dark** picks **Follow the OS**, **Always light** or
+  **Always dark**. **Themes folder** opens the folder where you can add your own; copy
+  `_example.json` to start one.
+- **Chat layout** — **Rows**, or **Bubbles** with your messages on the right.
+- **Chat width** — **Comfortable**, **Wide**, **Wider** or **Full**, for large screens.
+- **Translucent sidebar** (macOS) — lets the desktop show through the toolbar and
+  side panel.
+
+## Dictation
+
+The mic button in the composer turns speech into text with the device's own model;
+the audio never leaves it. **Settings → App → Dictation → Language** picks the Mac's
+language, or **Automatic**. A language's model downloads the first time you use it.
+It needs macOS 26; on the phone (iOS 26), hold the mic to pick the language.
 
 ## Escape key
 
@@ -294,6 +355,20 @@ conversation back to the Inbox, as does continuing it from the main window.
 
 On Linux with Wayland, set the command shown in Settings as a desktop keyboard
 shortcut; the recorded global shortcut cannot fire there.
+
+## Server and devices
+
+**Settings → Server** says where Stem runs: **This computer**, or the address of a server
+elsewhere that this app is a window onto. See [Running on a
+server](../running-on-a-server.md) for setting one up.
+
+**Devices** lists everything signed in to this Stem, with when each was last seen.
+**Withdraw** signs one out; Stem warns first if MCP servers run on it. **Add a device**
+names the new one and gives a code to enter there (**Get a code**), or **Pair a phone**
+shows a QR code to scan in the Stem iPhone app (beta). The phone app has chats, mail,
+rich answers, dictation and approvals, against the same Stem.
+
+**Move or back up this Stem** is described in [Moving and backups](moving-and-backups.md).
 
 ## About
 

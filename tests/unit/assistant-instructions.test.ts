@@ -68,7 +68,8 @@ describe('stemAssistantInstructions', () => {
     expect(prompt).toContain('`assistant-mcp`');
     const procedure = stemGuidePage('assistant-mcp')!.markdown;
     expect(procedure).toContain('spawn uvx ENOENT');
-    expect(procedure).toContain('Move to');
+    // The MCP editor moves a server on its Runs on tab (there is no "Move to").
+    expect(procedure).toContain('**Runs on** tab');
   });
 
   // The skill author has no system prompt of its own — it sees a serialized trace

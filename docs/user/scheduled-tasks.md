@@ -26,15 +26,16 @@ arrives as mail in the Inbox.
 
 - Stem must be running. If Stem is closed or the computer sleeps, each overdue task
   runs once when Stem can run again.
-- Times use the computer’s local time.
+- Times use the local time of the machine Stem runs on: your computer, or your
+  server if you moved Stem to one.
 - Each run starts with an empty context: the task’s prompt, the persona it runs
   as (if any), and your memory. Nothing said in the chat that created the task
   carries over, so the prompt has to say everything the run needs. Stem writes
   prompts that way when it schedules a task. Tasks from before this behaviour
   were rewritten once, on the first start after the update, from the chat each
-  was scheduled from; a mail lists them, and each shows its previous prompt in
-  the Tasks tab with a **Revert to the original** link until you revert or edit
-  it.
+  was scheduled from; a mail lists them, and each shows its previous prompt on
+  its **Prompt** tab with a **Revert to the original** link until you revert or
+  edit it.
 - Runs use the app’s default model and effort, unless the task runs as a persona
   (its model settings apply) or pins a model of its own in **Scheduled tasks**
   (see below).
@@ -50,37 +51,44 @@ arrives as mail in the Inbox.
   front; Settings → App → **Notifications** turns that down to a dock bounce, or to
   nothing but the mail.
 - When a task starts failing, one mail says so with the reason. Repeated failures
-  are shown on the task’s row instead, and a recovery sends nothing.
+  are shown on the task’s row instead (it moves to **Needs attention**), and a
+  recovery sends nothing.
 - A one-time task disappears after its scheduled run finishes, even if it fails.
-- Commands needing interactive approval are denied. Use clearly safe commands or a
-  narrowly saved allowed prefix.
+- A command that needs your approval does not fail the run: the run waits, and its
+  mail in the Inbox asks with **Allow once** and **Deny**. Your answer resumes the
+  run. Under **Assisted** approval, the safety check reads the chat the task was
+  scheduled from to judge what you asked for.
 
 ## Task controls
 
-Open **Scheduled tasks**, then:
+Open **Scheduled tasks**. Tasks are grouped **Needs attention** (failing),
+**Upcoming** (soonest first) and **Paused**. Each row reads the schedule in words
+("Weekdays at 08:00 · Secretary") with the next run or a status on the right. New
+tasks are made in a chat: **New in chat** starts one.
 
-- **Next** is the useful date. The `cron` line is Stem’s stored repeat pattern.
-- A run marked **(failed)** carries the reason: hover it. The same line is in the log
-  (`stem.log` in Stem’s state folder), which is where to look if the row is gone.
-- Click the task’s title (or the dotted label at the end of its row) to open the
-  task. The editor shows:
-  - **Prompt** — the full instruction every run re-executes. Edit it and **Save
-    prompt**; the row’s title follows.
-  - **Schedule** — the cron expression (minute hour day month weekday), or the
-    date and time of a one-time run. **Save schedule** refuses an expression that
-    can never fire, and a time already in the past.
-  - **Runs as** — one choice: the **app default model**, **a model of its own**
-    (pick the model, and optionally an effort), or a **persona**. A persona run
-    uses that persona’s role prompt, coding-agent pin, private memory, and model
-    settings, and its mails arrive from that persona. Each run also lets the
-    persona save what it learned into its notes, as a mail delivery does. A task
-    never has both a persona and a model pin.
-- **Open chat** opens the chat the task was scheduled from. Runs do not appear
-  there; their work is under the mail they sent, in the Inbox.
-- **Run now** to test it without changing the next scheduled time.
-- **Pause** to keep the task without running it.
-- **Delete** to remove the schedule. Its mail stays in the Inbox; the hidden
-  threads its runs left behind are removed.
+Click a task to open it. The header has the on/off switch (pause or resume), **Open
+chat** (the chat the task was scheduled from; runs do not appear there), **Run now**
+(a test that leaves the next scheduled time alone) and **Delete task**, which asks
+once. A failing task shows its last error on top. Three tabs:
+
+- **Prompt** — the full instruction every run re-executes, and **Runs as**: the
+  **App default model**, **A model of its own…** (pick the model, and optionally an
+  effort), or a **persona**. A persona run uses that persona’s role prompt, coding
+  setup, private memory, and model settings, and its mails arrive from that persona.
+  Each run also lets the persona save what it learned into its notes, as a mail
+  delivery does. A task never has both a persona and a model.
+- **Schedule** — the cron expression (minute · hour · day · month · weekday) in the
+  Stem server's time, or the date and time of a one-time run. Save refuses an
+  expression that can never fire, and a time already in the past.
+- **Runs** — each firing with its time and outcome: *Mailed* with the mail's subject
+  and an **Open** button, *Nothing to report. No mail sent.*, *Waiting for your
+  approval in the Inbox*, or the failure's reason. A run that mails nothing leaves
+  only this line.
+
+Changes on the Prompt and Schedule tabs are written together when you press **Save**.
+Deleting a task keeps its mail in the Inbox; the hidden threads its runs left behind
+are removed. A failure's reason is also in the log (`stem.log` in Stem’s state
+folder), which is where to look if the task is gone.
 
 To replace the instruction or timing, edit the task here, or ask Stem in the chat
 that created it to cancel the task and create a new one. Deleting that chat leaves

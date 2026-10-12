@@ -20,6 +20,25 @@ it.
 Personas that work on your computer (a coding agent, screen control or browser
 control) are not built in. You make them in the Personas tab.
 
+## The Personas tab
+
+The list groups personas by what they run as: **Assistants**, **Coding agents** and
+**Computer control**. **New** starts one of each kind. Click a persona to edit it;
+its header has buttons to duplicate it and, for your own personas, **Delete
+persona**. Nothing changes until you press **Save**. Three tabs:
+
+- **Role** — the role prompt, and optionally a model and effort of its own.
+- **Runs as** — **Assistant** (Stem's own tools), **Coding agent** (Claude Code,
+  Codex or another agent working in one folder on a computer you pick), or
+  **Computer** (**Screen and apps** on a Mac, **Browser** through the Stem
+  extension, or both).
+- **Access** — **Private memory** (notes it keeps from its work; for a coding agent,
+  **Standing answers** to the agent's recurring questions), **Sees your memory**,
+  **Open to chats** (offered in the chat composer on the phone), **Can start
+  helpers** (see Agents below), **Uses every MCP server** (switch it off to pick which
+  servers it may use; the rest are hidden from it entirely), and **Send budget** (how
+  many mails it may start between your sends).
+
 ## Who to mail first
 
 Mail **Normal** when you are not sure. It answers simple requests itself and
@@ -34,10 +53,37 @@ these claims, or read this draft cold. Mail a coding, screen or browser persona
 directly when the request is that work. To let Normal or Secretary use one of
 those, add it to the conversation yourself.
 
+## Write and read mail
+
+**New mail** (`⌘⇧N`) starts addressed to whoever your last mail went to. In
+**To**, type a persona's name to add it. The first one leads: it gets your mail
+and answers you. Click the crown on another to make it lead. The subject is
+optional; Stem names the conversation after the first reply. **Private** in the
+header makes the whole conversation private: nothing in it is saved to memory or
+read from it, and the personas keep no notes of it. It is fixed once sent. Send
+names the lead ("Send to Normal"). Closing the pane keeps an unsent draft, which
+waits as a **Draft** row at the top of the Inbox; **Discard** asks first.
+
+A conversation reads newest first. The reply box sits on top, under the header,
+and says who gets your reply. Each conversation keeps its own reply draft. While
+personas work, a live card shows who is on it and the latest steps, with **Stop**.
+Below it the newest mail is open and older ones fold to one line. Mail the
+personas sent each other folds onto the reply it led to ("Consulted Verifier · 2
+mails"). If you reply while they are still working, your mail is read when the
+current run ends. A reply the server refused stays in the thread as **Not sent**,
+with Retry, Edit and Delete, so its text is never lost. **Forward** sends a mail on
+to other personas with a note of your own.
+
+The Inbox lists **Waiting on you** first, then **Working** (conversations you
+sent that personas are still on), then the folded **Snoozed**, **Archived** and
+**Sent** sections. A run that needs your approval for a command waits in its
+mail with **Allow once** and **Deny**. You can also answer in words in the reply
+box instead. On the Mac the reply and compose boxes have the dictation mic too.
+
 ## Agents
 
-A persona allowed to start agents (the "Can start agents" box in its editor;
-Normal and Secretary ship with it on) can hand pieces of a job to
+A persona allowed to start agents (**Can start helpers** under its editor's
+**Access** tab; Normal and Secretary ship with it on) can hand pieces of a job to
 agents. An agent is a named copy of one of your personas, such as two Critics
 called reviewer-a and reviewer-b, that works its piece and reports back to the
 persona that started it. Several agents started together work in parallel, and
@@ -83,7 +129,8 @@ with its mail, and a run that made pictures always sends one.
 
 ## Work history
 
-Expand **Work** beneath your message to see what happened while you waited.
+Expand **Work** under a reply to see what happened while you waited. Work that
+cannot be tied to one mail folds into **Earlier work** at the bottom.
 Each request has its own history, grouped by persona and run. The timeline shows
 recorded actions, progress updates, timestamps, and outcomes. Expand an action to
 inspect its input and output. On iOS, action details open in a full-screen view.

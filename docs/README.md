@@ -9,7 +9,7 @@ Pick the feature you see in Stem.
 | [Mail](user/mail.md) | Send requests to personas and get replies in your Inbox |
 | [Memory](user/memory/README.md) | Learn useful context and recall earlier chats |
 | └ [Facts](user/memory/facts.md) | Durable details: preferences, people, projects |
-| └ [Recall](user/memory/recall.md) | Find relevant parts of past conversations |
+| └ [Past chats](user/memory/recall.md) | Recall: find relevant parts of past conversations |
 | [Tools](user/tools/README.md) | Give Stem more capabilities |
 | └ [MCP servers](user/tools/mcp-servers.md) | Connect services and tools, on this Stem or on your own computer |
 | └ [Skills](user/tools/skills.md) | Reuse procedures that work |

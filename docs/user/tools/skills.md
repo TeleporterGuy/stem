@@ -25,16 +25,20 @@ Open **Tools → Skills**.
 - Click a skill to select it, then the trash button under the list deletes it for
   good — it asks first. This works on skills you wrote yourself too: on a server
   install the skills folder is on the server, so this is the only way to reach it.
-- **Tidy up** merges duplicate auto skills and archives ones untouched for 90 days.
-  Archiving is the same reversible switch as above, so an archived skill can be
-  switched back on.
+- **Tidy up** keeps one skill per job: it splits a skill that grew to cover several
+  unrelated jobs, merges two write-ups of the same job, and archives ones untouched
+  for 90 days. Archiving is the same reversible switch as above, so an archived
+  skill can be switched back on. Anything it rewrites is backed up first.
 - **Saving skills** decides how much Stem may save on its own. Asking it to save
   one always works, whichever you pick.
 - **Skills model** does the model-driven skills work: writing, `/learn`, tidy-up.
+  It is also under **Settings → Models → Judgment work**.
 
 An **auto** label marks a skill Stem created. Usage details show whether it is still
-useful. Stem may create, change, or remove auto skills without an approval card.
-Skills you add yourself are left unchanged.
+useful. Stem reshapes only skills that were its own idea, including ones you accepted
+from a proposal card; it may change or split those without asking. Skills you asked it
+to save, skills you imported or added yourself, `/learn` skills and recorded skills are
+never rewritten by tidy-up, and Stem changes them only when you ask.
 
 A cloud curator receives relevant chat excerpts during collection and auto-skill text
 during upkeep. It may use provider quota.
@@ -43,24 +47,32 @@ Keep skills narrow and verifiable. Disable an auto skill to stop Stem using it.
 
 ## Recording a skill
 
-On the Mac app, press **Record** under the message box (or type `/record`, or
-⌃⌥R) and do the task in your own apps as usual; press **Stop** when done. Stem
+Recording is in **Alpha**. On the Mac app, press **Record** under the message box
+(or type `/record`, or ⌃⌥R) and do the task in your own apps as usual; press **Stop** when done. Stem
 notes what you click, type and switch to, plus the settings of any dialog you
 confirm, and writes a draft skill card in the chat. It may ask up to three
-questions in the card; answer in a sentence. **Practice** lets Stem try the draft
-before you save it. Nothing is recorded inside password managers or password
-fields.
+questions in the card; answer in a sentence. **Save skill** adds it to your library.
+
+**Practice run** lets Stem try the draft first. It fills the message box with the
+task and the final steps it must stop and ask about; edit it, then send. Correct it
+in the chat as it goes. Taking over the mouse or keyboard (or pressing Stop on a
+browser run) stops it at once, and the card asks what went wrong. Afterwards, **Update
+the skill from this run** rewrites the draft from what happened, your corrections
+first.
+
+Nothing is recorded inside password managers or password fields, and one-time codes,
+card numbers and keys typed anywhere are masked. While recording, Stem minimizes
+itself and a small pill with **Stop** stays on screen.
 
 ## Seeing a skill in use
 
-Above each reply is a **Used N tools** line. Skills are counted there separately — "Used 2 tools
-and 1 skill" — and expanding the line names the skills Stem loaded for that answer, alongside the
-files it read and the commands it ran. Only skills whose steps were actually put in front of the
-assistant are listed; ones it merely knew existed by name are not.
+Under the reply, the folded tool line counts skills separately — "Used 2 tools and 1
+skill". A skill is listed there only when the answer actually followed it ("Followed
+the skill monthly-invoice-report"); one that was merely loaded, or only known by name,
+is not. A skill already used earlier in the same chat is not loaded again.
 
 The **used N×** figure on the Skills list is a different, stricter count: it credits a skill only
-when the turn ran something the skill's steps name. A skill can be loaded into a turn without
-earning that credit.
+when the turn ran something the skill's steps name.
 
 ## Skills and the machine they run on
 

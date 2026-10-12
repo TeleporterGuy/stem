@@ -31,9 +31,10 @@ needs it, Stem starts it in the background.
 
 The same two places as computer control, and a conversation gets it from exactly one:
 
-- **A persona** gets it from its browser pin in Manage → Personas ("Browser this persona
-  controls"). The browser pin is separate from the computer pin: a persona can have
-  the browser without your screen. Pinned personas use it in chats, mail and scheduled
+- **A persona** gets it from its browser pin: in the Personas tab, open the persona,
+  choose **Computer** on its **Runs as** tab, and pick a Mac under **Browser**. The
+  browser pin is separate from **Screen and apps**: a persona can have the browser
+  without your screen. Pinned personas use it in chats, mail and scheduled
   tasks.
 - **A chat with no persona** gets it from Settings → Features → Browser control →
   **Allow in chats**, either on a fixed Mac or letting the model pick one.

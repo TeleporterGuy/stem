@@ -37,6 +37,12 @@ const TRICKS = `## Tricks
 - Send \`/learn\` in a chat that got something done to save the approach as a skill.
   It reads the whole chat, so corrections you made along the way end up in the
   steps. Add a focus—\`/learn the invoice reconciliation steps\`—to steer what it keeps.
+- Type \`/\` at the start of a message to list the commands the box understands —
+  \`/pin\`, \`/note\`, \`/learn\`, \`/compact\` and, on the Mac, \`/record\` — and pick one
+  with Enter, Tab or a click. \`/compact\` condenses a long chat's history to free up
+  context; add a focus to say what it must keep.
+- ⌘-click (**Ctrl**-click) chats in the list to select several, or Shift-click a
+  range, then mark, move or delete them together. **Esc** clears the selection.
 - Drop a file on **This chat** to use it for one message. Drop it on **Files** to copy
   it into Stem and reuse it across chats.
 - **Enter** sends. **Shift+Enter** starts a new line.`;
