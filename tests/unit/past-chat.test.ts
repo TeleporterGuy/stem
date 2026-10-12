@@ -220,3 +220,22 @@ describe('read_past_chat tool', () => {
     ]);
   });
 });
+
+describe('stem:// links in a reply', () => {
+  it('render as in-app links, the way read_past_chat tells the model to write them', async () => {
+    const { createElement } = await import('react');
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const { renderMdx } = await import('../../src/renderer/mdx/render');
+    const html = renderToStaticMarkup(
+      createElement(
+        'div',
+        null,
+        renderMdx('[Open the relevant chat: Telefóny](stem://chat/01a1153f-9d2d-734a-a9ff-7bc006bde587)')
+      )
+    );
+    expect(html).toContain('<a href="stem://chat/01a1153f-9d2d-734a-a9ff-7bc006bde587" class="stem-link">');
+    // Anything else on the stem: scheme stays inert text.
+    const pair = renderToStaticMarkup(createElement('div', null, renderMdx('[pair](stem://pair?url=x&code=y)')));
+    expect(pair).not.toContain('<a');
+  });
+});
