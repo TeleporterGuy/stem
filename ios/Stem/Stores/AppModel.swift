@@ -11,6 +11,21 @@ enum Route: Hashable {
     case mail(String)
 }
 
+extension Route {
+    /// `stem://chat/<threadId>` / `stem://mail/<conversationId>`, the links
+    /// read_past_chat gives the model for earlier chats; nil for anything else.
+    static func inAppLink(_ url: URL) -> Route? {
+        guard url.scheme?.lowercased() == "stem", let host = url.host?.lowercased() else { return nil }
+        let id = url.pathComponents.filter { $0 != "/" }.first ?? ""
+        guard id.range(of: "^[0-9A-Za-z-]{4,64}$", options: .regularExpression) != nil else { return nil }
+        switch host {
+        case "chat": return .thread(id)
+        case "mail": return .mail(id)
+        default: return nil
+        }
+    }
+}
+
 /// Root state: the pairing, and once paired the session every screen shares.
 @MainActor @Observable
 final class AppModel {

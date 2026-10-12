@@ -58,6 +58,10 @@ Maintainer notes:
   the list: anyone still on one moves to EmbeddingGemma 2, and their old download is deleted.
 - **Commands at a slash.** Type `/` at the start of a message to see what the box can do —
   `/pin`, `/note` and `/learn` — narrow it by typing, and pick one with Enter, Tab or a click.
+- **Stem reopens earlier chats.** Ask about something from an older chat and Stem reads that whole
+  chat, photos you sent there included, instead of asking you to send them again. When it
+  mentions another chat or mail, the name is a link: click it to open that chat, on the desktop
+  or the phone. Private chats are never read into other ones.
 
 ### Changed
 

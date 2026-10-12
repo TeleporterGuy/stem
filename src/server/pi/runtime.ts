@@ -62,6 +62,7 @@ import { resolveHostShell } from '../exec/git-bash';
 import { ensureThreadScratch } from '../exec/scratch';
 import { capActions, capUserWords, parseJudgeSession, type JudgeAction, type JudgeContext } from '../exec/judge-context';
 import { readMail } from '../workspace/mail';
+import { formatPastChat, pastChatLink } from './past-chat';
 import { clampPinnedCwd } from '../harness/pin';
 import { hostShellAgentHint } from '../exec/host-shell';
 import { previewText } from '../chats/preview';
@@ -171,6 +172,7 @@ import {
   EXEC_BRIDGE_TITLE,
   FILE_BRIDGE_TITLE,
   BROWSER_BRIDGE_TITLE,
+  CHAT_BRIDGE_TITLE,
   COMPUTER_BRIDGE_TITLE,
   HARNESS_BRIDGE_TITLE,
   INSTRUCTIONS_APPROVAL_TITLE,
@@ -3289,6 +3291,64 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   /**
+   * Handle read_past_chat (sentinel CHAT_BRIDGE_TITLE): one page of an earlier
+   * chat with its pictures. Gated like the recall searches — a turn without
+   * recall (private, blind persona, recall-off persona) and Memory switched off
+   * get nothing — and a private chat or private mail is never read back into
+   * another conversation.
+   */
+  private handleChatBridgeRequest(worker: PiWorker, id: string, payload: string | undefined): void {
+    const requestProcess = worker.proc;
+    const respond = (value: unknown): void => {
+      if (worker.proc !== requestProcess) return;
+      requestProcess?.send({ type: 'extension_ui_response', id, value: JSON.stringify(value) });
+    };
+    const turn = worker.currentTurn;
+    void (async () => {
+      try {
+        if (turn?.noRecall) {
+          return respond({
+            ok: false,
+            error: "This conversation works without access to the user's earlier chats. Do not retry; ask the user for what you need."
+          });
+        }
+        if (!isRecallEnabled()) {
+          return respond({ ok: false, error: 'Memory is switched off in Settings, so earlier chats cannot be read. Ask the user instead.' });
+        }
+        const req = JSON.parse(payload ?? '{}') as { threadId?: unknown; offset?: unknown; images?: unknown };
+        const threadId = typeof req.threadId === 'string' ? req.threadId.trim() : '';
+        if (!/^[0-9a-f-]{8,64}$/i.test(threadId)) {
+          return respond({ ok: false, error: 'Give the chat id exactly as a search result printed it.' });
+        }
+        const mail = await readMail();
+        const conversation =
+          mail.conversations.find((c) => Object.values(c.sessions).includes(threadId)) ??
+          mail.conversations.find((c) => c.id === mail.items.find((i) => i.runThreadId === threadId)?.conversationId);
+        if (conversation?.private || (await isChatPrivate(threadId))) {
+          return respond({ ok: false, error: 'That chat is private: Stem does not read it into other conversations. Ask the user instead.' });
+        }
+        if (!(await this.resolveSessionFile(threadId)) && !this.workers.some((w) => w.activeThreadId === threadId)) {
+          return respond({ ok: false, error: `No chat with id ${threadId}.` });
+        }
+        const thread = await this.readThread(threadId);
+        const title = conversation?.subject?.trim() || thread.title;
+        respond({
+          ok: true,
+          ...formatPastChat({
+            title,
+            link: pastChatLink({ threadId, mailConversationId: conversation?.id ?? null }),
+            messages: thread.messages,
+            offset: typeof req.offset === 'number' ? req.offset : 0,
+            images: req.images !== false
+          })
+        });
+      } catch (e) {
+        respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    })();
+  }
+
+  /**
    * Handle the manage_skill tool's ctx.ui.input round-trip (sentinel
    * SKILL_BRIDGE_TITLE). Everything the write needs — the validator, the mode, the
    * card — is main-process state the bridge extension cannot reach, so the whole
@@ -3871,6 +3931,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       }
       // `read` on a PDF: the bridge swaps pi's raw bytes for the text layer
       // extracted here, where pdf.js lives.
+      if (ev.method === 'input' && ev.title === CHAT_BRIDGE_TITLE) {
+        this.handleChatBridgeRequest(worker, id, ev.placeholder as string | undefined);
+        return;
+      }
       if (ev.method === 'input' && ev.title === FILE_BRIDGE_TITLE) {
         this.handleFileBridgeRequest(worker, id, ev.placeholder as string | undefined);
         return;

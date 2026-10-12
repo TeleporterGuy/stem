@@ -1843,6 +1843,7 @@ export default async function stemMcpBridge(pi) {
   // the conversation, participant set, and sender off the live turn, so the
   // tools are inert (and say so) outside a mail delivery.
   registerMailTools(pi);
+  registerPastChatTool(pi);
 
   // Command execution: run a shell command on the user's machine. The tool only
   // forwards the request — the main process runs the tiered auto-approve policy
@@ -2725,6 +2726,60 @@ function registerMailTools(pi) {
       const res = await mailBridge(ctx, { op: 'read_notes', ids: params?.ids });
       if (!res.ok) return taskErr(res.error || 'Could not read the notes.');
       return taskOk(res.text || 'No notes.');
+    }
+  });
+}
+
+// ---- read_past_chat: an earlier chat's transcript + pictures (main reads it) ----
+
+const CHAT_BRIDGE_TITLE = 'stem-chat-bridge';
+
+function registerPastChatTool(pi) {
+  pi.registerTool({
+    name: 'read_past_chat',
+    label: 'Read an earlier chat',
+    description:
+      'Open one of the user\'s earlier chats by its id (the "chat <id>" a search_past_chats or ' +
+      'search_chat_summaries result printed) and read it: the full transcript, plus the pictures the user ' +
+      'attached, as images you can see. Use it when a snippet is not enough — above all when the answer is in a ' +
+      'photo or document the user sent there; never ask the user to send it again before reading the chat. ' +
+      'Long chats come in pages; continue with `offset`. The result gives the chat\'s link: whenever your reply ' +
+      'mentions an earlier chat or mail, link it like that ([title](stem://chat/…) or (stem://mail/…)) so the ' +
+      'user can open it with a click — never show a bare id.',
+    parameters: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', description: 'The chat id from a search result.' },
+        offset: { type: 'number', description: 'Message index to start from (default 0), from a previous page\'s note.' },
+        images: { type: 'boolean', description: 'Include the attached pictures (default true).' }
+      },
+      required: ['chat']
+    },
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!ctx || !ctx.ui || typeof ctx.ui.input !== 'function') return taskErr('Earlier chats are unavailable here.');
+      const raw = await ctx.ui.input(
+        CHAT_BRIDGE_TITLE,
+        JSON.stringify({
+          threadId: params?.chat,
+          ...(typeof params?.offset === 'number' ? { offset: params.offset } : {}),
+          ...(params?.images === false ? { images: false } : {})
+        })
+      );
+      let res;
+      try {
+        res = typeof raw === 'string' ? JSON.parse(raw) : { ok: false, error: 'No response from Stem.' };
+      } catch {
+        res = { ok: false, error: 'Malformed response from Stem.' };
+      }
+      if (!res.ok) return taskErr(res.error || 'Could not read that chat.');
+      const images = Array.isArray(res.images) ? res.images : [];
+      return {
+        content: [
+          { type: 'text', text: String(res.text || '') },
+          ...images.map((img) => ({ type: 'image', data: img.data, mimeType: img.mimeType }))
+        ],
+        details: {}
+      };
     }
   });
 }

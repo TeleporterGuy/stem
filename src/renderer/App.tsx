@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { setStemLinkNavigator } from './stemLinks';
 import { Lock, MailPlus, SquarePen, PanelRight } from 'lucide-react';
 import type {
   FolderSettings,
@@ -1142,6 +1143,26 @@ export default function App() {
       if (userNavigation) noteChatOpened(history.threadId);
     },
     [core, setThread, mutateInbox, updatedAtMap, noteChatOpened, refreshThreadHistory]
+  );
+
+  // `stem://chat|mail/<id>` links in replies (read_past_chat hands them out).
+  // A chat link that names a thread behind a mail conversation opens that
+  // conversation: its hidden thread is not a chat the user can see.
+  useEffect(
+    () =>
+      setStemLinkNavigator((link) => {
+        const { conversations, items } = mailRef.current;
+        if (link.kind === 'mail') {
+          if (conversations.some((c) => c.id === link.id)) openMail(link.id);
+          return;
+        }
+        const owner =
+          conversations.find((c) => Object.values(c.sessions).includes(link.id))?.id ??
+          items.find((i) => i.runThreadId === link.id)?.conversationId;
+        if (owner) openMail(owner);
+        else void openChat(link.id);
+      }),
+    [openChat, openMail]
   );
 
   // Reading is what marks a thread read, and "reading" means the thread is on

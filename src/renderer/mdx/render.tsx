@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMdx from 'remark-mdx';
 import { stripCiteMarkers } from '../../shared/citations';
 import { findPhoneNumbers } from '../../shared/phone-links';
+import { openStemLink, parseStemLink } from '../stemLinks';
 import { CodeBlock, TaskItem, componentMap } from './components';
 
 // A minimal structural type for the mdast/mdx nodes we walk.
@@ -153,6 +154,14 @@ function renderNode(node: MdNode, key: string): ReactNode {
         ? <TaskItem key={key} checked={node.checked}>{renderChildren(node, key)}</TaskItem>
         : <li key={key}>{renderChildren(node, key)}</li>;
     case 'link': {
+      const stemLink = parseStemLink(node.url ?? '');
+      if (stemLink) {
+        const open = (e: { preventDefault(): void }) => {
+          e.preventDefault();
+          openStemLink(stemLink);
+        };
+        return <a key={key} href={node.url} className="stem-link" onClick={open}>{linkChildren(node, key)}</a>;
+      }
       const href = safeUrl(node.url, true);
       if (href && /^file:/i.test(href)) {
         const open = (e: { preventDefault(): void }) => {

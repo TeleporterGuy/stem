@@ -12,10 +12,16 @@ struct StemApp: App {
             RootView()
                 .environment(app)
                 // Links inside replies and mail are model-written: only web,
-                // mail and phone links open (iOS asks before it dials); app
-                // schemes (stem://, …) are dropped.
+                // mail and phone links open (iOS asks before it dials), plus
+                // Stem's own stem://chat/<id> and stem://mail/<id>, which
+                // navigate in-app. Every other app scheme (stem://pair, …) is
+                // dropped.
                 .environment(\.openURL, OpenURLAction { url in
-                    ["http", "https", "mailto", "tel"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
+                    if let route = Route.inAppLink(url) {
+                        app.open(route)
+                        return .handled
+                    }
+                    return ["http", "https", "mailto", "tel"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
                 })
                 .onAppear { delegate.app = app }
                 .onOpenURL { app.handle(url: $0) }

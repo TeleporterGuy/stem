@@ -329,7 +329,7 @@ function formatResults(rows: CoreSearchHit[]): string {
       // The full message text, not the «»-marked FTS snippet — tool output
       // stays clean of highlight markers (matches the pre-core behavior).
       const text = r.text.replace(/\s+/g, ' ').trim().slice(0, 600);
-      return `[${isoDate(r.ts)}] ${who}${r.role === 'assistant' ? ' claim (untrusted until confirmed)' : ''}: ${text}`;
+      return `[${isoDate(r.ts)}] (chat ${r.threadId}) ${who}${r.role === 'assistant' ? ' claim (untrusted until confirmed)' : ''}: ${text}`;
     })
     .join('\n\n');
 }
@@ -344,7 +344,7 @@ function formatSummaries(rows: CoreSummaryHit[]): string {
         ? isoDate(r.lastTs)
         : `${isoDate(r.firstTs)} → ${isoDate(r.lastTs)}`;
       const text = r.text.replace(/\s+/g, ' ').trim();
-      return `[${range}] (thread ${r.threadId}) ${text}`;
+      return `[${range}] (chat ${r.threadId}) ${text}`;
     })
     .join('\n\n');
 }
@@ -390,7 +390,7 @@ const FACTS_TOOL = {
 const CHATS_TOOL = {
   name: 'search_past_chats',
   description:
-    'Search the user\'s past conversations (across all chats) for anything previously said or shown — facts, decisions, details fetched from email/web, prior questions. Use when the user refers to something not in the current chat, or to recall context about them. Returns dated verbatim snippets; for a thread-level overview of what a past conversation covered and decided, search_chat_summaries is usually the better first stop. Matching is hybrid: keyword plus semantic (multilingual) while the Stem app is running, keyword-only otherwise. Semantic matching usually bridges Slovak/English/German, but it is imperfect — when a search misses, retry with key synonyms in the OTHER language (e.g. add English terms to a Slovak query), which also covers the keyword-only fallback.',
+    'Search the user\'s past conversations (across all chats) for anything previously said or shown — facts, decisions, details fetched from email/web, prior questions. Use when the user refers to something not in the current chat, or to recall context about them. Returns dated verbatim snippets, each with its chat id — open the whole chat (with the pictures the user attached) with read_past_chat; for a thread-level overview of what a past conversation covered and decided, search_chat_summaries is usually the better first stop. Matching is hybrid: keyword plus semantic (multilingual) while the Stem app is running, keyword-only otherwise. Semantic matching usually bridges Slovak/English/German, but it is imperfect — when a search misses, retry with key synonyms in the OTHER language (e.g. add English terms to a Slovak query), which also covers the keyword-only fallback.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -404,7 +404,7 @@ const CHATS_TOOL = {
 const SUMMARIES_TOOL = {
   name: 'search_chat_summaries',
   description:
-    'Search rolling English summaries of the user\'s past conversation threads — what each chat was about, what was decided, and what stayed open. Use for thread-level questions ("what did we conclude about X?", "which chat discussed Y?") before drilling into verbatim messages with search_past_chats. Summaries are in English regardless of the conversation language, so English query terms work best; matching is keyword plus semantic (multilingual).',
+    'Search rolling English summaries of the user\'s past conversation threads — what each chat was about, what was decided, and what stayed open. Use for thread-level questions ("what did we conclude about X?", "which chat discussed Y?") before drilling into verbatim messages with search_past_chats, or into the whole chat with read_past_chat. Summaries are in English regardless of the conversation language, so English query terms work best; matching is keyword plus semantic (multilingual).',
   inputSchema: {
     type: 'object',
     properties: {

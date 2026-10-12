@@ -113,6 +113,13 @@ export const SKILL_BRIDGE_TITLE = 'stem-skill-bridge';
  */
 export const FILE_BRIDGE_TITLE = 'stem-file-bridge';
 
+/**
+ * read_past_chat (`input`): `{ threadId, offset?, images? }` rides in
+ * `placeholder`. PiRuntime answers with the transcript page and the user's
+ * pictures from that chat (see past-chat.ts), gated like the recall searches.
+ */
+export const CHAT_BRIDGE_TITLE = 'stem-chat-bridge';
+
 // ---- gate files (basenames under the pi home, mtime-polled by the bridge) ----
 
 /**
