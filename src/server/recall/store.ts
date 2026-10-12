@@ -1676,6 +1676,29 @@ export class RecallStore {
   };
 
 
+  /** The newest messages after `afterId`, newest first — the user summary's chat window. */
+  getNewestMessagesAfter = (afterId: number, limit = 400): StoredMessage[] => {
+    const rows = this.open()
+      .prepare(
+        `SELECT id, thread_id AS threadId, turn_id AS turnId, role, ts, text, web
+         FROM messages WHERE id > ? ORDER BY id DESC LIMIT ?`
+      )
+      .all(afterId, limit) as Array<Record<string, unknown>>;
+    return rows.map(this.mapStoredMessage);
+  };
+
+
+  /** How much the user has written after `afterId`, and the newest message id. */
+  userMessageVolumeAfter = (afterId: number): { messages: number; chars: number; latestId: number } => {
+    const handle = this.open();
+    const row = handle
+      .prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(text)), 0) AS chars FROM messages WHERE role = 'user' AND id > ?`)
+      .get(afterId) as { n: number; chars: number };
+    const latest = handle.prepare(`SELECT COALESCE(MAX(id), 0) AS id FROM messages`).get() as { id: number };
+    return { messages: row.n, chars: row.chars, latestId: latest.id };
+  };
+
+
   /**
    * One thread's messages with id greater than `afterId`, oldest first — the
    * rolling-summary refresh walks these against the summary's own watermark.

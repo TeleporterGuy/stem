@@ -4,14 +4,14 @@ import type { UserProfile } from '../../../shared/types';
 import { createJobStore, holdFullSpin, useJob } from './shared';
 
 // The user summary (server: recall/profile.ts): a few paragraphs on who the
-// user is, written from the facts and sent with every chat that may see
+// user is and how they write, from the facts and their own messages, sent with every chat that may see
 // memory. It rewrites itself as Stem learns, so the card is mostly for
 // reading it, correcting it by hand, or switching it off.
 
 // Module-level so a rewrite still spins after a tab switch and back.
 const rewriteJob = createJobStore();
 
-const HEADINGS = new Set(['Work context', 'Personal context', 'Top of mind', 'Brief history']);
+const HEADINGS = new Set(['Work context', 'Personal context', 'How they communicate', 'Top of mind', 'Brief history']);
 
 function SummaryText({ text }: { text: string }) {
   return (
@@ -74,8 +74,8 @@ export function UserSummaryCard({ disabled }: { disabled: boolean }) {
         const r = await holdFullSpin(window.stem.rewriteUserProfile());
         setProfile(r.profile);
         if (r.updated) return null;
-        return r.reason === 'too-few-facts'
-          ? `Stem needs at least ${r.profile.minFacts} facts about you first.`
+        return r.reason === 'not-enough'
+          ? 'Stem needs to know you a little better first — a few more chats.'
           : 'The memory model gave no usable summary — try again.';
       } catch {
         return 'Rewrite failed — try again.';
@@ -84,14 +84,11 @@ export function UserSummaryCard({ disabled }: { disabled: boolean }) {
   };
 
   const off = disabled || !profile.enabled;
-  const tooFew = profile.factCount < profile.minFacts;
   const status = !profile.enabled
     ? 'Off — chats get only the facts that match each message.'
     : profile.text
-      ? 'Sent with every chat that can see your memory. Rewritten as Stem learns more about you.'
-      : tooFew
-        ? `Written once Stem knows ${profile.minFacts} facts about you (${profile.factCount} so far).`
-        : 'Not written yet — Stem writes it after your next chat, or rewrite it now.';
+      ? 'From your facts and how you write. Sent with every chat that can see your memory; rewritten as Stem learns more about you.'
+      : 'Not written yet — Stem writes it once it has learned a little about you from your chats.';
 
   return (
     <div className="group deep-check-card user-summary-card">
@@ -149,11 +146,11 @@ export function UserSummaryCard({ disabled }: { disabled: boolean }) {
                 <button
                   type="button"
                   className={`push${confirmRewrite ? ' default' : ''}`}
-                  disabled={off || running || tooFew}
+                  disabled={off || running}
                   onClick={rewrite}
                   onBlur={() => setConfirmRewrite(false)}
                 >
-                  {running ? 'Writing…' : confirmRewrite ? 'Discard your edits?' : profile.text ? 'Rewrite from facts' : 'Write now'}
+                  {running ? 'Writing…' : confirmRewrite ? 'Discard your edits?' : profile.text ? 'Rewrite' : 'Write now'}
                 </button>
               </>
             )}

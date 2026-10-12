@@ -9,6 +9,8 @@ import {
   getUserProfile,
   MIN_PROFILE_FACTS,
   PROFILE_CHANGE_FLOOR,
+  PROFILE_CHAT_MESSAGES,
+  profileChatWindow,
   parseProfile,
   profileInputFacts,
   saveUserProfileText,
@@ -21,6 +23,7 @@ import type { LlmClient } from '../../src/server/recall/llm';
 afterAll(() => store.close());
 beforeEach(() => {
   store.resetFacts();
+  store.resetEpisodic({ skipVacuum: true });
   store.setMeta('user_profile', '');
   setUserProfileEnabled(true);
 });
@@ -28,6 +31,7 @@ beforeEach(() => {
 const REPLY = JSON.stringify({
   work: 'Runs a small software company and builds a desktop assistant called Stem.',
   personal: 'Lives in Bratislava and prefers short answers.',
+  style: 'Writes short, lowercase messages in Slovak and English and expects decisions made for them.',
   topOfMind: '',
   history: 'Moved from Košice in 2020.'
 });
@@ -47,11 +51,18 @@ function seedFacts(n: number, prefix = 'Fact'): number[] {
   return Array.from({ length: n }, (_, i) => store.upsertFact(`${prefix} number ${i} about the user`, 'explicit')!);
 }
 
+function say(n: number, text = (i: number) => `message ${i} from the user`, threadId = 't1'): void {
+  for (let i = 0; i < n; i++) {
+    store.recordMessage({ threadId, turnId: `u${i}`, role: 'assistant', text: `reply before ${i}` });
+    store.recordMessage({ threadId, turnId: `u${i}`, role: 'user', text: text(i) });
+  }
+}
+
 describe('user summary', () => {
   it('waits for enough facts, then writes the summary under headings', async () => {
     seedFacts(MIN_PROFILE_FACTS - 1);
     expect(userProfileDue()).toBe(false);
-    expect((await buildUserProfile(fakeLlm())).reason).toBe('too-few-facts');
+    expect((await buildUserProfile(fakeLlm())).reason).toBe('not-enough');
 
     seedFacts(1, 'Another');
     expect(userProfileDue()).toBe(true);
@@ -139,5 +150,35 @@ describe('user summary', () => {
     expect(parseProfile('Sorry, I cannot help with that.')).toBeNull();
     expect(parseProfile('{"work":"","personal":""}')).toBeNull();
     expect(parseProfile('```json\n' + REPLY + '\n```')).toContain('Personal context');
+  });
+
+  it('learns from what the user writes, even before there are enough facts', async () => {
+    say(PROFILE_CHAT_MESSAGES - 1);
+    expect(userProfileDue()).toBe(false);
+    say(1, () => 'one more');
+    expect(userProfileDue()).toBe(true);
+
+    const llm = fakeLlm();
+    expect(await buildUserProfile(llm)).toMatchObject({ updated: true, mode: 'full' });
+    expect(llm.prompts[0]).toMatch(/RECENT MESSAGES, oldest first \(12\)[\s\S]*replying to the assistant: "reply before 0"[\s\S]*USER: message 0 from the user[\s\S]*USER: one more/);
+    expect(getUserProfile().text).toContain('How they communicate\nWrites short');
+    // The window moved: the same messages don't trigger a second rewrite.
+    expect(userProfileDue()).toBe(false);
+
+    say(PROFILE_CHAT_MESSAGES, (i) => `new topic ${i}`);
+    const next = fakeLlm();
+    expect((await buildUserProfile(next)).mode).toBe('update');
+    expect(next.prompts[0]).toContain('NEW MESSAGES FROM THE USER since the last revision, oldest first (12)');
+    expect(next.prompts[0]).toContain('USER: new topic 11');
+    expect(next.prompts[0]).not.toContain('USER: one more');
+  });
+
+  it('cuts long pasted messages and keeps the newest when over budget', () => {
+    say(40, (i) => `${i}: ${'x'.repeat(3_000)}`);
+    const w = profileChatWindow(0);
+    expect(w.text).toContain('[…cut]');
+    expect(w.text).toContain('39: ');
+    expect(w.text).not.toContain('\n  USER: 0: ');
+    expect(w.userMessages).toBeLessThan(40);
   });
 });

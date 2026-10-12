@@ -256,7 +256,7 @@ export function registerMemoryIpc(deps: IpcDeps): void {
     };
     const result = await activity.track('memory.profile', 'Rewriting your summary', () => buildUserProfile(llm, { full: true }), (r) => ({
       worked: r.updated,
-      detail: r.updated ? 'Rewrote the summary from your facts' : 'Summary unchanged'
+      detail: r.updated ? 'Rewrote the summary' : 'Summary unchanged'
     }));
     return { profile: getUserProfile(), updated: result.updated, ...(result.reason ? { reason: result.reason } : {}) };
   });

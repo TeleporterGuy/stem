@@ -21,14 +21,19 @@ Open the right sidebar, choose **Memory**, then choose:
 ## Summary of you
 
 Facts reach a chat one at a time, when the message is about them. On top of
-that, Stem keeps a short **summary of you** — work, personal context, what is on
-your mind lately, and a brief history — written from your facts and sent with
-every chat that can see your memory. It is at the top of **Memory → Facts**.
+that, Stem keeps a short **summary of you** — work, personal context, how you
+write and work, what is on your mind lately, and a brief history — and sends it
+with every chat that can see your memory. It is at the top of **Memory → Facts**.
 
-- It rewrites itself once enough facts were added, changed or retired.
+- It is written from your facts and from your own recent messages, in the same
+  background pass that learns facts from your chats. Mail written by personas,
+  scheduled-run prompts and private chats are never read.
+- It rewrites itself once enough facts changed or you have written enough since.
 - **Edit** to correct it by hand; later rewrites keep your corrections.
-  **Rewrite from facts** starts over and drops them.
-- Sensitive facts and facts learned from connected folders are never in it.
+  **Rewrite** starts over and drops them.
+- It leaves out sensitive details (health, money, addresses) and facts learned
+  from connected folders.
+- It describes you; it never overrides your custom instructions.
 - Private chats and personas without memory access never get it. The switch on
   the card turns it off everywhere.
 

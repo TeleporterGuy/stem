@@ -2757,7 +2757,7 @@ export interface MemoryConsolidateResult {
   contents: MemoryContents;
 }
 
-/** The user summary (recall/profile.ts): a prose portrait written from the facts. */
+/** The user summary (recall/profile.ts): a prose portrait written from the facts and the user's own messages. */
 export interface UserProfile {
   enabled: boolean;
   /** Empty until the first summary is written. */
@@ -2777,7 +2777,7 @@ export interface UserProfile {
 export interface UserProfileRewriteResult {
   profile: UserProfile;
   updated: boolean;
-  reason?: 'disabled' | 'too-few-facts' | 'unusable-reply' | 'superseded';
+  reason?: 'disabled' | 'not-enough' | 'unusable-reply' | 'superseded';
 }
 
 // ---- Personas (named agent configurations the mail Inbox addresses) ----
@@ -4978,7 +4978,7 @@ export interface StemApi {
   /** Save the user's own wording; empty clears it and the next pass writes a fresh one. */
   saveUserProfile(text: string): Promise<UserProfile>;
   setUserProfileEnabled(enabled: boolean): Promise<UserProfile>;
-  /** Start over from the facts alone (drops hand edits). */
+  /** Start over from the facts and recent messages (drops hand edits). */
   rewriteUserProfile(): Promise<UserProfileRewriteResult>;
   /** Fired when the background pass rewrites the summary. */
   onUserProfileChanged(listener: () => void): () => void;
