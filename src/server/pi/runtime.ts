@@ -3374,14 +3374,24 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         if (!(await this.resolveSessionFile(threadId)) && !this.workers.some((w) => w.activeThreadId === threadId)) {
           return respond({ ok: false, error: `No chat with id ${threadId}.` });
         }
-        const thread = await this.readThread(threadId);
+        const [thread, recorded] = await Promise.all([this.readThread(threadId), taintedTurns(threadId)]);
+        // Turns that read memorize:false content are kept out of recall, /learn
+        // and everything else that carries a chat's words elsewhere; same here.
+        const tainted = new Set(recorded);
+        for (const t of this.recentTurns) if (t.threadId === threadId && t.memoryTainted) tainted.add(t.turnId);
+        for (const w of this.workers) {
+          const live = w.currentTurn;
+          if (live?.threadId === threadId && live.memoryTainted) tainted.add(live.turnId);
+        }
+        const messages = thread.messages.filter((m) => !(m.runtimeTurnId && tainted.has(m.runtimeTurnId)));
         const title = conversation?.subject?.trim() || thread.title;
         respond({
           ok: true,
           ...formatPastChat({
             title,
             link: pastChatLink({ threadId, mailConversationId: conversation?.id ?? null }),
-            messages: thread.messages,
+            messages,
+            withheld: thread.messages.length - messages.length,
             offset: typeof req.offset === 'number' ? req.offset : 0,
             images: req.images !== false
           })

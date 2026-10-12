@@ -1486,7 +1486,9 @@ describe('scheduled-run turns', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].images).toHaveLength(4);
     const rows = threadRows();
-    expect(rows.map((r) => r.role)).toEqual(['user', 'user']);
+    // Assistant role: text in a picture is not the user's word (no injection,
+    // no direct-user evidence for the distiller), but search still finds it.
+    expect(rows.map((r) => r.role)).toEqual(['user', 'assistant']);
     expect(rows[1].text).toBe('[image: hospital admission order form — Antolská 11; stomatologické vyšetrenie; 14.10.2026]');
     expect(rows[1].turnId).toBe(rows[0].turnId);
     recallStore.resetEpisodic({ skipVacuum: true });

@@ -152,8 +152,8 @@ function imageDescriptionText(raw: string): string {
 }
 
 /**
- * Describe the pictures a user attached to a chat turn into a user-role
- * episodic row of their own, so `search_past_chats` (and recall injection) can
+ * Describe the pictures a user attached to a chat turn into an episodic row
+ * of their own (assistant role — see below), so `search_past_chats` can
  * find the chat by what the picture held — recall ranks text, and an image
  * otherwise contributes nothing. Same model and posture as image notes
  * (note.ts): one memory-model call, best-effort, failures to the degrade
@@ -188,7 +188,12 @@ export async function captureUserImages(
     recordMessage({
       threadId: input.threadId,
       turnId: input.turnId ?? null,
-      role: 'user',
+      // Assistant role on purpose: the memory model wrote this, and the text in
+      // a picture is not something the user said. A user-role row is injected
+      // into prompts and counts as the user's own word to the distiller, so a
+      // screenshot of a web page could plant "user said" facts; as an assistant
+      // row it stays searchable but reads as an unconfirmed claim.
+      role: 'assistant',
       text: description,
       cwd: input.cwd ?? null,
       ts: input.ts
