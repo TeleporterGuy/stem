@@ -69,6 +69,7 @@ import { autoTitle, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps }
 import { getChatFormat, isChatPrivate, markTurnTainted, setChatFormat, setChatPrivate, setNaming, taintedTurns } from '../workspace/chats';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
 import { buildRecallContext, type RecallTimings } from '../recall/inject';
+import { userProfileContext } from '../recall/profile';
 import { buildPinsContext } from '../pins/context';
 import { getFactRerankClient } from '../recall/retrieval';
 import { previousFactUserMessages } from '../recall/fact-query';
@@ -4579,7 +4580,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // episodic history, no indexed folder excerpts. The block is skipped
     // outright rather than emptied, so nothing about the user rides along
     // with the material (Persona.recall explains why Critic needs this).
+    let userSummary: string | null = null;
     if (isRecallEnabled() && input.persona?.recall !== false && !turn?.isPrivate) {
+      try {
+        userSummary = userProfileContext();
+      } catch (error) {
+        degrade('pi.profile', "sent the turn without the user's summary", error);
+      }
       const factReranker = await getFactRerankClient();
       const chosen: { facts: Fact[]; tier: FactTier } = { facts: [], tier: 'all' };
       const flags: { privateDocsInjected?: boolean } = {};
@@ -4676,6 +4683,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // all a mail thread where every delivery is a turn, used to carry one full
     // copy per message.
     const ambient = new AmbientBlocks(historySnapshot === undefined ? [] : liveUserTexts(historySnapshot));
+    // The user summary: the whole picture once per chat context, where recall
+    // above carries only the facts this message calls for.
+    if (userSummary) ambient.add(userSummary, 'the summary of what you know about the user');
     const files = await buildFilesContext();
     if (files) ambient.add(files, 'the workspace files list');
     const connected = await buildConnectedFoldersContext();

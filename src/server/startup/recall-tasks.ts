@@ -7,6 +7,7 @@ import { distillNewMessages, shouldConsolidate } from '../recall/distill';
 import { processPendingRelationChecks, relationSweepBackfillDone, stepRelationSweepBackfill } from '../recall/reconcile';
 import { MAX_ADJUDICATE_ATTEMPTS, adjudicateOpenConflicts } from '../recall/adjudicate';
 import { consolidateFacts, fullTidyDue } from '../recall/consolidate';
+import { buildUserProfile, userProfileDue } from '../recall/profile';
 import { getMemoryRebuildStatus, runMemoryRebuildStep } from '../recall/rebuild';
 import { summarizeFactTexts } from '../recall/audit';
 import { recallStore } from '../recall/store';
@@ -174,6 +175,15 @@ export function initRecallTasks(deps: {
             worked: r.merged + r.corrected + r.dropped > 0,
             detail: `Merged ${r.merged}, corrected ${r.corrected}, dropped ${r.dropped}`
           }));
+        }
+        // The user summary, last: it reads the facts this cycle just settled.
+        // Rewritten only once enough of them changed (profile.ts).
+        if (userProfileDue()) {
+          const r = await activity.track('memory.profile', 'Updating your summary', () => buildUserProfile(recallLlm), (r) => ({
+            worked: r.updated,
+            detail: r.updated ? (r.mode === 'full' ? 'Wrote your summary' : 'Revised your summary') : 'Summary unchanged'
+          }));
+          if (r.updated) deps.emit('memory:profileChanged', {});
         }
         // Skills acquisition used to run here as a backlog pass over the same new
         // messages. It's gone: the recall DB stores only prose, so it was

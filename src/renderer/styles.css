@@ -2980,6 +2980,12 @@ button.inbox-return-main:focus-visible { outline: none; box-shadow: var(--shadow
 .deep-check-foot .muted { font-size: var(--fs-11); }
 .deep-check-actions { display: inline-flex; gap: var(--sp-4); margin-left: auto; }
 .deep-check-actions .push { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.user-summary-card .deep-check-head .switch { flex: none; margin-left: auto; }
+.user-summary-text { display: grid; gap: var(--sp-5); font-size: var(--fs-13); line-height: 1.5; color: var(--ink); }
+.user-summary-text section { display: grid; gap: var(--sp-1); }
+.user-summary-text h4 { margin: 0; font-size: var(--fs-11); font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.user-summary-text p { margin: 0; white-space: pre-wrap; }
+.user-summary-edit { width: 100%; resize: vertical; min-height: 12em; }
 .memory-facts-tools { display: grid; gap: var(--sp-4); }
 .memory-search {
   display: flex; align-items: center; gap: var(--sp-3);

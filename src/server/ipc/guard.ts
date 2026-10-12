@@ -172,6 +172,8 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'memory:setEpisodicLimit': [a.number],
   'memory:setTidyThreshold': [a.number],
   'memory:setMaxRelevantFacts': [a.number],
+  'memory:profileSave': [a.string],
+  'memory:profileSetEnabled': [a.boolean],
   'chats:searchFast': [a.string],
   'chats:search': [a.string],
   'chats:open': [a.string],

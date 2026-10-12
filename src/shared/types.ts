@@ -2669,6 +2669,7 @@ export type ActivityKind =
   | 'memory.relationSweepBackfill'
   | 'memory.adjudicate'
   | 'memory.consolidate'
+  | 'memory.profile'
   | 'memory.deepCheck'
   | 'memory.episodicEmbed'
   | 'memory.factEmbed'
@@ -2754,6 +2755,29 @@ export interface MemoryConsolidateResult {
   /** Chunks whose model call failed — those facts were never reviewed this pass. */
   failedChunks: number;
   contents: MemoryContents;
+}
+
+/** The user summary (recall/profile.ts): a prose portrait written from the facts. */
+export interface UserProfile {
+  enabled: boolean;
+  /** Empty until the first summary is written. */
+  text: string;
+  /** Last model rewrite (ms). */
+  generatedAt: number | null;
+  /** Last hand edit (ms); null when the text is the model's own. */
+  editedAt: number | null;
+  /** Facts the summary is written from (not sensitive, not from folders). */
+  factCount: number;
+  /** Facts added, reworded or retired since the last rewrite. */
+  pendingChanges: number;
+  /** Below this many facts no summary is written. */
+  minFacts: number;
+}
+
+export interface UserProfileRewriteResult {
+  profile: UserProfile;
+  updated: boolean;
+  reason?: 'disabled' | 'too-few-facts' | 'unusable-reply' | 'superseded';
 }
 
 // ---- Personas (named agent configurations the mail Inbox addresses) ----
@@ -4950,6 +4974,14 @@ export interface StemApi {
   resetEpisodicMemory(): Promise<EpisodicStats>;
   /** Run a consolidation pass now (merge/correct/drop duplicates + stale facts). */
   consolidateMemory(): Promise<MemoryConsolidateResult>;
+  getUserProfile(): Promise<UserProfile>;
+  /** Save the user's own wording; empty clears it and the next pass writes a fresh one. */
+  saveUserProfile(text: string): Promise<UserProfile>;
+  setUserProfileEnabled(enabled: boolean): Promise<UserProfile>;
+  /** Start over from the facts alone (drops hand edits). */
+  rewriteUserProfile(): Promise<UserProfileRewriteResult>;
+  /** Fired when the background pass rewrites the summary. */
+  onUserProfileChanged(listener: () => void): () => void;
   /** Start the deep check of every chat fact; its findings arrive as a mail. */
   startMemoryCheck(): Promise<MemoryCheckJob>;
   memoryCheckJob(): Promise<MemoryCheckJob>;

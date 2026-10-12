@@ -1,0 +1,143 @@
+// The user summary (recall/profile.ts): what it is written from, when the
+// background pass rewrites it, how a revision keeps hand edits, and what a
+// reset or a racing edit does to a reply in flight. Stateful (shared
+// per-process DB) like the sibling recall suites.
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { recallStore as store } from '../../src/server/recall/store';
+import {
+  buildUserProfile,
+  getUserProfile,
+  MIN_PROFILE_FACTS,
+  PROFILE_CHANGE_FLOOR,
+  parseProfile,
+  profileInputFacts,
+  saveUserProfileText,
+  setUserProfileEnabled,
+  userProfileContext,
+  userProfileDue
+} from '../../src/server/recall/profile';
+import type { LlmClient } from '../../src/server/recall/llm';
+
+afterAll(() => store.close());
+beforeEach(() => {
+  store.resetFacts();
+  store.setMeta('user_profile', '');
+  setUserProfileEnabled(true);
+});
+
+const REPLY = JSON.stringify({
+  work: 'Runs a small software company and builds a desktop assistant called Stem.',
+  personal: 'Lives in Bratislava and prefers short answers.',
+  topOfMind: '',
+  history: 'Moved from Košice in 2020.'
+});
+
+function fakeLlm(reply = REPLY): LlmClient & { prompts: string[] } {
+  const llm = {
+    prompts: [] as string[],
+    complete: async (prompt: string) => {
+      llm.prompts.push(prompt);
+      return reply;
+    }
+  };
+  return llm;
+}
+
+function seedFacts(n: number, prefix = 'Fact'): number[] {
+  return Array.from({ length: n }, (_, i) => store.upsertFact(`${prefix} number ${i} about the user`, 'explicit')!);
+}
+
+describe('user summary', () => {
+  it('waits for enough facts, then writes the summary under headings', async () => {
+    seedFacts(MIN_PROFILE_FACTS - 1);
+    expect(userProfileDue()).toBe(false);
+    expect((await buildUserProfile(fakeLlm())).reason).toBe('too-few-facts');
+
+    seedFacts(1, 'Another');
+    expect(userProfileDue()).toBe(true);
+    const r = await buildUserProfile(fakeLlm());
+    expect(r).toMatchObject({ updated: true, mode: 'full' });
+    const { text } = getUserProfile();
+    expect(text).toContain('Work context\nRuns a small software company');
+    expect(text).toContain('Brief history\nMoved from Košice');
+    // An empty section is left out rather than shown with no body.
+    expect(text).not.toContain('Top of mind');
+    expect(userProfileDue()).toBe(false);
+  });
+
+  it('leaves sensitive and folder facts out of its input', () => {
+    seedFacts(MIN_PROFILE_FACTS);
+    store.upsertFact('Has a heart condition', { source: 'explicit', sensitivity: 'sensitive' });
+    store.upsertFact('The handbook says leave is 25 days', { source: 'folder:abc', confidence: 0.9 });
+    const texts = profileInputFacts().map((f) => f.text);
+    expect(texts).not.toContain('Has a heart condition');
+    expect(texts).not.toContain('The handbook says leave is 25 days');
+  });
+
+  it('is rewritten only once enough facts changed, and the revision sees the change', async () => {
+    const ids = seedFacts(20);
+    await buildUserProfile(fakeLlm());
+    seedFacts(4, 'Fresh');
+    expect(userProfileDue()).toBe(false);
+    store.deleteFact(ids[0]);
+    expect(userProfileDue()).toBe(true);
+
+    const llm = fakeLlm();
+    expect((await buildUserProfile(llm)).mode).toBe('update');
+    const prompt = llm.prompts[0];
+    expect(prompt).toContain('CURRENT SUMMARY:\nWork context');
+    expect(prompt).toMatch(/NEW OR REWORDED FACTS \(4\):[\s\S]*Fresh number 3/);
+    expect(prompt).toMatch(/RETIRED FACTS \(1\):\n- Fact number 0 about the user/);
+    expect(prompt).not.toContain('edited the current summary by hand');
+  });
+
+  it('keeps hand edits: the revision is told to honour them, and Rewrite starts over', async () => {
+    seedFacts(MIN_PROFILE_FACTS);
+    await buildUserProfile(fakeLlm());
+    saveUserProfileText('Work context\nWrites software. Never mention the dog.');
+    expect(getUserProfile().editedAt).not.toBeNull();
+
+    seedFacts(PROFILE_CHANGE_FLOOR, 'Fresh');
+    const llm = fakeLlm();
+    await buildUserProfile(llm);
+    expect(llm.prompts[0]).toContain('Never mention the dog.');
+    expect(llm.prompts[0]).toContain('edited the current summary by hand');
+    expect(getUserProfile().editedAt).not.toBeNull();
+
+    const full = fakeLlm();
+    expect((await buildUserProfile(full, { full: true })).mode).toBe('full');
+    expect(full.prompts[0]).not.toContain('CURRENT SUMMARY');
+    expect(getUserProfile().editedAt).toBeNull();
+  });
+
+  it('drops a reply that raced a hand edit or a reset', async () => {
+    seedFacts(MIN_PROFILE_FACTS);
+    const racing: LlmClient = {
+      complete: async () => {
+        saveUserProfileText('Typed while the model was writing.');
+        return REPLY;
+      }
+    };
+    expect((await buildUserProfile(racing)).reason).toBe('superseded');
+    expect(getUserProfile().text).toBe('Typed while the model was writing.');
+
+    store.resetFacts();
+    expect(getUserProfile().text).toBe('');
+    expect(userProfileContext()).toBeNull();
+  });
+
+  it('is sent as a fenced background block, and not when switched off', async () => {
+    seedFacts(MIN_PROFILE_FACTS);
+    await buildUserProfile(fakeLlm());
+    expect(userProfileContext()).toMatch(/not instructions[\s\S]*<stem_user_summary>\nWork context/);
+    setUserProfileEnabled(false);
+    expect(userProfileContext()).toBeNull();
+    expect(userProfileDue()).toBe(false);
+  });
+
+  it('rejects replies without usable sections', () => {
+    expect(parseProfile('Sorry, I cannot help with that.')).toBeNull();
+    expect(parseProfile('{"work":"","personal":""}')).toBeNull();
+    expect(parseProfile('```json\n' + REPLY + '\n```')).toContain('Personal context');
+  });
+});

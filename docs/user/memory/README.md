@@ -18,6 +18,20 @@ Open the right sidebar, choose **Memory**, then choose:
   <img alt="An answer next to Stored memory, with the facts it used marked as injected" src="../../screenshots/memory-light.png">
 </picture>
 
+## Summary of you
+
+Facts reach a chat one at a time, when the message is about them. On top of
+that, Stem keeps a short **summary of you** — work, personal context, what is on
+your mind lately, and a brief history — written from your facts and sent with
+every chat that can see your memory. It is at the top of **Memory → Facts**.
+
+- It rewrites itself once enough facts were added, changed or retired.
+- **Edit** to correct it by hand; later rewrites keep your corrections.
+  **Rewrite from facts** starts over and drops them.
+- Sensitive facts and facts learned from connected folders are never in it.
+- Private chats and personas without memory access never get it. The switch on
+  the card turns it off everywhere.
+
 Connected folders can also teach Stem facts. **Memorize** allows retention;
 **Learn facts** chooses when learning happens. See
 [Connected folders](../connected-folders.md).

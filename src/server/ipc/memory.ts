@@ -23,6 +23,7 @@ import {
 } from '../recall/rebuild';
 import { previewFacts } from '../recall/inject';
 import { consolidateFacts } from '../recall/consolidate';
+import { buildUserProfile, getUserProfile, saveUserProfileText, setUserProfileEnabled } from '../recall/profile';
 import { processExplicitNote } from '../recall/note';
 import { DEFAULT_LOCAL_EMBED_MODEL, EMBED_CATALOG, resolveEmbedSpec } from '../recall/embed-catalog';
 import { importCustomModel, importLocalModels } from '../recall/embed-import';
@@ -244,5 +245,19 @@ export function registerMemoryIpc(deps: IpcDeps): void {
     };
     const result = await consolidateFacts(llm, { force: true });
     return { ...result, contents: await readMemoryFiles() };
+  });
+  registerServer('memory:profile', () => getUserProfile());
+  registerServer('memory:profileSave', (_e, text: string) => saveUserProfileText(text));
+  registerServer('memory:profileSetEnabled', (_e, enabled: boolean) => setUserProfileEnabled(enabled));
+  registerServer('memory:profileRewrite', async () => {
+    const llm: LlmClient = {
+      complete: async (prompt) =>
+        deps.runtime().complete(prompt, await memoryRunOf((s) => s.memory.model))
+    };
+    const result = await activity.track('memory.profile', 'Rewriting your summary', () => buildUserProfile(llm, { full: true }), (r) => ({
+      worked: r.updated,
+      detail: r.updated ? 'Rewrote the summary from your facts' : 'Summary unchanged'
+    }));
+    return { profile: getUserProfile(), updated: result.updated, ...(result.reason ? { reason: result.reason } : {}) };
   });
 }

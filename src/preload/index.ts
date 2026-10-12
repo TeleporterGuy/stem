@@ -385,6 +385,15 @@ const api: StemApi = {
   resetFactsMemory: () => ipcRenderer.invoke('memory:resetFacts'),
   resetEpisodicMemory: () => ipcRenderer.invoke('memory:resetEpisodic'),
   consolidateMemory: () => ipcRenderer.invoke('memory:consolidate'),
+  getUserProfile: () => ipcRenderer.invoke('memory:profile'),
+  saveUserProfile: (text: string) => ipcRenderer.invoke('memory:profileSave', text),
+  setUserProfileEnabled: (enabled: boolean) => ipcRenderer.invoke('memory:profileSetEnabled', enabled),
+  rewriteUserProfile: () => ipcRenderer.invoke('memory:profileRewrite'),
+  onUserProfileChanged: (listener: () => void) => {
+    const handler = (): void => listener();
+    ipcRenderer.on('memory:profileChanged', handler);
+    return () => ipcRenderer.removeListener('memory:profileChanged', handler);
+  },
   startMemoryCheck: () => ipcRenderer.invoke('memory:checkStart'),
   memoryCheckJob: () => ipcRenderer.invoke('memory:checkJob'),
   memoryCheckState: (checkId: string) => ipcRenderer.invoke('memory:checkState', checkId),

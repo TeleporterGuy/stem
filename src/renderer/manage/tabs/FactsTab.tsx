@@ -19,9 +19,10 @@ import { useRetrievalHealth } from '../../hooks/useRetrievalHealth';
 import { HoverTip, InfoTip } from '../../ui/InfoTip';
 import { createJobStore, holdFullSpin, useJob, type ActiveFactsViewProps } from './shared';
 import { DeepCheckCard } from './DeepCheck';
+import { UserSummaryCard } from './UserSummary';
 
 // Memory → Facts. Ordered by what asks something of the user: the switch and a
-// one-line status, the deep check (the one memory job worth starting by hand),
+// one-line status, the summary of the user, the deep check (the one memory job worth starting by hand),
 // conflicts waiting on an answer, then the facts themselves. Everything that
 // runs by itself — tidy-up, provenance rebuild, what was replaced or settled
 // automatically — folds into History and Housekeeping at the bottom. Which
@@ -566,6 +567,9 @@ export function FactsTab({
           />
         </div>
       </div>
+
+      <div className="grp-head">What Stem knows about you</div>
+      <UserSummaryCard disabled={!settings.enabled} />
 
       <div className="grp-head">Check my memory</div>
       <DeepCheckCard disabled={!settings.enabled || notes.length < 2} onOpenMail={onOpenMail} />
