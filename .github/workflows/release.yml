@@ -80,8 +80,10 @@ jobs:
             release/latest-linux-arm64.yml
 
   mac:
-    # Standard Apple Silicon runner; release only arm64 installers.
-    runs-on: macos-15
+    # Standard Apple Silicon runner; release only arm64 installers. macos-26 for
+    # its SDK: the helper's dictation uses SpeechAnalyzer, which the macOS 15 SDK
+    # lacks (the code itself is gated @available(macOS 26) and still targets 14).
+    runs-on: macos-26
     env:
       # Release builds require signing and notarization. CSC_LINK is the base64 .p12 of the
       # "Developer ID Application" certificate; APPLE_API_KEY is the .p8 of an
