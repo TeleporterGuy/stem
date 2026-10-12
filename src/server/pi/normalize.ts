@@ -583,7 +583,9 @@ export function toolCallActivity(
     }
   }
   const type = toolItemType(name);
-  return { id, kind: type === 'webSearch' ? 'webSearch' : 'tool', type, name, detail, status: 'running' };
+  const item: ActivityItem = { id, kind: type === 'webSearch' ? 'webSearch' : 'tool', type, name, detail, status: 'running' };
+  if (name === 'coding_agent' && args?.fresh_session === true) item.freshSession = true;
+  return item;
 }
 
 /** Pull a short, human target string (file/command/query) from a tool-start event. */
@@ -681,7 +683,8 @@ export function normalizePiEvent(ev: PiEvent, ctx: TurnContext): { events: Norma
             id: item.id,
             name: item.name,
             detail: item.detail,
-            ...(item.startedAt !== undefined ? { startedAt: item.startedAt } : {})
+            ...(item.startedAt !== undefined ? { startedAt: item.startedAt } : {}),
+            ...(item.freshSession ? { freshSession: true } : {})
           },
           threadId,
           turnId

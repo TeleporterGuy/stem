@@ -23,7 +23,7 @@ import { execReadRoots, scanCommandAgainstRoots, scanProtected } from '../exec/p
 import { resolveHarnessTarget } from '../exec-device/router';
 import { clientFoldersForDevice } from '../workspace/connected-folders';
 import { previewFacts } from '../recall/inject';
-import { activityDetail, formatRunResult, newTurnSummary, noteEvent } from './format';
+import { activityDetail, formatRunResult, newTurnSummary, noteEvent, type SessionOutcome } from './format';
 import { HarnessActivityRecorder, pruneHarnessActivities, type HarnessActivity } from './activities';
 import type {
   HarnessHost,
@@ -259,7 +259,11 @@ export class HarnessService implements HarnessBridge {
     const remembered = req.freshSession ? null : await lookupSession(key);
     const spec = { agent, cwd, ...(model ? { model } : {}), ...(autoMode ? { autoMode } : {}) };
     let ensured = await host.ensureSession({ ...spec, ...(remembered ? { sessionId: remembered } : {}) });
+    // Told to the model in the result line: a lost session means the agent
+    // forgot everything earlier calls gave it, which the next brief must make up.
+    let session: SessionOutcome = remembered ? 'continued' : 'new';
     if (!ensured.ok && remembered) {
+      session = 'lost';
       // The host lost or refused the remembered session; a fresh one beats an error.
       log('harness', 'remembered session refused, starting fresh', { agent, error: ensured.error });
       await forgetSession(key);
@@ -375,6 +379,7 @@ export class HarnessService implements HarnessBridge {
         summary,
         status: status === 'ok' ? 'ok' : status === 'cancelled' ? 'cancelled' : 'failed',
         hostLabel: host.label(),
+        session,
         ...(!result.ok ? { error: result.error } : {}),
         ...(status === 'cancelled' && running.cancelReason ? { cancelReason: running.cancelReason } : {})
       });

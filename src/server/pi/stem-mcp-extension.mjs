@@ -3852,7 +3852,13 @@ function registerHarnessTools(pi, turnContext) {
       'which can take many minutes. Do not poll; there is nothing to poll. The session persists per chat + ' +
       'agent + working folder, so a later call continues the SAME conversation: call again only to deliver ' +
       "new input from the conversation — the sender's next message, or their answer to a question the agent " +
-      'asked (`fresh_session: true` starts over). ' +
+      'asked. ' +
+      'NEW OR CONTINUE: continue when the input belongs to the work the agent is on (an answer to its ' +
+      'question, a correction, a follow-up on that same change). Pass `fresh_session: true` when the sender ' +
+      'turns to a different task — another feature, another bug, a question about an unrelated part of the ' +
+      'code — so the old conversation does not steer the new work; the agent then remembers nothing, so the ' +
+      'brief must carry everything. When unsure, continue. When the sender asks for a new or fresh session, ' +
+      'always pass it; when they ask to keep the same one, never. ' +
       "The agent's reply comes back as this tool's result. When it asks a question, answer it in a follow-up " +
       'call only if the conversation already gives the answer; otherwise relay the question as your ' +
       'reply and call again when the answer arrives. ' +
@@ -3885,7 +3891,8 @@ function registerHarnessTools(pi, turnContext) {
         },
         fresh_session: {
           type: 'boolean',
-          description: 'Start a brand-new conversation with the agent instead of continuing the remembered one.'
+          description:
+            'Start a brand-new conversation with the agent instead of continuing the remembered one — for a different task, or when the sender asks for a new session. Leave out to continue.'
         }
       },
       required: ['prompt']

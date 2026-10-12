@@ -88,11 +88,19 @@ function clipLine(text: string, max: number): string {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
+/**
+ * Which agent conversation a call ran in: a new one (asked for, or none
+ * remembered), the remembered one, or a new one because the host no longer
+ * had the remembered one.
+ */
+export type SessionOutcome = 'new' | 'continued' | 'lost';
+
 export interface HarnessResultInput {
   agent: string;
   summary: HarnessTurnSummary;
   status: 'ok' | 'failed' | 'cancelled';
   hostLabel: string;
+  session?: SessionOutcome;
   error?: string;
   /** For a cancelled run: what stopped it, when it was not the user. */
   cancelReason?: string;
@@ -104,7 +112,7 @@ export interface HarnessResultInput {
  * continuity note that tells the model how to keep the conversation going.
  */
 export function formatRunResult(input: HarnessResultInput): string {
-  const { agent, summary, status, hostLabel, error, cancelReason } = input;
+  const { agent, summary, status, hostLabel, session, error, cancelReason } = input;
   if (status === 'cancelled') {
     // Only a Stop the user pressed reads as theirs. Anything Stem did on its
     // own — a scheduler timeout, a deleted chat, a dead worker — is named, so
@@ -116,6 +124,9 @@ export function formatRunResult(input: HarnessResultInput): string {
     return `The ${agent} run failed on ${hostLabel}: ${error || 'unknown error'}`;
   }
   const stats: string[] = [agent, `on ${hostLabel}`];
+  if (session === 'new') stats.push('new session');
+  else if (session === 'continued') stats.push('continued session');
+  else if (session === 'lost') stats.push('new session: the earlier one was lost, so the agent remembers none of it');
   if (summary.toolCalls > 0) stats.push(`${summary.toolCalls} tool call${summary.toolCalls === 1 ? '' : 's'}`);
   if (typeof summary.costUsd === 'number') stats.push(`session cost ${formatCost(summary.costUsd)}`);
   const files = summary.files.length ? `\nFiles touched: ${summary.files.join(', ')}` : '';

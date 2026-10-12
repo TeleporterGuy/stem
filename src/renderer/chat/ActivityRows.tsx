@@ -120,6 +120,7 @@ function Row({ item, live, now }: { item: ActivityItem; live: boolean; now: numb
       <span className="activity-row-label" title={label}>
         <Label text={label} item={item} />
       </span>
+      {item.freshSession && <span className="activity-row-note">new session</span>}
       {time && <span className="activity-row-ms">{time}</span>}
     </div>
   );

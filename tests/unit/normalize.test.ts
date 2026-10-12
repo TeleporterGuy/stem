@@ -92,6 +92,11 @@ describe('normalize tool activity', () => {
     const item = toolCallActivity('c3', 'edit', { path: '/x/y/z.ts' });
     expect(item).toMatchObject({ type: 'fileChange', kind: 'tool', detail: 'z.ts' });
   });
+  it('marks a coding_agent call that starts a new session, and only that', () => {
+    const fresh = toolCallActivity('c5', 'coding_agent', { prompt: 'Add dark mode', fresh_session: true });
+    expect(fresh).toMatchObject({ type: 'codingAgent', freshSession: true });
+    expect(toolCallActivity('c6', 'coding_agent', { prompt: 'Now the tests' }).freshSession).toBeUndefined();
+  });
 });
 
 describe('normalize compaction activity', () => {

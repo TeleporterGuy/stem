@@ -345,7 +345,8 @@ export function applyBackendEventToThread(
               name: p.item.name,
               detail: p.item.detail,
               status: 'running',
-              ...(p.item.startedAt !== undefined ? { startedAt: p.item.startedAt } : {})
+              ...(p.item.startedAt !== undefined ? { startedAt: p.item.startedAt } : {}),
+              ...(p.item.freshSession ? { freshSession: true } : {})
             } as ActivityItem
           ];
       return {

@@ -880,6 +880,8 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 
 /* How long a tool took (or has been running) — quiet, but there when a turn dragged. */
 .activity-row-ms { flex: none; color: var(--muted); opacity: 0.8; font-size: var(--fs-12); font-variant-numeric: tabular-nums; }
+/* A coding_agent row that started its agent over — quiet, it is information, not a warning. */
+.activity-row-note { flex: none; color: var(--muted); font-size: var(--fs-11); }
 .activity-row-tag {
   flex: none;
   font-size: var(--fs-11);

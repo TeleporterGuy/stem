@@ -113,6 +113,12 @@ export interface ActivityItem {
   startedAt?: number;
   /** A generate_image row that finished: the picture it made (no bytes). */
   image?: GeneratedImageRef;
+  /**
+   * A coding_agent call that asked for a brand-new agent conversation
+   * (`fresh_session`) — shown on the row so a wrong new-vs-continue call is
+   * visible and the user can say so.
+   */
+  freshSession?: true;
 }
 
 /**
@@ -702,6 +708,8 @@ export interface BackendItem {
   startedAt?: number;
   /** A finished generate_image call: the picture it made (a ref, never bytes). */
   image?: GeneratedImageRef;
+  /** A coding_agent call on `item/started` that asked for a new agent conversation. */
+  freshSession?: true;
 }
 
 /** `item/started` and `item/completed`. The completed agentMessage item carries authoritative text. */

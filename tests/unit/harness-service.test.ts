@@ -240,16 +240,18 @@ describe('sessions', () => {
     await rememberSession({ threadId: 'thread-1', host: 'server', agent: 'claude', cwd: scratch, sessionId: 'session-A' });
     const host = scriptedHost({});
     const { service } = makeService(host);
-    await service.handleHarnessRequest(REQ);
+    const res = await service.handleHarnessRequest(REQ);
     expect(host.ensures[0]).toMatchObject({ sessionId: 'session-A' });
+    expect(res.ok && res.text).toContain('· continued session');
   });
 
   it('fresh_session forgets the mapping and ensures without one', async () => {
     await rememberSession({ threadId: 'thread-1', host: 'server', agent: 'claude', cwd: scratch, sessionId: 'session-A' });
     const host = scriptedHost({ ensure: () => ({ ok: true, sessionId: 'session-B' }) });
     const { service } = makeService(host);
-    await service.handleHarnessRequest({ ...REQ, freshSession: true });
+    const res = await service.handleHarnessRequest({ ...REQ, freshSession: true });
     expect(host.ensures[0]).toEqual({ agent: 'claude', cwd: scratch });
+    expect(res.ok && res.text).toContain('· new session');
     expect(await lookupSession({ threadId: 'thread-1', host: 'server', agent: 'claude', cwd: scratch })).toBe(
       'session-B'
     );
@@ -265,6 +267,8 @@ describe('sessions', () => {
     const res = await service.handleHarnessRequest(REQ);
     expect(res.ok).toBe(true);
     expect(host.ensures).toHaveLength(2);
+    // The model must know the agent forgot the earlier calls' context.
+    expect(res.ok && res.text).toContain('the earlier one was lost');
     expect(await lookupSession({ threadId: 'thread-1', host: 'server', agent: 'claude', cwd: scratch })).toBe(
       'session-new'
     );
@@ -817,7 +821,7 @@ describe('results', () => {
       onProgress: (u) => updates.push(u.detail)
     });
     const res = await service.handleHarnessRequest(REQ);
-    expect(res.ok && res.text).toContain('[claude · on this server · 1 tool call · session cost $0.31]');
+    expect(res.ok && res.text).toContain('[claude · on this server · new session · 1 tool call · session cost $0.31]');
     expect(res.ok && res.text).toContain('Files touched: src/cli.ts');
     expect((await readHarnessRuns())[0]).toMatchObject({ status: 'ok', costUsd: 0.31 });
     expect(updates.length).toBeGreaterThan(0);
