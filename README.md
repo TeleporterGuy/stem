@@ -176,6 +176,18 @@ By default Stem runs on your computer. Move it to a VPS with Docker and Caddy, o
 
 [Running on a server](docs/running-on-a-server.md) · [Running on a LAN or Tailscale](docs/running-on-tailscale.md)
 
+## On your iPhone
+
+The iPhone app (beta) pairs with a server Stem by scanning the QR code from Settings → Server → Devices → Pair a phone. It has your chats, with the same tables and diagrams, plus mail from your personas, dictation and the approvals Stem is waiting on. New chats can go to a persona that is open to phones.
+
+<table>
+  <tr>
+    <td width="33%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/ios-chats-dark.png"><img alt="The Chats tab on iPhone listing four chats, three marked unread" src="docs/screenshots/ios-chats-light.png"></picture></td>
+    <td width="33%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/ios-diagram-dark.png"><img alt="An Argo CD reconciliation flowchart drawn in a chat on the phone" src="docs/screenshots/ios-diagram-light.png"></picture></td>
+    <td width="33%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/ios-mail-conversation-dark.png"><img alt="The Bookkeeper's mail on the phone: an invoice status table and a payment reminder draft" src="docs/screenshots/ios-mail-conversation-light.png"></picture></td>
+  </tr>
+</table>
+
 ## Install
 
 Grab the latest build from [Releases](https://github.com/join3r/stem/releases/latest):

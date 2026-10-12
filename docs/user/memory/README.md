@@ -16,7 +16,7 @@ Open the right sidebar, choose **Memory**, then choose:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../../screenshots/memory-dark.png">
-  <img alt="An answer next to Stored memory, with the facts it used marked as injected" src="../../screenshots/memory-light.png">
+  <img alt="An answer next to the Facts tab, with the facts it used marked as injected" src="../../screenshots/memory-light.png">
 </picture>
 
 ## Summary of you
