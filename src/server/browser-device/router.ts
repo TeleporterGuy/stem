@@ -108,10 +108,10 @@ function asAnnouncement(report: unknown): DeviceBrowserAnnouncement | null {
   const value = report as Partial<DeviceBrowserAnnouncement> | null;
   if (!value || typeof value !== 'object') return null;
   if (typeof value.enabled !== 'boolean') return null;
-  if (value.platform !== 'darwin') return null;
+  if (value.platform !== 'darwin' && value.platform !== 'linux') return null;
   return {
     enabled: value.enabled,
-    platform: 'darwin',
+    platform: value.platform,
     browsers: asBrowsers(value.browsers),
     ...(typeof value.chosen === 'string' && value.chosen ? { chosen: value.chosen.slice(0, 500) } : {})
   };

@@ -17,6 +17,7 @@
 //   user's Downloads into Stem's spool first. This process is the browser's
 //   child, so macOS attributes that read to the browser, which already has
 //   Downloads; the Stem app reading it directly would raise a privacy prompt.
+//   (Linux has no such prompt; the copy is kept so both take one path.)
 //
 // It never exits on its own while the browser keeps the port open: with Stem
 // not running it retries the socket every two seconds, and that open port is
@@ -26,7 +27,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readlinkSync } from 'node:fs';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { createConnection, type Socket } from 'node:net';
 import { basename, join } from 'node:path';
@@ -47,16 +48,37 @@ interface HostConfig {
 
 const RETRY_MS = 2000;
 
-/** The browser's app bundle and name, from the process that started us. */
+/** Names for the Linux browser executables, which say less than a Mac bundle does. */
+const LINUX_NAMES: [RegExp, string][] = [
+  [/chrome-for-testing|chrome-linux64/, 'Google Chrome for Testing'],
+  [/\/google\/chrome|google-chrome/, 'Google Chrome'],
+  [/brave/, 'Brave'],
+  [/msedge|microsoft-edge|microsoft\/edge/, 'Microsoft Edge'],
+  [/chromium/, 'Chromium']
+];
+
+/**
+ * The browser and its name, from the process that started us: a Mac reports
+ * the binary inside the bundle and the bundle is the browser; on Linux the
+ * executable is the browser (and what launching it again runs).
+ */
 export function browserOf(command: string): { appPath: string; appName: string } {
   const at = command.indexOf('.app/');
-  const appPath = at >= 0 ? command.slice(0, at + 4) : command;
-  const appName = basename(appPath).replace(/\.app$/, '') || 'Browser';
-  return { appPath, appName };
+  if (at >= 0 || command.endsWith('.app')) {
+    const appPath = at >= 0 ? command.slice(0, at + 4) : command;
+    return { appPath, appName: basename(appPath).replace(/\.app$/, '') || 'Browser' };
+  }
+  const appName = LINUX_NAMES.find(([re]) => re.test(command))?.[1] ?? (basename(command) || 'Browser');
+  return { appPath: command, appName };
 }
 
 function parentCommand(): string {
   try {
+    if (process.platform === 'linux') {
+      // `ps -o comm=` is cut to 15 characters there; the exe link is the whole
+      // path. A browser updated in place while running reads "… (deleted)".
+      return readlinkSync(`/proc/${process.ppid}/exe`).replace(/ \(deleted\)$/, '');
+    }
     return execFileSync('/bin/ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8' }).trim();
   } catch {
     return 'Browser';

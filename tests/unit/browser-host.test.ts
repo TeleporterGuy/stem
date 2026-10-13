@@ -346,3 +346,67 @@ describe('createBrowserHost', () => {
     expect(parseArcTabs('\n')).toEqual([]);
   });
 });
+
+describe('createBrowserHost on Linux', () => {
+  let root: string;
+  let host: BrowserHost;
+  let invoked: Array<{ channel: string; args: unknown[] }>;
+  let launched: string[];
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'sbl-'));
+    const extSource = join(root, 'ext-src');
+    mkdirSync(extSource);
+    writeFileSync(join(extSource, 'manifest.json'), '{"manifest_version":3}');
+    mkdirSync(join(root, 'home', '.config', 'google-chrome'), { recursive: true });
+    process.env.STEM_BROWSER_HOST_FILE = join(root, 'browser-host.json');
+    invoked = [];
+    launched = [];
+    host = createBrowserHost({
+      invoke: async (channel, args) => void invoked.push({ channel, args }),
+      uploadFile: async () => 'unused',
+      downloadOutbox: async () => 'unused',
+      installSource: () => ({ extensionSource: extSource, hostScript: '/dev/null', nodeCommand: '/bin/false' }),
+      home: join(root, 'home'),
+      launch: async (app) => void launched.push(app),
+      openWith: async () => undefined,
+      paths: browserInstallPaths(root),
+      platform: 'linux',
+      launchWaitMs: 300
+    });
+    await host.start();
+  });
+
+  afterEach(() => {
+    host.close();
+    rmSync(root, { recursive: true, force: true });
+    delete process.env.STEM_BROWSER_HOST_FILE;
+  });
+
+  it('is supported, says “computer”, and announces as linux', async () => {
+    expect((await host.localState()).supported).toBe(true);
+    await writeBrowserHostEnabled(true);
+    host.onRequest({ requestId: 'r0', threadId: 't1', action: { kind: 'tabs' } });
+    await until(() => invoked.some((c) => c.channel === 'browserHost:result'));
+    const error = (invoked.find((c) => c.channel === 'browserHost:result')!.args[1] as { error: string }).error;
+    expect(error).toContain('on this computer');
+    expect(error).not.toContain('Mac');
+
+    const { token, socketPath } = await ensureHostConfig(browserInstallPaths(root));
+    const chrome = '/opt/google/chrome/chrome';
+    const peer = await connectPeer(socketPath, { type: 'host-hello', token, appPath: chrome, appName: 'Google Chrome' });
+    peer.send({ type: 'hello', protocol: 1, extensionId: 'x', extensionVersion: '0.7.0', userAgent: 'UA' });
+    await until(() => invoked.some((c) => c.channel === 'browserHost:announce' && JSON.stringify(c.args).includes('0.7.0')));
+    expect(invoked.filter((c) => c.channel === 'browserHost:announce').at(-1)!.args[0]).toMatchObject({
+      platform: 'linux',
+      browsers: [{ id: chrome, name: 'Google Chrome', connected: true }]
+    });
+
+    // Closed: the executable is what gets started again.
+    peer.socket.destroy();
+    await peer.closed;
+    host.onRequest({ requestId: 'r1', threadId: 't1', action: { kind: 'tabs' } });
+    await until(() => launched.length === 1);
+    expect(launched).toEqual([chrome]);
+  });
+});

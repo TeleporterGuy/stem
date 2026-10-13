@@ -176,6 +176,7 @@ const MAC_FEATURES = {
     ),
     targetLabel: 'In chats, control',
     targetAria: 'Mac chats control',
+    pickHint: 'The model picks the Mac per request',
     fixedHint: 'Every chat drives this Mac'
   },
   browser: {
@@ -188,13 +189,14 @@ const MAC_FEATURES = {
         With this on, a chat that runs as no persona can work in your browser — your real one, signed in —
         when you ask it to. Personas are not affected: a persona drives a browser only if it is pinned to one in
         Manage → Personas, even with this on. This is a setting of your Stem server, so it applies to chats from
-        every device — the Mac itself still needs its own “Let Stem control this Mac’s browser” switch, and the
-        tab Stem works in shows a marker with a Stop button.
+        every device — the computer itself still needs its own browser-control switch, and the tab Stem works in
+        shows a marker with a Stop button.
       </>
     ),
     targetLabel: 'Browser for chats',
-    targetAria: 'Mac whose browser chats use',
-    fixedHint: 'Every chat uses this Mac’s browser'
+    targetAria: 'Computer whose browser chats use',
+    pickHint: 'The model picks the computer per request',
+    fixedHint: 'Every chat uses this computer’s browser'
   }
 } as const;
 
@@ -266,7 +268,7 @@ function ChatMacRows({
       {value.allow && (
         <ValueRow
           label={f.targetLabel}
-          hint={value.target ? f.fixedHint : 'The model picks the Mac per request'}
+          hint={value.target ? f.fixedHint : f.pickHint}
         >
           <RowSelect
             ariaLabel={f.targetAria}

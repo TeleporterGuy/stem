@@ -25,9 +25,9 @@ The user chose the computer-control posture instead.
 | Actions | `tabs`, `open`, `navigate`, `snapshot` (an accessibility outline with refs), `screenshot`, `click`, `hover`, `type`, `fill`, `press`, `scroll`, `wait`, `dialog`, `evaluate`, `console`, `network`, `upload`, `downloads`, `close`. |
 | Uploads | Only files Stem holds: Files, scratch, connected folders, `img_` ids, and the conversation's attachments, which a browser turn keeps as files. Never an arbitrary path on the Mac. |
 | Downloads | Copied into the conversation's scratch `downloads/` on the server. |
-| Several browsers | One per Mac, chosen in that Mac's Settings. The chosen browser is started (`open -g -a`) when a run needs it and it is closed. |
+| Several browsers | One per computer, chosen in that computer's Settings. The chosen browser is started when a run needs it and it is closed: `open -g -a` on a Mac; on Linux its executable is run unless a process already runs it, and it may come to the front. |
 | Concurrency | Several runs at once, each keeping track of its own tabs, with one action queue per tab. A run is warned when another run used the same tab recently. |
-| Platform | macOS only for now: Arc, Chrome, Dia, Brave, plus Chromium, Edge and Chrome for Testing when they are installed. |
+| Platform | macOS: Arc, Chrome, Dia, Brave, plus Chromium, Edge and Chrome for Testing when they are installed. Linux: Chrome, Brave, Chromium, Edge (manifests under `$XDG_CONFIG_HOME`, browser named by `/proc/<ppid>/exe`). Snap and Flatpak browsers are out: their sandbox reads its own manifest folder and will not start a host outside it. Windows: no. |
 | Install | An unpacked extension: Set up copies it into the profile's state folder and writes native-messaging manifests. The extension id is fixed by the manifest `key`. A Web Store listing comes later. |
 | Local server | Works when the server runs on the same Mac. Computer control was opened up to that case at the same time. |
 
