@@ -133,11 +133,11 @@ function macBrowserDirs(home: string): BrowserDir[] {
 function linuxBrowserDirs(home: string): BrowserDir[] {
   const config = home === homedir() && process.env.XDG_CONFIG_HOME ? process.env.XDG_CONFIG_HOME : join(home, '.config');
   const dirs = [
+    // Every launcher here must be in LINUX_BROWSER_COMMANDS, or Stem will not run it.
     dir('Google Chrome', 'google-chrome', ['google-chrome', 'google-chrome-stable'], ['google-chrome.desktop'], join(config, 'google-chrome')),
     dir('Brave', 'brave-browser', ['brave-browser', 'brave'], ['brave-browser.desktop', 'com.brave.Browser.desktop'], join(config, 'BraveSoftware', 'Brave-Browser')),
     dir('Chromium', 'chromium', ['chromium', 'chromium-browser'], ['chromium.desktop', 'chromium-browser.desktop'], join(config, 'chromium')),
     dir('Microsoft Edge', 'microsoft-edge', ['microsoft-edge', 'microsoft-edge-stable'], ['microsoft-edge.desktop'], join(config, 'microsoft-edge')),
-    dir('Google Chrome for Testing', 'chrome', ['chrome'], [], join(config, 'google-chrome-for-testing'))
   ];
   return dirs.filter((d) => existsSync(d.dataDir));
 }

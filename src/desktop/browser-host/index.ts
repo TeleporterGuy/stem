@@ -13,7 +13,8 @@ import {
   type ExtensionResult,
   type FromExtension,
   type HostHello,
-  type ToExtension
+  type ToExtension,
+  launchableOnLinux
 } from '../../shared/browser-native';
 import type {
   BrowserDownloadReceipt,
@@ -349,6 +350,13 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     const live = conns.get(chosen);
     if (live) return { ok: true, conn: live };
     const name = settings.known.find((b) => b.id === chosen)?.name ?? chosen;
+    if (platform === 'linux' && !launchableOnLinux(chosen)) {
+      // The id came from a native host's word; Stem starts only browsers it knows.
+      return {
+        ok: false,
+        error: `${name} is not running, and Stem only starts browsers it knows on Linux. Tell the user to open it.`
+      };
+    }
     try {
       await launch(chosen);
     } catch (e) {
@@ -589,7 +597,10 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       // the folder: Finder (or the file manager) shows it, ready for Load unpacked. The browser still
       // comes forward, so typing its extensions page is all that is left.
       await openWith(null, paths.extensionDir).catch(() => undefined);
-      if (app) await openWith(app, extensionsPageUrl(app)).catch(() => undefined);
+      // The renderer names the app; on Linux that is a program to run, so only a known browser.
+      if (app && (platform !== 'linux' || launchableOnLinux(app))) {
+        await openWith(app, extensionsPageUrl(app)).catch(() => undefined);
+      }
     },
 
     close() {

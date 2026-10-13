@@ -409,4 +409,25 @@ describe('createBrowserHost on Linux', () => {
     await until(() => launched.length === 1);
     expect(launched).toEqual([chrome]);
   });
+
+  it('never starts a program a native host merely claimed is its browser', async () => {
+    await writeBrowserHostEnabled(true);
+    const { token, socketPath } = await ensureHostConfig(browserInstallPaths(root));
+    const peer = await connectPeer(socketPath, { type: 'host-hello', token, appPath: '/tmp/evil', appName: 'Evil' });
+    // The connect remembers the browser on its own schedule; choose it once it is known.
+    let known = false;
+    for (let i = 0; i < 200 && !known; i++) {
+      known = (await host.localState()).browsers.some((b) => b.id === '/tmp/evil');
+      if (!known) await new Promise((r) => setTimeout(r, 5));
+    }
+    await host.choose('/tmp/evil');
+    peer.socket.destroy();
+    await peer.closed;
+    host.onRequest({ requestId: 'r2', threadId: 't1', action: { kind: 'tabs' } });
+    await until(() => invoked.some((c) => c.channel === 'browserHost:result'));
+    expect((invoked.find((c) => c.channel === 'browserHost:result')!.args[1] as { error: string }).error).toContain(
+      'only starts browsers it knows'
+    );
+    expect(launched).toEqual([]);
+  });
 });

@@ -17,7 +17,7 @@ import {
   socketPathFor,
   wrapperScript
 } from '../../src/desktop/browser-host/install';
-import { FrameReader, encodeFrame } from '../../src/shared/browser-native';
+import { FrameReader, encodeFrame, launchableOnLinux } from '../../src/shared/browser-native';
 import { browserOf } from '../../src/desktop/browser-host/native-host-main';
 
 let home: string;
@@ -125,6 +125,15 @@ describe('Linux', () => {
     expect(browserOf('/usr/lib/chromium/chromium').appName).toBe('Chromium');
     expect(browserOf('/opt/microsoft/msedge/msedge').appName).toBe('Microsoft Edge');
     expect(browserOf('/usr/bin/vivaldi-bin').appName).toBe('vivaldi-bin');
+  });
+
+  it('starts only known browsers from system folders', () => {
+    for (const ok of ['/opt/google/chrome/chrome', '/opt/brave.com/brave/brave', '/usr/lib64/chromium-browser/chromium-browser', 'google-chrome-stable']) {
+      expect(launchableOnLinux(ok)).toBe(true);
+    }
+    for (const bad of ['/home/u/bin/chrome', '/tmp/brave-evil.sh', '/opt/google/chrome/../../../tmp/x', '/usr/bin/vivaldi-bin', 'sh', '']) {
+      expect(launchableOnLinux(bad)).toBe(false);
+    }
   });
 });
 

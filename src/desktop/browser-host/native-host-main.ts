@@ -37,7 +37,8 @@ import {
   MAX_TO_EXTENSION_BYTES,
   type ExtensionDownload,
   type FromExtension,
-  type HostHello
+  type HostHello,
+  linuxBrowserName
 } from '../../shared/browser-native';
 
 interface HostConfig {
@@ -47,15 +48,6 @@ interface HostConfig {
 }
 
 const RETRY_MS = 2000;
-
-/** Names for the Linux browser executables, which say less than a Mac bundle does. */
-const LINUX_NAMES: [RegExp, string][] = [
-  [/chrome-for-testing|chrome-linux64/, 'Google Chrome for Testing'],
-  [/\/google\/chrome|google-chrome/, 'Google Chrome'],
-  [/brave/, 'Brave'],
-  [/msedge|microsoft-edge|microsoft\/edge/, 'Microsoft Edge'],
-  [/chromium/, 'Chromium']
-];
 
 /**
  * The browser and its name, from the process that started us: a Mac reports
@@ -68,7 +60,7 @@ export function browserOf(command: string): { appPath: string; appName: string }
     const appPath = at >= 0 ? command.slice(0, at + 4) : command;
     return { appPath, appName: basename(appPath).replace(/\.app$/, '') || 'Browser' };
   }
-  const appName = LINUX_NAMES.find(([re]) => re.test(command))?.[1] ?? (basename(command) || 'Browser');
+  const appName = linuxBrowserName(command) ?? (basename(command) || 'Browser');
   return { appPath: command, appName };
 }
 
