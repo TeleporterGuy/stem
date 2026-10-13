@@ -11,6 +11,10 @@ import { CodeBlock } from './components';
 type Mermaid = typeof import('mermaid').default;
 type Purify = typeof import('dompurify').default;
 let loading: Promise<{ mermaid: Mermaid; purify: Purify }> | null = null;
+// Every render gets a fresh id. Under StrictMode the effect runs twice with the
+// same useId; a shared id lets the second mermaid.render evict the first's temp
+// node mid-flight, so the first reads back null and throws on .firstChild.
+let renderSeq = 0;
 /** Both load on the first diagram, in their own chunk, never with the app. */
 function loadMermaid(): Promise<{ mermaid: Mermaid; purify: Purify }> {
   loading ??= Promise.all([import('mermaid'), import('dompurify')]).then(([m, p]) => ({
@@ -97,7 +101,7 @@ export function Diagram({ title, source }: { title?: string; source?: string }) 
         // Parse first: a failed render leaves mermaid's own error graphic in
         // the page body, and the source is shown as code instead anyway.
         if (!(await mermaid.parse(code, { suppressErrors: true }))) throw new Error('unparseable diagram');
-        const renderId = `${id}-${themeKey}`;
+        const renderId = `${id}-${themeKey}-${++renderSeq}`;
         let svg: string;
         try {
           ({ svg } = await mermaid.render(renderId, code));
@@ -108,7 +112,10 @@ export function Diagram({ title, source }: { title?: string; source?: string }) 
         // text, so the finished SVG goes through DOMPurify's SVG profile as well.
         const clean = purify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['style'] });
         if (live) setState({ svg: clean });
-      } catch {
+      } catch (err) {
+        // Surface the real reason: a bare catch here turned every diagram
+        // failure into the same opaque fallback.
+        console.error('[Diagram] render failed:', err);
         if (live) setState({ error: true });
       }
     })();
