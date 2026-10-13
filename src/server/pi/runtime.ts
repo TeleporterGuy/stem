@@ -13,7 +13,7 @@ import {
   type FSWatcher
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, parse, resolve, sep } from 'node:path';
+import { delimiter, dirname, join, parse, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
   ActivityItem,
@@ -58,6 +58,7 @@ import {
 import { memoryRunOf, readSettings } from '../workspace/settings';
 import { resolveBrowserGrant, resolveCodingGrant, resolveComputerGrant } from '../harness/chat-grants';
 import { browserChoicesText, codingChoicesText, computerChoicesText } from '../harness/chat-hosts';
+import { resolveLoginPath } from '../exec/executor';
 import { resolveHostShell } from '../exec/git-bash';
 import { ensureThreadScratch } from '../exec/scratch';
 import { capActions, capUserWords, parseJudgeSession, type JudgeAction, type JudgeContext } from '../exec/judge-context';
@@ -2113,7 +2114,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     const child = await spawnReadyCompleteChild({
       pi,
       cwd: completeInternalCwd(this.options.workspaceRoot),
-      env: this.sanitizedEnv(pi),
+      env: await this.sanitizedEnv(pi),
       provider,
       modelId
     });
@@ -2154,7 +2155,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const child = await spawnReadyCompleteChild({
         pi,
         cwd: completeInternalCwd(this.options.workspaceRoot),
-        env: this.sanitizedEnv(pi),
+        env: await this.sanitizedEnv(pi),
         provider: resolved.provider,
         modelId: resolved.modelId
       });
@@ -3803,7 +3804,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       command: pi.command,
       prefixArgs: pi.prefixArgs,
       cwd: this.options.workspaceRoot,
-      env: this.sanitizedEnv(pi, worker.gateDir),
+      env: await this.sanitizedEnv(pi, worker.gateDir),
       args: [
         // Filesystem access: keep pi's read/edit/write built-ins (so the assistant can
         // open AND create/modify files in the Files folder). Exclude only `bash`
@@ -5452,8 +5453,21 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     return `env PI_CODING_AGENT_DIR="${this.options.piHome}" ${extra}${argv}`;
   }
 
-  private sanitizedEnv(pi?: PiInvocation, gateDir?: string): NodeJS.ProcessEnv {
+  private async sanitizedEnv(pi?: PiInvocation, gateDir?: string): Promise<NodeJS.ProcessEnv> {
     const env = { ...process.env, ...(pi?.env ?? {}) };
+    // A Finder/Dock-launched Stem.app gets /usr/bin:/bin:/usr/sbin:/sbin and
+    // nothing else, and everything pi spawns inherits it — above all the stdio
+    // MCP servers in mcp.json, nearly all of which are `npx …` and died ENOENT
+    // (Playwright MCP, reported 2026-10-13). The login shell's PATH goes first;
+    // the process's own stays after it so the headless server, whose PATH is
+    // already right, loses nothing. Windows already inherits the user's Path.
+    if (process.platform !== 'win32') {
+      // quiet: resolveLoginPath answers with the process PATH on every failure of
+      // its own and degrades there (exec.loginPath); it has no rejection to report.
+      const loginPath = await resolveLoginPath().catch(() => '');
+      const dirs = [loginPath, env.PATH ?? ''].flatMap((p) => p.split(delimiter)).filter(Boolean);
+      env.PATH = [...new Set(dirs)].join(delimiter);
+    }
     env.PI_CODING_AGENT_DIR = this.options.piHome;
     env.PI_CODING_AGENT_SESSION_DIR = this.options.sessionsDir;
     env.PI_SKIP_VERSION_CHECK = '1';
