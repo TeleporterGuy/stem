@@ -2235,6 +2235,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    */
   async findThreadImage(threadId: string, imageId: string): Promise<{ mimeType: string; data: string } | null> {
     if (!/^img_[0-9a-f]{6,32}$/.test(imageId)) return null;
+    const unsaved = this.unsavedImages.get(`${threadId}/${imageId}`);
+    if (unsaved) return unsaved;
     const file = await this.resolveSessionFile(threadId);
     if (!file) {
       const live = this.workers.find((w) => w.proc?.running && w.activeThreadId === threadId);
@@ -4063,6 +4065,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       for (const steer of turn.steers ?? []) this.sendSteer(worker, turn, steer);
     } else if (ev.type === 'tool_execution_end') {
       turn.toolsRunning = Math.max(0, (turn.toolsRunning ?? 0) - 1);
+      this.holdUnsavedImage(turn.threadId, ev);
     } else if (ev.type === 'message_start' && turn.steers?.length) {
       // The model is shown a steered mail as a user message of its own.
       const message = ev.message as { role?: string; content?: unknown } | undefined;
@@ -4109,6 +4112,24 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     this.generatedImages.set(image.threadId, list);
   }
 
+  /**
+   * Picture bytes from tool_execution_end, kept until the turn settles. pi
+   * writes a tool result to the session only after EVERY call of a parallel
+   * batch has finished, but the renderer fetches each picture the moment its
+   * own call ends — without this, all but the last of three pictures made at
+   * once read as gone until the chat was reopened.
+   */
+  private readonly unsavedImages = new Map<string, { mimeType: string; data: string }>();
+
+  private holdUnsavedImage(threadId: string, ev: PiEvent): void {
+    if (ev.isError === true) return;
+    const result = ev.result as { content?: unknown; details?: unknown } | undefined;
+    const message = { role: 'toolResult', toolName: ev.toolName, content: result?.content, details: result?.details };
+    const made = stemImageOf(message);
+    const bytes = made ? findImageInEntries([message], made.id) : null;
+    if (made && bytes) this.unsavedImages.set(`${threadId}/${made.id}`, bytes);
+  }
+
   /** The thread's generated images since the last take, then forgotten. */
   takeGeneratedImages(threadId: string): GeneratedImageRef[] {
     const list = this.generatedImages.get(threadId) ?? [];
@@ -4122,6 +4143,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * work until agent_settled (see onPiEvent). */
   private settleTurn(worker: PiWorker, turn: TurnContext, now: number): void {
     turn.endedAt = now;
+    // Every tool result is in the session file by agent_end.
+    for (const key of this.unsavedImages.keys()) {
+      if (key.startsWith(`${turn.threadId}/`)) this.unsavedImages.delete(key);
+    }
     // Steered mail the model never read (the run ended first, or failed) must
     // not ride into this thread's NEXT prompt as a stale queued message: the
     // mail router redelivers it the ordinary way (steerConsumed says unread).
