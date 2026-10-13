@@ -20,6 +20,9 @@ Maintainer notes:
   `npx` (the Playwright one, and most others copied from a README) failed to start with a
   "not found" error unless Stem had been launched from a terminal. Stem now looks for programs
   in the same places your terminal does.
+- **Diagrams draw again.** A diagram could show "Couldn't draw this diagram" and its source
+  even when the diagram was fine, because a redraw that started before the last one finished
+  knocked it over. Thanks to jacisko for finding and fixing it.
 
 ## 0.6.0 — 2026-10-12
 
