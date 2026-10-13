@@ -330,7 +330,8 @@ describe('createBrowserHost', () => {
 
     sidebar = { error: 'macOS did not let Stem read Arc’s sidebar.' };
     host.onRequest(request('r2', { kind: 'tabs' }));
-    await until(() => peer.received.filter((m) => m.type === 'request').length >= 2);
+    // peer.next above took r1 out of `received`, so r2 is the only request left there.
+    await peer.next('request');
     peer.send({ type: 'result', id: 'r2', result: { ok: true, text: '0 open tabs.', urls: [] } });
     await until(() => !!result('r2'));
     expect(result('r2')!.text).toBe('0 open tabs.\n\nmacOS did not let Stem read Arc’s sidebar.');

@@ -518,7 +518,10 @@ app.whenReady().then(async () => {
       hostScript: BROWSER_NATIVE_HOST_SCRIPT,
       nodeCommand: process.execPath
     }),
-    copyText: (text) => clipboard.writeText(text)
+    copyText: (text) => clipboard.writeText(text),
+    // Tests press Set up for real; it must not open the file manager or start
+    // a browser on the machine running them.
+    ...(E2E ? { openWith: async () => undefined } : {})
   });
 
   proxy = createServerProxy({

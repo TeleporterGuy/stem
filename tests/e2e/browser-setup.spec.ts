@@ -2,14 +2,14 @@
 // has put the extension in its folder and no browser has loaded it, the row
 // spells out the steps, with the folder's path to paste. The folder is seeded
 // rather than made by pressing Set up, which would write native-messaging
-// manifests into this Mac's real browsers.
+// manifests into this computer's real browsers.
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeApp, expect, launchApp, mainWindowOf, openSettings, test } from './electron';
 
 test('waiting for Load unpacked shows the steps and the folder to paste', async () => {
-  test.skip(process.platform !== 'darwin', 'browser control is macOS-only');
+  test.skip(process.platform !== 'darwin' && process.platform !== 'linux', 'browser control runs on macOS and Linux');
   const launched = await launchApp({
     seedSettings: {
       onboarding: { completed: true },
@@ -23,7 +23,7 @@ test('waiting for Load unpacked shows the steps and the folder to paste', async 
     await win.waitForLoadState('domcontentloaded');
     await openSettings(win, 'Features');
 
-    await win.getByRole('switch', { name: 'Let Stem control this Mac’s browser' }).click();
+    await win.getByRole('switch', { name: /Let Stem control this (Mac|computer)’s browser/ }).click();
     await expect(win.getByText('Waiting for Load unpacked')).toBeVisible();
     const steps = win.locator('.ext-steps');
     await expect(steps.getByText('Developer mode')).toBeVisible();
@@ -46,7 +46,7 @@ test('waiting for Load unpacked shows the steps and the folder to paste', async 
 // profile. The Set up and open-page handlers are stubbed — the real ones write
 // manifests into this Mac's browsers and open Finder.
 test('Set up again shows the steps until Done', async () => {
-  test.skip(process.platform !== 'darwin', 'browser control is macOS-only');
+  test.skip(process.platform !== 'darwin' && process.platform !== 'linux', 'browser control runs on macOS and Linux');
   const userDataDir = mkdtempSync(join(tmpdir(), 'stem-e2e-'));
   const extensionDir = join(userDataDir, 'browser-extension');
   mkdirSync(extensionDir, { recursive: true });
