@@ -411,6 +411,15 @@ export function embedModelsDir(): string {
  * Held in the main process because some of it — the global accelerator — can
  * only be registered from main, not the renderer.
  */
+/**
+ * Inter-Stem mail state (server/interstem/store.ts): this Stem's identity and
+ * encryption keys (encrypted at rest when a key wrapper exists), its verified
+ * addresses, contacts with their pinned keys, and the outbound queue.
+ */
+export function interStemStorePath(): string {
+  return process.env.STEM_INTERSTEM_STORE ?? join(userDataRoot(), 'interstem.json');
+}
+
 export function settingsStorePath(): string {
   return join(userDataRoot(), 'settings.json');
 }

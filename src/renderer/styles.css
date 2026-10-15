@@ -3703,6 +3703,21 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 /* A parked run's Allow/Deny inside its mail item. */
 .mail-item-approval { margin-top: var(--sp-5); padding: var(--sp-4) var(--sp-5); border: 0.5px solid var(--hair); border-radius: var(--radius-md); font-size: var(--fs-12); }
 .mail-item-approval .mcp-approval-actions { margin-top: var(--sp-4); }
+/* Inter-Stem mail: held mail, Requests, key changes, drafts, send status. */
+.mail-ext-held { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); margin: var(--sp-3) 0; padding: var(--sp-3) var(--sp-4); border: 0.5px solid var(--hair); border-radius: var(--radius-md); background: var(--sel); font-size: var(--fs-12); color: var(--ink); }
+.mail-ext-held > span { display: inline-flex; align-items: center; gap: var(--sp-2); flex: 1 1 12rem; }
+.mail-ext-banner { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); padding: var(--sp-3) var(--sp-10); border-bottom: 0.5px solid var(--hair); background: var(--sel); font-size: var(--fs-12); color: var(--ink); }
+.mail-ext-banner > span { display: inline-flex; align-items: center; gap: var(--sp-2); flex: 1 1 14rem; }
+.mail-ext-banner.warn { color: var(--warn); }
+.mail-ext-status { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-11); color: var(--muted); white-space: nowrap; }
+.mail-ext-status.delivered { color: var(--success); }
+.mail-ext-status.failed, .mail-ext-status.unreachable { color: var(--danger); }
+.mail-ext-status.key-changed, .mail-ext-status.expired { color: var(--warn); }
+.mail-draft-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); margin: var(--sp-3) 0; font-size: var(--fs-12); color: var(--muted); }
+.mail-draft-row input { flex: 1 1 12rem; min-width: 0; }
+.mail-draft-row .task-failed { flex-basis: 100%; }
+.mail-draft-edit { display: block; width: 100%; box-sizing: border-box; margin-top: var(--sp-3); padding: var(--sp-3); border: 0.5px solid var(--line); border-radius: var(--radius-sm); background: var(--field); color: var(--ink); font: inherit; font-size: var(--fs-13); resize: vertical; }
+.row-inline { display: inline-flex; align-items: center; gap: var(--sp-2); }
 .mail-item-agent-summary { padding: var(--sp-4) var(--sp-5); cursor: pointer; color: var(--muted); line-height: 1.8; }
 .mail-item-agent-summary > * { margin-right: var(--sp-4); }
 .mail-item-agent-summary strong { color: var(--ink); }

@@ -100,3 +100,17 @@ jobs:
 
       - name: Unit tests (Vitest, Windows-relevant subset)
         run: npm run test:win
+
+  relay:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: relay/go.mod
+          cache-dependency-path: relay/go.sum
+      - run: go vet ./...
+      - run: go test ./...

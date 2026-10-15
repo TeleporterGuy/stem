@@ -476,8 +476,30 @@ const api: StemApi = {
   addMailParticipant: (conversationId: string, personaId: string) =>
     ipcRenderer.invoke('mail:addParticipant', conversationId, personaId),
   stopMail: (conversationId: string) => ipcRenderer.invoke('mail:stop', conversationId),
-  resolveMailApproval: (itemId: string, decision: 'allow' | 'deny') =>
-    ipcRenderer.invoke('mail:resolveApproval', itemId, decision),
+  // The edited draft body rides only for a send draft (older servers reject a 3rd arg).
+  resolveMailApproval: (itemId: string, decision: 'allow' | 'deny', body?: string) =>
+    body !== undefined
+      ? ipcRenderer.invoke('mail:resolveApproval', itemId, decision, body)
+      : ipcRenderer.invoke('mail:resolveApproval', itemId, decision),
+  composeExternalMail: (input: { to: string; subject?: string; body: string; self?: string }) =>
+    ipcRenderer.invoke('mail:composeExternal', input),
+  releaseMail: (conversationId: string, itemId: string) => ipcRenderer.invoke('mail:release', conversationId, itemId),
+  draftExternalMail: (conversationId: string, personaId: string, instructions?: string) =>
+    ipcRenderer.invoke('mail:draftExternal', conversationId, personaId, instructions ?? ''),
+  interStemStatus: () => ipcRenderer.invoke('interstem:status'),
+  interStemAddAddress: (address: string) => ipcRenderer.invoke('interstem:addAddress', address),
+  interStemVerifyAddress: (address: string, code: string) => ipcRenderer.invoke('interstem:verifyAddress', address, code),
+  interStemCheckLink: (address: string) => ipcRenderer.invoke('interstem:checkLink', address),
+  interStemRemoveAddress: (address: string) => ipcRenderer.invoke('interstem:removeAddress', address),
+  interStemSetUnlisted: (unlisted: boolean) => ipcRenderer.invoke('interstem:setUnlisted', unlisted),
+  interStemContact: (op: 'accept' | 'block' | 'unblock' | 'verify' | 'unverify' | 'ackKey', address: string) =>
+    ipcRenderer.invoke('interstem:contact', op, address),
+  interStemInvite: (address: string) => ipcRenderer.invoke('interstem:invite', address),
+  onInterStemChanged: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on('interstem:changed', handler);
+    return () => ipcRenderer.removeListener('interstem:changed', handler);
+  },
   setMailRead: (conversationIds: string[], read: boolean) =>
     ipcRenderer.invoke('mail:setRead', conversationIds, read),
   setMailArchived: (conversationIds: string[], archived: boolean) =>

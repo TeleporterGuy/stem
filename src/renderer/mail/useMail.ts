@@ -44,6 +44,8 @@ export interface MailApi {
   refresh: () => void;
   /** Resolves with the fresh list so the caller can open the new conversation. */
   compose: (input: MailComposeInput) => Promise<MailListResult>;
+  /** Inter-Stem: start a conversation with another Stem's owner. */
+  composeExternal: (input: { to: string; subject?: string; body: string }) => Promise<MailListResult>;
   /** Never rejects: a failure stays in `pending` as a failed send. */
   reply: (conversationId: string, body: string, attachments?: TurnAttachment[]) => Promise<void>;
   pending: PendingSend[];
@@ -162,6 +164,14 @@ export function useMail(ready: boolean): MailApi {
     },
     [applyServer]
   );
+  const composeExternal = useCallback(
+    async (input: { to: string; subject?: string; body: string }) => {
+      const list = await window.stem.composeExternalMail(input);
+      applyServer(list);
+      return list;
+    },
+    [applyServer]
+  );
   const deliver = useCallback(
     async (send: PendingSend) => {
       try {
@@ -240,6 +250,7 @@ export function useMail(ready: boolean): MailApi {
     personas,
     refresh,
     compose,
+    composeExternal,
     reply,
     pending,
     retrySend,
@@ -272,6 +283,8 @@ export function hasMailWaiting(c: MailConversation): boolean {
  */
 export function personaName(personas: Persona[], id: string): string {
   if (id.startsWith('task:')) return 'Scheduled task';
+  // Another Stem's owner: their email address is their name.
+  if (id.includes('@')) return id;
   if (id === 'memory-check') return 'Memory check';
   const at = id.lastIndexOf('~');
   if (at > 0) {

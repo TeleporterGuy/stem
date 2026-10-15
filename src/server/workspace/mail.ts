@@ -4,15 +4,18 @@ import { dirname } from 'node:path';
 import type { InboxEntry, InboxState } from '../../shared/inbox';
 import { toMs } from '../../shared/inbox';
 import { cleanMailSubject, deriveMailSubject, NO_SUBJECT, resolveMailSubject } from '../../shared/mail-subject';
-import type {
-  GeneratedImageRef,
-  MailApproval,
-  MailApprovalStatus,
-  MailAgent,
-  MailConversation,
-  MailItem,
-  MailListResult,
-  ScheduledRunReport
+import {
+  isExternalAddress,
+  type GeneratedImageRef,
+  type MailApproval,
+  type MailApprovalStatus,
+  type MailAgent,
+  type MailConversation,
+  type MailExternal,
+  type MailExternalThread,
+  type MailItem,
+  type MailListResult,
+  type ScheduledRunReport
 } from '../../shared/types';
 import { coerceSystemVersion } from '../../shared/sys-version';
 import { systemVersion } from '../sys-version';
@@ -58,8 +61,9 @@ function coerceApproval(raw: unknown): MailApproval | undefined {
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
   return {
     id: a.id,
-    kind: a.kind === 'harness' ? 'harness' : 'exec',
+    kind: a.kind === 'harness' ? 'harness' : a.kind === 'send' ? 'send' : 'exec',
     command: a.command,
+    ...(str(a.to) ? { to: str(a.to) } : {}),
     ...(str(a.cwd) ? { cwd: str(a.cwd) } : {}),
     ...(str(a.deviceLabel) ? { deviceLabel: str(a.deviceLabel) } : {}),
     ...(str(a.reason) ? { reason: str(a.reason) } : {}),
@@ -129,6 +133,8 @@ function coerceItem(raw: unknown): MailItem | null {
   if (sys) item.sys = sys;
   const approval = coerceApproval(r.approval);
   if (approval) item.approval = approval;
+  const external = coerceExternal(r.external);
+  if (external) item.external = external;
   if (Array.isArray(r.attachments)) {
     const attachments = r.attachments.flatMap((a) => {
       if (!a || typeof a !== 'object') return [];
@@ -149,6 +155,30 @@ function coerceItem(raw: unknown): MailItem | null {
   return item;
 }
 
+const EXTERNAL_STATUSES = ['queued', 'sent', 'delivered', 'expired', 'failed', 'unreachable', 'key-changed'] as const;
+
+function coerceExternal(raw: unknown): MailExternal | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const out: MailExternal = {};
+  if (typeof r.envelopeId === 'string' && r.envelopeId) out.envelopeId = r.envelopeId;
+  if (r.held === true) out.held = true;
+  if (r.keyChanged === true) out.keyChanged = true;
+  if (r.unsupported === true) out.unsupported = true;
+  if (EXTERNAL_STATUSES.includes(r.status as (typeof EXTERNAL_STATUSES)[number])) out.status = r.status as MailExternal['status'];
+  if (typeof r.error === 'string' && r.error) out.error = r.error;
+  return out;
+}
+
+function coerceExternalThread(raw: unknown): MailExternalThread | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.address !== 'string' || !isExternalAddress(r.address)) return undefined;
+  if (typeof r.thread !== 'string' || !/^[0-9a-f]{32}$/.test(r.thread)) return undefined;
+  if (typeof r.self !== 'string' || !isExternalAddress(r.self)) return undefined;
+  return { address: r.address, thread: r.thread, self: r.self };
+}
+
 /**
  * Conversation ids THIS process marked working. The set — not the file — is
  * the authority on "a delivery is in flight": ids enter on
@@ -164,7 +194,10 @@ function coerceConversation(raw: unknown): MailConversation | null {
   const participants = Array.isArray(r.participants)
     ? r.participants.filter((p): p is string => typeof p === 'string' && !!p)
     : [];
-  if (!participants.length) return null;
+  const external = coerceExternalThread(r.external);
+  // An inter-Stem conversation starts with no personas: the user handles it
+  // until they bring one in to draft.
+  if (!participants.length && !external) return null;
   const sessions: Record<string, string> = {};
   if (r.sessions && typeof r.sessions === 'object') {
     for (const [personaId, threadId] of Object.entries(r.sessions as Record<string, unknown>)) {
@@ -203,6 +236,7 @@ function coerceConversation(raw: unknown): MailConversation | null {
     ...(agents.length ? { agents } : {}),
     ...(r.private === true ? { private: true as const } : {}),
     ...(r.owner === 'memory-check' ? { owner: 'memory-check' as const } : {}),
+    ...(external ? { external } : {}),
     status,
     exchangeCount: num(r.exchangeCount) ?? 0,
     sendCounts,
@@ -421,7 +455,7 @@ export function createConversation(
   subject: string,
   participants: string[],
   bodyForSubject = '',
-  opts: { private?: boolean; owner?: MailConversation['owner'] } = {}
+  opts: { private?: boolean; owner?: MailConversation['owner']; external?: MailExternalThread } = {}
 ): Promise<MailConversation> {
   const conversation: MailConversation = {
     id: randomUUID(),
@@ -430,6 +464,7 @@ export function createConversation(
     sessions: {},
     ...(opts.private ? { private: true as const } : {}),
     ...(opts.owner ? { owner: opts.owner } : {}),
+    ...(opts.external ? { external: opts.external } : {}),
     status: 'idle',
     exchangeCount: 0,
     sendCounts: {},
@@ -470,7 +505,8 @@ export function exchangeHops(
 ): number {
   if (from === 'user') return 0;
   const starter = conversation.agents?.find((a) => a.id === from)?.spawnedBy;
-  return to.filter((t) => t !== 'user' && t !== starter).length;
+  // Mail to another Stem is the user's to send, never a hop between personas.
+  return to.filter((t) => t !== 'user' && t !== starter && !isExternalAddress(t)).length;
 }
 
 /**
@@ -725,6 +761,76 @@ export async function settleMailApproval(itemId: string, status: Exclude<MailApp
     item.approval = { ...item.approval, status };
     const conversation = conversationOf(store, item.conversationId);
     conversation.updatedAt = Math.max(conversation.updatedAt, Date.now());
+  });
+  return settled;
+}
+
+// ---- inter-Stem mail ----
+
+/** The conversation filed under a shared thread token with an external address. */
+export async function findExternalConversation(thread: string, address: string, self: string): Promise<MailConversation | null> {
+  const { conversations } = await readMail();
+  return (
+    conversations.find(
+      (c) => c.external?.thread === thread && c.external.address === address && c.external.self === self
+    ) ?? null
+  );
+}
+
+/** Whether an inbound envelope is already stored (redelivery after a missed ack). */
+export async function hasExternalEnvelope(envelopeId: string): Promise<boolean> {
+  const { items } = await readMail();
+  return items.some((i) => i.external?.envelopeId === envelopeId);
+}
+
+/**
+ * Release a held inbound mail to the user's agents. Every held item in the
+ * conversation up to and including this one is released together: the user
+ * read them in order.
+ */
+export function releaseExternalItems(conversationId: string, upToItemId: string): Promise<MailListResult> {
+  return update((store) => {
+    const items = store.items.filter((i) => i.conversationId === conversationId);
+    const idx = items.findIndex((i) => i.id === upToItemId);
+    if (idx < 0) throw new Error('That mail no longer exists.');
+    let changed = false;
+    for (const item of items.slice(0, idx + 1)) {
+      if (item.external?.held) {
+        item.external = { ...item.external, held: false };
+        delete item.external.held;
+        changed = true;
+      }
+    }
+    if (!changed) return false;
+  });
+}
+
+/** Record an outbound send's progress on its item. */
+export function setExternalStatus(itemId: string, patch: Partial<MailExternal>): Promise<MailListResult> {
+  return update((store) => {
+    const item = store.items.find((i) => i.id === itemId);
+    if (!item) return false;
+    const next: MailExternal = { ...item.external, ...patch };
+    if (!patch.error && patch.status && patch.status !== 'failed' && patch.status !== 'unreachable') delete next.error;
+    item.external = next;
+  });
+}
+
+/**
+ * Settle a persona's send draft, once. `body` is what the user actually
+ * sent (they may have edited it). Returns the draft as it was while pending.
+ */
+export async function settleSendDraft(
+  itemId: string,
+  status: 'allowed' | 'denied',
+  body?: string
+): Promise<{ item: MailItem; approval: MailApproval } | null> {
+  let settled: { item: MailItem; approval: MailApproval } | null = null;
+  await update((store) => {
+    const item = store.items.find((i) => i.id === itemId);
+    if (item?.approval?.kind !== 'send' || item.approval.status !== 'pending') return false;
+    settled = { item: { ...item }, approval: { ...item.approval } };
+    item.approval = { ...item.approval, status, ...(body !== undefined ? { command: body } : {}) };
   });
   return settled;
 }

@@ -29,3 +29,6 @@ docs/screenshots
 # that survives every `docker save` and every registry push.
 stem_key
 *.tar
+
+# The relay is a separate Go program with its own image (relay/Dockerfile).
+relay

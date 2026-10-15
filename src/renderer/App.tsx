@@ -45,7 +45,7 @@ import {
 } from './chats/return-chat';
 import { SnoozeMenu } from './chats/SnoozeMenu';
 import { hasMailWaiting, useMail } from './mail/useMail';
-import { MailComposeView, MailConversationView, type MailForwardDraft, type MailViewHandle } from './mail/MailView';
+import { MailComposeView, MailConversationView, type ExternalComposeInput, type MailForwardDraft, type MailViewHandle } from './mail/MailView';
 import { ActivityIndicator } from './ui/ActivityIndicator';
 import { TaskAlertModal } from './TaskAlertModal';
 import { ReleaseNotesModal } from './ReleaseNotesModal';
@@ -1382,9 +1382,9 @@ export default function App() {
    *  just sent stays in view, with the personas' progress on it, instead of
    *  vanishing into a folded Sent section. */
   const onComposeSend = useCallback(
-    async (input: Parameters<typeof mailApi.compose>[0]) => {
+    async (input: Parameters<typeof mailApi.compose>[0] | ExternalComposeInput) => {
       const before = new Set(mailRef.current.conversations.map((c) => c.id));
-      const list = await mailApi.compose(input);
+      const list = 'external' in input ? await mailApi.composeExternal(input) : await mailApi.compose(input);
       const created = list.conversations
         .filter((c) => !before.has(c.id))
         .sort((a, b) => b.createdAt - a.createdAt)[0];

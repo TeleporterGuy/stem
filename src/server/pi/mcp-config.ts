@@ -391,6 +391,8 @@ export async function writeTurnContextGate(
     browserRefusal?: string | null;
     recall: boolean;
     relay: boolean;
+    /** Inter-Stem external context: only the read-only allowlist (externalRefusal). */
+    external?: boolean;
     imageGen?: boolean;
     imageGenRefusal?: string | null;
     mcpServers?: readonly string[] | null;
@@ -432,6 +434,7 @@ export async function writeTurnContextGate(
         browserRefusal: ctx.browserRefusal ?? null,
         recall: ctx.recall,
         relay: ctx.relay,
+        external: ctx.external === true,
         // `imageGen`: whether generate_image is offered this turn (the bridge
         // also hides it from the tool set when false). Defaults to false.
         imageGen: ctx.imageGen === true,

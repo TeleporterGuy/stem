@@ -639,6 +639,12 @@ export interface StartTurnInput {
      * ride only the original user delivery.
      */
     source?: { itemId: string; body: string; attachmentNames?: string[] };
+    /**
+     * Inter-Stem: the conversation is with another Stem's owner. The turn is
+     * external context — side-effect tools are removed in code, web reads
+     * always ask — and send_mail to `address` saves a draft for the user.
+     */
+    external?: { address: string };
   };
 }
 
@@ -3018,8 +3024,70 @@ export interface PersonaNotesConsolidation {
 // the user; the persona work behind a reply lives in hidden pi threads (one per
 // conversation+persona, recorded in `sessions`) and is collapsible, not gone.
 
-/** 'user', or a persona id. */
+/**
+ * 'user', a persona id, an agent id (`role~name`), or — inter-Stem mail — an
+ * email address of another Stem's owner (contains '@').
+ */
 export type MailAddress = string;
+
+/** An address on another Stem (an email address), never a persona or agent. */
+export const isExternalAddress = (a: string): boolean => a.includes('@');
+
+/**
+ * Inter-Stem state of one mail item (docs/inter-stem-mail-design.md).
+ * Inbound: `held` until the user releases it — no agent, recall, capture or
+ * draft touches a held item. Outbound: the send's progress.
+ */
+export interface MailExternal {
+  /** The relay envelope id (dedupe for inbound, status lookups for outbound). */
+  envelopeId?: string;
+  held?: boolean;
+  /** Inbound: the sender's key differs from the one pinned for them. */
+  keyChanged?: boolean;
+  /** Outbound progress. Toward strangers 'sent' is all the relay ever says. */
+  status?: 'queued' | 'sent' | 'delivered' | 'expired' | 'failed' | 'unreachable' | 'key-changed';
+  error?: string;
+  /** Inbound mail in a format this Stem doesn't understand. */
+  unsupported?: boolean;
+}
+
+/** The other side of an inter-Stem conversation. */
+export interface MailExternalThread {
+  /** Their email address. */
+  address: string;
+  /** Shared conversation token both Stems file the thread under (32 hex). */
+  thread: string;
+  /** Which of OUR addresses this conversation runs under. */
+  self: string;
+}
+
+export interface InterStemContact {
+  address: string;
+  /** request = they knocked and we haven't answered; accepted = a contact. */
+  state: 'request' | 'accepted' | 'blocked';
+  keyFp: string;
+  /** Upgraded from "verified by email" by an in-person fingerprint check. */
+  verifiedByUser?: boolean;
+  /** Their key changed since it was pinned and the user hasn't acknowledged it. */
+  keyChanged?: boolean;
+  firstSeen: number;
+}
+
+export interface InterStemAddress {
+  address: string;
+  state: 'pending' | 'verified';
+  relay: string;
+}
+
+export interface InterStemStatus {
+  addresses: InterStemAddress[];
+  unlisted: boolean;
+  /** Our key fingerprint, for in-person verification. */
+  fingerprint: string;
+  /** Live connection to each verified address's relay. */
+  connected: boolean;
+  contacts: InterStemContact[];
+}
 
 /** Recorded work, separate from mail delivery/read state. Never contains reasoning. */
 export interface MailWorkActivity {
@@ -3145,14 +3213,20 @@ export interface MailItem {
    * persisted with the mail, answered by `mail:resolveApproval`.
    */
   approval?: MailApproval;
+  /** Inter-Stem mail only — see MailExternal. */
+  external?: MailExternal;
 }
 
 export type MailApprovalStatus = 'pending' | 'allowed' | 'denied' | 'superseded' | 'cancelled';
 
 export interface MailApproval {
   id: string;
-  kind: 'exec' | 'harness';
+  /** 'send' = a persona's draft to another Stem, waiting for the user to send it. */
+  kind: 'exec' | 'harness' | 'send';
+  /** exec/harness: the command. send: the draft body (the user may edit it before sending). */
   command: string;
+  /** send only: the external address the draft goes to. */
+  to?: string;
   cwd?: string;
   /** The paired computer it would run on (absent = the Stem server). */
   deviceLabel?: string;
@@ -3223,6 +3297,12 @@ export interface MailConversation {
    * tab's deep check (server/recall/deep-check.ts).
    */
   owner?: 'memory-check';
+  /**
+   * Inter-Stem: the conversation is with another Stem's owner. Every turn in
+   * it is external context (side-effect tools gated in code); personas in
+   * `participants` only ever draft — the user sends.
+   */
+  external?: MailExternalThread;
   /**
    * 'working' while a delivery is in flight; 'awaiting-user' when the wave is
    * held on the user rather than answered (a paired computer offline, the
@@ -4918,7 +4998,22 @@ export interface StemApi {
   /** Stop a conversation's in-flight deliveries (queued dropped, turns interrupted). */
   stopMail(conversationId: string): Promise<{ stopped: boolean }>;
   /** Allow or deny a parked run's command (an approval item in a conversation). */
-  resolveMailApproval(itemId: string, decision: 'allow' | 'deny'): Promise<{ ok: boolean; error?: string }>;
+  /** `body`: a send draft as the user edited it before sending. */
+  resolveMailApproval(itemId: string, decision: 'allow' | 'deny', body?: string): Promise<{ ok: boolean; error?: string }>;
+  // Inter-Stem mail (docs/inter-stem-mail-design.md).
+  composeExternalMail(input: { to: string; subject?: string; body: string; self?: string }): Promise<MailListResult>;
+  /** Let the user's agents see held mail from another Stem, up to and including this item. */
+  releaseMail(conversationId: string, itemId: string): Promise<MailListResult>;
+  draftExternalMail(conversationId: string, personaId: string, instructions?: string): Promise<MailListResult>;
+  interStemStatus(): Promise<InterStemStatus>;
+  interStemAddAddress(address: string): Promise<InterStemStatus>;
+  interStemVerifyAddress(address: string, code: string): Promise<InterStemStatus>;
+  interStemCheckLink(address: string): Promise<InterStemStatus>;
+  interStemRemoveAddress(address: string): Promise<InterStemStatus>;
+  interStemSetUnlisted(unlisted: boolean): Promise<InterStemStatus>;
+  interStemContact(op: 'accept' | 'block' | 'unblock' | 'verify' | 'unverify' | 'ackKey', address: string): Promise<InterStemStatus>;
+  interStemInvite(address: string): Promise<{ ok: boolean }>;
+  onInterStemChanged(listener: () => void): () => void;
   setMailRead(conversationIds: string[], read: boolean): Promise<MailListResult>;
   setMailArchived(conversationIds: string[], archived: boolean): Promise<MailListResult>;
   snoozeMail(conversationIds: string[], until: number | null): Promise<MailListResult>;

@@ -16,6 +16,7 @@ export { chatListOf, registerChatsIpc } from './chats';
 export { registerDevicesIpc } from './devices';
 export { registerMcpIpc } from './mcp';
 export { registerMailIpc } from './mail';
+export { registerInterStemIpc } from './interstem';
 export { registerMemoryIpc } from './memory';
 export { memoryCheckLlm, registerMemoryCheckIpc } from './memory-check';
 export { registerPersonasIpc } from './personas';

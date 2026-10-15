@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { InfoTip } from '../../../ui/InfoTip';
 import { RowSelect, ValueRow } from './rows';
 import { AutonomySections } from './AutonomySettings';
+import { OtherStemsSection } from './OtherStemsSettings';
 
 /**
  * Settings → Features: what Stem may DO beyond answering — personas mailing
@@ -12,6 +13,7 @@ export function FeaturesSettings() {
   return (
     <div>
       <MailSection />
+      <OtherStemsSection />
       <ImagesSection />
       <AutonomySections />
     </div>

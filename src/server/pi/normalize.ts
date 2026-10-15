@@ -158,6 +158,8 @@ export interface TurnContext {
    * comes back to a persona that can mail the user about it.
    */
   isMail?: boolean;
+  /** Inter-Stem external context: only read-only tools and drafting (see EXTERNAL_TOOLS). */
+  external?: boolean;
   /**
    * The mail delivery's conversation + participant set, for the mail bridge:
    * send_mail's recipients are validated against `participants`, and the

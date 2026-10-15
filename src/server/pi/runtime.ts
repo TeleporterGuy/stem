@@ -585,6 +585,11 @@ function slowestTools(turn: TurnContext): { tools: string[] } | undefined {
   };
 }
 
+/** What every side-effect bridge answers in an inter-Stem external-context turn. */
+const EXTERNAL_TOOL_REFUSAL =
+  "This conversation is with someone outside — another Stem's owner — so only reading the user's memory and " +
+  'files and drafting a reply are available here.';
+
 export class PiRuntime extends EventEmitter implements ChatBackend {
   // ---- the pool ----
   /**
@@ -1312,6 +1317,14 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // to, who may be mailed, and who the sender is — all read from the live
       // turn, never from the tool payload.
       if (input.mail) turn.mail = { conversationId: input.mail.conversationId, participants: input.mail.participants };
+      // Inter-Stem external context: full memory to read, but nothing leaves
+      // except the user-approved draft. Kept out of Recall too: content from
+      // outside must not become "facts about the user" (contact-tagged capture
+      // is a later step).
+      if (input.mail?.external) {
+        turn.external = true;
+        this.taintTurn(turn);
+      }
       if (input.persona) turn.personaId = input.persona.id;
       if (input.persona?.harness) turn.personaHarness = input.persona.harness;
       if (input.persona?.recall === false || isPrivate) turn.noRecall = true;
@@ -1335,6 +1348,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const browser = resolveBrowserGrant(grantTurn, chatFeatures.browser);
       if (browser.ok) turn.browserGrant = browser.grant;
       else turn.browserRefusal = browser.refusal;
+      if (turn.external) {
+        // The bridges refuse these regardless of what the persona is pinned to.
+        delete turn.codingGrant;
+        delete turn.computerGrant;
+        delete turn.browserGrant;
+        turn.codingRefusal = turn.computerRefusal = turn.browserRefusal = EXTERNAL_TOOL_REFUSAL;
+      }
       // generate_image: one Settings switch for every kind of turn, on the
       // user's ChatGPT sign-in; a code persona is a relay and never gets it.
       const imageGen = await this.imageGenGrant(chatFeatures.images, !!turn.personaHarness);
@@ -1412,7 +1432,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             // verification, so the persona's own read/grep/run_command/MCP
             // tools are off for the turn (codeRelayRefusal in the extension).
             relay: !!turn.personaHarness,
-            imageGen: imageGen.ok,
+            external: turn.external === true,
+            imageGen: imageGen.ok && !turn.external,
             imageGenRefusal: imageGen.ok ? null : imageGen.refusal,
             // The persona's MCP allowlist; buildMessage filters the catalog
             // from the same list, so the model never hears of a server the
@@ -1469,7 +1490,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         void setNaming(threadId, { step: 0, since: 0 }).catch(() => undefined);
       }
 
-      if (isRecallEnabled() && !input.scheduled && (!input.mail || input.mail.from === 'user')) {
+      if (isRecallEnabled() && !input.scheduled && !input.mail?.external && (!input.mail || input.mail.from === 'user')) {
         // Deferred, not captured: at prompt time the turn's memorize:false
         // verdict is unknowable (the taint is only set once the assistant reads
         // a private folder). The message is flushed by flushPendingUserCapture
@@ -3023,6 +3044,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       try {
         const bridge = this.execBridge;
         if (!bridge) return respond({ ok: false, error: 'Command execution is unavailable.' });
+        if (turn?.external) return respond({ ok: false, error: EXTERNAL_TOOL_REFUSAL });
         const req = JSON.parse(payload ?? '{}') as {
           command?: string;
           cwd?: string;
@@ -3575,6 +3597,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           personaId: turn.personaId,
           turnId: turn.turnId
         };
+        if (turn.external && (req.op === 'spawn_agent' || req.op === 'remember_note')) {
+          return respond({ ok: false, error: EXTERNAL_TOOL_REFUSAL });
+        }
         switch (req.op) {
           case 'send': {
             const to = Array.isArray(req.to) ? req.to.filter((t): t is string => typeof t === 'string') : [];

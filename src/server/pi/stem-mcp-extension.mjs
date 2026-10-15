@@ -1932,6 +1932,12 @@ export default async function stemMcpBridge(pi) {
           // (Settings → Features switch, a ChatGPT sign-in, not a code persona).
           if (turnContextGate().imageGen) next.add(IMAGE_TOOL_NAME);
           else next.delete(IMAGE_TOOL_NAME);
+          // Inter-Stem: a turn with another Stem's mail in context keeps only
+          // read-only tools and send_mail (which saves a draft). The model never
+          // sees the rest; externalRefusal below is the call-time backstop.
+          if (turnContextGate().external) {
+            for (const t of [...next]) if (!EXTERNAL_TOOLS.has(t)) next.delete(t);
+          }
           if (next.size !== active.length || active.some((t) => !next.has(t))) {
             pi.setActiveTools([...next]);
           }
@@ -1979,6 +1985,9 @@ export default async function stemMcpBridge(pi) {
     // Escape hatch that stays: run_command reaches other paths through the
     // tiered approval policy, where the user can see and refuse it.
     pi.on('tool_call', (event) => {
+      // External context (inter-Stem mail): only the read-only allowlist.
+      const externalBlock = event ? externalRefusal(event.toolName, turnContextGate()) : null;
+      if (externalBlock) return { block: true, reason: externalBlock };
       // A code persona's turn: everything but the relay tools is refused,
       // before the filesystem rules even look (see codeRelayRefusal).
       const relayRefusal = event ? codeRelayRefusal(event.toolName, turnContextGate()) : null;
@@ -2126,6 +2135,7 @@ export function makeTurnContextGate(path) {
         browserRefusal: typeof parsed.browserRefusal === 'string' ? parsed.browserRefusal : null,
         recall: parsed.recall !== false,
         relay: parsed.relay === true,
+        external: parsed.external === true,
         // generate_image defaults to OFF when absent (an older main never wrote it).
         imageGen: parsed.imageGen === true,
         imageGenRefusal: typeof parsed.imageGenRefusal === 'string' ? parsed.imageGenRefusal : null,
@@ -2150,6 +2160,7 @@ export function makeTurnContextGate(path) {
         browserRefusal: null,
         recall: true,
         relay: false,
+        external: false,
         imageGen: false,
         imageGenRefusal: null,
         mcpServers: null
@@ -2204,6 +2215,41 @@ export function codeRelayRefusal(toolName, turnCtx) {
 }
 
 const CODE_RELAY_TOOLS = new Set(['coding_agent', 'send_mail', 'notify_user']);
+
+/**
+ * Refusal for a tool outside the external-context allowlist (turn-context gate
+ * `external: true`: a mail turn in a conversation with another Stem's owner),
+ * else null. Such a turn reads the user's memory and files freely — that is
+ * what makes its drafts useful — so every way content could leave other than
+ * the user-approved draft is closed: web, writes, commands, coding agents,
+ * computer and browser control, integrations, skills, scheduling, notes.
+ * An allowlist, so a tool added later starts closed here.
+ */
+export function externalRefusal(toolName, turnCtx) {
+  if (!turnCtx || turnCtx.external !== true) return null;
+  if (EXTERNAL_TOOLS.has(toolName)) return null;
+  return EXTERNAL_REFUSAL;
+}
+
+export const EXTERNAL_TOOLS = new Set([
+  'read',
+  'grep',
+  'find',
+  'ls',
+  'send_mail',
+  'read_notes',
+  'read_past_chat',
+  'search_facts',
+  'search_past_chats',
+  'search_chat_summaries',
+  'search_folder_docs',
+  'read_stem_guide'
+]);
+
+const EXTERNAL_REFUSAL =
+  "This conversation is with someone outside — another Stem's owner — so only reading the user's memory and files " +
+  'and drafting with send_mail are available. Do not retry this tool. If the draft needs something you cannot do ' +
+  'here, say so in the draft note for the user.';
 
 const CODE_RELAY_REFUSAL =
   'This is a code persona: it relays to its coding agent and does not work, inspect or verify on its own. ' +

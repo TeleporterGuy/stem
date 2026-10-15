@@ -17,6 +17,8 @@ import stemMcpBridge, {
   MCP_RESULT_BUDGET,
   mcpConnectionsSettledForTests,
   recallToolRefusal,
+  externalRefusal,
+  EXTERNAL_TOOLS,
   resetMcpConnectionCacheForTests,
   withServiceTier,
   mcpServerAllowed,
@@ -579,6 +581,7 @@ describe('recall search tools in a recall-off turn', () => {
       browserRefusal: null,
       recall: true,
       relay: false,
+      external: false,
       imageGen: false,
       imageGenRefusal: null,
       mcpServers: null
@@ -1046,5 +1049,47 @@ describe('read on a PDF returns its text layer', () => {
     );
     const verdict = toolCall.map((h) => h({ toolName: 'write', input: { path: join(mirror, 'new.pdf') } })).find((r) => r?.block);
     expect(verdict?.reason).toBe(MIRROR_WRITE_REFUSAL);
+  });
+});
+
+describe('inter-Stem external context', () => {
+  // A turn with another Stem's mail in context reads freely and drafts with
+  // send_mail; every other way out is closed, by allowlist.
+  it('allows only the read-only tools and send_mail', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'stem-external-gate-'));
+    cleanup.push(root);
+    const gate = makeTurnContextGate(join(root, 'turn-context.json'));
+    await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: true, relay: false, external: true }, root);
+    const ctx = gate();
+    expect(ctx.external).toBe(true);
+    for (const allowed of ['read', 'grep', 'ls', 'find', 'send_mail', 'search_facts', 'read_past_chat', 'read_notes']) {
+      expect(externalRefusal(allowed, ctx)).toBeNull();
+    }
+    for (const closed of [
+      'web_search',
+      'fetch_content',
+      'run_command',
+      'write',
+      'edit',
+      'coding_agent',
+      'computer',
+      'browser',
+      'invoke_tool',
+      'find_tools',
+      'manage_skill',
+      'schedule_task',
+      'remember_note',
+      'spawn_agent',
+      'generate_image',
+      'set_custom_instructions',
+      'add_mcp_server',
+      'some_tool_added_later'
+    ]) {
+      expect(externalRefusal(closed, ctx)).not.toBeNull();
+    }
+    // Any other turn: no refusal from this rule.
+    await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: true, relay: false }, root);
+    expect(externalRefusal('run_command', gate())).toBeNull();
+    expect(EXTERNAL_TOOLS.has('web_search')).toBe(false);
   });
 });

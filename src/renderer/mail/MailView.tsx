@@ -24,12 +24,21 @@ import {
   Square,
   X,
   Pencil,
-  Trash2
+  Trash2,
+  AtSign,
+  Eye,
+  KeyRound,
+  UserCheck,
+  UserX,
+  UserPlus,
+  Sparkles
 } from 'lucide-react';
 import { MAIL_BETA_TITLE } from '../chats/ChatList';
+import { isExternalAddress } from '../../shared/types';
 import type {
   MailApproval,
   MailComposeInput,
+  MailExternal,
   MailConversation,
   MailItem,
   MailWorkGroup,
@@ -61,6 +70,25 @@ import { MailWork } from './MailWork';
 import { GeneratedImages } from '../chat/GeneratedImage';
 import { DictateButton, useDictation } from '../chat/dictation';
 import { plainLine } from '../../shared/plain-text';
+import { useInterStem } from './useInterStem';
+
+/** Compose to another Stem's owner: an email address instead of personas. */
+export interface ExternalComposeInput {
+  external: true;
+  to: string;
+  subject?: string;
+  body: string;
+}
+
+const EXTERNAL_STATUS: Record<NonNullable<MailExternal['status']>, string> = {
+  queued: 'Sending…',
+  sent: 'Sent',
+  delivered: 'Delivered',
+  expired: 'Not collected in 7 days',
+  failed: 'Not sent',
+  unreachable: 'Can’t be reached',
+  'key-changed': 'Waiting — their key changed'
+};
 
 // The centre pane's mail surface: a conversation read like the Inbox (newest
 // on top, the reply box above the mail it answers, older mails folded to one
@@ -240,10 +268,21 @@ export const MailConversationView = forwardRef<MailViewHandle, {
     [personas, conversation.participants]
   );
   const name = (id: string) => (id === 'user' ? 'You' : personaName(personas, id));
-  const lead = conversation.participants[0];
+  // Inter-Stem: the conversation is with another Stem's owner; replies go to
+  // them, and personas only ever draft.
+  const ext = conversation.external;
+  const interStem = useInterStem();
+  const counterpart = ext ? interStem.contact(ext.address) : undefined;
+  const lead = ext ? ext.address : conversation.participants[0];
   // A run parked on the user's Allow/Deny takes the next mail instead of the lead.
-  const parkedBy = layout.entries.find((e) => e.item.approval?.status === 'pending')?.item.from;
+  const parkedBy = ext ? undefined : layout.entries.find((e) => e.item.approval?.status === 'pending')?.item.from;
   const recipient = parkedBy ?? lead;
+  const held = mails.filter((m) => m.external?.held);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const act = (fn: () => Promise<unknown>) => {
+    setActionError(null);
+    fn().catch((e) => setActionError(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e)));
+  };
   // Land at the newest mail (the top) on open and when one arrives.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 });
@@ -415,6 +454,9 @@ export const MailConversationView = forwardRef<MailViewHandle, {
 
   const card = (entry: ThreadEntry) => {
     const m = entry.item;
+    // An external conversation's own sends have no persona work behind them;
+    // only real runs (a persona drafting) are worth a Work card there.
+    const work = ext ? entry.work.filter((g) => g.runs.length > 0) : entry.work;
     return (
       <Fragment key={m.id}>
         <article className={`mail-item${m.from === 'user' ? ' from-user' : ''}`}>
@@ -453,16 +495,29 @@ export const MailConversationView = forwardRef<MailViewHandle, {
                 answered on the spot
               </span>
             )}
+            {m.external?.status && (
+              <span className={`mail-ext-status ${m.external.status}`} title={m.external.error ?? undefined}>
+                {EXTERNAL_STATUS[m.external.status]}
+              </span>
+            )}
+            {m.external?.keyChanged && (
+              <span className="mail-ext-status key-changed" title="Sent with a different key than the one you have for them">
+                <KeyRound size={11} /> new key
+              </span>
+            )}
             <span className="mail-item-at">{formatAt(m.at, now)}</span>
-            <button
-              type="button"
-              className="icon-action sm mail-item-btn"
-              onClick={() => forward(m)}
-              title="Forward — send this mail on to personas in a new conversation"
-              aria-label="Forward this mail"
-            >
-              <Forward size={13} />
-            </button>
+            {/* Forwarding would carry another Stem's mail past the external gate. */}
+            {!ext && (
+              <button
+                type="button"
+                className="icon-action sm mail-item-btn"
+                onClick={() => forward(m)}
+                title="Forward — send this mail on to personas in a new conversation"
+                aria-label="Forward this mail"
+              >
+                <Forward size={13} />
+              </button>
+            )}
             {m.approval?.status !== 'pending' && (
               <button
                 type="button"
@@ -476,7 +531,38 @@ export const MailConversationView = forwardRef<MailViewHandle, {
             )}
           </div>
           {m.subject && <h2 className="mail-item-subject">{m.subject}</h2>}
-          {m.from === 'user' ? (
+          {m.external?.held && (
+            <div className="mail-ext-held" role="note">
+              <span>
+                <Lock size={12} /> Only you can see this. Your agents can’t read it until you let them.
+              </span>
+              <button
+                type="button"
+                className="push"
+                onClick={() => act(() => window.stem.releaseMail(conversation.id, m.id))}
+                title="Your personas may read this mail (and the earlier ones) when you ask one to draft a reply"
+              >
+                <Eye size={13} /> Let my agents read it
+              </button>
+            </div>
+          )}
+          {m.external?.error && m.external.status !== 'sent' && m.external.status !== 'delivered' && (
+            <p className="mail-pending-error">
+              {m.external.error}
+              {m.external.status === 'unreachable' && (
+                <button
+                  type="button"
+                  className="icon-action sm inline"
+                  onClick={() => act(() => window.stem.interStemInvite(m.to[0]))}
+                  title="Ask Stem to email them an invite (no content — it's encrypted)"
+                  aria-label="Invite them to Stem"
+                >
+                  <UserPlus size={12} />
+                </button>
+              )}
+            </p>
+          )}
+          {m.approval?.kind === 'send' ? null : m.from === 'user' || isExternalAddress(m.from) ? (
             <p className="mail-item-body-plain">{m.body}</p>
           ) : (
             <MdxMessageContext.Provider value={m.id === newestFromThem && !working ? LATEST_MESSAGE : EARLIER_MESSAGE}>
@@ -521,10 +607,10 @@ export const MailConversationView = forwardRef<MailViewHandle, {
               )}
             </div>
           )}
-          {(entry.exchange.length > 0 || entry.work.length > 0) && (
+          {(entry.exchange.length > 0 || work.length > 0) && (
             <div className="mail-item-foot">
               {exchangeChip(m.id, entry.exchange, m.from)}
-              {entry.work.map((group) => (
+              {work.map((group) => (
                 <MailWork key={group.id} group={group} personas={personas} />
               ))}
             </div>
@@ -554,7 +640,7 @@ export const MailConversationView = forwardRef<MailViewHandle, {
     []
   );
   const newestFromThem = [...mails].reverse().find((m) => m.from !== 'user')?.id;
-  const showOthers = conversation.participants.filter((p) => p !== recipient);
+  const showOthers = ext ? [] : conversation.participants.filter((p) => p !== recipient);
 
   return (
     <MdxActionContext.Provider value={mdxActions}>
@@ -564,11 +650,21 @@ export const MailConversationView = forwardRef<MailViewHandle, {
         <div className="mail-head-main">
           <h1 title={conversation.subject}>{conversation.subject}</h1>
           <div className="mail-head-to">
-            <span>
-              <strong>{name(lead)}</strong>
-              {conversation.participants.length > 1 && ' leads'}
-              {conversation.participants.slice(1).map((p) => ` · ${name(p)}`)}
-            </span>
+            {ext ? (
+              <span>
+                <AtSign size={12} /> <strong>{ext.address}</strong>
+                <span className="muted"> · {counterpart?.verifiedByUser ? 'verified by you' : 'verified by email'}</span>
+                {conversation.participants.length > 0 && (
+                  <span className="muted"> · drafts by {conversation.participants.map(name).join(', ')}</span>
+                )}
+              </span>
+            ) : (
+              <span>
+                <strong>{name(lead)}</strong>
+                {conversation.participants.length > 1 && ' leads'}
+                {conversation.participants.slice(1).map((p) => ` · ${name(p)}`)}
+              </span>
+            )}
             {working && (
               <span className="mail-status working">
                 <span className="mail-spin" aria-hidden="true" /> Working
@@ -581,7 +677,7 @@ export const MailConversationView = forwardRef<MailViewHandle, {
             {conversation.status === 'aborted' && <span className="mail-status">Stopped — reply to pick it back up</span>}
           </div>
         </div>
-        {addable.length > 0 && (
+        {!ext && addable.length > 0 && (
           <button
             className="icon-action mail-add-toggle"
             onClick={() => setAddingTo((v) => !v)}
@@ -593,7 +689,30 @@ export const MailConversationView = forwardRef<MailViewHandle, {
           </button>
         )}
       </header>
-      {addingTo && addable.length > 0 && (
+      {ext && counterpart?.state === 'request' && (
+        <div className="mail-ext-banner" role="note">
+          <span>{ext.address} wrote to you for the first time.</span>
+          <button type="button" className="push default" onClick={() => act(() => window.stem.interStemContact('accept', ext.address))}>
+            <UserCheck size={13} /> Accept
+          </button>
+          <button type="button" className="push" onClick={() => act(() => window.stem.interStemContact('block', ext.address))}>
+            <UserX size={13} /> Block
+          </button>
+        </div>
+      )}
+      {ext && counterpart?.keyChanged && (
+        <div className="mail-ext-banner warn" role="alert">
+          <span>
+            <KeyRound size={13} /> {ext.address}’s key changed — a new device, or someone else. Check with them another way
+            before you send anything.
+          </span>
+          <button type="button" className="push" onClick={() => act(() => window.stem.interStemContact('ackKey', ext.address))}>
+            It’s them — use the new key
+          </button>
+        </div>
+      )}
+      {actionError && <p className="task-failed">{actionError}</p>}
+      {!ext && addingTo && addable.length > 0 && (
         <div className="mail-add-row">
           <div className="mail-to-chips mail-add-chips" role="group" aria-label="Personas to add">
             {addable.map((p) => (
@@ -629,6 +748,7 @@ export const MailConversationView = forwardRef<MailViewHandle, {
           focusRef={replyFocus}
         />
         <AnswerBar host={formHost} running={working} />
+        {ext && <DraftRow conversationId={conversation.id} personas={personas} held={held.length > 0} working={working} />}
         {[...pending].reverse().map(pendingCard)}
         {working && (
           <LiveCard
@@ -873,11 +993,17 @@ function LiveCard({
 export const MailComposeView = forwardRef<MailViewHandle, {
   personas: Persona[];
   /** Resolves once sent; rejection shows its message inline. */
-  onCompose: (input: MailComposeInput) => Promise<void>;
+  onCompose: (input: MailComposeInput | ExternalComposeInput) => Promise<void>;
   onCancel: () => void;
   /** Open as a forward: the subject prefilled, the original quoted under the note. */
   forward?: MailForwardDraft;
 }>(function MailComposeView({ personas, onCompose, onCancel, forward }, ref) {
+  // Inter-Stem: writing to a person (their email address, on their Stem)
+  // instead of to personas. Offered once one of the user's addresses is verified.
+  const interStem = useInterStem();
+  const canWriteOut = !forward && !!interStem.status?.addresses.some((a) => a.state === 'verified');
+  const [outTo, setOutTo] = useState<string | null>(null);
+  const writingOut = outTo !== null;
   // A plain New mail resumes the saved draft; a forward starts from its quote
   // and is never saved (it is one click away on the original mail).
   // A blank one is addressed to whoever the last mail went to.
@@ -898,9 +1024,10 @@ export const MailComposeView = forwardRef<MailViewHandle, {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const sentRef = useRef(false);
   useEffect(() => {
-    if (forward || sentRef.current) return;
+    // The saved draft is persona mail; one to a person isn't kept (yet).
+    if (forward || sentRef.current || writingOut) return;
     writeComposeDraft({ to, subject, body, private: isPrivate, attachments: files.attachments });
-  }, [forward, to, subject, body, isPrivate, files.attachments]);
+  }, [forward, to, subject, body, isPrivate, files.attachments, writingOut]);
   // A forward always has something to send — the quote — even with no note.
   const empty = !forward && !body.trim() && !files.attachments.length;
   const hasDraft = !forward && (!!body.trim() || !!subject.trim() || files.attachments.length > 0);
@@ -912,6 +1039,22 @@ export const MailComposeView = forwardRef<MailViewHandle, {
   const leadName = to[0] ? personaName(personas, to[0]) : null;
 
   const send = async () => {
+    if (writingOut) {
+      if (sending || !body.trim() || !outTo.includes('@')) return;
+      dictation.freeze();
+      setSending(true);
+      setError(null);
+      try {
+        sentRef.current = true;
+        await onCompose({ external: true, to: outTo.trim(), subject, body });
+        writeComposeDraft(null);
+      } catch (err) {
+        sentRef.current = false;
+        setError(err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(err));
+        setSending(false);
+      }
+      return;
+    }
     if (sending || empty || to.length === 0) return;
     dictation.freeze();
     setSending(true);
@@ -960,6 +1103,18 @@ export const MailComposeView = forwardRef<MailViewHandle, {
             <Check size={12} /> Draft saved
           </span>
         )}
+        {canWriteOut && (
+          <button
+            type="button"
+            className={`mail-private-switch${writingOut ? ' on' : ''}`}
+            aria-pressed={writingOut}
+            onClick={() => setOutTo((v) => (v === null ? '' : null))}
+            title="Write to a person on their Stem, by their email address. End-to-end encrypted; only you send."
+          >
+            <AtSign size={12} /> To a person
+          </button>
+        )}
+        {!writingOut && (
         <button
           type="button"
           className={`mail-private-switch${isPrivate ? ' on' : ''}`}
@@ -969,6 +1124,7 @@ export const MailComposeView = forwardRef<MailViewHandle, {
         >
           <Lock size={12} /> Private
         </button>
+        )}
         <button
           className="icon-action sm"
           onClick={forward ? discard : onCancel}
@@ -984,16 +1140,30 @@ export const MailComposeView = forwardRef<MailViewHandle, {
         </p>
       )}
       <div className="mail-compose-form">
-        <div className="mail-field mail-field-to">
-          <span>To</span>
-          <MailToField personas={personas} to={to} onChange={setTo} />
-        </div>
+        {writingOut ? (
+          <label className="mail-field mail-field-to">
+            <span>To</span>
+            <input
+              type="email"
+              value={outTo}
+              onChange={(e) => setOutTo(e.target.value)}
+              placeholder="their@email.com — they need Stem too"
+              aria-label="Their email address"
+              autoFocus
+            />
+          </label>
+        ) : (
+          <div className="mail-field mail-field-to">
+            <span>To</span>
+            <MailToField personas={personas} to={to} onChange={setTo} />
+          </div>
+        )}
         <label className="mail-field">
           <span>Subject</span>
           <input
             value={subject}
             onChange={(e) => setSubject(e.target.value)}
-            placeholder="Optional — Stem names it after the first reply"
+            placeholder={writingOut ? 'Optional' : 'Optional — Stem names it after the first reply'}
           />
         </label>
         <textarea
@@ -1029,15 +1199,18 @@ export const MailComposeView = forwardRef<MailViewHandle, {
         <AttachmentChips attachments={files.attachments} onRemove={files.remove} />
         {error && <p className="task-failed">{error}</p>}
         <div className="mail-compose-actions">
-          <button
-            type="button"
-            className="composer-attach"
-            title="Attach"
-            aria-label="Attach"
-            onClick={() => void files.pickFiles()}
-          >
-            <Paperclip size={15} />
-          </button>
+          {/* Attachments to another Stem aren't sent yet. */}
+          {!writingOut && (
+            <button
+              type="button"
+              className="composer-attach"
+              title="Attach"
+              aria-label="Attach"
+              onClick={() => void files.pickFiles()}
+            >
+              <Paperclip size={15} />
+            </button>
+          )}
           <DictateButton dictation={dictation} size={15} />
           {confirmDiscard ? (
             <span className="mail-discard-confirm" role="group" aria-label="Discard this draft?">
@@ -1061,9 +1234,10 @@ export const MailComposeView = forwardRef<MailViewHandle, {
           <button
             className="mail-send"
             onClick={() => void send()}
-            disabled={sending || empty || to.length === 0}
+            disabled={sending || (writingOut ? !body.trim() || !outTo.includes('@') : empty || to.length === 0)}
           >
-            <Send size={14} /> {sending ? 'Sending…' : leadName ? `Send to ${leadName}` : 'Send'}
+            <Send size={14} />{' '}
+            {sending ? 'Sending…' : writingOut ? 'Send' : leadName ? `Send to ${leadName}` : 'Send'}
           </button>
         </div>
       </div>
@@ -1083,6 +1257,135 @@ const APPROVAL_SETTLED: Record<Exclude<MailApproval['status'], 'pending'>, strin
  * without the user, and why. Answering resumes the run on its own thread.
  */
 function MailApprovalBlock({ itemId, approval }: { itemId: string; approval: MailApproval }) {
+  if (approval.kind === 'send') return <SendDraftBlock itemId={itemId} approval={approval} />;
+  return <ExecApprovalBlock itemId={itemId} approval={approval} />;
+}
+
+/**
+ * A persona's draft to another Stem: the exact text that would be sent, which
+ * the user may edit. Nothing reaches the other side until they press Send.
+ */
+function SendDraftBlock({ itemId, approval }: { itemId: string; approval: MailApproval }) {
+  const [text, setText] = useState(approval.command);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const answer = async (decision: 'allow' | 'deny') => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await window.stem.resolveMailApproval(itemId, decision, decision === 'allow' ? text : undefined);
+      if (!result.ok) setError(result.error ?? 'That draft could not be answered.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (approval.status !== 'pending') {
+    return (
+      <section className="mail-item-approval" aria-label="Draft">
+        <p className="muted">
+          {approval.status === 'allowed'
+            ? `You sent it to ${approval.to}.`
+            : approval.status === 'superseded'
+              ? 'You wrote your own reply instead.'
+              : 'You discarded this draft.'}
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section className="mail-item-approval" aria-label="Draft waiting for you">
+      <div className="mcp-approval-head">
+        <span className="row-icon">
+          <Send size={14} />
+        </span>
+        <strong>Send this to {approval.to}?</strong>
+      </div>
+      <textarea
+        className="mail-draft-edit"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={Math.min(14, Math.max(4, text.split('\n').length + 1))}
+        aria-label="The draft — edit before sending"
+      />
+      <p className="muted">This is exactly what they will receive. Check it says nothing you would not tell them.</p>
+      {error && <p className="error">{error}</p>}
+      <div className="mcp-approval-actions">
+        <button type="button" className="push" onClick={() => void answer('deny')} disabled={busy}>
+          Discard
+        </button>
+        <button type="button" className="push default" onClick={() => void answer('allow')} disabled={busy || !text.trim()}>
+          <Send size={13} /> Send
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/** Ask a persona to draft the next reply in a conversation with another Stem. */
+function DraftRow({
+  conversationId,
+  personas,
+  held,
+  working
+}: {
+  conversationId: string;
+  personas: Persona[];
+  held: boolean;
+  working: boolean;
+}) {
+  const [personaId, setPersonaId] = useState(() => personas.find((p) => p.id === 'normal')?.id ?? personas[0]?.id ?? '');
+  const [instructions, setInstructions] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const draft = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await window.stem.draftExternalMail(conversationId, personaId, instructions);
+      setInstructions('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mail-draft-row">
+      <Sparkles size={13} aria-hidden="true" />
+      <select value={personaId} onChange={(e) => setPersonaId(e.target.value)} aria-label="Persona to draft the reply">
+        {personas.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+          </option>
+        ))}
+      </select>
+      <input
+        value={instructions}
+        onChange={(e) => setInstructions(e.target.value)}
+        placeholder={held ? 'Let your agents read their mail first' : 'What should the reply say? (optional)'}
+        aria-label="Instructions for the draft"
+        disabled={held}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !held && personaId) void draft();
+        }}
+      />
+      <button
+        type="button"
+        className="push"
+        onClick={() => void draft()}
+        disabled={busy || held || working || !personaId}
+        title="The persona uses what it knows about you; you review and send the draft"
+      >
+        Draft a reply
+      </button>
+      {error && <p className="task-failed">{error}</p>}
+    </div>
+  );
+}
+
+function ExecApprovalBlock({ itemId, approval }: { itemId: string; approval: MailApproval }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const answer = async (decision: 'allow' | 'deny') => {
