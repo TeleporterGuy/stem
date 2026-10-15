@@ -6,6 +6,7 @@ import type {
   MailApproval,
   MailComposeInput,
   MailConversation,
+  MailItem,
   MailListResult,
   Persona,
   TurnAttachment
@@ -25,7 +26,8 @@ import { reflectOnDelivery } from './reflect';
 import { captureStandingAnswer } from './standing-answers';
 import { personaTurnFields } from '../workspace/persona-turn';
 import { repoLocks } from './repo-lock';
-import { attachScheduledWork, beginMailWork, type WorkHandle } from './work';
+import { attachScheduledWork, beginMailWork, readRecordedWork, type WorkHandle } from './work';
+import { parseStatusVerdict, STATUS_CHECK_TIMEOUT_MS, statusPrompt, statusSnapshot, type StatusVerdict } from './status-check';
 import { readSettings } from '../workspace/settings';
 import { cleanMailSubject } from '../../shared/mail-subject';
 import {
@@ -41,7 +43,8 @@ import {
   setConversationStatus,
   markMailItemsFiled,
   setConversationSubject,
-  setMailItemResult
+  setMailItemResult,
+  settleUserSend
 } from '../workspace/mail';
 import {
   dropQueuedMail,
@@ -410,14 +413,26 @@ export class MailRouter {
         });
       }
     }
+    // Work still under way and nothing parked on the user: this may be a
+    // progress question, answered on the spot (see status-check.ts). The mail
+    // lands without counting as a send until that is settled.
+    const askable =
+      !!trimmed &&
+      (this.pending.get(conversationId) ?? 0) > 0 &&
+      !items.some((i) => i.conversationId === conversationId && i.approval?.status === 'pending');
     const result = await appendMailItem({
       conversationId,
       from: 'user',
       to: conversation.participants,
       body: trimmed,
-      ...(files ? { attachments: await attachmentPreviews(files) } : {})
+      ...(files ? { attachments: await attachmentPreviews(files) } : {}),
+      ...(askable ? { deferUserSend: true } : {})
     });
     const source = result.items[result.items.length - 1];
+    if (askable) {
+      void this.answerWhileWorking(conversationId, driver, source, files);
+      return result;
+    }
     // A run parked for the user's Allow/Deny that they answered with a mail
     // instead: the mail goes to the parked persona, on its own thread, with a
     // note that its request went unanswered — the user's new words reach the
@@ -442,6 +457,72 @@ export class MailRouter {
     }
     this.enqueueDelivery(conversationId, driver, trimmed, 'user', source.at, source.id, files);
     return result;
+  }
+
+  /**
+   * A user mail that landed while the conversation's personas were working:
+   * answer it on the spot when it asks how the work is going, and deliver it
+   * to the driver as usual when it says anything else (status-check.ts). The
+   * conversation stays pending meanwhile, so it cannot settle as answered
+   * while the mail is still undecided.
+   */
+  private async answerWhileWorking(
+    conversationId: string,
+    driver: string,
+    source: MailItem,
+    files: TurnAttachment[] | undefined
+  ): Promise<void> {
+    const stops = this.stopCounts.get(conversationId) ?? 0;
+    this.pending.set(conversationId, (this.pending.get(conversationId) ?? 0) + 1);
+    let verdict = await this.statusVerdict(conversationId, driver, source);
+    try {
+      await settleUserSend(source.id, verdict?.route === 'status');
+      if (verdict && verdict.route !== 'forward') {
+        await appendMailItem({ conversationId, from: driver, to: ['user'], body: verdict.reply, statusReply: true });
+        this.opts.onChange();
+      }
+    } catch (e) {
+      // The answer never reached the user: deliver the mail as usual instead.
+      degrade('mail.status', 'could not post the status answer', e);
+      if (verdict?.route === 'status') {
+        // quiet: the delivery below still counts as the send if this fails too.
+        await settleUserSend(source.id, false).catch(() => undefined);
+        verdict = null;
+      }
+    }
+    // A Stop pressed while the answer was written withdrew the work; the mail
+    // must not start it again.
+    if (verdict?.route !== 'status' && (this.stopCounts.get(conversationId) ?? 0) === stops) {
+      this.enqueueDelivery(conversationId, driver, source.body, 'user', source.at, source.id, files);
+    }
+    await this.releasePending(conversationId);
+  }
+
+  /** The status-check verdict for a mid-work user mail, or null (deliver it as usual). */
+  private async statusVerdict(conversationId: string, driver: string, source: MailItem): Promise<StatusVerdict | null> {
+    if (typeof this.opts.runtime.complete !== 'function') return null;
+    try {
+      const { items } = await readMail();
+      const registry = await listPersonas();
+      const nameOf = (id: string) =>
+        id === 'user' ? 'User' : isAgentId(id) ? agentName(id) : registry.find((p) => p.id === id)?.name ?? id;
+      const snapshot = statusSnapshot({
+        items: items.filter((i) => i.conversationId === conversationId && i.id !== source.id && !i.approval),
+        work: await readRecordedWork(conversationId),
+        nameOf,
+        now: Date.now()
+      });
+      const persona = registry.find((p) => p.id === driver);
+      const raw = await this.opts.runtime.complete(statusPrompt(snapshot, source.body), {
+        model: persona?.model ?? null,
+        effort: 'low',
+        timeoutMs: STATUS_CHECK_TIMEOUT_MS
+      });
+      return parseStatusVerdict(raw);
+    } catch (e) {
+      degrade('mail.status', 'status answer failed; delivering the mail as usual', e);
+      return null;
+    }
   }
 
   /**
@@ -689,9 +770,6 @@ export class MailRouter {
    * `stopped: false` when nothing was in flight.
    */
   async stopConversation(conversationId: string): Promise<{ stopped: boolean }> {
-    const lane = this.lanes.get(conversationId);
-    const active = [...this.activeTurns].filter(([, t]) => t.conversationId === conversationId);
-    const queued = lane?.queue.length ?? 0;
     // A conversation waiting for an offline computer has nothing running, but
     // the persisted wait IS something to stop — dropped here so the device
     // coming back does not deliver a mail the user withdrew.
@@ -701,6 +779,11 @@ export class MailRouter {
     // A parked run is stopped by cancelling its approval: nothing resumes it.
     // quiet: an unwritable store leaves the approval answerable; the stop still reports on the rest.
     const parksCancelled = (await this.supersedeParks(conversationId, 'cancelled').catch(() => [])).length > 0;
+    // Read after the awaits: a mail sent mid-work can be queued while they run
+    // (its status check settling), and the stop must drop it too.
+    const lane = this.lanes.get(conversationId);
+    const active = [...this.activeTurns].filter(([, t]) => t.conversationId === conversationId);
+    const queued = lane?.queue.length ?? 0;
     if (!active.length && !queued && !waitDropped && !parksCancelled) return { stopped: false };
     this.stopping.add(conversationId);
     this.stopCounts.set(conversationId, (this.stopCounts.get(conversationId) ?? 0) + 1);

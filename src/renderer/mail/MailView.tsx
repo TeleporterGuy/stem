@@ -405,6 +405,7 @@ export const MailConversationView = forwardRef<MailViewHandle, {
           <span className="mail-fold-gist">{mailPreviewText(m.body) || (m.attachments?.length ? 'Attachments' : '')}</span>
           {exchangeChip(m.id, entry.exchange, m.from)}
           {m.stale && <span className="mail-item-stale">↩ earlier mail</span>}
+          {m.statusReply && <span className="mail-item-stale">live status</span>}
           <span className="mail-fold-at">{formatAt(m.at, now)}</span>
         </button>
         {exchangeMails(m.id, entry.exchange)}
@@ -434,6 +435,22 @@ export const MailConversationView = forwardRef<MailViewHandle, {
                 title="This landed after you had already sent a newer mail — it answers an earlier one"
               >
                 ↩ answers your earlier mail
+              </span>
+            )}
+            {m.statusReply && (
+              <span
+                className="mail-item-stale"
+                title="Answered on the spot from the thread and the live work log; the work itself carries on undisturbed"
+              >
+                live status
+              </span>
+            )}
+            {m.statusQuery && (
+              <span
+                className="mail-item-stale"
+                title="A progress question: answered on the spot, not passed to the personas at work"
+              >
+                answered on the spot
               </span>
             )}
             <span className="mail-item-at">{formatAt(m.at, now)}</span>

@@ -464,6 +464,12 @@ struct MailItemCard: View {
             if item.stale == true {
                 Text("Late reply — written before your newest message").font(.caption).foregroundStyle(.orange)
             }
+            if item.statusReply == true {
+                Text("Live status — answered on the spot while the work carries on").font(.caption).foregroundStyle(.secondary)
+            }
+            if item.statusQuery == true {
+                Text("Answered on the spot, not passed to the personas at work").font(.caption).foregroundStyle(.secondary)
+            }
             if item.filed == true {
                 Text("Arrived after the answer — filed without starting another turn").font(.caption).foregroundStyle(.secondary)
             }

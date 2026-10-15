@@ -228,6 +228,10 @@ struct MailItem: Decodable, Hashable, Identifiable {
     var stale: Bool?
     /// Persona↔persona mail that reached a persona after it had answered: filed, no turn started.
     var filed: Bool?
+    /// A progress question asked mid-work, answered on the spot instead of delivered.
+    var statusQuery: Bool?
+    /// The on-the-spot answer to a progress question, written from the thread and the live work log.
+    var statusReply: Bool?
     var attachments: [MessageAttachment]?
     var images: [GeneratedImageRef]?
     var agentReplies: [String]?

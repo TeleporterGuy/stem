@@ -101,6 +101,8 @@ function coerceItem(raw: unknown): MailItem | null {
   if (typeof r.result === 'string' && r.result) item.result = r.result;
   if (r.stale === true) item.stale = true;
   if (r.filed === true) item.filed = true;
+  if (r.statusQuery === true) item.statusQuery = true;
+  if (r.statusReply === true) item.statusReply = true;
   if (Array.isArray(r.agentReplies)) {
     const replies = r.agentReplies.filter((t): t is string => typeof t === 'string' && t.length > 0);
     if (replies.length) item.agentReplies = replies;
@@ -251,11 +253,14 @@ function coerce(parsed: unknown): MailFile {
   const raw = (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, unknown>;
   const conversations: MailConversation[] = [];
   const seen = new Set<string>();
+  // Conversations stored before userSentAt existed, to backfill from their items.
+  const legacy = new Set<string>();
   for (const entry of Array.isArray(raw.conversations) ? raw.conversations : []) {
     const conversation = coerceConversation(entry);
     if (conversation && !seen.has(conversation.id)) {
       seen.add(conversation.id);
       conversations.push(conversation);
+      if (num((entry as Record<string, unknown>).userSentAt) === undefined) legacy.add(conversation.id);
     }
   }
   const items: MailItem[] = [];
@@ -265,8 +270,10 @@ function coerce(parsed: unknown): MailFile {
     if (item && seen.has(item.conversationId)) {
       items.push(item);
       // Backfill userSentAt for stores written before the field existed — the
-      // items are the full history, so the derivation is exact.
-      if (item.from === 'user') {
+      // items are the full history, so the derivation is exact. Only those: a
+      // stored value is authoritative, because a user mail can land without
+      // counting as a send (appendMailItem's deferUserSend).
+      if (item.from === 'user' && legacy.has(item.conversationId) && !item.statusQuery) {
         const c = byId.get(item.conversationId);
         if (c && item.at > c.userSentAt) c.userSentAt = item.at;
       }
@@ -484,15 +491,21 @@ export function exchangeHops(
  * checked here, inside the atomic write, so a user reply racing the append
  * cannot slip between a read and the stamp. A persona→user item landing after
  * a NEWER user send is marked stale — it answers an earlier message.
+ *
+ * `deferUserSend` lands a user mail without counting it as a send yet: no
+ * fresh exchange window, no new epoch for the stale check. The router uses it
+ * for a mail that may turn out to be only a progress question (status-check),
+ * and settles it with {@link settleUserSend} once it knows.
  */
 export function appendMailItem(
   input: Omit<MailItem, 'id' | 'at'> & {
     at?: number;
     guard?: { exchangeCap: number; senderBudget?: number; budgetExempt?: boolean };
     staleIfUserSentAfter?: number;
+    deferUserSend?: boolean;
   }
 ): Promise<MailListResult> {
-  const { guard, staleIfUserSentAfter, ...fields } = input;
+  const { guard, staleIfUserSentAfter, deferUserSend, ...fields } = input;
   let appended: MailItem | undefined;
   return update((store) => {
     const conversation = conversationOf(store, fields.conversationId);
@@ -520,11 +533,7 @@ export function appendMailItem(
     store.items.push(item);
     appended = item;
     conversation.updatedAt = item.at;
-    if (item.from === 'user') {
-      conversation.exchangeCount = 0;
-      conversation.sendCounts = {};
-      conversation.userSentAt = item.at;
-    }
+    if (item.from === 'user' && !deferUserSend) countUserSend(conversation, item.at);
     if (item.to.includes('user')) conversation.userUpdatedAt = item.at;
     if (hops > 0) {
       conversation.exchangeCount += hops;
@@ -535,6 +544,27 @@ export function appendMailItem(
   }).then((result) => {
     if (appended && appended.from !== 'user' && appended.to.includes('user')) announce(receivedListeners, appended);
     return result;
+  });
+}
+
+/** A user send buys a fresh exchange window and becomes the stale check's epoch. */
+function countUserSend(conversation: MailConversation, at: number): void {
+  conversation.exchangeCount = 0;
+  conversation.sendCounts = {};
+  conversation.userSentAt = Math.max(conversation.userSentAt, at);
+}
+
+/**
+ * Settle a user mail appended with `deferUserSend`: delivered to the personas
+ * after all, it counts as the send it would have been; answered on the spot
+ * as a progress question, it is marked so and never counts.
+ */
+export function settleUserSend(itemId: string, answeredAsStatus: boolean): Promise<MailListResult> {
+  return update((store) => {
+    const item = store.items.find((i) => i.id === itemId && i.from === 'user');
+    if (!item) return;
+    if (answeredAsStatus) item.statusQuery = true;
+    else countUserSend(conversationOf(store, item.conversationId), item.at);
   });
 }
 

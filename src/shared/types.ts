@@ -3073,6 +3073,18 @@ export interface MailItem {
    */
   filed?: boolean;
   /**
+   * User mail only: it asked how the work was going while the personas were
+   * still at it, and was answered on the spot from the thread and the live
+   * work log (a `statusReply` item) instead of being delivered to them.
+   */
+  statusQuery?: boolean;
+  /**
+   * The on-the-spot answer to a progress question asked mid-work, written from
+   * the thread and the live work log — not by the persona it is from, whose
+   * turn was left running undisturbed.
+   */
+  statusReply?: boolean;
+  /**
    * What the sender attached, for DISPLAY: image thumbnails as data URLs,
    * everything else a named chip. The attachment bytes themselves ride only
    * the delivery turn — they are never persisted here.

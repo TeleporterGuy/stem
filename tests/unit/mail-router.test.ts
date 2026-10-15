@@ -1391,6 +1391,110 @@ describe('stale replies', () => {
   });
 });
 
+describe('progress questions mid-work', () => {
+  /** A backend whose one-shot model answers the status check with `verdict`. */
+  function withStatusModel(fake: FakeBackend, verdict: string): string[] {
+    const asked: string[] = [];
+    Object.assign(fake.backend, {
+      complete: async (prompt: string) => {
+        if (!prompt.startsWith('You answer the user of a mail thread')) return '';
+        asked.push(prompt);
+        return verdict;
+      }
+    });
+    return asked;
+  }
+
+  it('answers "what is the status?" on the spot without waking or queueing the driver', async () => {
+    const fake = fakeBackend();
+    const asked = withStatusModel(fake, '{"route":"status","reply":"Seven of ten books are imported."}');
+    const router = makeRouter(fake);
+    const hold = deferred();
+    fake.scriptsByPersona.verifier = [{ mode: 'ok', reply: 'all done', bridge: () => hold.promise }];
+    const { conversations } = await router.compose({ to: ['verifier'], subject: 's', body: 'import the books' });
+    const id = conversations[0].id;
+    await vi.waitFor(() => expect(fake.starts.length).toBe(1));
+    await router.reply(id, 'Whats the status?');
+    const live = await vi.waitFor(async () => {
+      const m = await readMail();
+      expect(m.items.find((i) => i.statusReply)).toBeDefined();
+      return m;
+    });
+    expect(asked[0]).toContain('import the books');
+    expect(asked[0]).toContain('Whats the status?');
+    expect(asked[0]).toContain('Running right now');
+    expect(live.items.find((i) => i.statusReply)).toMatchObject({
+      from: 'verifier',
+      to: ['user'],
+      body: 'Seven of ten books are imported.'
+    });
+    expect(live.items.find((i) => i.body === 'Whats the status?')?.statusQuery).toBe(true);
+    expect(live.conversations[0].status).toBe('working');
+    hold.resolve();
+    const mail = await vi.waitFor(async () => {
+      const m = await readMail();
+      expect(m.conversations[0].status).toBe('idle');
+      return m;
+    });
+    // The question never reached the persona, and the real answer is not
+    // "late": the user asked nothing the work had to answer.
+    expect(fake.starts).toHaveLength(1);
+    expect(mail.items.find((i) => i.body === 'all done')?.stale).toBeUndefined();
+  });
+
+  it('answers the progress part and still delivers an instruction mixed in', async () => {
+    const fake = fakeBackend();
+    withStatusModel(fake, '{"route":"both","reply":"Halfway."}');
+    const router = makeRouter(fake);
+    const hold = deferred();
+    fake.scriptsByPersona.verifier = [
+      { mode: 'ok', reply: 'first done', bridge: () => hold.promise },
+      { mode: 'ok', reply: 'skipped them' }
+    ];
+    const { conversations } = await router.compose({ to: ['verifier'], subject: 's', body: 'import' });
+    await vi.waitFor(() => expect(fake.starts.length).toBe(1));
+    await router.reply(conversations[0].id, 'How far along? Also skip the Potter ones.');
+    await vi.waitFor(async () => expect((await readMail()).items.find((i) => i.statusReply)?.body).toBe('Halfway.'));
+    hold.resolve();
+    const mail = await vi.waitFor(async () => {
+      const m = await readMail();
+      expect(m.items.some((i) => i.body === 'skipped them')).toBe(true);
+      expect(m.conversations[0].status).toBe('idle');
+      return m;
+    });
+    expect(fake.starts[1].input).toContain('skip the Potter ones');
+    expect(mail.items.find((i) => i.body.startsWith('How far along'))?.statusQuery).toBeUndefined();
+  });
+
+  it('delivers as usual when the check forwards, fails or the conversation is idle', async () => {
+    const fake = fakeBackend();
+    const asked = withStatusModel(fake, 'not json');
+    const router = makeRouter(fake);
+    const hold = deferred();
+    fake.scriptsByPersona.verifier = [
+      { mode: 'ok', reply: 'one', bridge: () => hold.promise },
+      { mode: 'ok', reply: 'two' },
+      { mode: 'ok', reply: 'three' }
+    ];
+    const { conversations } = await router.compose({ to: ['verifier'], subject: 's', body: 'go' });
+    const id = conversations[0].id;
+    await vi.waitFor(() => expect(fake.starts.length).toBe(1));
+    await router.reply(id, 'Use the other folder instead.');
+    hold.resolve();
+    await vi.waitFor(async () => {
+      const m = await readMail();
+      expect(m.items.some((i) => i.body === 'two')).toBe(true);
+      expect(m.conversations[0].status).toBe('idle');
+    });
+    expect(asked).toHaveLength(1);
+    // Nothing running: no check at all.
+    await router.reply(id, 'Whats the status?');
+    await vi.waitFor(async () => expect((await readMail()).items.some((i) => i.body === 'three')).toBe(true));
+    expect(asked).toHaveLength(1);
+    expect((await readMail()).items.some((i) => i.statusReply)).toBe(false);
+  });
+});
+
 describe('stop control', () => {
   it('stops a working conversation: queued dropped, turns aborted, no failure notice', async () => {
     const fake = fakeBackend();
