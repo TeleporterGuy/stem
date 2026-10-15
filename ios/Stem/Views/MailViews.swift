@@ -58,8 +58,9 @@ struct MailListView: View {
             }
             .refreshable { await session.mail.reload() }
             .navigationTitle("Mail")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { ConnectionDot() }
+                OfflineToolbarItem()
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { composing = true } label: { Image(systemName: "square.and.pencil") }
                         .accessibilityLabel("New mail")

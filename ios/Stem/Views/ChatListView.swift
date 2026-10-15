@@ -52,8 +52,9 @@ struct ChatListView: View {
             .searchable(text: $query, prompt: "Search chats")
             .refreshable { await session.chats.reload() }
             .navigationTitle(showArchived ? "Archive" : "Chats")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { ConnectionDot() }
+                OfflineToolbarItem()
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Toggle("Show archive", isOn: $showArchived)
@@ -127,6 +128,20 @@ struct ConnectionDot: View {
             .fill(status == .live ? Color.green : status == .connecting ? Color.gray : Color.red)
             .frame(width: 9, height: 9)
             .accessibilityLabel(status == .live ? "Connected" : status == .connecting ? "Connecting" : "Offline")
+    }
+}
+
+/// Nothing while connected or reconnecting; a red badge once the server is unreachable.
+struct OfflineToolbarItem: ToolbarContent {
+    @Environment(Session.self) private var session
+    var body: some ToolbarContent {
+        if session.connection.status == .offline {
+            ToolbarItem(placement: .topBarLeading) {
+                Image(systemName: "wifi.slash")
+                    .foregroundStyle(.red)
+                    .accessibilityLabel("Offline")
+            }
+        }
     }
 }
 
