@@ -27,6 +27,7 @@ import type {
 import { plainLine, previewText } from '../../shared/plain-text';
 import { autoTitle, KEEP, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
 import { setNaming } from '../workspace/chats';
+import { browserDeviceRouter } from '../browser-device/router';
 import { turnFailureMessage } from '../../shared/chatState';
 
 const E2E_IMAGE_ID = 'img_e2e0000001';
@@ -95,6 +96,9 @@ function cannedSubject(prompt: string): string {
 //   [e2e:hang] — stream one delta, then stay running until interrupted
 //   [e2e:fail] — fail the turn after one delta
 //   [e2e:exec] — call run_command mid-turn, through the real ExecService
+//   [e2e:browser] <url> — open the URL with the `browser` tool and read the page
+//                 back, through the real router, desktop host, native host and
+//                 extension, on the first device that lets Stem drive its browser
 //   [e2e:tools] — two tool rows (a command, then a file read) around an empty
 //                 text block, the shape a model gives when it calls a tool first
 //   [e2e:burst] — stream BURST_DELTAS deltas back to back, with no pacing
@@ -177,6 +181,7 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
   private seq = 0;
   private activeTurn: ActiveTurn | null = null;
   private execBridge: ExecBridge | null = null;
+  private browserBridge: BrowserBridge | null = null;
 
   constructor(private readonly options: FakeBackendOptions) {
     super();
@@ -462,8 +467,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
   /** Accepted and ignored: no scripted turn calls `computer`. */
   setComputerBridge(_bridge: ComputerBridge | null): void {}
 
-  /** Accepted and ignored: no scripted turn calls `browser`. */
-  setBrowserBridge(_bridge: BrowserBridge | null): void {}
+  /** Held so `[e2e:browser]` can drive a real browser through the whole chain. */
+  setBrowserBridge(bridge: BrowserBridge | null): void {
+    this.browserBridge = bridge;
+  }
 
   // ---- scripted turn execution ----
 
@@ -568,6 +575,33 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
           userText: text
         });
         execTail = result.ok ? `\n\n[exec ok] ${result.text.trim()}` : `\n\n[exec refused] ${result.error}`;
+        this.emitEvent('item/agentMessage/delta', { threadId, turnId, itemId: turnId, delta: execTail });
+      });
+    }
+
+    // [e2e:browser] <url>: the `browser` tool's round-trip, as pi's tool makes
+    // it. Past the seam it is all real, down to the extension in a browser, so
+    // a test can prove the native host and the platform glue on a machine.
+    if (!fail && !turn.hang && text.includes('[e2e:browser]')) {
+      steps.push(async () => {
+        const bridge = this.browserBridge;
+        const url = /\[e2e:browser\]\s+(\S+)/.exec(text)?.[1];
+        if (!bridge || !url) {
+          execTail = '\n\n[browser unavailable]';
+          return;
+        }
+        const hosts = await browserDeviceRouter().hosts();
+        const device = Object.values(hosts).find((h) => h.enabled)?.deviceId;
+        if (!device) {
+          execTail = '\n\n[browser refused] no device lets Stem drive its browser';
+        } else {
+          const opened = await bridge.handleBrowserRequest({ device, threadId, action: { kind: 'open', url } });
+          const page = opened.ok
+            ? await bridge.handleBrowserRequest({ device, threadId, action: { kind: 'snapshot' } })
+            : opened;
+          execTail = page.ok ? `\n\n[browser ok] ${page.text ?? ''}` : `\n\n[browser refused] ${page.error}`;
+          bridge.endThread(threadId);
+        }
         this.emitEvent('item/agentMessage/delta', { threadId, turnId, itemId: turnId, delta: execTail });
       });
     }

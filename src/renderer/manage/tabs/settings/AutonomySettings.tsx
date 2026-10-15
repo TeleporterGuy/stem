@@ -20,6 +20,11 @@ import {
   MAX_COMMAND_PREFIX_LENGTH
 } from '../../../../shared/exec-rules';
 
+/** Browser control runs on Macs and Linux; say which this one is. */
+const IS_MAC = window.stem?.platform === 'darwin';
+const MACHINE = IS_MAC ? 'Mac' : 'computer';
+const SETUP_BROWSERS = IS_MAC ? 'Arc, Chrome, Dia and Brave' : 'Chrome, Brave, Chromium and Edge';
+
 /** How long a chat's scratch folder survives being ignored. null = never sweep. */
 const SCRATCH_TTLS: { label: string; days: number | null }[] = [
   { label: '7 days', days: 7 },
@@ -882,12 +887,12 @@ export function AutonomySections() {
         {browserHost?.supported && (
           <>
             <ValueRow
-              label={<strong>Let Stem control this Mac’s browser</strong>}
+              label={<strong>Let Stem control this {MACHINE}’s browser</strong>}
               hint={
                 <>
                   Stem can work in your browser here, signed in as you{' '}
                   <InfoTip label="What switching this on means">
-                    A persona pinned to this Mac’s browser in Manage → Personas — or a chat, when “Allow in
+                    A persona pinned to this {MACHINE}’s browser in Manage → Personas — or a chat, when “Allow in
                     chats” above sends it here — gets a <code>browser</code> tool: it opens pages in background
                     tabs, reads them, clicks, types, fills forms, uploads files Stem holds and downloads, in
                     any ordinary tab, with no per-action approval. The tab it works in shows a coloured border
@@ -902,7 +907,7 @@ export function AutonomySections() {
                 className={`switch${browserHost.enabled ? ' on' : ''}`}
                 role="switch"
                 aria-checked={browserHost.enabled}
-                aria-label="Let Stem control this Mac’s browser"
+                aria-label={`Let Stem control this ${MACHINE}’s browser`}
                 onClick={() =>
                   void window.stem.setBrowserHostEnabled(!browserHost.enabled).then((s) => {
                     setBrowserHost(s);
@@ -929,7 +934,7 @@ export function AutonomySections() {
               />
             )}
             {browserHost.enabled && browserHost.browsers.length > 1 && (
-              <ValueRow label="Use" hint="The browser Stem drives on this Mac; it starts it when it is closed">
+              <ValueRow label="Use" hint={`The browser Stem drives on this ${MACHINE}; it starts it when it is closed`}>
                 <RowSelect
                   ariaLabel="Browser Stem uses"
                   value={browserHost.chosen ?? browserHost.browsers[0]!.id}
@@ -993,7 +998,7 @@ function BrowserExtensionRow({
           <>
             <span className={`ext-status${connected.length > 0 ? ' ok' : ''}`}>{status}</span>{' '}
             <InfoTip label="Installing the extension">
-              Set up puts the extension in a folder and tells Arc, Chrome, Dia and Brave how to reach Stem. Then you
+              Set up puts the extension in a folder and tells {SETUP_BROWSERS} how to reach Stem. Then you
               load that folder once in each browser, following the steps shown here. Stem updates the extension itself
               afterwards.
             </InfoTip>
@@ -1056,9 +1061,9 @@ function CopyIcon({ text, label }: { text: string; label: string }) {
 /**
  * Load unpacked, spelled out for one browser: browsers will not open their
  * extensions page when asked from outside, and the folder sits inside
- * Application Support, which the picker hides — so the steps give the address
- * to type and the path to paste with ⌘⇧G (Set up already put it on the
- * clipboard). The picker starts on the default browser, the one Set up opened.
+ * Application Support (or ~/.config), which the picker hides — so the steps
+ * give the address to type and the path to paste with ⌘⇧G or Ctrl+L (Set up
+ * already put it on the clipboard). The picker starts on the default browser, the one Set up opened.
  */
 function LoadUnpackedSteps({
   extensionPath,
@@ -1107,13 +1112,23 @@ function LoadUnpackedSteps({
         </li>
         <li>
           Turn on <strong>Developer mode</strong>,{' '}
-          {browser?.app === 'Microsoft Edge' ? 'in the left sidebar' : 'the switch at the top right'} of that page.
+          {browser?.name === 'Microsoft Edge' ? 'in the left sidebar' : 'the switch at the top right'} of that page.
         </li>
         <li>
-          Click <strong>Load unpacked</strong>. In the folder picker press <kbd>⌘</kbd>
-          <kbd>⇧</kbd>
-          <kbd>G</kbd>, paste the path below with <kbd>⌘</kbd>
-          <kbd>V</kbd> (Set up already copied it), press Return, then <strong>Select</strong>.
+          {IS_MAC ? (
+            <>
+              Click <strong>Load unpacked</strong>. In the folder picker press <kbd>⌘</kbd>
+              <kbd>⇧</kbd>
+              <kbd>G</kbd>, paste the path below with <kbd>⌘</kbd>
+              <kbd>V</kbd> (Set up already copied it), press Return, then <strong>Select</strong>.
+            </>
+          ) : (
+            <>
+              Click <strong>Load unpacked</strong>. In the folder picker press <kbd>Ctrl</kbd>
+              <kbd>L</kbd>, paste the path below with <kbd>Ctrl</kbd>
+              <kbd>V</kbd> (Set up already copied it), press Enter, then <strong>Select</strong>.
+            </>
+          )}
           <div className="ext-line">
             <code className="ext-path">{extensionPath}</code>
             <CopyIcon text={extensionPath} label="Copy the folder’s path" />

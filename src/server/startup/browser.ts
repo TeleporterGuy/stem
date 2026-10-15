@@ -68,7 +68,7 @@ async function fileDownloads(
   for (const d of result.downloads ?? []) {
     const staged = await resolveUploadHandle(d.handle);
     if (!staged) {
-      lines.push(`Download “${d.name}” finished on the Mac but did not reach Stem; ask the user for the file.`);
+      lines.push(`Download “${d.name}” finished on the user’s computer but did not reach Stem; ask the user for the file.`);
       continue;
     }
     try {

@@ -85,78 +85,84 @@ export async function ensureHostConfig(paths = browserInstallPaths()): Promise<B
 /** Where a browser keeps its native-messaging manifests, by the folder that says it is installed. */
 interface BrowserDir {
   name: string;
-  /** The app's bundle name in /Applications, what `open -a` takes. */
+  /** What opens it: the app's bundle name in /Applications on a Mac (`open -a`), its command on Linux. */
   app: string;
-  /** Its bundle id, to spot the system's default browser. */
-  bundleId: string;
+  /** What says it is still installed: `<app>.app` in an Applications folder, or a command on PATH. */
+  launchers: string[];
+  /** How the system names it as the default browser: a bundle id, or a .desktop file. */
+  defaultIds: string[];
   /** Present when the browser has ever run for this user. */
   dataDir: string;
   hostsDir: string;
 }
 
-export function browserDirs(home = homedir()): BrowserDir[] {
+const dir = (name: string, app: string, launchers: string[], defaultIds: string[], dataDir: string): BrowserDir => ({
+  name,
+  app,
+  launchers,
+  defaultIds,
+  dataDir,
+  hostsDir: join(dataDir, 'NativeMessagingHosts')
+});
+
+function macBrowserDirs(home: string): BrowserDir[] {
   const support = join(home, 'Library', 'Application Support');
-  const chrome = join(support, 'Google', 'Chrome');
-  const dirs: BrowserDir[] = [
-    { name: 'Google Chrome', app: 'Google Chrome', bundleId: 'com.google.Chrome', dataDir: chrome, hostsDir: join(chrome, 'NativeMessagingHosts') },
-    {
-      name: 'Arc',
-      app: 'Arc',
-      bundleId: 'company.thebrowser.Browser',
-      dataDir: join(support, 'Arc', 'User Data'),
-      hostsDir: join(support, 'Arc', 'User Data', 'NativeMessagingHosts')
-    },
-    {
-      name: 'Dia',
-      app: 'Dia',
-      bundleId: 'company.thebrowser.dia',
-      dataDir: join(support, 'Dia', 'User Data'),
-      hostsDir: join(support, 'Dia', 'User Data', 'NativeMessagingHosts')
-    },
-    {
-      name: 'Brave',
-      app: 'Brave Browser',
-      bundleId: 'com.brave.Browser',
-      dataDir: join(support, 'BraveSoftware', 'Brave-Browser'),
-      hostsDir: join(support, 'BraveSoftware', 'Brave-Browser', 'NativeMessagingHosts')
-    },
-    {
-      name: 'Chromium',
-      app: 'Chromium',
-      bundleId: 'org.chromium.Chromium',
-      dataDir: join(support, 'Chromium'),
-      hostsDir: join(support, 'Chromium', 'NativeMessagingHosts')
-    },
-    {
-      name: 'Microsoft Edge',
-      app: 'Microsoft Edge',
-      bundleId: 'com.microsoft.edgemac',
-      dataDir: join(support, 'Microsoft Edge'),
-      hostsDir: join(support, 'Microsoft Edge', 'NativeMessagingHosts')
-    },
-    {
-      name: 'Google Chrome for Testing',
-      app: 'Google Chrome for Testing',
-      bundleId: 'com.google.chrome.for.testing',
-      dataDir: join(support, 'Google', 'Chrome for Testing'),
-      hostsDir: join(support, 'Google', 'Chrome for Testing', 'NativeMessagingHosts')
-    }
+  const mac = (name: string, app: string, bundleId: string, ...data: string[]) =>
+    dir(name, app, [`${app}.app`], [bundleId], join(support, ...data));
+  const dirs = [
+    mac('Google Chrome', 'Google Chrome', 'com.google.Chrome', 'Google', 'Chrome'),
+    mac('Arc', 'Arc', 'company.thebrowser.Browser', 'Arc', 'User Data'),
+    mac('Dia', 'Dia', 'company.thebrowser.dia', 'Dia', 'User Data'),
+    mac('Brave', 'Brave Browser', 'com.brave.Browser', 'BraveSoftware', 'Brave-Browser'),
+    mac('Chromium', 'Chromium', 'org.chromium.Chromium', 'Chromium'),
+    mac('Microsoft Edge', 'Microsoft Edge', 'com.microsoft.edgemac', 'Microsoft Edge'),
+    mac('Google Chrome for Testing', 'Google Chrome for Testing', 'com.google.chrome.for.testing', 'Google', 'Chrome for Testing')
   ];
   // Arc has been seen reading Chrome's folder rather than its own, so with Arc
   // present Chrome's folder gets the manifest too, installed or not.
+  const chrome = dirs[0]!.dataDir;
   const arcPresent = existsSync(dirs[1]!.dataDir);
   return dirs.filter((d) => existsSync(d.dataDir) || (arcPresent && d.dataDir === chrome));
 }
 
-/** The address of a browser's extensions page, by app name or bundle path. */
+/**
+ * Linux browsers keep their per-user manifests under the XDG config folder.
+ * Snap and Flatpak builds are not here: their sandbox reads another folder and
+ * will not start a host outside it.
+ */
+function linuxBrowserDirs(home: string): BrowserDir[] {
+  const config = home === homedir() && process.env.XDG_CONFIG_HOME ? process.env.XDG_CONFIG_HOME : join(home, '.config');
+  const dirs = [
+    // Every launcher here must be in LINUX_BROWSER_COMMANDS, or Stem will not run it.
+    dir('Google Chrome', 'google-chrome', ['google-chrome', 'google-chrome-stable'], ['google-chrome.desktop'], join(config, 'google-chrome')),
+    dir('Brave', 'brave-browser', ['brave-browser', 'brave'], ['brave-browser.desktop', 'com.brave.Browser.desktop'], join(config, 'BraveSoftware', 'Brave-Browser')),
+    dir('Chromium', 'chromium', ['chromium', 'chromium-browser'], ['chromium.desktop', 'chromium-browser.desktop'], join(config, 'chromium')),
+    dir('Microsoft Edge', 'microsoft-edge', ['microsoft-edge', 'microsoft-edge-stable'], ['microsoft-edge.desktop'], join(config, 'microsoft-edge')),
+  ];
+  return dirs.filter((d) => existsSync(d.dataDir));
+}
+
+export function browserDirs(home = homedir(), platform: NodeJS.Platform = process.platform): BrowserDir[] {
+  return platform === 'linux' ? linuxBrowserDirs(home) : macBrowserDirs(home);
+}
+
+/** The address of a browser's extensions page, by app name, bundle path or executable. */
 export function extensionsPageUrl(app: string): string {
   if (/(^|\/)Arc(\.app)?$/.test(app)) return 'arc://extensions';
-  if (/(^|\/)Microsoft Edge(\.app)?$/.test(app)) return 'edge://extensions';
+  if (/(^|\/)Microsoft Edge(\.app)?$|microsoft-edge|msedge/.test(app)) return 'edge://extensions';
   return 'chrome://extensions';
 }
 
-/** The bundle id of the user's default web browser, or null when it cannot be read. */
-export function defaultBrowserBundleId(home = homedir()): string | null {
+/** The id of the user's default web browser (a bundle id, or a .desktop file), or null when it cannot be read. */
+export function defaultBrowserId(home = homedir(), platform: NodeJS.Platform = process.platform): string | null {
+  if (platform === 'linux') {
+    try {
+      return execFileSync('xdg-settings', ['get', 'default-web-browser'], { encoding: 'utf8', timeout: 2000 }).trim() || null;
+    } catch {
+      // quiet: no xdg-settings only costs the default browser its place at the top.
+      return null;
+    }
+  }
   const plist = join(home, 'Library', 'Preferences', 'com.apple.LaunchServices', 'com.apple.launchservices.secure.plist');
   if (!existsSync(plist)) return null;
   try {
@@ -170,22 +176,34 @@ export function defaultBrowserBundleId(home = homedir()): string | null {
   }
 }
 
+/** Where `setupBrowsers` looks for a launcher: Applications folders on a Mac, PATH on Linux. */
+function defaultAppDirs(home: string, platform: NodeJS.Platform): string[] {
+  if (platform === 'linux') return (process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin').split(':').filter(Boolean);
+  return ['/Applications', join(home, 'Applications')];
+}
+
 /**
  * The browsers the user can Load unpacked into, for Set up's steps: used on
- * this Mac (a data folder) and still installed (an app bundle), the default
- * browser first. Not Chrome for Testing, which only the dev harness drives.
+ * this computer (a data folder) and still installed (an app bundle, or a
+ * command on PATH), the default browser first. Not Chrome for Testing, which
+ * only the dev harness drives.
  */
 export function setupBrowsers(
   home = homedir(),
-  appDirs = ['/Applications', join(home, 'Applications')],
-  defaultBundleId = defaultBrowserBundleId(home)
+  platform: NodeJS.Platform = process.platform,
+  appDirs = defaultAppDirs(home, platform),
+  defaultId = defaultBrowserId(home, platform)
 ): SetupBrowser[] {
-  const isDefault = (d: BrowserDir) => d.bundleId.toLowerCase() === defaultBundleId?.toLowerCase();
-  return browserDirs(home)
+  const isDefault = (d: BrowserDir) => d.defaultIds.some((id) => id.toLowerCase() === defaultId?.toLowerCase());
+  return browserDirs(home, platform)
     .filter((d) => d.name !== 'Google Chrome for Testing' && existsSync(d.dataDir))
-    .filter((d) => appDirs.some((dir) => existsSync(join(dir, `${d.app}.app`))))
-    .sort((a, b) => Number(isDefault(b)) - Number(isDefault(a)))
-    .map((d) => ({ name: d.name, app: d.app, extensionsUrl: extensionsPageUrl(d.app) }));
+    .flatMap((d) => {
+      const launcher = d.launchers.find((l) => appDirs.some((dir) => existsSync(join(dir, l))));
+      // On Linux the command that exists is the one to run; a Mac opens the bundle by name.
+      return launcher ? [{ d, app: platform === 'linux' ? launcher : d.app }] : [];
+    })
+    .sort((a, b) => Number(isDefault(b.d)) - Number(isDefault(a.d)))
+    .map(({ d, app }) => ({ name: d.name, app, extensionsUrl: extensionsPageUrl(app) }));
 }
 
 /** sh-quote: the paths go into a script, and "Application Support" has a space. */
@@ -271,14 +289,15 @@ async function writeWrapper(src: InstallSource, paths: BrowserInstallPaths): Pro
 export async function installBrowserControl(
   src: InstallSource,
   paths = browserInstallPaths(),
-  home = homedir()
+  home = homedir(),
+  platform: NodeJS.Platform = process.platform
 ): Promise<InstallResult> {
   await ensureHostConfig(paths);
   const extensionChanged = await syncExtension(src, paths);
   await writeWrapper(src, paths);
   const manifest = `${JSON.stringify(hostManifest(paths.wrapperPath), null, 2)}\n`;
   const registered: string[] = [];
-  for (const d of browserDirs(home)) {
+  for (const d of browserDirs(home, platform)) {
     await mkdir(d.hostsDir, { recursive: true });
     await writeFile(join(d.hostsDir, `${BROWSER_NATIVE_HOST}.json`), manifest);
     registered.push(d.name);
@@ -287,8 +306,12 @@ export async function installBrowserControl(
 }
 
 /** Whether some browser's manifest points at THIS profile's wrapper — i.e. Set up ran here last. */
-export function installedHere(paths = browserInstallPaths(), home = homedir()): boolean {
-  for (const d of browserDirs(home)) {
+export function installedHere(
+  paths = browserInstallPaths(),
+  home = homedir(),
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  for (const d of browserDirs(home, platform)) {
     try {
       const m = JSON.parse(readFileSync(join(d.hostsDir, `${BROWSER_NATIVE_HOST}.json`), 'utf8')) as { path?: unknown };
       if (m.path === paths.wrapperPath) return true;
@@ -303,13 +326,19 @@ export function installedHere(paths = browserInstallPaths(), home = homedir()): 
  * At startup: when Set up ran for this profile, bring the copy up to date —
  * the extension after a Stem update, the wrapper after the app moved. Never
  * registers anything new; that is Set up's job.
+ *
+ * An AppImage moves on every launch: its binary runs from a fresh mount that
+ * goes away when Stem quits. The wrapper written here points at this launch's
+ * mount, so while Stem is closed the browser cannot start the host, and the
+ * extension's 30 s reconnect alarm picks Stem up again once it is back.
  */
 export async function refreshBrowserControl(
   src: InstallSource,
   paths = browserInstallPaths(),
-  home = homedir()
+  home = homedir(),
+  platform: NodeJS.Platform = process.platform
 ): Promise<{ extensionChanged: boolean } | null> {
-  if (!installedHere(paths, home)) return null;
+  if (!installedHere(paths, home, platform)) return null;
   const extensionChanged = await syncExtension(src, paths);
   await writeWrapper(src, paths);
   return { extensionChanged };

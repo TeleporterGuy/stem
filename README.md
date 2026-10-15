@@ -114,7 +114,7 @@ A global shortcut opens Quick Chat over whatever app you're in. Ask, hit Enter, 
 - **Coding agents.** A persona hands work to Claude Code or any other ACP agent, on the server or on one of your computers. The agent's permission requests arrive as cards in the chat.
 - **Computer control (alpha).** A persona pinned to your Mac can work in its apps, including windows on another Space or behind other windows. macOS 14 or newer.
 - **Skill recorder (alpha).** Record yourself doing a task on the Mac. Stem writes it up as a draft skill, and a practice run tries it before you save it.
-- **Browser control.** The Stem extension for Chrome, Arc, Dia, Brave, Edge and Chromium lets Stem use your own signed-in browser in background tabs.
+- **Browser control.** The Stem extension for Chrome, Arc, Dia, Brave, Edge and Chromium lets Stem use your own signed-in browser in background tabs, on a Mac or Linux.
 - **Scheduled tasks.** Ask for "every weekday at 8, check…" and you get a cron job. Each run starts in a fresh thread.
 - **Shell commands.** A safety check runs what you asked for and turns the rest back. You decide only after repeated refusals, and you can always allow commands by name or pattern.
 - **MCP servers and skills.** Add MCP servers by command or URL, OAuth included. Stem writes skills from work that went well and rewrites the ones that failed.

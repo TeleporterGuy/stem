@@ -1151,7 +1151,7 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
             icon: <Monitor size={12} />,
             tone: 'warn',
             label: 'Computer control',
-            hint: 'Uses the screen or the browser on a Mac',
+            hint: 'Uses a Mac’s screen, or the browser on a Mac or Linux computer',
             onPick: () => add(undefined, 'computer')
           }
         ]}

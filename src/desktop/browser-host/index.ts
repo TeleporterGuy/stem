@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { existsSync, readdirSync, readlinkSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, realpath, rm } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
@@ -13,7 +13,8 @@ import {
   type ExtensionResult,
   type FromExtension,
   type HostHello,
-  type ToExtension
+  type ToExtension,
+  launchableOnLinux
 } from '../../shared/browser-native';
 import type {
   BrowserDownloadReceipt,
@@ -36,7 +37,7 @@ import {
 import { arcSidebarText, readArcSidebar, type ArcSidebarTab } from './arc-tabs';
 import { readBrowserHostSettings, updateBrowserHostSettings, writeBrowserHostEnabled } from './store';
 
-// The client half of the `browser` tool: THIS Mac, handing the browser actions
+// The client half of the `browser` tool: THIS Mac or Linux computer, handing the browser actions
 // its Stem server sends (BROWSER_REQUEST_FRAME) to the Stem extension in the
 // user's browser, and answering with what it reports.
 //
@@ -103,14 +104,52 @@ interface Conn {
   pending: Map<string, (result: ExtensionResult) => void>;
 }
 
-function defaultLaunch(appPath: string): Promise<void> {
+/** Is a process running this executable? Linux only: it reads /proc. */
+function runningExe(exe: string): boolean {
+  let pids: string[];
+  try {
+    pids = readdirSync('/proc').filter((n) => /^\d+$/.test(n));
+  } catch {
+    return false;
+  }
+  for (const pid of pids) {
+    try {
+      if (readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, '') === exe) return true;
+    } catch {
+      // quiet: another user's process, or one that just exited.
+    }
+  }
+  return false;
+}
+
+/** Start a program on its own, answering once it started (or failed to). */
+function spawnDetached(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+function defaultLaunch(appPath: string, platform: NodeJS.Platform): Promise<void> {
+  if (platform === 'linux') {
+    // Running a browser's executable again while it runs opens a new window;
+    // the connection is only late, so leave the window count alone. Linux has
+    // no `open -g`: a browser started here may come to the front.
+    if (runningExe(appPath)) return Promise.resolve();
+    return spawnDetached(appPath, []);
+  }
   return new Promise((resolve, reject) => {
     // -g: do not bring it to the front; the user keeps working where they are.
     execFile('/usr/bin/open', ['-g', '-a', appPath], (error) => (error ? reject(error) : resolve()));
   });
 }
 
-function defaultOpenWith(appPath: string | null, target: string): Promise<void> {
+function defaultOpenWith(appPath: string | null, target: string, platform: NodeJS.Platform): Promise<void> {
+  if (platform === 'linux') return appPath ? spawnDetached(appPath, [target]) : spawnDetached('xdg-open', [target]);
   return new Promise((resolve, reject) => {
     execFile('/usr/bin/open', appPath ? ['-a', appPath, target] : [target], (error) =>
       error ? reject(error) : resolve()
@@ -134,11 +173,14 @@ export function actionTimeoutMs(action: ExtensionAction): number {
 }
 
 export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
-  const supported = (deps.platform ?? process.platform) === 'darwin';
+  const platform = deps.platform ?? process.platform;
+  const supported = platform === 'darwin' || platform === 'linux';
+  // What the model and the user are told this computer is.
+  const here = platform === 'darwin' ? 'Mac' : 'computer';
   const paths = deps.paths ?? browserInstallPaths();
-  const launch = deps.launch ?? defaultLaunch;
+  const launch = deps.launch ?? ((app: string) => defaultLaunch(app, platform));
   const launchWaitMs = deps.launchWaitMs ?? LAUNCH_WAIT_MS;
-  const openWith = deps.openWith ?? defaultOpenWith;
+  const openWith = deps.openWith ?? ((app: string | null, target: string) => defaultOpenWith(app, target, platform));
   const conns = new Map<string, Conn>();
   const connectWaiters = new Set<() => void>();
   /** Upload folders per thread, removed when the run ends. */
@@ -177,7 +219,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     const { browsers, chosen, enabled } = await browsersNow();
     await deps
       .invoke('browserHost:announce', [
-        { enabled, platform: 'darwin', browsers, ...(chosen ? { chosen } : {}) }
+        { enabled, platform: platform === 'darwin' ? 'darwin' : 'linux', browsers, ...(chosen ? { chosen } : {}) }
       ])
       .catch((e) => {
         log('browser-host', 'could not announce', { error: e instanceof Error ? e.message : String(e) });
@@ -301,17 +343,24 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       return {
         ok: false,
         error:
-          'No browser with the Stem extension has connected on this Mac yet. Tell the user to set it up in ' +
-          'Settings → Features → Browser control → Set up, on that Mac.'
+          `No browser with the Stem extension has connected on this ${here} yet. Tell the user to set it up in ` +
+          `Settings → Features → Browser control → Set up, on that ${here}.`
       };
     }
     const live = conns.get(chosen);
     if (live) return { ok: true, conn: live };
     const name = settings.known.find((b) => b.id === chosen)?.name ?? chosen;
+    if (platform === 'linux' && !launchableOnLinux(chosen)) {
+      // The id came from a native host's word; Stem starts only browsers it knows.
+      return {
+        ok: false,
+        error: `${name} is not running, and Stem only starts browsers it knows on Linux. Tell the user to open it.`
+      };
+    }
     try {
       await launch(chosen);
     } catch (e) {
-      return { ok: false, error: `${name} could not be started on this Mac: ${e instanceof Error ? e.message : String(e)}` };
+      return { ok: false, error: `${name} could not be started on this ${here}: ${e instanceof Error ? e.message : String(e)}` };
     }
     const conn = await new Promise<Conn | null>((resolve) => {
       const wake = (): void => {
@@ -339,7 +388,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       ok: false,
       error:
         `${name} was started, but the Stem extension did not connect within ${Math.round(launchWaitMs / 1000)}s. It may be ` +
-        'disabled or removed there; tell the user to check Settings → Features → Browser control on that Mac.'
+        `disabled or removed there; tell the user to check Settings → Features → Browser control on that ${here}.`
     };
   }
 
@@ -378,14 +427,14 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       const real = spool ? await realpath(d.path).catch(() => null) : null;
       const folder = real ? dirname(real) : null;
       if (!spool || !real || !folder || dirname(folder) !== spool) {
-        notes.push(`Download “${d.name}” finished on the Mac but could not be copied for Stem; ask the user for the file.`);
+        notes.push(`Download “${d.name}” finished on the ${here} but could not be copied for Stem; ask the user for the file.`);
         continue;
       }
       try {
         const handle = await deps.uploadFile(real);
         receipts.push({ handle, name: d.name, size: d.size, ...(d.mime ? { mime: d.mime } : {}) });
       } catch (e) {
-        notes.push(`Download “${d.name}” finished on the Mac but could not be sent to Stem: ${e instanceof Error ? e.message : String(e)}`);
+        notes.push(`Download “${d.name}” finished on the ${here} but could not be sent to Stem: ${e instanceof Error ? e.message : String(e)}`);
       }
       // The spool copy has done its job either way.
       void rm(folder, { recursive: true, force: true });
@@ -395,12 +444,12 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
   }
 
   async function execute(request: DeviceBrowserRequest): Promise<DeviceBrowserResult> {
-    if (!supported) return { ok: false, error: 'Browser control is only available on macOS for now.' };
+    if (!supported) return { ok: false, error: 'Browser control is only available on macOS and Linux for now.' };
     if (!(await readBrowserHostSettings()).enabled) {
       return {
         ok: false,
         error:
-          'This Mac does not let Stem drive its browser. The switch is in Settings → Features → Browser control, ' +
+          `This ${here} does not let Stem drive its browser. The switch is in Settings → Features → Browser control, ` +
           'on that computer.'
       };
     }
@@ -411,7 +460,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     try {
       action = await localAction(request);
     } catch (e) {
-      return { ok: false, error: `The files could not be brought to the Mac for the upload: ${e instanceof Error ? e.message : String(e)}` };
+      return { ok: false, error: `The files could not be brought to the ${here} for the upload: ${e instanceof Error ? e.message : String(e)}` };
     }
     const result = await new Promise<ExtensionResult>((resolve) => {
       const timer = setTimeout(() => {
@@ -450,7 +499,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
 
   async function refreshInstall(): Promise<void> {
     try {
-      const refreshed = await refreshBrowserControl(deps.installSource(), paths, deps.home);
+      const refreshed = await refreshBrowserControl(deps.installSource(), paths, deps.home, platform);
       if (refreshed?.extensionChanged) {
         await oweReload();
       }
@@ -467,7 +516,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       browsers,
       chosen,
       extensionPath: existsSync(paths.extensionDir) ? paths.extensionDir : null,
-      setupBrowsers: supported ? setupBrowsers(deps.home) : []
+      setupBrowsers: supported ? setupBrowsers(deps.home, platform) : []
     };
   }
 
@@ -525,7 +574,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     async setUp() {
       if (!supported) return state();
       await listen().catch((e) => log('browser-host', 'could not listen for the extension', { error: String(e) }));
-      const result = await installBrowserControl(deps.installSource(), paths, deps.home);
+      const result = await installBrowserControl(deps.installSource(), paths, deps.home, platform);
       log('browser-host', 'set up browser control', { registered: result.registered });
       if (result.extensionChanged) {
         await oweReload();
@@ -535,20 +584,23 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
 
     async openExtensionsPage(browserId) {
       const settings = await readBrowserHostSettings();
-      const app = browserId ?? settings.chosen ?? settings.known[0]?.id ?? setupBrowsers(deps.home)[0]?.app ?? null;
+      const app = browserId ?? settings.chosen ?? settings.known[0]?.id ?? setupBrowsers(deps.home, platform)[0]?.app ?? null;
       // The path goes on the clipboard first, while Stem still has focus: Load
-      // unpacked's picker takes it with ⌘⇧G, which beats hunting for a folder
-      // inside Application Support.
+      // unpacked's picker takes it with ⌘⇧G (Ctrl+L in GTK's), which beats
+      // hunting for a folder inside Application Support or ~/.config.
       try {
         deps.copyText?.(paths.extensionDir);
       } catch (e) {
         log('browser-host', 'could not copy the extension folder', { error: String(e) });
       }
       // Browsers refuse chrome:// URLs from outside, so the reliable half is
-      // the folder: Finder shows it, ready for Load unpacked. The browser still
+      // the folder: Finder (or the file manager) shows it, ready for Load unpacked. The browser still
       // comes forward, so typing its extensions page is all that is left.
       await openWith(null, paths.extensionDir).catch(() => undefined);
-      if (app) await openWith(app, extensionsPageUrl(app)).catch(() => undefined);
+      // The renderer names the app; on Linux that is a program to run, so only a known browser.
+      if (app && (platform !== 'linux' || launchableOnLinux(app))) {
+        await openWith(app, extensionsPageUrl(app)).catch(() => undefined);
+      }
     },
 
     close() {

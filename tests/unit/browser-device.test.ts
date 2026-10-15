@@ -53,13 +53,19 @@ describe('createBrowserDeviceRouter', () => {
       ],
       chosen: '/Applications/Arc.app'
     });
-    await router.announce('mac-1', { enabled: true, platform: 'linux', browsers: [] }); // ignored: mac only
+    await router.announce('mac-1', { enabled: true, platform: 'win32', browsers: [] }); // ignored: Mac and Linux only
     expect(await router.hostFor('mac-1')).toMatchObject({
       enabled: true,
       platform: 'darwin',
       browsers: [{ id: '/Applications/Arc.app', name: 'Arc', connected: true, version: '0.6.0' }],
       chosen: '/Applications/Arc.app'
     });
+    await router.announce('linux-1', {
+      enabled: true,
+      platform: 'linux',
+      browsers: [{ id: '/opt/google/chrome/chrome', name: 'Google Chrome', connected: true }]
+    });
+    expect(await router.hostFor('linux-1')).toMatchObject({ platform: 'linux', browsers: [{ name: 'Google Chrome' }] });
   });
 
   it('round-trips one action and answers each id once, only from its device', async () => {

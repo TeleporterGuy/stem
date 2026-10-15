@@ -26,6 +26,43 @@ export const BROWSER_PROTOCOL = 1;
 /** Native-messaging host name, as registered in each browser's NativeMessagingHosts folder. */
 export const BROWSER_NATIVE_HOST = 'com.stem.browser';
 
+/**
+ * The Linux browsers Stem knows, by where their packages install the browser
+ * binary. A known browser is the only thing Stem will start or hand a URL to:
+ * the path arrives from the native host, and a peer that claimed some other
+ * program must not get Stem to run it. System folders only, so a same-named
+ * file in the user's home never qualifies. Snap and Flatpak are not here (their
+ * sandbox will not start Stem's host anyway).
+ */
+const LINUX_BROWSERS: { name: string; exe: RegExp }[] = [
+  { name: 'Google Chrome', exe: /^\/opt\/google\/chrome(-beta|-unstable)?\/chrome$/ },
+  { name: 'Brave', exe: /^\/opt\/brave[^/]*(\/brave[^/]*)?\/brave$/ },
+  { name: 'Microsoft Edge', exe: /^\/opt\/microsoft\/msedge(-beta|-dev)?\/msedge$/ },
+  { name: 'Chromium', exe: /^\/usr\/lib(64)?\/chromium(-browser)?\/chrom(e|ium)(-browser)?$/ }
+];
+
+/** The commands Set up may hand the extensions page to on Linux (found on PATH). */
+export const LINUX_BROWSER_COMMANDS = [
+  'google-chrome',
+  'google-chrome-stable',
+  'brave-browser',
+  'brave',
+  'chromium',
+  'chromium-browser',
+  'microsoft-edge',
+  'microsoft-edge-stable'
+];
+
+/** A known Linux browser's name from its executable, or null when Stem does not know it. */
+export function linuxBrowserName(exe: string): string | null {
+  return LINUX_BROWSERS.find((b) => b.exe.test(exe))?.name ?? null;
+}
+
+/** Is this something Stem may start on Linux: a known browser binary, or one of the known commands? */
+export function launchableOnLinux(app: string): boolean {
+  return linuxBrowserName(app) !== null || LINUX_BROWSER_COMMANDS.includes(app);
+}
+
 /** An upload as the extension receives it: files already on this Mac. */
 export type ExtensionAction =
   | Exclude<BrowserAction, { kind: 'upload' }>

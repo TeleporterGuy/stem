@@ -62,8 +62,8 @@ export async function browserChoicesText(): Promise<string> {
   // quiet: same as computerChoicesText — an unreadable store names no Mac, and the model says so.
   const macs = await browserDeviceRouter().hosts().then(listed).catch(() => [] as string[]);
   return macs.length
-    ? `The browser tool in this chat: name the Mac in \`device\`. Macs that let Stem drive their browser: ${macs.join(', ')}. ` +
-        'A Mac marked NOT connected cannot be driven until it is awake with Stem running — say so instead of trying it.'
-    : 'The browser tool in this chat: no Mac lets Stem drive its browser right now (each one switches it on under ' +
-        'Settings → Features → Browser control, on that Mac). Tell the user that instead of trying.';
+    ? `The browser tool in this chat: name the computer in \`device\`. Computers that let Stem drive their browser: ${macs.join(', ')}. ` +
+        'A computer marked NOT connected cannot be driven until it is awake with Stem running — say so instead of trying it.'
+    : 'The browser tool in this chat: no computer lets Stem drive its browser right now (each one switches it on under ' +
+        'Settings → Features → Browser control, on that computer). Tell the user that instead of trying.';
 }

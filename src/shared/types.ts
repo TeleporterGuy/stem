@@ -1971,9 +1971,9 @@ export interface BrowserInfo {
 /** A device's account of whether it lets Stem drive its browser — `browserHost:announce`. */
 export interface DeviceBrowserAnnouncement {
   enabled: boolean;
-  platform: 'darwin';
+  platform: 'darwin' | 'linux';
   browsers: BrowserInfo[];
-  /** The browser Stem uses on this Mac (BrowserInfo.id); absent = none known yet. */
+  /** The browser Stem uses on this computer (BrowserInfo.id); absent = none known yet. */
   chosen?: string;
 }
 
