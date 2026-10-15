@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 out/
 # electron-builder artifacts (see electron-builder.yml directories.output)
