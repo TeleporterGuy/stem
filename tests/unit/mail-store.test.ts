@@ -21,9 +21,11 @@ import {
   setMailItemResult,
   setMailRead,
   setMailSnooze,
+  settleMailApproval,
   taskMailHistory,
   taskRunThreadIds
 } from '../../src/server/workspace/mail';
+import { hasMailWaiting } from '../../src/renderer/mail/useMail';
 import { mailStorePath } from '../../src/server/workspace/paths';
 import { isUnread, placement } from '../../src/shared/inbox';
 
@@ -108,6 +110,38 @@ describe('conversations and items', () => {
     await appendMailItem({ conversationId: c.id, from: 'normal', to: ['user'], body: 'done', at: Date.now() + 30 });
     row = (await readMail()).conversations[0];
     expect(row.userUpdatedAt).toBeGreaterThan(row.userSentAt);
+  });
+
+  it('answering an approval deals with it like a send, without moving the stale epoch', async () => {
+    const c = await createConversation('s', ['normal']);
+    const t0 = Date.now() - 1000;
+    await appendMailItem({ conversationId: c.id, from: 'user', to: ['normal'], body: 'go', at: t0 });
+    const asked = await appendMailItem({
+      conversationId: c.id,
+      from: 'normal',
+      to: ['user'],
+      body: 'may I run it?',
+      at: t0 + 10,
+      approval: {
+        id: 'a1',
+        kind: 'exec',
+        command: 'ls',
+        status: 'pending',
+        resume: { personaId: 'normal', threadId: 't', from: 'user', epoch: t0, sourceItemId: 'x' }
+      }
+    });
+    let row = (await readMail()).conversations[0];
+    expect(hasMailWaiting(row)).toBe(true);
+
+    await settleMailApproval(asked.items.at(-1)!.id, 'allowed');
+    row = (await readMail()).conversations[0];
+    expect(hasMailWaiting(row)).toBe(false);
+    expect(row.userSentAt).toBe(t0);
+
+    // The next mail for the user brings it back.
+    await appendMailItem({ conversationId: c.id, from: 'normal', to: ['user'], body: 'done', at: Date.now() + 50 });
+    row = (await readMail()).conversations[0];
+    expect(hasMailWaiting(row)).toBe(true);
   });
 
   it('stamps every appended item and the list with the system version; a mangled stamp is dropped on read', async () => {

@@ -728,6 +728,13 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
           {m.role === 'assistant' && !isEditing && (m.sources?.length ?? 0) > 0 && (
             <SourcesList sources={m.sources!} />
           )}
+          {isLive && !isEditing && !!m.content && (
+            // Text written mid-turn ("I'll go through the threads…") is not the
+            // end: the model may still be thinking or calling tools, whose rows
+            // sit above the text, often scrolled away. Keep the dots at the
+            // bottom of the reply until the turn settles.
+            <div className="activity-tail">{activityIndicator}</div>
+          )}
           {!isEditing && m.attachments && m.attachments.length > 0 && (
             <div className="message-attachments">
               {m.attachments.map((att, i) =>

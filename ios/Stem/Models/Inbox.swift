@@ -44,7 +44,7 @@ enum MailSections {
             case .snoozed: out[.snoozed]!.append(c)
             case .archived: out[.archived]!.append(c)
             case .inbox:
-                if c.userUpdatedAt > (c.userSentAt ?? 0) || c.status == "aborted" { out[.inbox]!.append(c) }
+                if c.waitingOnUser || c.status == "aborted" { out[.inbox]!.append(c) }
             }
             if lastSent[c.id] != nil { out[.sent]!.append(c) }
         }
@@ -161,7 +161,7 @@ extension MailSections {
         mail.conversations
             .filter { c in
                 c.status == "working"
-                    && !(c.userUpdatedAt > (c.userSentAt ?? 0))
+                    && !c.waitingOnUser
                     && Inbox.placement(id: c.id, updatedAt: c.userUpdatedAt, state: mail.inbox, now: now) == .inbox
             }
             .sorted { ($0.userSentAt ?? 0) > ($1.userSentAt ?? 0) }

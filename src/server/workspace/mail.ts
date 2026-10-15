@@ -243,6 +243,7 @@ function coerceConversation(raw: unknown): MailConversation | null {
     updatedAt: num(r.updatedAt) ?? 0,
     userUpdatedAt: num(r.userUpdatedAt) ?? 0,
     userSentAt: num(r.userSentAt) ?? 0,
+    ...(num(r.userAnsweredAt) !== undefined ? { userAnsweredAt: num(r.userAnsweredAt) } : {}),
     createdAt: num(r.createdAt) ?? 0
   };
 }
@@ -760,7 +761,9 @@ export async function settleMailApproval(itemId: string, status: Exclude<MailApp
     settled = { ...item.approval };
     item.approval = { ...item.approval, status };
     const conversation = conversationOf(store, item.conversationId);
-    conversation.updatedAt = Math.max(conversation.updatedAt, Date.now());
+    // Superseded/cancelled are Stem's housekeeping, not the user's answer.
+    if (status === 'allowed' || status === 'denied') markAnswered(conversation);
+    else conversation.updatedAt = Math.max(conversation.updatedAt, Date.now());
   });
   return settled;
 }
@@ -831,8 +834,16 @@ export async function settleSendDraft(
     if (item?.approval?.kind !== 'send' || item.approval.status !== 'pending') return false;
     settled = { item: { ...item }, approval: { ...item.approval } };
     item.approval = { ...item.approval, status, ...(body !== undefined ? { command: body } : {}) };
+    markAnswered(conversationOf(store, item.conversationId));
   });
   return settled;
+}
+
+/** The user answered an approval item: the mail that asked is dealt with. */
+function markAnswered(conversation: MailConversation): void {
+  const now = Date.now();
+  conversation.updatedAt = Math.max(conversation.updatedAt, now);
+  conversation.userAnsweredAt = Math.max(conversation.userAnsweredAt ?? 0, now);
 }
 
 /** Record the hidden pi thread a persona's deliveries run in. */

@@ -3334,6 +3334,14 @@ export interface MailConversation {
    * with — the turn is on the personas — so it waits under Sent, not Inbox.
    */
   userSentAt: number;
+  /**
+   * ms of the user's latest answer to an approval item (Allow/Deny, or a send
+   * draft). Like a send, it deals with the mail that asked: the conversation
+   * leaves the Inbox for Working. Kept apart from userSentAt, which is also
+   * the stale-reply epoch — an answer resumes the same wave, it starts none.
+   * Absent from servers predating it.
+   */
+  userAnsweredAt?: number;
   createdAt: number;
 }
 

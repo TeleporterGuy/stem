@@ -214,7 +214,12 @@ struct MailConversation: Decodable, Hashable, Identifiable {
     var updatedAt: Double
     var userUpdatedAt: Double
     var userSentAt: Double?
+    /// The user's latest approval answer; absent from older servers.
+    var userAnsweredAt: Double?
     var createdAt: Double
+
+    /// Mail for the user landed after their last send or approval answer.
+    var waitingOnUser: Bool { userUpdatedAt > max(userSentAt ?? 0, userAnsweredAt ?? 0) }
 }
 
 struct MailItem: Decodable, Hashable, Identifiable {

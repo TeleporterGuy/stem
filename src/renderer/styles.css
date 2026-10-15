@@ -793,6 +793,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
    shown while the turn runs before answer text starts streaming */
 .activity { display: flex; align-items: center; gap: var(--sp-4); color: var(--muted); font-size: var(--fs-13); }
 .activity-dots { display: inline-flex; gap: var(--sp-2); }
+.activity-tail { margin-top: var(--sp-4); }
 .activity-dot {
   width: 6px;
   height: 6px;

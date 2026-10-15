@@ -52,7 +52,12 @@ test('Stop interrupts a hanging turn and recovers the composer', async ({ mainWi
   // The turn streams its first chunk then hangs; Stop is showing.
   const stop = mainWindow.getByTitle('Stop');
   await expect(stop).toBeVisible();
+  // Text written mid-turn does not end the turn: the working dots stay under it.
+  const reply = mainWindow.locator('.message-assistant:not(.activity-row) .message-body').last();
+  await expect(reply).toContainText('Echo:');
+  await expect(reply.locator('.activity-tail .activity')).toBeVisible();
   await stop.click();
+  await expect(mainWindow.locator('.activity-tail')).toHaveCount(0);
 
   // Stop aborts the turn in place (unlike Escape-retract it does NOT refill the
   // composer): the running state clears and a fresh send works immediately.
