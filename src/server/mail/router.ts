@@ -940,6 +940,24 @@ export class MailRouter {
     if (!conversation) return { ok: false, error: 'This mail conversation no longer exists.' };
     if (to.includes(ctx.personaId)) return { ok: false, error: 'You cannot mail yourself.' };
     const agents = conversation.agents ?? [];
+    // A driver the user lets bring personas in (Persona.addsPersonas) adds any
+    // persona it mails — the To: list stops being the user's alone, by the
+    // user's choice for that persona. Computer-pinned personas included: once
+    // a participant, the existing rules treat it as if the user had added it.
+    const outside = to.filter(
+      (t) => t !== 'user' && !isAgentId(t) && !conversation.participants.includes(t)
+    );
+    if (outside.length && !conversation.owner && ctx.personaId === conversation.participants[0] && !isAgentId(ctx.personaId)) {
+      const driver = await getPersona(ctx.personaId);
+      if (driver?.addsPersonas) {
+        for (const id of outside) {
+          if (!(await getPersona(id))) continue;
+          await addParticipant(conversation.id, id);
+          conversation.participants = [...conversation.participants, id];
+        }
+        this.opts.onChange();
+      }
+    }
     const reachable = new Set([...conversation.participants, ...agents.map((a) => a.id), 'user']);
     const bad = to.filter((t) => !reachable.has(t));
     if (bad.length) {
@@ -1189,6 +1207,15 @@ export class MailRouter {
     // allowed only in a conversation the user put it in — otherwise any
     // persona that can start agents could run code or drive the screen on the
     // user's Mac.
+    if (isPinned(role) && !conversation.participants.includes(role.id)) {
+      // ...unless the user lets the caller bring personas in on its own: the
+      // role joins as a participant first, exactly as if the user had added it.
+      if (caller.addsPersonas && !conversation.owner && ctx.personaId === conversation.participants[0]) {
+        await addParticipant(conversation.id, role.id);
+        conversation.participants = [...conversation.participants, role.id];
+        this.opts.onChange();
+      }
+    }
     if (isPinned(role) && !conversation.participants.includes(role.id)) {
       return {
         ok: false,
@@ -1811,7 +1838,14 @@ export class MailRouter {
       // A role without a model of its own runs on the default; listing the
       // models lets the lead put two of them on different ones (spawn_agent's
       // model). All of a conversation's agents ran on one model before.
-      const roles = persona.canSpawn ? spawnableRoles(registry, conversation.participants) : undefined;
+      const drives = conversation.participants[0] === personaId;
+      const addsPersonas = !!persona.addsPersonas && drives && !conversation.owner;
+      const roles = persona.canSpawn ? spawnableRoles(registry, conversation.participants, addsPersonas) : undefined;
+      const addable = addsPersonas
+        ? registry
+            .filter((p) => p.id !== personaId && !conversation.participants.includes(p.id))
+            .map((p) => ({ id: p.id, name: p.name, ...(isPinned(p) ? { computer: true as const } : {}) }))
+        : [];
       const models =
         roles?.some((r) => !r.model && !r.code)
           ? (await this.modelIds()).slice(0, 12).map((m) => (m.isDefault ? `${m.id} (default)` : m.id))
@@ -1840,6 +1874,7 @@ export class MailRouter {
             ...(persona.canSpawn ? { canSpawn: true } : {}),
             ...(own.length ? { agents: own } : {}),
             ...(roles ? { roles } : {}),
+            ...(addable.length ? { addable } : {}),
             ...(models.length ? { models } : {}),
             ...(selfAgent ? { agent: selfAgent } : {}),
             ...(source ? { source } : {})

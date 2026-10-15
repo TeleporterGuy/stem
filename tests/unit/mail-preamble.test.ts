@@ -128,6 +128,20 @@ describe('mail preamble source context', () => {
     expect(plain).not.toContain('spawn_agent');
   });
 
+  it('a driver that adds personas is told it may, without asking, and which ones work on the computer', () => {
+    const addable = [
+      { id: 'coder', name: 'Coder', computer: true as const },
+      { id: 'critic', name: 'Critic' }
+    ];
+    const text = mailPreamble({ subject: 's', from: 'user', participants: ['secretary'], addable }, 'secretary');
+    expect(text).toContain('You may bring any persona into this conversation on your own');
+    expect(text).toContain('never ask the user to add one');
+    expect(text).toContain("Coder (coder, works on the user's computer); Critic (critic)");
+    expect(text).toContain('work on that computer goes to them');
+    const none = mailPreamble({ subject: 's', from: 'user', participants: ['secretary'] }, 'secretary');
+    expect(none).not.toContain('bring any persona');
+  });
+
   it('the Code recipe appears when a coding role can be started, with a diff-only reviewer', () => {
     const base = { subject: 's', from: 'user', participants: ['driver'], canSpawn: true };
     const writer = { id: 'coder', name: 'Coder', code: true as const };

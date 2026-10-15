@@ -607,6 +607,12 @@ export interface StartTurnInput {
      */
     roles?: { id: string; name: string; model?: string; blind?: true; code?: true }[];
     /**
+     * Personas outside this conversation that the driver may bring in by
+     * mailing them (set with Persona.addsPersonas). `computer` marks the ones
+     * pinned to the user's computer.
+     */
+    addable?: { id: string; name: string; computer?: true }[];
+    /**
      * Model ids spawn_agent may put an agent on (set with roles when a role
      * has no model of its own), the default marked — so two agents of one
      * role can still run on different models.
@@ -2895,6 +2901,14 @@ export interface Persona {
    * flag on read.
    */
   canSpawn?: boolean;
+  /**
+   * May bring any persona into a conversation it drives, without asking the
+   * user: mailing a persona that is not a participant adds it, and that
+   * includes personas pinned to the user's computer (which otherwise only the
+   * user can bring in). The built-in Secretary ships with it — "do what needs
+   * doing and don't bug me". Never passed on to agents.
+   */
+  addsPersonas?: boolean;
   /**
    * Whether this persona keeps a private memory (expertise notes). Default on;
    * stored only when switched off (`false`) — e.g. the built-in Critic, whose

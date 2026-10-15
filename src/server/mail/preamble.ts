@@ -143,6 +143,7 @@ export function mailPreamble(
     canSpawn?: boolean;
     agents?: string[];
     roles?: { id: string; name: string; model?: string; blind?: true; code?: true }[];
+    addable?: { id: string; name: string; computer?: true }[];
     models?: string[];
     agent?: { role: string; spawnedBy: string };
     source?: { itemId: string; body: string; attachmentNames?: string[] };
@@ -233,6 +234,26 @@ export function mailPreamble(
         : '') +
       (agents.length ? ` Your agents here: ${agents.map(label).join(', ')}.` : '')
     : '';
+  // Bringing personas in (Persona.addsPersonas, drivers only): the user chose
+  // a persona that acts without asking, so the line says both halves — it may,
+  // and it must not turn the choice back into a question for the user.
+  const addable = (mail.addable ?? [])
+    .map((p) => {
+      const name = cleanName(p.name) || p.id;
+      const traits = [p.id !== name ? p.id : '', p.computer ? "works on the user's computer" : '']
+        .filter(Boolean)
+        .join(', ');
+      return traits ? `${name} (${traits})` : name;
+    })
+    .join('; ');
+  const adding = addable
+    ? ` You may bring any persona into this conversation on your own: send_mail to its id adds it, and the user ` +
+      `is not asked — never ask the user to add one. Personas you can add: ${addable}.` +
+      (mail.addable?.some((p) => p.computer)
+        ? " The ones that work on the user's computer run a coding agent, the screen or the browser there: work " +
+          'on that computer goes to them.'
+        : '')
+    : '';
   const role = mail.agent
     ? // An agent: one job's worker, reporting to whoever started it. A blind
       // agent is not told who that is, like every other sender cue.
@@ -247,8 +268,8 @@ export function mailPreamble(
       ? others.length
         ? `Also on this conversation: ${others.map(label).join(', ')}. You may bring one in with the send_mail tool when the ` +
           'task calls for its role; its reply arrives as a later mail to you, and your current turn ends after ' +
-          `sending. Your plain final message is your answer, and never goes back to a persona you brought in.${spawning ? ` ${spawning}` : ''}`
-        : spawning
+          `sending. Your plain final message is your answer, and never goes back to a persona you brought in.${spawning ? ` ${spawning}` : ''}${adding}`
+        : `${spawning}${adding}`.trim()
       : `You are a consulted participant here; the driver (${label(participants[0])}) alone coordinates the ` +
         `personas, so you cannot mail the others${spawning ? ' except agents you start' : ''}. Answer whoever ` +
         `mailed you — your plain final message goes back to them.${spawning ? ` ${spawning}` : ''}`
@@ -275,10 +296,11 @@ export function mailPreamble(
         'they added (never re-paste a report the user can already read in the thread — pick out what matters ' +
         'from it), and never mail a persona just to ' +
         'acknowledge it. Mail that reaches you after you have answered is filed in the thread without waking ' +
-        `you; the user's next mail brings it to you.${spawning ? ` ${spawning}` : ''}`
+        `you; the user's next mail brings it to you.${spawning ? ` ${spawning}` : ''}${adding}`
       : 'Your plain final message goes to the user. send_mail can also reach the user directly (to ["user"]) — ' +
         'useful for a progress note mid-work.' +
-        (spawning ? ` ${spawning}` : '')
+        (spawning ? ` ${spawning}` : '') +
+        adding
     : `You are a consulted participant here; the driver (${label(participants[0])}) alone answers the user and ` +
       `alone coordinates the personas, so you cannot mail the others${spawning ? ' except agents you start' : ''} ` +
       'and a send_mail to ["user"] is rerouted to the driver. Answer whoever mailed you — your plain final ' +
@@ -315,7 +337,7 @@ export function mailPreamble(
   // Who reads what this persona writes: a non-driver's every word goes to a
   // model; a driver's final message goes to the user, but its send_mail to
   // personas and agents (when it can mail any) goes to models.
-  const writesToModels = !isDriver || !!mail.agent || others.length > 0 || !!mail.canSpawn;
+  const writesToModels = !isDriver || !!mail.agent || others.length > 0 || !!mail.canSpawn || !!adding;
   const writing = writesToModels
     ? [
         isDriver && !mail.agent

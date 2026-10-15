@@ -1787,6 +1787,107 @@ describe('spawn_agent', () => {
     expect(fake2.starts.find((s) => s.persona?.id === 'coder~c1')?.persona?.harness).toEqual({ agent: 'claude', cwd: '/repo' });
   });
 
+  it('lets a driver that adds personas bring anyone in by mailing it, pinned ones included', async () => {
+    await savePersona({ id: 'coder', name: 'Coder', prompt: 'c', harness: { agent: 'claude', cwd: '/repo' } });
+    await savePersona({ id: 'boss', name: 'Boss', prompt: 'b', addsPersonas: true });
+    const fake = fakeBackend();
+    const router = makeRouter(fake);
+    fake.scriptsByPersona.boss = [
+      {
+        mode: 'ok',
+        reply: 'routing',
+        bridge: async (bridge, ctx) => {
+          const sent = await bridge.send({ to: ['coder'], body: 'fix the build' }, ctx);
+          expect(sent.ok).toBe(true);
+          // Only real personas join; a made-up id stays unreachable.
+          const bogus = await bridge.send({ to: ['nobody'], body: 'x' }, ctx);
+          expect(bogus.ok).toBe(false);
+        }
+      },
+      { mode: 'ok', reply: 'fixed it, all green' }
+    ];
+    fake.scriptsByPersona.coder = [{ mode: 'ok', reply: 'built' }];
+    await router.compose({ to: ['boss'], subject: 'errand', body: 'make the build pass' });
+    await vi.waitFor(async () => {
+      const m = await readMail();
+      expect(m.items.some((i) => i.body === 'fixed it, all green')).toBe(true);
+      expect(m.conversations[0].status).toBe('idle');
+    });
+    expect((await readMail()).conversations[0].participants).toEqual(['boss', 'coder']);
+    const bossStart = fake.starts.find((s) => s.persona?.id === 'boss');
+    expect(bossStart?.mail?.addable).toEqual(
+      expect.arrayContaining([{ id: 'coder', name: 'Coder', computer: true }, { id: 'critic', name: 'Critic' }])
+    );
+    expect(bossStart?.mail?.addable?.some((p) => p.id === 'boss')).toBe(false);
+    expect(fake.starts.some((s) => s.persona?.id === 'coder')).toBe(true);
+  });
+
+  it('starts a pinned agent for a driver that adds personas, joining the persona first', async () => {
+    await savePersona({ id: 'coder', name: 'Coder', prompt: 'c', harness: { agent: 'claude', cwd: '/repo' } });
+    await savePersona({ id: 'boss', name: 'Boss', prompt: 'b', canSpawn: true, addsPersonas: true });
+    const fake = fakeBackend();
+    const router = makeRouter(fake);
+    fake.scriptsByPersona.boss = [
+      {
+        mode: 'ok',
+        reply: 'staffing',
+        bridge: async (bridge, ctx) => {
+          expect((await bridge.spawnAgent({ role: 'coder', name: 'c1', brief: 'build it' }, ctx)).ok).toBe(true);
+        }
+      },
+      { mode: 'ok', reply: 'built' }
+    ];
+    await router.compose({ to: ['boss'], subject: 'spawn', body: 'go' });
+    await vi.waitFor(async () => {
+      const m = await readMail();
+      expect(m.items.some((i) => i.body === 'built')).toBe(true);
+      expect(m.conversations[0].status).toBe('idle');
+    });
+    const conversation = (await readMail()).conversations[0];
+    expect(conversation.participants).toEqual(['boss', 'coder']);
+    expect(fake.starts.find((s) => s.persona?.id === 'coder~c1')?.persona?.harness).toEqual({ agent: 'claude', cwd: '/repo' });
+    // The agent is a copy of Coder, and never inherits the starter's grant.
+    expect(fake.starts.find((s) => s.persona?.id === 'coder~c1')?.mail?.addable).toBeUndefined();
+  });
+
+  it('adds nobody for a persona without the flag, or one that is not driving', async () => {
+    await savePersona({ id: 'coder', name: 'Coder', prompt: 'c', harness: { agent: 'claude', cwd: '/repo' } });
+    await savePersona({ id: 'boss', name: 'Boss', prompt: 'b', addsPersonas: true });
+    const fake = fakeBackend();
+    const router = makeRouter(fake);
+    fake.scriptsByPersona.normal = [
+      {
+        mode: 'ok',
+        reply: 'asking boss',
+        bridge: async (bridge, ctx) => {
+          expect((await bridge.send({ to: ['coder'], body: 'x' }, ctx)).ok).toBe(false);
+          expect((await bridge.send({ to: ['boss'], body: 'your take?' }, ctx)).ok).toBe(true);
+        }
+      },
+      { mode: 'ok', reply: 'tried' }
+    ];
+    // Boss is consulted here, not driving: its grant does not apply.
+    fake.scriptsByPersona.boss = [
+      {
+        mode: 'ok',
+        reply: 'tried too',
+        bridge: async (bridge, ctx) => {
+          expect((await bridge.send({ to: ['coder'], body: 'x' }, ctx)).ok).toBe(false);
+        }
+      }
+    ];
+    await router.compose({ to: ['normal', 'boss'], subject: 'plain', body: 'go' });
+    await vi.waitFor(async () => {
+      const m = await readMail();
+      expect(m.items.some((i) => i.body === 'tried')).toBe(true);
+      expect(m.items.some((i) => i.body === 'tried too')).toBe(true);
+      expect(m.conversations[0].status).toBe('idle');
+    });
+    expect((await readMail()).conversations[0].participants).toEqual(['normal', 'boss']);
+    expect(fake.starts.find((s) => s.persona?.id === 'normal')?.mail?.addable).toBeUndefined();
+    expect(fake.starts.find((s) => s.persona?.id === 'boss')?.mail?.addable).toBeUndefined();
+  });
+
   it('bounds an agent by the current rows: tightening the starter or pinning the role applies from its next mail', async () => {
     await savePersona({ id: 'scout', name: 'Scout', prompt: 's' });
     await savePersona({ id: 'lead', name: 'Lead', prompt: 'l', canSpawn: true });

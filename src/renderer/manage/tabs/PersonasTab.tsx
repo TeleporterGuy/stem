@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Smartphone,
   Trash2,
+  UserPlus,
   Users
 } from 'lucide-react';
 import type {
@@ -139,6 +140,7 @@ function sameEdit(a: Persona, b: Persona): boolean {
     (a.computer?.device ?? '') === (b.computer?.device ?? '') &&
     (a.browser?.device ?? '') === (b.browser?.device ?? '') &&
     (a.canSpawn ?? false) === (b.canSpawn ?? false) &&
+    (a.addsPersonas ?? false) === (b.addsPersonas ?? false) &&
     (a.memory ?? true) === (b.memory ?? true) &&
     (a.recall ?? true) === (b.recall ?? true) &&
     (a.sendBudget ?? 0) === (b.sendBudget ?? 0) &&
@@ -641,6 +643,7 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
         {p.harness?.autoMode && <Flag icon={<ShieldCheck size={12} />} tone="warn" label="Approves its own actions" />}
         {p.clients && <Flag icon={<Smartphone size={12} />} tone="ok" label="Open to chats from your other devices" />}
         {p.canSpawn && <Flag icon={<Users size={12} />} label="Can start helpers" />}
+        {p.addsPersonas && <Flag icon={<UserPlus size={12} />} tone="warn" label="Adds personas without asking" />}
         {(p.memory === false || p.recall === false) && (
           <Flag
             icon={<EyeOff size={12} />}
@@ -1022,6 +1025,12 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
                 hint="Starts named copies of your other personas for parts of a job. They keep no memory."
                 on={p.canSpawn === true}
                 onChange={(on) => setDraft({ ...p, canSpawn: on || undefined })}
+              />
+              <ToggleRow
+                title="Adds personas without asking"
+                hint="Brings any persona into a conversation it leads, including ones that work on your computer."
+                on={p.addsPersonas === true}
+                onChange={(on) => setDraft({ ...p, addsPersonas: on || undefined })}
               />
               <ToggleRow
                 title="Uses every MCP server"

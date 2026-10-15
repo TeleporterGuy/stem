@@ -13,7 +13,7 @@ it.
 | Persona | What it does | Starts agents | Your memory |
 | --- | --- | --- | --- |
 | Normal | Answers on its own and brings in agents when a job needs them | yes | yes |
-| Secretary | Delegates the work instead of doing it, schedules follow-ups, and mails you only decisions and results | yes | yes |
+| Secretary | Delegates the work and keeps at it until the job is done, brings in any persona it needs without asking you, schedules follow-ups, and mails you only decisions and results | yes | yes |
 | Verifier | Checks the factual claims in the work it is sent and lists what is wrong | no | yes |
 | Critic | Reads what it is sent as its recipient would, without knowing who wrote it | no | no |
 
@@ -35,7 +35,9 @@ persona**. Nothing changes until you press **Save**. Three tabs:
 - **Access** — **Private memory** (notes it keeps from its work; for a coding agent,
   **Standing answers** to the agent's recurring questions), **Sees your memory**,
   **Open to chats** (offered in the chat composer on the phone), **Can start
-  helpers** (see Agents below), **Uses every MCP server** (switch it off to pick which
+  helpers** (see Agents below), **Adds personas without asking** (it brings any
+  persona into a conversation it leads, including ones that work on your
+  computer; Secretary ships with it on), **Uses every MCP server** (switch it off to pick which
   servers it may use; the rest are hidden from it entirely), and **Send budget** (how
   many mails it may start between your sends).
 
@@ -46,12 +48,18 @@ starts agents when a job needs checking or several hands.
 
 Mail **Secretary** for errands you want handled without the details, especially
 ones that need a follow-up later. It always hands the work to someone else, so
-it adds a step that a direct question does not need.
+it adds a step that a direct question does not need. It adds whichever personas
+the job needs to the conversation itself, your coding, screen and browser
+personas included, and does not ask you first. When a reply comes back
+incomplete or stuck, it sends the work back or tries another persona instead of
+handing the problem to you. It writes to you with the result, or when only you
+can unblock it (a decision, a password, a payment). Normal is the one that stops
+and suggests which persona to add.
 
 Mail **Verifier** or **Critic** directly when that is the whole job: check
 these claims, or read this draft cold. Mail a coding, screen or browser persona
-directly when the request is that work. To let Normal or Secretary use one of
-those, add it to the conversation yourself.
+directly when the request is that work. Secretary brings those in on its own.
+To let Normal use one of them, add it to the conversation yourself.
 
 ## Write and read mail
 
@@ -110,7 +118,8 @@ agent can fill only five of those places. The last one is kept for the persona
 you mailed, so it can always have its lead's work checked. An agent never
 gets integrations its starter lacks, and a persona that works on your
 computer (a coding agent, screen or browser control) is started as an agent
-only in a conversation you added it to.
+only in a conversation you added it to, or one led by a persona with **Adds
+personas without asking** on.
 
 Orchestrator is no longer a built-in persona, because every persona that can
 start agents now does its job. If you had edited Orchestrator's prompt, it
