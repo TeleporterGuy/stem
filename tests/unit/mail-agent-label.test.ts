@@ -2,7 +2,7 @@
 // persona list alone, and the router derives ids and names the same way.
 import { describe, expect, it } from 'vitest';
 import { personaName } from '../../src/renderer/mail/useMail';
-import { agentId, agentName, agentPersona, agentSlug, isAgentId, narrowMcpServers, spawnableRoles } from '../../src/server/mail/agents';
+import { agentId, agentName, agentPersona, agentSlug, isAgentId, narrowMcpServers, outsidePersonas, spawnableRoles } from '../../src/server/mail/agents';
 import type { Persona } from '../../src/shared/types';
 
 const personas: Persona[] = [{ id: 'critic', name: 'Critic', prompt: 'You are Critic.' }];
@@ -66,5 +66,18 @@ describe('spawnable roles', () => {
       { id: 'coder', name: 'Coder', code: true }
     ]);
     expect(spawnableRoles(list, []).map((r) => r.id)).toEqual(['critic']);
+  });
+
+  it('names the pinned personas left out of the conversation, with what each drives', () => {
+    const list: Persona[] = [
+      { id: 'critic', name: 'Critic', prompt: '' },
+      { id: 'coder', name: 'Coder', prompt: '', harness: { agent: 'claude', cwd: '/r' } },
+      { id: 'bc', name: 'BrowserControl', prompt: '', computer: { device: 'm1' }, browser: { device: 'm1' } },
+      { id: 'mac', name: 'Mac', prompt: '', computer: { device: 'm1' } }
+    ];
+    expect(outsidePersonas(list, ['coder'])).toEqual([
+      { id: 'bc', name: 'BrowserControl', does: 'browser, screen and apps' },
+      { id: 'mac', name: 'Mac', does: 'screen and apps' }
+    ]);
   });
 });

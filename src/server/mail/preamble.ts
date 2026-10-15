@@ -143,6 +143,7 @@ export function mailPreamble(
     canSpawn?: boolean;
     agents?: string[];
     roles?: { id: string; name: string; model?: string; blind?: true; code?: true }[];
+    outside?: { id: string; name: string; does: string }[];
     addable?: { id: string; name: string; computer?: true }[];
     models?: string[];
     agent?: { role: string; spawnedBy: string };
@@ -228,7 +229,17 @@ export function mailPreamble(
           'problems only; send those findings back to the writer once; then answer with one report. '
         : '') +
       'Never start agents for a chat-like ask, and never send an agent work you could finish in the same time.' +
-      (roles ? ` Roles you can start: ${roles}.` : '') +
+      (roles
+        ? ` Roles you can start: ${roles}. Agents you start have the tools you have, so whatever you could ` +
+          'try, they can try: a role list names who to start, not what they are able to do.'
+        : '') +
+      (mail.outside?.length
+        ? ` On the user's computer, not in this conversation (you cannot start these; if part of the job ` +
+          `truly needs one, do every other part first, then ask the user to add it here for what is left — ` +
+          `it already exists, so never ask them to make a new one): ${mail.outside
+            .map((p) => `${cleanName(p.name) || p.id} (${p.does})`)
+            .join('; ')}.`
+        : '') +
       (mail.models?.length
         ? ` Models for a role without its own (spawn_agent model): ${mail.models.map(cleanName).filter(Boolean).join(', ')}.`
         : '') +
@@ -361,6 +372,11 @@ export function mailPreamble(
     ...standing,
     ...source,
     'If a command is blocked by the safety check, find a safer way that stays within what was asked, or carry on without that step; never reach the same effect another way. If Stem pauses this task for approval, end your turn — it resumes you with the answer. If you need a decision only the sender can make, say exactly what you need in your reply: it lands in their inbox and the conversation waits.',
+    // Seen live: a Secretary asked the user for a coding persona to draw art it
+    // could have made itself, then answered "Coding persona can't create
+    // images" with "You're right, I can" and stopped. Listing every capability
+    // does not scale; these two rules cover the failure in general.
+    'Asking the sender for help is the last resort: first do every part of the job your tools can do (or agents you start can), then ask only for what is left and say what is already done. When the sender answers your question with a correction or an objection, take it as the go-ahead and do the work in this turn.',
     MAIL_CLOSE
   ].join('\n');
 }

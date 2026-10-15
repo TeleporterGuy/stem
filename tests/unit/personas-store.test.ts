@@ -40,7 +40,7 @@ describe('first read', () => {
     const personas = await listPersonas();
     expect(personas.map((p) => p.id)).toEqual(['normal', 'verifier', 'secretary', 'critic']);
     expect(personas.every((p) => p.builtin)).toBe(true);
-    expect(onDisk().version).toBe(7);
+    expect(onDisk().version).toBe(8);
   });
 
   it('degrades a corrupt file to the built-ins rather than throwing', async () => {
@@ -161,13 +161,36 @@ describe('save', () => {
     expect((await getPersona('critic'))?.recall).toBe(false);
     expect((await getPersona('verifier'))?.recall).toBeUndefined();
     // …and the read persists it: the file on disk now says so too.
-    expect(onDisk().version).toBe(7);
+    expect(onDisk().version).toBe(8);
     expect(onDisk().personas.find((p: Persona) => p.id === 'critic')?.recall).toBe(false);
     // The user turns it back on: written at the current version, the choice survives the next read.
     const critic = (await getPersona('critic'))!;
     await savePersona({ ...critic, recall: true });
-    expect(onDisk().version).toBe(7);
+    expect(onDisk().version).toBe(8);
     expect((await getPersona('critic'))?.recall).toBeUndefined();
+  });
+
+  it('a v6 file refreshes the untouched v5 Secretary prompt and keeps an edited one', async () => {
+    const seeded = await listPersonas();
+    const seedOf = (id: string) => seeded.find((p) => p.id === id)!.prompt;
+    const v5 =
+      'You are Secretary. You triage requests: decide what a task needs and delegate rather than doing the ' +
+      'work yourself. Start agents from the existing personas with spawn_agent (each gets a name and a brief) ' +
+      'and schedule follow-ups with schedule_task (set its personaId so the run happens as the right persona). ' +
+      'Keep the inbox quiet: mail the user only decisions and results, not process.';
+    const raw = onDisk();
+    raw.version = 6;
+    for (const p of raw.personas) if (p.id === 'secretary') p.prompt = v5;
+    writeFileSync(path, JSON.stringify(raw), 'utf8');
+    expect((await getPersona('secretary'))?.prompt).toBe(seedOf('secretary'));
+    expect(seedOf('secretary')).not.toContain('rather than doing the work yourself');
+    expect(onDisk().version).toBe(8);
+
+    const edited = onDisk();
+    edited.version = 6;
+    for (const p of edited.personas) if (p.id === 'secretary') p.prompt = v5 + ' Mine.';
+    writeFileSync(path, JSON.stringify(edited), 'utf8');
+    expect((await getPersona('secretary'))?.prompt).toBe(v5 + ' Mine.');
   });
 
   it('a v3 file refreshes an untouched legacy Secretary prompt and retires an untouched Orchestrator', async () => {
@@ -196,7 +219,7 @@ describe('save', () => {
     writeFileSync(path, JSON.stringify(raw), 'utf8');
     expect(await getPersona('orchestrator')).toBeNull();
     expect((await getPersona('secretary'))?.prompt).toBe(seedOf('secretary'));
-    expect(onDisk().version).toBe(7);
+    expect(onDisk().version).toBe(8);
   });
 
   it('a v4 file drops agent-made helper personas, refreshes helper-era seeds, and lets Normal start agents', async () => {
@@ -228,7 +251,7 @@ describe('save', () => {
     expect(personas.find((p) => p.id === 'orchestrator')).toBeUndefined();
     expect(personas.find((p) => p.id === 'secretary')?.canSpawn).toBe(true);
     expect(personas.find((p) => p.id === 'normal')?.canSpawn).toBe(true);
-    expect(onDisk().version).toBe(7);
+    expect(onDisk().version).toBe(8);
     expect(JSON.stringify(onDisk())).not.toContain('createdBy');
   });
 
@@ -257,7 +280,7 @@ describe('save', () => {
     // The user unticks it — the write lands at the current version and the choice sticks.
     const secretary = (await getPersona('secretary'))!;
     await savePersona({ ...secretary, canSpawn: undefined });
-    expect(onDisk().version).toBe(7);
+    expect(onDisk().version).toBe(8);
     expect((await getPersona('secretary'))?.canSpawn).toBeUndefined();
   });
 
@@ -281,7 +304,7 @@ describe('save', () => {
     expect(migrated.addsPersonas).toBe(true);
     expect(migrated.prompt).toContain('without asking');
     await savePersona({ ...migrated, addsPersonas: undefined });
-    expect(onDisk().version).toBe(7);
+    expect(onDisk().version).toBe(8);
     expect((await getPersona('secretary'))?.addsPersonas).toBeUndefined();
   });
 
@@ -302,7 +325,7 @@ describe('save', () => {
     };
     write(v5Seed);
     expect(await getPersona('orchestrator')).toBeNull();
-    expect(onDisk().version).toBe(7);
+    expect(onDisk().version).toBe(8);
     write('My own coordinator.');
     const kept = await getPersona('orchestrator');
     expect(kept).toMatchObject({ prompt: 'My own coordinator.', canSpawn: true });

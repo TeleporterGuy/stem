@@ -106,9 +106,29 @@ describe('mail preamble source context', () => {
     expect(driver).toContain('Independent attempts');
     // The lead sees what it can start, with models, so it never guesses names.
     expect(driver).toContain(
-      'Roles you can start: Verifier (verifier, default model); Critic (critic, xai/grok-5, no recall); Bad name (x, default model).'
+      'Roles you can start: Verifier (verifier, default model); Critic (critic, xai/grok-5, no recall); Bad name (x, default model). Agents you start have the tools you have'
     );
+    // Every delivery: asking the sender comes last, and pushback is a go-ahead.
+    expect(driver).toContain('Asking the sender for help is the last resort');
+    expect(driver).toContain('take it as the go-ahead and do the work in this turn');
     expect(driver).not.toContain('Models for a role');
+    expect(driver).not.toContain('not in this conversation');
+    // Pinned personas it cannot start are still named, so the lead asks the
+    // user to add one instead of telling them to make a new one.
+    const withOutside = mailPreamble(
+      {
+        subject: 's',
+        from: 'user',
+        participants: ['driver'],
+        canSpawn: true,
+        roles: [{ id: 'verifier', name: 'Verifier' }],
+        outside: [{ id: 'bc', name: 'BrowserControl', does: 'browser, screen and apps' }]
+      },
+      'driver'
+    );
+    expect(withOutside).toContain('never ask them to make a new one): BrowserControl (browser, screen and apps).');
+    // Asking for an outside persona comes after every part the lead can do here.
+    expect(withOutside).toContain('do every other part first, then ask the user to add it here for what is left');
     // With a model list, the lead can put two agents of one role on different models.
     const withModels = mailPreamble(
       {

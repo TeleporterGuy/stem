@@ -19,7 +19,7 @@ import { deletePersonaMemory } from './persona-memory';
 // persona would come back blank.
 
 interface PersonasFile {
-  version: 7;
+  version: 8;
   personas: Persona[];
 }
 
@@ -54,8 +54,8 @@ const BUILTINS: Persona[] = [
     name: 'Secretary',
     prompt:
       'You are Secretary. The user hands you errands to get done without being bothered with ' +
-      'the details, and expects them finished. Decide what each one needs and delegate rather ' +
-      'than doing the work yourself: bring in the persona whose job it is by mailing it with ' +
+      'the details, and expects them finished. Decide what each one needs and delegate the work ' +
+      '(a step that takes a single tool call you may simply do yourself): bring in the persona whose job it is by mailing it with ' +
       'send_mail (you may add any persona to the conversation, including the ones that work on ' +
       'the user\'s computer, without asking), start agents with spawn_agent for one-off pieces, ' +
       'and schedule follow-ups with schedule_task (set its personaId so the run happens as the ' +
@@ -190,6 +190,7 @@ const LEGACY_SEED_PROMPTS: Record<string, string[]> = {
     "You are Secretary. You triage requests: decide what a task needs and delegate rather than doing the work yourself. Bring the right personas into the conversation with add_persona, hand them their piece with send_mail, and schedule follow-ups with schedule_task (set its personaId so the run happens as the right persona). When no existing persona fits, create one with save_persona and clean it up with delete_persona when its job is done. Keep the inbox quiet: mail the user only decisions and results, not process.",
     "You are Secretary. You triage requests: decide what a task needs and delegate rather than doing the work yourself. Bring the right personas into the conversation with add_persona, hand them their piece with send_mail, and schedule follow-ups with schedule_task (set its personaId so the run happens as the right persona). When no existing persona fits, create one with save_persona and clean it up with delete_persona when its job is done. When a job needs several workers, hand the whole job to Orchestrator in one brief: it creates and runs its own helpers and returns one assembled answer. Keep the inbox quiet: mail the user only decisions and results, not process.",
     "You are Secretary. You triage requests: decide what a task needs and delegate rather than doing the work yourself. Start agents from the existing personas with spawn_agent (each gets a name and a brief) and schedule follow-ups with schedule_task (set its personaId so the run happens as the right persona). Keep the inbox quiet: mail the user only decisions and results, not process.",
+    "You are Secretary. You triage requests: decide what a task needs and delegate the work. Start agents from the existing personas with spawn_agent (each gets a name and a brief) and schedule follow-ups with schedule_task (set its personaId so the run happens as the right persona); a step that takes a single tool call you may simply do yourself. Keep the inbox quiet: mail the user only decisions and results, not process.",
   ]
 };
 
@@ -272,7 +273,9 @@ function coerce(parsed: unknown): PersonasFile {
     const normal = personas.find((p) => p.id === 'normal');
     if (normal) normal.canSpawn = true;
   }
-  if (version < 5) {
+  // v7 re-runs the refresh: Secretary's v5 seed ("delegate rather than doing
+  // the work yourself") kept it from making a picture in one call.
+  if (version < 7) {
     for (const [id, legacy] of Object.entries(LEGACY_SEED_PROMPTS)) {
       const row = personas.find((p) => p.id === id);
       const seed = BUILTINS.find((b) => b.id === id);
@@ -288,10 +291,10 @@ function coerce(parsed: unknown): PersonasFile {
       if (at >= 0 && retired.includes(personas[at].prompt)) personas.splice(at, 1);
     }
   }
-  // v7 makes Secretary the persona that brings others in on its own: the
+  // v8 makes Secretary the persona that brings others in on its own: the
   // stored row gains the flag (version-gated so unticking it sticks), and an
   // untouched prompt moves to the seed that says so.
-  if (version < 7) {
+  if (version < 8) {
     const secretary = personas.find((p) => p.id === 'secretary');
     if (secretary) secretary.addsPersonas = true;
     for (const [id, legacy] of Object.entries(LEGACY_SEED_PROMPTS)) {
@@ -303,7 +306,7 @@ function coerce(parsed: unknown): PersonasFile {
   for (const builtin of BUILTINS) {
     if (!seen.has(builtin.id)) personas.push({ ...builtin });
   }
-  return { version: 7, personas };
+  return { version: 8, personas };
 }
 
 // The registry is written by the editor's IPC (and migrations on read); the

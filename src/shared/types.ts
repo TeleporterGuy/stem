@@ -607,6 +607,13 @@ export interface StartTurnInput {
      */
     roles?: { id: string; name: string; model?: string; blind?: true; code?: true }[];
     /**
+     * Personas pinned to the user's computer that are NOT in this
+     * conversation, with what each drives. The lead cannot start them, but
+     * without the list it told the user to make a browser persona that
+     * already existed instead of asking them to add it.
+     */
+    outside?: { id: string; name: string; does: string }[];
+    /**
      * Personas outside this conversation that the driver may bring in by
      * mailing them (set with Persona.addsPersonas). `computer` marks the ones
      * pinned to the user's computer.

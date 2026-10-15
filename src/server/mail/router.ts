@@ -16,7 +16,7 @@ import * as activity from '../activity';
 import { degrade } from '../degrade';
 import { noteTurnStart } from '../live-turns';
 import { getPersona, listPersonas } from '../workspace/personas';
-import { agentId, agentName, agentPersona, agentSlug, isAgentId, isPinned, MAX_AGENTS, spawnableRoles } from './agents';
+import { agentId, agentName, agentPersona, agentSlug, isAgentId, isPinned, MAX_AGENTS, outsidePersonas, spawnableRoles } from './agents';
 import {
   listPersonaNotes,
   personaOwnsMemory,
@@ -1858,6 +1858,9 @@ export class MailRouter {
             .filter((p) => p.id !== personaId && !conversation.participants.includes(p.id))
             .map((p) => ({ id: p.id, name: p.name, ...(isPinned(p) ? { computer: true as const } : {}) }))
         : [];
+      // A driver that brings personas in itself is told who it can add; the
+      // ask-the-user list of computer personas would contradict that.
+      const outside = persona.canSpawn && !addsPersonas ? outsidePersonas(registry, conversation.participants) : [];
       const models =
         roles?.some((r) => !r.model && !r.code)
           ? (await this.modelIds()).slice(0, 12).map((m) => (m.isDefault ? `${m.id} (default)` : m.id))
@@ -1886,6 +1889,7 @@ export class MailRouter {
             ...(persona.canSpawn ? { canSpawn: true } : {}),
             ...(own.length ? { agents: own } : {}),
             ...(roles ? { roles } : {}),
+            ...(outside.length ? { outside } : {}),
             ...(addable.length ? { addable } : {}),
             ...(models.length ? { models } : {}),
             ...(selfAgent ? { agent: selfAgent } : {}),

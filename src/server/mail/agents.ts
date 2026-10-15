@@ -121,3 +121,20 @@ export function spawnableRoles(
       ...(p.harness ? { code: true as const } : {})
     }));
 }
+
+/**
+ * The personas pinned to the user's computer that a lead cannot start here
+ * (not in the conversation), with what each drives — so the lead asks the
+ * user to add the right one instead of guessing none exists.
+ */
+export function outsidePersonas(personas: Persona[], participants: string[]): { id: string; name: string; does: string }[] {
+  return personas
+    .filter((p) => isPinned(p) && !participants.includes(p.id))
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      does: p.harness
+        ? 'coding agent'
+        : [p.browser ? 'browser' : '', p.computer ? 'screen and apps' : ''].filter(Boolean).join(', ')
+    }));
+}
