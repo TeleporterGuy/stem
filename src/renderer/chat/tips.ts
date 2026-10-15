@@ -117,7 +117,7 @@ export const TIPS: Tip[] = [
   },
   {
     id: 'archive',
-    text: 'Archive a chat from its hover actions to clear the Inbox without deleting anything.'
+    text: 'Right-click a chat and archive it to clear it out of the list without deleting anything — it waits under Archived at the bottom.'
   },
   {
     id: 'unread',

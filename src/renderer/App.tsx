@@ -20,7 +20,7 @@ import type {
   UpdateStatus
 } from '../shared/types';
 import { AUTH_PROVIDER_IDS, providerName } from '../shared/providers';
-import { emptyInboxState, isUnread, placement, withRead, type InboxState } from '../shared/inbox';
+import { emptyInboxState, isUnread, placement, withArchived, withRead, type InboxState } from '../shared/inbox';
 import { previewText } from '../shared/plain-text';
 import { resendAttachments } from './attachments';
 import { ChatView, type ChatViewHandle } from './chat/ChatView';
@@ -1343,6 +1343,18 @@ export default function App() {
     },
     [mutateInbox, updatedAtMap]
   );
+  // Chat archive: out of the tree into its folded Archived section, kept whole.
+  // A timestamp like mail's, so a new turn in the chat brings it back by itself.
+  const onSetArchived = useCallback(
+    (threadIds: string[], archived: boolean) => {
+      const now = Date.now();
+      mutateInbox(
+        (inbox) => withArchived(inbox, threadIds, archived, now),
+        () => window.stem.setInboxArchived(threadIds, archived)
+      );
+    },
+    [mutateInbox]
+  );
 
   // ---- mail actions the rail and centre pane share ----
   const composeMail = useCallback(() => setMailView({ kind: 'compose' }), []);
@@ -1451,9 +1463,8 @@ export default function App() {
   });
 
   // ---- triage shortcuts ----
-  // ⌘⇧A / ⌘⇧S act on the mail conversation you are reading — archive and snooze
-  // are mail concepts now. ⌘⇧U toggles read on whichever the centre pane holds:
-  // the open mail conversation, else the open chat. Registered here, not in the
+  // ⌘⇧A and ⌘⇧D act on whichever the centre pane holds: the open mail
+  // conversation, else the open chat. ⌘⇧S snoozes mail only — chats have no snooze. Registered here, not in the
   // list, so they survive a hidden inspector or a parked-on-Settings panel.
   const mailViewRef = useRef(mailView);
   mailViewRef.current = mailView;
@@ -1462,10 +1473,19 @@ export default function App() {
     mailViewRef.current?.kind === 'conversation' ? mailViewRef.current.id : null;
 
   useShortcut('archive-thread', () => {
-    const id = openMailId();
+    const mailId = openMailId();
+    if (mailId) {
+      mailApi.archive([mailId], true);
+      setMailView(null);
+      return;
+    }
+    // The chat stays open: archiving tidies the list, it doesn't close what you
+    // are reading. Pressed again on an archived chat, it brings it back.
+    const id = activeThreadIdRef.current;
     if (!id) return;
-    mailApi.archive([id], true);
-    setMailView(null);
+    const chat = displayList.chats.find((c) => c.threadId === id);
+    if (!chat) return;
+    onSetArchived([id], placement(chat, displayList.inbox, Date.now()) === 'inbox');
   });
 
   useShortcut('snooze-thread', () => {
@@ -1943,6 +1963,7 @@ export default function App() {
               onDeleteChat={onDeleteChat}
               onMoveChat={onMoveChat}
               onSetRead={onSetRead}
+              onSetArchived={onSetArchived}
               onWriteSubject={onWriteSubject}
               mail={mail}
               personas={mailApi.personas}
@@ -1981,6 +2002,10 @@ export default function App() {
         <DeleteThreadDialog
           title={pendingDelete.title}
           onConfirm={confirmDeleteThread}
+          onArchive={() => {
+            onSetArchived([pendingDelete.threadId], true);
+            setPendingDelete(null);
+          }}
           onCancel={() => setPendingDelete(null)}
         />
       )}
