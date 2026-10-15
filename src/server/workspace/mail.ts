@@ -937,6 +937,28 @@ export async function mailConversationFor(threadId: string, taskId?: string): Pr
   return byRun && conversations.some((c) => c.id === byRun.conversationId) ? byRun.conversationId : null;
 }
 
+/**
+ * The thread a picture was made in, when it reached `threadId` by mail: a
+ * persona's mail carries the images its turn made (by id, the bytes stay in
+ * the sender's session), so the recipient names an id its own thread never
+ * held. Only mail the recipient's persona sent or was sent counts. Null when
+ * no such mail carries `imageId`.
+ */
+export async function mailedImageThread(threadId: string, imageId: string): Promise<string | null> {
+  const { conversations, items } = await readMail();
+  for (const c of conversations) {
+    const persona = Object.keys(c.sessions).find((p) => c.sessions[p] === threadId);
+    if (!persona) continue;
+    for (const item of items) {
+      if (item.conversationId !== c.id) continue;
+      if (item.from !== persona && !item.to.includes(persona)) continue;
+      const hit = item.images?.find((img) => img.id === imageId);
+      if (hit && hit.threadId !== threadId) return hit.threadId;
+    }
+  }
+  return null;
+}
+
 /** Delete a conversation + its items + triage state. Returns the orphaned thread ids. */
 export async function deleteConversation(id: string): Promise<{ result: MailListResult; threadIds: string[] }> {
   let threadIds: string[] = [];

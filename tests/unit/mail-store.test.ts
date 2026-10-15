@@ -13,6 +13,7 @@ import {
   createConversation,
   deleteConversation,
   mailSessionThreadIds,
+  mailedImageThread,
   readMail,
   setConversationSession,
   setConversationStatus,
@@ -207,6 +208,20 @@ describe('conversations and items', () => {
     const c = await createConversation('s', ['normal']);
     await setConversationSession(c.id, 'normal', 'thread-9');
     expect(await mailSessionThreadIds()).toEqual(new Set(['thread-9']));
+  });
+
+  it('a picture mailed to a persona resolves to the thread that made it; mail it never saw does not', async () => {
+    const c = await createConversation('Crypt art', ['normal', 'mac']);
+    await setConversationSession(c.id, 'normal', 'lead-thread');
+    await setConversationSession(c.id, 'mac', 'mac-thread');
+    await setConversationSession(c.id, 'other', 'other-thread');
+    const image = { id: 'img_3dae606efb', threadId: 'lead-thread', mime: 'image/png' };
+    await appendMailItem({ conversationId: c.id, from: 'normal', to: ['mac'], body: 'install this', images: [image] });
+    expect(await mailedImageThread('mac-thread', 'img_3dae606efb')).toBe('lead-thread');
+    expect(await mailedImageThread('mac-thread', 'img_0000000000')).toBeNull();
+    // Not addressed to it, and the sender's own thread already holds the bytes.
+    expect(await mailedImageThread('other-thread', 'img_3dae606efb')).toBeNull();
+    expect(await mailedImageThread('lead-thread', 'img_3dae606efb')).toBeNull();
   });
 
   it('a scheduled run\'s thread rides its mail item: hidden from the chat list, released when the task goes', async () => {

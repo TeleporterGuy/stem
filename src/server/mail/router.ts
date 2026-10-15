@@ -1252,6 +1252,7 @@ export class MailRouter {
       }
     }
     let itemId: string | undefined;
+    let images: GeneratedImageRef[] = [];
     try {
       const appended = await appendMailItem({
         conversationId: ctx.conversationId,
@@ -1268,6 +1269,7 @@ export class MailRouter {
         ...(finalTo.includes('user') ? { staleIfUserSentAfter: epoch } : {})
       });
       itemId = appended.items.at(-1)?.id;
+      images = appended.items.at(-1)?.images ?? [];
     } catch (error) {
       // With deliveries running in parallel, a racing send can pass the
       // pre-check above and lose here — the store's guard is the authority.
@@ -1299,6 +1301,11 @@ export class MailRouter {
     // its assembly, so mail addressed to an open join's sender is buffered into
     // that join instead of delivered — a branch's explicit reply settles its
     // branch, anything else rides along labeled for what it is.
+    // The pictures ride the item by id; the recipient's tools (browser upload)
+    // resolve those ids through the mail, so it needs to know which they are.
+    const sentBody = images.length
+      ? `${body}\n\n(Pictures attached to this mail: ${images.map((i) => i.id).join(', ')}. Name them by id where a tool takes an image.)`
+      : body;
     const delivered: string[] = [];
     for (const recipient of personaTo) {
       const join = this.joinFor(ctx.conversationId, recipient);
@@ -1307,7 +1314,7 @@ export class MailRouter {
         const senderName = name ?? (await this.personaName(ctx.personaId));
         join.buffered.push({
           name: senderName,
-          body,
+          body: sentBody,
           ...(name === undefined ? { note: 'not a delegation reply' } : {})
         });
         if (name !== undefined) {
@@ -1318,7 +1325,7 @@ export class MailRouter {
       }
       if (filedTo.includes(recipient)) continue;
       delivered.push(recipient);
-      this.deliverOrSteer(ctx.conversationId, { personaId: recipient, body, from: ctx.personaId, epoch, sourceItemId, itemId });
+      this.deliverOrSteer(ctx.conversationId, { personaId: recipient, body: sentBody, from: ctx.personaId, epoch, sourceItemId, itemId });
     }
     // Fanning out — two or more deliveries from one send, or any send to an
     // agent — opens (or widens) this sender's join: the replies come back as

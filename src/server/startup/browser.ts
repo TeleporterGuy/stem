@@ -8,6 +8,7 @@ import { outboxPut } from '../files/outbox';
 import { resolveUploadHandle } from '../files/staging';
 import { copyToUniquePath } from '../files/store';
 import { log } from '../log';
+import { mailedImageThread } from '../workspace/mail';
 import type { BrowserBridge, ChatBackend } from '../backend/types';
 import type { BrowserAction, DeviceBrowserResult } from '../../shared/types';
 
@@ -27,7 +28,14 @@ export function initBrowserControl(deps: { runtime: ChatBackend }): BrowserBridg
       if (req.action.kind === 'upload') {
         const files = Array.isArray(req.action.files) ? req.action.files : [];
         const sources = await resolveUploadSources(req.threadId, files, {
-          findThreadImage: (threadId, imageId) => deps.runtime.findThreadImage(threadId, imageId)
+          findThreadImage: async (threadId, imageId) => {
+            const own = await deps.runtime.findThreadImage(threadId, imageId);
+            if (own) return own;
+            // A picture another persona made and mailed here: the bytes are
+            // in the sender's thread.
+            const origin = await mailedImageThread(threadId, imageId);
+            return origin ? deps.runtime.findThreadImage(origin, imageId) : null;
+          }
         });
         if (!sources.ok) return { ok: false, error: sources.error };
         action = { ...req.action, files: sources.files.map((f) => outboxPut(req.device, f)) };
