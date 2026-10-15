@@ -32,7 +32,7 @@ import { IDLE_MS } from '../chats/autofile';
 import { faviconFor } from '../chats/favicon';
 import {
   markAllRead,
-  noteSilentRun,
+  noteRename,
   readInbox,
   removeInboxEntry,
   setArchived,
@@ -60,13 +60,6 @@ import { plainLine } from '../../shared/plain-text';
  * the cross-language superset back indefinitely.
  */
 const CHAT_SEARCH_COMPLETION_TIMEOUT_MS = 4_000;
-
-/**
- * How far past the rename's own write its quiet window reaches. pi appends the
- * session_info entry before answering, so the mtime is already final when the
- * thread list is re-read; the grace covers a filesystem that rounds mtimes up.
- */
-const RENAME_GRACE_MS = 2_000;
 
 /**
  * The sidebar payload: every chat the list shows, merged with its folder,
@@ -219,8 +212,7 @@ export function registerChatsIpc(deps: IpcDeps): void {
     // where it was, with whatever read/archive/snooze standing it had.
     if (before) {
       const after = (await deps.runtime().listThreads()).find((t) => t.threadId === threadId);
-      const at = Math.max(Date.now(), toMs(after?.updatedAt ?? 0)) + RENAME_GRACE_MS;
-      await noteSilentRun(threadId, before.updatedAt, at).catch((err) =>
+      await noteRename(threadId, before.updatedAt, after?.updatedAt ?? 0).catch((err) =>
         degrade('chats', 'left a renamed chat looking like it had a new message', err)
       );
     }

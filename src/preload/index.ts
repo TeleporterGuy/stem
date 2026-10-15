@@ -192,6 +192,8 @@ const api: StemApi = {
     ipcRenderer.invoke('mcp:setEnabled', name, enabled),
   setMcpServerLocation: (name: string, deviceId: string | null) =>
     ipcRenderer.invoke('mcp:setLocation', name, deviceId),
+  setMcpServerApps: (name: string, apps: string[] | null) => ipcRenderer.invoke('mcp:setApps', name, apps),
+  mcpServersForApp: (app: string, bundleId: string | null) => ipcRenderer.invoke('mcp:forApp', app, bundleId),
   loginMcpServer: (name: string) => ipcRenderer.invoke('mcp:login', name),
   restartRuntime: () => ipcRenderer.invoke('runtime:restart'),
 
@@ -622,7 +624,8 @@ const api: StemApi = {
   revealQuickChat: () => ipcRenderer.invoke('quickchat:reveal'),
   revealMain: () => ipcRenderer.invoke('main:reveal'),
   hideQuickChat: () => ipcRenderer.invoke('quickchat:hide'),
-  compactQuickChat: () => ipcRenderer.invoke('quickchat:compact'),
+  openQuickChatPrivacy: (which: 'screen' | 'accessibility') => ipcRenderer.invoke('quickchat:openPrivacy', which),
+  compactQuickChat: (chip?: boolean) => ipcRenderer.invoke('quickchat:compact', chip === true),
   onQuickChatFocus: (listener: (focus: QuickChatFocus) => void) => {
     const handler = (_e: unknown, focus: QuickChatFocus) => listener(focus);
     ipcRenderer.on('quickchat:focus', handler);

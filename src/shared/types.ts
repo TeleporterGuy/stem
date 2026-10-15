@@ -489,6 +489,13 @@ export interface StartTurnInput {
   /** Files/images attached to this turn. */
   attachments?: TurnAttachment[];
   /**
+   * "Ask about this window": the window the user asked from (Quick Chat's
+   * window shortcut, Mac only). Its picture rides in `attachments`; this is
+   * what the picture cannot say exactly — which app, which window, and the
+   * text it shows — put before the model as a `<stem_window>` block.
+   */
+  windowContext?: WindowContext;
+  /**
    * Set by the scheduler for a scheduled-task run. The backend prepends an
    * automated-run preamble (so the agent knows it's running headless and should use
    * notify_user) plus a replay-detectable marker, and tags the turn's events so the
@@ -1238,6 +1245,8 @@ export interface McpServerSummary {
   enabled: boolean;
   /** Where it runs; absent = on the machine hosting the server. */
   location?: McpServerLocation;
+  /** "Works with apps", as set; absent = matched by the server's name. */
+  apps?: string[];
 }
 
 /**
@@ -3422,6 +3431,11 @@ export interface ChatListResult {
 export interface QuickChatSettings {
   /** Electron global accelerator (e.g. 'Alt+Space'); null = shortcut disabled. */
   shortcut: string | null;
+  /**
+   * "Ask about this window" (Mac only): summons Quick Chat with the window the
+   * user is in attached. Electron accelerator; null = off.
+   */
+  windowShortcut: string | null;
   /** Model the overlay opens with; null = follow the app's default model. */
   defaultModel: string | null;
   /** Reasoning effort the overlay opens with (low/medium/high/xhigh). */
@@ -3456,6 +3470,9 @@ export interface QuickChatSettings {
 export interface QuickChatShortcutStatus {
   accelerator: string | null;
   registered: boolean;
+  /** The same two for the "Ask about this window" shortcut. */
+  windowAccelerator: string | null;
+  windowRegistered: boolean;
   wayland: boolean;
   summonCommand: string;
 }
@@ -3471,7 +3488,7 @@ export interface QuickChatShortcutStatus {
  */
 export type ClientQuickChatSettings = Pick<
   QuickChatSettings,
-  'shortcut' | 'showOnAllDisplays' | 'followAcrossSpaces'
+  'shortcut' | 'windowShortcut' | 'showOnAllDisplays' | 'followAcrossSpaces'
 >;
 
 /**
@@ -4385,6 +4402,12 @@ export interface ClientSettings {
  */
 export interface QuickChatPrompt {
   input: string;
+  /**
+   * The window chip was still attached when this was sent: main adds that
+   * window's text (read while the user typed) to the turn. Its picture is
+   * already among `attachments`.
+   */
+  windowId?: number;
   /** Client-minted turn id, forwarded into StartTurnInput — see its doc there. */
   turnId?: string;
   /** Model chosen in the overlay; null = use the overlay's default model. */
@@ -4422,6 +4445,36 @@ export interface QuickChatStatus {
 /** Main → overlay: sent on each summon; `reset` starts a fresh session. */
 export interface QuickChatFocus {
   reset: boolean;
+  /**
+   * Summoned with the window shortcut: the window the user was in, shown as a
+   * removable chip. Absent for a plain summon (which keeps whatever chip the
+   * session already has).
+   */
+  window?: QuickChatWindow;
+}
+
+/** The window "Ask about this window" captured, as the overlay shows it. */
+export interface QuickChatWindow {
+  /** The window server's id, which main keys the window's text by. */
+  windowId: number;
+  app: string;
+  bundleId: string | null;
+  title: string;
+  /** JPEG of the window; null when Screen Recording is off. */
+  imageBase64: string | null;
+  /** Grants that were missing: no picture without 'screen', no text without 'accessibility'. */
+  missing: ('screen' | 'accessibility')[];
+}
+
+/** What the model is told about the window a turn was asked from. */
+export interface WindowContext {
+  /** The window server's id on the Mac the user asked from (computer control's select_window). */
+  windowId: number | null;
+  app: string;
+  bundleId: string | null;
+  title: string;
+  /** The window's readable text, when the app exposes it. */
+  text: string | null;
 }
 
 /** Main → overlay: capture an atomic state snapshot for an implicit handoff. */
@@ -4856,6 +4909,10 @@ export interface StemApi {
    * still approves it there before anything runs.
    */
   setMcpServerLocation(name: string, deviceId: string | null): Promise<McpServerSummary[]>;
+  /** Set which apps a server works with; null = match by its name again. */
+  setMcpServerApps(name: string, apps: string[] | null): Promise<McpServerSummary[]>;
+  /** The MCP servers that cover an app ("Ask about this window" chip). */
+  mcpServersForApp(app: string, bundleId: string | null): Promise<string[]>;
   loginMcpServer(name: string): Promise<McpLoginResult>;
   restartRuntime(): Promise<RuntimeStatus>;
   /** Assistant proposed an MCP change; fired so the UI can show a confirm card. */
@@ -5340,8 +5397,11 @@ export interface StemApi {
   revealMain(): Promise<void>;
   /** Hide the overlay (Escape from within it). */
   hideQuickChat(): Promise<void>;
+  /** Overlay: open System Settings at the Privacy pane the window chip is missing. */
+  openQuickChatPrivacy(which: 'screen' | 'accessibility'): Promise<void>;
   /** Shrink the visible overlay to the compact bar (its session just emptied). */
-  compactQuickChat(): Promise<void>;
+  /** `chip`: the bar is showing an "Ask about this window" chip. */
+  compactQuickChat(chip?: boolean): Promise<void>;
   /** Overlay: fired each time the overlay is summoned; `reset` => fresh session. */
   onQuickChatFocus(listener: (focus: QuickChatFocus) => void): () => void;
   /** HUD: fired with the current one-line status while the overlay is hidden. */

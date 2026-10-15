@@ -1,3 +1,4 @@
+import { cleanAppList, mcpServersForApp } from './app-match';
 import {
   MCP_SECRET_MASK,
   type McpServerDetails,
@@ -167,7 +168,8 @@ export async function listMcpServers(): Promise<McpServerSummary[]> {
         url,
         authStatus,
         enabled: !def.disabled,
-        ...(def.location ? { location: describeLocation(def.location, devices) } : {})
+        ...(def.location ? { location: describeLocation(def.location, devices) } : {}),
+        ...(def.apps?.length ? { apps: [...def.apps] } : {})
       } satisfies McpServerSummary;
     });
 }
@@ -342,6 +344,7 @@ export async function updateMcpServer(input: McpServerInput): Promise<McpServerS
     const next: PiMcpServer = {
       ...spec,
       ...(previous.location ? { location: previous.location } : {}),
+      ...(previous.apps ? { apps: previous.apps } : {}),
       ...(previous.disabled ? { disabled: true } : {}),
       ...(previous.trusted === undefined ? {} : { trusted: previous.trusted })
     };
@@ -424,6 +427,37 @@ export async function setMcpServerEnabled(name: string, enabled: boolean): Promi
     if (enabled) delete def.disabled;
     else def.disabled = true;
   });
+}
+
+/**
+ * Which apps a server works with (Manage → MCP → Works with apps). Null or an
+ * empty list goes back to matching by the server's name.
+ */
+export async function setMcpServerApps(name: string, apps: string[] | null): Promise<McpServerSummary[]> {
+  if (RESERVED_NAMES.has(name)) throw new Error(`"${name}" is a reserved Stem server name.`);
+  const list = cleanAppList(apps);
+  return writeServers((config) => {
+    const def = config.servers[name];
+    if (!def) throw new Error(`No MCP server named "${name}".`);
+    if (list) def.apps = list;
+    else delete def.apps;
+  });
+}
+
+/**
+ * The user's servers that cover an app (see app-match.ts): for the Quick Chat
+ * window chip, and for the turn asked from that app's window, where `allow` is
+ * the persona's allowlist (null = every server).
+ */
+export async function mcpServersForAppName(
+  app: string,
+  bundleId: string | null,
+  allow: string[] | null = null
+): Promise<string[]> {
+  if (typeof app !== 'string' || !app.trim()) return [];
+  const { servers } = await readMcpConfig();
+  const visible = Object.fromEntries(Object.entries(servers).filter(([name]) => !RESERVED_NAMES.has(name)));
+  return mcpServersForApp(visible, app, typeof bundleId === 'string' ? bundleId : null, allow);
 }
 
 export async function removeMcpServer(name: string): Promise<McpServerSummary[]> {

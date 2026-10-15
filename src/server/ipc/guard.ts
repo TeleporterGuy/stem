@@ -113,6 +113,10 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   // The device id, or null for "the machine hosting stem-server". Whether that
   // id names a paired desktop is decided in pi/mcp.ts, where the registry is.
   'mcp:setLocation': [a.string, a.nullish(a.string)],
+  // A server's "Works with apps" list, or null for "match by its name".
+  'mcp:setApps': [a.string, a.nullish(a.stringArray)],
+  // An app name and its bundle id (null when the app has none).
+  'mcp:forApp': [a.string, a.nullish(a.string)],
   'mcp:login': [a.string],
   'mcp:adminDecision': [a.id, a.boolean],
   // The MCP host channels. No device id on any of them: the caller IS the

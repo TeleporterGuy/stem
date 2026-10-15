@@ -68,6 +68,7 @@ import { clampPinnedCwd } from '../harness/pin';
 import { hostShellAgentHint } from '../exec/host-shell';
 import { plainLine, previewText } from '../../shared/plain-text';
 import { autoTitle, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
+import { noteRename } from '../workspace/inbox';
 import { getChatFormat, isChatPrivate, markTurnTainted, setChatFormat, setChatPrivate, setNaming, taintedTurns } from '../workspace/chats';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
 import { buildRecallContext, type RecallTimings } from '../recall/inject';
@@ -127,6 +128,9 @@ import { formatSkillsBlock, selectSkills, type SkillUsageStat } from '../skills/
 import { loadedSkillNames } from '../skills/thread-history';
 import { AmbientBlocks, liveUserTexts } from './context-dedupe';
 import { formatPracticeBlock } from '../skills/record';
+import { formatWindowBlock } from './window-context';
+import { mcpServersForAppName } from './mcp';
+import { readDevices } from '../transport/auth';
 import { listSkillRecords } from '../skills/store';
 import { gradeSkillUse, reportedSkillIssues } from '../skills/grade';
 import { parseThreadEvidence, type LearnTurn } from '../skills/thread-evidence';
@@ -2567,7 +2571,18 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // Not priority: unlike the exec judge, nobody is blocked on this.
       complete: (prompt, opts) => this.complete(prompt, opts),
       currentTitle: async (id) => (await this.listThreads()).find((c) => c.threadId === id)?.title ?? null,
-      rename: (id, name) => this.renameThread(id, name),
+      // The naming pass renames a couple of seconds after the turn settled —
+      // after a reader may already have stamped the answer read. Its write
+      // must not paint the row bold again (see noteRename).
+      rename: async (id, name) => {
+        const mtime = async () => (await this.listThreads()).find((c) => c.threadId === id)?.updatedAt;
+        const before = await mtime();
+        await this.renameThread(id, name);
+        if (before === undefined) return;
+        await noteRename(id, before, (await mtime()) ?? 0).catch((err) =>
+          log('chats', 'naming left a chat looking like it had a new message', { threadId: id, error: String(err) })
+        );
+      },
       readMessages: async (id) => (await this.readThread(id)).messages
     };
   }
@@ -4824,6 +4839,27 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // A practice run of a recorded draft (the draft card's "Practice run"):
     // the draft is not in the library yet, so it is handed over here.
     if (input.practiceSkill) blocks.push(formatPracticeBlock(input.practiceSkill));
+    // "Ask about this window": which window the question came from, and its text.
+    if (input.windowContext) {
+      const w = input.windowContext;
+      // quiet: without the match the model still gets the window, just no pointer to its app's server.
+      const servers = await mcpServersForAppName(w.app, w.bundleId, input.persona?.mcpServers ?? null).catch(
+        () => [] as string[]
+      );
+      // Computer control reaches this window only when it drives the Mac the user asked from.
+      const grant = turn?.computerGrant;
+      const origin = input.originDeviceId;
+      let computer: { device: string | null } | undefined;
+      if (grant && origin && grant.device === origin) computer = { device: null };
+      else if (grant?.kind === 'chat' && grant.device === null && origin) {
+        const label = await readDevices()
+          .then((list) => list.find((d) => d.id === origin)?.label)
+          // quiet: without the name the model is told nothing about acting in the window.
+          .catch(() => undefined);
+        if (label) computer = { device: label };
+      }
+      blocks.push(formatWindowBlock(w, servers, computer));
+    }
 
     // The ambient blocks below go out only when the live context does not
     // already hold them verbatim (context-dedupe.ts): a long thread, and above

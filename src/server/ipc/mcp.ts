@@ -24,6 +24,8 @@ export function registerMcpIpc(deps: IpcDeps): void {
   registerServer('mcp:setLocation', (_e, name: string, deviceId: string | null) =>
     piMcp.setMcpServerLocation(name, deviceId)
   );
+  registerServer('mcp:setApps', (_e, name: string, apps: string[] | null) => piMcp.setMcpServerApps(name, apps));
+  registerServer('mcp:forApp', (_e, app: string, bundleId: string | null) => piMcp.mcpServersForAppName(app, bundleId));
   registerServer('mcp:login', (_e, name: string) => deps.runtime().mcpLogin(name));
   registerServer('mcp:adminDecision', async (_e, id: ApprovalId, accept: boolean) => {
     await deps.runtime().resolveAdminApproval(

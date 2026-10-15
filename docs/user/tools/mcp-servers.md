@@ -66,6 +66,18 @@ or headers, and the OAuth client), **Runs on** (when you have computers to choos
 from), and **Status**. Stored secrets show as dots; leave them to keep them, or type a
 new value. **Save** writes everything at once; **Cancel** throws the edit away.
 
+## Works with apps
+
+On a Mac, [**Ask about this window**](../quick-chat.md#ask-about-this-window-mac)
+uses the server that covers the window's app. The model is told to prefer it
+for reading and acting in that app, and to show you what it will send before
+sending.
+
+By default a server covers apps named like it: `slack` covers Slack,
+`linear-mcp` covers Linear. To choose the apps yourself, open the server and
+fill in **Works with apps** with app names or bundle ids, separated by
+commas. Clear the field to go back to matching by name.
+
 ## Where a server runs
 
 **Command** and **URL** say how Stem talks to a server, not where it runs. A server

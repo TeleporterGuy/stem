@@ -314,6 +314,24 @@ export function noteSilentRun(threadId: string, before: number, at: number): Pro
   });
 }
 
+/**
+ * How far past a rename's own write its quiet window reaches. pi appends the
+ * session_info entry before answering, so the mtime is already final when the
+ * thread list is re-read; the grace covers a filesystem that rounds mtimes up.
+ */
+const RENAME_GRACE_MS = 2_000;
+
+/**
+ * A rename is not new activity, whoever made it: the user from the sidebar, or
+ * the naming pass a couple of seconds after a turn settles. Without this the
+ * automatic one lands after Quick Chat has stamped its answer read, and the
+ * chat the user just read sits bold in the list. `before`/`after` are the
+ * thread's listed mtimes either side of the rename.
+ */
+export function noteRename(threadId: string, before: number, after: number): Promise<InboxState> {
+  return noteSilentRun(threadId, before, Math.max(Date.now(), toMs(after)) + RENAME_GRACE_MS);
+}
+
 /** Drop a thread's inbox state when the chat itself is deleted. */
 export function removeInboxEntry(threadId: string): Promise<InboxState> {
   return update((store) => {

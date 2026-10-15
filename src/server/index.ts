@@ -45,6 +45,7 @@ import type { HarnessService } from './harness/service';
 import { registerHarnessIpc } from './harness/ipc';
 import { closeHarnessDeviceRouter, harnessDeviceRouter } from './harness/device-host';
 import { initSkills } from './startup/skills';
+import { cleanWindowContext } from './pi/window-context';
 import { practiceSkillFor, practiceStarted, practiceTurnSettled, setPracticeStopper, setRecordingDraftPush } from './startup/record-skills';
 import {
   closeTransport,
@@ -491,6 +492,8 @@ function registerIpc(): void {
       persona: personaFields?.persona,
       mail: undefined,
       practiceSkill: practiceSkill ?? undefined,
+      // Only Quick Chat asks about a window; anything else claiming one is dropped.
+      windowContext: quickChat ? cleanWindowContext(input.windowContext) ?? undefined : undefined,
       originDeviceId: e?.deviceId
     });
     if (practiceSkill && input.practiceDraftId && started.turnId) {

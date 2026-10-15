@@ -35,6 +35,7 @@ const DEFAULTS: ClientSettings = {
   quickChat: {
     // Unset until the user records one in Settings.
     shortcut: null,
+    windowShortcut: null,
     showOnAllDisplays: true,
     // Show the progress pill for main-window threads when the main window loses
     // focus (switch Spaces/apps), so an active thread stays visible.
@@ -81,6 +82,7 @@ function coerceClientSettings(raw: Partial<ClientSettings> | undefined): ClientS
   return {
     quickChat: {
       shortcut: typeof qc.shortcut === 'string' && qc.shortcut.trim() ? qc.shortcut : null,
+      windowShortcut: typeof qc.windowShortcut === 'string' && qc.windowShortcut.trim() ? qc.windowShortcut : null,
       showOnAllDisplays:
         typeof qc.showOnAllDisplays === 'boolean' ? qc.showOnAllDisplays : d.quickChat.showOnAllDisplays,
       followAcrossSpaces:
@@ -148,9 +150,10 @@ export async function readClientSettings(): Promise<ClientSettings> {
 export function updateClientQuickChat(patch: Partial<QuickChatSettings>): Promise<ClientSettings> {
   return updateClientDocument(async (doc) => {
     const cur = await migrated(doc);
-    // Only the three keys this side owns; the rest of the patch went to the server.
+    // Only the keys this side owns; the rest of the patch went to the server.
     const mine: Partial<ClientQuickChatSettings> = {};
     if ('shortcut' in patch) mine.shortcut = patch.shortcut ?? null;
+    if ('windowShortcut' in patch) mine.windowShortcut = patch.windowShortcut ?? null;
     if ('showOnAllDisplays' in patch) mine.showOnAllDisplays = patch.showOnAllDisplays;
     if ('followAcrossSpaces' in patch) mine.followAcrossSpaces = patch.followAcrossSpaces;
     doc.settings = coerceClientSettings({ ...cur, quickChat: { ...cur.quickChat, ...mine } });

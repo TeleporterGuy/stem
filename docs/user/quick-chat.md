@@ -37,5 +37,34 @@ again or click the pill.
 - **Note**—or starting with `/note ` or `//`—is the optional direct-save path for
   Memory. No chat turn. Memory must be on; credential-like text is not saved.
 
+## Ask about this window (Mac)
+
+Maya is in Slack and Jana has asked her to decide something. She presses her
+**Ask about this window** shortcut. Quick Chat opens beside the Slack window,
+not on top of it, with a chip showing which window it captured. She asks
+“What does Jana need from me?” and the answer appears right there.
+
+- The chip shows a picture of the window. Its text goes along too, so the
+  assistant reads names and messages exactly. Click **×** on the chip to ask
+  without the window.
+- If an MCP server covers the app, a second chip names it. The assistant uses it
+  to read what the window doesn't show and to act in the app, and shows you
+  what it will send before sending. See
+  [Works with apps](tools/mcp-servers.md#works-with-apps).
+- With computer control allowed for this Mac (**Settings → Features**), the
+  assistant can also click and type in that window.
+- Nothing is captured until you press the shortcut.
+- The panel sits right of the window, else left, else below or above. It covers
+  the window only when the window fills the screen. It follows the window if you
+  move it.
+- Pressing it again in the same window continues that conversation. In another
+  window it starts a new one.
+- It needs **Screen Recording** for the picture and **Accessibility** for the
+  text. If one is off, the chip says which and opens the right System Settings
+  pane.
+
+Set the shortcut under **Settings → Quick Chat → Ask about this window**. It is
+off until you record one.
+
 Quick Chat has its own thread. Set its defaults in
 [**Settings → Quick Chat**](settings.md).

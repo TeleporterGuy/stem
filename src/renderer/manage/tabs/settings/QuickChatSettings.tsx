@@ -81,6 +81,13 @@ export function QuickChatSection({ models }: { models: ModelSummary[] }) {
     });
   }
 
+  function updateWindowShortcut(accel: string | null) {
+    window.stem.updateQuickChat({ windowShortcut: accel }).then(async (s) => {
+      setQc(s.quickChat);
+      setShortcutStatus(await window.stem.getQuickChatShortcutStatus());
+    });
+  }
+
   function copySummonCommand() {
     if (!shortcutStatus) return;
     void navigator.clipboard.writeText(shortcutStatus.summonCommand).then(() => {
@@ -175,6 +182,27 @@ export function QuickChatSection({ models }: { models: ModelSummary[] }) {
               )}
             </div>
           </div>
+        )}
+
+        {/* Mac only: capturing another app's window needs the computer-control helper. */}
+        {window.stem.platform === 'darwin' && (
+          <>
+            <ValueRow
+              label={<strong>Ask about this window</strong>}
+              hint="Opens Quick Chat beside the window you're in, with a picture and the text of that window attached"
+            >
+              <ShortcutRecorder value={qc.windowShortcut} onChange={updateWindowShortcut} />
+            </ValueRow>
+            {qc.windowShortcut && shortcutStatus && !shortcutStatus.windowRegistered && (
+              <div className="set-vbody">
+                <span className="retrieval-test-status err">
+                  <X size={12} />
+                  The system refused this combination — another app (or the Quick Chat shortcut) is
+                  probably holding it. Record a different one.
+                </span>
+              </div>
+            )}
+          </>
         )}
 
         <ValueRow label="Web search" hint="Live results with citations, in the overlay">

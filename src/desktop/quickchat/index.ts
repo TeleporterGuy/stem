@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { globalShortcut, ipcMain, type BrowserWindow } from 'electron';
+import { globalShortcut, ipcMain, shell, type BrowserWindow } from 'electron';
 import { log } from '../../server/log';
 import { handleLocal } from '../ipc-bridge';
 import {
@@ -21,8 +21,11 @@ import {
   placeHud,
   compactOverlay,
   placeOverlay,
-  setOverlayWorkspaceVisibility
+  placeOverlayBeside,
+  setOverlayWorkspaceVisibility,
+  type DockRect
 } from './windows';
+import { peekFrontWindow, readWindowText, stopWindowPeek, warmWindowPeek, windowBounds } from './window-peek';
 import { eventTurnId } from '../../shared/settledTurns';
 import { PillTurns, type PillEventParams } from './pill-turns';
 import { activityLabel } from '../../shared/activity';
@@ -35,8 +38,10 @@ import type {
   QuickChatSettings,
   QuickChatShortcutStatus,
   QuickChatStatus,
+  QuickChatWindow,
   StartTurnInput,
-  StartTurnResult
+  StartTurnResult,
+  WindowContext
 } from '../../shared/types';
 
 // Quick Chat: the Spotlight-style overlay, the bottom-left status pill, and the
@@ -100,6 +105,8 @@ export interface QuickChatSurface {
   sendToOverlay(channel: string, payload: unknown): void;
   /** Push on a channel the HUD pill renders (theme changes). No-op when it is gone. */
   sendToHud(channel: string, payload: unknown): void;
+  /** Let go of the window helper (app quit). */
+  stop(): void;
   /** Bring the overlay back when it owns `threadId` (approval cards). */
   revealIfOwns(threadId: string | null | undefined): void;
   /**
@@ -132,6 +139,21 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
    * that does nothing.
    */
   let desiredShortcut: string | null = null;
+  /** The same pair for "Ask about this window" (Mac only). */
+  let currentWindowShortcut: string | null = null;
+  let desiredWindowShortcut: string | null = null;
+
+  // ---- "Ask about this window" ----
+  //
+  // The window the overlay's session was summoned for: the panel docks beside
+  // it (never on top when the screen has room) and follows it while shown, and
+  // the first prompt sent with its chip carries its text. Cleared whenever the
+  // session starts fresh without one.
+  let peek: { window: QuickChatWindow; bounds: DockRect; text: Promise<string | null> } | null = null;
+  /** A press is still capturing: a second press waits its turn instead of racing it. */
+  let peeking = false;
+  /** Polls the anchored window's frame while the overlay is on screen. */
+  let followTimer: NodeJS.Timeout | null = null;
   /** Cached "show overlay on all Spaces" setting, applied once per overlay window. */
   let overlayOnAllDisplays = true;
   /** Cached inactivity timeout (ms) after which a summon starts a fresh thread. */
@@ -334,19 +356,104 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
    * answer the user re-summoned to read). The overlay's React state persists across
    * hide/show, so resuming needs no payload beyond the reset flag.
    */
-  function showQuickChat(reset: boolean): void {
+  function showQuickChat(reset: boolean, window?: QuickChatWindow): void {
     const win = ensureOverlayWindow();
     // Resuming puts the answer in front of the user: that's reading it.
     if (!reset && !overlay.turnRunning) markOverlayThreadRead();
     hideHud();
     deps.beginSummon();
-    placeOverlay(win, reset);
+    if (peek) {
+      placeOverlayBeside(win, peek.bounds, !reset, reset);
+      followWindow();
+    } else placeOverlay(win, reset);
     // Surface the panel on whatever Space the user is on and make it the key window
     // so it receives keystrokes (typing, Escape) — without activating Stem, so the
     // previous app stays active underneath and the main window is never pulled
     // forward. The macOS ordering is subtle; see presentOverlayWindow.
     presentOverlayWindow(win);
-    win.webContents.send('quickchat:focus', { reset });
+    win.webContents.send('quickchat:focus', window ? { reset, window } : { reset });
+  }
+
+  /**
+   * Keep the docked panel beside its window while both are on screen: the
+   * window may be dragged or resized with the panel open. Stops itself once
+   * the overlay hides or the window closes.
+   */
+  function followWindow(): void {
+    if (followTimer) return;
+    followTimer = setInterval(() => {
+      const win = overlayWindow;
+      const anchored = peek;
+      if (!win || win.isDestroyed() || !win.isVisible() || !anchored) {
+        stopFollowing();
+        return;
+      }
+      void windowBounds(anchored.window.windowId)
+        .then((b) => {
+          if (!b || peek !== anchored || !win.isVisible() || win.isDestroyed()) return;
+          const p = anchored.bounds;
+          if (b.x === p.x && b.y === p.y && b.width === p.width && b.height === p.height) return;
+          anchored.bounds = b;
+          const expanded = win.getBounds().height > 200;
+          placeOverlayBeside(win, b, expanded, !expanded);
+        })
+        .catch(() => undefined);
+    }, 400);
+  }
+
+  function stopFollowing(): void {
+    if (followTimer) clearInterval(followTimer);
+    followTimer = null;
+  }
+
+  /**
+   * The window shortcut: capture the window the user is in, then summon Quick
+   * Chat beside it with that window as a chip. Pressed again while the overlay
+   * is up, it dismisses like the plain shortcut. The same window again resumes
+   * its conversation (unless it went idle); another window starts a fresh one.
+   */
+  async function askAboutWindow(): Promise<void> {
+    if (overlayWindow && overlayWindow.isVisible()) {
+      dismissQuickChat();
+      return;
+    }
+    if (peeking) return;
+    peeking = true;
+    try {
+      const peeked = await peekFrontWindow();
+      if (!peeked) {
+        // No other window to ask about: an ordinary summon.
+        toggleQuickChat();
+        return;
+      }
+      const sameWindow = peek?.window.windowId === peeked.window.windowId;
+      const reset = !sameWindow || overlay.shouldStartFresh(Date.now(), newThreadTimeoutMs);
+      if (reset) overlay.clearForFreshSession();
+      // The text is read while the user types; the send waits for it (see runQuickChat).
+      const text = reset || !peek
+        ? peeked.window.missing.includes('accessibility')
+          ? Promise.resolve(null)
+          : readWindowText(peeked.window.windowId)
+        : peek.text;
+      peek = { window: peeked.window, bounds: peeked.bounds, text };
+      showQuickChat(reset, reset ? peeked.window : undefined);
+    } finally {
+      peeking = false;
+    }
+  }
+
+  /** What the model is told about the window a prompt was sent with. */
+  async function windowContextFor(windowId: number | undefined): Promise<WindowContext | undefined> {
+    const anchored = peek;
+    if (windowId === undefined || !anchored || anchored.window.windowId !== windowId) return undefined;
+    const { app, bundleId, title } = anchored.window;
+    // A slow app's tree must not hold the question up for long: past this the
+    // turn goes with the picture alone.
+    const text = await Promise.race([
+      anchored.text,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000))
+    ]);
+    return { windowId, app, bundleId, title, text };
   }
 
   /**
@@ -373,6 +480,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
 
   /** Hide just the overlay window (without app.hide), so the HUD can stay visible. */
   function hideOverlayWindow(): void {
+    stopFollowing();
     if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible()) overlayWindow.hide();
   }
 
@@ -385,8 +493,24 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
     // the configured timeout => start a new thread. Clear ownership up front so the
     // old thread's events stop routing to the (now reset) overlay.
     const reset = overlay.shouldStartFresh(Date.now(), newThreadTimeoutMs);
-    if (reset) overlay.clearForFreshSession();
+    if (reset) {
+      overlay.clearForFreshSession();
+      // A plain summon starts a plain session: no window chip, centred bar.
+      peek = null;
+    }
     showQuickChat(reset);
+  }
+
+  /** Grab `accelerator` for `handler`; the accelerator when the OS granted it, else null. */
+  function registerAccelerator(accelerator: string | null, handler: () => void): string | null {
+    if (!accelerator) return null;
+    try {
+      if (globalShortcut.register(accelerator, handler)) return accelerator;
+      log('main', 'global shortcut refused by the OS', { accelerator });
+    } catch (error) {
+      log('main', 'global shortcut registration failed', { accelerator, error: String(error) });
+    }
+    return null;
   }
 
   /** (Re)register the global accelerator. Returns false when registration fails. */
@@ -396,16 +520,21 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
       globalShortcut.unregister(currentShortcut);
       currentShortcut = null;
     }
-    if (!accelerator) return true;
-    try {
-      const ok = globalShortcut.register(accelerator, toggleQuickChat);
-      if (ok) currentShortcut = accelerator;
-      else log('main', 'global shortcut refused by the OS', { accelerator });
-      return ok;
-    } catch (error) {
-      log('main', 'global shortcut registration failed', { accelerator, error: String(error) });
-      return false;
+    currentShortcut = registerAccelerator(accelerator, toggleQuickChat);
+    return !accelerator || !!currentShortcut;
+  }
+
+  /** (Re)register "Ask about this window". A Mac-only feature: elsewhere it stays unbound. */
+  function applyWindowShortcut(accelerator: string | null): void {
+    desiredWindowShortcut = accelerator;
+    if (currentWindowShortcut) {
+      globalShortcut.unregister(currentWindowShortcut);
+      currentWindowShortcut = null;
     }
+    if (process.platform !== 'darwin') return;
+    currentWindowShortcut = registerAccelerator(accelerator, () => void askAboutWindow());
+    // The helper's launch was most of a first press's wait: start it now.
+    if (currentWindowShortcut) warmWindowPeek();
   }
 
   /**
@@ -417,6 +546,8 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
     return {
       accelerator: desiredShortcut,
       registered: !!desiredShortcut && currentShortcut === desiredShortcut,
+      windowAccelerator: desiredWindowShortcut,
+      windowRegistered: !!desiredWindowShortcut && currentWindowShortcut === desiredWindowShortcut,
       wayland: isWaylandSession(),
       summonCommand: quickChatSummonCommand()
     };
@@ -561,13 +692,20 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
     const turnId = prompt.turnId || randomUUID();
     overlayTurnId = turnId;
     overlay.beginTurn(Date.now());
-    // Hide just the overlay (NOT app.hide — that would also hide the HUD we're
-    // about to show, and re-showing the HUD would reactivate the app and surface
-    // the main window). The overlay is a non-activating panel, so hiding it does
-    // not promote the main window. The HUD is non-focusable, so it never steals
-    // focus from whatever app the user is in.
-    hideOverlayWindow();
-    showHud({ phase: 'working', label: 'Working…' }, 'quickchat');
+    if (peek && overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible()) {
+      // Docked beside a window: the answer is read right there, next to what
+      // it is about, so the panel grows in place instead of giving way to the
+      // pill. (driveHud shows no pill while the overlay is visible.)
+      placeOverlayBeside(overlayWindow, peek.bounds, true, false);
+    } else {
+      // Hide just the overlay (NOT app.hide — that would also hide the HUD we're
+      // about to show, and re-showing the HUD would reactivate the app and surface
+      // the main window). The overlay is a non-activating panel, so hiding it does
+      // not promote the main window. The HUD is non-focusable, so it never steals
+      // focus from whatever app the user is in.
+      hideOverlayWindow();
+      showHud({ phase: 'working', label: 'Working…' }, 'quickchat');
+    }
 
     try {
       const continuing = overlay.owns(prompt.threadId);
@@ -585,6 +723,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
         });
       }
 
+      const windowContext = await windowContextFor(prompt.windowId);
       // `surface` is the whole of what makes this a Quick Chat turn: the server
       // resolves the Quick Chat web-search toggle and the main+quickChat
       // instruction composition from it (see backend:startTurn).
@@ -598,7 +737,8 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
           serviceTier: prompt.serviceTier,
           format: prompt.format,
           surface: 'quickChat',
-          attachments: prompt.attachments
+          attachments: prompt.attachments,
+          ...(windowContext ? { windowContext } : {})
         } satisfies StartTurnInput
       ])) as StartTurnResult;
       overlay.noteActivity(Date.now());
@@ -676,6 +816,12 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
       ensureOverlayWindow();
       ensureHudWindow();
       applyQuickChatShortcut(settings.shortcut);
+      applyWindowShortcut(settings.windowShortcut);
+    },
+
+    stop() {
+      stopFollowing();
+      stopWindowPeek();
     },
 
     registerIpc() {
@@ -729,10 +875,16 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
         dismissQuickChat();
       });
 
+      // The window chip's "Open Settings": the Privacy pane for the missing grant.
+      handleLocal('quickchat:openPrivacy', (_e, which: 'screen' | 'accessibility') => {
+        const pane = which === 'accessibility' ? 'Privacy_Accessibility' : 'Privacy_ScreenCapture';
+        void shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
+      });
+
       // The panel emptied while on screen (New thread, deleted thread): drop back
       // to the compact bar instead of leaving a tall empty card.
-      handleLocal('quickchat:compact', () => {
-        if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible()) compactOverlay(overlayWindow);
+      handleLocal('quickchat:compact', (_e, chip?: boolean) => {
+        if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible()) compactOverlay(overlayWindow, chip === true);
       });
     },
 
@@ -742,6 +894,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
 
     applySettings(patch, next) {
       if ('shortcut' in patch) applyQuickChatShortcut(next.shortcut);
+      if ('windowShortcut' in patch) applyWindowShortcut(next.windowShortcut);
       if ('showOnAllDisplays' in patch) {
         overlayOnAllDisplays = next.showOnAllDisplays;
         applyOverlayWorkspaceVisibility();

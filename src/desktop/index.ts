@@ -728,6 +728,8 @@ app.on('before-quit', (event) => {
   browserHost?.close();
   // And a recording in progress: its helper is a child too; its folder stays for recover().
   recorder?.close();
+  // And the "Ask about this window" helper.
+  quickChat.stop();
   // Nothing to drain when the server is somebody else's process.
   if (!server) return;
   event.preventDefault();

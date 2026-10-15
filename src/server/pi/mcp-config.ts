@@ -90,6 +90,14 @@ export interface PiMcpServer {
     label?: string;
   };
   /**
+   * The apps this server works with, by name or bundle id ("Slack",
+   * "com.tinyspeck.slackmacgap"): asking about one of their windows tells the
+   * model to prefer this server (see app-match.ts). Absent = matched by the
+   * server's own name. Not part of how it is reached, so outside the auth
+   * identity and the device fingerprint, like `location`.
+   */
+  apps?: string[];
+  /**
    * Which `env`/`headers` values were in the file and could not be decrypted,
    * filled in by {@link readMcpConfig} and stripped again on write. Derived, not
    * stored: it is a fact about this machine's key, not about the server.

@@ -181,5 +181,9 @@ export function bindServerChannels(
  */
 const NEEDS_A_NEWER_SERVER: Record<string, string> = {
   'mcp:setLocation':
-    'This Stem server is older than this copy of Stem and cannot pin an MCP server to a computer. Update the server (or its container) and try again.'
+    'This Stem server is older than this copy of Stem and cannot pin an MCP server to a computer. Update the server (or its container) and try again.',
+  'mcp:setApps':
+    'This Stem server is older than this copy of Stem and cannot match MCP servers to apps. Update the server (or its container) and try again.',
+  'mcp:forApp':
+    'This Stem server is older than this copy of Stem and cannot match MCP servers to apps. Update the server (or its container) and try again.'
 };

@@ -3139,6 +3139,48 @@ body.platform-win32 .qc-card {
   font-size: var(--fs-10);
 }
 
+/* "Ask about this window": the captured window as a chip above the bar. */
+.qc-chips { display: flex; gap: var(--sp-4); padding: var(--sp-6) var(--sp-9) 0; }
+.qc-chip.mcp { flex: none; padding: var(--sp-2) var(--sp-5); background: color-mix(in srgb, var(--ink) 5%, transparent); color: var(--ok, var(--accent)); }
+.qc-chip.mcp strong { max-width: 140px; }
+.qc-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--sp-2);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  -webkit-app-region: no-drag;
+}
+.qc-chip.warn { background: none; border-color: var(--warn, var(--line)); }
+.qc-chip-thumb {
+  flex: none;
+  width: 52px;
+  height: 34px;
+  object-fit: cover;
+  object-position: top left;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid var(--hair);
+}
+.qc-chip-thumb.empty { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.qc-chip-text { display: grid; min-width: 0; line-height: 1.25; }
+.qc-chip-text strong { font-size: var(--fs-13); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.qc-chip-text small { font-size: var(--fs-11); color: var(--muted); }
+.qc-chip-btn {
+  flex: none;
+  font: inherit;
+  font-size: var(--fs-12);
+  padding: var(--sp-1) var(--sp-5);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+  color: var(--ink);
+  cursor: pointer;
+}
+
 /* Expanded conversation panel: the frosted card fills the window and stacks a
    draggable header over the reused ChatView. */
 .qc-panel {

@@ -61,7 +61,7 @@ describe('carrying an existing install across the split', () => {
     writeFileSync(settingsPath, JSON.stringify(PRE_SPLIT));
 
     expect(await readClientSettings()).toEqual({
-      quickChat: { shortcut: 'Alt+Space', showOnAllDisplays: false, followAcrossSpaces: false },
+      quickChat: { shortcut: 'Alt+Space', windowShortcut: null, showOnAllDisplays: false, followAcrossSpaces: false },
       releaseNotes: { showOnUpdate: false, lastSeenVersion: '0.2.0' },
       // Not in PRE_SPLIT: the updates and theme blocks postdate the split, so
       // they always start from their defaults rather than migrating from anywhere.
@@ -91,7 +91,7 @@ describe('carrying an existing install across the split', () => {
     // is owed of the release notes is a startup decision, not a defaulting rule
     // (see seedReleaseNotesMarker).
     expect(await readClientSettings()).toEqual({
-      quickChat: { shortcut: null, showOnAllDisplays: true, followAcrossSpaces: true },
+      quickChat: { shortcut: null, windowShortcut: null, showOnAllDisplays: true, followAcrossSpaces: true },
       releaseNotes: { showOnUpdate: true, lastSeenVersion: null },
       updates: { checkAutomatically: true },
       theme: { selected: 'system', appearance: 'system', chatLayout: 'rows', chatWidth: 'comfortable', translucent: false }
@@ -109,7 +109,7 @@ describe('carrying an existing install across the split', () => {
       })
     );
     expect(await readClientSettings()).toEqual({
-      quickChat: { shortcut: null, showOnAllDisplays: true, followAcrossSpaces: true },
+      quickChat: { shortcut: null, windowShortcut: null, showOnAllDisplays: true, followAcrossSpaces: true },
       releaseNotes: { showOnUpdate: true, lastSeenVersion: null },
       updates: { checkAutomatically: true },
       theme: { selected: 'system', appearance: 'system', chatLayout: 'rows', chatWidth: 'comfortable', translucent: false }
@@ -118,12 +118,13 @@ describe('carrying an existing install across the split', () => {
 });
 
 describe('splitting a Quick Chat patch', () => {
-  it('keeps only the three fields this machine owns', async () => {
+  it('keeps only the fields this machine owns', async () => {
     await updateClientQuickChat({ shortcut: 'Ctrl+Space', finishSound: true, defaultEffort: 'low' });
 
     const settings = storedClient().settings!;
     expect(settings.quickChat).toEqual({
       shortcut: 'Ctrl+Space',
+      windowShortcut: null,
       showOnAllDisplays: true,
       followAcrossSpaces: true
     });
@@ -136,6 +137,7 @@ describe('splitting a Quick Chat patch', () => {
     await updateClientQuickChat({ followAcrossSpaces: false });
     expect((await readClientSettings()).quickChat).toEqual({
       shortcut: 'Ctrl+Space',
+      windowShortcut: null,
       showOnAllDisplays: false,
       followAcrossSpaces: false
     });
@@ -145,6 +147,16 @@ describe('splitting a Quick Chat patch', () => {
     await updateClientQuickChat({ shortcut: 'Ctrl+Space' });
     await updateClientQuickChat({ shortcut: null });
     expect((await readClientSettings()).quickChat.shortcut).toBeNull();
+  });
+
+  it('keeps the "Ask about this window" shortcut on this machine, apart from the summon key', async () => {
+    await updateClientQuickChat({ shortcut: 'Alt+Space' });
+    await updateClientQuickChat({ windowShortcut: 'Control+Alt+Space' });
+    const qc = (await readClientSettings()).quickChat;
+    expect(qc.shortcut).toBe('Alt+Space');
+    expect(qc.windowShortcut).toBe('Control+Alt+Space');
+    await updateClientQuickChat({ windowShortcut: null });
+    expect((await readClientSettings()).quickChat.windowShortcut).toBeNull();
   });
 });
 

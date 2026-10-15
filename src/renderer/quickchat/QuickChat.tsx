@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, SquarePen, PanelRight, Globe, NotebookPen, Check, Zap } from 'lucide-react';
-import type { ModelSummary, QuickChatSettings, TurnAttachment } from '../../shared/types';
+import { Sparkles, SquarePen, PanelRight, Globe, NotebookPen, Check, Zap, X, Plug } from 'lucide-react';
+import type { ModelSummary, QuickChatSettings, QuickChatWindow, TurnAttachment } from '../../shared/types';
 import { ChatView } from '../chat/ChatView';
 import { EffortModelControl } from '../ui/EffortModelControl';
 import { McpApprovalCard } from '../manage/McpApprovalCard';
@@ -64,6 +64,24 @@ export function QuickChat() {
   const otherApprovals = approvalsElsewhere(pendingApprovals, threadId);
 
   const [input, setInput] = useState('');
+  // "Ask about this window": the window the user summoned from, shown as a chip
+  // until it goes out with the first prompt or the user removes it.
+  const [windowChip, setWindowChip] = useState<QuickChatWindow | null>(null);
+  // The MCP servers that cover the chip's app (Manage → MCP → Works with apps).
+  const [windowServers, setWindowServers] = useState<string[]>([]);
+  useEffect(() => {
+    setWindowServers([]);
+    if (!windowChip) return;
+    let live = true;
+    // quiet: an older server cannot match; the chip then just shows no server.
+    window.stem
+      .mcpServersForApp(windowChip.app, windowChip.bundleId)
+      .then((names) => live && setWindowServers(names))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [windowChip]);
   const inputRef = useRef<HTMLInputElement>(null);
   // `/note` / `//` quick-note capture in the compact bar (the expanded panel gets
   // its own instance inside ChatView).
@@ -176,6 +194,7 @@ export function QuickChat() {
     setThreadId(null);
     updateChatState(EMPTY_STATE);
     setInput('');
+    setWindowChip(null);
     exitNoteMode();
     if (models.length) window.stem.getSettings().then((s) => applyDefaults(s.quickChat, models));
   }, [core, models, applyDefaults, updateChatState, exitNoteMode]);
@@ -183,8 +202,9 @@ export function QuickChat() {
   // Each summon: `reset` => start a fresh thread; otherwise keep showing the
   // existing session (the answer the user re-summoned to read). Always refocus.
   useEffect(() => {
-    return window.stem.onQuickChatFocus(({ reset }) => {
+    return window.stem.onQuickChatFocus(({ reset, window: summonedFor }) => {
       if (reset) resetSession();
+      if (summonedFor) setWindowChip(summonedFor);
       // The overlay window is only hidden between summons, so a Quick Chat web
       // search change made over in Settings has to be picked up here — the usual
       // `focus` event doesn't fire on show.
@@ -267,7 +287,7 @@ export function QuickChat() {
   }, []);
 
   const onSend = useCallback(
-    async (text: string, attachments: TurnAttachment[] = []) => {
+    async (text: string, attachments: TurnAttachment[] = [], windowId?: number) => {
       await sendTurn(core, {
         key: QC_KEY,
         text,
@@ -283,7 +303,8 @@ export function QuickChat() {
             serviceTier,
             format,
             threadId: threadId ?? undefined,
-            attachments: input.attachments.length ? input.attachments : undefined
+            attachments: input.attachments.length ? input.attachments : undefined,
+            windowId
           }),
         onStarted: (result, { pending, alreadySettled, userMsgId }) => {
           // New Thread / handoff may have reset this session while start was still
@@ -404,14 +425,18 @@ export function QuickChat() {
     [threadId, modelId, effort, serviceTier, resetSession, pushSystem]
   );
 
-  // The panel emptied while on screen (New thread, deleted thread): shrink the
-  // window back to the compact bar. Only on the >0 → 0 edge — sending from the
-  // bar hides the overlay, so the opposite edge never happens on screen.
+  // The panel emptied while on screen (New thread, deleted thread, or the
+  // window shortcut starting a fresh session): shrink the window back to the
+  // compact bar. Only on the >0 → 0 edge — sending from the bar hides the
+  // overlay, so the opposite edge never happens on screen. The bar keeps room
+  // for a window chip, or the chip pushes the model row out of sight.
   const hadMessagesRef = useRef(messages.length > 0);
   useEffect(() => {
     const has = messages.length > 0;
-    if (hadMessagesRef.current && !has) void window.stem.compactQuickChat();
+    if (hadMessagesRef.current && !has) void window.stem.compactQuickChat(!!windowChip);
     hadMessagesRef.current = has;
+    // windowChip is read, not watched: removing the chip must not shrink the bar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length]);
 
   async function newThread() {
@@ -480,7 +505,18 @@ export function QuickChat() {
       return;
     }
     setInput('');
-    onSend(text, []);
+    const chip = windowChip;
+    setWindowChip(null);
+    if (!chip) {
+      onSend(text, []);
+      return;
+    }
+    // The picture goes as an ordinary image attachment (so the chat shows what
+    // was asked about); main adds the window's text by its id.
+    const picture: TurnAttachment[] = chip.imageBase64
+      ? [{ name: `${chip.app} window.jpg`, dataBase64: chip.imageBase64, mime: 'image/jpeg' }]
+      : [];
+    onSend(text, picture, chip.windowId);
   }
 
   const fastTier = selectedModel?.serviceTiers.find((t) => t.id === 'priority');
@@ -583,13 +619,14 @@ export function QuickChat() {
   return (
     <div className="qc-root">
       <div className="qc-card">
+        {windowChip && <WindowChip chip={windowChip} servers={windowServers} onRemove={() => setWindowChip(null)} />}
         <div className="qc-row">
           {noteMode ? <NotebookPen className="qc-mark" size={22} /> : <Sparkles className="qc-mark" size={22} />}
           <input
             ref={inputRef}
             className="qc-input"
             value={input}
-            placeholder={noteMode ? 'Save a note to memory…' : 'Ask Stem anything…'}
+            placeholder={noteMode ? 'Save a note to memory…' : windowChip ? `Ask about this ${windowChip.app} window…` : 'Ask Stem anything…'}
             onChange={(e) => {
               const value = e.target.value;
               const trigger = noteMode ? null : detectNoteTrigger(value);
@@ -673,6 +710,55 @@ export function QuickChat() {
         />
       )}
       <MissedApprovalDialog />
+    </div>
+  );
+}
+
+/**
+ * The window "Ask about this window" captured: a thumbnail, which window it is,
+ * and what goes with the question. A missing grant says which and opens its
+ * System Settings pane; the question can still be sent without it.
+ */
+function WindowChip({ chip, servers, onRemove }: { chip: QuickChatWindow; servers: string[]; onRemove(): void }) {
+  const noScreen = chip.missing.includes('screen');
+  const noText = chip.missing.includes('accessibility');
+  const name = chip.title && chip.title !== chip.app ? `${chip.app} — ${chip.title}` : chip.app;
+  const what = noScreen
+    ? 'Turn on Screen Recording to attach a picture of this window'
+    : noText
+      ? 'Picture attached. Turn on Accessibility to add its text'
+      : 'Picture and text attached';
+  const grant: 'screen' | 'accessibility' | null = noScreen ? 'screen' : noText ? 'accessibility' : null;
+  return (
+    <div className="qc-chips">
+      <div className={`qc-chip${grant ? ' warn' : ''}`}>
+        {chip.imageBase64 ? (
+          <img className="qc-chip-thumb" src={`data:image/jpeg;base64,${chip.imageBase64}`} alt="" />
+        ) : (
+          <span className="qc-chip-thumb empty" />
+        )}
+        <span className="qc-chip-text">
+          <strong title={name}>{name}</strong>
+          <small>{what}</small>
+        </span>
+        {grant && (
+          <button type="button" className="qc-chip-btn" onClick={() => void window.stem.openQuickChatPrivacy(grant)}>
+            Open Settings
+          </button>
+        )}
+        <button type="button" className="qc-act" title="Don't attach this window" aria-label="Remove window" onClick={onRemove}>
+          <X size={14} />
+        </button>
+      </div>
+      {servers.length > 0 && (
+        <div className="qc-chip mcp" title={`Stem will use ${servers.join(' or ')} to read and act in ${chip.app}`}>
+          <Plug size={13} />
+          <span className="qc-chip-text">
+            <strong>{servers.join(', ')}</strong>
+            <small>MCP server for {chip.app}</small>
+          </span>
+        </div>
+      )}
     </div>
   );
 }

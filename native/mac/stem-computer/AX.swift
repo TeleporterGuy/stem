@@ -92,7 +92,7 @@ final class AX {
 
   /// The AX window for our CGWindowID, giving an app that is still building
   /// its tree a moment (200 ms per try) before giving up.
-  private func lookUpWindow(tries: Int) -> AXUIElement? {
+  func lookUpWindow(tries: Int) -> AXUIElement? {
     for attempt in 0..<tries {
       if attempt > 0 { usleep(200_000) }
       var note = ""

@@ -311,6 +311,29 @@ while let line = readLine(strippingNewline: true) {
       guard let ax = windowAX() else { throw HelperError("set_value acts on a snapshot id; select_window and snapshot first.") }
       try ax.setValue(id: Int(number(obj["element"]) ?? -1), text: obj["text"] as? String ?? "")
       answerWithScreenshot(id)
+    case "peek-window":
+      // "Ask about this window" (WindowPeek.swift): which window, and one picture of it.
+      let access = Status.check()
+      guard let w = WindowPeek.frontWindow() else {
+        emit(["id": id, "ok": true, "window": NSNull(), "access": access])
+        break
+      }
+      var reply: [String: Any] = ["id": id, "ok": true, "window": WindowPeek.describe(w), "access": access]
+      if access["screen"] as? Bool == true {
+        do { reply["screenshot"] = try WindowPeek.picture(w) } catch { reply["text"] = "\(error)" }
+      }
+      emit(reply)
+    case "peek-text":
+      guard Status.check()["accessibility"] as? Bool == true else {
+        emit(["id": id, "ok": true, "text": NSNull()])
+        break
+      }
+      let windowId = CGWindowID(Int(number(obj["windowId"]) ?? 0))
+      let maxChars = Int(number(obj["maxChars"]) ?? 20_000)
+      emit(["id": id, "ok": true, "text": WindowPeek.text(windowId: windowId, maxChars: maxChars) ?? NSNull()])
+    case "window-bounds":
+      let windowId = CGWindowID(Int(number(obj["windowId"]) ?? 0))
+      emit(["id": id, "ok": true, "bounds": WindowPeek.bounds(windowId: windowId) ?? NSNull()])
     case "watch":
       let on = obj["on"] as? Bool ?? true
       if on {
