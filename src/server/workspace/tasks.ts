@@ -113,7 +113,8 @@ function coerce(raw: unknown): ScheduledTask | null {
       ? { lastStatus: r.lastStatus }
       : {}),
     ...(typeof r.lastError === 'string' && r.lastError ? { lastError: clipError(r.lastError) } : {}),
-    ...(Array.isArray(r.recentRuns) ? { recentRuns: coerceRuns(r.recentRuns) } : {})
+    ...(Array.isArray(r.recentRuns) ? { recentRuns: coerceRuns(r.recentRuns) } : {}),
+    ...(str(r.mailConversationId) ? { mailConversationId: str(r.mailConversationId) } : {})
   };
 }
 

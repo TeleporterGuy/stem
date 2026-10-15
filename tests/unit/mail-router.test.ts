@@ -795,6 +795,26 @@ describe('mail router', () => {
     expect(items.map((i) => i.subject)).toEqual(['Lab A ships model 1', undefined, 'Lab B narrows model 2 to Friday']);
   });
 
+  it('deliverTaskMail replies in the conversation a task was scheduled from, keeping its subject', async () => {
+    const fake = fakeBackend();
+    const router = new MailRouter({ runtime: fake.backend, onChange: () => undefined });
+    const origin = await createConversation('AlphaRatio import', ['secretary']);
+    await appendMailItem({ conversationId: origin.id, from: 'user', to: ['secretary'], body: 'Download the first 50' });
+    // Two one-off follow-up checks, each its own task, both bound to the thread.
+    await router.deliverTaskMail({ subject: 'Check', headline: 'Two more imported', body: '5 books', taskId: 'check-1', conversationId: origin.id });
+    await router.deliverTaskMail({ subject: 'Check', headline: 'Downloads progressing', body: '33 of 50', taskId: 'check-2', conversationId: origin.id });
+    const { conversations, items } = await readMail();
+    expect(conversations).toHaveLength(1);
+    expect(conversations[0].subject).toBe('AlphaRatio import');
+    expect(items.filter((i) => i.taskId).map((i) => [i.conversationId, i.subject])).toEqual([
+      [origin.id, 'Two more imported'],
+      [origin.id, 'Downloads progressing']
+    ]);
+    // A bound conversation that is gone falls back to the task's own thread.
+    await router.deliverTaskMail({ subject: 'Orphan', body: 'x', taskId: 'check-3', conversationId: 'deleted' });
+    expect((await readMail()).conversations).toHaveLength(2);
+  });
+
   it('attachTaskResult puts the run’s reply on the notification it sent', async () => {
     const fake = fakeBackend();
     let changes = 0;

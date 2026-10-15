@@ -1145,6 +1145,16 @@ export interface ScheduledTask {
    * quiet run leaves; `threadId` is set only for a run whose thread was kept.
    */
   recentRuns?: TaskRunRecord[];
+  /**
+   * The mail conversation this task reports into, when it was scheduled from
+   * mail: a persona's session in that conversation, or a scheduled run that
+   * itself reported there (a follow-up check scheduled by an earlier check).
+   * Its notify_user mails land in that thread as replies, so a chain of
+   * "check again in 15 minutes" tasks reads as one conversation in the Inbox
+   * rather than a new mail per check. Absent = the task's own conversation,
+   * opened by its first mail.
+   */
+  mailConversationId?: string;
 }
 
 /** One firing of a scheduled task, as the Tasks tab's Runs list shows it. */

@@ -339,7 +339,8 @@ export class TaskScheduler {
    */
   async create(
     req: ScheduleTaskRequest,
-    threadId: string
+    threadId: string,
+    opts: { mailConversationId?: string } = {}
   ): Promise<{ ok: true; task: ScheduledTask } | { ok: false; error: string }> {
     const valid = await this.validate(req);
     if (!valid.ok) return valid;
@@ -358,7 +359,8 @@ export class TaskScheduler {
       createdAt: now.toISOString(),
       title: titleFromPrompt(prompt),
       nextRunAt: null,
-      runsAs: personaId ? { kind: 'persona', personaId } : { kind: 'default' }
+      runsAs: personaId ? { kind: 'persona', personaId } : { kind: 'default' },
+      ...(opts.mailConversationId ? { mailConversationId: opts.mailConversationId } : {})
     };
     task.nextRunAt = this.computeNextRunAt(task, now);
     this.tasks.push(task);

@@ -778,11 +778,24 @@ export async function taskRunThreadIds(taskId: string): Promise<string[]> {
  * task reports each finding once. The user's own mails in the conversation are
  * not the task's reports and stay out.
  */
-export async function taskMailHistory(taskId: string, limit: number): Promise<ScheduledRunReport[]> {
+export async function taskMailHistory(
+  taskId: string,
+  limit: number,
+  /**
+   * The thread the task reports into, when it was scheduled from mail: earlier
+   * tasks' reports there count too, so the next check in a chain of one-off
+   * follow-ups knows what the previous checks already said.
+   */
+  conversationId?: string
+): Promise<ScheduledRunReport[]> {
   const { conversations, items } = await readMail();
   const subjectOf = new Map(conversations.map((c) => [c.id, c.subject]));
   return items
-    .filter((i) => i.taskId === taskId && i.from !== 'user')
+    .filter(
+      (i) =>
+        i.from !== 'user' &&
+        (i.taskId === taskId || (!!conversationId && !!i.taskId && i.conversationId === conversationId))
+    )
     .sort((a, b) => b.at - a.at)
     .slice(0, limit)
     .map((i) => ({
@@ -791,6 +804,20 @@ export async function taskMailHistory(taskId: string, limit: number): Promise<Sc
       body: i.body,
       ...(i.result ? { reply: i.result } : {})
     }));
+}
+
+/**
+ * The mail conversation a schedule_task call should report into: the one whose
+ * persona session `threadId` is, the one a scheduled run in `threadId` already
+ * mailed, or — for a run that has not mailed yet — wherever its task's earlier
+ * firings went (`taskId`). Null for a plain chat.
+ */
+export async function mailConversationFor(threadId: string, taskId?: string): Promise<string | null> {
+  const { conversations, items } = await readMail();
+  const bySession = conversations.find((c) => Object.values(c.sessions).includes(threadId));
+  if (bySession) return bySession.id;
+  const byRun = items.find((i) => i.runThreadId === threadId) ?? (taskId ? items.find((i) => i.taskId === taskId) : undefined);
+  return byRun && conversations.some((c) => c.id === byRun.conversationId) ? byRun.conversationId : null;
 }
 
 /** Delete a conversation + its items + triage state. Returns the orphaned thread ids. */

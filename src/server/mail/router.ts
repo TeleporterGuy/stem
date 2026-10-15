@@ -854,19 +854,31 @@ export class MailRouter {
     images?: GeneratedImageRef[];
     /** A parked run: the item carries its Allow/Deny, answered by resolveApproval. */
     park?: ParkRequest;
+    /**
+     * The conversation the task was scheduled from (ScheduledTask.mailConversationId):
+     * its mail is a reply there instead of a thread of its own.
+     */
+    conversationId?: string;
   }): Promise<string> {
     // One conversation per task, found by the task id on its items; created on
     // the first notify. Keeps every firing of a watch task in one thread of mail.
+    // A task scheduled from mail replies in that conversation instead, so a
+    // chain of follow-up checks is one Inbox row, not a mail per check.
     const { conversations, items } = await readMail();
     const existing = items.find((i) => i.taskId === input.taskId);
     const conversation = existing
       ? conversations.find((c) => c.id === existing.conversationId)
-      : undefined;
+      : input.conversationId
+        ? conversations.find((c) => c.id === input.conversationId)
+        : undefined;
     const from = input.personaId ?? `task:${input.taskId}`;
     const headline = input.headline ? cleanMailSubject(input.headline) : '';
     const target =
       conversation ?? (await createConversation(input.subject, [input.personaId ?? 'normal'], input.body));
-    if (conversation && headline && headline !== conversation.subject) {
+    // Retitled only when the thread is the task's own: a conversation the user
+    // started keeps the subject it was given.
+    const tasksOwn = !!conversation && items.every((i) => i.conversationId !== conversation.id || !!i.taskId);
+    if (conversation && tasksOwn && headline && headline !== conversation.subject) {
       await setConversationSubject(conversation.id, headline);
     }
     const delivered = await appendMailItem({

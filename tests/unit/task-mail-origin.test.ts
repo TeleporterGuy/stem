@@ -15,7 +15,7 @@ process.env.STEM_TASKS_STORE = STORE;
 import type { ChatBackend } from '../../src/server/backend';
 import type { TaskBridge } from '../../src/server/backend/types';
 import { initTaskScheduler } from '../../src/server/startup/scheduler';
-import { createConversation, setConversationSession } from '../../src/server/workspace/mail';
+import { createConversation, mailConversationFor, setConversationSession } from '../../src/server/workspace/mail';
 import { mailStorePath } from '../../src/server/workspace/paths';
 import { readTasks } from '../../src/server/workspace/tasks';
 
@@ -51,7 +51,10 @@ class FakeRuntime extends EventEmitter {
 
 function wire(
   runtime: FakeRuntime,
-  opts: { taskRunThreadIds?: (taskId: string) => Promise<string[]>; deliverTaskMail?: () => Promise<string | void> } = {}
+  opts: {
+    taskRunThreadIds?: (taskId: string) => Promise<string[]>;
+    deliverTaskMail?: (input: { taskId: string; conversationId?: string }) => Promise<string | void>;
+  } = {}
 ) {
   return initTaskScheduler({
     runtime: runtime as unknown as ChatBackend,
@@ -60,6 +63,7 @@ function wire(
     revealMainWindow: () => {},
     requestAttention: () => {},
     deliverTaskMail: opts.deliverTaskMail ?? (async () => {}),
+    mailConversationFor,
     ...(opts.taskRunThreadIds ? { taskRunThreadIds: opts.taskRunThreadIds } : {})
   });
 }
@@ -91,6 +95,40 @@ describe('schedule_task through the bridge', () => {
     expect(runtime.created).toEqual([]);
     expect((await runtime.bridge!.listForThread('secretary-session')).map((t) => t.id)).toEqual([res.task.id]);
     expect((await readTasks())[0].threadId).toBe('secretary-session');
+    scheduler.stop();
+  });
+
+  it('from mail: reports reply in that conversation, and a follow-up a run schedules stays there too', async () => {
+    const conversation = await createConversation('Import the audiobooks', ['secretary']);
+    await setConversationSession(conversation.id, 'secretary', 'secretary-session');
+    const delivered: { taskId: string; conversationId?: string }[] = [];
+    const runtime = new FakeRuntime();
+    const scheduler = wire(runtime, {
+      deliverTaskMail: async (input) => {
+        delivered.push({ taskId: input.taskId, conversationId: input.conversationId });
+        return input.conversationId ?? 'own-thread';
+      }
+    });
+    const first = await runtime.bridge!.schedule({ prompt: 'check the downloads', at: new Date(Date.now() + 900_000).toISOString() }, 'secretary-session');
+    if (!first.ok) throw new Error(first.error);
+    expect(first.task.mailConversationId).toBe(conversation.id);
+
+    // The check reports, then schedules the next check from its own run thread.
+    let followUp: string | undefined;
+    runtime.duringTurn = async (threadId) => {
+      await runtime.bridge!.notify({ title: 'Progress', message: '33 of 50' }, threadId);
+      const next = await runtime.bridge!.schedule({ prompt: 'check again', at: new Date(Date.now() + 900_000).toISOString() }, threadId);
+      if (next.ok) followUp = next.task.id;
+    };
+    scheduler.runNow(first.task.id);
+    await settled(runtime);
+    const next = (await readTasks()).find((t) => t.id === followUp);
+    expect(next?.mailConversationId).toBe(conversation.id);
+    expect(delivered).toEqual([{ taskId: first.task.id, conversationId: conversation.id }]);
+
+    // A task scheduled from a plain chat is bound to no mail.
+    const chat = await runtime.bridge!.schedule({ prompt: 'watch', cron: '0 8 * * *' }, 'plain-chat');
+    expect(chat.ok && chat.task.mailConversationId).toBeUndefined();
     scheduler.stop();
   });
 
