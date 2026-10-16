@@ -475,9 +475,10 @@ Where the first build is stricter or narrower than the design above:
 - **Text only.** Attachments to and from other Stems aren't sent yet.
 - **One counterpart per conversation.** An external conversation is with
   exactly one address; personas join it only to draft.
-- **Global relay keys** are learned from its `/.well-known` on first use and
-  pinned until they ship in the build (`STEM_GLOBAL_RELAY_URL`,
-  `STEM_GLOBAL_RELAY_KEYS`).
+- **Global relay keys** ship in the build for `relay.stem.awantech.sk`
+  (`GLOBAL_RELAY_KEYS` in `relay-client.ts`). A relay named by
+  `STEM_GLOBAL_RELAY_URL` brings its keys in `STEM_GLOBAL_RELAY_KEYS` or is
+  learned from its `/.well-known` on first use and pinned.
 
 ## Phases
 

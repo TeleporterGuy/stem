@@ -1,0 +1,15 @@
+
+# Stem global relay (~/services/stem-relay, container stem-relay).
+relay.stem.awantech.sk {
+	import security_headers
+	import cloudflare_dns
+	# GET /v1/stream is SSE — never buffer it.
+	reverse_proxy stem-relay:8080 {
+		flush_interval -1
+		stream_close_delay 5m
+	}
+	log {
+		output stdout
+		format console
+	}
+}

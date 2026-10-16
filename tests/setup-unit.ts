@@ -27,6 +27,8 @@ const chatCacheDb = join(tmpdir(), `stem-chat-cache-${process.pid}.sqlite`);
 const chatPinsDb = join(tmpdir(), `stem-chat-pins-${process.pid}.sqlite`);
 const stateDir = join(tmpdir(), `stem-state-${process.pid}`);
 
+// No test reaches the real relay's push gateway; push.test.ts turns it on with a fake.
+process.env.STEM_PUSH_GATEWAY = 'off';
 process.env.STEM_RECALL_DB = recallDb;
 process.env.STEM_FILES_DIR = filesDir;
 process.env.STEM_CHAT_SEARCH_DB = chatSearchDb;

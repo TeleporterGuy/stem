@@ -41,6 +41,7 @@ var migrations = []string{
 	 CREATE TABLE invite_banned (from_addr TEXT PRIMARY KEY, at INTEGER NOT NULL);
 	 CREATE TABLE mail_events (tag TEXT NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL);
 	 CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);`,
+	`CREATE TABLE push_tokens (token TEXT PRIMARY KEY, fp TEXT NOT NULL, used INTEGER NOT NULL);`,
 }
 
 func Open(path string) (*Store, error) {
@@ -210,6 +211,7 @@ func (s *Store) Sweep(holdDays int) error {
 		{`DELETE FROM pending WHERE created <= ?`, []any{t - 86400000}},
 		{`DELETE FROM counters WHERE expires <= ?`, []any{t}},
 		{`DELETE FROM unsub_tokens WHERE at <= ?`, []any{t - 400*86400000}},
+		{`DELETE FROM push_tokens WHERE used <= ?`, []any{t - 90*86400000}},
 	}
 	for _, st := range stmts {
 		if _, err := s.db.Exec(st.q, st.args...); err != nil {
@@ -217,4 +219,25 @@ func (s *Store) Sweep(holdDays int) error {
 		}
 	}
 	return nil
+}
+
+// ---- push tokens ----
+
+// ClaimPushToken binds token to fp on first use and reports whether fp owns
+// it. Another fp takes it over only once the owner has been idle for rebind.
+func (s *Store) ClaimPushToken(token, fp string, rebind time.Duration) (bool, error) {
+	t := now()
+	res, err := s.db.Exec(`INSERT INTO push_tokens (token, fp, used) VALUES (?, ?, ?)
+		ON CONFLICT (token) DO UPDATE SET fp = excluded.fp, used = excluded.used
+		WHERE push_tokens.fp = excluded.fp OR push_tokens.used <= ?`, token, fp, t, t-rebind.Milliseconds())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (s *Store) DropPushToken(token string) error {
+	_, err := s.db.Exec(`DELETE FROM push_tokens WHERE token = ?`, token)
+	return err
 }

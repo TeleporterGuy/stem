@@ -1,0 +1,22 @@
+# Stem global relay (relay.stem.awantech.sk), deployed at root@167.233.132.66
+# in /root/services/stem-relay. Source in ./src (git archive of
+# stem/desktop relay/). Caddy (/root/services/caddy) proxies to stem-relay:8080
+# on the external `edge` network; no published port.
+#   docker compose build && docker compose up -d
+services:
+  stem-relay:
+    build: ./src
+    image: stem-relay:local
+    container_name: stem-relay
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+      # The Awantech team .p8 for the push gateway, owned by 65532, 0400.
+      - ./secrets/apns.p8:/secrets/apns.p8:ro
+    networks:
+      - edge
+
+networks:
+  edge:
+    name: edge
+    external: true

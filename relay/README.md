@@ -35,6 +35,22 @@ verification mail. Point the provider's bounce and complaint webhooks at
 `POST /v1/hooks/mail-event` (header `X-Stem-Webhook-Secret`, body
 `{"tag":"<X-Stem-Tag header of the mail>","kind":"bounce"|"complaint"}`).
 
+## Push gateway (global relay)
+
+Stems that don't hold the iOS app's APNs key wake their phones through the
+relay. Put the team's `.p8` beside the relay, readable by uid 65532, and add:
+
+```toml
+[push]
+enabled = true
+key_path = "/secrets/apns.p8"
+key_id = "ND4436FVW9"
+team_id = "AX23G9CAL9"
+bundle_id = "sk.awantech.stem"
+```
+
+`/v1/info` then lists `push`. Protocol: `PROTOCOL.md`, "Push gateway".
+
 ## Tuning
 
 Every limit is in `[limits]` and `[invites]` in `relay.toml`. Edit and

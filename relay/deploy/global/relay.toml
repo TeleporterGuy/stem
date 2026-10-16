@@ -1,0 +1,23 @@
+url = "https://relay.stem.awantech.sk"
+global = true
+data_dir = "/data"
+listen = ":8080"
+trust_proxy = true
+
+[mail]
+# "log" until a transactional sender is set up: verification codes go to
+# `docker logs stem-relay`.
+driver = "log"
+verify_from = "Stem <codes@relay.stem.awantech.sk>"
+invite_from = "Stem <invites@invites.relay.stem.awantech.sk>"
+
+[invites]
+enabled = false
+
+# APNs gateway for every Stem without the app's key (relay/README.md).
+[push]
+enabled = true
+key_path = "/secrets/apns.p8"
+key_id = "ND4436FVW9"
+team_id = "AX23G9CAL9"
+bundle_id = "sk.awantech.stem"

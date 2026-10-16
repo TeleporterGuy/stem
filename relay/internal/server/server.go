@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -45,6 +46,9 @@ type Server struct {
 	mailSlots chan struct{}
 	ipSlots   counted
 	streams   counted
+
+	// Pusher is set when [push] is enabled; nil answers push_disabled.
+	Pusher Pusher
 }
 
 func New(cfg *config.Config, st *store.Store, m mailer.Mailer, res *authority.Resolver) (*Server, error) {
@@ -211,6 +215,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/unsubscribe", s.wrap(0, s.unsubscribePage))
 	mux.HandleFunc("POST /v1/unsubscribe", s.wrap(small, s.unsubscribe))
 	mux.HandleFunc("POST /v1/hooks/mail-event", s.wrap(small, s.mailEvent))
+	mux.HandleFunc("POST /v1/push", s.wrap(small, s.push))
 	return mux
 }
 
@@ -223,7 +228,7 @@ func (s *Server) Handler() http.Handler {
 // their slot back quickly.
 func (s *Server) limited(slots chan struct{}, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := s.clientIP(r)
+		ip := ipBucket(s.clientIP(r))
 		if !s.ipSlots.take(ip, perIPMail) {
 			writeJSON(w, 429, map[string]string{"error": "rate_limited"})
 			return
@@ -273,10 +278,26 @@ func (c *counted) give(k string) {
 	}
 }
 
+// ipBucket is what per-IP limits count: the address itself for IPv4, its
+// /64 for IPv6, since one client holds a whole /64 and can rotate through it.
+func ipBucket(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil || a.Unmap().Is4() {
+		return ip
+	}
+	p, _ := a.Prefix(64)
+	return p.String()
+}
+
 func (s *Server) clientIP(r *http.Request) string {
 	if s.cfg.TrustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			return strings.TrimSpace(strings.Split(xff, ",")[0])
+		// The rightmost entry is the one our own proxy appended; anything
+		// left of it came from the client and could be forged.
+		if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
+			parts := strings.Split(xff[len(xff)-1], ",")
+			if ip := strings.TrimSpace(parts[len(parts)-1]); ip != "" {
+				return ip
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -384,6 +405,9 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request, _ []byte) error {
 	if s.cfg.Invite.Enabled {
 		features = append(features, "invites")
 	}
+	if s.Pusher != nil {
+		features = append(features, "push")
+	}
 	l := s.cfg.Limits
 	writeJSON(w, 200, map[string]any{"v": 1, "version": Version, "features": features, "limits": map[string]any{
 		"maxMailBytes": l.MaxMailBytes, "powBits": l.PowBits, "holdDays": l.HoldDays,
@@ -448,7 +472,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request, body []byte) e
 	for _, c := range []struct {
 		k string
 		n int
-	}{{"code:addr:" + addr, l.CodesPerAddressDay}, {"code:key:" + fp, l.CodesPerKeyDay}, {"code:ip:" + s.clientIP(r), l.CodesPerIPDay}} {
+	}{{"code:addr:" + addr, l.CodesPerAddressDay}, {"code:key:" + fp, l.CodesPerKeyDay}, {"code:ip:" + ipBucket(s.clientIP(r)), l.CodesPerIPDay}} {
 		if ok, err := s.hit(c.k, day, c.n); err != nil {
 			return err
 		} else if !ok {

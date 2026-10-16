@@ -42,10 +42,17 @@ export function acceptableRelayUrl(url: string): boolean {
 /** Whether this Stem may trust the global relay's /.well-known on first use (no shipped keys). */
 export const globalTofuAllowed = (): boolean => !!process.env.STEM_GLOBAL_RELAY_URL;
 
+const GLOBAL_RELAY_URL = 'https://relay.stem.awantech.sk';
+/** The global relay's signing keys, shipped so a first fetch is never trusted. Rotation: relay/README.md. */
+const GLOBAL_RELAY_KEYS = 'k1:f4E6lZT6fc1cwMnjQi15Kvgd/srN+BM+0wmkhO+7d04=';
+
 export function globalRelay(): { url: string; keys: Record<string, string> } {
-  const url = (process.env.STEM_GLOBAL_RELAY_URL ?? 'https://relay.stem.awantech.sk').replace(/\/+$/, '');
+  const override = process.env.STEM_GLOBAL_RELAY_URL;
+  const url = (override ?? GLOBAL_RELAY_URL).replace(/\/+$/, '');
+  // Shipped keys belong to the shipped URL; a relay named by env brings its own or is learned on first use.
+  const shipped = override ? '' : GLOBAL_RELAY_KEYS;
   const keys: Record<string, string> = {};
-  for (const entry of (process.env.STEM_GLOBAL_RELAY_KEYS ?? '').split(',').filter(Boolean)) {
+  for (const entry of (process.env.STEM_GLOBAL_RELAY_KEYS ?? shipped).split(',').filter(Boolean)) {
     const [kid, pub] = entry.split(':');
     if (kid && pub) keys[kid] = pub;
   }

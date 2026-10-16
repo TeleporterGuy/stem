@@ -139,7 +139,7 @@ version, and a Stem shows "needs a newer Stem" for one it doesn't know.
 
 All under the relay URL. `S` = signed request by a key registered on this
 relay (own-account calls). `SC` = signed request with `Stem-Cert`, from any
-relay. Errors are
+relay. `K` = signed request by any key, registered or not. Errors are
 `{"error":"<code>"}` with a 4xx/5xx status.
 
 | Method & path | Auth | Body → response |
@@ -163,6 +163,7 @@ relay. Errors are
 | `POST /v1/revoke` | S | `{}` → `{}`; this key stops being certified |
 | `GET /v1/unsubscribe?t=` | — | email link; → confirmation page only |
 | `POST /v1/unsubscribe` | — | form `t=` → adds the address to the suppression list |
+| `POST /v1/push` | K | `{token, env, wake}` → `{result:"sent"\|"gone"}`; `409 token_bound`, `502 apns_failed` |
 
 ### Register and verify
 
@@ -214,6 +215,22 @@ an invite naming only the requester's certified address. The answer is always
 
 Email links never act on GET: mail scanners and link previews open every
 link they see, so a GET only shows a page with a button that POSTs.
+
+### Push gateway
+
+Only relays with `[push]` configured (feature `push`). A Stem without the
+app's APNs key sends `token` (the device's hex APNs token), `env`
+(`production`, the default, or `sandbox`) and `wake`: `{kind, approvalKind?,
+conversationId?, threadId?, approvalId?, taskId?, failed?}`. `kind` is
+`approval`, `turn`, `task` or `mail`, and ids match `[A-Za-z0-9_.:-]{1,128}`.
+Anything else is `400 bad_wake`.
+
+The relay writes the alert itself from fixed wording per kind and ignores
+any other field, so a Stem can't choose what a lock screen says. A token
+belongs to the first key that pushes to it. Another key gets `409
+token_bound` until the owner has been idle `rebind_days`, or until Apple
+reports the token gone (`{result:"gone"}`; the Stem drops it). Limits per
+hour, per client IP, per key, per token and in all are in `[push]`.
 
 ## Features
 

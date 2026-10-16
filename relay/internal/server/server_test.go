@@ -589,3 +589,32 @@ func TestStreamFollowsTheKeyNotTheAddress(t *testing.T) {
 		t.Fatalf("new key held %d", n)
 	}
 }
+
+func TestClientIPIgnoresForgedForwardedFor(t *testing.T) {
+	s := &Server{cfg: &config.Config{TrustProxy: true}}
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "172.18.0.2:5000"
+	r.Header.Set("X-Forwarded-For", "9.9.9.9, 203.0.113.7")
+	if got := s.clientIP(r); got != "203.0.113.7" {
+		t.Fatalf("clientIP = %q, want the proxy-appended 203.0.113.7", got)
+	}
+	s.cfg.TrustProxy = false
+	if got := s.clientIP(r); got != "172.18.0.2" {
+		t.Fatalf("clientIP without trust_proxy = %q", got)
+	}
+}
+
+func TestIPBucketGroupsIPv6By64(t *testing.T) {
+	if a, b := ipBucket("2001:db8:1:2::1"), ipBucket("2001:db8:1:2:ffff::9"); a != b || a != "2001:db8:1:2::/64" {
+		t.Fatalf("same /64 split: %q %q", a, b)
+	}
+	if ipBucket("2001:db8:1:3::1") == ipBucket("2001:db8:1:2::1") {
+		t.Fatal("different /64s merged")
+	}
+	if got := ipBucket("203.0.113.7"); got != "203.0.113.7" {
+		t.Fatalf("ipv4 bucket %q", got)
+	}
+	if got := ipBucket("::ffff:203.0.113.7"); got != "::ffff:203.0.113.7" {
+		t.Fatalf("mapped ipv4 bucket %q", got)
+	}
+}

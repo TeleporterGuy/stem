@@ -37,6 +37,25 @@ type Config struct {
 	Mail   Mail   `toml:"mail"`
 	Limits Limits `toml:"limits"`
 	Invite Invite `toml:"invites"`
+	Push   Push   `toml:"push"`
+}
+
+// Push is the APNs gateway: Stems without the app's APNs key send wake-ups
+// here, and the relay signs them with its .p8.
+type Push struct {
+	Enabled  bool   `toml:"enabled"`
+	KeyPath  string `toml:"key_path"`
+	KeyID    string `toml:"key_id"`
+	TeamID   string `toml:"team_id"`
+	BundleID string `toml:"bundle_id"`
+	// Wake-ups per client IP, per Stem key, per device token, and in all, per hour.
+	PerIPHour    int `toml:"per_ip_hour"`
+	PerKeyHour   int `toml:"per_key_hour"`
+	PerTokenHour int `toml:"per_token_hour"`
+	GlobalHour   int `toml:"global_hour"`
+	// A token belongs to the first Stem key that pushes to it; another key
+	// may take it over only after the owner has been silent this long.
+	RebindDays int `toml:"rebind_days"`
 }
 
 type Mail struct {
@@ -111,6 +130,7 @@ func Defaults() Config {
 			GlobalPerDay: 200, BounceRatePct: 2, ComplaintRatePct: 0.1, BreakerWindowDays: 7,
 			BreakerMinSample: 50,
 		},
+		Push: Push{PerIPHour: 600, PerKeyHour: 120, PerTokenHour: 60, GlobalHour: 20000, RebindDays: 7},
 	}
 }
 
@@ -134,6 +154,9 @@ func (c *Config) Validate() error {
 		c.GlobalURL = c.URL
 	} else if c.GlobalURL == "" || len(c.GlobalKeys) == 0 {
 		return errors.New("a private relay needs global_url and global_keys to accept mail from the global relay's users")
+	}
+	if p := c.Push; p.Enabled && (p.KeyPath == "" || p.KeyID == "" || p.TeamID == "" || p.BundleID == "") {
+		return errors.New("[push] needs key_path, key_id, team_id and bundle_id")
 	}
 	for i, d := range c.Domains {
 		c.Domains[i] = strings.ToLower(strings.TrimSpace(d))

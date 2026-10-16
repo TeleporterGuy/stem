@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/crypto/acme/autocert"
 
+	"github.com/join3r/stem/relay/internal/apns"
 	"github.com/join3r/stem/relay/internal/authority"
 	"github.com/join3r/stem/relay/internal/config"
 	"github.com/join3r/stem/relay/internal/mailer"
@@ -206,6 +207,14 @@ func serve(path string) error {
 	return withServer(path, func(cfg *config.Config, s *server.Server) error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		if p := cfg.Push; p.Enabled {
+			c, err := apns.New(p.KeyPath, p.KeyID, p.TeamID, p.BundleID)
+			if err != nil {
+				return err
+			}
+			s.Pusher = c
+			log.Printf("push gateway on for %s", p.BundleID)
+		}
 		go s.Run(ctx)
 
 		// ReadTimeout bounds slow uploads; no WriteTimeout because /v1/stream
