@@ -618,3 +618,45 @@ func TestIPBucketGroupsIPv6By64(t *testing.T) {
 		t.Fatalf("mapped ipv4 bucket %q", got)
 	}
 }
+
+func TestClosedRelay(t *testing.T) {
+	w := newWorld(t)
+	w.acme.srv.cfg.Closed = true
+	w.static["acme.test"].Closed = true
+	vlado := w.newStem(w.global, "vlado@gmail.test")
+	martin := w.newStem(w.acme, "martin@acme.test")
+	anna := w.newStem(w.acme, "anna@acme.test")
+	vlado.register()
+	martin.register()
+	anna.register()
+
+	// Outsiders can't see who is there, and can't deliver.
+	if st, _, _ := vlado.lookup("martin@acme.test"); st != 404 {
+		t.Fatalf("outsider lookup: %d, want 404", st)
+	}
+	if _, code, _ := vlado.send("martin@acme.test", martin, "hi"); code != 403 {
+		t.Fatalf("outsider mail: %d, want 403", code)
+	}
+	// The record's access=closed makes the global relay refuse acme senders.
+	if st, _, _ := martin.lookup("vlado@gmail.test"); st != 404 {
+		t.Fatalf("closed-domain lookup on the global relay: %d, want 404", st)
+	}
+	if _, code, _ := martin.send("vlado@gmail.test", vlado, "out"); code != 403 {
+		t.Fatalf("closed-domain mail on the global relay: %d, want 403", code)
+	}
+	if len(martin.held()) != 0 || len(vlado.held()) != 0 {
+		t.Fatal("mail crossed a closed boundary")
+	}
+	// Colleagues still reach each other.
+	if st, _, _ := anna.lookup("martin@acme.test"); st != 200 {
+		t.Fatalf("colleague lookup: %d", st)
+	}
+	if _, code, _ := anna.send("martin@acme.test", martin, "lunch?"); code != 202 {
+		t.Fatalf("colleague mail: %d", code)
+	}
+	// A partner domain is let in.
+	w.acme.srv.cfg.PartnerDomains = []string{"gmail.test"}
+	if _, code, _ := vlado.send("martin@acme.test", martin, "partner"); code != 202 {
+		t.Fatalf("partner mail: %d", code)
+	}
+}

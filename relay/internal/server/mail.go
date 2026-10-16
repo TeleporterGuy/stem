@@ -23,7 +23,9 @@ func (s *Server) postMail(w http.ResponseWriter, r *http.Request, body []byte) e
 	}
 	env.From, env.To = proto.NormalizeAddress(env.From), proto.NormalizeAddress(env.To)
 	sealed, err := proto.VerifyEnvelope(&env, s.Now(), s.issuerKeys)
-	if err != nil {
+	if errors.Is(err, errOutsider) {
+		return errOutsider
+	} else if err != nil {
 		return fail(400, "bad_envelope")
 	}
 	if int64(len(sealed)) > s.cfg.Limits.MaxMailBytes {

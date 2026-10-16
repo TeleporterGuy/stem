@@ -2,6 +2,7 @@
 // serves an address, and which keys may certify it).
 import { resolveTxt } from 'node:dns/promises';
 import { degrade } from '../degrade';
+import { assertAddressAllowed, PolicyError, type InterStemPolicy } from './policy';
 import { b64, domainOf, signRequestHeaders, unb64, type Cert, type Envelope, type IssuerKeys } from './proto';
 
 // ---- the global relay ----
@@ -98,7 +99,8 @@ export class AuthorityResolver {
   constructor(
     private globalAuthority: () => Promise<Authority>,
     private lookup: TxtLookup = resolveTxt,
-    private ttlMs = 10 * 60_000
+    private ttlMs = 10 * 60_000,
+    private policy: () => InterStemPolicy = () => ({ mode: 'open' })
   ) {}
 
   async domainRecord(domain: string): Promise<Authority | null> {
@@ -122,14 +124,34 @@ export class AuthorityResolver {
     return rec;
   }
 
+  /**
+   * The relay that serves an address and the keys that may certify it.
+   * Under an organization policy (policy.ts) this throws PolicyError for
+   * anything outside it, and never falls back to the global relay.
+   */
   async authority(address: string): Promise<Authority> {
+    const policy = this.policy();
+    assertAddressAllowed(policy, address);
+    if (policy.mode === 'restricted') {
+      if (policy.relay) return { relay: policy.relay.url, keys: policy.relay.keys };
+      const rec = await this.domainRecord(domainOf(address));
+      if (!rec) throw new PolicyError(`${domainOf(address)} has no Stem relay of its own.`);
+      return rec;
+    }
     return (await this.domainRecord(domainOf(address))) ?? this.globalAuthority();
   }
 
   issuerKeys(): IssuerKeys {
     return async (address) => {
-      const a = await this.authority(address);
-      return { issuer: a.relay, keys: a.keys };
+      try {
+        const a = await this.authority(address);
+        return { issuer: a.relay, keys: a.keys };
+      } catch (err) {
+        // A sender the policy refuses is a certificate nobody may vouch for:
+        // verification fails cleanly and the mail is dropped, not retried.
+        if (err instanceof PolicyError) return { issuer: '', keys: {} };
+        throw err;
+      }
     };
   }
 }

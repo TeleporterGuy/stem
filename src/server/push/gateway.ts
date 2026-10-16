@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { log } from '../log';
+import { interStemPolicy } from '../interstem/policy';
 import { globalRelay } from '../interstem/relay-client';
 import { newSeed, signRequestHeaders } from '../interstem/proto';
 import { userDataRoot } from '../workspace/paths';
@@ -21,16 +22,22 @@ import type { WakeUp } from './index';
 // another key is refused for that phone until the old one has been idle a week.
 //
 // On whenever no STEM_APNS_* value is set; STEM_PUSH_GATEWAY=off turns it off.
+// An organization policy (interstem/policy.ts) overrides both: pushes go only
+// to the organization's pinned relay, or nowhere.
 
 /** Whether to send through the relay. False when any direct APNs value is set, even half of them. */
 export function gatewayEnabled(): boolean {
   if (process.env.STEM_PUSH_GATEWAY?.trim() === 'off') return false;
+  if (gatewayUrl() === null) return false;
   return !['STEM_APNS_KEY_PATH', 'STEM_APNS_KEY_ID', 'STEM_APNS_TEAM_ID', 'STEM_APNS_BUNDLE_ID'].some((k) =>
     process.env[k]?.trim()
   );
 }
 
-function gatewayUrl(): string {
+function gatewayUrl(): string | null {
+  const policy = interStemPolicy();
+  if (policy.mode === 'off') return null;
+  if (policy.mode === 'restricted') return policy.relay?.url ?? null;
   return (process.env.STEM_PUSH_GATEWAY_URL?.trim() || globalRelay().url).replace(/\/+$/, '');
 }
 
@@ -93,9 +100,11 @@ export async function sendViaGateway(deviceToken: string, wake: WakeUp): Promise
   // Sandbox only for an Xcode dev build pointed here on purpose.
   const env = process.env.STEM_PUSH_GATEWAY_ENV?.trim() === 'sandbox' ? 'sandbox' : 'production';
   const body = JSON.stringify({ token: deviceToken, env, wake });
+  const url = gatewayUrl();
+  if (url === null) return 'failed';
   try {
     const headers = { 'Content-Type': 'application/json', ...signRequestHeaders(await loadSeed(), 'POST', path, body) };
-    const res = await (post ?? fetchPost)(gatewayUrl() + path, headers, body);
+    const res = await (post ?? fetchPost)(url + path, headers, body);
     if (res.status === 200) return /"gone"/.test(res.body) ? 'gone' : 'sent';
     log('push', 'push gateway refused a push', { status: res.status, body: res.body.slice(0, 200) });
   } catch (e) {

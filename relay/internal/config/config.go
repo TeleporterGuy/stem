@@ -25,6 +25,13 @@ type Config struct {
 	// check certificates for addresses on the global relay.
 	GlobalURL  string   `toml:"global_url"`
 	GlobalKeys []string `toml:"global_keys"`
+	// Closed (private relays only): only addresses in Domains and
+	// PartnerDomains may mail this relay's people or look up their keys.
+	// Everyone else, the global relay's users included, is turned away.
+	// Publish the record with access=closed too (stem-relay dns does), so
+	// other relays refuse this relay's people as senders.
+	Closed         bool     `toml:"closed"`
+	PartnerDomains []string `toml:"partner_domains"`
 
 	DataDir string `toml:"data_dir"`
 
@@ -150,16 +157,25 @@ func (c *Config) Validate() error {
 	if !c.Global && len(c.Domains) == 0 {
 		return errors.New("a private relay needs domains")
 	}
+	if c.Global && c.Closed {
+		return errors.New("the global relay can't be closed")
+	}
+	if !c.Closed && len(c.PartnerDomains) > 0 {
+		return errors.New("partner_domains only applies to a closed relay")
+	}
 	if c.Global {
 		c.GlobalURL = c.URL
-	} else if c.GlobalURL == "" || len(c.GlobalKeys) == 0 {
-		return errors.New("a private relay needs global_url and global_keys to accept mail from the global relay's users")
+	} else if !c.Closed && (c.GlobalURL == "" || len(c.GlobalKeys) == 0) {
+		return errors.New("a private relay needs global_url and global_keys to accept mail from the global relay's users (or closed = true)")
 	}
 	if p := c.Push; p.Enabled && (p.KeyPath == "" || p.KeyID == "" || p.TeamID == "" || p.BundleID == "") {
 		return errors.New("[push] needs key_path, key_id, team_id and bundle_id")
 	}
 	for i, d := range c.Domains {
 		c.Domains[i] = strings.ToLower(strings.TrimSpace(d))
+	}
+	for i, d := range c.PartnerDomains {
+		c.PartnerDomains[i] = strings.ToLower(strings.TrimSpace(d))
 	}
 	return nil
 }

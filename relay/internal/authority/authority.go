@@ -18,9 +18,13 @@ import (
 type Record struct {
 	Relay string
 	Keys  map[string]ed25519.PublicKey
+	// Closed (`access=closed`): the domain's people talk only among
+	// themselves. Every other relay refuses them as senders.
+	Closed bool
 }
 
-// ParseRecord parses `v=stem1; relay=https://...; k=kid:<b64>; ...`.
+// ParseRecord parses `v=stem1; relay=https://...; k=kid:<b64>; [access=closed]`.
+// Unknown fields are ignored, so older relays read a closed record as open.
 func ParseRecord(txt string) (*Record, error) {
 	r := &Record{Keys: map[string]ed25519.PublicKey{}}
 	seenV := false
@@ -37,6 +41,8 @@ func ParseRecord(txt string) (*Record, error) {
 			seenV = true
 		case "relay":
 			r.Relay = strings.TrimRight(strings.TrimSpace(v), "/")
+		case "access":
+			r.Closed = strings.TrimSpace(v) == "closed"
 		case "k":
 			kid, pub, ok := strings.Cut(strings.TrimSpace(v), ":")
 			if !ok {

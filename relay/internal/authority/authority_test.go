@@ -15,6 +15,12 @@ func TestParseRecord(t *testing.T) {
 	if err != nil || r.Relay != "https://relay.acme.com" || len(r.Keys) != 1 {
 		t.Fatalf("%+v %v", r, err)
 	}
+	if r.Closed {
+		t.Fatal("a record without access=closed is open")
+	}
+	if r, err := ParseRecord("v=stem1; relay=https://relay.acme.com; k=k1:" + proto.B64(pub) + "; access=closed"); err != nil || !r.Closed {
+		t.Fatalf("access=closed not read: %+v %v", r, err)
+	}
 	for _, bad := range []string{"v=stem2; relay=https://x; k=k1:" + proto.B64(pub), "v=stem1; k=k1:" + proto.B64(pub), "v=stem1; relay=https://x"} {
 		if _, err := ParseRecord(bad); err == nil {
 			t.Errorf("accepted %q", bad)

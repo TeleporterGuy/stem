@@ -120,9 +120,36 @@ func (s *Server) Serves(address string) (bool, error) {
 	return rec == nil, nil
 }
 
+// errOutsider: the sender is outside a closed relay's circle, or belongs to a
+// closed domain this relay doesn't serve.
+var errOutsider = fail(403, "closed_relay")
+
+// outsider reports whether certificates for the address must be refused:
+// on a closed relay, anyone outside its domains and partners; on any relay,
+// the people of a domain whose record says access=closed, unless we serve it.
+func (s *Server) outsider(address string) (bool, error) {
+	d := proto.Domain(address)
+	if slices.Contains(s.cfg.Domains, d) {
+		return false, nil
+	}
+	if s.cfg.Closed {
+		return !slices.Contains(s.cfg.PartnerDomains, d), nil
+	}
+	rec, err := s.resolver.DomainRecord(d)
+	if err != nil {
+		return false, err
+	}
+	return rec != nil && rec.Closed, nil
+}
+
 // issuerKeys verifies certificates: our own keys for our addresses, DNS or
-// the global relay for everyone else.
+// the global relay for everyone else. Outsiders (see outsider) get none.
 func (s *Server) issuerKeys(address string) (string, map[string]ed25519.PublicKey, error) {
+	if out, err := s.outsider(address); err != nil {
+		return "", nil, err
+	} else if out {
+		return "", nil, errOutsider
+	}
 	if ok, err := s.Serves(address); err != nil {
 		return "", nil, err
 	} else if ok {
@@ -349,6 +376,9 @@ func (s *Server) certified(r *http.Request, body []byte) (string, string, error)
 		return "", "", fail(401, "bad_certificate")
 	}
 	if err := proto.VerifyCert(&c, s.Now(), s.issuerKeys); err != nil {
+		if errors.Is(err, errOutsider) {
+			return "", "", errOutsider
+		}
 		return "", "", fail(401, "bad_certificate")
 	}
 	fp := proto.Fingerprint(pub)
@@ -646,7 +676,10 @@ var errNotReachable = fail(404, "not_reachable")
 
 func (s *Server) keys(w http.ResponseWriter, r *http.Request, body []byte) error {
 	requester, _, err := s.certified(r, body)
-	if err != nil {
+	if errors.Is(err, errOutsider) {
+		// Same answer as an unknown address: outsiders can't list who is here.
+		return errNotReachable
+	} else if err != nil {
 		return err
 	}
 	l := s.cfg.Limits

@@ -26,6 +26,26 @@ server.
 
 Invites are off unless `[invites] enabled = true`.
 
+### Keep it inside the company
+
+Set `closed = true` in `relay.toml` and restart. Then:
+
+- only addresses in `domains` (and `partner_domains`, if you list any) can
+  mail your people or look up their keys; everyone else, the global relay's
+  users included, is refused and can't tell who is on the relay;
+- `global_url` / `global_keys` are no longer needed;
+- `stem-relay dns` adds `access=closed` to the record. Publish it: the
+  global relay (and every other relay) then refuses your people as senders,
+  so a colleague's unmanaged Stem can't mail out either.
+
+A partner domain must not be closed itself, or its relay refuses yours.
+
+The relay can't stop a laptop from talking to other relays. For that, install
+the Stem policy file on company machines (`docs/stem-policy.md`): it turns
+mail with other Stems off, or limits it to your domains through your relay,
+and the app never contacts the global relay. Blocking
+`relay.stem.awantech.sk` at the firewall backs it up.
+
 ## Run the global relay
 
 Same, with `global = true` and no `domains`: it serves every domain without a

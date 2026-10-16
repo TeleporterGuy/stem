@@ -145,6 +145,9 @@ func printDNS(cfg *config.Config, s *server.Server) error {
 	for _, k := range kids {
 		parts = append(parts, "k="+k+":"+proto.B64(pubs[k]))
 	}
+	if cfg.Closed {
+		parts = append(parts, "access=closed")
+	}
 	rec := strings.Join(parts, "; ")
 	for _, d := range cfg.Domains {
 		fmt.Printf("_stem.%s. TXT \"%s\"\n", d, rec)

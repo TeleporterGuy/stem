@@ -58,6 +58,7 @@ import {
   type Identity,
   type TxtLookup
 } from './relay-client';
+import { addressUsable, assertAddressAllowed, interStemPolicy, PolicyError, type InterStemPolicy } from './policy';
 import { interStemStore, type InterStemState, type InterStemStore, type StoredContact } from './store';
 
 /** What the service needs from the mail store — swappable so tests can run two Stems in one process. */
@@ -103,6 +104,8 @@ export interface InterStemOptions {
   /** Called after anything the UI shows changed (status, contacts). */
   onChange?: () => void;
   now?: () => number;
+  /** The organization's policy (policy.ts); tests inject one. */
+  policy?: () => InterStemPolicy;
 }
 
 export class InterStemService {
@@ -111,6 +114,7 @@ export class InterStemService {
   private resolver: AuthorityResolver;
   private onChange: () => void;
   private now: () => number;
+  private policy: () => InterStemPolicy;
   private streams = new Map<string, AbortController>();
   private connected = new Set<string>();
   private timers: NodeJS.Timeout[] = [];
@@ -122,7 +126,18 @@ export class InterStemService {
     this.mail = opts.mail ?? defaultMail;
     this.onChange = opts.onChange ?? (() => undefined);
     this.now = opts.now ?? Date.now;
-    this.resolver = new AuthorityResolver(() => this.globalAuthority(), opts.txt);
+    this.policy = opts.policy ?? interStemPolicy;
+    this.resolver = new AuthorityResolver(() => this.globalAuthority(), opts.txt, undefined, this.policy);
+  }
+
+  /**
+   * Verified addresses the policy still allows. One verified before a lockdown
+   * (on the global relay, or outside the allowed domains) stays in the store
+   * but is never connected, refreshed or sent from.
+   */
+  private live(state: InterStemState): InterStemState['addresses'] {
+    const policy = this.policy();
+    return state.addresses.filter((a) => a.state === 'verified' && addressUsable(policy, a.address, a.relay, globalRelay().url));
   }
 
   // ---- lifecycle ----
@@ -183,15 +198,18 @@ export class InterStemService {
 
   async status(): Promise<InterStemStatus> {
     const s = await this.store.read();
+    const policy = this.policy();
+    const live = this.live(s);
     return {
-      addresses: s.addresses.map(({ address, state, relay }) => ({ address, state, relay })),
+      addresses: s.addresses
+        .filter((a) => addressUsable(policy, a.address, a.relay, globalRelay().url))
+        .map(({ address, state, relay }) => ({ address, state, relay })),
       unlisted: s.unlisted,
       fingerprint: fingerprint(rawPublic(edPrivate(s.identitySeed))),
-      connected:
-        s.addresses.some((a) => a.state === 'verified') &&
-        [...new Set(s.addresses.filter((a) => a.state === 'verified').map((a) => a.relay))].every((r) =>
-          this.connected.has(r)
-        ),
+      connected: live.length > 0 && [...new Set(live.map((a) => a.relay))].every((r) => this.connected.has(r)),
+      ...(policy.mode === 'open'
+        ? {}
+        : { policy: policy.mode === 'off' ? { mode: 'off' } : { mode: 'restricted', domains: policy.domains } }),
       contacts: Object.values(s.contacts).map(({ address, state, keyFp, verifiedByUser, keyChanged, firstSeen }) => ({
         address,
         state,
@@ -217,8 +235,12 @@ export class InterStemService {
     await this.store.update((s) => {
       const existing = s.addresses.find((a) => a.address === address);
       if (existing) {
+        // A new relay (an organization policy moved it) means a fresh verification there.
+        if (existing.state !== 'verified' || existing.relay !== relay) {
+          existing.state = 'pending';
+          delete existing.cert;
+        }
         existing.relay = relay;
-        if (existing.state !== 'verified') existing.state = 'pending';
       } else {
         s.addresses.push({ address, state: 'pending', relay, addedAt: this.now() });
       }
@@ -232,6 +254,7 @@ export class InterStemService {
     const state = await this.store.read();
     const entry = state.addresses.find((a) => a.address === address);
     if (!entry) throw new Error('Add the address first.');
+    this.assertUsable(entry);
     let cert: Cert;
     try {
       cert = await verifyCode(entry.relay, this.identity(state), address, code.trim());
@@ -262,6 +285,7 @@ export class InterStemService {
     const state = await this.store.read();
     const entry = state.addresses.find((a) => a.address === address);
     if (!entry) throw new Error('Add the address first.');
+    this.assertUsable(entry);
     const cert = await fetchCert(entry.relay, this.identity(state), address);
     await this.store.update((s) => {
       const e = s.addresses.find((a) => a.address === address);
@@ -284,7 +308,7 @@ export class InterStemService {
 
   async setUnlisted(unlisted: boolean): Promise<InterStemStatus> {
     const state = await this.store.read();
-    for (const relay of new Set(state.addresses.filter((a) => a.state === 'verified').map((a) => a.relay))) {
+    for (const relay of new Set(this.live(state).map((a) => a.relay))) {
       await setUnlisted(relay, this.identity(state), unlisted);
     }
     await this.store.update((s) => {
@@ -297,13 +321,12 @@ export class InterStemService {
   /** Our verified address to send from when the user has several: the first. */
   async defaultSelf(): Promise<string | null> {
     const s = await this.store.read();
-    return s.addresses.find((a) => a.state === 'verified')?.address ?? null;
+    return this.live(s)[0]?.address ?? null;
   }
 
   private async refreshCerts(force = false): Promise<void> {
     const state = await this.store.read();
-    for (const a of state.addresses) {
-      if (a.state !== 'verified') continue;
+    for (const a of this.live(state)) {
       if (!force && a.cert && a.cert.exp - this.now() > CERT_REFRESH_BEFORE_MS) continue;
       try {
         const cert = await fetchCert(a.relay, this.identity(state), a.address);
@@ -332,6 +355,7 @@ export class InterStemService {
     let state = await this.store.read();
     const entry = state.addresses.find((a) => a.address === address && a.state === 'verified');
     if (!entry) throw new Error(`${address} is not verified on this Stem.`);
+    this.assertUsable(entry);
     if (!entry.cert || entry.cert.exp - this.now() < CERT_REFRESH_BEFORE_MS) {
       await this.refreshCerts(true);
       state = await this.store.read();
@@ -341,12 +365,19 @@ export class InterStemService {
     return id;
   }
 
+  private assertUsable(entry: { address: string; relay: string }): void {
+    const policy = this.policy();
+    if (addressUsable(policy, entry.address, entry.relay, globalRelay().url)) return;
+    assertAddressAllowed(policy, entry.address);
+    throw new PolicyError(`Your organization only allows ${entry.address} on its own relay. Add it again to move it there.`);
+  }
+
   // ---- inbound ----
 
   private async connectAll(): Promise<void> {
     if (this.stopped) return;
     const state = await this.store.read();
-    const relays = new Set(state.addresses.filter((a) => a.state === 'verified').map((a) => a.relay));
+    const relays = new Set(this.live(state).map((a) => a.relay));
     for (const [relay, ctl] of this.streams) {
       if (!relays.has(relay)) {
         ctl.abort();
@@ -386,7 +417,7 @@ export class InterStemService {
   async receive(relay: string, env: Envelope): Promise<void> {
     const state = await this.store.read();
     const id = this.identity(state);
-    const ours = state.addresses.find((a) => a.address === env.to && a.state === 'verified');
+    const ours = this.live(state).find((a) => a.address === env.to);
     const done = () => ack(relay, id, [env.id]);
     if (!ours) {
       // Mail for an address this key no longer holds: not ours to read.
@@ -491,7 +522,7 @@ export class InterStemService {
 
   private async ownRelays(): Promise<{ relay: string; id: Identity }[]> {
     const state = await this.store.read();
-    return [...new Set(state.addresses.filter((a) => a.state === 'verified').map((a) => a.relay))].map((relay) => ({
+    return [...new Set(this.live(state).map((a) => a.relay))].map((relay) => ({
       relay,
       id: this.identity(state)
     }));
@@ -595,6 +626,14 @@ export class InterStemService {
     const item = items.find((i) => i.id === itemId);
     if (!conversation?.external || !item) return;
     const { address, thread, self } = conversation.external;
+    try {
+      assertAddressAllowed(this.policy(), address);
+    } catch (err) {
+      if (!(err instanceof PolicyError)) throw err;
+      await this.mail.setExternalStatus(itemId, { status: 'failed', error: err.message });
+      this.onChange();
+      return;
+    }
     const inner: InnerV1 = {
       v: 1,
       kind: 'mail',
@@ -629,7 +668,12 @@ export class InterStemService {
       const state = await this.store.read();
       for (const entry of state.outbox.filter((o) => o.nextAt <= this.now())) {
         // quiet: a thrown send is retried below, and the retry path degrades with the error.
-        const outcome = await this.sendOne(entry).catch((err: unknown) => ({ retry: true as const, error: err }));
+        const outcome = await this.sendOne(entry).catch(async (err: unknown) => {
+          // A policy refusal won't change by retrying: fail the item now.
+          if (!(err instanceof PolicyError)) return { retry: true as const, error: err };
+          await this.mail.setExternalStatus(entry.mailItemId, { status: 'failed', error: err.message });
+          return { done: true as const };
+        });
         if ('done' in outcome) {
           await this.store.update((s) => {
             s.outbox = s.outbox.filter((o) => o.id !== entry.id);
@@ -735,7 +779,9 @@ export class InterStemService {
             ? `${entry.to}'s mailbox on their relay is full.`
             : err.code === 'too_large'
               ? 'The mail is too large for their relay.'
-              : `Their relay refused the mail (${err.code}).`;
+              : err.code === 'closed_relay'
+                ? `${entry.to}'s organization doesn't take Stem mail from outside it, or yours doesn't let mail out.`
+                : `Their relay refused the mail (${err.code}).`;
         await this.mail.setExternalStatus(entry.mailItemId, { status: 'failed', error: why });
         return { done: true };
       }
@@ -769,7 +815,9 @@ export class InterStemService {
           finished.add(e.envelopeId);
         }
       } catch (err) {
-        degrade('interstem', 'could not check a delivery status', err);
+        // Outside the policy now: nothing will ever answer, stop asking.
+        if (err instanceof PolicyError) finished.add(e.envelopeId);
+        else degrade('interstem', 'could not check a delivery status', err);
       }
     }
     await this.store.update((s) => {

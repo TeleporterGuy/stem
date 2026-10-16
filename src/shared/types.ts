@@ -3087,6 +3087,11 @@ export interface InterStemStatus {
   /** Live connection to each verified address's relay. */
   connected: boolean;
   contacts: InterStemContact[];
+  /**
+   * Set when an organization policy file limits inter-Stem mail: "off", or
+   * only these domains through the organization's own relay. Absent = no limit.
+   */
+  policy?: { mode: 'off' } | { mode: 'restricted'; domains: string[] };
 }
 
 /** Recorded work, separate from mail delivery/read state. Never contains reasoning. */

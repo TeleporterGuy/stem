@@ -30,6 +30,18 @@ export function OtherStemsSection() {
     }
   };
 
+  if (status.policy?.mode === 'off') {
+    return (
+      <>
+        <div className="grp-head">Mail with other Stems</div>
+        <div className="group">
+          <ValueRow label="Turned off by your organization" hint="This Stem doesn't connect to any relay" />
+        </div>
+      </>
+    );
+  }
+  const allowed = status.policy?.mode === 'restricted' ? status.policy.domains : null;
+
   const verified = status.addresses.filter((a) => a.state === 'verified');
   const contacts = status.contacts.filter((c) => c.state !== 'blocked');
   const blocked = status.contacts.filter((c) => c.state === 'blocked');
@@ -38,6 +50,12 @@ export function OtherStemsSection() {
     <>
       <div className="grp-head">Mail with other Stems</div>
       <div className="group">
+        {allowed && (
+          <ValueRow
+            label="Limited by your organization"
+            hint={`Only addresses at ${allowed.join(', ')}, through your organization's relay`}
+          />
+        )}
         {status.addresses.map((a) => (
           <ValueRow
             key={a.address}
@@ -104,7 +122,7 @@ export function OtherStemsSection() {
             <input
               className="vfield"
               type="email"
-              placeholder="you@example.com"
+              placeholder={`you@${allowed?.[0] ?? 'example.com'}`}
               aria-label="Your email address"
               value={address}
               onChange={(e) => setAddress(e.target.value)}

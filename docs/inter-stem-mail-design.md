@@ -115,6 +115,16 @@ out a false key and read mail. The design limits this:
   firewalls.
 - Sending to an address on another relay goes to that relay directly. Relays
   don't forward to each other.
+- **A company can keep Stem mail inside.** Three locks, each usable alone:
+  - a **policy file** on company machines (`docs/stem-policy.md`) turns
+    inter-Stem mail off, or allows only the company's domains through the
+    company relay. The app then never contacts the global relay (push
+    gateway included), and the user can't loosen it from Settings;
+  - a **closed relay** (`closed = true`) refuses every sender outside its
+    domains and named partners, and answers their lookups as "not on Stem";
+  - `access=closed` in the `_stem` record makes every other relay, the
+    global one first, refuse the domain's people as senders, which also
+    covers employees whose Stem has no policy file.
 
 ### Delivery
 
@@ -176,8 +186,9 @@ address) vouches for that, the same way DKIM lets a domain vouch for mail:
   the current one for an overlap period (two DNS records); certificates
   signed by either are accepted until the old one is removed.
 - **Relay-to-relay limits.** A receiving relay rate-limits per issuing relay
-  as well as per sender, and a private relay can restrict which relays may
-  deliver to it (for example only the global relay and named partners).
+  as well as per sender, and a closed private relay accepts only its own
+  domains and named partner domains (see "A company can keep Stem mail
+  inside").
 - **Replay.** Envelope ids are unique and carry a timestamp; relays and Stems
   drop duplicates and envelopes older than the 7-day transit cap.
 

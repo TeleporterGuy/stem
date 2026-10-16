@@ -83,6 +83,21 @@ relays are configured with. A relay only registers, certifies and serves
 addresses it is authoritative for; the global relay refuses domains that
 have a record.
 
+`access=closed` in the record marks a **closed domain**: its people talk
+only among themselves. Every relay that doesn't serve the domain refuses
+certificates for its addresses (`403 closed_relay` on delivery, `404
+not_reachable` on lookups). Fields a relay doesn't know are ignored, so an
+older relay reads the record as open.
+
+```
+v=stem1; relay=https://relay.acme.com; k=k1:<b64 pub>; access=closed
+```
+
+A **closed relay** (`closed = true`) also refuses senders outside its own
+domains and its `partner_domains`, the same way: their mail gets `403
+closed_relay`, their lookups `404 not_reachable`, so outsiders can't tell
+who is on it.
+
 ## Sender certificates
 
 ```json
@@ -195,7 +210,8 @@ delivery status; blocks drop mail silently.
 authority (this relay serves `to`), sender limits, block list, one knock,
 queue quotas. The answer is always `202 {"status":"sent"}` unless the
 recipient has allowed the sender, in which case a full queue answers
-`507 queue_full`. Mail to an address nobody holds is dropped.
+`507 queue_full`, or the sender is shut out by a closed relay or a closed
+domain (`403 closed_relay`, see above). Mail to an address nobody holds is dropped.
 
 `/v1/stream` (SSE) first replays every held envelope for the account's
 addresses, then pushes new ones as `event: mail`, `data: <envelope JSON>`,
