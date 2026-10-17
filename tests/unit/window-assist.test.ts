@@ -109,7 +109,10 @@ describe('which MCP servers cover an app', () => {
     const block = formatWindowBlock({ windowId: 7, app: 'Slack', bundleId: null, title: '', text: null }, ['slack']);
     expect(block).toContain('prefer the integration (MCP server) "slack"');
     expect(block).toContain('wait for their go-ahead');
-    expect(block).toContain('read the rest through it before you answer');
+    expect(block).toContain('read it through the integration first');
+    // Loaded as real tools for the chat, so the model is told their names, not find_tools.
+    expect(block).toContain('already in your tool list for this chat (their names start with slack_)');
+    expect(block).toContain('who wrote each message, attached pictures and files');
   });
 
   it('asks for a judgement of the substance, not the tone', () => {
@@ -117,7 +120,7 @@ describe('which MCP servers cover an app', () => {
     expect(block).toContain('check the facts, the reasoning and what the other people actually asked for');
     expect(block).toContain('Judge tone, grammar or wording only when they ask about those');
     // Without a matching server there is nothing to read the rest of the thread through.
-    expect(block).not.toContain('read the rest through it');
+    expect(block).not.toContain('read it through the integration');
   });
 });
 

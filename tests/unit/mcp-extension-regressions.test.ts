@@ -584,7 +584,8 @@ describe('recall search tools in a recall-off turn', () => {
       external: false,
       imageGen: false,
       imageGenRefusal: null,
-      mcpServers: null
+      mcpServers: null,
+      directMcp: []
     });
     // What main writes for a Critic delivery.
     await writeTurnContextGate({ mail: true, scheduled: false, coding: false, recall: false, relay: false }, root);

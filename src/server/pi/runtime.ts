@@ -1330,6 +1330,23 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       if (input.persona?.recall === false || isPrivate) turn.noRecall = true;
       if (input.persona?.computer) turn.personaComputer = input.persona.computer;
       if (input.persona?.browser) turn.personaBrowser = input.persona.browser;
+      // "Ask about this window": the window's app servers stay loaded as real
+      // tools for the whole chat. Only its first turn carries the window, and a
+      // follow-up ("read the thread", "who wrote that?") needs them as much; a
+      // tool set that changed between turns would also miss the prompt cache.
+      if (input.windowContext) {
+        const w = input.windowContext;
+        // quiet: without the match the model still gets the window, just no pointer to its app's server.
+        const servers = await mcpServersForAppName(w.app, w.bundleId, input.persona?.mcpServers ?? null).catch(
+          () => [] as string[]
+        );
+        if (servers.length) this.windowServers.set(threadId, servers);
+        else this.windowServers.delete(threadId);
+        turn.windowServers = servers;
+      } else {
+        const kept = this.windowServers.get(threadId);
+        if (kept) turn.windowServers = kept.filter((n) => !input.persona?.mcpServers || input.persona.mcpServers.includes(n));
+      }
       // coding_agent / computer / browser: the persona's pins, or for a chat
       // run as no persona, Settings → Features.
       // quiet: readSettings answers coerced defaults rather than rejecting; a failure here leaves both tools off, with the "off for chats" refusal, which is the default anyway.
@@ -1438,7 +1455,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             // The persona's MCP allowlist; buildMessage filters the catalog
             // from the same list, so the model never hears of a server the
             // bridge would refuse. A no-persona chat sees everything.
-            mcpServers: input.persona?.mcpServers ?? null
+            mcpServers: input.persona?.mcpServers ?? null,
+            // Servers whose tools are loaded directly rather than behind
+            // find_tools: the window's app servers (see windowServers).
+            directMcp: turn.external || turn.personaHarness ? [] : (turn.windowServers ?? [])
           },
           w.gateDir
         ).catch(
@@ -4145,6 +4165,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    */
   private readonly generatedImages = new Map<string, GeneratedImageRef[]>();
 
+  /**
+   * "Ask about this window" chats → the MCP servers matched to the window's
+   * app, set by the chat's first turn. In memory: after a restart a follow-up
+   * turn falls back to find_tools, which still reaches the same tools.
+   */
+  private readonly windowServers = new Map<string, string[]>();
+
   private bufferGeneratedImage(params: unknown): void {
     const image = (params as { item?: { image?: GeneratedImageRef } } | undefined)?.item?.image;
     if (!image?.threadId) return;
@@ -4868,9 +4895,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     if (input.windowContext) {
       const w = input.windowContext;
       // quiet: without the match the model still gets the window, just no pointer to its app's server.
-      const servers = await mcpServersForAppName(w.app, w.bundleId, input.persona?.mcpServers ?? null).catch(
-        () => [] as string[]
-      );
+      const servers = turn?.windowServers ?? [];
       // Computer control reaches this window only when it drives the Mac the user asked from.
       const grant = turn?.computerGrant;
       const origin = input.originDeviceId;

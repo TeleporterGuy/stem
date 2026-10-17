@@ -396,6 +396,7 @@ export async function writeTurnContextGate(
     imageGen?: boolean;
     imageGenRefusal?: string | null;
     mcpServers?: readonly string[] | null;
+    directMcp?: readonly string[];
   },
   gateDir?: string
 ): Promise<void> {
@@ -444,7 +445,11 @@ export async function writeTurnContextGate(
         // an older main). The bridge hides the rest from find_tools /
         // describe_tool / list_mcp_servers and refuses them in invoke_tool;
         // the prompt's catalog is filtered in main from the same list.
-        mcpServers: ctx.mcpServers ? [...ctx.mcpServers] : null
+        mcpServers: ctx.mcpServers ? [...ctx.mcpServers] : null,
+        // `directMcp`: servers whose tools the bridge loads as ordinary tools
+        // this turn instead of leaving them behind find_tools/invoke_tool —
+        // the app servers of an "Ask about this window" chat. Empty when absent.
+        directMcp: ctx.directMcp ? [...ctx.directMcp] : []
       },
       null,
       2

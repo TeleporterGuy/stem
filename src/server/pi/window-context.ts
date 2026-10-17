@@ -30,6 +30,9 @@ export function cleanWindowContext(value: unknown): WindowContext | null {
 /** Keeps the window's own text from closing or opening our block. */
 const fence = (text: string): string => text.replace(/<(\/?)stem_window/gi, '<$1stem-window');
 
+/** A server's tool-name prefix, as the bridge names its directly loaded tools (directMcpToolName). */
+const toolPrefix = (server: string): string => server.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+
 /**
  * `servers`: the MCP servers that cover this window's app (app-match.ts), which
  * the model is told to reach for first — the window shows a slice of the app,
@@ -63,7 +66,15 @@ export function formatWindowBlock(
       'In a conversation, work out first which messages are the user’s own (or their draft in the compose box) and what the others want. ' +
       (servers.length
         ? `For ${fence(w.app)} itself, prefer the integration (MCP server) ${servers.map((n) => `"${fence(n)}"`).join(' or ')} over the picture: use it to read what the window does not show (earlier messages, the full thread, other items) and for anything they ask you to do in ${fence(w.app)}. ` +
-          'When the window shows only part of a thread or document their question turns on, read the rest through it before you answer, not after they ask again. ' +
+          // Its tools are loaded as ordinary tools for this chat (directMcp in
+          // the bridge), so no find_tools round first.
+          `Its tools are already in your tool list for this chat (their names start with ${servers.map((n) => `${fence(toolPrefix(n))}_`).join(' or ')}); call them directly (if they are missing, reach it through find_tools). ` +
+          // 2026-10-16, "anything we can do here?" over a Slack group DM: the
+          // window text had every message but no senders, and Maroš's
+          // screenshot was only "image.png". The model answered from it and
+          // got who-proposed-what wrong until told to check Slack.
+          'The window is a partial view: its text often drops who wrote each message, attached pictures and files, where links go, threads and anything scrolled off. ' +
+          'When your answer depends on any of that, or you cannot tell from the window who said what or what the user wants you to look at, read it through the integration first — before you answer, not after they ask again. ' +
           "Before it sends, posts, edits or deletes anything there on the user's behalf, show them what you will do and wait for their go-ahead — unless their message already asked for exactly that. "
         : '') +
       "Answer from it. When something they ask about is not in it (older messages, other channels, a field you cannot see), say so, or use a tool that reaches that app's data if one is listed." +

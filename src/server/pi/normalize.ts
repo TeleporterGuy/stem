@@ -200,6 +200,12 @@ export interface TurnContext {
   /** The turn's persona browser pin: the Mac whose browser the `browser` tool drives. */
   personaBrowser?: PersonaBrowserPin;
   /**
+   * "Ask about this window": the MCP servers that cover the window's app. The
+   * bridge loads their tools as ordinary tools for the turn (turn-context
+   * `directMcp`) and the window block points the model at them.
+   */
+  windowServers?: string[];
+  /**
    * What coding_agent may do this turn — the persona pin, or a plain chat's
    * Settings → Features choice — or, absent, why not (`codingRefusal`).
    * Resolved once at turn start (harness/chat-grants.ts); the harness bridge

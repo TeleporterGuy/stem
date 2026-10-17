@@ -1439,20 +1439,7 @@ function registerRouterTools(pi, clients, protectedRoots, turnContext) {
       if (!mcpServerAllowed(server, turnContext ? turnContext() : null)) return errText(MCP_SERVER_HIDDEN_REFUSAL);
       const def = entry.tools.find((t) => t.name === toolName);
       if (!def) return errText(`Server "${server}" has no tool "${toolName}".`);
-      // Preserve the per-call trusted gate (parity with the eager path): untrusted
-      // servers confirm via ctx.ui; in practice all Stem-added servers are trusted.
-      if (!entry.spec.trusted && ctx && ctx.ui && typeof ctx.ui.confirm === 'function') {
-        const ok = await ctx.ui.confirm('Allow MCP tool', `Run ${server} → ${def.name}?`);
-        if (!ok) return { content: [{ type: 'text', text: 'Denied by user.' }], details: {} };
-      }
-      const offending = protectedRoots ? findProtectedPath((params && params.args) || {}, protectedRoots()) : null;
-      if (offending) return errText(protectedPathRefusal(offending));
-      const result = await entry.client.callTool(def.name, (params && params.args) || {});
-      const content = Array.isArray(result && result.content)
-        ? result.content
-        : [{ type: 'text', text: JSON.stringify(result ?? null) }];
-      // details carries the real server/tool so normalize.ts can recover the activity label.
-      return { content: capToolContent(content), details: { server, tool: def.name } };
+      return callRoutedTool(server, entry, def, (params && params.args) || {}, ctx, protectedRoots);
     }
   });
 
@@ -1502,6 +1489,100 @@ function registerRouterTools(pi, clients, protectedRoots, turnContext) {
       return { content: [{ type: 'text', text }], details: {} };
     }
   });
+}
+
+/**
+ * One call to a routed server's tool, after the caller has resolved it and
+ * checked the allowlist: invoke_tool and the directly loaded tools below share
+ * the trusted-confirm, protected-path and result-cap path.
+ */
+async function callRoutedTool(server, entry, def, args, ctx, protectedRoots) {
+  // Preserve the per-call trusted gate (parity with the eager path): untrusted
+  // servers confirm via ctx.ui; in practice all Stem-added servers are trusted.
+  if (!entry.spec.trusted && ctx && ctx.ui && typeof ctx.ui.confirm === 'function') {
+    const ok = await ctx.ui.confirm('Allow MCP tool', `Run ${server} → ${def.name}?`);
+    if (!ok) return { content: [{ type: 'text', text: 'Denied by user.' }], details: {} };
+  }
+  const offending = protectedRoots ? findProtectedPath(args, protectedRoots()) : null;
+  if (offending) return errText(protectedPathRefusal(offending));
+  const result = await entry.client.callTool(def.name, args);
+  const content = Array.isArray(result && result.content)
+    ? result.content
+    : [{ type: 'text', text: JSON.stringify(result ?? null) }];
+  // details carries the real server/tool so normalize.ts can recover the activity label.
+  return { content: capToolContent(content), details: { server, tool: def.name } };
+}
+
+// ---- Directly loaded servers ----
+//
+// The router keeps integrations behind find_tools so the prompt does not carry
+// every schema. That bargain is wrong for the one integration a turn is plainly
+// about: asked about a Slack window, the model answered from the screenshot,
+// and once told to check Slack spent five find_tools calls getting to the tool
+// it needed. So the servers named in the turn-context gate's `directMcp` (the
+// window's app servers) get their tools registered as ordinary pi tools. They
+// are registered inactive and switched on per turn in before_agent_start, the
+// one hook that sets the first request's tools (see enableBrowseTools); a chat
+// keeps the same set on every turn, so the prompt cache holds.
+
+/** The pi tool name for a directly loaded MCP tool: "slack" + "slack_read_channel" stays "slack_read_channel". */
+export function directMcpToolName(server, tool) {
+  const s = sanitizeToolName(server);
+  const t = sanitizeToolName(tool);
+  return t === s || t.startsWith(`${s}_`) ? t : `${s}_${t}`;
+}
+
+/**
+ * Register (once) and name the tools of every `directMcp` server this turn may
+ * see. `registered` maps a tool name to the server it fronts, per pi instance.
+ * Returns the names to activate; every other name in `registered` goes inactive.
+ */
+function syncDirectMcpTools(pi, clients, turnCtx, registered, protectedRoots, turnContext) {
+  const want = new Set();
+  if (!turnCtx || !Array.isArray(turnCtx.directMcp) || !turnCtx.directMcp.length) return want;
+  let taken = null; // names of tools that are not ours, looked up only when needed
+  for (const server of turnCtx.directMcp) {
+    if (!mcpServerAllowed(server, turnCtx)) continue;
+    const entry = clients.get(server);
+    if (!entry) continue; // not connected yet: find_tools still reaches it once it is
+    for (const def of entry.tools) {
+      const name = directMcpToolName(server, def.name);
+      if (registered.has(name)) {
+        if (registered.get(name).server === server) want.add(name);
+        continue;
+      }
+      if (!taken) taken = new Set((pi.getAllTools() || []).map((t) => (typeof t === 'string' ? t : t && t.name)));
+      if (taken.has(name)) continue; // a built-in or another extension's tool keeps its name
+      const parameters =
+        def.inputSchema && typeof def.inputSchema === 'object'
+          ? def.inputSchema
+          : def.signature
+            ? schemaFromSignature(def.signature, `The computer that hosts "${server}" has only announced its argument names.`)
+            : { type: 'object', properties: {} };
+      try {
+        pi.registerTool({
+          name,
+          label: def.title || def.name,
+          description: def.description || `MCP tool "${def.name}" from ${server}`,
+          parameters,
+          defaultActive: false,
+          async execute(_id, params, _signal, _onUpdate, ctx) {
+            const current = clients.get(server);
+            if (!current) return errText(`The "${server}" integration is not connected right now.`);
+            if (!mcpServerAllowed(server, turnContext ? turnContext() : null)) return errText(MCP_SERVER_HIDDEN_REFUSAL);
+            const live = current.tools.find((t) => t.name === def.name);
+            if (!live) return errText(`Server "${server}" no longer has a tool "${def.name}".`);
+            return callRoutedTool(server, current, live, params || {}, ctx, protectedRoots);
+          }
+        });
+      } catch {
+        continue; // a stale pi (session replaced mid-turn): the router still reaches the tool
+      }
+      registered.set(name, { server });
+      want.add(name);
+    }
+  }
+  return want;
 }
 
 /** First sentence (or ~120 chars) of a tool description, collapsed to one line. */
@@ -1913,6 +1994,8 @@ export default async function stemMcpBridge(pi) {
     // the session's tools BEFORE the first turn computes its tool list (turn_start is
     // too late). Re-fires on new/switch/fork. We merge in idempotently, clobbering nothing.
     if (typeof pi.setActiveTools === 'function' && typeof pi.getActiveTools === 'function') {
+      // Directly loaded MCP tools registered on THIS pi: name -> { server }.
+      const directTools = new Map();
       const enableBrowseTools = () => {
         try {
           const active = pi.getActiveTools();
@@ -1932,6 +2015,12 @@ export default async function stemMcpBridge(pi) {
           // (Settings → Features switch, a ChatGPT sign-in, not a code persona).
           if (turnContextGate().imageGen) next.add(IMAGE_TOOL_NAME);
           else next.delete(IMAGE_TOOL_NAME);
+          // The window's app servers, as ordinary tools (syncDirectMcpTools).
+          const direct = syncDirectMcpTools(pi, clients, turnContextGate(), directTools, protectedRoots, turnContextGate);
+          for (const name of directTools.keys()) {
+            if (direct.has(name)) next.add(name);
+            else next.delete(name);
+          }
           // Inter-Stem: a turn with another Stem's mail in context keeps only
           // read-only tools and send_mail (which saves a draft). The model never
           // sees the rest; externalRefusal below is the call-time backstop.
@@ -2143,7 +2232,10 @@ export function makeTurnContextGate(path) {
         // older main) is every configured server.
         mcpServers: Array.isArray(parsed.mcpServers)
           ? parsed.mcpServers.filter((n) => typeof n === 'string')
-          : null
+          : null,
+        // Servers whose tools are loaded as ordinary tools this turn (an "Ask
+        // about this window" chat's app servers); absent = none.
+        directMcp: Array.isArray(parsed.directMcp) ? parsed.directMcp.filter((n) => typeof n === 'string') : []
       };
     } catch {
       return {
@@ -2163,7 +2255,8 @@ export function makeTurnContextGate(path) {
         external: false,
         imageGen: false,
         imageGenRefusal: null,
-        mcpServers: null
+        mcpServers: null,
+        directMcp: []
       };
     }
   };
