@@ -14,8 +14,8 @@ struct ThreadView: View {
     /// Not observed: re-rendering on every scroll step looped the layout.
     @State private var follow = ScrollFollow()
 
-    init(session: Session, threadId: String?) {
-        _store = State(initialValue: ThreadStore(session: session, threadId: threadId))
+    init(session: Session, threadId: String?, folderId: String? = nil) {
+        _store = State(initialValue: ThreadStore(session: session, threadId: threadId, folderId: folderId))
         let key = threadId.map { "chat:\($0)" } ?? "chat:new"
         _draftKey = State(initialValue: key)
         _draft = State(initialValue: DraftStore.load(key))
@@ -168,6 +168,9 @@ struct ThreadView: View {
 
     private var newChatHeader: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if let folder = session.chats.folder(store.folderId) {
+                Label("In \(folder.name)", systemImage: "folder").font(.footnote).foregroundStyle(.secondary)
+            }
             if !session.chatPersonas.isEmpty {
                 Text("Talk to").font(.footnote).foregroundStyle(.secondary)
                 ScrollView(.horizontal, showsIndicators: false) {

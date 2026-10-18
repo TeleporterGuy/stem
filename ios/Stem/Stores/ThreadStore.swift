@@ -28,6 +28,8 @@ final class ThreadStore {
     /// The open chat's own format ("mdx" or "md"), stored with it on the server.
     /// A draft has none yet: it starts in the composer's default.
     private(set) var format: String?
+    /// Where a draft is filed once its first send makes it a chat.
+    let folderId: String?
     var error: String?
 
     let session: Session
@@ -40,9 +42,10 @@ final class ThreadStore {
     /// turn it already started instead of a duplicate chat.
     @ObservationIgnored private var unanswered: (text: String, files: Int, turnId: String)?
 
-    init(session: Session, threadId: String?) {
+    init(session: Session, threadId: String?, folderId: String? = nil) {
         self.session = session
         self.threadId = threadId
+        self.folderId = folderId
         if let id = threadId, let row = session.chats.chats.first(where: { $0.threadId == id }) {
             isPrivate = row.private == true
             format = row.format ?? "mdx"
@@ -369,6 +372,7 @@ final class ThreadStore {
                 threadId = t
                 self.isPrivate = isPrivate
                 format = s.format
+                if let folderId { Task { await session.chats.moveChats([t], to: folderId) } }
             }
             pendingTurnId = nil
             if activityLabel == "Sending" { activityLabel = nil }

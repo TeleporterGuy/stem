@@ -7,7 +7,18 @@ import Foundation
 
 struct ChatListResult: Codable {
     var chats: [ChatSummary]
+    /// Absent only from a server older than folders.
+    var folders: [ChatFolder]?
     var inbox: InboxState
+}
+
+/// A user-made chat folder; `parentId` nil = top level.
+struct ChatFolder: Codable, Identifiable, Hashable {
+    var id: String
+    var name: String
+    var parentId: String?
+    /// Sort order among siblings.
+    var order: Double
 }
 
 struct ChatSummary: Codable, Identifiable, Hashable {
@@ -15,6 +26,7 @@ struct ChatSummary: Codable, Identifiable, Hashable {
     var title: String
     var subject: String?
     var preview: String?
+    var folderId: String?
     var `private`: Bool?
     /// "md" when the chat runs as plain Markdown; nil means MDX.
     var format: String?

@@ -70,7 +70,8 @@ struct MailListView: View {
                 switch route {
                 case .mail(let id): MailConversationView(conversationId: id)
                 case .thread(let id): ThreadView(session: session, threadId: id).id(id)
-                case .newChat: ThreadView(session: session, threadId: nil)
+                case .newChat(let folderId): ThreadView(session: session, threadId: nil, folderId: folderId)
+                case .folder(let id): ChatFolderView(folderId: id)
                 }
             }
             .sheet(isPresented: $composing) {

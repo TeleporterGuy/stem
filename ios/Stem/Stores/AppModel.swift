@@ -7,7 +7,9 @@ enum AppTab: Hashable { case mail, chats, settings }
 /// Where a notification tap or deep link wants to go.
 enum Route: Hashable {
     case thread(String)
-    case newChat
+    /// A draft filed into the folder once it becomes a chat; nil = top level.
+    case newChat(folderId: String?)
+    case folder(String)
     case mail(String)
 }
 
@@ -73,7 +75,7 @@ final class AppModel {
         case .mail:
             tab = .mail
             mailPath = [route]
-        case .thread, .newChat:
+        case .thread, .newChat, .folder:
             tab = .chats
             chatPath = [route]
         }

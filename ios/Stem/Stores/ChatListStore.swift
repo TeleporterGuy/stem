@@ -4,6 +4,7 @@ import Observation
 @MainActor @Observable
 final class ChatListStore {
     private(set) var chats: [ChatSummary] = []
+    private(set) var folders: [ChatFolder] = []
     private(set) var inbox = InboxState()
     private(set) var loaded = false
     var error: String?
@@ -82,7 +83,74 @@ final class ChatListStore {
 
     private func apply(_ r: ChatListResult) {
         chats = r.chats.sorted { Inbox.toMs($0.updatedAt) > Inbox.toMs($1.updatedAt) }
+        folders = r.folders ?? []
         inbox = r.inbox
+    }
+
+    // MARK: Folders
+
+    func childFolders(of parentId: String?) -> [ChatFolder] {
+        folders.filter { $0.parentId == parentId }.sorted { $0.order < $1.order }
+    }
+
+    func folder(_ id: String?) -> ChatFolder? {
+        id.flatMap { id in folders.first { $0.id == id } }
+    }
+
+    /// The folder and every folder under it.
+    func subtree(_ id: String) -> Set<String> {
+        var out: Set<String> = [id]
+        var frontier = [id]
+        while let next = frontier.popLast() {
+            for f in folders where f.parentId == next && !out.contains(f.id) {
+                out.insert(f.id)
+                frontier.append(f.id)
+            }
+        }
+        return out
+    }
+
+    /// Unread chats anywhere under the folder, so a bold row can't hide inside it.
+    func unreadCount(in id: String) -> Int {
+        let ids = subtree(id)
+        return chats.filter { c in c.folderId.map(ids.contains) == true && !isArchived(c) && isUnread(c) }.count
+    }
+
+    /// Every folder in tree order with its depth, for the Move picker.
+    var folderTree: [(folder: ChatFolder, depth: Int)] {
+        var out: [(ChatFolder, Int)] = []
+        func walk(_ parent: String?, _ depth: Int) {
+            for f in childFolders(of: parent) {
+                out.append((f, depth))
+                walk(f.id, depth + 1)
+            }
+        }
+        walk(nil, 0)
+        return out
+    }
+
+    func moveChats(_ ids: [String], to folderId: String?) async {
+        for id in ids {
+            if let i = chats.firstIndex(where: { $0.threadId == id }) { chats[i].folderId = folderId }
+        }
+        for id in ids { await mutate("chats:setFolder", [.string(id), folderId.map(JSONValue.string) ?? .null]) }
+    }
+
+    /// Answers the new folder's id, told apart from the folders that were there before.
+    @discardableResult
+    func createFolder(_ name: String, in parentId: String?) async -> String? {
+        let before = Set(folders.map(\.id))
+        await mutate("folders:create", [.string(name), parentId.map(JSONValue.string) ?? .null])
+        return folders.first { !before.contains($0.id) }?.id
+    }
+
+    func renameFolder(_ id: String, _ name: String) async {
+        await mutate("folders:rename", [.string(id), .string(name)])
+    }
+
+    /// Its chats and subfolders move up to its parent; nothing is deleted with it.
+    func deleteFolder(_ id: String) async {
+        await mutate("folders:delete", [.string(id)])
     }
 
     func isUnread(_ c: ChatSummary) -> Bool {
