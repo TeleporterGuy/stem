@@ -15,7 +15,8 @@ import {
   type MailExternalThread,
   type MailItem,
   type MailListResult,
-  type ScheduledRunReport
+  type ScheduledRunReport,
+  type SystemVersion
 } from '../../shared/types';
 import { coerceSystemVersion } from '../../shared/sys-version';
 import { systemVersion } from '../sys-version';
@@ -413,6 +414,63 @@ function asResult(store: MailFile): MailListResult {
 
 export function readMail(): Promise<MailListResult> {
   return enqueue(async () => asResult(await readFileStore()));
+}
+
+/** How much of a mail body a summary keeps: enough for a two-line row preview. */
+const SUMMARY_BODY_CHARS = 400;
+
+/**
+ * The list without the mail: every conversation and the inbox state, plus per
+ * conversation only the mails a list row needs (the newest the user sent or
+ * received, for the preview, and the user's newest send, for Sent's order),
+ * bodies cut to a preview and the heavy fields dropped. A phone reads this on
+ * every launch and every mail:changed; the whole store was 1.3 MB by October
+ * and growing with every mail. A conversation's own mails come from
+ * readMailConversation when it is opened.
+ */
+export function readMailSummary(): Promise<MailListResult> {
+  return enqueue(async () => {
+    const store = await readFileStore();
+    const preview = new Map<string, MailItem>();
+    const sent = new Map<string, MailItem>();
+    for (const item of store.items) {
+      if (item.from === 'user' || item.to.includes('user')) {
+        const cur = preview.get(item.conversationId);
+        if (!cur || item.at >= cur.at) preview.set(item.conversationId, item);
+      }
+      if (item.from === 'user') {
+        const cur = sent.get(item.conversationId);
+        if (!cur || item.at >= cur.at) sent.set(item.conversationId, item);
+      }
+    }
+    const keep = new Set([...preview.values(), ...sent.values()]);
+    const items = store.items
+      .filter((item) => keep.has(item))
+      .map((item): MailItem => ({
+        id: item.id,
+        conversationId: item.conversationId,
+        from: item.from,
+        to: item.to,
+        body: item.body.length > SUMMARY_BODY_CHARS ? item.body.slice(0, SUMMARY_BODY_CHARS) : item.body,
+        at: item.at,
+        ...(item.subject !== undefined ? { subject: item.subject } : {})
+      }));
+    return { ...asResult(store), items };
+  });
+}
+
+/** One conversation and all of its mails, whole: what opening it shows. */
+export function readMailConversation(
+  conversationId: string
+): Promise<{ conversation: MailConversation | null; items: MailItem[]; sys: SystemVersion }> {
+  return enqueue(async () => {
+    const store = await readFileStore();
+    return {
+      conversation: store.conversations.find((c) => c.id === conversationId) ?? null,
+      items: store.items.filter((item) => item.conversationId === conversationId),
+      sys: systemVersion()
+    };
+  });
 }
 
 /**

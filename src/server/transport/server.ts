@@ -4,6 +4,8 @@ import { chmod, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { connect, type AddressInfo, type Socket } from 'node:net';
 import { Transform, type Readable } from 'node:stream';
+import { promisify } from 'node:util';
+import { gzip } from 'node:zlib';
 import { log } from '../log';
 import { presentedToken, requestOriginProblem, type DeviceRole, type OriginPolicy } from './auth';
 import type { DeviceKind } from '../../shared/types';
@@ -68,6 +70,15 @@ import type { DeviceKind } from '../../shared/types';
 
 /** 25 MB: base64-encoded photo attachments ride POST /rpc as startTurn arguments. */
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Answers past this size go out gzipped to a caller that accepts it. The phone
+ * refetches its mail list (every body) and chat list on each launch and
+ * foreground — 1.7 MB of JSON by mid-October — and on a mobile link that
+ * transfer, not the server, is what kept the list spinning.
+ */
+const GZIP_MIN_BYTES = 8 * 1024;
+const gzipAsync = promisify(gzip);
 
 /** A pairing code and its JSON wrapper. Unauthenticated, so it gets its own cap. */
 const MAX_PAIR_BODY_BYTES = 1024;
@@ -349,7 +360,10 @@ export interface TransportServer {
 class BodyTooLarge extends Error {}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const text = JSON.stringify(body);
+  sendJsonText(res, status, JSON.stringify(body));
+}
+
+function sendJsonText(res: ServerResponse, status: number, text: string): void {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(text),
@@ -357,6 +371,25 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
     'cache-control': 'no-store'
   });
   res.end(text);
+}
+
+/** sendJson, gzipped when the answer is big and the caller said it can read gzip. */
+async function sendJsonCompressed(req: IncomingMessage, res: ServerResponse, status: number, body: unknown): Promise<void> {
+  const text = JSON.stringify(body);
+  const accepts = /\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''));
+  if (!accepts || text.length < GZIP_MIN_BYTES) {
+    sendJsonText(res, status, text);
+    return;
+  }
+  const zipped = await gzipAsync(text);
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-encoding': 'gzip',
+    'content-length': zipped.length,
+    vary: 'accept-encoding',
+    'cache-control': 'no-store'
+  });
+  res.end(zipped);
 }
 
 /**
@@ -651,7 +684,11 @@ export async function startTransportServer(opts: TransportServerOptions): Promis
       // IPC gets, then the real handler — so a malformed startTurn is refused
       // here for exactly the reason it would be refused at the desk.
       const result = await opts.dispatch(channel, args, { deviceId: gated.device.id });
-      sendJson(res, 200, { ok: true, result: result ?? null });
+      // `x-stem-result: none` is a caller that only needs to know the call
+      // worked: the inbox mutators answer with the whole mail list, which a
+      // phone re-reads in its slim form anyway.
+      const discard = req.headers['x-stem-result'] === 'none';
+      await sendJsonCompressed(req, res, 200, { ok: true, result: discard ? null : (result ?? null) });
     } catch (e) {
       const error = String((e as Error)?.message ?? e);
       // quiet: the handler's own error goes back over the wire verbatim, which

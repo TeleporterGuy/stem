@@ -233,6 +233,8 @@ struct MailConversationView: View {
             if !session.mail.loaded { await session.mail.reload() }
             await markRead()
         }
+        .task { await session.mail.open(conversationId) }
+        .onDisappear { session.mail.close(conversationId) }
         // A reply that lands while the conversation is open has been read.
         .onChange(of: conversation?.userUpdatedAt) { _, _ in Task { await markRead() } }
     }

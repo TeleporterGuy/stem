@@ -29,8 +29,14 @@ struct StemClient: Sendable {
 
     /// Calls a server channel. Args are positional, like the desktop preload.
     func call<T: Decodable>(_ channel: String, _ args: [JSONValue] = [], as: T.Type = T.self) async throws -> T {
+        try await call(channel, args, as: T.self, discardResult: false)
+    }
+
+    private func call<T: Decodable>(_ channel: String, _ args: [JSONValue], as: T.Type, discardResult: Bool) async throws -> T {
         var req = URLRequest(url: baseURL.appendingPathComponent("rpc"))
         req.httpMethod = "POST"
+        // The server leaves the answer out (older servers send it anyway).
+        if discardResult { req.setValue("none", forHTTPHeaderField: "X-Stem-Result") }
         req.setValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(["channel": JSONValue.string(channel), "args": .array(args)])
@@ -53,7 +59,7 @@ struct StemClient: Sendable {
 
     /// Fire-and-check for channels whose answer the caller ignores.
     func run(_ channel: String, _ args: [JSONValue] = []) async throws {
-        _ = try await call(channel, args, as: Empty.self)
+        _ = try await call(channel, args, as: Empty.self, discardResult: true)
     }
 
     struct UploadResult: Decodable { let handle: String; let name: String; let size: Int? }

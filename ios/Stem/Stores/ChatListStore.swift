@@ -12,7 +12,37 @@ final class ChatListStore {
     @ObservationIgnored private weak var connection: Connection?
     @ObservationIgnored private var debounce: Task<Void, Never>?
 
-    init(client: StemClient) { self.client = client }
+    init(client: StemClient) {
+        self.client = client
+        // The last list this pairing saw, so a cold start shows chats at once
+        // instead of a spinner while a few hundred KB come over a phone link.
+        if let data = try? Data(contentsOf: Self.cacheURL(client.creds.deviceId)),
+           let cached = try? JSONDecoder().decode(ChatListResult.self, from: data) {
+            apply(cached)
+            loaded = true
+        }
+    }
+
+    private static var cacheDir: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("chat-list", isDirectory: true)
+    }
+
+    private static func cacheURL(_ deviceId: String) -> URL {
+        cacheDir.appendingPathComponent("\(deviceId).json")
+    }
+
+    /// Unpairing forgets the list along with the pairing.
+    static func clearCache() { try? FileManager.default.removeItem(at: cacheDir) }
+
+    private func save(_ r: ChatListResult) {
+        let url = Self.cacheURL(client.creds.deviceId)
+        Task.detached(priority: .utility) {
+            guard let data = try? JSONEncoder().encode(r) else { return }
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: url, options: .atomic)
+        }
+    }
 
     func attach(_ c: Connection) {
         connection = c
@@ -40,7 +70,9 @@ final class ChatListStore {
 
     func reload() async {
         do {
-            apply(try await client.call("chats:list", as: ChatListResult.self))
+            let r = try await client.call("chats:list", as: ChatListResult.self)
+            apply(r)
+            save(r)
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -77,7 +109,11 @@ final class ChatListStore {
     }
 
     private func mutate(_ channel: String, _ args: [JSONValue]) async {
-        do { apply(try await client.call(channel, args, as: ChatListResult.self)) }
+        do {
+            let r = try await client.call(channel, args, as: ChatListResult.self)
+            apply(r)
+            save(r)
+        }
         catch { self.error = error.localizedDescription }
     }
 }

@@ -58,6 +58,7 @@ final class AppModel {
         session = nil
         CredentialStore.clear()
         DraftStore.clearAll()
+        ChatListStore.clearCache()
         chatPath = []
         mailPath = []
     }

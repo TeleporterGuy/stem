@@ -15,6 +15,8 @@ import {
   mailSessionThreadIds,
   mailedImageThread,
   readMail,
+  readMailConversation,
+  readMailSummary,
   setConversationSession,
   setConversationStatus,
   setConversationSubject,
@@ -524,5 +526,38 @@ describe('mail observers', () => {
       expect(received).toEqual(['answer']);
       expect(changes).toBe(6);
     } finally { off(); offReceived(); }
+  });
+});
+
+describe('the phone\'s summary and open', () => {
+  it('lists every conversation with only the mails a row needs, bodies cut to a preview', async () => {
+    const a = await createConversation('Plan the trip', ['normal']);
+    await appendMailItem({ conversationId: a.id, from: 'user', to: ['normal'], body: 'plan it' });
+    await appendMailItem({ conversationId: a.id, from: 'normal', to: ['travel'], body: 'consult' });
+    await appendMailItem({ conversationId: a.id, from: 'travel', to: ['normal'], body: 'x'.repeat(5000) });
+    await appendMailItem({ conversationId: a.id, from: 'normal', to: ['user'], body: 'y'.repeat(5000) });
+    const b = await createConversation('Quiet', ['normal']);
+
+    const summary = await readMailSummary();
+    expect(summary.conversations.map((c) => c.id).sort()).toEqual([a.id, b.id].sort());
+    expect(summary.inbox).toEqual((await readMail()).inbox);
+    // The user's send (Sent's order) and the reply to them (the preview); the
+    // persona-to-persona exchange stays on the server.
+    expect(summary.items.map((i) => i.from)).toEqual(['user', 'normal']);
+    expect(summary.items[1].to).toEqual(['user']);
+    expect(summary.items[1].body).toBe('y'.repeat(400));
+  });
+
+  it('opens one conversation whole', async () => {
+    const a = await createConversation('A', ['normal']);
+    const b = await createConversation('B', ['normal']);
+    await appendMailItem({ conversationId: a.id, from: 'user', to: ['normal'], body: 'a1' });
+    await appendMailItem({ conversationId: b.id, from: 'user', to: ['normal'], body: 'b1' });
+    await appendMailItem({ conversationId: a.id, from: 'normal', to: ['travel'], body: 'z'.repeat(5000) });
+
+    const open = await readMailConversation(a.id);
+    expect(open.conversation?.id).toBe(a.id);
+    expect(open.items.map((i) => i.body)).toEqual(['a1', 'z'.repeat(5000)]);
+    expect((await readMailConversation('gone')).conversation).toBeNull();
   });
 });

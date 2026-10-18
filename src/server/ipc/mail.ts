@@ -7,6 +7,8 @@ import { transportedRawPath } from '../files/staging';
 import {
   deleteConversation,
   readMail,
+  readMailConversation,
+  readMailSummary,
   setMailArchived,
   setMailRead,
   setMailSnooze
@@ -35,6 +37,10 @@ export function registerMailIpc(deps: { router(): MailRouter | null; runtime(): 
     }
   };
   registerServer('mail:list', () => readMail());
+  // The phone's pair: a list that carries no mail, and one conversation's mail
+  // on open. mail:list stays whole for the desktop and for older phone builds.
+  registerServer('mail:summary', () => readMailSummary());
+  registerServer('mail:open', (_e, conversationId: string) => readMailConversation(conversationId));
   registerServer('mail:work', (_e, conversationId: string) => getMailWork(deps.runtime(), conversationId));
   registerServer('mail:compose', async (e, input: MailComposeInput) => {
     await refuseRawPaths(e, input.attachments);

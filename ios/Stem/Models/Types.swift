@@ -5,12 +5,12 @@ import Foundation
 
 // MARK: Chats
 
-struct ChatListResult: Decodable {
+struct ChatListResult: Codable {
     var chats: [ChatSummary]
     var inbox: InboxState
 }
 
-struct ChatSummary: Decodable, Identifiable, Hashable {
+struct ChatSummary: Codable, Identifiable, Hashable {
     var threadId: String
     var title: String
     var subject: String?
