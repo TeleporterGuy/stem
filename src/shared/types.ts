@@ -1141,6 +1141,13 @@ export interface ScheduledTask {
    * log at best, and for a whole class of failures not even there.
    */
   lastError?: string;
+  /**
+   * The firing in flight: when it started and, once the backend named it, its
+   * thread. Cleared when the run settles, so one still set at boot is a run the
+   * process died under — the schedule had already moved on, so without this the
+   * firing vanished with the row stuck on "running".
+   */
+  inFlight?: { at: string; threadId?: string };
   /** Short human label derived from the prompt, for the list + chat badge. */
   title: string;
   /** Who and what this task's runs execute as (see {@link TaskRunsAs}). */
@@ -1181,6 +1188,8 @@ export interface TaskRunRecord {
   threadId?: string;
   /** Stopped for an Allow/Deny that went out by mail. */
   parked?: boolean;
+  /** Cut off by a server restart; the next boot ran it once more. */
+  interrupted?: boolean;
 }
 
 /** How many firings a task remembers in `recentRuns`. */

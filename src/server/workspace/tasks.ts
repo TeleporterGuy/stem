@@ -114,6 +114,9 @@ function coerce(raw: unknown): ScheduledTask | null {
       ? { lastStatus: r.lastStatus }
       : {}),
     ...(typeof r.lastError === 'string' && r.lastError ? { lastError: clipError(r.lastError) } : {}),
+    ...(r.inFlight && typeof r.inFlight === 'object' && typeof r.inFlight.at === 'string'
+      ? { inFlight: { at: r.inFlight.at, ...(str(r.inFlight.threadId) ? { threadId: str(r.inFlight.threadId) } : {}) } }
+      : {}),
     ...(Array.isArray(r.recentRuns) ? { recentRuns: coerceRuns(r.recentRuns) } : {}),
     ...(str(r.mailConversationId) ? { mailConversationId: str(r.mailConversationId) } : {})
   };
@@ -130,7 +133,8 @@ function coerceRuns(raw: unknown[]): TaskRunRecord[] {
       status: r.status,
       ...(typeof r.error === 'string' && r.error ? { error: clipError(r.error) } : {}),
       ...(typeof r.threadId === 'string' && r.threadId ? { threadId: r.threadId } : {}),
-      ...(r.parked === true ? { parked: true } : {})
+      ...(r.parked === true ? { parked: true } : {}),
+      ...(r.interrupted === true ? { interrupted: true } : {})
     });
   }
   return out.slice(0, TASK_RECENT_RUNS);

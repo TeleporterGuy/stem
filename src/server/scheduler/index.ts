@@ -236,6 +236,11 @@ export class TaskScheduler {
     // version whatever happened, so the pass runs once per install.
     if (store.legacy && this.tasks.length) await this.rewriteLegacyPrompts();
 
+    // Runs the last process died under. Each was dispatched, so its schedule
+    // already moved on and the overdue check below cannot see it.
+    const interrupted = this.tasks.filter((t) => t.inFlight || t.lastStatus === 'running');
+    const retries = interrupted.filter((task) => this.settleInterrupted(task));
+
     const now = new Date();
     const overdue: ScheduledTask[] = [];
     for (const task of this.tasks) {
@@ -253,7 +258,47 @@ export class TaskScheduler {
 
     // Catch-up: run each overdue task exactly once, sequentially, then resume.
     for (const task of overdue) this.enqueueRun(task.id, 'catchup');
+    for (const task of retries) if (!overdue.includes(task)) this.enqueueRun(task.id, 'catchup');
     this.arm();
+  }
+
+  /**
+   * Record a firing the process died under as an interrupted run and say
+   * whether to run it again now. Once only: a run cut off twice in a row may be
+   * what is bringing the server down, so the second time it waits for its next
+   * schedule with the row saying why.
+   */
+  private settleInterrupted(task: ScheduledTask): boolean {
+    const at = task.inFlight?.at ?? new Date().toISOString();
+    const deadThread = task.inFlight?.threadId;
+    delete task.inFlight;
+    const retry = task.enabled && !task.recentRuns?.[0]?.interrupted;
+    const error = retry
+      ? 'Cut off by a server restart; it ran again on startup.'
+      : 'Cut off by a server restart twice in a row; it goes again on its next schedule.';
+    log('tasks', 'a scheduled run was cut off by a restart', { task: task.title, retry });
+    // The status the run started from, so the retry's failure mail fires as it
+    // would have (it mails only on a first failure).
+    const before = task.recentRuns?.[0]?.status;
+    task.recentRuns = [{ at, status: 'failed' as const, error, interrupted: true }, ...(task.recentRuns ?? [])].slice(
+      0,
+      TASK_RECENT_RUNS
+    );
+    task.lastRunAt = at;
+    if (retry) {
+      if (before) task.lastStatus = before;
+      else delete task.lastStatus;
+    } else {
+      task.lastStatus = 'failed';
+      task.lastError = error;
+      if (task.schedule.kind === 'once' && !task.nextRunAt) this.tasks = this.tasks.filter((t) => t.id !== task.id);
+    }
+    // Nothing reads a dead run's thread; it only costs disk.
+    if (deadThread) {
+      const deleteThread = this.opts.deleteThread ?? ((id: string) => this.opts.runtime.deleteThread(id));
+      void deleteThread(deadThread).catch((err) => degrade('tasks', "left a cut-off scheduled run's thread behind", err));
+    }
+    return retry;
   }
 
   stop(): void {
@@ -554,6 +599,12 @@ export class TaskScheduler {
     task.nextRunAt = next ? next.toISOString() : null;
   }
 
+  /** Write the in-flight mark now: the point of it is to survive the process dying mid-run. */
+  private persistInFlight(): void {
+    this.opts.onChange(this.snapshot());
+    void saveTasks(this.tasks).catch((err) => degrade('tasks', 'did not record a scheduled run as in flight', err));
+  }
+
   private async persistAndArm(): Promise<void> {
     await saveTasks(this.tasks);
     this.opts.onChange(this.snapshot());
@@ -654,7 +705,8 @@ export class TaskScheduler {
     const atIso = new Date().toISOString();
     const prevStatus = task.lastStatus;
     task.lastStatus = 'running';
-    this.opts.onChange(this.snapshot());
+    task.inFlight = { at: atIso };
+    this.persistInFlight();
 
     const resolved = await this.resolveRunsAs(task);
     const run: ActiveRun = { taskId: id, threadId: null, turnId: null, preempted: false, notified: false };
@@ -690,6 +742,8 @@ export class TaskScheduler {
         if (started.threadId) {
           run.threadId = started.threadId;
           work.bindThread(started.threadId);
+          task.inFlight = { at: atIso, threadId: started.threadId };
+          this.persistInFlight();
           // Start this turn's clock now rather than at its first streamed event,
           // so a run that hangs without producing one is still measurable — same
           // reason as the interactive path in server/index.ts (see noteTurnStart).
@@ -743,7 +797,8 @@ export class TaskScheduler {
         activity.end(handle, { worked: false });
         await this.disposeRunThread(run, reflection);
         task.lastStatus = prevStatus;
-        this.opts.onChange(this.snapshot());
+        delete task.inFlight;
+        this.persistInFlight();
         this.enqueueRun(id, 'requeued');
         return;
       }
@@ -813,6 +868,7 @@ export class TaskScheduler {
     await this.disposeRunThread(run, reflection);
 
     task.lastRunAt = atIso;
+    delete task.inFlight;
     // The Runs list: a quiet run's thread is gone by now, so this is all it leaves.
     const failed = task.lastStatus === 'failed';
     const record: TaskRunRecord = {
