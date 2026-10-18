@@ -12,7 +12,7 @@
 
 import { spawn } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { open, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, parse, resolve, sep } from 'node:path';
@@ -52,6 +52,27 @@ const RECALL_SERVER_NAME = 'stem-recall';
  * credential map. Main owns mcp.json; this bridge writes only refreshed OAuth
  * tokens after the identity/CAS checks below.
  */
+/**
+ * renameSync, retried on Windows while the target is open elsewhere (main
+ * reading the same token file), then copied over in place: a dropped rename
+ * here is a rotated refresh token lost. Twin of src/server/replace-file.ts.
+ */
+function replaceFileSync(tmp, path) {
+  for (let attempt = 0, waited = 0; ; attempt++) {
+    try {
+      renameSync(tmp, path);
+      return;
+    } catch (e) {
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(e?.code)) throw e;
+      if (waited >= 2_000) break;
+      const ms = Math.min(10 * 2 ** attempt, 100);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+      waited += ms;
+    }
+  }
+  copyFileSync(tmp, path);
+}
+
 function writeSecretSync(path, data) {
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(tmp, data, { mode: 0o600 });
@@ -61,7 +82,7 @@ function writeSecretSync(path, data) {
     // best-effort on platforms without POSIX perms
   }
   try {
-    renameSync(tmp, path); // atomic on the same filesystem (same dir)
+    replaceFileSync(tmp, path); // atomic on the same filesystem (same dir)
   } finally {
     try {
       rmSync(tmp, { force: true });
@@ -3482,9 +3503,9 @@ function registerComputerTool(pi, turnContext) {
     name: 'computer',
     label: 'Computer',
     description:
-      "See and drive a Mac: the one this persona is pinned to (Manage → Personas → \"Computer this persona " +
+      "See and drive the user's computer, a Mac or a Windows PC: the one this persona is pinned to (Manage → Personas → \"Computer this persona " +
       'controls"), or, in a chat with no persona, the one Settings → Features → Computer control names — or, ' +
-      'when this turn\'s context lists Macs for you to choose from, the one you name in `device`. In such a ' +
+      'when this turn\'s context lists computers for you to choose from, the one you name in `device`. In such a ' +
       'chat use it only when the user asks you to do something on their computer. Every call answers with a ' +
       'fresh picture, so look before you act and check after. One call can chain several steps: `actions` (up ' +
       'to 10, in order, one picture after the last). Batch what is predictable — keys, typing, clicks at ' +
@@ -3494,12 +3515,12 @@ function registerComputerTool(pi, turnContext) {
       'were shown (top-left origin), in every step of a batch too — never ' +
       'guess them from memory of an earlier frame. Use `zoom` with a `region` to read small text (its picture is ' +
       'magnified: do not click from it, take a screenshot first). Prefer `run_command` with `device` set to this ' +
-      'same computer for anything a shell does better (opening an app with `open -a`, files, git, scripts); click ' +
+      'same computer for anything a shell does better (opening an app with `open -a` on a Mac or `start` on Windows, files, git, scripts); click ' +
       'only for what needs the GUI. Two modes. START WITH `list_windows`: it costs nothing and never interrupts ' +
       'the user. WINDOW mode (the default for working on an app): `select_window` (by `window_id`, or `app` name ' +
       'plus optional `title` substring). From then on screenshots show that window wherever it is — another ' +
       'Space, behind other windows, another display — coordinates are pixels of the window picture, and clicks ' +
-      'and keys are delivered through Accessibility to that app alone: they work on buttons, links, fields, list ' +
+      'and keys are delivered through Accessibility (UI Automation on Windows) to that app alone: they work on buttons, links, fields, list ' +
       'rows and menu items, not on canvases or games. The user keeps their own mouse and keyboard and their ' +
       'typing does not end the run (only Stop on the banner does). `snapshot` lists the window\'s controls with ' +
       'ids and their place in the picture; `press`, `focus`, `menu` (context menu) and `set_value` act by ' +
@@ -3519,7 +3540,8 @@ function registerComputerTool(pi, turnContext) {
       'the current Space (it may stay behind their windows) and stop for this turn instead of retrying. Never ' +
       'type passwords, one-time codes or payment details, and never dismiss a security prompt; tell the user and ' +
       'wait. Keys use xdotool names: Return, Tab, Escape, space, BackSpace, Delete, Up/Down/Left/Right, Home, ' +
-      'End, Page_Up, Page_Down, F1–F12, and chords like "cmd+shift+t" or "ctrl+c".',
+      'End, Page_Up, Page_Down, F1–F12, and chords like "cmd+shift+t" or "ctrl+c". A Windows computer says so in ' +
+      'its first answer of a run, with what differs there.',
     parameters: {
       type: 'object',
       properties: {
@@ -3536,7 +3558,7 @@ function registerComputerTool(pi, turnContext) {
         device: {
           type: 'string',
           description:
-            'Which Mac, by name — only when this turn\'s context lists Macs for you to choose from. Otherwise leave it out: the Mac is fixed.'
+            'Which computer, by name — only when this turn\'s context lists computers for you to choose from. Otherwise leave it out: the computer is fixed.'
         }
       },
     },
@@ -3743,7 +3765,7 @@ function registerBrowserTool(pi, turnContext) {
     label: 'Browser',
     description:
       "Drive the user's own browser — their real one, signed in to their accounts — through the Stem " +
-      'extension on one of their computers (a Mac or a Linux machine): the one this persona is pinned to (Manage → Personas → "Browser this persona ' +
+      'extension on one of their computers (a Mac, Windows or Linux machine): the one this persona is pinned to (Manage → Personas → "Browser this persona ' +
       'controls"), or, in a chat with no persona, the one Settings → Features → Browser control names — or, ' +
       "when this turn's context lists computers for you to choose from, the one you name in `device`. In such a chat " +
       'use it only when the user asks for something in their browser; for reading the public web, web_search ' +

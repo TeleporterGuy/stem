@@ -15,7 +15,7 @@
 //  - every request gets an answer, including the ones that are refusals.
 
 import { afterAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +35,7 @@ import type {
   DeviceMcpSpec,
   McpHostLocalState
 } from '../../src/shared/types';
+import { expectPosixMode } from './posix-mode';
 
 const FILES_SPEC: DeviceMcpSpec = {
   command: '/usr/bin/mcp-files',
@@ -612,7 +613,7 @@ describe('the approval file on this disk', () => {
 
     // A file another user can write is a file another user can pre-approve a
     // spec in, which is the whole gate.
-    expect(statSync(mcpApprovalsPath()).mode & 0o777).toBe(0o600);
+    expectPosixMode(mcpApprovalsPath(), 0o600);
     expect(JSON.parse(await readFile(mcpApprovalsPath(), 'utf8'))).toEqual({
       version: 1,
       approved: { files: 'abc123', notes: 'def456' }

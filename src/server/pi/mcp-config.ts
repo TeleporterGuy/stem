@@ -1,6 +1,6 @@
 import { host } from '../host';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,7 @@ import {
 import { decryptSecretValue, encryptSecretValue, secretKeyAvailable } from './secrets';
 import { degrade } from '../degrade';
 import { compactCatalogText } from './mcp-discovery.mjs';
+import { replaceFile } from '../replace-file';
 
 // Stem's MCP config for the pi backend (mcp.json). Consumed by the bridge
 // extension (stem-mcp-extension.mjs), which pi loads via `-e`. Stem owns this file
@@ -530,7 +531,7 @@ async function writeSecretFile(path: string, data: string): Promise<void> {
   try {
     await writeFile(tmp, data, { encoding: 'utf8', mode: 0o600 });
     await chmod(tmp, 0o600);
-    await rename(tmp, path); // atomic on the same filesystem (same dir)
+    await replaceFile(tmp, path); // atomic on the same filesystem (same dir)
   } finally {
     // quiet: the temp is created 0600 inside the 0700 dir, so one that survives
     // is exactly as unreadable to anyone else as the file it was to become. It

@@ -28,6 +28,7 @@ import { plainLine, previewText } from '../../shared/plain-text';
 import { autoTitle, KEEP, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
 import { setNaming } from '../workspace/chats';
 import { browserDeviceRouter } from '../browser-device/router';
+import { computerDeviceRouter } from '../computer-device/router';
 import { turnFailureMessage } from '../../shared/chatState';
 
 const E2E_IMAGE_ID = 'img_e2e0000001';
@@ -99,6 +100,10 @@ function cannedSubject(prompt: string): string {
 //   [e2e:browser] <url> — open the URL with the `browser` tool and read the page
 //                 back, through the real router, desktop host, native host and
 //                 extension, on the first device that lets Stem drive its browser
+//   [e2e:computer] <app> — list the windows, select <app>'s with the `computer`
+//                 tool and snapshot its controls, through the real router,
+//                 desktop host and helper, on the first device that lets Stem
+//                 control it (needs a real desktop session)
 //   [e2e:tools] — two tool rows (a command, then a file read) around an empty
 //                 text block, the shape a model gives when it calls a tool first
 //   [e2e:burst] — stream BURST_DELTAS deltas back to back, with no pacing
@@ -182,6 +187,7 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
   private activeTurn: ActiveTurn | null = null;
   private execBridge: ExecBridge | null = null;
   private browserBridge: BrowserBridge | null = null;
+  private computerBridge: ComputerBridge | null = null;
 
   constructor(private readonly options: FakeBackendOptions) {
     super();
@@ -465,7 +471,10 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
   setHarnessBridge(_bridge: HarnessBridge | null): void {}
 
   /** Accepted and ignored: no scripted turn calls `computer`. */
-  setComputerBridge(_bridge: ComputerBridge | null): void {}
+  /** Held so `[e2e:computer]` can drive a real helper through the whole chain. */
+  setComputerBridge(bridge: ComputerBridge | null): void {
+    this.computerBridge = bridge;
+  }
 
   /** Held so `[e2e:browser]` can drive a real browser through the whole chain. */
   setBrowserBridge(bridge: BrowserBridge | null): void {
@@ -601,6 +610,30 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
             : opened;
           execTail = page.ok ? `\n\n[browser ok] ${page.text ?? ''}` : `\n\n[browser refused] ${page.error}`;
           bridge.endThread(threadId);
+        }
+        this.emitEvent('item/agentMessage/delta', { threadId, turnId, itemId: turnId, delta: execTail });
+      });
+    }
+
+    // [e2e:computer] <app>: the `computer` tool's window-mode opening moves.
+    if (!fail && !turn.hang && text.includes('[e2e:computer]')) {
+      steps.push(async () => {
+        const bridge = this.computerBridge;
+        const app = /\[e2e:computer\]\s+(\S+)/.exec(text)?.[1];
+        const hosts = bridge ? await computerDeviceRouter().hosts() : {};
+        const device = Object.values(hosts).find((h) => h.enabled)?.deviceId;
+        if (!bridge || !app || !device) {
+          execTail = '\n\n[computer refused] no device lets Stem control it';
+        } else {
+          const ask = (action: Parameters<ComputerBridge['handleComputerRequest']>[0]['action']) =>
+            bridge.handleComputerRequest({ device, threadId, action });
+          const listed = await ask({ kind: 'list_windows' });
+          const selected = listed.ok ? await ask({ kind: 'select_window', app }) : listed;
+          const tree = selected.ok ? await ask({ kind: 'snapshot' }) : selected;
+          execTail = tree.ok
+            ? `\n\n[computer ok] ${selected.ok && selected.target ? selected.target.app : '?'} · ${(tree.text ?? '').split('\n').slice(0, 12).join(' | ')}`
+            : `\n\n[computer refused] ${tree.error}`;
+          bridge.endThread(threadId, 'turn-ended');
         }
         this.emitEvent('item/agentMessage/delta', { threadId, turnId, itemId: turnId, delta: execTail });
       });

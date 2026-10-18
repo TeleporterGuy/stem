@@ -21,10 +21,14 @@ import {
   MAX_COMMAND_PREFIX_LENGTH
 } from '../../../../shared/exec-rules';
 
-/** Browser control runs on Macs and Linux; say which this one is. */
+/** Browser control runs on Macs, Windows and Linux; say which this one is. */
 const IS_MAC = window.stem?.platform === 'darwin';
 const MACHINE = IS_MAC ? 'Mac' : 'computer';
-const SETUP_BROWSERS = IS_MAC ? 'Arc, Chrome, Dia and Brave' : 'Chrome, Brave, Chromium and Edge';
+const SETUP_BROWSERS = IS_MAC
+  ? 'Arc, Chrome, Dia and Brave'
+  : window.stem?.platform === 'win32'
+    ? 'Chrome, Edge, Brave and Chromium'
+    : 'Chrome, Brave, Chromium and Edge';
 
 /** How long a chat's scratch folder survives being ignored. null = never sweep. */
 const SCRATCH_TTLS: { label: string; days: number | null }[] = [
@@ -793,20 +797,20 @@ export function AutonomySections() {
         {computerHost?.supported && (
           <>
             <ValueRow
-              label={<strong>Let Stem control this Mac</strong>}
+              label={<strong>Let Stem control this {MACHINE}</strong>}
               hint={
                 <>
                   Stem can see the screen and drive the mouse and keyboard here{' '}
                   <InfoTip label="What switching this on means">
-                    A persona pinned to this Mac in Manage → Personas — or a chat, when “Allow in chats”
+                    A persona pinned to this {MACHINE} in Manage → Personas — or a chat, when “Allow in chats”
                     above sends it here — gets a <code>computer</code> tool:
                     it takes screenshots, clicks and types here, with no per-action approval. While it
                     works a banner says so. Driving the whole screen, any key or mouse movement of your
                     own stops the run at once; working inside one app’s window (which it can do even
-                    when that window is on another Space or behind others), it leaves your mouse and
+                    when that window is {IS_MAC ? 'on another Space or ' : ''}behind others), it leaves your mouse and
                     keyboard alone and the banner’s Stop button ends it. Switching this off stops new
-                    runs immediately. Leave it off if this Stem server isn’t yours alone. Needs macOS 14
-                    or newer.
+                    runs immediately. Leave it off if this Stem server isn’t yours alone.
+                    {IS_MAC ? ' Needs macOS 14 or newer.' : ''}
                   </InfoTip>
                 </>
               }
@@ -815,7 +819,7 @@ export function AutonomySections() {
                 className={`switch${computerHost.enabled ? ' on' : ''}`}
                 role="switch"
                 aria-checked={computerHost.enabled}
-                aria-label="Let Stem control this Mac"
+                aria-label={`Let Stem control this ${MACHINE}`}
                 onClick={() =>
                   void window.stem.setComputerHostEnabled(!computerHost.enabled).then((s) => {
                     setComputerHost(s);
@@ -824,7 +828,7 @@ export function AutonomySections() {
                 }
               />
             </ValueRow>
-            {computerHost.enabled && (
+            {computerHost.enabled && IS_MAC && (
               <ValueRow
                 label={
                   <>

@@ -18,14 +18,14 @@ const WIDTH = 340;
 const HEIGHT = 44;
 
 const HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
-  html,body{margin:0;background:transparent;font:13px -apple-system,BlinkMacSystemFont,sans-serif;-webkit-user-select:none}
+  html,body{margin:0;background:transparent;font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-user-select:none}
   .pill{display:flex;align-items:center;gap:10px;height:36px;margin:4px;padding:0 6px 0 14px;border-radius:18px;
     background:rgba(20,20,24,.92);color:#fff;box-shadow:0 4px 18px rgba(0,0,0,.35)}
   .dot{width:8px;height:8px;border-radius:50%;background:#ff5f57;animation:p 1.2s infinite}
   @keyframes p{50%{opacity:.35}}
   .txt{flex:1;white-space:nowrap}
   button{height:26px;padding:0 12px;border:0;border-radius:13px;background:#fff;color:#111;font:600 12px -apple-system,sans-serif;cursor:pointer}
-</style></head><body><div class="pill"><span class="dot"></span><span class="txt" id="txt">Stem is controlling this Mac</span>
+</style></head><body><div class="pill"><span class="dot"></span><span class="txt" id="txt">${labelFor(null)}</span>
 <button id="stop">Stop</button></div></body></html>`;
 
 // An https URL, not a custom scheme: Chromium routes unknown schemes to the OS
@@ -43,7 +43,7 @@ export interface ComputerBanner {
 }
 
 function labelFor(app: string | null): string {
-  return app ? `Stem is controlling ${app}` : 'Stem is controlling this Mac';
+  return app ? `Stem is controlling ${app}` : `Stem is controlling this ${process.platform === 'darwin' ? 'Mac' : 'computer'}`;
 }
 
 export function createComputerBanner(): ComputerBanner {

@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import type { Folder, FolderSettings } from '../../shared/types';
 import { degrade } from '../degrade';
 import { chatStorePath } from './paths';
+import { replaceFile } from '../replace-file';
 
 // The Stem-owned chat-organization store. The backend owns the chats (threads);
 // this file holds only what it can't: the user's folder tree and which folder each
@@ -199,7 +200,7 @@ async function writeStore(store: ChatStore): Promise<void> {
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(store, null, 2), 'utf8');
   // rename is atomic on the same volume — readers never see a half-written file.
-  await rename(tmp, path);
+  await replaceFile(tmp, path);
 }
 
 /** Read, mutate, persist atomically. All public mutators funnel through here. */

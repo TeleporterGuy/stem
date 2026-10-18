@@ -12,7 +12,9 @@ import { createBrowserHost, type BrowserHost } from '../../src/desktop/browser-h
 import { parseArcTabs, type ArcSidebarTab } from '../../src/desktop/browser-host/arc-tabs';
 import { browserInstallPaths, ensureHostConfig } from '../../src/desktop/browser-host/install';
 import { writeBrowserHostEnabled } from '../../src/desktop/browser-host/store';
-import { encodeFrame, FrameReader, type ToExtension } from '../../src/shared/browser-native';
+import { encodeFrame, FrameReader, type ServerHello, type ToExtension } from '../../src/shared/browser-native';
+import { handshakeProof, newNonce, proofMatches } from '../../src/desktop/browser-host/handshake';
+import { serverProved } from '../../src/desktop/browser-host/native-host-main';
 import type { DeviceBrowserRequest } from '../../src/shared/types';
 
 interface Peer {
@@ -27,28 +29,44 @@ interface Peer {
 const LEGACY_HELLO = { type: 'hello', protocol: 1, extensionId: 'x', extensionVersion: '0.6.0', userAgent: 'UA' };
 
 /**
- * A native host: its host-hello, then — as the real one replays it on every
+ * A native host: the handshake (handshake.ts) with the token in `hello`, which
+ * never goes on the wire, then — as the real one replays it on every
  * connection — the extension's hello (`ext`; null for a host whose extension
- * has not said it yet).
+ * has not said it yet). Resolves once the host has sent its proof, or once the
+ * desktop hung up on it.
  */
 async function connectPeer(
   socketPath: string,
   hello: Record<string, unknown>,
   ext: Record<string, unknown> | null = LEGACY_HELLO
 ): Promise<Peer> {
+  const { token, ...claim } = hello as { token: string };
   const socket = createConnection(socketPath);
   const reader = new FrameReader();
   const received: ToExtension[] = [];
   const waiters: Array<() => void> = [];
+  const nonce = newNonce();
+  let proved: () => void = () => undefined;
+  const handshake = new Promise<void>((resolve) => (proved = resolve));
   socket.on('data', (chunk: Buffer) => {
-    for (const body of reader.push(chunk)) received.push(JSON.parse(body.toString('utf8')) as ToExtension);
+    for (const body of reader.push(chunk)) {
+      const m = JSON.parse(body.toString('utf8')) as ToExtension | ServerHello;
+      if (m.type === 'server-hello') {
+        expect(proofMatches(token, 'stem', nonce, m.proof) || token === 'nope').toBe(true);
+        socket.write(encodeFrame({ type: 'host-proof', proof: handshakeProof(token, 'host', m.nonce) }));
+        proved();
+        continue;
+      }
+      received.push(m);
+    }
     for (const w of waiters.splice(0)) w();
   });
   const closed = new Promise<void>((resolve) => socket.on('close', () => resolve()));
   socket.on('error', () => undefined);
   await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
-  socket.write(encodeFrame(hello));
-  if (ext) socket.write(encodeFrame(ext));
+  socket.write(encodeFrame({ ...claim, nonce }));
+  const proof = await Promise.race([handshake.then(() => true), closed.then(() => false)]);
+  if (proof && ext) socket.write(encodeFrame(ext));
   const send = (message: unknown): void => void socket.write(encodeFrame(message));
   const next = async (type: ToExtension['type']): Promise<ToExtension> => {
     for (;;) {
@@ -60,9 +78,25 @@ async function connectPeer(
   return { socket, received, send, next, closed };
 }
 
+/** Two seconds of polling, by the clock: Windows rounds a 5 ms timer up to ~16 ms. */
 const until = async (cond: () => boolean): Promise<void> => {
-  for (let i = 0; i < 400 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+  const end = Date.now() + 2000;
+  while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 5));
 };
+
+describe('the native host', () => {
+  it('relays only to a peer that proves it holds the token', () => {
+    const token = 'a'.repeat(64);
+    const nonce = newNonce();
+    const hello = (proof: string) => Buffer.from(JSON.stringify({ type: 'server-hello', nonce: newNonce(), proof }));
+    expect(serverProved(token, nonce, hello(handshakeProof(token, 'stem', nonce)))).toBe(true);
+    // A squatter on the socket: no token, or a proof replayed for another nonce, or the host's own role.
+    expect(serverProved(token, nonce, hello(handshakeProof('b'.repeat(64), 'stem', nonce)))).toBe(false);
+    expect(serverProved(token, nonce, hello(handshakeProof(token, 'stem', newNonce())))).toBe(false);
+    expect(serverProved(token, nonce, hello(handshakeProof(token, 'host', nonce)))).toBe(false);
+    expect(serverProved(token, nonce, Buffer.from('{"type":"request"}'))).toBe(false);
+  });
+});
 
 describe('createBrowserHost', () => {
   let root: string;
@@ -156,6 +190,17 @@ describe('createBrowserHost', () => {
     await peer.closed;
   });
 
+  it('drops a native host that skips the handshake, and never sends the token itself', async () => {
+    const socket = createConnection(socketPath);
+    const seen: Buffer[] = [];
+    socket.on('data', (c: Buffer) => seen.push(c));
+    socket.on('error', () => undefined);
+    await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+    socket.write(encodeFrame({ type: 'host-hello', token, appPath: '/Applications/Arc.app', appName: 'Arc' }));
+    await new Promise<void>((resolve) => socket.on('close', () => resolve()));
+    expect(Buffer.concat(seen).toString('utf8')).not.toContain(token);
+  });
+
   it('relays a request to the connected browser and its answer back, and announces it', async () => {
     await writeBrowserHostEnabled(true);
     const peer = await connectPeer(socketPath, arc());
@@ -218,7 +263,7 @@ describe('createBrowserHost', () => {
     expect(sent.action.kind).toBe('upload');
     const paths = (sent.action as { paths: string[] }).paths;
     expect(paths).toHaveLength(1);
-    expect(paths[0]).toMatch(/uploads\/[0-9a-f]{16}\/cv\.pdf$/);
+    expect(paths[0]).toMatch(/uploads[\\/][0-9a-f]{16}[\\/]cv\.pdf$/);
 
     // The native host's spool copy is sent up; a path anywhere else never is.
     const spooled = join(root, 'browser', 'spool', 'abcd');
@@ -241,7 +286,7 @@ describe('createBrowserHost', () => {
     });
     await until(() => !!result('r1'));
     expect(uploads).toHaveLength(1);
-    expect(uploads[0]).toMatch(/spool\/abcd\/report\.pdf$/);
+    expect(uploads[0]).toMatch(/spool[\\/]abcd[\\/]report\.pdf$/);
     const res = result('r1') as { ok: boolean; text: string; downloads: unknown[] };
     expect(res.downloads).toEqual([{ handle: 'stem-upload:1', name: 'report.pdf', size: 9 }]);
     expect(res.text).toContain('“secret.txt” finished on the Mac but could not be copied');

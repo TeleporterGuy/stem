@@ -1715,7 +1715,7 @@ export interface ComputerAccess {
 /** A device's account of whether it lets Stem drive its screen — `computerHost:announce`. */
 export interface DeviceComputerAnnouncement {
   enabled: boolean;
-  platform: 'darwin';
+  platform: 'darwin' | 'win32';
   access?: ComputerAccess;
 }
 
@@ -2030,7 +2030,7 @@ export interface BrowserInfo {
 /** A device's account of whether it lets Stem drive its browser — `browserHost:announce`. */
 export interface DeviceBrowserAnnouncement {
   enabled: boolean;
-  platform: 'darwin' | 'linux';
+  platform: 'darwin' | 'linux' | 'win32';
   browsers: BrowserInfo[];
   /** The browser Stem uses on this computer (BrowserInfo.id); absent = none known yet. */
   chosen?: string;
@@ -5165,7 +5165,8 @@ export interface StemApi {
   /** Dictation on this Mac's microphone (client-owned; see desktop/dictation.ts). */
   dictationLanguages(): Promise<DictationLanguages>;
   /** Starts listening (null locale = the Mac's language). Rejects with the reason. */
-  startDictation(locale: string | null): Promise<{ session: number; locale: string }>;
+  /** `model`: which Whisper model listens off a Mac (a Mac ignores it). */
+  startDictation(locale: string | null, model?: 'fast' | 'accurate'): Promise<{ session: number; locale: string }>;
   /** Stops and answers with everything heard. */
   stopDictation(): Promise<string>;
   cancelDictation(): Promise<void>;

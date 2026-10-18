@@ -5,8 +5,8 @@ the Stem extension: open pages, read them, click, type, fill in forms, upload fi
 download, and check a page's console and network requests. It works in background
 tabs, so the tab you are looking at never changes under you.
 
-It runs on a Mac, in Arc, Chrome, Dia or Brave, and on Linux, in Chrome, Brave, Chromium
-or Edge. It works whether Stem's server runs on that computer or somewhere else. On Linux,
+It runs on a Mac, in Arc, Chrome, Dia or Brave; on Windows, in Chrome, Edge, Brave or
+Chromium; and on Linux, in Chrome, Brave, Chromium or Edge. It works whether Stem's server runs on that computer or somewhere else. On Linux,
 Snap and Flatpak builds of a browser can't reach Stem; use the browser's own .deb or .rpm.
 
 ## Setting it up
@@ -14,7 +14,7 @@ Snap and Flatpak builds of a browser can't reach Stem; use the browser's own .de
 On the computer whose browser Stem should use:
 
 1. Open Settings → Features → **Browser control** and switch on **Let Stem control this
-   Mac's browser** (**this computer's browser** on Linux).
+   Mac's browser** (**this computer's browser** on Windows and Linux).
 2. Press **Set up…**. Stem puts the extension in a folder, copies that folder's path,
    brings your browser forward, and tells the browsers on this computer how to reach Stem.
    The steps below then appear in Settings, with Copy and Open buttons.
@@ -22,10 +22,12 @@ On the computer whose browser Stem should use:
    or `arc://extensions` in Arc) and turn on **Developer mode**.
 4. Click **Load unpacked**. In the folder picker press ⌘⇧G, paste the path with ⌘V,
    press Return, then **Select**. On Linux press Ctrl+L, paste with Ctrl+V, and press Enter.
+   On Windows click the folder picker's address bar, paste with Ctrl+V, press Enter, then
+   **Select Folder**.
 
 Settings shows the browser as connected within a couple of seconds. You do this once per browser; when Stem
 updates, the extension updates itself. When that browser is closed and a run needs it,
-Stem starts it in the background. On Linux it may open in front.
+Stem starts it in the background. On Windows and Linux it may open in front.
 
 ## Several profiles
 

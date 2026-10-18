@@ -15,7 +15,7 @@ import {
   type FromExtension,
   type HostHello,
   type ToExtension,
-  launchableOnLinux
+  launchableBrowser
 } from '../../shared/browser-native';
 import type {
   BrowserDownloadReceipt,
@@ -35,6 +35,7 @@ import {
   type BrowserInstallPaths,
   type InstallSource
 } from './install';
+import { handshakeProof, isNonce, newNonce, proofMatches } from './handshake';
 import { arcSidebarText, readArcSidebar, type ArcSidebarTab } from './arc-tabs';
 import {
   appOf,
@@ -45,18 +46,19 @@ import {
   type KnownBrowser
 } from './store';
 
-// The client half of the `browser` tool: THIS Mac or Linux computer, handing the browser actions
+// The client half of the `browser` tool: THIS Mac, Windows or Linux computer, handing the browser actions
 // its Stem server sends (BROWSER_REQUEST_FRAME) to the Stem extension in the
 // user's browser, and answering with what it reports.
 //
 // The extension reaches us through its native-messaging host, which the
 // browser starts and which connects to a unix socket here (0600, in this
-// profile's state folder) and opens with the token from the config Set up
-// wrote. One connection per browser profile — the extension sends an id it
-// keeps in that profile's storage — and several may be up at once (Arc's work
-// and personal profiles, Chrome beside them). The user picks the default and
-// can name each one; the model may name another profile per call, and the one
-// it named stays the thread's until it names a different one.
+// profile's state folder; a named pipe on Windows) and proves it holds the
+// token from the config Set up wrote (handshake.ts). One connection per
+// browser profile — the extension sends an id it keeps in that profile's
+// storage — and several may be up at once (Arc's work and personal profiles,
+// Chrome beside them). The user picks the default and can name each one; the
+// model may name another profile per call, and the one it named stays the
+// thread's until it names a different one.
 //
 // What this file decides, like computer-host: whether Stem may drive the
 // browser at all (the switch, read fresh on every request), and the file
@@ -239,7 +241,24 @@ function spawnDetached(command: string, args: string[]): Promise<void> {
   });
 }
 
-function defaultLaunch(appPath: string, platform: NodeJS.Platform): Promise<void> {
+/** Is a process running this executable? Windows: one PowerShell question. */
+function runningWindowsExe(exe: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', `if (Get-Process | Where-Object { $_.Path -eq $args[0] } | Select-Object -First 1) { 'yes' }`, exe],
+      { timeout: 10_000, windowsHide: true },
+      (error, stdout) => resolve(!error && String(stdout).trim() === 'yes')
+    );
+  });
+}
+
+async function defaultLaunch(appPath: string, platform: NodeJS.Platform): Promise<void> {
+  if (platform === 'win32') {
+    // As on Linux: a second start of a running browser opens a window.
+    if (await runningWindowsExe(appPath)) return;
+    return spawnDetached(appPath, []);
+  }
   if (platform === 'linux') {
     // Running a browser's executable again while it runs opens a new window;
     // the connection is only late, so leave the window count alone. Linux has
@@ -254,6 +273,7 @@ function defaultLaunch(appPath: string, platform: NodeJS.Platform): Promise<void
 }
 
 function defaultOpenWith(appPath: string | null, target: string, platform: NodeJS.Platform): Promise<void> {
+  if (platform === 'win32') return appPath ? spawnDetached(appPath, [target]) : spawnDetached('explorer.exe', [target]);
   if (platform === 'linux') return appPath ? spawnDetached(appPath, [target]) : spawnDetached('xdg-open', [target]);
   return new Promise((resolve, reject) => {
     execFile('/usr/bin/open', appPath ? ['-a', appPath, target] : [target], (error) =>
@@ -261,6 +281,8 @@ function defaultOpenWith(appPath: string | null, target: string, platform: NodeJ
     );
   });
 }
+
+const isPipe = (path: string): boolean => path.startsWith('\\\\.\\pipe\\');
 
 /** How long one action may take on this side before the extension is presumed stuck. */
 export function actionTimeoutMs(action: ExtensionAction): number {
@@ -279,7 +301,7 @@ export function actionTimeoutMs(action: ExtensionAction): number {
 
 export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
   const platform = deps.platform ?? process.platform;
-  const supported = platform === 'darwin' || platform === 'linux';
+  const supported = platform === 'darwin' || platform === 'linux' || platform === 'win32';
   // What the model and the user are told this computer is.
   const here = platform === 'darwin' ? 'Mac' : 'computer';
   const paths = deps.paths ?? browserInstallPaths();
@@ -338,7 +360,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       .invoke('browserHost:announce', [
         {
           enabled,
-          platform: platform === 'darwin' ? 'darwin' : 'linux',
+          platform: platform === 'darwin' || platform === 'win32' ? platform : 'linux',
           // The sites open in a profile stay on this computer.
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
           browsers: browsers.map(({ hint, named, ...b }) => b),
@@ -436,6 +458,8 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
   function accept(socket: Socket): void {
     const reader = new FrameReader();
     let conn: Conn | null = null;
+    /** Between the host's hello and its proof: what it claimed, and the nonce it must answer. */
+    let pending: { appPath: string; appName: string; nonce: string } | null = null;
     const hello = setTimeout(() => socket.destroy(), 5000);
     hello.unref?.();
     socket.on('data', (chunk: Buffer) => {
@@ -453,21 +477,37 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
         } catch {
           continue;
         }
-        if (!conn) {
+        if (!conn && !pending) {
           const h = message as Partial<HostHello>;
-          if (h?.type !== 'host-hello' || !config || h.token !== config.token || typeof h.appPath !== 'string') {
+          if (h?.type !== 'host-hello' || !config || !isNonce(h.nonce) || typeof h.appPath !== 'string') {
+            log('browser-host', 'refused a native host that did not start the handshake');
+            socket.destroy();
+            return;
+          }
+          pending = {
+            appPath: h.appPath,
+            appName: typeof h.appName === 'string' && h.appName ? h.appName : 'Browser',
+            nonce: newNonce()
+          };
+          socket.write(encodeFrame({ type: 'server-hello', nonce: pending.nonce, proof: handshakeProof(config.token, 'stem', h.nonce) }));
+          continue;
+        }
+        if (!conn && pending) {
+          const p = message as { type?: unknown; proof?: unknown };
+          if (p?.type !== 'host-proof' || !config || !proofMatches(config.token, 'host', pending.nonce, p.proof)) {
             log('browser-host', 'refused a native host without the right token');
             socket.destroy();
             return;
           }
           clearTimeout(hello);
-          const appName = typeof h.appName === 'string' && h.appName ? h.appName : 'Browser';
+          const { appPath, appName } = pending;
+          pending = null;
           // Which profile this is arrives with the extension's own hello,
           // right behind (the native host replays it on every connection).
-          conn = { socket, key: null, appPath: h.appPath, appName, pending: new Map() };
+          conn = { socket, key: null, appPath, appName, pending: new Map() };
           continue;
         }
-        onFrame(conn, message as FromExtension);
+        if (conn) onFrame(conn, message as FromExtension);
       }
     });
     socket.on('error', () => undefined);
@@ -495,13 +535,14 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     config = await ensureHostConfig(paths);
     await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
     // A socket file left by a previous run (or a crash) would make listen fail.
-    await rm(config.socketPath, { force: true });
+    // A Windows pipe goes away with its last handle.
+    if (!isPipe(config.socketPath)) await rm(config.socketPath, { force: true });
     const s = createServer(accept);
     await new Promise<void>((resolve, reject) => {
       s.once('error', reject);
       s.listen(config!.socketPath, () => resolve());
     });
-    await chmod(config.socketPath, 0o600).catch(() => undefined);
+    if (!isPipe(config.socketPath)) await chmod(config.socketPath, 0o600).catch(() => undefined);
     s.on('error', (e) => log('browser-host', 'socket error', { error: String(e) }));
     server = s;
   }
@@ -536,11 +577,11 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     const app = appOf(chosen);
     const profiles = settings.known.filter((b) => appOf(b.id) === app).length;
     const name = entry ? nameOf(entry, profileNames(settings.known)) : chosen;
-    if (platform === 'linux' && !launchableOnLinux(app)) {
+    if (!launchableBrowser(app, platform)) {
       // The id came from a native host's word; Stem starts only browsers it knows.
       return {
         ok: false,
-        error: `${name} is not running, and Stem only starts browsers it knows on Linux. Tell the user to open it.`
+        error: `${name} is not running, and Stem only starts browsers it knows on this ${here}. Tell the user to open it.`
       };
     }
     try {
@@ -728,7 +769,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
   }
 
   async function execute(request: DeviceBrowserRequest): Promise<DeviceBrowserResult> {
-    if (!supported) return { ok: false, error: 'Browser control is only available on macOS and Linux for now.' };
+    if (!supported) return { ok: false, error: 'Browser control is only available on macOS, Windows and Linux.' };
     if (!(await readBrowserHostSettings()).enabled) {
       return {
         ok: false,
@@ -935,7 +976,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       // comes forward, so typing its extensions page is all that is left.
       await openWith(null, paths.extensionDir).catch(() => undefined);
       // The renderer names the app; on Linux that is a program to run, so only a known browser.
-      if (app && (platform !== 'linux' || launchableOnLinux(app))) {
+      if (app && launchableBrowser(app, platform)) {
         await openWith(app, extensionsPageUrl(app)).catch(() => undefined);
       }
     },
@@ -945,7 +986,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       conns.clear();
       server?.close();
       server = null;
-      if (config) void rm(config.socketPath, { force: true });
+      if (config && !isPipe(config.socketPath)) void rm(config.socketPath, { force: true });
     }
   };
 }

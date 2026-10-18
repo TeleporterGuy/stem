@@ -53,7 +53,7 @@ describe('createBrowserDeviceRouter', () => {
       ],
       chosen: '/Applications/Arc.app'
     });
-    await router.announce('mac-1', { enabled: true, platform: 'win32', browsers: [] }); // ignored: Mac and Linux only
+    await router.announce('mac-1', { enabled: true, platform: 'beos', browsers: [] }); // ignored: not a platform Stem runs on
     expect(await router.hostFor('mac-1')).toMatchObject({
       enabled: true,
       platform: 'darwin',
@@ -66,6 +66,8 @@ describe('createBrowserDeviceRouter', () => {
       browsers: [{ id: '/opt/google/chrome/chrome', name: 'Google Chrome', connected: true }]
     });
     expect(await router.hostFor('linux-1')).toMatchObject({ platform: 'linux', browsers: [{ name: 'Google Chrome' }] });
+    await router.announce('pc-1', { enabled: true, platform: 'win32', browsers: [] });
+    expect(await router.hostFor('pc-1')).toMatchObject({ platform: 'win32' });
   });
 
   it('round-trips one action and answers each id once, only from its device', async () => {

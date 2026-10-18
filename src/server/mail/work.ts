@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ChatBackend } from '../backend/types';
 import type { BackendEventEnvelope, MailWorkActivity, MailWorkGroup, MailWorkRun } from '../../shared/types';
 import { workDetail } from '../../shared/work-detail';
 import { mailStorePath } from '../workspace/paths';
 import { degrade } from '../degrade';
+import { replaceFile } from '../replace-file';
 
 const root = () => process.env.STEM_MAIL_WORK_DIR ?? join(dirname(mailStorePath()), 'mail-work');
 const key = (id: string) => createHash('sha256').update(id).digest('hex');
@@ -30,7 +31,7 @@ function persist(group: MailWorkGroup): Promise<boolean> {
     await mkdir(dirname(path), { recursive: true });
     const tmp = `${path}.tmp`;
     await writeFile(tmp, data, { mode: 0o600 });
-    await rename(tmp, path);
+    await replaceFile(tmp, path);
     return true;
   }).catch((e) => {
     const gap = 'Some work history could not be saved. Details may be lost after a restart.';

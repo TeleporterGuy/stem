@@ -1,8 +1,9 @@
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { host } from '../server/host';
 import { log } from '../server/log';
 import type { ClientSettings } from '../shared/types';
+import { replaceFile } from '../server/replace-file';
 
 // What this CLIENT knows about itself: which server it talks to, its row in that
 // server's device registry, the bearer token that proves it, and the handful of
@@ -93,7 +94,7 @@ export function updateClientDocument<T>(mutate: (doc: StoredClient) => T | Promi
       encoding: 'utf8',
       mode: 0o600
     });
-    await rename(tmp, path);
+    await replaceFile(tmp, path);
     // The rename carries the tmp file's 0600 along, but an existing file replaced
     // on Windows can differ; re-assert either way.
     await chmod(path, 0o600).catch(() => undefined);

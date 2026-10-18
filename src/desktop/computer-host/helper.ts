@@ -8,12 +8,13 @@ import { host } from '../../server/host';
 import { log } from '../../server/log';
 import type { ComputerAccess, ComputerTarget, RecordedStep } from '../../shared/types';
 
-// The Swift helper (native/mac/stem-computer) as a child process: one JSON
-// line in, one out, plus the unsolicited human-input event while a run is
-// watched. Packaged, the binary ships at Resources/bin/stem-computer (see
-// electron-builder.yml extraResources); in development it is compiled on
-// demand into the profile's state folder so a fresh checkout works without
-// remembering a build step.
+// The helper as a child process: one JSON line in, one out, plus the
+// unsolicited human-input event while a run is watched. On a Mac it is the
+// Swift helper (native/mac/stem-computer), on Windows its C# twin
+// (native/windows/stem-computer), speaking the same lines. Packaged, the binary
+// ships at resources/bin/stem-computer(.exe) (see electron-builder.yml
+// extraResources); in development it is compiled on demand into the profile's
+// state folder so a fresh checkout works without remembering a build step.
 
 const CALL_TIMEOUT_MS = 30_000;
 
@@ -54,7 +55,8 @@ export type HelperEvent =
 
 /** Where the helper binary is, building it first in development. Throws with a readable reason. */
 export async function resolveHelperPath(): Promise<string> {
-  if (process.platform !== 'darwin') throw new Error('Computer control is only available on macOS.');
+  if (process.platform === 'win32') return resolveWindowsHelper();
+  if (process.platform !== 'darwin') throw new Error('Computer control is only available on macOS and Windows.');
   const packaged = join(process.resourcesPath ?? '', 'bin', 'stem-computer');
   if (process.resourcesPath && (await exists(packaged))) return packaged;
   // Development: run the build script (the same one electron-builder's
@@ -87,9 +89,39 @@ export async function resolveHelperPath(): Promise<string> {
   return output;
 }
 
-async function sourceHash(dir: string): Promise<string> {
+/** Windows: the packaged exe, or a development build with the C# compiler Windows ships. */
+async function resolveWindowsHelper(): Promise<string> {
+  const packaged = join(process.resourcesPath ?? '', 'bin', 'stem-computer.exe');
+  if (process.resourcesPath && (await exists(packaged, constants.R_OK))) return packaged;
+  const repo = resolve(__dirname, '..', '..');
+  const script = join(repo, 'scripts', 'build-windows-helper.mjs');
+  const sources = join(repo, 'native', 'windows', 'stem-computer');
+  if (!(await exists(script, constants.R_OK))) {
+    throw new Error(`The computer-control helper is missing (looked in ${packaged}).`);
+  }
+  const output = join(host().stateRoot(), 'native', `stem-computer-${await sourceHash(sources, '.cs')}.exe`);
+  if (await exists(output, constants.R_OK)) return output;
+  await mkdir(dirname(output), { recursive: true });
+  log('computer-host', 'building the helper for development', { output });
+  const { command, env } = host().nodeSpawn();
+  await new Promise<void>((done, fail) => {
+    const child = spawn(command, [script, '--output', output], {
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true
+    });
+    let err = '';
+    child.stdout?.on('data', (c: Buffer) => (err += c.toString('utf8')));
+    child.stderr?.on('data', (c: Buffer) => (err += c.toString('utf8')));
+    child.on('error', fail);
+    child.on('exit', (code) => (code === 0 ? done() : fail(new Error(`Building the helper failed: ${err.trim().slice(-400)}`))));
+  });
+  return output;
+}
+
+async function sourceHash(dir: string, ext = '.swift'): Promise<string> {
   const h = createHash('sha256');
-  for (const name of (await readdir(dir)).filter((f) => f.endsWith('.swift')).sort()) {
+  for (const name of (await readdir(dir)).filter((f) => f.endsWith(ext)).sort()) {
     h.update(await readFile(join(dir, name)));
   }
   return h.digest('hex').slice(0, 16);
@@ -118,7 +150,12 @@ export class HelperProcess {
   private readonly listeners = new Set<(event: HelperEvent) => void>();
 
   constructor(binary: string) {
-    this.proc = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+    // STEM_PARENT_PID: the Windows helper leaves Stem's own windows out of its lists.
+    this.proc = spawn(binary, [], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: { ...process.env, STEM_PARENT_PID: String(process.pid) }
+    });
     const lines = createInterface({ input: this.proc.stdout! });
     lines.on('line', (line) => this.onLine(line));
     this.proc.stderr?.on('data', (chunk: Buffer) => {

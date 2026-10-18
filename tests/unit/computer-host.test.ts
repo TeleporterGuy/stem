@@ -276,3 +276,63 @@ describe.skipIf(!mac)('createComputerHost', () => {
     expect(helper.killed).toBe(true);
   });
 });
+
+// Windows: the same host over the C# helper, on any machine (the helper is faked).
+describe('createComputerHost on Windows', () => {
+  let dir: string;
+  let calls: Array<{ channel: string; args: unknown[] }>;
+  let helper: FakeHelper;
+  let host: ComputerHost;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'stem-computer-host-'));
+    process.env.STEM_COMPUTER_HOST_FILE = join(dir, 'computer-host.json');
+    calls = [];
+    helper = new FakeHelper();
+    host = createComputerHost({
+      platform: 'win32',
+      invoke: (channel, args) => {
+        calls.push({ channel, args });
+        return Promise.resolve(undefined);
+      },
+      banner: { show: () => undefined, hide: () => undefined },
+      helpers: { spawn: () => Promise.resolve(helper), oneShot: (cmd) => helper.call(cmd) }
+    });
+  });
+
+  afterEach(() => {
+    host.close();
+    delete process.env.STEM_COMPUTER_HOST_FILE;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const resultOf = async (requestId: string): Promise<DeviceComputerResult> => {
+    const end = Date.now() + 2000;
+    for (;;) {
+      const hit = calls.find((c) => c.channel === 'computerHost:result' && c.args[0] === requestId);
+      if (hit) return hit.args[1] as DeviceComputerResult;
+      if (Date.now() > end) throw new Error(`no result for ${requestId}`);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  };
+
+  it('is supported, announces win32, and calls itself a computer', async () => {
+    expect((await host.localState()).supported).toBe(true);
+    await host.start();
+    expect(calls.find((c) => c.channel === 'computerHost:announce')!.args[0]).toMatchObject({ platform: 'win32' });
+    host.onRequest({ requestId: 'r0', threadId: 't1', action: { kind: 'screenshot' } });
+    const refused = await resultOf('r0');
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error).toContain('This computer does not let Stem');
+  });
+
+  it('tells the model once per run that this is Windows', async () => {
+    await host.setEnabled(true);
+    host.onRequest({ requestId: 'r1', threadId: 't1', action: { kind: 'screenshot' } });
+    const first = await resultOf('r1');
+    expect(first.ok && first.text).toContain('This computer runs Windows');
+    host.onRequest({ requestId: 'r2', threadId: 't1', action: { kind: 'list_windows' } });
+    const second = await resultOf('r2');
+    expect(second.ok && second.text).toBe('12  Discord  "#test"');
+  });
+});

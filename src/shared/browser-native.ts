@@ -11,8 +11,8 @@ import type { BrowserAction } from './types';
 // desktop sends carries file bytes: uploads travel as paths on this Mac.
 //
 // The native host (browser-host/native-host-main.ts) adds exactly two things:
-// the first frame on the socket is its own `host-hello` (with the token that
-// proves it was installed by this Stem profile), and it copies finished
+// the first frames on the socket are its handshake with the desktop (each side
+// proves it holds this profile's token, see browser-host/handshake.ts), and it copies finished
 // downloads out of the user's Downloads folder into Stem's spool before
 // relaying a result — it runs as the browser's child, so macOS attributes that
 // read to the browser rather than asking the user to let Stem into Downloads.
@@ -61,6 +61,41 @@ export function linuxBrowserName(exe: string): string | null {
 /** Is this something Stem may start on Linux: a known browser binary, or one of the known commands? */
 export function launchableOnLinux(app: string): boolean {
   return linuxBrowserName(app) !== null || LINUX_BROWSER_COMMANDS.includes(app);
+}
+
+/**
+ * The Windows browsers Stem knows, by where their installers put the browser:
+ * Program Files for a machine-wide install, the user's AppData\Local for a
+ * per-user one (Chrome without admin rights, Chromium). Anything else a native
+ * host claims is never started.
+ */
+const WINDOWS_PROGRAMS = String.raw`^[a-z]:\\Program Files( \(x86\))?\\`;
+// The user segment may not be `.`/`..` or hold a `/` (Windows takes either
+// slash), or `C:\Users\..\AppData\…` would name a folder under C:\ itself,
+// which any user can create.
+const WINDOWS_LOCAL = String.raw`^[a-z]:\\Users\\(?!\.\.?\\)[^\\/]+\\AppData\\Local\\`;
+const windowsExe = (tail: string) => new RegExp(`(${WINDOWS_PROGRAMS}|${WINDOWS_LOCAL})${tail}$`, 'i');
+const WINDOWS_BROWSERS: { name: string; exe: RegExp }[] = [
+  { name: 'Google Chrome', exe: windowsExe(String.raw`Google\\Chrome( Beta| Dev| SxS)?\\Application\\chrome\.exe`) },
+  { name: 'Microsoft Edge', exe: windowsExe(String.raw`Microsoft\\Edge( Beta| Dev| SxS)?\\Application\\msedge\.exe`) },
+  { name: 'Brave', exe: windowsExe(String.raw`BraveSoftware\\Brave-Browser( Beta| Nightly)?\\Application\\brave\.exe`) },
+  { name: 'Chromium', exe: windowsExe(String.raw`Chromium\\Application\\chrome\.exe`) }
+];
+
+/** A known Windows browser's name from its executable, or null when Stem does not know it. */
+export function windowsBrowserName(exe: string): string | null {
+  return WINDOWS_BROWSERS.find((b) => b.exe.test(exe))?.name ?? null;
+}
+
+/**
+ * May Stem start this browser here? The id arrives from a native host's word,
+ * so off a Mac (where `open -a` only opens apps) it must be a browser Stem
+ * knows. A Mac opens bundles by name and needs no list.
+ */
+export function launchableBrowser(app: string, platform: NodeJS.Platform): boolean {
+  if (platform === 'linux') return launchableOnLinux(app);
+  if (platform === 'win32') return windowsBrowserName(app) !== null;
+  return true;
 }
 
 /** An upload as the extension receives it: files already on this Mac. */
@@ -122,13 +157,28 @@ export type FromExtension =
   | { type: 'stopped'; threadId: string };
 
 /** native host → desktop, first frame on the socket. */
+/** The native host's first frame. */
 export interface HostHello {
   type: 'host-hello';
-  token: string;
+  /** The desktop answers it with a proof that it holds the token. */
+  nonce: string;
   /** The browser's app bundle, from the host's parent process ("/Applications/Arc.app"). */
   appPath: string;
   /** Display name ("Arc"). */
   appName: string;
+}
+
+/** The desktop's answer to a host-hello: its proof, and a nonce for the host's. */
+export interface ServerHello {
+  type: 'server-hello';
+  nonce: string;
+  proof: string;
+}
+
+/** The native host's proof, after which frames are relayed. */
+export interface HostProof {
+  type: 'host-proof';
+  proof: string;
 }
 
 /** Largest frame either side accepts (screenshots ride extension → desktop). */

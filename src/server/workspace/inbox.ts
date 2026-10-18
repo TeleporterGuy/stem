@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { InboxEntry, InboxState } from '../../shared/inbox';
 import { toMs } from '../../shared/inbox';
 import { degrade } from '../degrade';
 import { inboxStorePath } from './paths';
+import { replaceFile } from '../replace-file';
 
 // The Stem-owned inbox store: per-thread read / archived / snoozed state for the
 // Chats panel's Inbox mode. Same shape as the chat-folder store next door —
@@ -83,7 +84,7 @@ async function writeFileAtomic(store: InboxFile): Promise<void> {
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(store, null, 2), 'utf8');
   // rename is atomic on the same volume — readers never see a half-written file.
-  await rename(tmp, path);
+  await replaceFile(tmp, path);
 }
 
 /**

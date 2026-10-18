@@ -2,13 +2,14 @@
 // outbound queue. Keys are encrypted at rest with the same wrapped data key
 // as MCP credentials (pi/secrets.ts); the file is 0600 either way.
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { degrade } from '../degrade';
 import { decryptSecretValue, encryptSecretValue } from '../pi/secrets';
 import { interStemStorePath } from '../workspace/paths';
 import type { InterStemAddress, InterStemContact } from '../../shared/types';
 import { newSeed, newX25519Raw, type Cert } from './proto';
+import { replaceFile } from '../replace-file';
 
 export interface StoredAddress extends InterStemAddress {
   cert?: Cert;
@@ -145,7 +146,7 @@ export function interStemStore(path: string = interStemStorePath()): InterStemSt
       encoding: 'utf8',
       mode: 0o600
     });
-    await rename(tmp, path);
+    await replaceFile(tmp, path);
     // quiet: a filesystem without permissions (some mounts) still keeps the file.
     await chmod(path, 0o600).catch(() => undefined);
   }

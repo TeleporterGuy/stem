@@ -1133,7 +1133,8 @@ describe('what it will bind', () => {
     }
   });
 
-  it('serves over a Unix socket, where there is no interface to answer at all', async () => {
+  // The socket listener is the container's shape (STEM_SERVER_SOCKET); Windows has no Unix sockets to give it.
+  it.skipIf(process.platform === 'win32')('serves over a Unix socket, where there is no interface to answer at all', async () => {
     // Short, and deliberately not under a mkdtemp: macOS puts TMPDIR somewhere
     // long enough that a nested throwaway directory can blow the kernel's ~104
     // byte limit for a socket path — the exact failure socketPathProblem names.
@@ -1180,7 +1181,7 @@ describe('what it will bind', () => {
     expect(existsSync(socketPath)).toBe(false);
   });
 
-  it('clears a socket left behind by a run that was killed', async () => {
+  it.skipIf(process.platform === 'win32')('clears a socket left behind by a run that was killed', async () => {
     const socketPath = join(tmpdir(), `stem-stale-${process.pid}.sock`);
     // What `docker kill` leaves in the volume: a socket file with nothing behind
     // it. Binding must succeed anyway, or the container never comes back up.

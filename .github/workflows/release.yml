@@ -152,8 +152,40 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/AuthKey.p8"
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # Unsigned: no Windows code-signing certificate yet (see the `win` block
+      # in electron-builder.yml).
+      - run: npm run dist:win
+      - name: Packaged app is sound
+        shell: bash
+        run: |
+          app=release/win-unpacked/resources/app
+          node "$app/node_modules/@earendil-works/pi-coding-agent/dist/cli.js" --version
+          for stray in src tests ios docs scripts Dockerfile; do
+            if [ -e "$app/$stray" ]; then echo "::error::$stray/ leaked into the packaged app"; exit 1; fi
+          done
+          ls "$app/node_modules/onnxruntime-node/bin/napi-v6"
+      # latest.yml + the installer's blockmap are what an installed Stem
+      # updates from (src/desktop/updates.ts).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          if-no-files-found: error
+          path: |
+            release/Stem-Setup-*.exe
+            release/Stem-Setup-*.exe.blockmap
+            release/latest.yml
+
   publish:
-    needs: [linux-x64, mac]
+    needs: [linux-x64, mac, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

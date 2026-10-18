@@ -184,8 +184,8 @@ export function QuickChatSection({ models }: { models: ModelSummary[] }) {
           </div>
         )}
 
-        {/* Mac only: capturing another app's window needs the computer-control helper. */}
-        {window.stem.platform === 'darwin' && (
+        {/* Mac and Windows: capturing another app's window needs the computer-control helper. */}
+        {(window.stem.platform === 'darwin' || window.stem.platform === 'win32') && (
           <>
             <ValueRow
               label={<strong>Ask about this window</strong>}

@@ -167,17 +167,17 @@ const MAC_FEATURES = {
     tipLabel: 'About computer control in chats',
     tip: (
       <>
-        With this on, a chat that runs as no persona can see and drive a Mac when you ask it to do something
-        there. Personas are not affected: a persona controls a computer only if it is pinned to one in Manage →
+        With this on, a chat that runs as no persona can see and drive a Mac or Windows PC when you ask it to do
+        something there. Personas are not affected: a persona controls a computer only if it is pinned to one in Manage →
         Personas, even with this on. This is a setting of your Stem server, so it applies to chats from every
-        device — the Mac itself still needs its own “Let Stem control this Mac” switch, and shows a banner while
-        it is being driven. The chat’s model has to accept images.
+        device — the computer itself still needs its own “Let Stem control this computer” switch, and shows a
+        banner while it is being driven. The chat’s model has to accept images.
       </>
     ),
     targetLabel: 'In chats, control',
-    targetAria: 'Mac chats control',
-    pickHint: 'The model picks the Mac per request',
-    fixedHint: 'Every chat drives this Mac'
+    targetAria: 'Computer chats control',
+    pickHint: 'The model picks the computer per request',
+    fixedHint: 'Every chat drives this computer'
   },
   browser: {
     qualifies: (d: DeviceInfo) => !!d.runsBrowser,

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { startCapture, stopCapture } from './dictation-capture';
 import type {
   FolderSettings,
   ActivitySnapshot,
@@ -232,9 +233,34 @@ const api: StemApi = {
     return () => ipcRenderer.removeListener('recorder:openSheet', handler);
   },
   dictationLanguages: () => ipcRenderer.invoke('dictation:languages'),
-  startDictation: (locale: string | null) => ipcRenderer.invoke('dictation:start', locale),
-  stopDictation: () => ipcRenderer.invoke('dictation:stop'),
-  cancelDictation: () => ipcRenderer.invoke('dictation:cancel'),
+  // Off a Mac the microphone is captured here and streamed to Whisper in the
+  // main process. Start is sent first, so the session exists before the
+  // first block of audio arrives; what is said while the model loads is kept.
+  startDictation: async (locale: string | null, model?: 'fast' | 'accurate'): Promise<{ session: number; locale: string }> => {
+    if (process.platform === 'darwin') return ipcRenderer.invoke('dictation:start', locale);
+    const started = ipcRenderer.invoke('dictation:start', locale, model ?? 'fast') as Promise<{ session: number; locale: string }>;
+    try {
+      await startCapture((samples) => void ipcRenderer.invoke('dictation:audio', samples).catch(() => undefined));
+    } catch (e) {
+      started.catch(() => undefined);
+      await ipcRenderer.invoke('dictation:cancel');
+      throw e;
+    }
+    try {
+      return await started;
+    } catch (e) {
+      stopCapture();
+      throw e;
+    }
+  },
+  stopDictation: () => {
+    stopCapture();
+    return ipcRenderer.invoke('dictation:stop');
+  },
+  cancelDictation: () => {
+    stopCapture();
+    return ipcRenderer.invoke('dictation:cancel');
+  },
   onDictationUpdate: (listener: (update: DictationUpdate) => void) => {
     const handler = (_e: unknown, update: DictationUpdate) => listener(update);
     ipcRenderer.on('dictation:update', handler);

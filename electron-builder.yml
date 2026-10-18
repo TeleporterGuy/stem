@@ -100,9 +100,10 @@ files:
 # whole repository (src/, tests/, mobile/, docs/, Dockerfile, …) inside the app
 # because of two such lists. Target-specific trimming lives in the hook instead.
 afterPack: scripts/prune-onnxruntime.mjs
-# Compiles native/mac/stem-computer (the computer-control persona's Swift
-# helper) before the mac app is packed; a no-op on every other platform.
-beforePack: scripts/build-mac-helper.mjs
+# Compiles the computer-control helper before the app is packed: the Swift one
+# (native/mac/stem-computer) for a Mac, the C# one (native/windows/stem-computer)
+# for Windows; nothing for Linux.
+beforePack: scripts/build-native-helpers.mjs
 
 mac:
   target: [dmg, zip]
@@ -139,6 +140,26 @@ linux:
   desktop:
     entry:
       StartupWMClass: Stem
+
+win:
+  target: [nsis]
+  # Derived from the 1024px png (electron-builder writes the .ico).
+  icon: build/icon.png
+  extraResources:
+    - from: build/native/stem-computer.exe
+      to: bin/stem-computer.exe
+  # No code-signing certificate yet: SmartScreen warns on the first download
+  # ("More info → Run anyway"). electron-updater checks a signature only when
+  # publisherName is set, so updates still apply.
+
+# Per user, into %LOCALAPPDATA%\Programs\Stem: no UAC prompt to install, and
+# the updater can run the next installer over it without one either.
+nsis:
+  oneClick: true
+  perMachine: false
+  artifactName: Stem-Setup-${version}.${ext}
+  shortcutName: Stem
+  deleteAppDataOnUninstall: false
 
 deb:
   # Expose `stem` on PATH so DE keyboard shortcuts can run `stem --quick-chat`

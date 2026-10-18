@@ -226,12 +226,13 @@ export function createOfflineCache({ enabled }: { enabled: boolean }): OfflineCa
   function open(): DatabaseSync | null {
     if (db !== undefined) return db;
     db = null;
+    let handle: DatabaseSync | null = null;
     try {
       const path = chatCachePath();
       // The state root exists by the time anything gets here, but a
       // STEM_CHAT_CACHE_FILE pointed at a fresh directory need not.
       mkdirSync(dirname(path), { recursive: true });
-      const handle = new DatabaseSync(path);
+      handle = new DatabaseSync(path);
       handle.exec('PRAGMA journal_mode = WAL;');
       const version = (handle.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)
         ?.user_version;
@@ -257,7 +258,16 @@ export function createOfflineCache({ enabled }: { enabled: boolean }): OfflineCa
       seedWatermarks();
     } catch (e) {
       // A corrupt file, a read-only disk, a directory that isn't there yet.
-      // "No cache" is a supported state; failing to start is not.
+      // "No cache" is a supported state; failing to start is not. The handle
+      // that opened but could not be used goes too: on Windows it would keep
+      // the broken file locked for as long as the app runs.
+      if (db === null) {
+        try {
+          handle?.close();
+        } catch {
+          // quiet: a handle that will not close was never usable.
+        }
+      }
       log('cache', 'the offline chat cache could not be opened', {
         error: String((e as Error)?.message ?? e)
       });

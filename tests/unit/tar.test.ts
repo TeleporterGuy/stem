@@ -13,6 +13,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { extractTar, listTar, readTarMember, writeTar, type TarInput } from '../../src/server/workspace/tar';
+import { expectPosixMode } from './posix-mode';
 
 const roots: string[] = [];
 
@@ -50,7 +51,7 @@ describe('writing and reading a tar archive', () => {
     expect(readFileSync(join(dest, 'plain.txt'), 'utf8')).toBe('hello');
     expect(readFileSync(join(dest, 'sub', 'secret.key'), 'utf8')).toBe('shh');
     // The 0600 files must land 0600 — that is half the point of restoring modes.
-    expect(statSync(join(dest, 'sub', 'secret.key')).mode & 0o777).toBe(0o600);
+    expectPosixMode(join(dest, 'sub', 'secret.key'), 0o600);
     // An empty folder survives, which it would not if directories were implied
     // by the files under them.
     expect(statSync(join(dest, 'empty')).isDirectory()).toBe(true);

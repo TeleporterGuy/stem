@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { open, readFile, readdir, rename, rm, utimes, writeFile } from 'node:fs/promises';
+import { open, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { degrade } from '../degrade';
 import { log } from '../log';
+import { replaceFile } from '../replace-file';
 
 // Chats that came from another machine, made resumable here.
 //
@@ -102,7 +103,7 @@ async function rewriteSessionCwd(
     const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
     try {
       await writeFile(tmp, `${JSON.stringify({ ...header, cwd: workspace })}\n${rest}`, 'utf8');
-      await rename(tmp, file);
+      await replaceFile(tmp, file);
       await utimes(file, times.atime, times.mtime).catch((error) =>
         // A chat whose timestamps could not be restored is still a chat that
         // opens, which is what the rewrite was for — so this does not fail the

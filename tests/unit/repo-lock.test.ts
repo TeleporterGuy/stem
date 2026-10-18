@@ -79,6 +79,15 @@ describe('conflicts', () => {
     (await sameDevice)();
   });
 
+  it('a Windows device’s paths compare with either slash and in any case', async () => {
+    const locks = new RepoLocks();
+    const release = await locks.acquire({ cwd: 'C:\\Users\\me\\Repo', device: 'pc' });
+    expect(await settled(locks.acquire({ cwd: 'c:/users/me/repo/packages/x', device: 'pc' }))).toBe(false);
+    expect(await settled(locks.acquire({ cwd: 'C:\\Users\\me\\Repo\\..\\Repo\\sub', device: 'pc' }))).toBe(false);
+    expect(await settled(locks.acquire({ cwd: 'C:\\Users\\me\\Repo-docs', device: 'pc' }))).toBe(true);
+    release();
+  });
+
   it('trailing slashes and dot segments normalize away', async () => {
     const locks = new RepoLocks();
     const release = await locks.acquire({ cwd: `${repo}/` });

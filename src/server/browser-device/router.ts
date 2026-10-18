@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { degrade } from '../degrade';
 import { isUploadHandle } from '../files/staging';
 import { log } from '../log';
@@ -16,6 +16,7 @@ import {
   type DeviceBrowserRequest,
   type DeviceBrowserResult
 } from '../../shared/types';
+import { replaceFile } from '../replace-file';
 
 // The server's half of the `browser` tool: one browser action out to the Mac
 // the turn is pinned to, one answer back.
@@ -119,7 +120,7 @@ function asAnnouncement(report: unknown): DeviceBrowserAnnouncement | null {
   const value = report as Partial<DeviceBrowserAnnouncement> | null;
   if (!value || typeof value !== 'object') return null;
   if (typeof value.enabled !== 'boolean') return null;
-  if (value.platform !== 'darwin' && value.platform !== 'linux') return null;
+  if (value.platform !== 'darwin' && value.platform !== 'linux' && value.platform !== 'win32') return null;
   return {
     enabled: value.enabled,
     platform: value.platform,
@@ -394,7 +395,7 @@ async function writeHostsFile(hosts: Record<string, DeviceBrowserHostEntry>): Pr
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(tmp, `${JSON.stringify({ version: 1, hosts }, null, 2)}\n`, 'utf8');
-    await rename(tmp, path);
+    await replaceFile(tmp, path);
   } finally {
     // quiet: on the happy path the rename already moved it; a temp file left
     // behind by a torn write is inert.

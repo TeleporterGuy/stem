@@ -1,4 +1,4 @@
-import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ConnectedFolder, FolderIndexStatus } from '../../shared/types';
@@ -18,6 +18,7 @@ import { embedMissingDocVectors } from './embed';
 import { learnFolderBatch } from './learn';
 import { scanFolder } from './scan';
 import { FolderIndexStore } from './store';
+import { replaceFile } from '../replace-file';
 
 // Orchestrator for indexed connected folders: owns the per-folder store
 // handles, the periodic scan+embed pass, retrieval across all indexes (the
@@ -92,7 +93,7 @@ async function writeManifest(entries: ManifestEntry[]): Promise<void> {
   const path = join(folderIndexDir(), 'manifest.json');
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify({ version: 1, folders: entries }, null, 2), 'utf8');
-  await rename(tmp, path); // Atomic: the MCP server may read mid-write.
+  await replaceFile(tmp, path); // Atomic: the MCP server may read mid-write.
 }
 
 /**

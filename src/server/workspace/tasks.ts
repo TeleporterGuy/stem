@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import type { ScheduledTask, TaskRunRecord, TaskRunsAs, TaskSchedule } from '../../shared/types';
 import { TASK_RECENT_RUNS } from '../../shared/types';
 import { degrade } from '../degrade';
 import { tasksStorePath } from './paths';
+import { replaceFile } from '../replace-file';
 
 // The Stem-owned registry of scheduled tasks (tasks.json). Tiny and resilient like
 // the connected-folders store: a corrupt/missing file degrades to "no tasks" rather
@@ -203,7 +204,7 @@ async function writeTasks(tasks: ScheduledTask[]): Promise<void> {
   const path = tasksStorePath();
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify({ version: STORE_VERSION, tasks } satisfies TasksStore, null, 2), 'utf8');
-  await rename(tmp, path); // atomic on the same volume
+  await replaceFile(tmp, path); // atomic on the same volume
 }
 
 /** Read, mutate the task array, persist atomically; returns the mutate() result. */

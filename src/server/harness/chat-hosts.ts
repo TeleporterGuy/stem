@@ -51,10 +51,10 @@ export async function computerChoicesText(): Promise<string> {
   // quiet: an unreadable host store reads as "no Mac lets Stem control it", which is what the model then says.
   const macs = await computerDeviceRouter().hosts().then(listed).catch(() => [] as string[]);
   return macs.length
-    ? `The computer tool in this chat: name the Mac in \`device\`. Macs that let Stem control them: ${macs.join(', ')}. ` +
-        'A Mac marked NOT connected cannot be driven until it is awake with Stem running — say so instead of trying it.'
-    : 'The computer tool in this chat: no Mac lets Stem control it right now (each one switches it on under ' +
-        'Settings → Features → Computer control, on that Mac). Tell the user that instead of trying.';
+    ? `The computer tool in this chat: name the computer in \`device\`. Computers that let Stem control them: ${macs.join(', ')}. ` +
+        'A computer marked NOT connected cannot be driven until it is awake with Stem running — say so instead of trying it.'
+    : 'The computer tool in this chat: no computer lets Stem control it right now (each one switches it on under ' +
+        'Settings → Features → Computer control, on that computer). Tell the user that instead of trying.';
 }
 
 /** The per-turn block for a chat whose browser Mac the model names. */

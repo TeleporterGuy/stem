@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { degrade } from '../degrade';
 import { log } from '../log';
 import { connectedDeviceIds, pushToDevice } from '../startup/transport';
@@ -28,6 +28,7 @@ import type {
   HarnessTurnResult,
   HarnessTurnSink
 } from './host';
+import { replaceFile } from '../replace-file';
 
 // The server's half of a coding_agent turn that runs on a paired computer.
 //
@@ -548,7 +549,7 @@ async function writeHostsFile(hosts: Record<string, DeviceHarnessHostEntry>): Pr
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(tmp, `${JSON.stringify({ version: 1, hosts }, null, 2)}\n`, 'utf8');
-    await rename(tmp, path);
+    await replaceFile(tmp, path);
   } finally {
     // quiet: on the happy path the rename already moved it; a leftover temp
     // file is inert — nothing reads this directory by pattern.

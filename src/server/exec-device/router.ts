@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { degrade } from '../degrade';
 import { log } from '../log';
 import { readDevices } from '../transport/auth';
@@ -12,6 +12,7 @@ import {
   type DeviceExecRequest,
   type DeviceExecResult
 } from '../../shared/types';
+import { replaceFile } from '../replace-file';
 
 // The server's half of a run_command that runs on a paired computer.
 //
@@ -268,7 +269,7 @@ async function writeHostsFile(hosts: Record<string, DeviceExecHostEntry>): Promi
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(tmp, `${JSON.stringify({ version: 1, hosts }, null, 2)}\n`, 'utf8');
-    await rename(tmp, path);
+    await replaceFile(tmp, path);
   } finally {
     // quiet: on the happy path the rename already moved it, and a temp file left
     // behind by a torn write is inert — nothing reads this directory by pattern,

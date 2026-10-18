@@ -9,7 +9,9 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { getEmbedEndpointToken, startEmbedEndpoint } from '../../src/server/recall/embed-endpoint';
 import type { EmbeddingsClient } from '../../src/server/recall/embeddings';
 
-const SOCK = join(tmpdir(), `stem-embed-test-${process.pid}.sock`);
+// A named pipe on Windows, as embedSocketPath() gives the real endpoint there.
+const SOCK =
+  process.platform === 'win32' ? `\\\\.\\pipe\\stem-embed-test-${process.pid}` : join(tmpdir(), `stem-embed-test-${process.pid}.sock`);
 
 function request(body: Record<string, unknown>): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {

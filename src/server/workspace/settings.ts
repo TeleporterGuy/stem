@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import type {
   ChatsSettings,
   ChatSubjectMode,
@@ -50,6 +50,7 @@ import { coerceBrowserProfiles } from '../../shared/browser-native';
 import { DEFAULT_LOCAL_RERANK_MODEL, RERANK_CATALOG } from '../recall/rerank-catalog';
 import { GTE_FACT_PILOT_ID } from '../recall/gte-model-artifact';
 import { settingsStorePath } from './paths';
+import { replaceFile } from '../replace-file';
 
 // Stem-owned app settings. Like the chat store, kept deliberately tiny and
 // resilient — a corrupt/missing file degrades to defaults rather than breaking
@@ -780,7 +781,7 @@ async function writeSettings(settings: ServerSettings): Promise<void> {
   const path = settingsStorePath();
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(settings, null, 2), 'utf8');
-  await rename(tmp, path);
+  await replaceFile(tmp, path);
 }
 
 /**

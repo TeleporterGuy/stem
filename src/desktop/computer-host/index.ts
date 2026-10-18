@@ -54,6 +54,8 @@ export interface ComputerHostDeps {
     /** The person pressed Stop on the banner. */
     onStop?(handler: () => void): void;
   };
+  /** Tests pretend to be another platform. */
+  platform?: NodeJS.Platform;
   /** How a helper is started and asked one-off questions; defaults to the real binary. */
   helpers?: {
     spawn(): Promise<HelperLike>;
@@ -93,6 +95,8 @@ interface Run {
   aborted: boolean;
   /** The window the run works on; null = the whole screen (pointer + kill switch). */
   target: ComputerTarget | null;
+  /** The platform note has gone out on this run's first answer. */
+  noted: boolean;
 }
 
 /** The macOS major version (Darwin 23 = macOS 14), or 0 off macOS / when unreadable. */
@@ -102,10 +106,26 @@ function macOSMajor(): number {
   return Number.isFinite(darwin) ? darwin - 9 : 0;
 }
 
+/**
+ * What the model is told once per run on a computer that is not a Mac: the
+ * tool's habits (cmd for shortcuts, Spaces) come from macOS.
+ */
+const PLATFORM_NOTES: Partial<Record<NodeJS.Platform, string>> = {
+  win32:
+    'This computer runs Windows. Shortcuts use ctrl where a Mac uses cmd (cmd is sent as ctrl; win is the Windows key). ' +
+    'Windows have no Spaces: list_windows says "other desktop" for a window on another virtual desktop, and a minimized ' +
+    'window cannot be pictured until it is restored. In window mode a background window takes plain keys and typing, ' +
+    'but not ctrl/alt shortcuts: use its menus through snapshot and press, or the whole screen.'
+};
+
 export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
   // macOS 14 or newer: per-window capture (ScreenCaptureKit's screenshot API) is
   // what window mode is built on, and the helper is compiled against it.
-  const supported = process.platform === 'darwin' && macOSMajor() >= 14;
+  // Windows: PrintWindow and UI Automation, in every Windows 10 and 11.
+  const platform = deps.platform ?? process.platform;
+  const supported = (platform === 'darwin' && macOSMajor() >= 14) || platform === 'win32';
+  const here = platform === 'darwin' ? 'Mac' : 'computer';
+  const platformNote = PLATFORM_NOTES[platform];
   const helpers = deps.helpers ?? realHelpers;
   let run: Run | null = null;
   let lastAccess: ComputerAccess | null = null;
@@ -131,7 +151,7 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
     const enabled = await readComputerHostEnabled();
     const access = enabled ? await checkAccess() : lastAccess;
     await deps
-      .invoke('computerHost:announce', [{ enabled, platform: 'darwin', ...(access ? { access } : {}) }])
+      .invoke('computerHost:announce', [{ enabled, platform: platform === 'win32' ? 'win32' : 'darwin', ...(access ? { access } : {}) }])
       .catch((e) => {
         // An older server has no such channel; this Mac simply cannot be a target there.
         log('computer-host', 'could not announce', {
@@ -198,7 +218,8 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
       idle: setTimeout(() => undefined, 0),
       inFlight: null,
       aborted: false,
-      target: null
+      target: null,
+      noted: false
     };
     helper.onEvent((event) => {
       if (event.event === 'human-input') humanTookOver(r, event.kind);
@@ -318,23 +339,23 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
     if (!supported)
       return {
         ok: false,
-        error: 'Computer control is only available on macOS.'
+        error: 'Computer control is only available on macOS and Windows.'
       };
     // The gate, read fresh from this disk on every request.
     if (!(await readComputerHostEnabled())) {
       return {
         ok: false,
         error:
-          'This Mac does not let Stem control its screen. The switch is in Settings → Features → Computer control, ' +
+          `This ${here} does not let Stem control its screen. The switch is in Settings → Features → Computer control, ` +
           'on that computer.'
       };
     }
-    // One run at a time, per Mac: a second thread's action while another
+    // One run at a time, per computer: a second thread's action while another
     // thread is driving would fight it for the one cursor there is.
     if (run && run.threadId !== request.threadId) {
       return {
         ok: false,
-        error: 'Another conversation is controlling this Mac right now; try again when it is done.'
+        error: `Another conversation is controlling this ${here} right now; try again when it is done.`
       };
     }
     let r = run;
@@ -361,8 +382,12 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
       };
       r!.inFlight = { requestId: request.requestId, fail: done };
       void r!.helper.call(cmd, fields, timeout).then((reply) => {
-        const result = fromReply(reply);
+        let result = fromReply(reply);
         noteTarget(r!, result);
+        if (platformNote && result.ok && !r!.noted) {
+          r!.noted = true;
+          result = { ...result, text: result.text ? `${platformNote}\n\n${result.text}` : platformNote };
+        }
         done(result);
       });
     });

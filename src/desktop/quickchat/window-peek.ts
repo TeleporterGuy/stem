@@ -1,11 +1,16 @@
+import { screen } from 'electron';
 import { HelperProcess, resolveHelperPath } from '../computer-host/helper';
 import { log } from '../../server/log';
 import type { QuickChatWindow } from '../../shared/types';
 
 // "Ask about this window": the helper calls behind the second Quick Chat
-// shortcut (native/mac/stem-computer/WindowPeek.swift). One helper process of
-// its own, started on first use and kept, so a press costs a capture and not a
-// process launch; it never selects a window or touches a computer-control run.
+// shortcut (native/mac/stem-computer/WindowPeek.swift, and its Windows twin
+// native/windows/stem-computer/Peek.cs). One helper process of its own,
+// started on first use and kept, so a press costs a capture and not a process
+// launch; it never selects a window or touches a computer-control run.
+
+/** Where a helper can see other apps' windows. */
+export const windowPeekSupported = process.platform === 'darwin' || process.platform === 'win32';
 
 /** The window as the panel needs it, plus the frame the panel docks against. */
 export interface PeekedWindow {
@@ -38,14 +43,20 @@ async function ensureHelper(): Promise<HelperProcess> {
 
 /** Start the helper ahead of the first press, so that press costs a capture only. */
 export function warmWindowPeek(): void {
-  if (process.platform !== 'darwin') return;
+  if (!windowPeekSupported) return;
   ensureHelper().catch((error) => log('quickchat', 'window peek could not start the helper', { error: String(error) }));
 }
 
+/**
+ * A rectangle as the helper sent it, in the units Electron places windows in:
+ * the Mac helper speaks points already; the Windows one, which is DPI aware,
+ * speaks physical pixels, and Electron's are device-independent.
+ */
 function asRect(value: unknown): Rect | null {
   const r = value as Partial<Rect> | null | undefined;
   if (!r || [r.x, r.y, r.width, r.height].some((n) => typeof n !== 'number')) return null;
-  return { x: r.x!, y: r.y!, width: r.width!, height: r.height! };
+  const rect = { x: r.x!, y: r.y!, width: r.width!, height: r.height! };
+  return process.platform === 'win32' ? screen.screenToDipRect(null, rect) : rect;
 }
 
 /**
@@ -54,7 +65,7 @@ function asRect(value: unknown): Rect | null {
  * a missing permission comes back as `missing` with whatever could be read.
  */
 export async function peekFrontWindow(): Promise<PeekedWindow | null> {
-  if (process.platform !== 'darwin') return null;
+  if (!windowPeekSupported) return null;
   let reply;
   try {
     reply = await (await ensureHelper()).call('peek-window', {}, 10_000);

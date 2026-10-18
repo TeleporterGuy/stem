@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import type { ConnectedFolder, ConnectedFolderKind, ConnectedFolderPatch } from '../../shared/types';
 import { degrade } from '../degrade';
 import { deviceKind, readDevices } from '../transport/auth';
 import { connectedFoldersStorePath, execWorkspaceDir, mirrorManifestPath, mirrorRoot, piHome, protectedRootsPath } from './paths';
+import { replaceFile } from '../replace-file';
 
 // The Stem-owned registry of external "connected folders" the assistant may read
 // in place (an Obsidian vault, a financials folder, …). The folders themselves
@@ -146,7 +147,7 @@ async function writeStore(store: ConnectedFoldersStore): Promise<void> {
   const path = connectedFoldersStorePath();
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(store, null, 2), 'utf8');
-  await rename(tmp, path); // atomic on the same volume
+  await replaceFile(tmp, path); // atomic on the same volume
 }
 
 /** Read, mutate, persist atomically, then re-publish the protected-roots gate. */
@@ -431,7 +432,7 @@ async function publishProtectedRoots(store: ConnectedFoldersStore): Promise<void
   const path = protectedRootsPath();
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify({ roots, read, write, mirrors }, null, 2), 'utf8');
-  await rename(tmp, path);
+  await replaceFile(tmp, path);
 }
 
 /** Publish the protected-roots gate from the current store (idempotent; for startup). */

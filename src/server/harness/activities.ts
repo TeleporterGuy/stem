@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { workDetail } from '../../shared/work-detail';
 import { degrade } from '../degrade';
 import { harnessRunsPath } from '../workspace/paths';
 import type { HarnessEvent } from './format';
 import { readHarnessRuns, type HarnessRunStatus } from './records';
+import { replaceFile } from '../replace-file';
 
 export interface HarnessActivity {
   id: string;
@@ -170,7 +171,7 @@ export class HarnessActivityRecorder {
       const path = join(dir, fileName(this.context.runId));
       const tmp = `${path}.${randomUUID()}.tmp`;
       await writeFile(tmp, JSON.stringify({ version: 1, activities: rows }), 'utf8');
-      await rename(tmp, path);
+      await replaceFile(tmp, path);
       for (const row of rows) if (dirty.has(row.id) || row.kind === 'gap') this.emit?.(row);
     }).catch((error: unknown) => { degrade('harness', 'could not persist coding-agent activity', error); });
     return this.chain;

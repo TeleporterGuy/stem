@@ -11,7 +11,7 @@
 // reason (see parseDevices).
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import {
@@ -25,6 +25,7 @@ import {
   setDevicePushToken
 } from '../../src/server/transport/auth';
 import { devicesStorePath } from '../../src/server/workspace/paths';
+import { expectPosixMode } from './posix-mode';
 
 const devicesPath = devicesStorePath();
 
@@ -78,7 +79,7 @@ describe('minting devices', () => {
 
   it('writes the registry 0600 — it still says who can reach this machine', async () => {
     await mintDevice('This machine');
-    expect(statSync(devicesPath).mode & 0o777).toBe(0o600);
+    expectPosixMode(devicesPath, 0o600);
   });
 
   it('survives a truncated or hand-edited registry rather than locking everyone out', async () => {

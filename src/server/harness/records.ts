@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { degrade } from '../degrade';
 import { harnessRunsPath } from '../workspace/paths';
+import { replaceFile } from '../replace-file';
 
 // The run log for coding_agent turns (harness-runs.json). Persistence layer
 // only, shaped like workspace/tasks.ts: a corrupt or missing file degrades to
@@ -119,7 +120,7 @@ async function writeRuns(runs: HarnessRunRecord[]): Promise<void> {
   const path = harnessRunsPath();
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify({ version: 1, runs: runs.slice(0, MAX_RUNS) } satisfies RunsStore, null, 2), 'utf8');
-  await rename(tmp, path); // atomic on the same volume
+  await replaceFile(tmp, path); // atomic on the same volume
 }
 
 /**

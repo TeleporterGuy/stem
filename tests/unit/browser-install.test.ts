@@ -2,10 +2,10 @@
 // copied out for Load unpacked, the wrapper the manifests point at, the
 // manifests in each installed browser — Arc's twice — and a startup refresh
 // that only touches an install this profile made.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   browserDirs,
   browserInstallPaths,
@@ -15,10 +15,13 @@ import {
   refreshBrowserControl,
   setupBrowsers,
   socketPathFor,
+  windowsRegistry,
+  wrapperBatch,
   wrapperScript
 } from '../../src/desktop/browser-host/install';
-import { FrameReader, encodeFrame, launchableOnLinux } from '../../src/shared/browser-native';
+import { FrameReader, encodeFrame, launchableBrowser, launchableOnLinux, windowsBrowserName } from '../../src/shared/browser-native';
 import { browserOf } from '../../src/desktop/browser-host/native-host-main';
+import { expectPosixMode } from './posix-mode';
 
 let home: string;
 let state: string;
@@ -54,8 +57,8 @@ describe('installBrowserControl', () => {
     expect(manifest).toMatchObject({ name: 'com.stem.browser', type: 'stdio', path: paths.wrapperPath });
     expect(manifest.allowed_origins).toEqual([expect.stringMatching(/^chrome-extension:\/\/[a-p]{32}\/$/)]);
     expect(existsSync(join(paths.extensionDir, 'background.js'))).toBe(true);
-    expect(statSync(paths.wrapperPath).mode & 0o777).toBe(0o700);
-    expect(statSync(paths.configPath).mode & 0o777).toBe(0o600);
+    expectPosixMode(paths.wrapperPath, 0o700);
+    expectPosixMode(paths.configPath, 0o600);
     expect(installedHere(paths, home, 'darwin')).toBe(true);
   });
 
@@ -137,6 +140,88 @@ describe('Linux', () => {
   });
 });
 
+describe('Windows', () => {
+  const local = (...p: string[]) => join(home, 'AppData', 'Local', ...p);
+  let registry: Map<string, string>;
+
+  beforeEach(() => {
+    registry = new Map();
+    vi.spyOn(windowsRegistry, 'read').mockImplementation((key, value) => registry.get(value ? `${key}|${value}` : key) ?? null);
+    vi.spyOn(windowsRegistry, 'write').mockImplementation((key, data) => void registry.set(key, data));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('registers each browser in the registry, pointing at one manifest beside a batch-file wrapper', async () => {
+    mkdirSync(local('Google', 'Chrome', 'User Data'), { recursive: true });
+    mkdirSync(local('Microsoft', 'Edge', 'User Data'), { recursive: true });
+    const paths = browserInstallPaths(state, 'win32');
+    expect(paths.wrapperPath.endsWith('stem-browser-host.cmd')).toBe(true);
+    const res = await installBrowserControl(src(), paths, home, 'win32');
+    expect(res.registered.sort()).toEqual(['Google Chrome', 'Microsoft Edge']);
+    expect(registry.get('HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.stem.browser')).toBe(paths.manifestPath);
+    expect(registry.get('HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.stem.browser')).toBe(paths.manifestPath);
+    expect(JSON.parse(readFileSync(paths.manifestPath, 'utf8'))).toMatchObject({ name: 'com.stem.browser', path: paths.wrapperPath });
+    expect(readFileSync(paths.wrapperPath, 'utf8')).toContain('set ELECTRON_RUN_AS_NODE=1\r\n');
+    expect(installedHere(paths, home, 'win32')).toBe(true);
+    expect(installedHere(browserInstallPaths(mkdtempSync(join(tmpdir(), 'stem-other-')), 'win32'), home, 'win32')).toBe(false);
+  });
+
+  it('offers browsers whose executable exists, the default first', () => {
+    mkdirSync(local('Google', 'Chrome', 'User Data'), { recursive: true });
+    mkdirSync(local('Google', 'Chrome', 'Application'), { recursive: true });
+    writeFileSync(local('Google', 'Chrome', 'Application', 'chrome.exe'), '');
+    mkdirSync(local('Chromium', 'User Data'), { recursive: true });
+    mkdirSync(local('Chromium', 'Application'), { recursive: true });
+    writeFileSync(local('Chromium', 'Application', 'chrome.exe'), '');
+    // Brave was used but is gone.
+    mkdirSync(local('BraveSoftware', 'Brave-Browser', 'User Data'), { recursive: true });
+    expect(setupBrowsers(home, 'win32', [''], 'ChromiumHTM').map((b) => [b.name, b.app])).toEqual([
+      ['Chromium', local('Chromium', 'Application', 'chrome.exe')],
+      ['Google Chrome', local('Google', 'Chrome', 'Application', 'chrome.exe')]
+    ]);
+  });
+
+  it('listens on a named pipe nobody can guess', () => {
+    const dir = 'C:\\Users\\a\\AppData\\Roaming\\Stem\\browser';
+    expect(socketPathFor(dir, 'win32')).toMatch(/^\\\\\.\\pipe\\stem-browser-[0-9a-f]{32}$/);
+    expect(socketPathFor(dir, 'win32')).not.toBe(socketPathFor(dir, 'win32'));
+  });
+
+  it('quotes the paths in the batch wrapper', () => {
+    expect(wrapperBatch('C:\\Program Files\\Stem\\Stem.exe', 'C:\\x\\host.js', 'C:\\s\\config.json')).toContain(
+      '"C:\\Program Files\\Stem\\Stem.exe" "C:\\x\\host.js" "C:\\s\\config.json" %*'
+    );
+  });
+
+  it('names the browser from its executable', () => {
+    expect(browserOf('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe').appName).toBe('Google Chrome');
+    expect(browserOf('C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe').appName).toBe('Microsoft Edge');
+    expect(browserOf('C:\\Users\\me\\AppData\\Local\\Vivaldi\\Application\\vivaldi.exe').appName).toBe('vivaldi');
+  });
+
+  it('starts only known browsers from where their installers put them', () => {
+    for (const ok of [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe',
+      'C:\\Users\\john.doe\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe'
+    ]) {
+      expect(windowsBrowserName(ok)).not.toBeNull();
+      expect(launchableBrowser(ok, 'win32')).toBe(true);
+    }
+    for (const bad of [
+      'C:\\Users\\me\\Downloads\\chrome.exe',
+      'C:\\Users\\..\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Users\\me/../..\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe.bat',
+      'chrome.exe',
+      ''
+    ]) {
+      expect(launchableBrowser(bad, 'win32')).toBe(false);
+    }
+  });
+});
+
 describe('pieces', () => {
   it('quotes paths with spaces and quotes in the wrapper', () => {
     const script = wrapperScript('/Applications/Stem.app/Contents/MacOS/Stem', "/x/it's here.js", '/a b/config.json');
@@ -165,7 +250,7 @@ describe('pieces', () => {
     expect(extensionsPageUrl('Microsoft Edge')).toBe('edge://extensions');
   });
 
-  it('keeps socket paths under the unix limit', () => {
+  it.skipIf(process.platform === 'win32')('keeps socket paths under the unix limit', () => {
     expect(socketPathFor('/short')).toBe('/short/host.sock');
     const long = socketPathFor(`/${'x'.repeat(120)}`);
     expect(Buffer.byteLength(long)).toBeLessThan(104);

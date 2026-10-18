@@ -16,7 +16,8 @@ import { readClientSettings } from './settings';
 // What "update" means depends on how Stem got here, and the split is decided
 // once, at startup:
 //
-//   auto — the AppImage, and a mac build installed in an Applications folder.
+//   auto — the AppImage, the Windows installer, and a mac build installed in
+//     an Applications folder.
 //     electron-updater reads the feed electron-builder put beside the release
 //     (latest-linux*.yml, latest-mac.yml) and downloads the new build on its
 //     own. The AppImage swaps the file on restart — or silently on quit,
@@ -25,7 +26,9 @@ import { readClientSettings } from './settings';
 //     and hands it to Squirrel.Mac, which checks that the new bundle is signed
 //     by the same Developer ID as the running one (mac builds are signed since
 //     2026-09, see the `mac` block in electron-builder.yml) and replaces
-//     Stem.app after the app quits.
+//     Stem.app after the app quits. On Windows it fetches the next per-user
+//     NSIS installer (latest.yml) and runs it silently as the app quits;
+//     nothing there needs administrator rights.
 //
 //   manual — the deb, and a mac build running from anywhere Squirrel cannot
 //     write: straight off the mounted dmg, or a copy macOS translocated out of
@@ -91,6 +94,9 @@ export function updateModeFor(f: UpdateModeFacts): UpdateMode {
   // home: an Applications folder. Off the read-only dmg, or translocated out
   // of Downloads, the swap could only fail — the release page still works.
   if (f.platform === 'darwin' && f.inApplicationsFolder) return 'auto';
+  // Windows ships only the NSIS installer, which installs per user into a
+  // folder this user owns; electron-updater runs the next one over it.
+  if (f.platform === 'win32') return 'auto';
   return 'manual';
 }
 

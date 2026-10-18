@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Persona, PersonaHarnessPin } from '../../shared/types';
 import { degrade } from '../degrade';
 import { personasStorePath } from './paths';
 import { coerceBrowserProfiles } from '../../shared/browser-native';
 import { deletePersonaMemory } from './persona-memory';
+import { replaceFile } from '../replace-file';
 
 // The Stem-owned persona registry. Same shape as the inbox store next door —
 // serialized read-modify-write, atomic temp+rename, and a corrupt file degrading
@@ -349,7 +350,7 @@ async function writeFileAtomic(store: PersonasFile): Promise<void> {
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(store, null, 2), 'utf8');
   // rename is atomic on the same volume — readers never see a half-written file.
-  await rename(tmp, path);
+  await replaceFile(tmp, path);
 }
 
 /** Read the registry, seeding the built-ins on first use. */

@@ -67,7 +67,10 @@ export default defineConfig({
           // The browser extension's native-messaging host: plain Node, run by
           // the Stem binary with ELECTRON_RUN_AS_NODE from the wrapper script
           // Set up writes (desktop/browser-host/install.ts).
-          'browser-native-host': 'src/desktop/browser-host/native-host-main.ts'
+          'browser-native-host': 'src/desktop/browser-host/native-host-main.ts',
+          // Dictation off the Mac: Whisper in its own utilityProcess
+          // (utilityProcess.fork(dist/main/dictation-worker.js) in desktop/dictation/whisper.ts).
+          'dictation-worker': 'src/desktop/dictation/whisper-worker.ts'
         },
         // transformers.js must stay external: it lazily loads onnxruntime-node's
         // native .node binary, which cannot live inside a rollup bundle. Resolved

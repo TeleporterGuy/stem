@@ -57,6 +57,10 @@ describe('updateModeFor', () => {
     expect(updateModeFor(linux)).toBe('manual');
   });
 
+  it('self-updates the Windows installer', () => {
+    expect(updateModeFor({ ...packaged, platform: 'win32', inApplicationsFolder: false })).toBe('auto');
+  });
+
   it('never updates a dev run or a test', () => {
     expect(updateModeFor({ ...packaged, packaged: false })).toBe('none');
     expect(updateModeFor({ ...packaged, e2e: true })).toBe('none');

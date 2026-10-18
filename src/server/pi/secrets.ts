@@ -1,8 +1,9 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { degrade } from '../degrade';
 import { host } from '../host';
+import { replaceFileSync } from '../replace-file';
 import { secretKeyPath } from '../workspace/paths';
 import { SECRET_VALUE_PREFIX } from './protocol';
 
@@ -46,7 +47,7 @@ function loadOrCreateKey(): Buffer | null {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     writeFileSync(tmp, wrapper.wrap(key.toString('hex')), { mode: 0o600 });
-    renameSync(tmp, path);
+    replaceFileSync(tmp, path);
   } catch (error) {
     try {
       rmSync(tmp, { force: true });

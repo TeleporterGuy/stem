@@ -50,7 +50,7 @@ describe('createComputerDeviceRouter', () => {
       platform: 'darwin',
       access: { screen: true, accessibility: false, inputMonitoring: 'yes' }
     });
-    await router.announce('mac-1', { enabled: true, platform: 'linux' }); // ignored: mac only
+    await router.announce('mac-1', { enabled: true, platform: 'linux' }); // ignored: Macs and Windows only
     const host = await router.hostFor('mac-1');
     expect(host).toMatchObject({
       enabled: true,

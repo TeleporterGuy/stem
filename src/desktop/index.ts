@@ -65,6 +65,9 @@ import type { AppSettings, ThemeState } from '../shared/types';
 // "Electron" — that comes from the Electron.app bundle and only changes when
 // the app is packaged.
 app.setName('Stem');
+// Windows ties notifications and the taskbar to the Start-menu shortcut by its
+// AppUserModelID, which the installer sets to the appId (electron-builder.yml).
+if (process.platform === 'win32') app.setAppUserModelId('com.join3r.stem');
 
 // Background (E2E) mode: keep a test run out of the way of whoever is using the
 // machine. On macOS a launching regular app makes itself frontmost, and when it

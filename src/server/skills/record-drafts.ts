@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { RecordingDraft } from '../../shared/types';
 import { userDataRoot } from '../workspace/paths';
+import { replaceFile } from '../replace-file';
 
 // The draft skills recordings became, one card each in the chat that recorded
 // them, until saved or discarded. Its own small file rather than a field on a
@@ -47,7 +48,7 @@ async function writeStore(store: DraftStore): Promise<void> {
   const tmp = `${path}.${randomUUID()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
   await writeFile(tmp, JSON.stringify(store), { encoding: 'utf8', mode: 0o600 });
-  await rename(tmp, path);
+  await replaceFile(tmp, path);
 }
 
 function update<T>(mutate: (store: DraftStore) => T): Promise<T> {

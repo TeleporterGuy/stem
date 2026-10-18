@@ -3,14 +3,16 @@
 // extension from the folder Set up made, and a scripted turn ([e2e:browser])
 // opens a fixture page and reads it back: server → router → desktop host →
 // native host (the Stem binary as Node) → extension → page. This is the test
-// that proves the platform glue (manifest folders, the parent-process lookup,
-// the wrapper) on Linux as well as on a Mac.
+// that proves the platform glue (manifest folders or the registry, the
+// parent-process lookup, the wrapper, the socket or pipe) on Linux and Windows
+// as well as on a Mac. On Windows it writes the real HKCU key for Chromium and
+// removes it again.
 //
 // Needs Playwright's Chromium (`npx playwright install chromium`), or the
 // browser STEM_E2E_BROWSER names — the Linux container (scripts/linux-test.mjs)
 // points it at Debian's own chromium, the package a user would have. Skipped
 // when neither is there.
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -19,18 +21,21 @@ import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { closeApp, expect, launchApp, mainWindowOf, openSettings, test } from './electron';
 
+const REGISTRY_KEY = 'HKCU\\Software\\Chromium\\NativeMessagingHosts\\com.stem.browser';
+
 test('a real browser drives a page through the Stem extension', async () => {
   test.setTimeout(150_000);
   const executable = process.env.STEM_E2E_BROWSER || chromium.executablePath();
   test.skip(!existsSync(executable), `no browser at ${executable} (npx playwright install chromium)`);
-  test.skip(process.platform !== 'darwin' && process.platform !== 'linux', 'browser control runs on macOS and Linux');
 
   const home = mkdtempSync(join(tmpdir(), 'stem-home-'));
   // A folder Set up recognizes as a used Chromium, so it registers the host there.
   const profile =
     process.platform === 'darwin'
       ? join(home, 'Library', 'Application Support', 'Chromium')
-      : join(home, '.config', 'chromium');
+      : process.platform === 'win32'
+        ? join(home, 'AppData', 'Local', 'Chromium', 'User Data')
+        : join(home, '.config', 'chromium');
   mkdirSync(profile, { recursive: true });
 
   const fixture: Server = createServer((_req, res) => {
@@ -41,7 +46,9 @@ test('a real browser drives a page through the Stem extension', async () => {
   const url = `http://127.0.0.1:${(fixture.address() as AddressInfo).port}/`;
 
   const launched = await launchApp({
-    env: { HOME: home, XDG_CONFIG_HOME: join(home, '.config') },
+    // Windows: LOCALAPPDATA is where Set up looks for browsers. USERPROFILE stays
+    // real; an Electron started with another one never opens a window.
+    env: { HOME: home, XDG_CONFIG_HOME: join(home, '.config'), LOCALAPPDATA: join(home, 'AppData', 'Local') },
     seedSettings: {
       onboarding: { completed: true },
       releaseNotes: { showOnUpdate: false, lastSeenVersion: null }
@@ -57,7 +64,11 @@ test('a real browser drives a page through the Stem extension', async () => {
     await win.getByRole('button', { name: 'Set up…' }).click();
     await expect(win.getByText('Waiting for Load unpacked')).toBeVisible();
 
-    const manifest = JSON.parse(readFileSync(join(profile, 'NativeMessagingHosts', 'com.stem.browser.json'), 'utf8'));
+    const manifestFile =
+      process.platform === 'win32'
+        ? /REG_SZ\s+(.*)$/m.exec(execFileSync('reg', ['query', REGISTRY_KEY, '/ve'], { encoding: 'utf8' }))![1]!.trim()
+        : join(profile, 'NativeMessagingHosts', 'com.stem.browser.json');
+    const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
     expect(manifest.name).toBe('com.stem.browser');
     const extensionPath = (await win.locator('.ext-path').first().textContent())!.trim();
 
@@ -92,6 +103,13 @@ test('a real browser drives a page through the Stem extension', async () => {
   } finally {
     browser?.kill();
     await closeApp(launched);
+    if (process.platform === 'win32') {
+      try {
+        execFileSync('reg', ['delete', REGISTRY_KEY, '/f'], { stdio: 'ignore' });
+      } catch {
+        // quiet: Set up never got as far as the registry.
+      }
+    }
     fixture.close();
     rmSync(home, { recursive: true, force: true });
   }

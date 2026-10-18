@@ -25,7 +25,7 @@ import {
   setOverlayWorkspaceVisibility,
   type DockRect
 } from './windows';
-import { peekFrontWindow, readWindowText, stopWindowPeek, warmWindowPeek, windowBounds } from './window-peek';
+import { peekFrontWindow, readWindowText, stopWindowPeek, warmWindowPeek, windowBounds, windowPeekSupported } from './window-peek';
 import { eventTurnId } from '../../shared/settledTurns';
 import { PillTurns, type PillEventParams } from './pill-turns';
 import { activityLabel } from '../../shared/activity';
@@ -524,14 +524,14 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
     return !accelerator || !!currentShortcut;
   }
 
-  /** (Re)register "Ask about this window". A Mac-only feature: elsewhere it stays unbound. */
+  /** (Re)register "Ask about this window". Mac and Windows: elsewhere it stays unbound. */
   function applyWindowShortcut(accelerator: string | null): void {
     desiredWindowShortcut = accelerator;
     if (currentWindowShortcut) {
       globalShortcut.unregister(currentWindowShortcut);
       currentWindowShortcut = null;
     }
-    if (process.platform !== 'darwin') return;
+    if (!windowPeekSupported) return;
     currentWindowShortcut = registerAccelerator(accelerator, () => void askAboutWindow());
     // The helper's launch was most of a first press's wait: start it now.
     if (currentWindowShortcut) warmWindowPeek();

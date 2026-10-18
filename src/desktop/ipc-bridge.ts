@@ -76,11 +76,18 @@ const LOCAL_IPC_ARGS: Record<string, ArgSpec[]> = {
   // ':pause' / ':cancel' take no arguments): the chat it records for, and the
   // draft a second example is added to.
   'recorder:start': [a.string, a.optional(a.nullish(a.string))],
-  // Dictation on this Mac ('dictation:languages' / ':stop' / ':cancel' take no
-  // arguments): the language to listen in, null for the Mac's own.
-  'dictation:start': [a.nullish(a.string)],
+  // Dictation ('dictation:languages' / ':stop' / ':cancel' take no
+  // arguments): the language to listen in, null for the computer's own, and
+  // off a Mac which Whisper model; then the microphone, 16 kHz mono blocks
+  // (a Float32Array, checked again in the handler).
+  'dictation:start': [a.nullish(a.string), a.optional(a.oneOf(['fast', 'accurate']))],
+  'dictation:audio': [a.object],
   'quickchat:run': [a.object],
-  'quickchat:handoff': [a.object]
+  'quickchat:handoff': [a.object],
+  // Whether the compact bar keeps room for the window chip ("Ask about this window").
+  'quickchat:compact': [a.optional(a.boolean)],
+  // The System Settings pane the chip's missing-permission link opens.
+  'quickchat:openPrivacy': [a.oneOf(['screen', 'accessibility'])]
 };
 
 /**

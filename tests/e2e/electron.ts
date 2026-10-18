@@ -4,7 +4,7 @@
 import { _electron as electron, test as base, type ElectronApplication, type Page } from '@playwright/test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startStemServer, type StemServerProcess } from './stem-server';
 import type { ScheduledTask } from '../../src/shared/types';
@@ -13,7 +13,9 @@ import type { ScheduledTask } from '../../src/shared/types';
 // resolves `main` from package.json AND app.getAppPath() returns the repo root.
 // Pointing at the entry file makes getAppPath() = dist/main, which breaks the
 // runtime's source-relative paths (e.g. the pi extension under src/server/pi).
-const PROJECT_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+// No trailing separator: Playwright quotes the Windows command line itself, and
+// `"C:\repo\"` reads as an escaped quote that swallows the next argument.
+const PROJECT_ROOT = resolve(fileURLToPath(new URL('../../', import.meta.url)));
 
 /** The real app opens three windows (main, Quick Chat overlay, HUD); only the
  *  overlay/HUD carry a `quickchat`/`hud` query flag. Pick the bare main window. */
@@ -103,7 +105,7 @@ export interface LaunchedApp {
 }
 
 /** The Quick Chat fields a machine owns — see ClientSettings in shared/types.ts. */
-const CLIENT_QUICK_CHAT_KEYS = ['shortcut', 'showOnAllDisplays', 'followAcrossSpaces'];
+const CLIENT_QUICK_CHAT_KEYS = ['shortcut', 'windowShortcut', 'showOnAllDisplays', 'followAcrossSpaces'];
 
 /**
  * Sort a seed into the file that will actually be read for each key. Mirrors

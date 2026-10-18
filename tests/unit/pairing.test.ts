@@ -8,7 +8,7 @@
 // cannot be read back into a code.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   createPairingCode,
@@ -19,6 +19,7 @@ import {
 } from '../../src/server/transport/pairing';
 import { forgetCachedDevices, readDevices, resolveDevice } from '../../src/server/transport/auth';
 import { devicesStorePath, pairingStorePath } from '../../src/server/workspace/paths';
+import { expectPosixMode } from './posix-mode';
 
 const pairingPath = pairingStorePath();
 const devicesPath = devicesStorePath();
@@ -51,7 +52,7 @@ describe('issuing a code', () => {
 
     const onDisk = readFileSync(pairingPath, 'utf8');
     expect(onDisk).not.toContain(normalizeCode(code));
-    expect(statSync(pairingPath).mode & 0o777).toBe(0o600);
+    expectPosixMode(pairingPath, 0o600);
   });
 
   it('lists what is outstanding, so a stale code is visible rather than guessed at', async () => {
