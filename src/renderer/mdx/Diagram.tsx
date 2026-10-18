@@ -1,137 +1,107 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CodeBlock } from './components';
 
-// <Diagram> draws Mermaid source (flowcharts, sequence diagrams, timelines…).
-// mermaid is several MB, so it is imported on first use and never by the
-// server bundle. securityLevel 'strict' sanitizes labels and disables click
-// handlers, so a diagram can only be a picture. The theme is read from Stem's
-// own tokens and redrawn when the theme changes. A diagram mermaid can't parse
-// falls back to its source in a code block.
+// <Diagram> draws Mermaid source (flowcharts, sequence diagrams, timelines…)
+// with pele, a small synchronous Mermaid renderer. It is imported on first use
+// and never by the server bundle. Links and images are off, so a diagram can
+// only be a picture. Colors are CSS variables (.mdx-diagram in styles.css), so
+// a theme flip recolors without a redraw. A diagram pele can't parse falls
+// back to its source in a code block.
+//
+// While a reply is still streaming, `live` draws every complete line as it
+// arrives and keeps the last drawing that worked on screen, so the diagram
+// grows as the model writes it. A render takes well under a millisecond.
 
-type Mermaid = typeof import('mermaid').default;
+type Pele = typeof import('pele');
 type Purify = typeof import('dompurify').default;
-let loading: Promise<{ mermaid: Mermaid; purify: Purify }> | null = null;
-// Every render gets a fresh id. Under StrictMode the effect runs twice with the
-// same useId; a shared id lets the second mermaid.render evict the first's temp
-// node mid-flight, so the first reads back null and throws on .firstChild.
-let renderSeq = 0;
+let engine: { pele: Pele; purify: Purify } | null = null;
+let loading: Promise<{ pele: Pele; purify: Purify }> | null = null;
 /** Both load on the first diagram, in their own chunk, never with the app. */
-function loadMermaid(): Promise<{ mermaid: Mermaid; purify: Purify }> {
-  loading ??= Promise.all([import('mermaid'), import('dompurify')]).then(([m, p]) => ({
-    mermaid: m.default,
-    purify: p.default
-  }));
+function loadPele(): Promise<{ pele: Pele; purify: Purify }> {
+  loading ??= Promise.all([import('pele'), import('dompurify')]).then(([p, d]) => (engine = { pele: p, purify: d.default }));
   return loading;
 }
 
-function themeVariables(): Record<string, string> {
-  const css = getComputedStyle(document.documentElement);
-  const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
-  const surface = v('--surface', '#fffdf9');
-  const ink = v('--ink', '#23211d');
-  const line = v('--line', '#e0dccf');
-  const muted = v('--muted', '#6d675d');
-  return {
-    fontFamily: v('--font-ui', 'system-ui, sans-serif'),
-    fontSize: '13px',
-    background: 'transparent',
-    primaryColor: surface,
-    primaryTextColor: ink,
-    primaryBorderColor: muted,
-    secondaryColor: v('--inline-bg', '#efeae0'),
-    tertiaryColor: v('--content', '#faf8f3'),
-    lineColor: muted,
-    textColor: ink,
-    mainBkg: surface,
-    nodeBorder: muted,
-    clusterBkg: v('--content', '#faf8f3'),
-    clusterBorder: line,
-    edgeLabelBackground: v('--content', '#faf8f3'),
-    actorBkg: surface,
-    actorBorder: muted,
-    actorTextColor: ink,
-    signalColor: ink,
-    signalTextColor: ink,
-    noteBkgColor: v('--inline-bg', '#efeae0'),
-    noteTextColor: ink,
-    noteBorderColor: line
-  };
+/** The source's complete lines: the last one may still be mid-token while streaming. */
+export function completeLines(source: string): string {
+  const cut = source.lastIndexOf('\n');
+  return cut === -1 ? '' : source.slice(0, cut);
 }
 
-/** Bumps whenever the app's theme flips, so diagrams redraw in the new colors. */
-function useThemeKey(): number {
-  const [key, setKey] = useState(0);
+function draw(code: string, idPrefix: string, maxWidth: number | undefined): string {
+  const { pele, purify } = engine!;
+  const css = getComputedStyle(document.documentElement);
+  const { svg } = pele.render(code, {
+    idPrefix,
+    maxWidth,
+    fontFamily: css.getPropertyValue('--font-ui').trim() || 'system-ui, sans-serif',
+    fontSize: 13,
+    links: false,
+    images: false
+  });
+  // Pele escapes labels and filters links itself; the source is model text, so
+  // the SVG goes through DOMPurify's SVG profile as well.
+  return purify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
+}
+
+/** The figure's width, so pele can lay a wide flowchart out vertically on a narrow pane. */
+function useWidth(ref: React.RefObject<HTMLElement | null>): number | undefined {
+  const [width, setWidth] = useState<number>();
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.clientWidth || undefined);
+    const observer = new ResizeObserver(() => setWidth(el.clientWidth || undefined));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return width;
+}
+
+export function Diagram({ title, source, live = false }: { title?: string; source?: string; live?: boolean }) {
+  const idPrefix = `mdx-diagram-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const figure = useRef<HTMLElement>(null);
+  const width = useWidth(figure);
+  const [loaded, setLoaded] = useState(engine !== null);
+  // The last drawing that worked: a streaming line that doesn't parse yet keeps it.
+  const lastGood = useRef<string | null>(null);
+  const code = (live ? completeLines(source ?? '') : (source ?? '')).trim();
+
   useEffect(() => {
-    const bump = () => setKey((k) => k + 1);
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
-    media.addEventListener('change', bump);
-    const observer = new MutationObserver(bump);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    if (engine) return;
+    let mounted = true;
+    loadPele().then(
+      () => mounted && setLoaded(true),
+      (err) => console.error('[Diagram] pele failed to load:', err)
+    );
     return () => {
-      media.removeEventListener('change', bump);
-      observer.disconnect();
+      mounted = false;
     };
   }, []);
-  return key;
-}
 
-export function Diagram({ title, source }: { title?: string; source?: string }) {
-  const id = `mdx-diagram-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
-  const themeKey = useThemeKey();
-  const [state, setState] = useState<{ svg: string } | { error: true } | null>(null);
-  const code = (source ?? '').trim();
+  const { svg, failed } = useMemo(() => {
+    if (!loaded || !code) return { svg: null, failed: false };
+    try {
+      const svg = draw(code, idPrefix, width);
+      lastGood.current = svg;
+      return { svg, failed: false };
+    } catch (err) {
+      if (live) return { svg: lastGood.current, failed: false };
+      // Surface the real reason: a bare catch here turned every diagram
+      // failure into the same opaque fallback.
+      console.error('[Diagram] render failed:', err);
+      return { svg: null, failed: true };
+    }
+  }, [loaded, code, idPrefix, width, live]);
 
-  useEffect(() => {
-    if (!code) return;
-    let live = true;
-    void (async () => {
-      try {
-        const { mermaid, purify } = await loadMermaid();
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: 'strict',
-          theme: 'base',
-          themeVariables: themeVariables(),
-          // Plain SVG text labels: HTML labels ride in <foreignObject>, which
-          // the SVG sanitizer below rightly strips, leaving empty boxes.
-          htmlLabels: false,
-          flowchart: { htmlLabels: false, curve: 'basis' },
-          sequence: { messageFontSize: 13, actorFontSize: 13, noteFontSize: 13 }
-        });
-        // Parse first: a failed render leaves mermaid's own error graphic in
-        // the page body, and the source is shown as code instead anyway.
-        if (!(await mermaid.parse(code, { suppressErrors: true }))) throw new Error('unparseable diagram');
-        const renderId = `${id}-${themeKey}-${++renderSeq}`;
-        let svg: string;
-        try {
-          ({ svg } = await mermaid.render(renderId, code));
-        } finally {
-          document.getElementById(`d${renderId}`)?.remove();
-        }
-        // Mermaid sanitizes labels itself under 'strict'; the source is model
-        // text, so the finished SVG goes through DOMPurify's SVG profile as well.
-        const clean = purify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['style'] });
-        if (live) setState({ svg: clean });
-      } catch (err) {
-        // Surface the real reason: a bare catch here turned every diagram
-        // failure into the same opaque fallback.
-        console.error('[Diagram] render failed:', err);
-        if (live) setState({ error: true });
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [code, id, themeKey]);
-
-  if (!code) return <div className="chart-error">This diagram is empty.</div>;
+  if (!code && !live) return <div className="chart-error">This diagram is empty.</div>;
   return (
-    <figure className="mdx-diagram">
+    <figure className="mdx-diagram" ref={figure}>
       {title && <figcaption className="chart-title">{title}</figcaption>}
-      {state && 'svg' in state ? (
-        // Mermaid's output, sanitized by it under 'strict' and again by DOMPurify.
-        <div className="mdx-diagram-svg" dangerouslySetInnerHTML={{ __html: state.svg }} />
-      ) : state && 'error' in state ? (
+      {svg ? (
+        // Pele's output, escaped by it and sanitized again by DOMPurify.
+        <div className="mdx-diagram-svg" dangerouslySetInnerHTML={{ __html: svg }} />
+      ) : failed ? (
         <>
           <div className="mdx-diagram-note">Couldn’t draw this diagram; here is its source.</div>
           <CodeBlock lang="mermaid" value={code} />

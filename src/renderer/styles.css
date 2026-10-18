@@ -1585,8 +1585,32 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .compare-pros li::before { content: '+'; position: absolute; left: 2px; color: var(--success); font-weight: 700; }
 .compare-cons li::before { content: '−'; position: absolute; left: 2px; color: var(--danger); font-weight: 700; }
 
-/* ---- Diagram (Mermaid) ---- */
-.mdx-diagram { margin: 0.9em 0; }
+/* ---- Diagram (Mermaid source, drawn by pele) ----
+   Pele's SVG reads its colors from these variables, so a theme flip recolors
+   a drawn diagram in place. */
+.mdx-diagram {
+  margin: 0.9em 0;
+  --pele-bg: var(--content);
+  --pele-fg: var(--ink);
+  --pele-muted: var(--muted);
+  --pele-line: var(--muted);
+  --pele-surface: var(--surface);
+  --pele-surface-alt: var(--inline-bg);
+  --pele-border: var(--muted);
+  --pele-accent: var(--accent);
+  --pele-critical: var(--danger);
+  --pele-error: var(--danger);
+  --pele-font: var(--font-ui);
+  --pele-font-mono: var(--font-mono);
+  --pele-series-1: var(--series-1);
+  --pele-series-2: var(--series-2);
+  --pele-series-3: var(--series-3);
+  --pele-series-4: var(--series-4);
+  --pele-series-5: var(--series-5);
+  --pele-series-6: var(--series-6);
+  --pele-series-7: var(--series-7);
+  --pele-series-8: var(--series-8);
+}
 .mdx-diagram-svg { overflow-x: auto; }
 .mdx-diagram-svg svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
 .mdx-diagram-note { color: var(--muted); font-size: var(--fs-12); margin-bottom: var(--sp-1); }

@@ -49,6 +49,14 @@ final class MdxTreeTests: XCTestCase {
 }
 
 final class MdxDataTests: XCTestCase {
+    func testCompleteRowsClosesAfterLastCompleteRow() {
+        XCTAssertEqual(MdxDataParse.completeRows(#"[{"a":1},{"a":2},{"a""#), #"[{"a":1},{"a":2}]"#)
+        XCTAssertEqual(MdxDataParse.completeRows(#"[{"s":"}]\"{"},{"t":[1,{"u":2}]},{"v":"x"#), #"[{"s":"}]\"{"},{"t":[1,{"u":2}]}]"#)
+        XCTAssertEqual(MdxDataParse.completeRows(#"[{"a":1}]"#), #"[{"a":1}]"#)
+        XCTAssertNil(MdxDataParse.completeRows(#"[{"a":"#))
+        XCTAssertNil(MdxDataParse.completeRows(#"{"columns":["a"],"rows":[[1]"#))
+    }
+
     func testChartColumnsKeepOrderAndPickTextX() throws {
         let d = try XCTUnwrap(MdxChartData.from(#"[{"month":"Jan","power":92,"water":"31"},{"month":"Feb","power":88,"water":29}]"#))
         XCTAssertEqual(d.xName, "month")

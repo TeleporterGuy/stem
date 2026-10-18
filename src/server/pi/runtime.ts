@@ -335,6 +335,28 @@ const PRE_START_CANCEL_CAP = 32;
  * request timeout would give up on a big chat that is still being summarized. */
 const COMPACT_TIMEOUT_MS = 10 * 60_000;
 
+/** Session files read at once on a cold chat-list scan; each is read whole. */
+const SESSION_META_READS = 4;
+
+/** Run the given tasks at most `limit` at a time, in the order they arrive. */
+function limitConcurrency(limit: number): <T>(task: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiting: Array<() => void> = [];
+  return async (task) => {
+    // A finished task hands its slot straight to the next waiter, so a new
+    // arrival can't slip in between and run a fifth.
+    if (running >= limit) await new Promise<void>((resolve) => waiting.push(resolve));
+    else running += 1;
+    try {
+      return await task();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else running -= 1;
+    }
+  };
+}
+
 /** Accept a client-minted turn id only in canonical UUID form; anything else is
  * replaced with a server-minted one (the turn still runs, it just cannot be
  * canceled before its start returns). */
@@ -630,6 +652,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * list/delete cost, so this keeps repeated `listThreads` refreshes cheap.
    */
   private metaCache = new Map<string, { mtimeMs: number; meta: SessionFile }>();
+  /** The scan in flight: concurrent list calls share it rather than each reading every file. */
+  private sessionScan: Promise<SessionFile[]> | null = null;
   /**
    * Sessions pre-created via createThread (e.g. Quick Chat) that haven't had a
    * turn yet, so their first turn still gets an auto-derived title — matching the
@@ -5046,9 +5070,25 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     return files.find((f) => f.id === threadId)?.path ?? null;
   }
 
-  /** Walk the session dir and read each JSONL header + name for the chat list. */
-  private async scanSessions(): Promise<SessionFile[]> {
+  /**
+   * Walk the session dir and read each JSONL header + name for the chat list.
+   * Callers that arrive while a scan runs get that scan. After a restart the
+   * cache is empty and every session is read in full; a reconnecting client
+   * asks for the chat list and the mail list together, and with ~1 GB of
+   * sessions three parallel cold scans ran the server out of heap at boot.
+   */
+  private scanSessions(): Promise<SessionFile[]> {
+    this.sessionScan ??= this.scanSessionsOnce().finally(() => {
+      this.sessionScan = null;
+    });
+    return this.sessionScan;
+  }
+
+  private async scanSessionsOnce(): Promise<SessionFile[]> {
     const seen = new Set<string>();
+    // Uncached files are read whole, so only a few at a time: all of them at
+    // once held every session in memory together.
+    const readMeta = limitConcurrency(SESSION_META_READS);
     const walk = async (dir: string): Promise<SessionFile[]> => {
       let entries;
       try {
@@ -5083,7 +5123,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           }
           const cached = this.metaCache.get(full);
           if (cached && cached.mtimeMs === mtimeMs) return [cached.meta];
-          const meta = await this.readSessionMeta(full, mtimeMs);
+          const meta = await readMeta(() => this.readSessionMeta(full, mtimeMs!));
           if (!meta) return [];
           this.metaCache.set(full, { mtimeMs, meta });
           return [meta];

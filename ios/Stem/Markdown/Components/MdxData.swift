@@ -192,6 +192,39 @@ struct MdxTable {
 }
 
 enum MdxDataParse {
+    /// The rows of a JSON array written so far, as JSON that parses: up to the
+    /// last complete top-level element, with the array closed. A streaming
+    /// DataTable, Chart, Stats or Compare draws from this; port of completeRows
+    /// in src/renderer/mdx/data.ts. Nil before the first row is complete, or
+    /// when the data isn't an array.
+    static func completeRows(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let chars = Array(raw)
+        guard let start = chars.firstIndex(where: { !$0.isWhitespace }), chars[start] == "[" else { return nil }
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var end: Int?
+        for i in start..<chars.count {
+            let c = chars[i]
+            if inString {
+                if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { inString = false }
+                continue
+            }
+            switch c {
+            case "\"": inString = true
+            case "[", "{": depth += 1
+            case "]", "}":
+                depth -= 1
+                if depth == 0 { return String(chars[start...i]) }
+                if depth == 1 { end = i + 1 }
+            default: break
+            }
+        }
+        guard let end else { return nil }
+        return String(chars[start..<end]) + "]"
+    }
+
     /// An array of objects (keys in first-seen order become columns), or
     /// `{columns, rows}` with rows as arrays.
     static func table(_ raw: String?) -> MdxTable? {

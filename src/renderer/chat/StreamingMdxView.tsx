@@ -1,6 +1,8 @@
 import { Fragment, memo, useRef, type ReactNode } from 'react';
-import { provisionalTail, renderMdx, splitStreamBlocks, tryRenderMdx } from '../mdx/render';
-import { MdxPlaceholder } from '../mdx/components';
+import { provisionalTail, renderMdx, splitStreamBlocks, streamingData, tryRenderMdx } from '../mdx/render';
+import { MdxPlaceholder, componentMap } from '../mdx/components';
+import { completeRows } from '../mdx/data';
+import { Diagram } from '../mdx/Diagram';
 
 // Incremental renderer for a still-streaming reply. MdxView re-parses the entire
 // accumulated text on every delta — O(n) per token, O(n²) per reply. Here the text
@@ -13,7 +15,9 @@ import { MdxPlaceholder } from '../mdx/components';
 // which component the tail is still inside. Prose containers (Callout, Steps,
 // Tabs…) render live, closed provisionally; anything whose content is data
 // (Chart, DataTable, Quiz, Form…) shows a placeholder until its closing tag
-// arrives. A half-written tag is never shown as text.
+// arrives. A half-written tag is never shown as text. Diagrams and the JSON
+// data components are the exception: a Diagram draws line by line, and a
+// Chart, DataTable, Stats or Compare row by row, as their data arrives.
 export const StreamingMdxView = memo(function StreamingMdxView({ text }: { text: string }) {
   const cache = useRef<Array<{ text: string; node: ReactNode }>>([]);
   const blocks = splitStreamBlocks(text);
@@ -35,7 +39,9 @@ export const StreamingMdxView = memo(function StreamingMdxView({ text }: { text:
   if (cache.current.length > stableCount) cache.current.length = stableCount;
   let tail: ReactNode = null;
   const last = blocks[blocks.length - 1];
-  if (last) {
+  const data = last && streamingData(last);
+  if (data) tail = <Fragment key={`tail-${stableCount}`}>{liveData(data)}</Fragment>;
+  else if (last) {
     const { live, pending } = provisionalTail(last);
     let liveNode: ReactNode = null;
     let waiting = pending;
@@ -59,3 +65,11 @@ export const StreamingMdxView = memo(function StreamingMdxView({ text }: { text:
     </div>
   );
 });
+
+/** A data component drawn from what has arrived so far; a placeholder until its first row. */
+function liveData({ name, props, value, closed }: NonNullable<ReturnType<typeof streamingData>>): ReactNode {
+  // A closed fence's last line is complete, so it counts.
+  if (name === 'Diagram') return <Diagram live title={props.title} source={closed ? `${value}\n` : value} />;
+  const rows = closed ? value : completeRows(value);
+  return rows ? componentMap[name](props, null, { value: rows }) : <MdxPlaceholder name={name} />;
+}

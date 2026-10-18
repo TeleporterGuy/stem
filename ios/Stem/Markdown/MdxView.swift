@@ -38,6 +38,11 @@ struct MdxBlocksView: View {
 struct MdxComponentView: View {
     let component: MdxComponent
 
+    /// The data, or while the component is still streaming, its rows complete so far.
+    private var rows: String? {
+        component.closed ? component.data?.value : MdxDataParse.completeRows(component.data?.value)
+    }
+
     var body: some View {
         let c = component
         switch c.name {
@@ -45,13 +50,14 @@ struct MdxComponentView: View {
         case "Steps": MdxSteps(children: c.children)
         case "Tabs": MdxTabs(children: c.children)
         case "Collapsible": MdxCollapsible(title: c.attrs["title"], children: c.children)
+        // Still streaming: drawn from the rows complete so far.
         case "Chart":
             MdxChartView(type: c.attrs["type"], title: c.attrs["title"], unit: c.attrs["unit"],
-                         data: c.data?.value, closed: c.closed)
-        case "DataTable": MdxDataTable(caption: c.attrs["caption"], data: c.data?.value, closed: c.closed)
-        case "Stats": MdxStatsView(data: c.data?.value, closed: c.closed)
-        case "Compare": MdxCompareView(recommend: c.attrs["recommend"], data: c.data?.value, closed: c.closed)
-        case "Diagram": MdxDiagram(title: c.attrs["title"], source: c.data?.value ?? "")
+                         data: rows, closed: c.closed)
+        case "DataTable": MdxDataTable(caption: c.attrs["caption"], data: rows, closed: c.closed)
+        case "Stats": MdxStatsView(data: rows, closed: c.closed)
+        case "Compare": MdxCompareView(recommend: c.attrs["recommend"], data: rows, closed: c.closed)
+        case "Diagram": MdxDiagram(title: c.attrs["title"], source: c.data?.value ?? "", closed: c.closed)
         case "Quiz": MdxQuiz(topic: c.attrs["topic"], children: c.children)
         case "Form": MdxForm(prompt: c.attrs["prompt"], submitLabel: c.attrs["submitLabel"], children: c.children)
         case "Replies": if c.closed { MdxReplies(children: c.children) }

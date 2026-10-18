@@ -88,3 +88,36 @@ export function toChartData(raw: string | undefined): ChartData | null {
     series: seriesColumns.map((name) => ({ name, values: rows.map((r) => toNumber(r[name])) }))
   };
 }
+
+/**
+ * The rows of a JSON array written so far, as JSON that parses: everything up
+ * to the last complete top-level element, with the array closed. A streaming
+ * DataTable, Chart, Stats or Compare draws from this while the model is still
+ * writing. Null before the first row is complete, or when the data isn't an
+ * array (the `{columns, rows}` table form waits for its closing tag).
+ */
+export function completeRows(raw: string): string | null {
+  const start = raw.search(/\S/);
+  if (start === -1 || raw[start] !== '[') return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let end = -1;
+  for (let i = start; i < raw.length; i++) {
+    const c = raw[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === '[' || c === '{') depth++;
+    else if (c === ']' || c === '}') {
+      depth--;
+      if (depth === 0) return raw.slice(start, i + 1);
+      if (depth === 1) end = i + 1;
+    }
+  }
+  return end === -1 ? null : `${raw.slice(start, end)}]`;
+}
