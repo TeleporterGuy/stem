@@ -369,6 +369,15 @@ describe('save', () => {
     expect((await getPersona('p1'))?.browser).toBeUndefined();
   });
 
+  it('keeps the browser profiles a pin allows, trimmed and once each; no list means every profile', async () => {
+    await savePersona(
+      persona({ browser: { device: 'mac-1', profiles: [' /Applications/Arc.app#w ', '/Applications/Arc.app#w', 7, ''] as string[] } })
+    );
+    expect((await getPersona('p1'))?.browser).toEqual({ device: 'mac-1', profiles: ['/Applications/Arc.app#w'] });
+    await savePersona(persona({ browser: { device: 'mac-1', profiles: 'all' as unknown as string[] } }));
+    expect((await getPersona('p1'))?.browser).toEqual({ device: 'mac-1' });
+  });
+
   it('keeps a harness pin with a blank cwd (mid-edit save) but drops one without an agent', async () => {
     // The editor saves per keystroke: the agent name lands before the cwd is
     // typed, and dropping the pin would wipe the field under the user's cursor.

@@ -3747,7 +3747,8 @@ function registerBrowserTool(pi, turnContext) {
       'controls"), or, in a chat with no persona, the one Settings → Features → Browser control names — or, ' +
       "when this turn's context lists computers for you to choose from, the one you name in `device`. In such a chat " +
       'use it only when the user asks for something in their browser; for reading the public web, web_search ' +
-      'and fetch are cheaper. One call is one action. `tabs` lists the open tabs (yours are marked); `open` ' +
+      'and fetch are cheaper. One call is one action. `tabs` lists the open tabs (yours are marked) — of every ' +
+      'browser profile, when the user keeps several (work, personal): name one in `profile` to work there. `open` ' +
       'loads a URL in a new BACKGROUND tab — the user\'s view never switches — and that becomes your current tab; ' +
       '`tab` (an id from `tabs`) picks another, including a tab the user has open. Read a page with `snapshot`: ' +
       'an outline of its controls and text with refs like e12; `click`, `hover`, `type`, `fill`, `scroll` and ' +
@@ -3812,6 +3813,13 @@ function registerBrowserTool(pi, turnContext) {
           type: 'string',
           description:
             "Which Mac, by name — only when this turn's context lists Macs for you to choose from. Otherwise leave it out: the Mac is fixed."
+        },
+        profile: {
+          type: 'string',
+          description:
+            'Which browser profile, by the name `tabs` lists (e.g. "Work", "Personal"), when the Mac has several. ' +
+            'It stays your profile for later calls until you name another; leave it out to stay where you are ' +
+            '(at first, the default profile).'
         }
       },
       required: ['action']
@@ -3827,7 +3835,8 @@ function registerBrowserTool(pi, turnContext) {
         turnCtx && turnCtx.browserChoose && params && typeof params.device === 'string' && params.device.trim()
           ? params.device.trim()
           : undefined;
-      const res = await browserBridge(ctx, { action: parsed.action, ...(device ? { device } : {}) });
+      const profile = params && typeof params.profile === 'string' && params.profile.trim() ? params.profile.trim() : undefined;
+      const res = await browserBridge(ctx, { action: parsed.action, ...(device ? { device } : {}), ...(profile ? { profile } : {}) });
       if (!res.ok) return taskErr(res.error || 'The action could not be performed.');
       return { content: browserResultContent(res), details: {} };
     }

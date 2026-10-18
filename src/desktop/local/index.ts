@@ -285,6 +285,11 @@ export function registerLocalIpc(deps: LocalIpcDeps): void {
     (_e, enabled: boolean): Promise<BrowserHostLocalState> => deps.browserHost.setEnabled(enabled)
   );
   handleLocal('browserHost:choose', (_e, id: string): Promise<BrowserHostLocalState> => deps.browserHost.choose(id));
+  handleLocal(
+    'browserHost:rename',
+    (_e, id: string, name: string): Promise<BrowserHostLocalState> => deps.browserHost.rename(id, name)
+  );
+  handleLocal('browserHost:forget', (_e, id: string): Promise<BrowserHostLocalState> => deps.browserHost.forget(id));
   handleLocal('browserHost:setUp', (): Promise<BrowserHostLocalState> => deps.browserHost.setUp());
   handleLocal('browserHost:openExtensions', (_e, id?: string | null): Promise<void> =>
     deps.browserHost.openExtensionsPage(id ?? undefined)

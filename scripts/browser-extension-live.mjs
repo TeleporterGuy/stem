@@ -587,7 +587,8 @@ async function nativeHost(configPath) {
       assert(hello.extensionId === config.extensionId, `id ${hello.extensionId} != ${config.extensionId}`);
       assert(hello.extensionVersion === config.expectedVersion, `version ${hello.extensionVersion}`);
       assert(/Chrome\//.test(hello.userAgent), 'userAgent');
-      return `${hello.extensionId} v${hello.extensionVersion}`;
+      assert(/^[0-9a-f-]{36}$/.test(hello.profileId || ''), `profileId ${hello.profileId}`);
+      return `${hello.extensionId} v${hello.extensionVersion}, profile ${hello.profileId.slice(0, 8)}…`;
     });
     sendFrame({ type: 'host', connected: true });
 

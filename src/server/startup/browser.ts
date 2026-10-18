@@ -42,7 +42,10 @@ export function initBrowserControl(deps: { runtime: ChatBackend }): BrowserBridg
       } else {
         action = req.action;
       }
-      const result = await browserDeviceRouter().send(req.threadId, req.device, action);
+      const result = await browserDeviceRouter().send(req.threadId, req.device, action, {
+        ...(req.profile ? { profile: req.profile } : {}),
+        ...(req.allowed ? { allowed: req.allowed } : {})
+      });
       return result.ok && result.downloads?.length ? fileDownloads(req.threadId, result) : result;
     },
     async resolveNamedMac(name) {

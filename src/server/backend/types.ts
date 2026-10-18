@@ -216,6 +216,10 @@ export interface BrowserRequest {
   /** The Mac, from the turn's browser grant or resolveNamedMac in a model-chooses chat. */
   device: string;
   action: BrowserToolAction;
+  /** The browser profile the model named ("Work"); the Mac resolves it. */
+  profile?: string;
+  /** The profiles the turn's grant allows (BrowserInfo.id); absent = every profile. */
+  allowed?: string[];
   /** Injected from the live turn. */
   threadId: string;
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, X, FolderOpen, Trash2 } from 'lucide-react';
 import type {
   BrowserHostLocalState,
+  BrowserInfo,
   SetupBrowser,
   ComputerHostLocalState,
   DeviceInfo,
@@ -934,19 +935,122 @@ export function AutonomySections() {
               />
             )}
             {browserHost.enabled && browserHost.browsers.length > 1 && (
-              <ValueRow label="Use" hint={`The browser Stem drives on this ${MACHINE}; it starts it when it is closed`}>
-                <RowSelect
-                  ariaLabel="Browser Stem uses"
-                  value={browserHost.chosen ?? browserHost.browsers[0]!.id}
-                  options={browserHost.browsers.map((b) => ({ value: b.id, label: b.name }))}
-                  onChange={(id) => void window.stem.chooseBrowser(id).then(setBrowserHost)}
-                />
-              </ValueRow>
+              <>
+                <ValueRow
+                  label="Use"
+                  hint={
+                    <>
+                      The browser profile Stem starts in; it opens the browser when it is closed{' '}
+                      <InfoTip label="Several profiles">
+                        Stem works in every browser profile that has the extension. A task starts in this one, and
+                        moves to another when you ask (“in my work browser…”) or when the page it needs is open
+                        there. Name the profiles below so you and Stem can tell them apart.
+                      </InfoTip>
+                    </>
+                  }
+                >
+                  <RowSelect
+                    ariaLabel="Browser profile Stem uses"
+                    value={browserHost.chosen ?? browserHost.browsers[0]!.id}
+                    options={browserHost.browsers.map((b) => ({ value: b.id, label: browserLabel(b) }))}
+                    onChange={(id) => void window.stem.chooseBrowser(id).then(setBrowserHost)}
+                  />
+                </ValueRow>
+                <BrowserProfilesRow state={browserHost} onState={setBrowserHost} />
+              </>
             )}
           </>
         )}
       </div>
     </>
+  );
+}
+
+/** "Arc · Work" once named, else "Arc 2" — or just "Arc" for an app's only profile. */
+function browserLabel(b: BrowserInfo): string {
+  return b.named && b.profile ? `${b.name} · ${b.profile}` : (b.profile ?? b.name);
+}
+
+/**
+ * The browser profiles that have the extension, each with a name field — what
+ * the model passes as `profile`, and what the extension's popup says, which is
+ * how the user tells which profile is which — and, once closed, a way to
+ * forget one (its extension was removed, or the profile deleted).
+ */
+function BrowserProfilesRow({
+  state,
+  onState
+}: {
+  state: BrowserHostLocalState;
+  onState: (s: BrowserHostLocalState) => void;
+}) {
+  return (
+    <DisclosureRow
+      label="Profiles"
+      hint="Name them, so you and Stem can tell work from personal"
+      value={String(state.browsers.length)}
+    >
+      <div className="browser-profiles">
+        {state.browsers.map((b) => (
+          <BrowserProfileLine key={b.id} browser={b} onState={onState} />
+        ))}
+        <em className="scratch-empty">Each browser’s Stem button shows the name its profile goes by.</em>
+      </div>
+    </DisclosureRow>
+  );
+}
+
+function BrowserProfileLine({ browser, onState }: { browser: BrowserInfo; onState: (s: BrowserHostLocalState) => void }) {
+  // The name the user gave; "Arc 2" is only a placeholder.
+  const given = browser.named && browser.profile ? browser.profile : '';
+  const [draft, setDraft] = useState(given);
+  const [error, setError] = useState('');
+  useEffect(() => setDraft(given), [given]);
+  const commit = () => {
+    if (draft.trim() === given) return;
+    window.stem
+      .renameBrowser(browser.id, draft)
+      .then((s) => {
+        setError('');
+        onState(s);
+      })
+      .catch((e: unknown) => {
+        setError(String(e instanceof Error ? e.message : e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
+        setDraft(given);
+      });
+  };
+  return (
+    <div className="browser-profile">
+      <span className={`ext-status${browser.connected ? ' ok' : ''}`} title={browser.connected ? 'Open' : 'Not open'}>
+        {browser.name}
+      </span>
+      <input
+        className="ifield"
+        type="text"
+        maxLength={40}
+        placeholder={browser.profile ?? 'Name, e.g. Work'}
+        aria-label={`Name for this ${browser.name} profile`}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          if (e.key === 'Escape') setDraft(given);
+        }}
+      />
+      {!browser.connected && (
+        <button
+          className="icon-action sm"
+          title="Forget this profile"
+          aria-label={`Forget this ${browser.name} profile`}
+          onClick={() => void window.stem.forgetBrowser(browser.id).then(onState)}
+        >
+          <Trash2 size={14} />
+        </button>
+      )}
+      {browser.hint && <em className="browser-profile-hint">{browser.hint}</em>}
+      {error && <em className="exec-rule-error">{error}</em>}
+    </div>
   );
 }
 
@@ -975,9 +1079,9 @@ function BrowserExtensionRow({
   const connected = state.browsers.filter((b) => b.connected);
   const status =
     connected.length > 0
-      ? connected.map((b) => `${b.name} connected${b.version ? ` · ${b.version}` : ''}`).join(', ')
+      ? connected.map((b) => `${browserLabel(b)} connected${b.version ? ` · ${b.version}` : ''}`).join(', ')
       : state.browsers.length > 0
-        ? `${state.browsers.map((b) => b.name).join(', ')} not running`
+        ? `${state.browsers.map(browserLabel).join(', ')} not running`
         : state.extensionPath
           ? 'Waiting for Load unpacked'
           : 'Not set up yet';

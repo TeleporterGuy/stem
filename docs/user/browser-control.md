@@ -24,9 +24,26 @@ On the computer whose browser Stem should use:
    press Return, then **Select**. On Linux press Ctrl+L, paste with Ctrl+V, and press Enter.
 
 Settings shows the browser as connected within a couple of seconds. You do this once per browser; when Stem
-updates, the extension updates itself. If the extension is installed in more than one
-browser, a **Use** row picks the one Stem drives. When that browser is closed and a run
-needs it, Stem starts it in the background. On Linux it may open in front.
+updates, the extension updates itself. When that browser is closed and a run needs it,
+Stem starts it in the background. On Linux it may open in front.
+
+## Several profiles
+
+If you keep separate browser profiles — an Arc profile for work and one for personal
+things, say — load the extension in each one (press **Set up again** and repeat steps
+3–4 from a window of the other profile). Each profile connects on its own, and Stem can
+work in all of them:
+
+- **Profiles** in Settings lists them. Give each one a name, such as *Work* and
+  *Personal*. To tell which is which, click the Stem button in a browser's toolbar: it
+  says the name that profile goes by.
+- **Use** picks the profile a task starts in.
+- When you ask for something in a particular one ("in my work browser, …"), or the page
+  it needs is open there, the assistant switches to that profile and stays in it for
+  the rest of the task. Asked for the open tabs, it sees every open profile's tabs under
+  that profile's name.
+- A profile you removed the extension from can be forgotten from the list once it is
+  closed.
 
 ## Who can use it
 
@@ -73,5 +90,7 @@ still a page from the internet: keep an eye on runs that touch accounts that mat
 - *"the Stem extension did not connect"*: the browser started but the extension is
   disabled or removed; check its extensions page.
 - *"not connected right now"*: the Mac is asleep or Stem is not running on it.
+- *"The browser profile … is not open"*: starting the browser opened a different
+  profile. Open a window of the one named, or ask for another profile.
 - Pages inside a cross-site frame (some payment and login widgets) are not part of what
   the assistant reads; a screenshot still shows them.

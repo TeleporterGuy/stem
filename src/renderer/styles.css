@@ -4370,6 +4370,27 @@ button.set-vrow { border: none; background: none; font: inherit; color: inherit;
   background: var(--muted);
 }
 .set-vrow .vlab .ext-status.ok::before { background: var(--success); }
+/* Browser control → Profiles: one line per browser profile, its name field in the middle. */
+.browser-profiles { display: flex; flex-direction: column; gap: var(--sp-3); }
+.browser-profile { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+.browser-profile .ext-status { flex: none; min-width: 64px; font-size: var(--fs-12); color: var(--muted); }
+.browser-profile .ext-status::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--muted);
+}
+.browser-profile .ext-status.ok::before { background: var(--success); }
+.browser-profile .ifield { flex: 1; min-width: 0; width: auto; padding: var(--sp-2) var(--sp-4); font-size: var(--fs-12); }
+.browser-profile-hint, .browser-profile .exec-rule-error { flex-basis: 100%; padding-left: calc(64px + var(--sp-3)); font-size: var(--fs-11); color: var(--muted); }
+.browser-profile .exec-rule-error { color: var(--danger); }
+/* Which browser profiles a persona or chats may use (BrowserProfileChecks). */
+.browser-profile-checks { display: flex; flex-direction: column; gap: var(--sp-2); }
+.browser-profile-check { padding-left: var(--sp-7); }
 /* …and, while it waits for Load unpacked, the steps under it. */
 .ext-steps ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: var(--sp-3); }
 .ext-steps .ext-line { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }

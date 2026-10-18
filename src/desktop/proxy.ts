@@ -862,8 +862,20 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     if (typeof frame.threadId !== 'string' || !frame.threadId) return null;
     const action = frame.action as { kind?: unknown } | undefined;
     if (!action || typeof action !== 'object' || typeof action.kind !== 'string') return null;
-    // As with the screen: the extension refuses what it cannot do.
-    return { requestId: frame.requestId, threadId: frame.threadId, action: frame.action! };
+    // As with the screen: the extension refuses what it cannot do. The profile
+    // and the allowed list ride along: dropped here, every action went to the
+    // default profile and a persona's profile limit was never kept.
+    const allowed = Array.isArray(frame.allowed)
+      ? frame.allowed.filter((a): a is string => typeof a === 'string')
+      : undefined;
+    return {
+      requestId: frame.requestId,
+      threadId: frame.threadId,
+      action: frame.action!,
+      ...(typeof frame.profile === 'string' && frame.profile ? { profile: frame.profile } : {}),
+      // A malformed list is still a limit: kept (empty), never widened to every profile.
+      ...(frame.allowed !== undefined ? { allowed: allowed ?? [] } : {})
+    };
   }
 
   function asHarnessRequest(data: unknown): DeviceHarnessRequest | null {

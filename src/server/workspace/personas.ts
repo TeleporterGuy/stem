@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import type { Persona, PersonaHarnessPin } from '../../shared/types';
 import { degrade } from '../degrade';
 import { personasStorePath } from './paths';
+import { coerceBrowserProfiles } from '../../shared/browser-native';
 import { deletePersonaMemory } from './persona-memory';
 
 // The Stem-owned persona registry. Same shape as the inbox store next door —
@@ -120,6 +121,14 @@ function coerceDevicePin(raw: unknown): { device: string } | undefined {
   return device ? { device } : undefined;
 }
 
+/** The browser pin: the Mac, and the profiles there it may use. */
+function coerceBrowserPin(raw: unknown): Persona['browser'] {
+  const pin = coerceDevicePin(raw);
+  if (!pin) return undefined;
+  const profiles = coerceBrowserProfiles((raw as Record<string, unknown>).profiles);
+  return profiles ? { ...pin, profiles } : pin;
+}
+
 /** Reshape one stored/submitted persona; null when it isn't one. */
 function coercePersona(raw: unknown): Persona | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -137,7 +146,7 @@ function coercePersona(raw: unknown): Persona | null {
   if (harness) persona.harness = harness;
   const computer = coerceDevicePin(r.computer);
   if (computer) persona.computer = computer;
-  const browser = coerceDevicePin(r.browser);
+  const browser = coerceBrowserPin(r.browser);
   if (browser) persona.browser = browser;
   if (r.lightweight === true) persona.lightweight = true;
   // `canManagePersonas` and `canAddPersonas` are the flag's earlier spellings —

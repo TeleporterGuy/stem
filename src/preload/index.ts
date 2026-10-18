@@ -257,6 +257,8 @@ const api: StemApi = {
   browserHostState: () => ipcRenderer.invoke('browserHost:localState'),
   setBrowserHostEnabled: (enabled: boolean) => ipcRenderer.invoke('browserHost:setEnabled', enabled),
   chooseBrowser: (id: string) => ipcRenderer.invoke('browserHost:choose', id),
+  renameBrowser: (id: string, name: string) => ipcRenderer.invoke('browserHost:rename', id, name),
+  forgetBrowser: (id: string) => ipcRenderer.invoke('browserHost:forget', id),
   setUpBrowserControl: () => ipcRenderer.invoke('browserHost:setUp'),
   openBrowserExtensionsPage: (browserId?: string) => ipcRenderer.invoke('browserHost:openExtensions', browserId),
   onMcpAdminApproval: (listener: (proposal: McpAdminProposal) => void) => {

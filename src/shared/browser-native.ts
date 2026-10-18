@@ -95,12 +95,28 @@ export type ToExtension =
   | { type: 'end'; threadId: string }
   /** The extension's files on disk changed (a Stem update): reload to pick them up. */
   | { type: 'reload' }
+  /** What Stem calls this browser profile ("Work", "Arc 2"), for the popup. */
+  | { type: 'profile'; name: string }
   /** From the native host only: whether it currently reaches the Stem app. */
   | { type: 'host'; connected: boolean };
 
 /** extension → desktop */
 export type FromExtension =
-  | { type: 'hello'; protocol: number; extensionId: string; extensionVersion: string; userAgent: string }
+  | {
+      type: 'hello';
+      protocol: number;
+      extensionId: string;
+      extensionVersion: string;
+      userAgent: string;
+      /**
+       * A random id the extension keeps in its own storage, so one per browser
+       * profile: how two profiles of one app (Arc's work and personal) are
+       * told apart. Absent from extensions older than 0.7.0.
+       */
+      profileId?: string;
+      /** The sites most open in the profile ("mail.google.com, github.com"), to tell unnamed profiles apart. */
+      hint?: string;
+    }
   | { type: 'result'; id: string; result: ExtensionResult }
   /** The user pressed Stop for a run: the marker's button, the popup, or cancelling the debugging bar. */
   | { type: 'stopped'; threadId: string };
@@ -154,3 +170,15 @@ export class FrameReader {
 
 /** The extension's id, derived from the `key` in src/browser-extension/manifest.json (tests/unit/browser-extension-id.test.ts checks it). */
 export const BROWSER_EXTENSION_ID = 'bbadcpfklblgjocjcaemcmojkikjnoao';
+
+/**
+ * A list of browser profile ids (BrowserInfo.id); undefined when there is no
+ * list — every profile. An empty list stays empty: it allows none.
+ */
+export function coerceBrowserProfiles(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const ids = raw
+    .filter((v): v is string => typeof v === 'string' && !!v.trim() && v.length <= 600)
+    .map((v) => v.trim());
+  return [...new Set(ids)].slice(0, 32);
+}

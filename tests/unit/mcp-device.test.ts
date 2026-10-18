@@ -38,7 +38,9 @@ import {
   piMcpDeviceCatalogPath
 } from '../../src/server/workspace/paths';
 import {
+  BROWSER_REQUEST_FRAME,
   MCP_REQUEST_FRAME,
+  type DeviceBrowserRequest,
   type DeviceMcpCatalog,
   type DeviceMcpRequest,
   type DeviceMcpResult,
@@ -342,6 +344,7 @@ describe('a call to a device, end to end', () => {
   let answer: DeviceMcpResult = { ok: true, content: 'nothing yet' };
   const asked: DeviceMcpRequest[] = [];
   const execAsked: { requestId: string; command: string; threadId: string; cwd?: string }[] = [];
+  const browserAsked: DeviceBrowserRequest[] = [];
   /** How many times the server told this device its assignments had moved. */
   let assignmentNotices = 0;
 
@@ -417,6 +420,7 @@ describe('a call to a device, end to end', () => {
       },
       harnessHost: { onRequest: () => undefined, onCancel: () => undefined },
     computerHost: { onRequest: () => undefined, onEnd: () => undefined },
+      browserHost: { onRequest: (request) => browserAsked.push(request), onEnd: () => undefined },
       oauthCourier: { expectSignIn: () => undefined, offer: () => undefined, close: () => undefined },
       sendToMain: () => undefined,
       sendToOverlay: () => undefined,
@@ -538,6 +542,36 @@ describe('a call to a device, end to end', () => {
     const result = await deviceMcpRouter().listTools(deviceId, 'files');
     expect(result).toEqual({ ok: true, tools: [] });
     expect(asked.slice(before).map((r) => r.op)).toEqual(['tools']);
+  });
+
+  it('hands the browser host the profile and the allowed list a browser frame carries', async () => {
+    // The regression this pins: the frame check kept only requestId, threadId
+    // and action, so `profile: "Work"` reached the host as nothing — every
+    // action ran in the default profile — and a persona's allowed list was
+    // dropped while the Mac still announced that it enforces one.
+    await until(() => deviceMcpRouter().isAvailable(deviceId), 'the event stream to register');
+    const action = { kind: 'snapshot', tab: 7 };
+    pushToDevice(deviceId, BROWSER_REQUEST_FRAME, {
+      requestId: 'b1',
+      threadId: 't1',
+      action,
+      profile: 'Work',
+      allowed: ['/Applications/Arc.app#work']
+    });
+    pushToDevice(deviceId, BROWSER_REQUEST_FRAME, { requestId: 'b2', threadId: 't1', action, allowed: 'everything' });
+    pushToDevice(deviceId, BROWSER_REQUEST_FRAME, { requestId: 'b3', threadId: 't1', action });
+    await until(() => browserAsked.length >= 3, 'the browser frames to reach the host');
+
+    expect(browserAsked[0]).toEqual({
+      requestId: 'b1',
+      threadId: 't1',
+      action,
+      profile: 'Work',
+      allowed: ['/Applications/Arc.app#work']
+    });
+    // A malformed limit still limits: to nothing, never to every profile.
+    expect(browserAsked[1]).toEqual({ requestId: 'b2', threadId: 't1', action, allowed: [] });
+    expect(browserAsked[2]).toEqual({ requestId: 'b3', threadId: 't1', action });
   });
 
   it('stores an announcement where the catalog block will read it', async () => {

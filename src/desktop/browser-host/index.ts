@@ -10,6 +10,7 @@ import {
   FrameReader,
   MAX_TO_EXTENSION_BYTES,
   type ExtensionAction,
+  type ExtensionDownload,
   type ExtensionResult,
   type FromExtension,
   type HostHello,
@@ -35,7 +36,14 @@ import {
   type InstallSource
 } from './install';
 import { arcSidebarText, readArcSidebar, type ArcSidebarTab } from './arc-tabs';
-import { readBrowserHostSettings, updateBrowserHostSettings, writeBrowserHostEnabled } from './store';
+import {
+  appOf,
+  readBrowserHostSettings,
+  updateBrowserHostSettings,
+  writeBrowserHostEnabled,
+  type BrowserHostSettings,
+  type KnownBrowser
+} from './store';
 
 // The client half of the `browser` tool: THIS Mac or Linux computer, handing the browser actions
 // its Stem server sends (BROWSER_REQUEST_FRAME) to the Stem extension in the
@@ -44,8 +52,11 @@ import { readBrowserHostSettings, updateBrowserHostSettings, writeBrowserHostEna
 // The extension reaches us through its native-messaging host, which the
 // browser starts and which connects to a unix socket here (0600, in this
 // profile's state folder) and opens with the token from the config Set up
-// wrote. One connection per browser; several may be up at once (Arc and
-// Chrome), and the user picks which one Stem drives.
+// wrote. One connection per browser profile — the extension sends an id it
+// keeps in that profile's storage — and several may be up at once (Arc's work
+// and personal profiles, Chrome beside them). The user picks the default and
+// can name each one; the model may name another profile per call, and the one
+// it named stays the thread's until it names a different one.
 //
 // What this file decides, like computer-host: whether Stem may drive the
 // browser at all (the switch, read fresh on every request), and the file
@@ -91,6 +102,8 @@ export interface BrowserHost {
   localState(): Promise<BrowserHostLocalState>;
   setEnabled(enabled: boolean): Promise<BrowserHostLocalState>;
   choose(id: string): Promise<BrowserHostLocalState>;
+  rename(id: string, name: string): Promise<BrowserHostLocalState>;
+  forget(id: string): Promise<BrowserHostLocalState>;
   setUp(): Promise<BrowserHostLocalState>;
   openExtensionsPage(browserId?: string): Promise<void>;
   close(): void;
@@ -98,10 +111,102 @@ export interface BrowserHost {
 
 interface Conn {
   socket: Socket;
+  /** KnownBrowser.id, once the extension said hello; until then the connection is not usable. */
+  key: string | null;
   appPath: string;
   appName: string;
   version?: string;
   pending: Map<string, (result: ExtensionResult) => void>;
+}
+
+/** Longest name a profile may be given. */
+const MAX_PROFILE_NAME = 40;
+
+/**
+ * What each known browser is called: the user's name for it, else — when an
+ * app has several profiles — "Arc 2" by the order they first connected. An
+ * app's only, unnamed profile has none and goes by the app's name.
+ */
+export function profileNames(known: readonly KnownBrowser[]): Map<string, string | undefined> {
+  const names = new Map<string, string | undefined>();
+  const seen = new Map<string, number>();
+  for (const b of known) {
+    const app = appOf(b.id);
+    const n = (seen.get(app) ?? 0) + 1;
+    seen.set(app, n);
+    const siblings = known.filter((o) => appOf(o.id) === app).length;
+    names.set(b.id, b.label ?? (siblings > 1 ? `${b.name} ${n}` : undefined));
+  }
+  return names;
+}
+
+/** How the model and the popup name a known browser. */
+function nameOf(b: KnownBrowser, names: Map<string, string | undefined>): string {
+  return names.get(b.id) ?? b.name;
+}
+
+/** The known browser a name from the model means: a profile's name, or an app with one profile. */
+export function findProfile(
+  known: readonly KnownBrowser[],
+  wanted: string,
+  names: Map<string, string | undefined> = profileNames(known)
+): KnownBrowser | null {
+  const w = wanted.trim().toLowerCase();
+  if (!w) return null;
+  const byName = known.find((b) => nameOf(b, names).toLowerCase() === w);
+  if (byName) return byName;
+  const byApp = known.filter((b) => b.name.toLowerCase() === w);
+  return byApp.length === 1 ? byApp[0]! : null;
+}
+
+/** "“Work” (Arc), “Personal” (Arc)" — the names the model may pass. */
+function profileList(
+  known: readonly KnownBrowser[],
+  names: Map<string, string | undefined> = profileNames(known)
+): string {
+  return known
+    .map((b) => {
+      const name = nameOf(b, names);
+      return name === b.name ? `“${name}”` : `“${name}” (${b.name})`;
+    })
+    .join(', ');
+}
+
+/** The browser Stem uses on this Mac when nothing else says which. */
+function defaultId(settings: BrowserHostSettings): string | undefined {
+  const chosen = settings.chosen && settings.known.some((b) => b.id === settings.chosen) ? settings.chosen : undefined;
+  return chosen ?? settings.known[0]?.id;
+}
+
+/**
+ * What one request may reach: every known profile, or only those the turn's
+ * grant allows. Names stay those of the whole list, so "Arc 2" means the same
+ * profile to every persona.
+ */
+interface Scope {
+  /** The settings with `known` cut down to the allowed profiles (the default falls inside them). */
+  settings: BrowserHostSettings;
+  names: Map<string, string | undefined>;
+  /** The grant limits the profiles. */
+  limited: boolean;
+}
+
+export function scopeOf(settings: BrowserHostSettings, allowed: readonly string[] | undefined): Scope {
+  const names = profileNames(settings.known);
+  if (!allowed) return { settings, names, limited: false };
+  const known = settings.known.filter((b) => allowed.includes(b.id));
+  return { settings: { ...settings, known }, names, limited: true };
+}
+
+/** "mail.google.com, github.com" — the sites a hello says are most open there; anything else is dropped. */
+function asHint(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const hosts = raw
+    .split(',')
+    .map((h) => h.trim())
+    .filter((h) => /^[a-z0-9.-]{1,100}$/i.test(h))
+    .slice(0, 3);
+  return hosts.length ? hosts.join(', ') : undefined;
 }
 
 /** Is a process running this executable? Linux only: it reads /proc. */
@@ -185,6 +290,8 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
   const connectWaiters = new Set<() => void>();
   /** Upload folders per thread, removed when the run ends. */
   const uploadDirs = new Map<string, Set<string>>();
+  /** The profile each live thread last named (KnownBrowser.id), until its run ends. */
+  const threadProfile = new Map<string, string>();
   let server: Server | null = null;
   let config: BrowserHostConfig | null = null;
   /**
@@ -206,12 +313,22 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     // Known ones first, in the order they first connected, then any connection
     // whose remembering is still being written.
     const known = [...settings.known];
-    for (const c of conns.values()) if (!known.some((b) => b.id === c.appPath)) known.push({ id: c.appPath, name: c.appName });
+    for (const c of conns.values()) if (c.key && !known.some((b) => b.id === c.key)) known.push({ id: c.key, name: c.appName });
+    const names = profileNames(known);
     const browsers: BrowserInfo[] = known.map((b) => {
       const c = conns.get(b.id);
-      return { id: b.id, name: b.name, connected: !!c, ...(c?.version ? { version: c.version } : {}) };
+      const profile = names.get(b.id);
+      return {
+        id: b.id,
+        name: b.name,
+        ...(profile ? { profile } : {}),
+        ...(b.label ? { named: true } : {}),
+        ...(b.hint ? { hint: b.hint } : {}),
+        connected: !!c,
+        ...(c?.version ? { version: c.version } : {})
+      };
     });
-    return { browsers, chosen: settings.chosen ?? browsers[0]?.id ?? null, enabled: settings.enabled };
+    return { browsers, chosen: defaultId({ ...settings, known }) ?? null, enabled: settings.enabled };
   }
 
   async function announce(): Promise<void> {
@@ -219,22 +336,86 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     const { browsers, chosen, enabled } = await browsersNow();
     await deps
       .invoke('browserHost:announce', [
-        { enabled, platform: platform === 'darwin' ? 'darwin' : 'linux', browsers, ...(chosen ? { chosen } : {}) }
+        {
+          enabled,
+          platform: platform === 'darwin' ? 'darwin' : 'linux',
+          // The sites open in a profile stay on this computer.
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          browsers: browsers.map(({ hint, named, ...b }) => b),
+          ...(chosen ? { chosen } : {}),
+          enforcesProfiles: true
+        }
       ])
       .catch((e) => {
         log('browser-host', 'could not announce', { error: e instanceof Error ? e.message : String(e) });
       });
   }
 
+  /** Tell every connected extension what Stem calls its profile (a rename can shift the others' "Arc 2"). */
+  async function sendNames(): Promise<void> {
+    const known = (await readBrowserHostSettings()).known;
+    const names = profileNames(known);
+    for (const b of known) {
+      const c = conns.get(b.id);
+      if (c) send(c, { type: 'profile', name: nameOf(b, names) });
+    }
+  }
+
+  /**
+   * Remember the profile behind a hello. An entry from before profiles were
+   * told apart (the bare app path) is taken over by the first profile of that
+   * app to connect, keeping its place as the default.
+   */
+  async function remember(conn: Conn, key: string, hint: string | undefined): Promise<void> {
+    await updateBrowserHostSettings((cur) => {
+      const at = cur.known.findIndex((b) => b.id === key);
+      if (at >= 0) {
+        const known = [...cur.known];
+        known[at] = { ...known[at]!, name: conn.appName, ...(hint ? { hint } : {}) };
+        return { ...cur, known };
+      }
+      const entry: KnownBrowser = { id: key, name: conn.appName, ...(hint ? { hint } : {}) };
+      const legacy = key !== conn.appPath ? cur.known.findIndex((b) => b.id === conn.appPath) : -1;
+      if (legacy >= 0 && !conns.has(conn.appPath)) {
+        const known = [...cur.known];
+        known[legacy] = { ...entry, ...(known[legacy]!.label ? { label: known[legacy]!.label } : {}) };
+        return { ...cur, known, ...(cur.chosen === conn.appPath ? { chosen: key } : {}) };
+      }
+      return { ...cur, known: [...cur.known, entry] };
+    });
+  }
+
+  async function onHello(conn: Conn, message: Extract<FromExtension, { type: 'hello' }>): Promise<void> {
+    conn.version = typeof message.extensionVersion === 'string' ? message.extensionVersion : undefined;
+    const profile =
+      typeof message.profileId === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(message.profileId) ? message.profileId : null;
+    // An extension from before 0.7.0 sends no profile id: one entry per app, as then.
+    const key = profile ? `${conn.appPath}#${profile}` : conn.appPath;
+    log('browser-host', 'the extension said hello', { browser: conn.appName, version: conn.version, profile: !!profile });
+    if (conn.key !== key) {
+      if (conn.key && conns.get(conn.key) === conn) conns.delete(conn.key);
+      // A browser that restarted connects again before the old socket is
+      // noticed gone: the new connection wins.
+      const old = conns.get(key);
+      if (old && old !== conn) old.socket.destroy();
+      conn.key = key;
+      conns.set(key, conn);
+    }
+    if (reloadOwed.delete(key) || reloadOwed.delete(conn.appPath)) {
+      send(conn, { type: 'reload' });
+      return;
+    }
+    await remember(conn, key, asHint(message.hint)).catch((e) =>
+      log('browser-host', 'could not remember a browser', { error: String(e) })
+    );
+    for (const wake of [...connectWaiters]) wake();
+    await sendNames();
+    await announce();
+  }
+
   function onFrame(conn: Conn, message: FromExtension): void {
     if (message.type === 'hello') {
-      conn.version = typeof message.extensionVersion === 'string' ? message.extensionVersion : undefined;
-      log('browser-host', 'the extension said hello', { browser: conn.appName, version: conn.version });
-      if (reloadOwed.delete(conn.appPath)) {
-        send(conn, { type: 'reload' });
-        return;
-      }
-      void announce();
+      void onHello(conn, message);
       return;
     }
     if (message.type === 'result') {
@@ -280,20 +461,10 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
             return;
           }
           clearTimeout(hello);
-          const appPath = h.appPath;
           const appName = typeof h.appName === 'string' && h.appName ? h.appName : 'Browser';
-          // A browser that restarted connects again before the old socket is
-          // noticed gone: the new connection wins.
-          conns.get(appPath)?.socket.destroy();
-          conn = { socket, appPath, appName, pending: new Map() };
-          conns.set(appPath, conn);
-          void updateBrowserHostSettings((cur) =>
-            cur.known.some((b) => b.id === appPath)
-              ? cur
-              : { ...cur, known: [...cur.known, { id: appPath, name: appName }] }
-          ).then(() => {
-            for (const wake of [...connectWaiters]) wake();
-          });
+          // Which profile this is arrives with the extension's own hello,
+          // right behind (the native host replays it on every connection).
+          conn = { socket, key: null, appPath: h.appPath, appName, pending: new Map() };
           continue;
         }
         onFrame(conn, message as FromExtension);
@@ -312,8 +483,8 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
         });
       }
       conn.pending.clear();
-      if (conns.get(conn.appPath) === conn) {
-        conns.delete(conn.appPath);
+      if (conn.key && conns.get(conn.key) === conn) {
+        conns.delete(conn.key);
         void announce();
       }
     });
@@ -335,10 +506,22 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     server = s;
   }
 
-  /** The connection for the chosen browser, launching it when it is not running. */
-  async function connectionFor(): Promise<{ ok: true; conn: Conn } | { ok: false; error: string }> {
-    const settings = await readBrowserHostSettings();
-    const chosen = settings.chosen ?? settings.known[0]?.id ?? [...conns.keys()][0];
+  /** The connection for a known browser (the default when none is named), launching it when it is not running. */
+  async function connectionFor(
+    settings: BrowserHostSettings,
+    id?: string,
+    scope?: Scope
+  ): Promise<{ ok: true; conn: Conn } | { ok: false; error: string }> {
+    const chosen = id ?? defaultId(scope?.settings ?? settings) ?? (scope?.limited ? undefined : [...conns.keys()][0]);
+    if (!chosen && scope?.limited) {
+      return {
+        ok: false,
+        error:
+          'This conversation may use only some of the browser profiles on this Mac, and none of those is set up ' +
+          'there any more. Tell the user to check which profiles it may use (the persona’s browser pin, or ' +
+          'Settings → Features → Browser control for chats).'
+      };
+    }
     if (!chosen) {
       return {
         ok: false,
@@ -349,8 +532,11 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     }
     const live = conns.get(chosen);
     if (live) return { ok: true, conn: live };
-    const name = settings.known.find((b) => b.id === chosen)?.name ?? chosen;
-    if (platform === 'linux' && !launchableOnLinux(chosen)) {
+    const entry = settings.known.find((b) => b.id === chosen);
+    const app = appOf(chosen);
+    const profiles = settings.known.filter((b) => appOf(b.id) === app).length;
+    const name = entry ? nameOf(entry, profileNames(settings.known)) : chosen;
+    if (platform === 'linux' && !launchableOnLinux(app)) {
       // The id came from a native host's word; Stem starts only browsers it knows.
       return {
         ok: false,
@@ -358,7 +544,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       };
     }
     try {
-      await launch(chosen);
+      await launch(app);
     } catch (e) {
       return { ok: false, error: `${name} could not be started on this ${here}: ${e instanceof Error ? e.message : String(e)}` };
     }
@@ -384,12 +570,110 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       log('browser-host', 'started the browser for a run', { browser: name });
       return { ok: true, conn };
     }
+    if (profiles > 1) {
+      return {
+        ok: false,
+        error:
+          `The browser profile “${name}” is not open, and starting ${entry?.name ?? 'the browser'} did not bring it up ` +
+          `within ${Math.round(launchWaitMs / 1000)}s. Ask the user to open a window of that profile, or use another profile.`
+      };
+    }
     return {
       ok: false,
       error:
         `${name} was started, but the Stem extension did not connect within ${Math.round(launchWaitMs / 1000)}s. It may be ` +
         `disabled or removed there; tell the user to check Settings → Features → Browser control on that ${here}.`
     };
+  }
+
+  /** One action on one connection. */
+  function ask(conn: Conn, request: DeviceBrowserRequest, action: ExtensionAction): Promise<ExtensionResult> {
+    return new Promise<ExtensionResult>((resolve) => {
+      const timer = setTimeout(() => {
+        conn.pending.delete(request.requestId);
+        resolve({
+          ok: false,
+          error:
+            `${conn.appName} did not finish the action in time. It may or may not have happened: check the page ` +
+            '(snapshot) before repeating it.'
+        });
+      }, actionTimeoutMs(action));
+      conn.pending.set(request.requestId, (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
+      const sent = send(conn, { type: 'request', id: request.requestId, threadId: request.threadId, action });
+      if (!sent) {
+        clearTimeout(timer);
+        conn.pending.delete(request.requestId);
+        resolve({ ok: false, error: 'The action is too large to hand to the browser (over 1 MB); shorten it.' });
+      }
+    });
+  }
+
+  /** Arc's sidebar tabs the extension could not list, as lines to add to a `tabs` answer. */
+  async function arcExtra(loadedUrls: string[]): Promise<string> {
+    const sidebar = await (deps.readArcSidebar ?? readArcSidebar)();
+    return 'error' in sidebar ? sidebar.error : arcSidebarText(sidebar.tabs, loadedUrls);
+  }
+
+  /**
+   * `tabs` with no profile named, on a Mac with several: every open profile's
+   * tabs, under its name, so the model can find a page wherever it is. The
+   * thread's own profile is listed (and started) even when it is closed.
+   */
+  async function tabsEverywhere(
+    request: DeviceBrowserRequest,
+    full: BrowserHostSettings,
+    scope: Scope,
+    current: string | undefined
+  ): Promise<ExtensionResult> {
+    const { settings, names } = scope;
+    const targets: { entry: KnownBrowser; conn: Conn | null; error?: string }[] = [];
+    for (const entry of settings.known) {
+      const live = conns.get(entry.id) ?? null;
+      if (live) targets.push({ entry, conn: live });
+      else if (entry.id === current) {
+        const opened = await connectionFor(full, entry.id);
+        targets.push(opened.ok ? { entry, conn: opened.conn } : { entry, conn: null, error: opened.error });
+      }
+    }
+    const answers = await Promise.all(
+      targets.map(async (t) => (t.conn ? ask(t.conn, request, { kind: 'tabs' }) : ({ ok: false, error: t.error ?? '' } as const)))
+    );
+    const sections: string[] = [];
+    const arcUrls: string[] = [];
+    const downloads: ExtensionDownload[] = [];
+    let arc = false;
+    targets.forEach((t, i) => {
+      const r = answers[i]!;
+      const marks = [t.entry.id === current ? 'your current profile' : '', t.entry.id === defaultId(full) ? 'default' : '']
+        .filter(Boolean)
+        .join(', ');
+      const name = nameOf(t.entry, names);
+      const head = `## Profile “${name}”${name === t.entry.name ? '' : ` (${t.entry.name})`}${marks ? ` — ${marks}` : ''}`;
+      sections.push(`${head}\n${r.ok ? (r.text ?? '') : `Its tabs could not be listed: ${r.error}`}`);
+      if (r.ok && r.downloads) downloads.push(...r.downloads);
+      if (t.conn && /\/Arc\.app$/.test(t.conn.appPath)) {
+        arc = true;
+        if (r.ok) arcUrls.push(...(r.urls ?? []));
+      }
+    });
+    const closed = settings.known.filter((b) => !targets.some((t) => t.entry.id === b.id));
+    const lines = [
+      `${scope.limited ? 'This conversation may use' : "This Mac's browser has"} ${settings.known.length} profiles ` +
+        `with Stem: ${profileList(settings.known, names)}. A tab id ` +
+        'belongs to its profile: to work in a tab of another profile than your current one, pass that `profile` too ' +
+        '(it then stays your profile for later calls).',
+      ...sections,
+      ...(closed.length ? [`Not open right now: ${profileList(closed, names)}.`] : [])
+    ];
+    if (arc) {
+      const extra = await arcExtra(arcUrls);
+      if (extra) lines.push(extra);
+    }
+    if (!answers.some((r) => r.ok)) return { ok: false, error: lines.join('\n\n') };
+    return { ok: true, text: lines.join('\n\n'), ...(downloads.length ? { downloads } : {}) };
   }
 
   /** The device's action, as the extension takes it: an upload's files fetched to this Mac first. */
@@ -453,7 +737,42 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
           'on that computer.'
       };
     }
-    const target = await connectionFor();
+    const full = await readBrowserHostSettings();
+    // The persona's pin or the chat setting may limit the profiles: outside
+    // them a profile is not listed, not found by name and never a fallback.
+    const allowed = Array.isArray(request.allowed)
+      ? request.allowed.filter((a): a is string => typeof a === 'string')
+      : undefined;
+    const scope = scopeOf(full, allowed);
+    const settings = scope.settings;
+    // Which profile: the one named in this call, else the one this thread
+    // named last, else the default.
+    let id: string | undefined;
+    const wanted = typeof request.profile === 'string' ? request.profile.trim() : '';
+    if (wanted) {
+      const hit = findProfile(settings.known, wanted, scope.names);
+      if (!hit) {
+        const what = scope.limited ? 'This conversation may use no browser profile called' : 'This Mac has no browser profile called';
+        const list = scope.limited ? 'The ones it may use' : 'Its profiles';
+        return {
+          ok: false,
+          error: settings.known.length
+            ? `${what} “${wanted.slice(0, 60)}”. ${list}: ${profileList(settings.known, scope.names)}.`
+            : scope.limited
+              ? `This conversation may use no browser profile called “${wanted.slice(0, 60)}”.`
+              : `No browser has connected the Stem extension on this Mac yet, so there is no profile “${wanted.slice(0, 60)}”.`
+        };
+      }
+      id = hit.id;
+      threadProfile.set(request.threadId, id);
+    } else {
+      const last = threadProfile.get(request.threadId);
+      id = last && settings.known.some((b) => b.id === last) ? last : undefined;
+    }
+    if (request.action.kind === 'tabs' && !wanted && settings.known.length > 1) {
+      return remoteResult(await tabsEverywhere(request, full, scope, id ?? defaultId(settings)));
+    }
+    const target = await connectionFor(full, id ?? defaultId(settings), scope);
     if (!target.ok) return { ok: false, error: target.error };
     const conn = target.conn;
     let action: ExtensionAction;
@@ -462,30 +781,9 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     } catch (e) {
       return { ok: false, error: `The files could not be brought to the ${here} for the upload: ${e instanceof Error ? e.message : String(e)}` };
     }
-    const result = await new Promise<ExtensionResult>((resolve) => {
-      const timer = setTimeout(() => {
-        conn.pending.delete(request.requestId);
-        resolve({
-          ok: false,
-          error:
-            `${conn.appName} did not finish the action in time. It may or may not have happened: check the page ` +
-            '(snapshot) before repeating it.'
-        });
-      }, actionTimeoutMs(action));
-      conn.pending.set(request.requestId, (r) => {
-        clearTimeout(timer);
-        resolve(r);
-      });
-      const sent = send(conn, { type: 'request', id: request.requestId, threadId: request.threadId, action });
-      if (!sent) {
-        clearTimeout(timer);
-        conn.pending.delete(request.requestId);
-        resolve({ ok: false, error: 'The action is too large to hand to the browser (over 1 MB); shorten it.' });
-      }
-    });
+    const result = await ask(conn, request, action);
     if (action.kind === 'tabs' && result.ok && /\/Arc\.app$/.test(conn.appPath)) {
-      const sidebar = await (deps.readArcSidebar ?? readArcSidebar)();
-      const extra = 'error' in sidebar ? sidebar.error : arcSidebarText(sidebar.tabs, result.urls ?? []);
+      const extra = await arcExtra(result.urls ?? []);
       if (extra) result.text = [result.text, extra].filter(Boolean).join('\n\n');
     }
     return remoteResult(result);
@@ -551,6 +849,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     },
 
     onEnd({ threadId }) {
+      threadProfile.delete(threadId);
       for (const c of conns.values()) send(c, { type: 'end', threadId });
       for (const dir of uploadDirs.get(threadId) ?? []) void rm(dir, { recursive: true, force: true });
       uploadDirs.delete(threadId);
@@ -571,6 +870,43 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       return state();
     },
 
+    async rename(id, name) {
+      const label = name.trim().replace(/\s+/g, ' ').slice(0, MAX_PROFILE_NAME);
+      await updateBrowserHostSettings((cur) => {
+        if (!cur.known.some((b) => b.id === id)) return cur;
+        if (label && cur.known.some((b) => b.id !== id && b.label?.toLowerCase() === label.toLowerCase())) {
+          throw new Error(`Another browser profile is already called “${label}”.`);
+        }
+        return {
+          ...cur,
+          known: cur.known.map((b) => {
+            if (b.id !== id) return b;
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const { label: _old, ...rest } = b;
+            return label ? { ...rest, label } : rest;
+          })
+        };
+      });
+      await sendNames();
+      await announce();
+      return state();
+    },
+
+    async forget(id) {
+      if (conns.has(id)) return state();
+      await updateBrowserHostSettings((cur) => {
+        const known = cur.known.filter((b) => b.id !== id);
+        if (cur.chosen !== id) return { ...cur, known };
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { chosen: _gone, ...rest } = cur;
+        return { ...rest, known };
+      });
+      reloadOwed.delete(id);
+      await sendNames();
+      await announce();
+      return state();
+    },
+
     async setUp() {
       if (!supported) return state();
       await listen().catch((e) => log('browser-host', 'could not listen for the extension', { error: String(e) }));
@@ -584,7 +920,8 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
 
     async openExtensionsPage(browserId) {
       const settings = await readBrowserHostSettings();
-      const app = browserId ?? settings.chosen ?? settings.known[0]?.id ?? setupBrowsers(deps.home, platform)[0]?.app ?? null;
+      const known = browserId ?? defaultId(settings);
+      const app = (known ? appOf(known) : null) ?? setupBrowsers(deps.home, platform)[0]?.app ?? null;
       // The path goes on the clipboard first, while Stem still has focus: Load
       // unpacked's picker takes it with ⌘⇧G (Ctrl+L in GTK's), which beats
       // hunting for a folder inside Application Support or ~/.config.

@@ -1967,6 +1967,14 @@ export interface DeviceBrowserRequest {
   /** The turn's thread; the extension keeps the run's tabs under it. */
   threadId: string;
   action: BrowserAction;
+  /** The browser profile the model named; absent = the one the thread is using, else the Mac's default. */
+  profile?: string;
+  /**
+   * The only profiles this turn may use (BrowserInfo.id), from the persona's
+   * pin or the chat setting; absent = every profile. The Mac lists, resolves
+   * and falls back within these alone.
+   */
+  allowed?: string[];
 }
 
 /** A finished download the Mac streamed up (POST /upload); the server files it for the thread. */
@@ -1997,10 +2005,23 @@ export type DeviceBrowserResult =
 
 /** A browser with the Stem extension, as the Mac knows it. */
 export interface BrowserInfo {
-  /** Stable key: the app bundle path the native host was launched from. */
+  /**
+   * Stable key: the app bundle path the native host was launched from, then
+   * "#" and the profile id the extension keeps in that browser profile. A key
+   * without "#" was remembered before profiles were told apart (0.6.0).
+   */
   id: string;
-  /** Display name ("Arc", "Google Chrome"). */
+  /** The app's display name ("Arc", "Google Chrome"). */
   name: string;
+  /**
+   * The profile's name — the user's, or "Arc 2" when an app has several
+   * unnamed ones. Absent for an app's only profile until the user names it.
+   */
+  profile?: string;
+  /** `profile` is the user's name for it, not a number Stem gave. This Mac's Settings only. */
+  named?: boolean;
+  /** A few sites open in the profile when it last connected, to tell unnamed ones apart. This Mac's Settings only. */
+  hint?: string;
   connected: boolean;
   /** The extension's version, when connected. */
   version?: string;
@@ -2013,6 +2034,12 @@ export interface DeviceBrowserAnnouncement {
   browsers: BrowserInfo[];
   /** The browser Stem uses on this computer (BrowserInfo.id); absent = none known yet. */
   chosen?: string;
+  /**
+   * This Mac keeps an action within DeviceBrowserRequest.allowed. A Mac
+   * without it (older than 0.7.0) would ignore the list, so the server never
+   * sends it a limited action.
+   */
+  enforcesProfiles?: true;
 }
 
 export interface DeviceBrowserHostEntry extends DeviceBrowserAnnouncement {
@@ -2894,6 +2921,11 @@ export interface PersonaComputerPin {
 export interface PersonaBrowserPin {
   /** Paired computer id (a desktop that announced browser control). */
   device: string;
+  /**
+   * The browser profiles on that Mac it may use (BrowserInfo.id). Absent =
+   * every profile, including ones added later.
+   */
+  profiles?: string[];
 }
 
 export interface Persona {
@@ -3892,8 +3924,12 @@ export interface ChatFeatureSettings {
    */
   browser?: {
     allow: boolean;
-    /** A paired Mac's device id. */
-    target: { device: string } | null;
+    /**
+     * A paired Mac's device id, and the browser profiles there chats may use
+     * (BrowserInfo.id; absent = every profile). The model choosing the Mac
+     * gets every profile on it.
+     */
+    target: { device: string; profiles?: string[] } | null;
   };
   /**
    * Image generation (`generate_image`, the user's ChatGPT subscription).
@@ -4686,6 +4722,8 @@ export interface DeviceInfo {
    * Same rule as runsComputer; surfaced for the persona editor's browser pin.
    */
   runsBrowser?: boolean;
+  /** The browser profiles that Mac announced, for the persona editor's and Settings' profile pickers. */
+  browserProfiles?: { id: string; name: string }[];
 }
 
 /**
@@ -5151,6 +5189,10 @@ export interface StemApi {
   setBrowserHostEnabled(enabled: boolean): Promise<BrowserHostLocalState>;
   /** Pick the browser Stem drives on this Mac (BrowserInfo.id). */
   chooseBrowser(id: string): Promise<BrowserHostLocalState>;
+  /** Name a browser profile ("Work"); an empty name drops it back to the default. */
+  renameBrowser(id: string, name: string): Promise<BrowserHostLocalState>;
+  /** Forget a browser profile that is not connected (its extension was removed). */
+  forgetBrowser(id: string): Promise<BrowserHostLocalState>;
   /** Copy the extension and register it with the installed browsers; answers with the new state. */
   setUpBrowserControl(): Promise<BrowserHostLocalState>;
   /** Open a browser's extensions page (or Finder at the extension folder when that fails). */

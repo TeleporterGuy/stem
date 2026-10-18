@@ -3300,10 +3300,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           'should take it, or that chats can be allowed in Settings → Features → Browser control.',
       unavailable: 'Browser control is unavailable.',
       choices: browserChoicesText,
-      call: (bridge, device, action) =>
+      call: (bridge, device, action, req) =>
         bridge.handleBrowserRequest({
           device,
           action: action as BrowserRequest['action'],
+          ...(typeof req.profile === 'string' && req.profile.trim() ? { profile: req.profile.trim() } : {}),
+          ...(turn?.browserGrant?.profiles ? { allowed: turn.browserGrant.profiles } : {}),
           threadId: turn?.threadId ?? ''
         })
     });
@@ -3325,7 +3327,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       refusal: string;
       unavailable: string;
       choices: () => Promise<string>;
-      call: (bridge: B, device: string, action: object, req: { shot?: unknown }) => Promise<unknown>;
+      call: (bridge: B, device: string, action: object, req: { shot?: unknown; profile?: unknown }) => Promise<unknown>;
     }
   ): void {
     const requestProcess = worker.proc;
@@ -3339,7 +3341,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         if (!bridge) return respond({ ok: false, error: spec.unavailable });
         const grant = spec.grant;
         if (!grant) return respond({ ok: false, error: spec.refusal });
-        const req = JSON.parse(payload ?? '{}') as { action?: unknown; device?: unknown; shot?: unknown };
+        const req = JSON.parse(payload ?? '{}') as { action?: unknown; device?: unknown; shot?: unknown; profile?: unknown };
         const action = req.action;
         if (!action || typeof action !== 'object' || typeof (action as { kind?: unknown }).kind !== 'string') {
           return respond({ ok: false, error: `The ${spec.tool} tool sent no action.` });

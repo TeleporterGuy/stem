@@ -1,4 +1,4 @@
-/* global chrome, navigator, setTimeout, clearTimeout */
+/* global chrome, crypto, navigator, setTimeout, clearTimeout, URL */
 import { initActions, notifyStopped, perform } from './actions.js';
 import * as cdp from './cdp.js';
 import { noteDownloadStart, trackDownloads } from './downloads.js';
@@ -33,6 +33,50 @@ let attempt = 0;
 let reconnectTimer = null;
 let hostConnected = null;
 let lastError = '';
+/** What Stem calls this browser profile ("Work"), once it has said. */
+let profileName = '';
+
+// ---- this profile ----
+
+const PROFILE_KEY = 'stemProfileId';
+
+/**
+ * A random id kept in this extension's storage — one per browser profile, as
+ * each profile runs its own copy of the extension. It is how Stem tells Arc's
+ * work profile from its personal one; it says nothing else about the profile.
+ */
+async function profileId() {
+  const got = await chrome.storage.local.get(PROFILE_KEY).catch(() => ({}));
+  if (typeof got[PROFILE_KEY] === 'string' && got[PROFILE_KEY]) return got[PROFILE_KEY];
+  const id = crypto.randomUUID();
+  await chrome.storage.local.set({ [PROFILE_KEY]: id }).catch(() => {});
+  return id;
+}
+
+/** The three sites most open here ("mail.google.com, github.com"), so the user can tell unnamed profiles apart. */
+async function sitesHint() {
+  try {
+    const counts = new Map();
+    for (const t of await chrome.tabs.query({})) {
+      if (t.incognito) continue;
+      let host = '';
+      try {
+        const u = new URL(t.url || t.pendingUrl || '');
+        if (u.protocol === 'http:' || u.protocol === 'https:') host = u.hostname;
+      } catch {
+        // Not a URL (an empty new tab).
+      }
+      if (host) counts.set(host, (counts.get(host) || 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([host]) => host)
+      .join(', ');
+  } catch {
+    return '';
+  }
+}
 
 // ---- native port ----
 
@@ -46,9 +90,20 @@ function post(message) {
   }
 }
 
-function connect() {
-  if (port) return;
+let connecting = false;
+
+async function connect() {
+  if (port || connecting) return;
   clearTimeout(reconnectTimer);
+  connecting = true;
+  let profile;
+  let hint;
+  try {
+    [profile, hint] = await Promise.all([profileId(), sitesHint()]);
+  } finally {
+    connecting = false;
+  }
+  if (port) return;
   let p;
   try {
     p = chrome.runtime.connectNative(NATIVE_HOST);
@@ -76,7 +131,9 @@ function connect() {
     protocol: PROTOCOL,
     extensionId: chrome.runtime.id,
     extensionVersion: chrome.runtime.getManifest().version,
-    userAgent: navigator.userAgent
+    userAgent: navigator.userAgent,
+    profileId: profile,
+    ...(hint ? { hint } : {})
   });
   refreshBadge();
 }
@@ -84,7 +141,7 @@ function connect() {
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);
   if (attempt < RECONNECT_STEPS_MS.length) {
-    reconnectTimer = setTimeout(connect, RECONNECT_STEPS_MS[attempt++]);
+    reconnectTimer = setTimeout(() => void connect(), RECONNECT_STEPS_MS[attempt++]);
   }
   // Past the quick steps, the 30-second alarm keeps trying.
 }
@@ -142,6 +199,9 @@ async function onNativeMessage(msg) {
     case 'host':
       hostConnected = !!msg.connected;
       refreshBadge();
+      return;
+    case 'profile':
+      profileName = typeof msg.name === 'string' ? msg.name.slice(0, 60) : '';
       return;
     default:
   }
@@ -249,6 +309,7 @@ async function popupState() {
     port: !!port,
     host: hostConnected,
     lastError: port ? '' : lastError,
+    profile: port && hostConnected !== false ? profileName : '',
     runs: list,
     version: chrome.runtime.getManifest().version
   };
@@ -269,8 +330,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'stem:reconnect') {
     attempt = 0;
-    connect();
-    void popupState().then(sendResponse);
+    void connect().then(() => popupState()).then(sendResponse);
     return true;
   }
   return false;
@@ -280,7 +340,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== ALARM) return;
-  if (!port) connect();
+  if (!port) void connect();
   const now = Date.now();
   for (const r of runs.live()) {
     if (now - r.lastActionAt > RUN_IDLE_MS) void endRun(r.threadId);
@@ -289,7 +349,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 function start() {
   chrome.alarms.create(ALARM, { periodInMinutes: 0.5 }).catch(() => {});
-  connect();
+  void connect();
 }
 
 chrome.runtime.onStartup.addListener(start);

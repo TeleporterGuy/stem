@@ -46,6 +46,7 @@ import { degrade } from '../degrade';
 import { DEFAULT_SCRATCH_TTL_DAYS } from '../exec/scratch';
 import { JUDGE_RULE_MAX_CHARS } from '../exec/judge-context';
 import { customModelId, DEFAULT_LOCAL_EMBED_MODEL, EMBED_CATALOG } from '../recall/embed-catalog';
+import { coerceBrowserProfiles } from '../../shared/browser-native';
 import { DEFAULT_LOCAL_RERANK_MODEL, RERANK_CATALOG } from '../recall/rerank-catalog';
 import { GTE_FACT_PILOT_ID } from '../recall/gte-model-artifact';
 import { settingsStorePath } from './paths';
@@ -704,6 +705,7 @@ function coerceChatFeatures(raw: unknown): ChatFeatureSettings {
   const codingDevice = str(codingTarget.device);
   const computerDevice = str(obj(computer.target).device);
   const browserDevice = str(obj(browser.target).device);
+  const browserProfiles = coerceBrowserProfiles(obj(browser.target).profiles);
   return {
     coding: {
       allow: coding.allow === true,
@@ -715,7 +717,7 @@ function coerceChatFeatures(raw: unknown): ChatFeatureSettings {
     },
     browser: {
       allow: browser.allow === true,
-      target: browserDevice ? { device: browserDevice } : null
+      target: browserDevice ? { device: browserDevice, ...(browserProfiles ? { profiles: browserProfiles } : {}) } : null
     },
     images: { allow: obj(r.images).allow !== false }
   };
