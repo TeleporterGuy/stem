@@ -385,13 +385,16 @@ export default function App() {
         returnChatId,
         chats: displayList.chats,
         chatsLoaded,
+        inbox: displayList.inbox,
+        now: Date.now(),
         activeThreadId,
         mailPaneOpen: mailView !== null
       }),
-    [returnChatId, displayList.chats, chatsLoaded, activeThreadId, mailView]
+    [returnChatId, displayList.chats, displayList.inbox, chatsLoaded, activeThreadId, mailView]
   );
-  // A target the loaded list no longer contains can't be returned to (deleted
-  // here or on another device) — drop it rather than keep a dead pointer.
+  // A target the loaded list no longer contains (deleted here or on another
+  // device) or that was archived can't be returned to — drop it rather than
+  // keep a dead pointer.
   useEffect(() => {
     if (inboxReturn.orphaned) dismissInboxReturn();
   }, [inboxReturn.orphaned, dismissInboxReturn]);

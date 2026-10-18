@@ -1,3 +1,4 @@
+import { placement, type InboxState } from '../../shared/inbox';
 import type { ChatSummary } from '../../shared/types';
 
 /**
@@ -8,8 +9,8 @@ import type { ChatSummary } from '../../shared/types';
  * Explicit is the contract: the id is written only by that open/create rule,
  * never guessed from recency or activity, and it never expires on its own. It
  * leaves in exactly three ways — replaced by another chat opened the same way,
- * dismissed, or orphaned (its chat deleted or gone from the list). Mail triage,
- * tab switches, reloads and restarts all leave it alone.
+ * dismissed, or orphaned (its chat deleted, archived, or gone from the list).
+ * Mail triage, tab switches, reloads and restarts all leave it alone.
  */
 export const RETURN_CHAT_KEY = 'stem.inbox.returnChatId';
 
@@ -69,14 +70,16 @@ export type ReturnChatRow = {
 export type ReturnChatResolution = {
   /** null = nothing to render (no target, list not loaded yet, or orphaned). */
   row: ReturnChatRow | null;
-  /** The list has loaded and the target isn't in it — the caller should clear the id. */
+  /** The list has loaded and the target is gone from it or archived — the caller should clear the id. */
   orphaned: boolean;
 };
 
 /**
- * Resolve the persisted id against the chat list. Membership is the only test:
- * a listed chat is an openable chat, whatever its inbox placement — archiving
- * never orphans the shortcut. Before the first list arrives nothing is known,
+ * Resolve the persisted id against the chat list. A chat missing from the list
+ * or archived is orphaned: archiving says you're done with it, and a row that
+ * kept pointing at it would read "Currently viewing" over a chat that has left
+ * the tree. Snoozed is "not now", not done, so it keeps the row. Before the
+ * first list arrives nothing is known,
  * so the row stays hidden and the id is NOT judged orphaned (clearing on a
  * still-empty startup list would erase the very persistence being promised).
  */
@@ -84,15 +87,17 @@ export function resolveReturnChat(args: {
   returnChatId: string | null;
   chats: readonly ChatSummary[];
   chatsLoaded: boolean;
+  inbox: InboxState;
+  now: number;
   activeThreadId: string | null;
   /** Centre pane currently shows mail (open conversation or compose form). */
   mailPaneOpen: boolean;
 }): ReturnChatResolution {
-  const { returnChatId, chats, chatsLoaded, activeThreadId, mailPaneOpen } = args;
+  const { returnChatId, chats, chatsLoaded, inbox, now, activeThreadId, mailPaneOpen } = args;
   if (!returnChatId) return { row: null, orphaned: false };
   if (!chatsLoaded) return { row: null, orphaned: false };
   const chat = chats.find((c) => c.threadId === returnChatId);
-  if (!chat) return { row: null, orphaned: true };
+  if (!chat || placement(chat, inbox, now) === 'archived') return { row: null, orphaned: true };
   return {
     row: {
       threadId: chat.threadId,

@@ -13,6 +13,7 @@ import {
   returnChatTitle,
   type StorageLike
 } from '../../src/renderer/chats/return-chat';
+import { emptyInboxState, withArchived, withSnooze } from '../../src/shared/inbox';
 import type { ChatSummary } from '../../src/shared/types';
 
 function fakeStorage(): StorageLike & { map: Map<string, string> } {
@@ -78,7 +79,14 @@ describe('return-chat persistence', () => {
 });
 
 describe('resolveReturnChat', () => {
-  const base = { chatsLoaded: true, activeThreadId: null, mailPaneOpen: false };
+  const NOW = Date.parse('2026-10-18T12:00:00Z');
+  const base = {
+    chatsLoaded: true,
+    inbox: emptyInboxState(),
+    now: NOW,
+    activeThreadId: null,
+    mailPaneOpen: false
+  };
 
   it('no target → no row, not orphaned', () => {
     expect(resolveReturnChat({ ...base, returnChatId: null, chats: [chat('t1')] })).toEqual({
@@ -106,10 +114,18 @@ describe('resolveReturnChat', () => {
     });
   });
 
-  it('membership is the only test — an archived-but-listed chat still resolves', () => {
-    // Archiving lives in the inbox state, not in chats:list membership, so the
-    // resolver never sees it; a listed chat is an openable chat.
-    const res = resolveReturnChat({ ...base, returnChatId: 't1', chats: [chat('t1')] });
+  it('an archived target is orphaned, even while it is still the centre pane', () => {
+    const inbox = withArchived(emptyInboxState(), ['t1'], true, NOW);
+    for (const activeThreadId of [null, 't1']) {
+      expect(
+        resolveReturnChat({ ...base, inbox, activeThreadId, returnChatId: 't1', chats: [chat('t1')] })
+      ).toEqual({ row: null, orphaned: true });
+    }
+  });
+
+  it('a snoozed target keeps its row', () => {
+    const inbox = withSnooze(emptyInboxState(), ['t1'], NOW + 3_600_000, NOW);
+    const res = resolveReturnChat({ ...base, inbox, returnChatId: 't1', chats: [chat('t1')] });
     expect(res.row?.threadId).toBe('t1');
   });
 
