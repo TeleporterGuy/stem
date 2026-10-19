@@ -82,6 +82,10 @@ test('a real browser drives a page through the Stem extension', async () => {
         '--disable-features=DisableLoadExtensionCommandLineSwitch',
         `--load-extension=${extensionPath}`,
         ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
+        // Without it Chrome on macOS reads the login keychain for its own
+        // encryption key and hangs once a tab opens (a locked or CI keychain).
+        // Playwright adds it to the browsers it launches; this one we spawn.
+        ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
         'about:blank'
       ],
       { env: { ...process.env, HOME: home }, stdio: ['ignore', 'ignore', 'pipe'] }
