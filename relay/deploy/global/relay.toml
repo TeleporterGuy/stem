@@ -5,10 +5,16 @@ listen = ":8080"
 trust_proxy = true
 
 [mail]
-# "log" until a transactional sender is set up: verification codes go to
-# `docker logs stem-relay`.
-driver = "log"
-verify_from = "Stem <codes@relay.heystem.app>"
+# Verification codes go out through Fastmail (heystem.app is a Fastmail
+# domain: MX, SPF, DKIM fm1-3 and DMARC on Cloudflare). smtp_pass is a
+# Fastmail app password with SMTP access; it lives only in the deployed
+# data/relay.toml.
+driver = "smtp"
+smtp_host = "smtp.fastmail.com"
+smtp_port = 587
+smtp_user = "FASTMAIL_LOGIN"
+smtp_pass = "FASTMAIL_APP_PASSWORD"
+verify_from = "Stem <codes@heystem.app>"
 invite_from = "Stem <invites@invites.relay.heystem.app>"
 
 [invites]

@@ -3,6 +3,8 @@
 package mailer
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/smtp"
@@ -73,6 +75,8 @@ func (s *SMTP) Send(m Message) error {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\n", from, m.To, m.Subject, time.Now().Format(time.RFC1123Z))
+	// Gmail scores mail without a Message-ID as spam-like.
+	fmt.Fprintf(&b, "Message-ID: %s\r\n", messageID(envelopeFrom(from)))
 	fmt.Fprintf(&b, "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nX-Stem-Tag: %s\r\n", m.Tag)
 	if stream != "" {
 		b.WriteString(stream + "\r\n")
@@ -92,4 +96,14 @@ func envelopeFrom(from string) string {
 		return strings.TrimSuffix(from[i+1:], ">")
 	}
 	return from
+}
+
+func messageID(from string) string {
+	host := "localhost"
+	if i := strings.LastIndexByte(from, '@'); i >= 0 {
+		host = from[i+1:]
+	}
+	var r [12]byte
+	rand.Read(r[:])
+	return "<" + hex.EncodeToString(r[:]) + "@" + host + ">"
 }
