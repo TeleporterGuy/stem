@@ -3639,7 +3639,7 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 .task-editor { display: flex; flex-direction: column; gap: var(--sp-3); padding-left: var(--sp-1); }
 .task-field { display: flex; flex-direction: column; gap: var(--sp-2); max-width: 320px; }
 .task-field-label { font-size: var(--fs-11); color: var(--muted); }
-/* select.vfield is tuned for a settings row (right-aligned, half width); here it
+/* select.vfield is tuned for a settings row (sized to its value, half width); here it
    is a form field like the inputs beside it. */
 .task-editor .vfield { text-align: left; border: 0.5px solid var(--hair); border-radius: var(--radius-sm); padding: 5px var(--sp-4); width: 100%; max-width: 100%; }
 /* A paragraph-long watch task scrolls inside its box instead of becoming the page. */
@@ -4427,14 +4427,17 @@ button.set-vrow:hover { background: color-mix(in srgb, var(--ink) 4%, transparen
 .vchev { flex: none; color: var(--muted); transition: transform var(--motion-fast); }
 .vchev.open { transform: rotate(90deg); }
 
-/* The row's control: a borderless right-aligned select showing its value. */
+/* The row's control: a borderless select showing its value, sized to that
+   value so the row's label pushes it to the right edge. Not text-align: right —
+   on Linux and Windows Chromium draws the open list itself and right-aligns
+   the options with it (macOS uses a native menu and ignores it). */
 select.vfield {
   border: none;
   background: none;
   font: inherit;
   font-size: var(--fs-12);
   color: var(--ink);
-  text-align: right;
+  field-sizing: content;
   max-width: 50%;
   padding: var(--sp-1) 0;
   cursor: pointer;
