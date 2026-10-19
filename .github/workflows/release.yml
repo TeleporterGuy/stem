@@ -125,7 +125,19 @@ jobs:
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
       # Sign while electron-builder's temporary signing keychain is available.
-      - run: npm run dist:mac -- --arm64 --config.forceCodeSigning=true --config.dmg.sign=true
+      # Stapling fetches the ticket from Apple's CloudKit, and the connection
+      # from GitHub's macOS runners drops now and then (Error 68, "The network
+      # connection was lost") after Apple has already accepted the app. Build
+      # again rather than fail the release on it.
+      - name: Build, sign and notarize
+        run: |
+          for attempt in 1 2 3; do
+            if npm run dist:mac -- --arm64 --config.forceCodeSigning=true --config.dmg.sign=true; then exit 0; fi
+            echo "::warning::dist:mac failed (attempt $attempt)"
+            rm -rf release
+            sleep 30
+          done
+          exit 1
       - name: Verify signed and notarized app
         run: |
           app=release/mac-arm64/Stem.app
