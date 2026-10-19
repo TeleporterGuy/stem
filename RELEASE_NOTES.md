@@ -12,6 +12,75 @@ Maintainer notes:
   date, tag.
 -->
 
+## 0.7.0 — 2026-10-19
+
+### Added
+
+- **Mail with other people's Stems.** Add your email address under Settings → Features → **Your
+  email address** and confirm the code Stem emails you. People who use Stem can then mail you there,
+  and you can mail them. Mail is encrypted from one Stem to the other. Mail from someone new waits
+  under **Requests** until you accept them. Your personas see an incoming mail only after you let
+  them, and nothing goes out until you approve the draft. **Only people I've written to can reach
+  me** keeps everyone else from finding out that you use Stem. Compare keys in person to mark a
+  contact as checked.
+- **Share links.** Hover an answer and click **Share** to publish the whole chat, the question and
+  answer, or the answer alone as a link anyone can open. The content is encrypted in your Stem, and
+  the key is part of the link, so the server that hosts it can't read it. Links show a preview card
+  in chat apps, stay out of search engines, and expire after 30 days. Settings lists your links so
+  you can take one down. Sharing needs a verified email address. It works from the iPhone too.
+- **Ask about this window.** A second Quick Chat shortcut opens Quick Chat next to the window you're
+  in, with a picture and the text of that window attached. Ask "What does Jana need from me?" in
+  Slack and the answer appears beside it. If one of your MCP servers covers that app, Stem uses it
+  to read what the window doesn't show. With computer control allowed, Stem can also click and type
+  in that window. Set the shortcut under Settings → Quick Chat. Works on the Mac, Windows and Linux
+  (GNOME).
+- **Computer control on Windows and Linux (Alpha).** "Let Stem control this computer" now works on
+  Windows 10 and 11, and on Linux under GNOME on Wayland. On Linux, Stem installs a small GNOME
+  extension from Settings → Features → Computer control. You log out and back in once after the
+  first install, and later updates arrive without a login. Moving your own mouse or pressing a key
+  stops a run.
+- **Browser control on Windows and Linux (Beta).** The Stem extension now works in Chrome, Edge,
+  Brave and Chromium on Windows and Linux, and in Chromium-based AppImages such as Helium. Browsers
+  installed as Snap or Flatpak can't run it.
+- **Several browser profiles.** If you keep separate browser profiles for work and home, each one
+  connects on its own. Name them under Settings → Features → Browser control, pick the one tasks
+  start in, and limit a persona or chat to the profiles it may use. Asked for your open tabs, Stem
+  lists them by profile.
+- **Dictation on Windows and Linux (Beta).** The microphone button now works there too, with Whisper
+  running on your computer. Its model downloads the first time you use it, and the audio never
+  leaves your computer.
+- **Secretary brings in help on its own.** A Secretary mail now adds whichever personas the job
+  needs, including ones that control your computer, and sees the errand through. Use **Normal** if
+  you want to add personas yourself.
+
+### Changed
+
+- **The iPhone opens faster.** The chat list and mail show the last list at once and load less over
+  the network, so a slow connection no longer means a long wait.
+- **Connected folders skip ignored files.** A mirrored folder leaves out what its `.gitignore`
+  leaves out.
+
+### Fixed
+
+- **Several pictures made at once all show.** When Stem made a few pictures in one go, all but the
+  last read "no longer available" until you reopened the chat.
+- **A long chat on the iPhone no longer goes blank** after you send a message.
+- **Every HEIC photo from the iPhone arrives.** Some HEIC and HEIF variants were sent without being
+  converted to JPEG and couldn't be read.
+- **A scheduled task survives a server restart.** A run the server died under is now recorded and
+  run once more, instead of being lost.
+- **Long sign-ins finish.** Signing in during onboarding no longer gets stuck when it takes more
+  than five minutes.
+- **Answered approvals leave the Inbox.** Answering an approval in mail moves that conversation out
+  of the Inbox, and archiving a chat clears its Return-to-chat row.
+- **Named chats stay read.** A chat Stem named after its first turn no longer turned bold again.
+- **The working dots stay** under a reply that's still being written, so you can tell it isn't
+  finished.
+- **Big servers start.** On a server with many chats, the chat list scan at startup could run out of
+  memory.
+- **The first launch on Windows works.** Windows scans every file on the first launch after an
+  install or update, which made Stem time out before it could answer.
+
 ## 0.6.1 — 2026-10-13
 
 ### Fixed
