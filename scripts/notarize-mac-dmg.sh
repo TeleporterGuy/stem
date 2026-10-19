@@ -47,7 +47,14 @@ if [ "$verify_only" = false ]; then
       process.exit(1);
     }
   ' "$work_dir/notarization.json"
-  xcrun stapler staple "$dmg"
+  # Stapling fetches the ticket from Apple's CDN, which can lag the Accepted
+  # answer or drop the connection (Error 68); the notarization itself is done.
+  for attempt in 1 2 3 4 5 6; do
+    if xcrun stapler staple "$dmg"; then break; fi
+    if [ "$attempt" = 6 ]; then exit 1; fi
+    echo "Stapling failed (attempt $attempt); retrying in 20s" >&2
+    sleep 20
+  done
 fi
 
 xcrun stapler validate "$dmg"
