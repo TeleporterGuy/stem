@@ -1,4 +1,4 @@
-# Stem global relay (relay.stem.awantech.sk), deployed at root@167.233.132.66
+# Stem global relay (relay.heystem.app, formerly relay.stem.awantech.sk), deployed at root@167.233.132.66
 # in /root/services/stem-relay. Source in ./src (git archive of
 # stem/desktop relay/). Caddy (/root/services/caddy) proxies to stem-relay:8080
 # on the external `edge` network; no published port.

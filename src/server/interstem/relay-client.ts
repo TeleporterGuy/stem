@@ -43,7 +43,9 @@ export function acceptableRelayUrl(url: string): boolean {
 /** Whether this Stem may trust the global relay's /.well-known on first use (no shipped keys). */
 export const globalTofuAllowed = (): boolean => !!process.env.STEM_GLOBAL_RELAY_URL;
 
-const GLOBAL_RELAY_URL = 'https://relay.stem.awantech.sk';
+const GLOBAL_RELAY_URL = 'https://relay.heystem.app';
+/** Earlier names of the global relay. Addresses stored with one move to GLOBAL_RELAY_URL on start. */
+export const LEGACY_GLOBAL_RELAY_URLS = ['https://relay.stem.awantech.sk'];
 /** The global relay's signing keys, shipped so a first fetch is never trusted. Rotation: relay/README.md. */
 const GLOBAL_RELAY_KEYS = 'k1:f4E6lZT6fc1cwMnjQi15Kvgd/srN+BM+0wmkhO+7d04=';
 

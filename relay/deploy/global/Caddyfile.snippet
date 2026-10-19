@@ -13,3 +13,34 @@ relay.stem.awantech.sk {
 		format console
 	}
 }
+
+# heystem.app zone: separate Cloudflare token (Zone:Read + DNS:Edit on heystem.app,
+# IP-filtered to this box), CLOUDFLARE_API_TOKEN_HEYSTEM in ~/services/caddy/.env
+# and passed through docker-compose.yml.
+(cloudflare_dns_heystem) {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN_HEYSTEM}
+	}
+}
+
+# Stem global relay on the product domain (same container as relay.stem.awantech.sk).
+relay.heystem.app {
+	import security_headers
+	import cloudflare_dns_heystem
+	# GET /v1/stream is SSE — never buffer it.
+	reverse_proxy stem-relay:8080 {
+		flush_interval -1
+		stream_close_delay 5m
+	}
+}
+
+# Homepage placeholder until the site exists.
+heystem.app {
+	import cloudflare_dns_heystem
+	redir https://github.com/join3r/stem 302
+}
+
+www.heystem.app {
+	import cloudflare_dns_heystem
+	redir https://heystem.app{uri} 301
+}

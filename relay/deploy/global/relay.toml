@@ -1,4 +1,4 @@
-url = "https://relay.stem.awantech.sk"
+url = "https://relay.heystem.app"
 global = true
 data_dir = "/data"
 listen = ":8080"
@@ -8,8 +8,8 @@ trust_proxy = true
 # "log" until a transactional sender is set up: verification codes go to
 # `docker logs stem-relay`.
 driver = "log"
-verify_from = "Stem <codes@relay.stem.awantech.sk>"
-invite_from = "Stem <invites@invites.relay.stem.awantech.sk>"
+verify_from = "Stem <codes@relay.heystem.app>"
+invite_from = "Stem <invites@invites.relay.heystem.app>"
 
 [invites]
 enabled = false

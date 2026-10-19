@@ -44,6 +44,7 @@ import {
   globalTofuAllowed,
   invite,
   keyStatus,
+  LEGACY_GLOBAL_RELAY_URLS,
   listOp,
   lookupKey,
   mailStatus,
@@ -145,6 +146,7 @@ export class InterStemService {
   /** Connect to every verified address's relay and start the timers. */
   async start(): Promise<void> {
     this.stopped = false;
+    await this.moveOffLegacyGlobalRelay();
     await this.connectAll();
     this.timers.push(
       setInterval(() => void this.processOutbox(), 30_000),
@@ -153,6 +155,27 @@ export class InterStemService {
     );
     for (const t of this.timers) t.unref?.();
     void this.processOutbox();
+  }
+
+  /**
+   * The global relay was renamed. Addresses verified under an old name move to
+   * the current one and drop their certificate: its issuer names the old URL,
+   * which peers no longer accept as the authority. The relay is the same, so
+   * the binding holds and refreshCerts fetches a new certificate.
+   */
+  private async moveOffLegacyGlobalRelay(): Promise<void> {
+    if (process.env.STEM_GLOBAL_RELAY_URL) return;
+    const url = globalRelay().url;
+    const stale = (relay: string) => relay !== url && LEGACY_GLOBAL_RELAY_URLS.includes(relay);
+    if (!(await this.store.read()).addresses.some((a) => stale(a.relay))) return;
+    await this.store.update((s) => {
+      for (const a of s.addresses) {
+        if (!stale(a.relay)) continue;
+        a.relay = url;
+        delete a.cert;
+      }
+    });
+    await this.refreshCerts();
   }
 
   stop(): void {

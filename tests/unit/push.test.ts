@@ -764,7 +764,7 @@ describe('the relay gateway, for a server without the APNs key', () => {
     expect(posts).toHaveLength(2);
     expect(sent).toHaveLength(0);
     expect(resolved).toBe(0);
-    expect(posts[0].url).toBe('https://relay.stem.awantech.sk/v1/push');
+    expect(posts[0].url).toBe('https://relay.heystem.app/v1/push');
     expect(posts[0].headers['Stem-Key']).toBeTruthy();
     expect(posts[0].headers['Stem-Sig']).toBeTruthy();
     expect(JSON.parse(posts[0].body)).toEqual({
