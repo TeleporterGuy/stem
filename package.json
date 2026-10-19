@@ -17,6 +17,7 @@
     "predev": "npm run preflight && node scripts/brand-electron-dev.mjs",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
+    "build:share": "vite build --config vite.share.config.ts",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint .",

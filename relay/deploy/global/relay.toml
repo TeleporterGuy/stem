@@ -21,3 +21,14 @@ key_path = "/secrets/apns.p8"
 key_id = "ND4436FVW9"
 team_id = "AX23G9CAL9"
 bundle_id = "sk.awantech.stem"
+
+# Public share links: encrypted blobs, viewer at share.heystem.app (Caddy
+# serves the static viewer and proxies /v1/shares/* here).
+[share]
+enabled = true
+viewer_url = "https://share.heystem.app"
+viewer_dir = "/viewer"
+# Abuse limits: links last at most 30 days, 100 working links per address.
+max_ttl_days = 30
+max_live = 100
+per_address_day = 30

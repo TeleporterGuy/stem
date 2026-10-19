@@ -18,6 +18,7 @@ import {
   registerPersonasIpc,
   registerPinsIpc,
   registerServer,
+  registerShareIpc,
   registerWorkspaceIpc,
   type IpcDeps
 } from './ipc';
@@ -415,6 +416,7 @@ function registerIpc(): void {
   onPersonasChanged(() => emit('personas:changed', undefined));
   registerMailIpc({ router: () => mailRouter, runtime: () => runtime! });
   registerInterStemIpc({ service: () => interStem, router: () => mailRouter });
+  registerShareIpc({ runtime: () => runtime!, interStem: () => interStem });
   registerMemoryCheckIpc({ router: () => mailRouter, runtime: () => runtime!, emit });
   onMailChanged(() => emit('mail:changed', undefined));
   onMailWorkChanged((event) => emit('mail:workChanged', event));

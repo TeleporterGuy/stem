@@ -243,6 +243,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/unsubscribe", s.wrap(small, s.unsubscribe))
 	mux.HandleFunc("POST /v1/hooks/mail-event", s.wrap(small, s.mailEvent))
 	mux.HandleFunc("POST /v1/push", s.wrap(small, s.push))
+	mux.HandleFunc("POST /v1/shares", s.limited(s.mailSlots, s.wrap(s.cfg.Share.MaxBytes, s.postShare)))
+	mux.HandleFunc("GET /v1/shares", s.wrap(0, s.listShares))
+	mux.HandleFunc("GET /v1/shares/{id}", s.wrap(0, s.getShare))
+	mux.HandleFunc("DELETE /v1/shares/{id}", s.wrap(0, s.deleteShare))
+	mux.HandleFunc("POST /v1/shares/{id}/report", s.wrap(small, s.reportShare))
+	mux.HandleFunc("GET /s/{id}", s.wrap(0, s.sharePage))
+	mux.HandleFunc("GET /assets/", s.viewerAsset)
+	mux.HandleFunc("GET /og.png", s.viewerAsset)
+	mux.HandleFunc("GET /favicon.png", s.viewerAsset)
 	return mux
 }
 
@@ -439,9 +448,13 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request, _ []byte) error {
 		features = append(features, "push")
 	}
 	l := s.cfg.Limits
-	writeJSON(w, 200, map[string]any{"v": 1, "version": Version, "features": features, "limits": map[string]any{
-		"maxMailBytes": l.MaxMailBytes, "powBits": l.PowBits, "holdDays": l.HoldDays,
-	}})
+	limits := map[string]any{"maxMailBytes": l.MaxMailBytes, "powBits": l.PowBits, "holdDays": l.HoldDays}
+	if s.cfg.Share.Enabled {
+		features = append(features, "share")
+		limits["maxShareBytes"] = s.cfg.Share.MaxBytes
+		limits["maxShareTtlDays"] = s.cfg.Share.MaxTTLDays
+	}
+	writeJSON(w, 200, map[string]any{"v": 1, "version": Version, "features": features, "limits": limits})
 	return nil
 }
 

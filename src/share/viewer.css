@@ -1,0 +1,103 @@
+/* The share viewer page: one readable column over the app's own styles. */
+html,
+body,
+#root {
+  height: auto;
+  min-height: 100%;
+}
+body {
+  font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  font-size: 15px;
+}
+.viewer {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.viewer-main {
+  flex: 1;
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 40px 16px 24px;
+}
+.viewer-main .message-stamp {
+  display: none;
+}
+.viewer-message {
+  text-align: center;
+  padding: 18vh 0;
+}
+.viewer-message h1 {
+  margin: 0 0 8px;
+  font-size: 1.5em;
+}
+.viewer-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 16px;
+  max-width: 780px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 16px;
+  border-top: 0.5px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.viewer-foot svg {
+  vertical-align: -2px;
+}
+.viewer-foot-links {
+  display: flex;
+  gap: 16px;
+}
+.viewer-foot a,
+.viewer-link {
+  color: inherit;
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: none;
+}
+.viewer-foot a:hover,
+.viewer-link:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+.viewer-report {
+  margin: 32px 0 0;
+  padding: 20px;
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.viewer-report h2 {
+  margin: 0;
+  font-size: 1.15em;
+}
+.viewer-report label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.viewer-report .viewer-check {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+.viewer-report-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+@media (max-width: 560px) {
+  .viewer-main .msg-avatar {
+    display: none;
+  }
+}

@@ -21,4 +21,5 @@ export { registerMemoryIpc } from './memory';
 export { memoryCheckLlm, registerMemoryCheckIpc } from './memory-check';
 export { registerPersonasIpc } from './personas';
 export { registerPinsIpc } from './pins';
+export { registerShareIpc } from './share';
 export { registerWorkspaceIpc } from './workspace';

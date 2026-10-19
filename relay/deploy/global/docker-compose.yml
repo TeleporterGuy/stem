@@ -13,6 +13,9 @@ services:
       - ./data:/data
       # The Awantech team .p8 for the push gateway, owned by 65532, 0400.
       - ./secrets/apns.p8:/secrets/apns.p8:ro
+      # The share viewer build (npm run build:share → dist/share), served by
+      # the relay on share.heystem.app (previews filled into /s/<id>).
+      - ./viewer:/viewer:ro
     networks:
       - edge
 

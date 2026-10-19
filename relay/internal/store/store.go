@@ -42,6 +42,14 @@ var migrations = []string{
 	 CREATE TABLE mail_events (tag TEXT NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL);
 	 CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);`,
 	`CREATE TABLE push_tokens (token TEXT PRIMARY KEY, fp TEXT NOT NULL, used INTEGER NOT NULL);`,
+	`CREATE TABLE shares (id TEXT PRIMARY KEY, owner TEXT NOT NULL, fp TEXT NOT NULL, size INTEGER NOT NULL, blob BLOB,
+	   created INTEGER NOT NULL, expires INTEGER NOT NULL, removed INTEGER NOT NULL DEFAULT 0, removed_why TEXT NOT NULL DEFAULT '');
+	 CREATE INDEX shares_owner ON shares(owner, created);
+	 CREATE TABLE share_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, share TEXT NOT NULL, reason TEXT NOT NULL,
+	   detail TEXT NOT NULL, contact TEXT NOT NULL, key TEXT NOT NULL, ip TEXT NOT NULL, at INTEGER NOT NULL,
+	   handled INTEGER NOT NULL DEFAULT 0);`,
+	`ALTER TABLE shares ADD COLUMN card_title TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE shares ADD COLUMN card_desc TEXT NOT NULL DEFAULT '';`,
 }
 
 func Open(path string) (*Store, error) {
@@ -212,6 +220,10 @@ func (s *Store) Sweep(holdDays int) error {
 		{`DELETE FROM counters WHERE expires <= ?`, []any{t}},
 		{`DELETE FROM unsub_tokens WHERE at <= ?`, []any{t - 400*86400000}},
 		{`DELETE FROM push_tokens WHERE used <= ?`, []any{t - 90*86400000}},
+		// An expired share is gone for good; a revoked one keeps its
+		// tombstone (so the link says "removed") for a year.
+		{`DELETE FROM shares WHERE expires > 0 AND expires <= ?`, []any{t}},
+		{`DELETE FROM shares WHERE removed > 0 AND removed <= ?`, []any{t - 365*86400000}},
 	}
 	for _, st := range stmts {
 		if _, err := s.db.Exec(st.q, st.args...); err != nil {

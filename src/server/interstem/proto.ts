@@ -270,7 +270,7 @@ export function signRequestHeaders(
   seed: Uint8Array,
   method: string,
   pathQuery: string,
-  body: string,
+  body: string | Uint8Array,
   now = Date.now()
 ): Record<string, string> {
   return {

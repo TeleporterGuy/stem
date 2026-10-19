@@ -20,6 +20,7 @@ import {
   Plus,
   RotateCcw,
   Send,
+  Share2,
   ShieldAlert,
   Square,
   X,
@@ -229,6 +230,8 @@ export const MailConversationView = forwardRef<MailViewHandle, {
   onStop: () => void;
   /** Open the compose form forwarding one of this conversation's mails. */
   onForward: (draft: MailForwardDraft) => void;
+  /** Publish a reply (or the whole thread) as a public link: opens the share dialog. */
+  onShare?: (itemId: string) => void;
   /**
    * The serving system's version (MailListResult.sys). A mail stamped with a
    * different one was made by older persona / skills / memory code and says so,
@@ -236,7 +239,20 @@ export const MailConversationView = forwardRef<MailViewHandle, {
    */
   currentSys?: SystemVersion;
 }>(function MailConversationView(
-  { conversation, items, personas, onReply, pending, onRetrySend, onDropSend, onAddParticipant, onStop, onForward, currentSys },
+  {
+    conversation,
+    items,
+    personas,
+    onReply,
+    pending,
+    onRetrySend,
+    onDropSend,
+    onAddParticipant,
+    onStop,
+    onForward,
+    onShare,
+    currentSys
+  },
   ref
 ) {
   // Keyed by conversation in App, so this mounts fresh per conversation and
@@ -506,6 +522,19 @@ export const MailConversationView = forwardRef<MailViewHandle, {
               </span>
             )}
             <span className="mail-item-at">{formatAt(m.at, now)}</span>
+            {/* Only a persona's reply in the user's own thread: another person's
+                mail isn't ours to publish, and the memory check is the user's memory. */}
+            {onShare && !ext && !conversation.owner && m.from !== 'user' && !m.approval && (
+              <button
+                type="button"
+                className="icon-action sm mail-item-btn mail-item-share"
+                onClick={() => onShare(m.id)}
+                title="Share as a link"
+                aria-label="Share this reply as a link"
+              >
+                <Share2 size={13} />
+              </button>
+            )}
             {/* Forwarding would carry another Stem's mail past the external gate. */}
             {!ext && (
               <button

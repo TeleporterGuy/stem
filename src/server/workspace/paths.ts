@@ -420,6 +420,11 @@ export function interStemStorePath(): string {
   return process.env.STEM_INTERSTEM_STORE ?? join(userDataRoot(), 'interstem.json');
 }
 
+/** Public share links this Stem published (share/store.ts). */
+export function sharesStorePath(): string {
+  return process.env.STEM_SHARES_STORE ?? join(userDataRoot(), 'shares.json');
+}
+
 export function settingsStorePath(): string {
   return join(userDataRoot(), 'settings.json');
 }

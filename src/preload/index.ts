@@ -78,6 +78,7 @@ import type {
   RecordingDraft
 } from '../shared/types';
 import { parseTimeLocaleArgs } from '../shared/time-locale';
+import type { ShareOptions, ShareSource } from '../shared/share';
 
 const api: StemApi = {
   // Sandboxed preloads still see process.platform; exotic platforms never ship.
@@ -460,6 +461,11 @@ const api: StemApi = {
     ipcRenderer.invoke('pins:update', threadId, pinId, patch),
   removePin: (threadId: string, pinId: string) => ipcRenderer.invoke('pins:remove', threadId, pinId),
   reorderPins: (threadId: string, pinIds: string[]) => ipcRenderer.invoke('pins:reorder', threadId, pinIds),
+  shareStatus: () => ipcRenderer.invoke('share:status'),
+  previewShare: (source: ShareSource, opts?: ShareOptions) => ipcRenderer.invoke('share:preview', source, opts),
+  createShare: (source: ShareSource, opts?: ShareOptions) => ipcRenderer.invoke('share:create', source, opts),
+  listShares: () => ipcRenderer.invoke('share:list'),
+  revokeShare: (id: string) => ipcRenderer.invoke('share:revoke', id),
   renameChat: (threadId: string, name: string) => ipcRenderer.invoke('chats:rename', threadId, name),
   deleteChat: (threadId: string) => ipcRenderer.invoke('chats:delete', threadId),
   createFolder: (name: string, parentId: string | null, settings?: Omit<FolderSettings, 'name'>) =>

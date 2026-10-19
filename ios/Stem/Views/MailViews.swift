@@ -137,10 +137,18 @@ struct MailConversationView: View {
     /// over the Reply button; asking about a question starts a reply.
     @State private var formHost = MdxFormHost(place: .below)
     @State private var formError: String?
+    /// The reply whose Share sheet is open.
+    @State private var sharing: ShareRequest?
 
     private var conversation: MailConversation? { session.mail.conversation(conversationId) }
     private var working: Bool { conversation?.status == "working" }
     private var lead: String { conversation?.participants.first ?? "normal" }
+
+    /// A persona's reply in the user's own thread. Mail with another person
+    /// isn't ours to publish, and the memory check is the user's memory.
+    private func shareable(_ item: MailItem) -> Bool {
+        item.from != "user" && item.approval == nil && conversation?.external == nil && conversation?.owner == nil
+    }
 
     var body: some View {
         let items = session.mail.items(conversationId)
@@ -155,7 +163,10 @@ struct MailConversationView: View {
                     ForEach(layout.entries) { entry in
                         Group {
                             if layout.open.contains(entry.id) != flipped.contains(entry.id) {
-                                MailItemCard(item: entry.item, onFold: entry.item.approval?.status == "pending" ? nil : { flip(entry.id) })
+                                MailItemCard(item: entry.item, onFold: entry.item.approval?.status == "pending" ? nil : { flip(entry.id) },
+                                             onShare: shareable(entry.item) ? {
+                                                 sharing = ShareRequest(source: .mail(conversationId: conversationId), anchorId: entry.item.id)
+                                             } : nil)
                                     .environment(\.mdxActions, entry.item.from == "user" ? nil : mdxActions)
                                     .environment(\.mdxIsLatest, entry.id == newestFromThem && !working)
                                     .environment(\.mdxSource, MdxSource(key: "mail:\(entry.id)", scrollId: entry.id, order: entry.item.at))
@@ -203,6 +214,7 @@ struct MailConversationView: View {
                 .background(.bar)
             }
         }
+        .sheet(item: $sharing) { r in ShareLinkSheet(request: r).environment(session) }
         .sheet(item: $replying) { r in
             MailReplySheet(conversationId: conversationId, focusRequest: r.focus ? 1 : 0).environment(session)
         }
@@ -446,6 +458,8 @@ struct MailItemCard: View {
     let item: MailItem
     /// Fold this mail back to one line (absent where it can't fold).
     var onFold: (() -> Void)? = nil
+    /// Opens the Share sheet for this reply (absent where it can't be shared).
+    var onShare: (() -> Void)? = nil
 
     var body: some View {
         let mine = item.from == "user"
@@ -486,6 +500,10 @@ struct MailItemCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(mine ? Color.accentColor.opacity(0.10) : Color(.secondarySystemBackground).opacity(0.7),
                     in: RoundedRectangle(cornerRadius: 14))
+        .contextMenu {
+            Button("Copy") { UIPasteboard.general.string = item.body }
+            if let onShare { Button("Share as Link…", systemImage: "square.and.arrow.up") { onShare() } }
+        }
     }
 }
 

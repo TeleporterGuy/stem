@@ -222,6 +222,10 @@ struct MailConversation: Decodable, Hashable, Identifiable {
     var subject: String
     var participants: [String]
     var `private`: Bool?
+    /// Inter-Stem: a conversation with another person (only presence matters here).
+    var external: JSONValue?
+    /// Owned by a server feature ("memory-check") instead of a persona.
+    var owner: String?
     var status: String
     var updatedAt: Double
     var userUpdatedAt: Double

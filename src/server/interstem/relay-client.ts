@@ -178,10 +178,12 @@ async function call<T>(
   relay: string,
   method: string,
   path: string,
-  opts: { body?: unknown; id?: Identity; withCert?: boolean; raw?: string } = {}
+  opts: { body?: unknown; id?: Identity; withCert?: boolean; raw?: string; bytes?: Uint8Array } = {}
 ): Promise<{ status: number; json: T }> {
-  const body = opts.raw ?? (opts.body === undefined ? '' : JSON.stringify(opts.body));
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const body = opts.bytes ?? opts.raw ?? (opts.body === undefined ? '' : JSON.stringify(opts.body));
+  const headers: Record<string, string> = {
+    'Content-Type': opts.bytes ? 'application/octet-stream' : 'application/json'
+  };
   if (opts.id) Object.assign(headers, signRequestHeaders(opts.id.seed, method, path, body));
   if (opts.withCert && opts.id?.cert) headers['Stem-Cert'] = b64(Buffer.from(JSON.stringify(opts.id.cert)));
   if (!acceptableRelayUrl(relay)) throw new RelayError(0, 'unacceptable_relay_url');
@@ -189,8 +191,8 @@ async function call<T>(
     method,
     redirect: 'error',
     headers,
-    body: method === 'GET' ? undefined : body,
-    signal: AbortSignal.timeout(30_000)
+    body: method === 'GET' ? undefined : (body as BodyInit),
+    signal: AbortSignal.timeout(opts.bytes ? 120_000 : 30_000)
   });
   const text = await res.text();
   let json: unknown = {};
@@ -290,6 +292,44 @@ export async function invite(relay: string, id: Identity, address: string): Prom
 export async function keyStatus(relay: string, address: string, fp: string): Promise<boolean> {
   const q = `/v1/keystatus?address=${encodeURIComponent(address)}&fp=${encodeURIComponent(fp)}`;
   return (await call<{ current: boolean }>(relay, 'GET', q)).json.current === true;
+}
+
+// ---- share links (PROTOCOL.md, "Share links") ----
+
+export interface RelayShare {
+  id: string;
+  url: string;
+  size?: number;
+  created?: number;
+  expires: number;
+}
+
+/**
+ * Upload an encrypted share blob. `id` must carry a certificate. `card` is
+ * the link preview, published in the clear (it rides in the signed path).
+ */
+export async function postShare(
+  relay: string,
+  id: Identity,
+  blob: Uint8Array,
+  ttlDays?: number,
+  card?: { title: string; description: string } | null
+): Promise<RelayShare> {
+  const q = new URLSearchParams();
+  if (ttlDays) q.set('ttl', String(ttlDays));
+  if (card && (card.title || card.description)) {
+    q.set('card', Buffer.from(JSON.stringify({ t: card.title, d: card.description })).toString('base64url'));
+  }
+  const path = q.size ? `/v1/shares?${q}` : '/v1/shares';
+  return (await call<RelayShare>(relay, 'POST', path, { id, withCert: true, bytes: blob })).json;
+}
+
+export async function deleteShare(relay: string, id: Identity, shareId: string): Promise<void> {
+  await call(relay, 'DELETE', `/v1/shares/${encodeURIComponent(shareId)}`, { id, withCert: true });
+}
+
+export async function listShares(relay: string, id: Identity): Promise<RelayShare[]> {
+  return (await call<{ shares: RelayShare[] }>(relay, 'GET', '/v1/shares', { id, withCert: true })).json.shares ?? [];
 }
 
 export async function revoke(relay: string, id: Identity): Promise<void> {

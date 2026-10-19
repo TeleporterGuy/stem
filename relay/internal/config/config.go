@@ -45,6 +45,32 @@ type Config struct {
 	Limits Limits `toml:"limits"`
 	Invite Invite `toml:"invites"`
 	Push   Push   `toml:"push"`
+	Share  Share  `toml:"share"`
+}
+
+// Share hosts public share links: blobs a Stem encrypted before upload, so
+// the relay never sees what is in them. The global relay only.
+type Share struct {
+	Enabled bool `toml:"enabled"`
+	// Public base of the viewer, e.g. https://share.heystem.app; a link is
+	// <viewer_url>/s/<id>#<key>.
+	ViewerURL string `toml:"viewer_url"`
+	// The viewer build (dist/share). Its index.html is served for /s/<id>
+	// with that share's link-preview tags filled in; empty = no previews.
+	ViewerDir string `toml:"viewer_dir"`
+	// Largest blob, in bytes.
+	MaxBytes int64 `toml:"max_bytes"`
+	// Shares per certified address per day, live shares it may hold at once,
+	// and bytes it may keep stored.
+	PerAddressDay int   `toml:"per_address_day"`
+	MaxLive       int   `toml:"max_live"`
+	QuotaBytes    int64 `toml:"quota_bytes"`
+	// Longest expiry a Stem may ask for, in days (also the default). 0 lets a
+	// share never expire; the global relay keeps it short so it is no free
+	// permanent host.
+	MaxTTLDays int `toml:"max_ttl_days"`
+	// Abuse reports per client IP per hour.
+	ReportsPerIPHour int `toml:"reports_per_ip_hour"`
 }
 
 // Push is the APNs gateway: Stems without the app's APNs key send wake-ups
@@ -138,6 +164,8 @@ func Defaults() Config {
 			BreakerMinSample: 50,
 		},
 		Push: Push{PerIPHour: 600, PerKeyHour: 120, PerTokenHour: 60, GlobalHour: 20000, RebindDays: 7},
+		Share: Share{MaxBytes: 12 << 20, PerAddressDay: 30, MaxLive: 100, QuotaBytes: 500 << 20, MaxTTLDays: 30,
+			ReportsPerIPHour: 20},
 	}
 }
 
@@ -170,6 +198,15 @@ func (c *Config) Validate() error {
 	}
 	if p := c.Push; p.Enabled && (p.KeyPath == "" || p.KeyID == "" || p.TeamID == "" || p.BundleID == "") {
 		return errors.New("[push] needs key_path, key_id, team_id and bundle_id")
+	}
+	if c.Share.Enabled {
+		if !c.Global {
+			return errors.New("[share] runs on the global relay only")
+		}
+		c.Share.ViewerURL = strings.TrimRight(c.Share.ViewerURL, "/")
+		if !strings.HasPrefix(c.Share.ViewerURL, "https://") && !strings.HasPrefix(c.Share.ViewerURL, "http://") {
+			return errors.New("[share] needs viewer_url")
+		}
 	}
 	for i, d := range c.Domains {
 		c.Domains[i] = strings.ToLower(strings.TrimSpace(d))

@@ -347,6 +347,26 @@ export class InterStemService {
     return this.live(s)[0]?.address ?? null;
   }
 
+  /**
+   * Who signs a public share upload: the default verified address with a
+   * fresh certificate. Shares live on the global relay, so any policy other
+   * than "open" (which promises the global relay is never contacted) turns
+   * sharing off.
+   */
+  async shareIdentity(): Promise<{ relay: string; address: string; identity: Identity }> {
+    if (this.policy().mode !== 'open') {
+      throw new ShareUnavailableError('policy', 'Your organization has turned off sharing outside the company.');
+    }
+    const address = await this.defaultSelf();
+    if (!address) {
+      throw new ShareUnavailableError(
+        'no_address',
+        'Sharing needs a verified address. Add one in Settings → Mail with other Stems.'
+      );
+    }
+    return { relay: globalRelay().url, address, identity: await this.freshCert(address) };
+  }
+
   private async refreshCerts(force = false): Promise<void> {
     const state = await this.store.read();
     for (const a of this.live(state)) {
@@ -850,6 +870,16 @@ export class InterStemService {
 }
 
 /** True when a held item must not reach any agent or model. */
+/** Why this Stem can't publish a share link; `code` is for the UI. */
+export class ShareUnavailableError extends Error {
+  constructor(
+    readonly code: 'policy' | 'no_address',
+    message: string
+  ) {
+    super(message);
+  }
+}
+
 export function isHeld(item: Pick<MailItem, 'external'>): boolean {
   return item.external?.held === true;
 }

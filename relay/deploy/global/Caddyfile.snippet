@@ -34,6 +34,37 @@ relay.heystem.app {
 	}
 }
 
+# Share-link viewer. stem-relay serves it all from ~/services/stem-relay/viewer
+# (npm run build:share → dist/share, mounted at /viewer): /s/<id> with the
+# share's link-preview tags filled in, the hashed assets, and /v1/shares/*.
+# Nothing else of the relay API is reachable here. Its own origin, so shared
+# content never runs where relay calls or a future heystem.app login do. The
+# decryption key is in the URL fragment, which never reaches a server.
+# noindex everywhere, but no robots.txt Disallow: that would stop the
+# chat-app crawlers that draw link previews too.
+share.heystem.app {
+	import cloudflare_dns_heystem
+	header {
+		Content-Security-Policy "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+		X-Robots-Tag "noindex, nofollow, noarchive"
+		Strict-Transport-Security "max-age=31536000"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+	@viewer path /s/* /assets/* /og.png /favicon.png /v1/shares /v1/shares/*
+	handle @viewer {
+		reverse_proxy stem-relay:8080
+	}
+	handle / {
+		redir https://heystem.app 302
+	}
+	handle {
+		respond "Not found" 404
+	}
+}
+
 # Homepage placeholder until the site exists.
 heystem.app {
 	import cloudflare_dns_heystem

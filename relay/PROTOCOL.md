@@ -179,6 +179,11 @@ relay. `K` = signed request by any key, registered or not. Errors are
 | `GET /v1/unsubscribe?t=` | — | email link; → confirmation page only |
 | `POST /v1/unsubscribe` | — | form `t=` → adds the address to the suppression list |
 | `POST /v1/push` | K | `{token, env, wake}` → `{result:"sent"\|"gone"}`; `409 token_bound`, `502 apns_failed` |
+| `POST /v1/shares?ttl=<days>&card=<b64url JSON>` | SC | blob bytes → `{id, url, expires}`; `400 bad_ttl`, `413`, `429`, `507 too_many_links`, `507 quota_full` |
+| `GET /v1/shares` | SC | → `{shares:[{id, url, size, created, expires}]}` |
+| `GET /v1/shares/{id}` | — | → blob bytes; `404 not_found`, `410 {error:"gone", why:"revoked"\|"taken_down"}` |
+| `DELETE /v1/shares/{id}` | SC, the owner address | → `{}` |
+| `POST /v1/shares/{id}/report` | — | `{reason, detail?, contact?, key?}` → `202 {}` |
 
 ### Register and verify
 
@@ -247,6 +252,39 @@ belongs to the first key that pushes to it. Another key gets `409
 token_bound` until the owner has been idle `rebind_days`, or until Apple
 reports the token gone (`{result:"gone"}`; the Stem drops it). Limits per
 hour, per client IP, per key, per token and in all are in `[push]`.
+
+### Share links
+
+Only relays with `[share]` enabled (feature `share`; the global relay). A
+Stem uploads a snapshot it encrypted itself:
+
+```
+key    = 32 random bytes            (never sent; the link's fragment)
+nonce  = 12 random bytes
+blob   = 0x01 || nonce || AES-256-GCM(key, nonce, gzip(snapshot JSON), aad = "stem-share-v1")
+```
+
+The relay checks only the version byte and the size. The link is
+`url + "#" + base64url(key)` (no padding). `id` is 22 base64url characters.
+A share belongs to the certified address, not the key, so another device
+holding the address can list and revoke it. Limits: `limits.maxShareBytes`
+per blob, `[share] per_address_day`, `max_live` working links and
+`quota_bytes` per address, and `maxShareTtlDays`: the longest `ttl`, and the
+expiry when none is given (0: a share may never expire; the global relay
+uses 30). Expired shares are deleted; revoked and taken-down ones answer
+`410` for a year.
+
+`card` (optional) is the link preview the sharer publishes in the clear:
+base64url (no padding) of `{"t": title, "d": description}`. It rides in the
+signed path; the relay keeps one printable line of each (120 and 300
+characters). With `[share] viewer_dir` set, `GET /s/{id}` answers the
+viewer's `index.html` with the `<!--stem-card-->` block replaced by that
+card's `og:` tags (a removed link gets a "removed" card, a cardless one the
+page as built). Every share response carries `X-Robots-Tag: noindex`.
+
+`report` reasons: `illegal`, `privacy`, `harassment`, `spam`, `other`.
+`key` is optional: a reporter who includes it lets the operator see the
+content.
 
 ## Features
 

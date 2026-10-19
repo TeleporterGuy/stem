@@ -13,6 +13,8 @@ struct ThreadView: View {
     /// Whether the list sits at its end, so growth below follows it there.
     /// Not observed: re-rendering on every scroll step looped the layout.
     @State private var follow = ScrollFollow()
+    /// The answer whose Share sheet is open.
+    @State private var sharing: ShareRequest?
 
     init(session: Session, threadId: String?, folderId: String? = nil) {
         _store = State(initialValue: ThreadStore(session: session, threadId: threadId, folderId: folderId))
@@ -93,6 +95,7 @@ struct ThreadView: View {
                 }
             }
         }
+        .sheet(item: $sharing) { r in ShareLinkSheet(request: r).environment(session) }
         .navigationTitle(navTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -143,7 +146,10 @@ struct ThreadView: View {
     }
 
     private func row(_ m: ChatMessage, _ i: Int, latest: String?) -> some View {
-        MessageRow(message: m, store: store, isLatest: m.id == latest, submit: submitFromReply)
+        MessageRow(message: m, store: store, isLatest: m.id == latest, submit: submitFromReply,
+                   onShare: { turnId in
+                       if let id = store.threadId { sharing = ShareRequest(source: .chat(threadId: id), anchorId: turnId) }
+                   })
             .environment(\.mdxSource, MdxSource(key: "chat:\(store.threadId ?? ""):\(m.turnId ?? m.id)",
                                                 scrollId: m.id, order: Double(i)))
             .id(m.id)
@@ -289,6 +295,8 @@ struct MessageRow: View {
     let store: ThreadStore
     var isLatest = false
     var submit: ((String) -> Void)?
+    /// Opens the Share sheet for this answer's turn.
+    var onShare: ((String) -> Void)?
 
     var body: some View {
         switch message.role {
@@ -328,7 +336,12 @@ struct MessageRow: View {
                 ForEach(message.images ?? [], id: \.id) { ref in GeneratedImage(ref: ref, store: store) }
                 if let sources = message.sources, !sources.isEmpty { SourcesList(sources: sources) }
             }
-            .contextMenu { Button("Copy") { UIPasteboard.general.string = message.content } }
+            .contextMenu {
+                Button("Copy") { UIPasteboard.general.string = message.content }
+                if let onShare, let turn = message.turnId, !message.content.isEmpty, !store.busy || !isLatest {
+                    Button("Share as Link…", systemImage: "square.and.arrow.up") { onShare(turn) }
+                }
+            }
         }
     }
 }

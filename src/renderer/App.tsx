@@ -36,6 +36,8 @@ import { ApprovalNotice, MissedApprovalDialog } from './manage/ApprovalCard';
 import { approvalsElsewhere, approvalsForThread } from './manage/approvalQueue';
 import { useApprovals } from './manage/approvalStore';
 import { DeleteThreadDialog } from './DeleteThreadDialog';
+import { ShareDialog } from './share/ShareDialog';
+import type { ShareSource } from '../shared/share';
 import { CHATS_TAB_IDS, CHATS_TAB_KEY, type ChatsTab } from './chats/ChatList';
 import {
   persistReturnChatId,
@@ -139,6 +141,8 @@ export default function App() {
   // The right-hand panel's tab, held here rather than in ManagePanel so the View
   // menu (and ⌘,) can switch it — even while the panel is hidden.
   const [manageTab, setManageTab] = useRememberedTab<ManageTabId>(MANAGE_TAB_KEY, MANAGE_TAB_IDS, 'chats');
+  // Public share links: one answer (turnId) or the whole chat.
+  const [shareTarget, setShareTarget] = useState<{ source: ShareSource; anchorId: string } | null>(null);
   const chatsTabRef = useRef(chatsTab);
   chatsTabRef.current = chatsTab;
   // The Return-to-chat target: the ordinary chat last opened (or created) while
@@ -1421,6 +1425,10 @@ export default function App() {
     },
     [mailApi, openMail]
   );
+  const onShareMessage = useCallback((turnId: string) => {
+    const threadId = activeThreadIdRef.current;
+    if (threadId) setShareTarget({ source: { kind: 'chat', threadId }, anchorId: turnId });
+  }, []);
   const onWriteSubject = useCallback(
     (threadId: string) => {
       // Round-trips through a model, so this resolves in a second or two rather
@@ -1911,6 +1919,9 @@ export default function App() {
                     mailApi.addParticipant(conversation.id, personaId)
                   }
                   onStop={() => void mailApi.stop(conversation.id)}
+                  onShare={(itemId) =>
+                    setShareTarget({ source: { kind: 'mail', conversationId: conversation.id }, anchorId: itemId })
+                  }
                   onForward={(forward) => setMailView({ kind: 'compose', forward })}
                 />
               );
@@ -1936,6 +1947,7 @@ export default function App() {
           onRetry={onRetry}
           onEdit={onEditMessage}
           onFork={onForkMessage}
+          onShare={onShareMessage}
           onDelete={onDeleteFromTurn}
           onRetryFailedSend={onRetryFailedSend}
           onEditFailedSend={onEditFailedSend}
@@ -2028,6 +2040,23 @@ export default function App() {
           and dismissed. It waits here until the main window is opened. */}
       <SkillsResetDialog />
       <MissedApprovalDialog />
+      {shareTarget && (
+        <ShareDialog
+          source={shareTarget.source}
+          anchorId={shareTarget.anchorId}
+          onClose={() => setShareTarget(null)}
+          onOpenSettings={() => {
+            try {
+              localStorage.setItem('stem.settings.tab', 'features');
+            } catch {
+              // Lands on the remembered settings tab instead.
+            }
+            setShareTarget(null);
+            setShowInspector(true);
+            setManageTab('settings');
+          }}
+        />
+      )}
       {pendingDelete && (
         <DeleteThreadDialog
           title={pendingDelete.title}
@@ -2141,6 +2170,7 @@ export default function App() {
       </div>
       <div className="toolbar-spacer" />
       <ActivityIndicator onOpenMail={openMail} />
+
       <button
         className={`tbtn${showInspector ? ' active' : ''}`}
         title={`Toggle inspector (${glyphsFor('toggle-inspector')})`}

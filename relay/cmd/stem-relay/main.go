@@ -36,7 +36,10 @@ const usage = `stem-relay — a Stem relay
   stem-relay serve [-config relay.toml]       run the relay
   stem-relay dns [-config relay.toml]         print the _stem DNS record (private relays)
   stem-relay keys list|add|activate|remove [kid]   manage signing keys
-  stem-relay unsuspend <address>              lift a block suspension
+  stem-relay suspend <address>                stop an address sending, looking up and sharing
+  stem-relay unsuspend <address>              lift a suspension
+  stem-relay share-reports                    list open reports on share links
+  stem-relay share-takedown <id> <reason>     remove a share link and close its reports
   stem-relay version
 `
 
@@ -66,6 +69,34 @@ func main() {
 				return errors.New("usage: stem-relay unsuspend <address>")
 			}
 			return st.Unsuspend(proto.NormalizeAddress(fs.Arg(0)))
+		})
+	case "suspend":
+		err = withStore(*cfgPath, func(_ *config.Config, st *store.Store) error {
+			if fs.NArg() != 1 {
+				return errors.New("usage: stem-relay suspend <address>")
+			}
+			return st.Suspend(proto.NormalizeAddress(fs.Arg(0)))
+		})
+	case "share-reports":
+		err = withStore(*cfgPath, shareReports)
+	case "share-takedown":
+		err = withStore(*cfgPath, func(_ *config.Config, st *store.Store) error {
+			if fs.NArg() != 2 {
+				return errors.New("usage: stem-relay share-takedown <id> <reason>")
+			}
+			id := fs.Arg(0)
+			sh, err := st.GetShare(id)
+			if err != nil {
+				return fmt.Errorf("share %s: %w", id, err)
+			}
+			if _, err := st.RemoveShare(id, "takedown: "+fs.Arg(1)); err != nil {
+				return err
+			}
+			if err := st.HandleShareReports(id); err != nil {
+				return err
+			}
+			fmt.Printf("removed %s (shared by %s); suspend them with: stem-relay suspend %s\n", id, sh.Owner, sh.Owner)
+			return nil
 		})
 	case "version":
 		fmt.Println(server.Version)
@@ -250,4 +281,33 @@ func serve(path string) error {
 			return srv.Shutdown(sctx)
 		}
 	})
+}
+
+func shareReports(cfg *config.Config, st *store.Store) error {
+	reps, err := st.OpenShareReports()
+	if err != nil {
+		return err
+	}
+	if len(reps) == 0 {
+		fmt.Println("no open reports")
+		return nil
+	}
+	for _, r := range reps {
+		owner := "(gone)"
+		if sh, err := st.GetShare(r.Share); err == nil {
+			owner = sh.Owner
+		}
+		link := cfg.Share.ViewerURL + "/s/" + r.Share
+		if r.Key != "" {
+			link += "#" + r.Key
+		}
+		fmt.Printf("#%d  %s  %s  by %s\n    %s\n", r.ID, time.UnixMilli(r.At).UTC().Format(time.RFC3339), r.Reason, owner, link)
+		if r.Detail != "" {
+			fmt.Printf("    %s\n", strings.ReplaceAll(r.Detail, "\n", "\n    "))
+		}
+		if r.Contact != "" {
+			fmt.Printf("    contact: %s\n", r.Contact)
+		}
+	}
+	return nil
 }

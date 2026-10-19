@@ -3,6 +3,7 @@
 import type { InboxState } from './inbox';
 import type { TimeLocale } from './time-locale';
 import type { ShortcutId } from './shortcut-defs';
+import type { SharedLink, ShareOptions, SharePreview, ShareSource, ShareStatus } from './share';
 
 export type { InboxEntry, InboxState } from './inbox';
 
@@ -5340,6 +5341,14 @@ export interface StemApi {
   removePin(threadId: string, pinId: string): Promise<ChatPin[]>;
   /** Put the chat's pins in this order (every id of the chat, once). */
   reorderPins(threadId: string, pinIds: string[]): Promise<ChatPin[]>;
+  /** Public share links (docs/public-share-design.md). */
+  shareStatus(): Promise<ShareStatus>;
+  /** The snapshot exactly as it would be published, for the dialog's preview. */
+  previewShare(source: ShareSource, opts?: ShareOptions): Promise<SharePreview>;
+  createShare(source: ShareSource, opts?: ShareOptions): Promise<SharedLink>;
+  listShares(): Promise<SharedLink[]>;
+  /** Take a link down; answers the remaining links. */
+  revokeShare(id: string): Promise<SharedLink[]>;
   /** A chat's pins changed — on another client, or a label just written. Refetch that chat. */
   onPinsChanged(listener: (payload: { threadId: string }) => void): () => void;
   renameChat(threadId: string, name: string): Promise<void>;
