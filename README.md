@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/join3r/stem/releases/latest"><b>Download</b></a>
-  · macOS (Apple Silicon) · Linux (AppImage, deb) ·
+  · macOS (Apple Silicon) · Linux (AppImage, deb) · Windows ·
   <a href="docs/README.md">User guide</a>
 </p>
 

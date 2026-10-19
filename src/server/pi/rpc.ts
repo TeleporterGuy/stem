@@ -36,6 +36,15 @@ interface Pending {
 
 const REQUEST_TIMEOUT_MS = 120_000;
 
+/**
+ * Budget for a fresh child's first `get_state`. Windows gets three times as
+ * long: Defender scans every file pi loads the first time it runs after an
+ * install or update (the app ships unpacked, so that is thousands of files),
+ * and a cold start measured 17s on its own and past 20s next to the embedder
+ * loading in the same minute. Warm, it answers in about a second there too.
+ */
+export const PI_READY_TIMEOUT_MS = process.platform === 'win32' ? 60_000 : 20_000;
+
 /** How much stderr to keep for the exit message (see stderrTail). */
 const STDERR_TAIL_CHARS = 4_000;
 /** How much of that tail is quoted back in the exit error itself. */

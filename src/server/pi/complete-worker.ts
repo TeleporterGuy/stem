@@ -1,14 +1,14 @@
 import { join } from 'node:path';
 import type { PiInvocation } from './locate';
 import { emptyCompleteError } from './complete-errors';
-import { PiProcess, stderrReason, type PiEvent } from './rpc';
+import { PI_READY_TIMEOUT_MS, PiProcess, stderrReason, type PiEvent } from './rpc';
 
 // Shared helpers for one-shot LLM completes (exec safety judge, Recall distill).
 // Kept out of PiRuntime so readiness + prompt ack can be unit-tested without a
 // full Electron spawn. The warm worker lives in PiRuntime; this module runs one
 // prompt on an already-started PiProcess (or cold-starts a throwaway child).
 
-/** Budget for get_state after spawn — fail fast instead of burning the LLM timer. */
+/** Budget for the setup commands after readiness — fail fast instead of burning the LLM timer. */
 export const COMPLETE_READY_TIMEOUT_MS = 20_000;
 
 /**
@@ -58,7 +58,7 @@ export async function spawnReadyCompleteChild(opts: CompleteChildOptions): Promi
   });
   child.start();
   try {
-    const state = await child.request({ type: 'get_state' }, COMPLETE_READY_TIMEOUT_MS);
+    const state = await child.request({ type: 'get_state' }, PI_READY_TIMEOUT_MS);
     if (!state.success) {
       throw new Error(state.error ?? 'pi complete worker failed get_state.');
     }

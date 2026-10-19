@@ -136,7 +136,7 @@ import { gradeSkillUse, reportedSkillIssues } from '../skills/grade';
 import { parseThreadEvidence, type LearnTurn } from '../skills/thread-evidence';
 import { resolvePi, type PiInvocation } from './locate';
 import { repairMissingSessionCwd } from './session-cwd';
-import { PiProcess, stderrReason, type PiEvent } from './rpc';
+import { PI_READY_TIMEOUT_MS, PiProcess, stderrReason, type PiEvent } from './rpc';
 import {
   completeInternalCwd,
   ensureCompleteModel,
@@ -3984,7 +3984,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     try {
       proc.start();
       // Probe readiness and capture the initial session id/file.
-      const state = await proc.request({ type: 'get_state' }, 20_000);
+      const state = await proc.request({ type: 'get_state' }, PI_READY_TIMEOUT_MS);
       this.recordState(worker, state.data);
       this.lastStartError = null;
       // More than one worker alive: start retiring the extras once they idle.
