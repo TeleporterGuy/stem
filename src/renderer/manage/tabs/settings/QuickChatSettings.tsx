@@ -40,6 +40,7 @@ export function QuickChatSection({ models }: { models: ModelSummary[] }) {
   const [ci, setCi] = useState<CustomInstructionsSettings>({ main: '', quickChat: '' });
   const [shortcutStatus, setShortcutStatus] = useState<QuickChatShortcutStatus | null>(null);
   const [copiedSummon, setCopiedSummon] = useState(false);
+  const [copiedWindow, setCopiedWindow] = useState(false);
   // Per-field debounce so typing doesn't spam the atomic settings writer.
   const ciQuickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -93,6 +94,14 @@ export function QuickChatSection({ models }: { models: ModelSummary[] }) {
     void navigator.clipboard.writeText(shortcutStatus.summonCommand).then(() => {
       setCopiedSummon(true);
       setTimeout(() => setCopiedSummon(false), 1600);
+    });
+  }
+
+  function copyWindowCommand() {
+    if (!shortcutStatus) return;
+    void navigator.clipboard.writeText(shortcutStatus.windowSummonCommand).then(() => {
+      setCopiedWindow(true);
+      setTimeout(() => setCopiedWindow(false), 1600);
     });
   }
 
@@ -184,8 +193,25 @@ export function QuickChatSection({ models }: { models: ModelSummary[] }) {
           </div>
         )}
 
-        {/* Mac and Windows: capturing another app's window needs the computer-control helper. */}
-        {(window.stem.platform === 'darwin' || window.stem.platform === 'win32') && (
+        {/* Capturing another app's window needs the computer-control helper (on
+            Linux, its GNOME extension). On Wayland the shortcut is a system one
+            bound to `--ask-window`, like the Quick Chat one above. */}
+        {shortcutStatus?.wayland ? (
+          <>
+            <ValueRow
+              label={<strong>Ask about this window</strong>}
+              hint="Opens Quick Chat with a picture and the text of the window you're in. Needs the GNOME extension from Settings → Features → Computer control"
+            >
+              <button className="icon-action sm" onClick={copyWindowCommand} title="Copy the command" aria-label="Copy the Ask about this window command">
+                {copiedWindow ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+            </ValueRow>
+            <div className="set-vbody">
+              <span className="set-sub">Add a custom keyboard shortcut in your system settings that runs:</span>
+              <code className="pair-cmd">{shortcutStatus.windowSummonCommand}</code>
+            </div>
+          </>
+        ) : (
           <>
             <ValueRow
               label={<strong>Ask about this window</strong>}

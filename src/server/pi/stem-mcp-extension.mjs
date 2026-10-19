@@ -3065,7 +3065,9 @@ function registerExecTool(pi) {
       'benchmark — rather than letting them hit the default. For a job that may outlast an hour, start it in the ' +
       'background with its output in a log file, e.g. `nohup python bench.py > bench.log 2>&1 & echo $!`, then ' +
       'check it with later commands (`tail -n 50 bench.log`, `kill -0 <pid>`), waiting between checks with ' +
-      '`sleep` inside a command of its own.',
+      '`sleep` inside a command of its own. A desktop app started directly holds the command open until it ' +
+      'closes, and the timeout closes it: start apps detached — `open -a App` on a Mac, `start app` on ' +
+      'Windows, `gtk-launch <desktop id>` (e.g. org.mozilla.firefox) or `setsid -f app` on Linux.',
     parameters: {
       type: 'object',
       properties: {
@@ -3515,7 +3517,7 @@ function registerComputerTool(pi, turnContext) {
       'were shown (top-left origin), in every step of a batch too — never ' +
       'guess them from memory of an earlier frame. Use `zoom` with a `region` to read small text (its picture is ' +
       'magnified: do not click from it, take a screenshot first). Prefer `run_command` with `device` set to this ' +
-      'same computer for anything a shell does better (opening an app with `open -a` on a Mac or `start` on Windows, files, git, scripts); click ' +
+      'same computer for anything a shell does better (opening an app with `open -a` on a Mac, `start` on Windows or `gtk-launch` on Linux, files, git, scripts); click ' +
       'only for what needs the GUI. Two modes. START WITH `list_windows`: it costs nothing and never interrupts ' +
       'the user. WINDOW mode (the default for working on an app): `select_window` (by `window_id`, or `app` name ' +
       'plus optional `title` substring). From then on screenshots show that window wherever it is — another ' +

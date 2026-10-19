@@ -111,7 +111,8 @@ if (profileOverride) {
 // One Stem per profile. A second launch hands its argv to the running instance
 // and exits: `stem --quick-chat` toggles the overlay (the summon path for
 // Wayland, where Electron's globalShortcut never fires — users bind a DE
-// shortcut to this command), a plain `stem` reveals the main window (the
+// shortcut to this command), `stem --ask-window` is "Ask about this window"
+// the same way, a plain `stem` reveals the main window (the
 // reopen path on Linux, where the app keeps running after the main window
 // closes and stock GNOME hides the tray). Must run after the profile override
 // so the lock keys off the final userData path (isolated E2E/profile runs
@@ -122,6 +123,7 @@ app.on('second-instance', (_event, argv) => {
   // Ignore launches racing the whenReady bootstrap (windows not created yet).
   if (!windowsReady) return;
   if (argv.includes('--quick-chat')) quickChat.toggle();
+  else if (argv.includes('--ask-window')) quickChat.askAboutWindow();
   else revealMainWindow();
 });
 
@@ -645,7 +647,8 @@ app.whenReady().then(async () => {
   // that command IS the shortcut on Wayland (see the second-instance handler),
   // and pressing it with Stem closed should feel the same as pressing it with
   // Stem running. The overlay is summoned once it exists, below.
-  const coldSummon = process.argv.includes('--quick-chat');
+  // `--ask-window` cold: there is no helper warm yet, so it is a plain summon.
+  const coldSummon = process.argv.includes('--quick-chat') || process.argv.includes('--ask-window');
   createWindow(coldSummon);
   // Eagerly spawn pi + connect MCP once the window has painted, so the first prompt
   // doesn't pay backend cold-start. did-finish-load keeps the spawn + MCP child

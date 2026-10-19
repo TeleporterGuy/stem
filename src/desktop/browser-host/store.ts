@@ -96,7 +96,7 @@ export async function writeBrowserHostEnabled(enabled: boolean): Promise<Browser
   const next = await updateBrowserHostSettings((cur) => ({ ...cur, enabled }));
   log(
     'browser-host',
-    enabled ? 'this Mac now lets Stem drive its browser' : 'this Mac stopped letting Stem drive its browser'
+    enabled ? 'this computer now lets Stem drive its browser' : 'this computer stopped letting Stem drive its browser'
   );
   return next;
 }

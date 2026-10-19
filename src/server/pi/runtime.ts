@@ -4963,17 +4963,17 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // "Let the model choose") is told what it can pick from, fresh each turn.
     if (turn?.codingGrant?.kind === 'chat' && turn.codingGrant.target === null) {
       // quiet: without the list the model can still ask the user, and a wrong pick is refused with the options attached.
-      const choices = await codingChoicesText().catch(() => '');
+      const choices = await codingChoicesText(input.originDeviceId).catch(() => '');
       if (choices) ambient.add(choices, 'the coding agents you can choose');
     }
     if (turn?.computerGrant?.kind === 'chat' && turn.computerGrant.device === null) {
       // quiet: same as the coding list above.
-      const choices = await computerChoicesText().catch(() => '');
+      const choices = await computerChoicesText(input.originDeviceId).catch(() => '');
       if (choices) ambient.add(choices, 'the computers you can control');
     }
     if (turn?.browserGrant?.kind === 'chat' && turn.browserGrant.device === null) {
       // quiet: same as the coding list above.
-      const choices = await browserChoicesText().catch(() => '');
+      const choices = await browserChoicesText(input.originDeviceId).catch(() => '');
       if (choices) ambient.add(choices, 'the browsers you can drive');
     }
     try {

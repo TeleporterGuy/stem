@@ -1,0 +1,9 @@
+{
+  "uuid": "stem-computer@awantech.sk",
+  "name": "Stem computer control",
+  "description": "Lets the Stem desktop app see the screen and use the mouse and keyboard when you turn on computer control in Stem. It does nothing unless Stem asks.",
+  "shell-version": ["46", "47", "48", "49", "50"],
+  "url": "https://stem.awantech.sk",
+  "version": 5,
+  "version-name": "5"
+}

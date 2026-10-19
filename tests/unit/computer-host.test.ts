@@ -336,3 +336,79 @@ describe('createComputerHost on Windows', () => {
     expect(second.ok && second.text).toBe('12  Discord  "#test"');
   });
 });
+
+describe('createComputerHost on Linux', () => {
+  let dir: string;
+  let calls: Array<{ channel: string; args: unknown[] }>;
+  let helper: FakeHelper;
+  let host: ComputerHost;
+  let installs: number;
+  let running: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'stem-computer-host-'));
+    process.env.STEM_COMPUTER_HOST_FILE = join(dir, 'computer-host.json');
+    calls = [];
+    installs = 0;
+    running = 'not-loaded';
+    helper = new FakeHelper();
+    host = createComputerHost({
+      platform: 'linux',
+      invoke: (channel, args) => {
+        calls.push({ channel, args });
+        return Promise.resolve(undefined);
+      },
+      banner: { show: () => undefined, hide: () => undefined },
+      helpers: {
+        spawn: () => Promise.resolve(helper),
+        oneShot: async (cmd) => ({ ...(await helper.call(cmd)), linux: { state: running } })
+      },
+      gnome: {
+        install: () => {
+          installs++;
+          return Promise.resolve();
+        },
+        // What linuxSetupFrom says once the current copy is on disk.
+        setup: (h) => Promise.resolve(h?.state === 'ready' ? { state: 'ready' } : { state: installs > 0 ? 'relogin' : 'not-installed' })
+      }
+    });
+  });
+
+  afterEach(() => {
+    host.close();
+    delete process.env.STEM_COMPUTER_HOST_FILE;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('is supported, announces linux, and reports the GNOME extension setup', async () => {
+    const before = await host.localState();
+    expect(before.supported).toBe(true);
+    expect(before.linux).toEqual({ state: 'not-installed' });
+    await host.setEnabled(true);
+    expect(calls.find((c) => c.channel === 'computerHost:announce')!.args[0]).toMatchObject({ platform: 'linux' });
+  });
+
+  it('installs the extension when asked for access, then says to log in again until the shell runs it', async () => {
+    await host.setEnabled(true);
+    expect((await host.requestAccess()).linux).toEqual({ state: 'relogin' });
+    expect(installs).toBe(1);
+    running = 'ready';
+    expect((await host.localState()).linux).toEqual({ state: 'ready' });
+  });
+
+  it('tells the model once per run that this is GNOME on Wayland', async () => {
+    await host.setEnabled(true);
+    const result = new Promise<DeviceComputerResult>((resolve) => {
+      const tick = setInterval(() => {
+        const hit = calls.find((c) => c.channel === 'computerHost:result');
+        if (hit) {
+          clearInterval(tick);
+          resolve(hit.args[1] as DeviceComputerResult);
+        }
+      }, 5);
+    });
+    host.onRequest({ requestId: 'r1', threadId: 't1', action: { kind: 'screenshot' } });
+    const first = await result;
+    expect(first.ok && first.text).toContain('This computer runs Linux (GNOME on Wayland)');
+  });
+});

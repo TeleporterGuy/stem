@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { access, mkdir, readdir, readFile } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { host } from '../../server/host';
 import { log } from '../../server/log';
@@ -11,10 +11,13 @@ import type { ComputerAccess, ComputerTarget, RecordedStep } from '../../shared/
 // The helper as a child process: one JSON line in, one out, plus the
 // unsolicited human-input event while a run is watched. On a Mac it is the
 // Swift helper (native/mac/stem-computer), on Windows its C# twin
-// (native/windows/stem-computer), speaking the same lines. Packaged, the binary
-// ships at resources/bin/stem-computer(.exe) (see electron-builder.yml
-// extraResources); in development it is compiled on demand into the profile's
-// state folder so a fresh checkout works without remembering a build step.
+// (native/windows/stem-computer), on Linux a gjs script
+// (native/linux/stem-computer) that reaches GNOME through Stem's Shell
+// extension — all speaking the same lines. Packaged, the binary ships at
+// resources/bin/stem-computer(.exe) and the Linux scripts under
+// resources/linux (see electron-builder.yml extraResources); in development
+// the Mac and Windows ones are compiled on demand into the profile's state
+// folder so a fresh checkout works without remembering a build step.
 
 const CALL_TIMEOUT_MS = 30_000;
 
@@ -39,6 +42,8 @@ export interface HelperReply {
   current?: string;
   /** dictate-start: the language the model settled on. */
   locale?: string;
+  /** Linux status: the GNOME Shell extension as the helper sees it running. */
+  linux?: { state: string; error?: string | null; protocol?: number; loader?: number };
 }
 
 export type HelperEvent =
@@ -56,7 +61,8 @@ export type HelperEvent =
 /** Where the helper binary is, building it first in development. Throws with a readable reason. */
 export async function resolveHelperPath(): Promise<string> {
   if (process.platform === 'win32') return resolveWindowsHelper();
-  if (process.platform !== 'darwin') throw new Error('Computer control is only available on macOS and Windows.');
+  if (process.platform === 'linux') return resolveLinuxHelper();
+  if (process.platform !== 'darwin') throw new Error('Computer control is only available on macOS, Windows and Linux.');
   const packaged = join(process.resourcesPath ?? '', 'bin', 'stem-computer');
   if (process.resourcesPath && (await exists(packaged))) return packaged;
   // Development: run the build script (the same one electron-builder's
@@ -119,6 +125,44 @@ async function resolveWindowsHelper(): Promise<string> {
   return output;
 }
 
+/** The Linux helper's folder: native/linux, packaged as resources/linux. */
+export function linuxNativeRoot(): string {
+  const packaged = join(process.resourcesPath ?? '', 'linux');
+  if (process.resourcesPath && existsSync(join(packaged, 'stem-computer', 'main.js'))) return packaged;
+  return resolve(__dirname, '..', '..', 'native', 'linux');
+}
+
+/** Linux: a gjs script, nothing to build. gjs comes with GNOME Shell, the only desktop it serves. */
+async function resolveLinuxHelper(): Promise<string> {
+  const main = join(linuxNativeRoot(), 'stem-computer', 'main.js');
+  if (!(await exists(main, constants.R_OK))) throw new Error(`The computer-control helper is missing (looked in ${main}).`);
+  if (!(await gjsPath())) throw new GjsMissingError();
+  return main;
+}
+
+/** No gjs on PATH: not a GNOME desktop, or a stripped-down one. */
+export class GjsMissingError extends Error {
+  constructor() {
+    super('Computer control on Linux needs GNOME Shell (its gjs runtime was not found).');
+  }
+}
+
+let gjs: string | null | undefined;
+
+/** Where gjs is, looked up once. */
+export async function gjsPath(): Promise<string | null> {
+  if (gjs !== undefined) return gjs;
+  for (const dir of (process.env.PATH ?? '').split(':').concat('/usr/bin', '/usr/local/bin')) {
+    if (dir && (await exists(join(dir, 'gjs')))) return (gjs = join(dir, 'gjs'));
+  }
+  return (gjs = null);
+}
+
+/** How a helper is started: the binary itself, or gjs running the Linux script. */
+export function helperCommand(binary: string): { command: string; args: string[] } {
+  return binary.endsWith('.js') ? { command: gjs ?? 'gjs', args: ['-m', binary] } : { command: binary, args: [] };
+}
+
 async function sourceHash(dir: string, ext = '.swift'): Promise<string> {
   const h = createHash('sha256');
   for (const name of (await readdir(dir)).filter((f) => f.endsWith(ext)).sort()) {
@@ -150,8 +194,9 @@ export class HelperProcess {
   private readonly listeners = new Set<(event: HelperEvent) => void>();
 
   constructor(binary: string) {
-    // STEM_PARENT_PID: the Windows helper leaves Stem's own windows out of its lists.
-    this.proc = spawn(binary, [], {
+    // STEM_PARENT_PID: the Windows and Linux helpers leave Stem's own windows out of their lists.
+    const { command, args } = helperCommand(binary);
+    this.proc = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       env: { ...process.env, STEM_PARENT_PID: String(process.pid) }
@@ -256,4 +301,17 @@ export async function oneShot(cmd: string, fields: Record<string, unknown> = {})
   } finally {
     proc.kill();
   }
+}
+
+/**
+ * Move one of Stem's own windows (found by title) to (x, y) on a Wayland
+ * session, where the compositor places new windows itself (GNOME: centred)
+ * and ignores setPosition. Needs Stem's GNOME extension; without it the window
+ * stays where GNOME put it. Never throws.
+ */
+export function placeOwnWindow(title: string, x: number, y: number): void {
+  void oneShot('place-window', { title, x, y }).then(
+    (r) => r.ok || log('computer-host', 'could not place a window', { title, error: r.error }),
+    (e: unknown) => log('computer-host', 'could not place a window', { title, error: e instanceof Error ? e.message : String(e) })
+  );
 }

@@ -1724,7 +1724,7 @@ export interface ComputerAccess {
 /** A device's account of whether it lets Stem drive its screen — `computerHost:announce`. */
 export interface DeviceComputerAnnouncement {
   enabled: boolean;
-  platform: 'darwin' | 'win32';
+  platform: 'darwin' | 'linux' | 'win32';
   access?: ComputerAccess;
 }
 
@@ -1739,12 +1739,38 @@ export interface DeviceComputerEvent {
   kind: 'human-input';
 }
 
+/**
+ * Where computer control stands on a Linux desktop, which needs Stem's GNOME
+ * Shell extension (native/linux/gnome-extension): `ready`; `not-installed`
+ * (or an older copy is installed); `relogin` (installed, loads at the next
+ * login); `disabled` (turned off in GNOME's Extensions app); `extensions-off`
+ * (all user extensions are off); `error` (the shell failed to load it);
+ * `not-gnome` / `not-wayland` / `no-gjs` (this desktop cannot run it).
+ */
+export type LinuxComputerSetupState =
+  | 'ready'
+  | 'not-installed'
+  | 'relogin'
+  | 'disabled'
+  | 'extensions-off'
+  | 'error'
+  | 'not-gnome'
+  | 'not-wayland'
+  | 'no-gjs';
+
+export interface LinuxComputerSetup {
+  state: LinuxComputerSetupState;
+  error?: string;
+}
+
 /** The answer to `computerHost:localState` — client-owned, never on the wire. */
 export interface ComputerHostLocalState {
-  /** False on every platform but macOS: there is no helper to run. */
+  /** False where there is no helper to run (macOS before 14, other systems). */
   supported: boolean;
   enabled: boolean;
   access: ComputerAccess | null;
+  /** Linux only: the GNOME Shell extension's setup. */
+  linux?: LinuxComputerSetup;
 }
 
 // ---- Skill recorder: the person shows Stem a task, Stem writes the skill ----
@@ -3652,6 +3678,8 @@ export interface QuickChatShortcutStatus {
   windowRegistered: boolean;
   wayland: boolean;
   summonCommand: string;
+  /** The command for "Ask about this window" (`--ask-window`), bound the same way. */
+  windowSummonCommand: string;
 }
 
 /**

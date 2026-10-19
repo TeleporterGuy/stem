@@ -98,6 +98,8 @@ describe('ExecService judge', () => {
     } as unknown as ChatBackend;
 
     service = new ExecService({
+      // The real one reads the device registry from disk.
+      deviceIsLocal: async () => false,
       // These suites are about the card: escalate on the first refusal.
       blockStreak: 1,
       runtime: () => runtime,
@@ -294,6 +296,8 @@ describe('ExecService read confinement (H-01)', () => {
     approvals = [];
     judged = [];
     service = new ExecService({
+      // The real one reads the device registry from disk.
+      deviceIsLocal: async () => false,
       // These suites are about the card: escalate on the first refusal.
       blockStreak: 1,
       runtime: () =>
@@ -373,6 +377,8 @@ describe('ExecService working directory', () => {
     settings.exec.approvalMode = 'manual';
     approvals = [];
     service = new ExecService({
+      // The real one reads the device registry from disk.
+      deviceIsLocal: async () => false,
       // These suites are about the card: escalate on the first refusal.
       blockStreak: 1,
       runtime: () => ({}) as unknown as ChatBackend,
@@ -449,6 +455,7 @@ describe('ExecService device targeting', () => {
   let hostEntry: { deviceId: string; announcedAt: string; enabled: boolean; platform: 'darwin' } | null;
   let available: boolean;
   let pinned: string[];
+  let local: boolean;
 
   beforeEach(() => {
     settings = baseSettings();
@@ -460,6 +467,7 @@ describe('ExecService device targeting', () => {
     ran = [];
     available = true;
     pinned = [];
+    local = false;
     hostEntry = { deviceId: 'mac-1', announcedAt: new Date().toISOString(), enabled: true, platform: 'darwin' };
     const runtime = {
       listModels: async () => [model('anthropic/claude-opus-4', 'anthropic', true)],
@@ -483,6 +491,7 @@ describe('ExecService device targeting', () => {
         queueMicrotask(() => service.resolveApproval(request.id, decision));
       },
       emitApprovalResolved: () => undefined,
+      deviceIsLocal: async (id) => local && id === 'mac-1',
       resolveDevice: async (nameOrId) =>
         nameOrId === "Vlado's MacBook" || nameOrId === 'mac-1'
           ? { ok: true, deviceId: 'mac-1', label: "Vlado's MacBook" }
@@ -554,7 +563,31 @@ describe('ExecService device targeting', () => {
     expect(ran).toHaveLength(0);
   });
 
-  it('refuses a sleeping computer immediately, naming it', async () => {
+  it('runs a command addressed to the desktop that hosts this server here, not over the wire', async () => {
+    // The local desktop's per-computer switch is off (and hidden against a
+    // local server); the command still belongs to this server's own switch.
+    hostEntry = { ...hostEntry!, enabled: false };
+    local = true;
+    const result = await request({ command: 'true' });
+    expect(ran).toHaveLength(0);
+    if (!result.ok) expect(result.error).not.toContain('does not accept commands');
+  });
+
+  it('still hands GUI scripting on that machine to its pinned persona', async () => {
+    local = true;
+    pinned = ['Desk'];
+    const result = await request({ command: 'xdotool key ctrl+c' });
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toContain('“Desk”');
+  });
+
+  it('a device saying nothing about sharing this machine is never treated as local', async () => {
+    hostEntry = { ...hostEntry!, enabled: false };
+    const result = await request();
+    expect((result as { error: string }).error).toContain('does not accept commands');
+  });
+
+    it('refuses a sleeping computer immediately, naming it', async () => {
     available = false;
     const result = await request();
     expect(result.ok).toBe(false);
@@ -726,6 +759,8 @@ describe('ExecService approval queue', () => {
     armed = [];
     resolved = [];
     service = new ExecService({
+      // The real one reads the device registry from disk.
+      deviceIsLocal: async () => false,
       // These suites are about the card: escalate on the first refusal.
       blockStreak: 1,
       runtime: () => ({ listModels: async () => [], complete: async () => 'unsure' }) as unknown as ChatBackend,
@@ -861,6 +896,8 @@ describe('ExecService blocking and escalation', () => {
       complete: async (prompt: string) => (prompt.includes('Think it through first') ? `reasoning\n${verdict}` : verdict)
     } as unknown as ChatBackend;
     service = new ExecService({
+      // The real one reads the device registry from disk.
+      deviceIsLocal: async () => false,
       runtime: () => runtime,
       readSettings: async () => settings,
       updateExecSettings: async () => settings,

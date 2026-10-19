@@ -133,6 +133,11 @@ mac:
 linux:
   target: [AppImage, deb]
   executableName: stem
+  # Computer control on GNOME: the gjs helper and the Shell extension it talks
+  # to (installed from here into ~/.local/share/gnome-shell/extensions).
+  extraResources:
+    - from: native/linux
+      to: linux
   # 1024px source; electron-builder derives the icon size set.
   icon: build/icon.png
   category: Utility

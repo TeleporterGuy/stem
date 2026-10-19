@@ -1,5 +1,6 @@
 import { BrowserWindow, screen } from 'electron';
-import { overlayOuterBounds, overlayWindowOptions, timeLocaleArguments, workspaceVisibilityOptions } from '../platform';
+import { placeOwnWindow } from '../computer-host/helper';
+import { isWaylandSession, overlayOuterBounds, overlayWindowOptions, timeLocaleArguments, workspaceVisibilityOptions } from '../platform';
 import { loadRenderer, PRELOAD_SCRIPT } from '../renderer-assets';
 
 // The two windows Quick Chat owns, and where on screen they go. Construction
@@ -19,6 +20,8 @@ const QUICK_CHAT_PANEL_HEIGHT = 518;
 // Bottom-left status HUD pill.
 const HUD_WIDTH = 320;
 const HUD_HEIGHT = 46;
+/** The pill's window title: how Stem's GNOME extension finds it to place it on Wayland. */
+const HUD_TITLE = 'Stem status';
 
 /**
  * The Quick Chat overlay (Spotlight-style): a frameless, always-on-top,
@@ -126,6 +129,9 @@ export function createHudWindow(deps: { installNavigationGuards(win: BrowserWind
   });
 
   deps.installNavigationGuards(win);
+  // A fixed title, not the page's: on Wayland the pill is found by it.
+  win.setTitle(HUD_TITLE);
+  win.on('page-title-updated', (e) => e.preventDefault());
 
   // The status pill must float above everything and follow the user across every
   // Space and into full-screen apps — unlike the overlay, this is unconditional
@@ -227,10 +233,9 @@ export function compactOverlay(win: BrowserWindow, chip = false): void {
 /** Park the pill in the bottom-left of the display under the cursor. */
 export function placeHud(win: BrowserWindow): void {
   const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  win.setBounds({
-    x: Math.round(workArea.x + 16),
-    y: Math.round(workArea.y + workArea.height - HUD_HEIGHT - 16),
-    width: HUD_WIDTH,
-    height: HUD_HEIGHT
-  });
+  const x = Math.round(workArea.x + 16);
+  const y = Math.round(workArea.y + workArea.height - HUD_HEIGHT - 16);
+  win.setBounds({ x, y, width: HUD_WIDTH, height: HUD_HEIGHT });
+  // Wayland ignores setBounds' position (GNOME centres new windows).
+  if (isWaylandSession()) placeOwnWindow(HUD_TITLE, x, y);
 }

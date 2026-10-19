@@ -8,6 +8,8 @@ import type {
   DeviceInfo,
   ExecHostShellInfo,
   ExecSettings,
+  LinuxComputerSetup,
+  LinuxComputerSetupState,
   ScratchUsageRow,
   WindowsShell
 } from '../../../../shared/types';
@@ -29,6 +31,66 @@ const SETUP_BROWSERS = IS_MAC
   : window.stem?.platform === 'win32'
     ? 'Chrome, Edge, Brave and Chromium'
     : 'Chrome, Brave, Chromium and Edge';
+
+/**
+ * Linux: the GNOME Shell extension computer control runs through, and the one
+ * thing to do next. GNOME loads a newly installed extension only at login.
+ */
+const GNOME_SETUP: Record<LinuxComputerSetupState, { ok?: true; text: string; action?: string }> = {
+  ready: { ok: true, text: 'Running' },
+  'not-installed': { text: 'Stem needs its GNOME Shell extension to see the screen and use the mouse and keyboard.', action: 'Install' },
+  relogin: { text: 'Installed. GNOME loads a new extension when you log in: log out and back in to finish.', action: 'Re-check' },
+  disabled: { text: 'Turned off in GNOME’s Extensions app.', action: 'Turn on' },
+  'extensions-off': { text: 'GNOME has all user extensions turned off. Turn them on in the Extensions app, then re-check.', action: 'Re-check' },
+  error: { text: 'GNOME could not load it.', action: 'Reinstall' },
+  'not-gnome': { text: 'Computer control on Linux needs GNOME Shell; this desktop isn’t supported yet.' },
+  'not-wayland': { text: 'Computer control on Linux needs a GNOME Wayland session.' },
+  'no-gjs': { text: 'Computer control on Linux needs GNOME Shell (its gjs runtime wasn’t found).' }
+};
+
+function GnomeExtensionRow({ setup, onChange }: { setup: LinuxComputerSetup; onChange(s: ComputerHostLocalState): void }) {
+  const [busy, setBusy] = useState(false);
+  const shown = GNOME_SETUP[setup.state];
+  return (
+    <ValueRow
+      label={
+        <>
+          GNOME extension{' '}
+          <InfoTip label="About the GNOME extension">
+            On Wayland an app can’t see other windows or move the pointer, so Stem asks GNOME Shell through a small
+            extension of its own. It does nothing unless computer control is running. It lives in your extensions
+            folder and shows up in GNOME’s Extensions app, where you can turn it off.
+          </InfoTip>
+        </>
+      }
+      hint={
+        <span className={`perm${shown.ok ? ' ok' : ' missing'}`}>
+          {shown.ok ? <Check size={12} strokeWidth={3} aria-label="ready" /> : <X size={12} strokeWidth={3} aria-label="not ready" />}
+          <span>
+            {shown.text}
+            {setup.state === 'error' && setup.error ? ` ${setup.error}` : ''}
+          </span>
+        </span>
+      }
+    >
+      {shown.action && (
+        <button
+          className="btn sm"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void window.stem
+              .requestComputerAccess()
+              .then(onChange)
+              .finally(() => setBusy(false));
+          }}
+        >
+          {shown.action}
+        </button>
+      )}
+    </ValueRow>
+  );
+}
 
 /** How long a chat's scratch folder survives being ignored. null = never sweep. */
 const SCRATCH_TTLS: { label: string; days: number | null }[] = [
@@ -877,6 +939,7 @@ export function AutonomySections() {
                 </button>
               </ValueRow>
             )}
+            {computerHost.enabled && computerHost.linux && <GnomeExtensionRow setup={computerHost.linux} onChange={setComputerHost} />}
           </>
         )}
       </div>

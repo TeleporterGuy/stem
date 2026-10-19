@@ -255,10 +255,21 @@ namespace StemComputer
             if (KeyboardWindow != IntPtr.Zero)
             {
                 var focus = FocusOf(KeyboardWindow);
-                foreach (char unit in text)
+                for (int i = 0; i < text.Length; i++)
                 {
-                    char c = unit == '\n' ? '\r' : unit;
-                    Native.PostMessage(focus, Native.WM_CHAR, (IntPtr)c, (IntPtr)1);
+                    char unit = text[i];
+                    if (unit == '\r' && i + 1 < text.Length && text[i + 1] == '\n') continue;
+                    if (unit == '\n' || unit == '\r' || unit == '\t')
+                    {
+                        // A key press, not WM_CHAR: rich edit controls (Windows 11
+                        // Notepad) drop a posted '\r' character but take the key,
+                        // and the app's own TranslateMessage still makes the
+                        // character for a plain edit control.
+                        ushort vk = unit == '\t' ? KeyMap.VK_TAB : KeyMap.VK_RETURN;
+                        Native.PostMessage(focus, Native.WM_KEYDOWN, (IntPtr)vk, KeyLParam(vk, false, false));
+                        Native.PostMessage(focus, Native.WM_KEYUP, (IntPtr)vk, KeyLParam(vk, true, false));
+                    }
+                    else Native.PostMessage(focus, Native.WM_CHAR, (IntPtr)unit, (IntPtr)1);
                     Pause(4);
                 }
                 return;
@@ -285,7 +296,7 @@ namespace StemComputer
             {
                 if (parsed.Modifiers.Count > 0)
                 {
-                    throw new HelperError("In window mode on Windows a background window only gets plain keys: shortcuts with ctrl, alt or win need the real keyboard. Use the menu through snapshot/press, or clear the window and send the shortcut in screen mode.");
+                    throw new HelperError("In window mode on Windows a background window only gets plain keys: anything with ctrl, alt, shift or win (shift+arrow selection too) needs the real keyboard. Use the menu through snapshot/press, or clear the window and send the shortcut in screen mode.");
                 }
                 var focus = FocusOf(KeyboardWindow);
                 Native.PostMessage(focus, Native.WM_KEYDOWN, (IntPtr)parsed.Vk, KeyLParam(parsed.Vk, false, parsed.Extended));

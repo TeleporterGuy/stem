@@ -39,6 +39,6 @@ export async function writeComputerHostEnabled(enabled: boolean): Promise<void> 
   await chmod(path, 0o600).catch(() => undefined);
   log(
     'computer-host',
-    enabled ? 'this Mac now lets Stem drive its screen' : 'this Mac stopped letting Stem drive its screen'
+    enabled ? 'this computer now lets Stem drive its screen' : 'this computer stopped letting Stem drive its screen'
   );
 }

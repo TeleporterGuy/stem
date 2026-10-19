@@ -165,8 +165,12 @@ export function OnboardingGate({
 
   useEffect(() => window.stem.onAuthEvent((event) => dispatch({ type: 'authEvent', event })), []);
 
+  // finish() has started: the fallback below must not run it a second time.
+  const finishStartedRef = useRef(false);
+
   const finish = useCallback(
     async (status: RuntimeStatus | undefined) => {
+      finishStartedRef.current = true;
       dispatch({ type: 'finishing' });
       if (variant === 'firstRun') await window.stem.completeOnboarding().catch(() => undefined);
       const next = status ?? (await window.stem.runtimeStatus());
@@ -208,16 +212,48 @@ export function OnboardingGate({
     onAuthenticated(pendingStatusRef.current ?? (await window.stem.runtimeStatus()));
   }, [onAuthenticated]);
 
+  // Whether the providerLogin call is still waiting for its answer. The server
+  // also pushes `done` when the sign-in completes; if the call itself was lost
+  // on the way (the connection dropped while the person was in the browser),
+  // that push is all that is left, and the effect below finishes from it.
+  const loginPendingRef = useRef(false);
+
   const startOAuth = useCallback(
     async (provider: AuthProviderId) => {
       dispatch({ type: 'pickProvider', provider });
-      const res = await window.stem.providerLogin(provider);
+      loginPendingRef.current = true;
+      let res: Awaited<ReturnType<typeof window.stem.providerLogin>>;
+      try {
+        res = await window.stem.providerLogin(provider);
+      } catch (e) {
+        loginPendingRef.current = false;
+        if (!mountedRef.current) return;
+        const message = e instanceof Error ? e.message : String(e);
+        // Lost, not refused: the sign-in may still finish on the server, and
+        // its `done` push takes over from here.
+        if (/unreachable/i.test(message)) return;
+        dispatch({ type: 'fail', error: message });
+        return;
+      }
+      loginPendingRef.current = false;
       if (!mountedRef.current) return;
       if (res.ok) await finish(res.status);
       else dispatch({ type: 'fail', error: res.error ?? 'Sign-in failed.' });
     },
     [finish]
   );
+
+  // `done` arrived (the reducer moved to finishing) but no call will answer it.
+  // The server is still restarting the assistant with the new sign-in at that
+  // point; a short wait lets the status read below come from the new one.
+  const step = state.step;
+  useEffect(() => {
+    if (step !== 'finishing' || loginPendingRef.current || finishStartedRef.current) return;
+    const t = setTimeout(() => {
+      if (mountedRef.current && !loginPendingRef.current && !finishStartedRef.current) void finish(undefined);
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [step, finish]);
 
   const cancelOAuth = useCallback(() => {
     void window.stem.providerLoginCancel();

@@ -95,6 +95,8 @@ export interface QuickChatSurface {
   registerIpc(): void;
   /** Summon or dismiss the overlay — the shortcut, the tray, the CLI, the HUD. */
   toggle(): void;
+  /** "Ask about this window" — its shortcut, or `stem --ask-window` (the Wayland path). */
+  askAboutWindow(): void;
   /** Is the overlay on screen? (app.on('activate') asks before reopening the app.) */
   overlayVisible(): boolean;
   /** Apply the parts of a Quick Chat settings change no other layer can. */
@@ -524,7 +526,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
     return !accelerator || !!currentShortcut;
   }
 
-  /** (Re)register "Ask about this window". Mac and Windows: elsewhere it stays unbound. */
+  /** (Re)register "Ask about this window" where the helper can see other windows (Wayland binds `--ask-window` instead). */
   function applyWindowShortcut(accelerator: string | null): void {
     desiredWindowShortcut = accelerator;
     if (currentWindowShortcut) {
@@ -549,7 +551,8 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
       windowAccelerator: desiredWindowShortcut,
       windowRegistered: !!desiredWindowShortcut && currentWindowShortcut === desiredWindowShortcut,
       wayland: isWaylandSession(),
-      summonCommand: quickChatSummonCommand()
+      summonCommand: quickChatSummonCommand(),
+      windowSummonCommand: quickChatSummonCommand('--ask-window')
     };
   }
 
@@ -889,6 +892,8 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
     },
 
     toggle: toggleQuickChat,
+
+    askAboutWindow: () => void askAboutWindow(),
 
     overlayVisible: () => overlayWindow?.isVisible() ?? false,
 

@@ -5,9 +5,11 @@ import type {
   ComputerHostLocalState,
   ComputerTarget,
   DeviceComputerRequest,
-  DeviceComputerResult
+  DeviceComputerResult,
+  LinuxComputerSetup
 } from '../../shared/types';
-import { HelperProcess, oneShot, resolveHelperPath, type HelperEvent, type HelperReply } from './helper';
+import { installGnomeExtension, linuxSetupFrom, refreshGnomeExtensionFiles } from './gnome-extension';
+import { GjsMissingError, HelperProcess, oneShot, resolveHelperPath, type HelperEvent, type HelperReply } from './helper';
 import { readComputerHostEnabled, writeComputerHostEnabled } from './store';
 
 // The client half of the `computer` tool: THIS Mac, performing the screen
@@ -61,7 +63,20 @@ export interface ComputerHostDeps {
     spawn(): Promise<HelperLike>;
     oneShot(cmd: string): Promise<HelperReply>;
   };
+  /** Linux: the GNOME extension's install and on-disk state; defaults to the real ones. */
+  gnome?: {
+    install(): Promise<void>;
+    setup(helper: HelperReply['linux']): Promise<LinuxComputerSetup>;
+    /** Copy in newer files under a running, compatible extension (they load at the next login). */
+    refresh?(): Promise<boolean>;
+  };
 }
+
+const realGnome: NonNullable<ComputerHostDeps['gnome']> = {
+  install: () => installGnomeExtension(),
+  setup: (helper) => linuxSetupFrom(helper),
+  refresh: () => refreshGnomeExtensionFiles()
+};
 
 const realHelpers: NonNullable<ComputerHostDeps['helpers']> = {
   spawn: async () => new HelperProcess(await resolveHelperPath()),
@@ -77,7 +92,10 @@ export interface ComputerHost {
   onEnd(end: { threadId: string }): void;
   localState(): Promise<ComputerHostLocalState>;
   setEnabled(enabled: boolean): Promise<ComputerHostLocalState>;
-  /** Ask macOS for the missing grants (prompts appear); answers with the state afterwards. */
+  /**
+   * Ask macOS for the missing grants (prompts appear), or on Linux install and
+   * enable the GNOME extension; answers with the state afterwards.
+   */
   requestAccess(): Promise<ComputerHostLocalState>;
   /** Quit: end any run, kill the helper. */
   close(): void;
@@ -115,30 +133,58 @@ const PLATFORM_NOTES: Partial<Record<NodeJS.Platform, string>> = {
     'This computer runs Windows. Shortcuts use ctrl where a Mac uses cmd (cmd is sent as ctrl; win is the Windows key). ' +
     'Windows have no Spaces: list_windows says "other desktop" for a window on another virtual desktop, and a minimized ' +
     'window cannot be pictured until it is restored. In window mode a background window takes plain keys and typing, ' +
-    'but not ctrl/alt shortcuts: use its menus through snapshot and press, or the whole screen.'
+    'but no ctrl, alt or shift combinations (shift+arrow selection too): use its menus through snapshot and press, or the whole screen.',
+  linux:
+    'This computer runs Linux (GNOME on Wayland). Shortcuts use ctrl where a Mac uses cmd (cmd is sent as ctrl; super is ' +
+    'the Super key). Workspaces stand in for Spaces: list_windows says "other workspace", and a minimized window cannot be ' +
+    'pictured until it is restored. In window mode a background window takes no keys at all (Wayland sends keys only to ' +
+    'the window in front): type text with `type` (it goes into the field you last clicked or focused), and use snapshot ' +
+    'and press for buttons; key presses other than Return need the whole screen. GTK 4 apps may report control positions ' +
+    'a little off, so in window mode prefer snapshot ids to coordinates.'
 };
 
 export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
   // macOS 14 or newer: per-window capture (ScreenCaptureKit's screenshot API) is
   // what window mode is built on, and the helper is compiled against it.
   // Windows: PrintWindow and UI Automation, in every Windows 10 and 11.
+  // Linux: GNOME on Wayland through Stem's Shell extension; whether this
+  // desktop is one is the extension setup's to say (`linux` below).
   const platform = deps.platform ?? process.platform;
-  const supported = (platform === 'darwin' && macOSMajor() >= 14) || platform === 'win32';
+  const supported = (platform === 'darwin' && macOSMajor() >= 14) || platform === 'win32' || platform === 'linux';
   const here = platform === 'darwin' ? 'Mac' : 'computer';
   const platformNote = PLATFORM_NOTES[platform];
   const helpers = deps.helpers ?? realHelpers;
+  const gnome = deps.gnome ?? realGnome;
   let run: Run | null = null;
   let lastAccess: ComputerAccess | null = null;
+  let linux: LinuxComputerSetup | undefined;
   deps.banner.onStop?.(() => {
     if (run) stoppedFromBanner(run);
   });
 
-  async function checkAccess(): Promise<ComputerAccess | null> {
+  async function checkAccess(cmd: 'status' | 'request-access' = 'status'): Promise<ComputerAccess | null> {
     if (!supported) return null;
     try {
-      const reply = await helpers.oneShot('status');
+      const reply = await helpers.oneShot(cmd);
       if (reply.ok && reply.status) lastAccess = reply.status;
+      if (platform === 'linux') {
+        // An outdated extension that has the loader is updated in place: new
+        // files, a reload, and it is current — no button, no login.
+        if (!run && reply.ok && reply.linux?.state === 'outdated' && (reply.linux.loader ?? 0) >= 1 && cmd === 'status') {
+          await gnome.install().catch(() => undefined);
+          return checkAccess('request-access');
+        }
+        linux = await gnome.setup(reply.ok ? reply.linux : undefined);
+        // Never swap the extension's code under a running run.
+        if (!run && linux.state === 'ready' && (await gnome.refresh?.().catch(() => false))) {
+          log('computer-host', 'copied a newer GNOME extension in; it loads at the next login');
+        }
+      }
     } catch (e) {
+      if (platform === 'linux' && e instanceof GjsMissingError) {
+        linux = { state: 'no-gjs' };
+        lastAccess = { screen: false, accessibility: false, inputMonitoring: false };
+      }
       log('computer-host', 'could not read the helper status', {
         error: e instanceof Error ? e.message : String(e)
       });
@@ -151,7 +197,9 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
     const enabled = await readComputerHostEnabled();
     const access = enabled ? await checkAccess() : lastAccess;
     await deps
-      .invoke('computerHost:announce', [{ enabled, platform: platform === 'win32' ? 'win32' : 'darwin', ...(access ? { access } : {}) }])
+      .invoke('computerHost:announce', [
+        { enabled, platform: platform === 'win32' || platform === 'linux' ? platform : 'darwin', ...(access ? { access } : {}) }
+      ])
       .catch((e) => {
         // An older server has no such channel; this Mac simply cannot be a target there.
         log('computer-host', 'could not announce', {
@@ -161,7 +209,7 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
   }
 
   function state(): ComputerHostLocalState {
-    return { supported, enabled: false, access: lastAccess };
+    return { supported, enabled: false, access: lastAccess, ...(linux ? { linux } : {}) };
   }
 
   function touch(r: Run): void {
@@ -339,7 +387,7 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
     if (!supported)
       return {
         ok: false,
-        error: 'Computer control is only available on macOS and Windows.'
+        error: 'Computer control is only available on macOS 14 or newer, Windows, and Linux with GNOME on Wayland.'
       };
     // The gate, read fresh from this disk on every request.
     if (!(await readComputerHostEnabled())) {
@@ -423,11 +471,11 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
       if (run && run.threadId === threadId) endRun(run, 'turn-ended');
     },
 
-    localState: async () => ({
-      ...state(),
-      enabled: await readComputerHostEnabled(),
-      access: await checkAccess()
-    }),
+    localState: async () => {
+      const enabled = await readComputerHostEnabled();
+      const access = await checkAccess();
+      return { ...state(), enabled, access };
+    },
 
     async setEnabled(enabled) {
       if (!supported) return state();
@@ -439,14 +487,18 @@ export function createComputerHost(deps: ComputerHostDeps): ComputerHost {
 
     async requestAccess() {
       if (!supported) return state();
-      try {
-        const reply = await helpers.oneShot('request-access');
-        if (reply.ok && reply.status) lastAccess = reply.status;
-      } catch (e) {
-        log('computer-host', 'could not request access', {
-          error: e instanceof Error ? e.message : String(e)
-        });
+      // Linux has no permission prompts: what it needs is the GNOME extension,
+      // installed and enabled from here.
+      if (platform === 'linux' && !run) {
+        try {
+          await gnome.install();
+        } catch (e) {
+          log('computer-host', 'could not install the GNOME extension', {
+            error: e instanceof Error ? e.message : String(e)
+          });
+        }
       }
+      await checkAccess('request-access');
       await announce();
       return { ...state(), enabled: await readComputerHostEnabled() };
     },

@@ -9,6 +9,10 @@
 //   node scripts/linux-pc.mjs desktop                   Stem on that headless desktop, a fresh profile;
 //                                                       its DevTools port is forwarded to localhost:9333
 //   node scripts/linux-pc.mjs screen                    Stem on the PC's own screen, DevTools on localhost:9334
+//   node scripts/linux-pc.mjs gnome-e2e [playwright args] E2E specs inside a private headless GNOME Shell with
+//                                                       Stem's extension loaded (computer control, e.g.
+//                                                       STEM_E2E_COMPUTER_APP=zenity tests/e2e/computer-live.spec.ts)
+//   node scripts/linux-pc.mjs gnome-sh '<command>'       one command in that GNOME session
 //   node scripts/linux-pc.mjs shell                     a shell in the copy
 //   node scripts/linux-pc.mjs sh '<command>'            one command in the copy
 //   node scripts/linux-pc.mjs sync                      only copy and install
@@ -84,11 +88,14 @@ exec dbus-run-session -- bash -c ${quote('exec 2>&3; headless; npx electron . --
 export WAYLAND_DISPLAY=wayland-0 XDG_SESSION_TYPE=wayland DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 echo "linux-pc: Stem on the PC's screen; DevTools at localhost:9334"
 exec npx electron . --fresh --remote-debugging-port=9334`,
+  // A private GNOME Shell (scripts/gnome-headless.sh), never the person's session.
+  'gnome-e2e': `exec ./scripts/gnome-headless.sh bash -c ${quote(`exec 2>&3; ${process.env.STEM_E2E_COMPUTER_APP ? `export STEM_E2E_COMPUTER_APP=${quote(process.env.STEM_E2E_COMPUTER_APP)};` : ''} npx playwright test ${args}`)} 2>/tmp/stem-pc-gnome.log`,
+  'gnome-sh': `exec ./scripts/gnome-headless.sh bash -c ${quote(rest.join(' '))}`,
   shell: 'exec bash -l',
   sh: rest.join(' ')
 }[mode];
 if (!body) {
-  console.error('usage: linux-pc.mjs test|e2e|desktop|screen|shell|sync|sh [args]');
+  console.error('usage: linux-pc.mjs test|e2e|desktop|screen|gnome-e2e|gnome-sh|shell|sync|sh [args]');
   process.exit(2);
 }
 

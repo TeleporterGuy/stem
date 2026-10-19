@@ -12,6 +12,7 @@ import {
   resolveLoginPath,
   runCommand,
   shellInvocation,
+  timedOutLine,
   unixShell,
 } from "../../src/server/exec/executor";
 
@@ -232,5 +233,14 @@ describe.skipIf(!isWin)("runCommand Windows quoting", () => {
     });
     expect(outcome.exitCode).toBe(0);
     expect(outcome.stdout).toContain("hi");
+  });
+});
+
+describe("timedOutLine", () => {
+  it("says how to start an app that outlives the command, per platform", () => {
+    expect(timedOutLine(1000, "darwin")).toContain("`open -a App`");
+    expect(timedOutLine(1000, "win32")).toContain("`start app`");
+    expect(timedOutLine(1000, "linux")).toContain("`gtk-launch <desktop id>`");
+    expect(timedOutLine(1000, "linux")).toMatch(/^Timed out after 1000 ms \(process group killed\)\./);
   });
 });

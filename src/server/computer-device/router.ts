@@ -107,7 +107,7 @@ function asAnnouncement(report: unknown): DeviceComputerAnnouncement | null {
   const value = report as Partial<DeviceComputerAnnouncement> | null;
   if (!value || typeof value !== 'object') return null;
   if (typeof value.enabled !== 'boolean') return null;
-  if (value.platform !== 'darwin' && value.platform !== 'win32') return null;
+  if (value.platform !== 'darwin' && value.platform !== 'linux' && value.platform !== 'win32') return null;
   const access = asAccess(value.access);
   return {
     enabled: value.enabled,

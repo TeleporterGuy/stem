@@ -226,7 +226,8 @@ also left behind when you move Stem to another machine.
 ## Coding agents and computer control
 
 A coding agent (Claude Code, Codex, OpenCode, …) takes programming work off Stem's
-hands; computer control lets Stem see a Mac's screen and click and type there. Both
+hands; computer control lets Stem see a computer's screen (Mac, Windows, or Linux with
+GNOME) and click and type there. Both
 come from two places, and a conversation gets them from exactly one:
 
 - **A persona** gets them from its own setup, on the **Runs as** tab of its editor in
@@ -257,7 +258,8 @@ another computer stops to ask you which folder. A computer that is asleep or has
 Stem closed fails right away with a message saying so; nothing is queued.
 
 Each computer still has to agree for itself: **Run coding agents on this computer**
-and **Let Stem control this Mac**, in the same section *on that machine*. Command
+and **Let Stem control this Mac** (or **this computer** on Windows and Linux), in the
+same section *on that machine*. Command
 approvals apply to what a coding agent runs, the same as for personas. A persona that
 drives Claude Code can instead switch on **Approves its own actions**: Claude Code's own
 check then decides each step, so routine work never waits on a card, and Stem shows no
@@ -265,6 +267,15 @@ cards and keeps no approval log for that persona.
 
 If Stem says it cannot use a coding agent or control the computer, it names the
 reason: the chat runs as a persona without that setup, or chats are switched off here.
+
+On Linux, computer control needs GNOME on Wayland. Once you switch it on, a
+**GNOME extension** row appears: **Install** puts Stem's GNOME Shell extension in your
+extensions folder. GNOME loads a new extension only at login, so log out and back in
+once; the row then says **Running**. You can turn the extension off in GNOME's
+Extensions app. Two Wayland limits apply when Stem works inside one window instead of
+the whole screen: that window gets no key presses, only text typed into a field and
+buttons pressed by name, and some GTK 4 lists can be selected but not opened. Working on
+the whole screen has no such limits.
 
 **Browser control** follows the same rules with its own pin and its own switch: a
 persona's **Browser** (Runs as → Computer), or Settings → Features → Browser control →

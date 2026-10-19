@@ -37,7 +37,7 @@ again or click the pill.
 - **Note**—or starting with `/note ` or `//`—is the optional direct-save path for
   Memory. No chat turn. Memory must be on; credential-like text is not saved.
 
-## Ask about this window (Mac)
+## Ask about this window
 
 Maya is in Slack and Jana has asked her to decide something. She presses her
 **Ask about this window** shortcut. Quick Chat opens beside the Slack window,
@@ -59,12 +59,15 @@ not on top of it, with a chip showing which window it captured. She asks
   move it.
 - Pressing it again in the same window continues that conversation. In another
   window it starts a new one.
-- It needs **Screen Recording** for the picture and **Accessibility** for the
-  text. If one is off, the chip says which and opens the right System Settings
-  pane.
+- On a Mac it needs **Screen Recording** for the picture and **Accessibility**
+  for the text. If one is off, the chip says which and opens the right System
+  Settings pane. On Linux it needs the GNOME extension from **Settings →
+  Features → Computer control**.
 
 Set the shortcut under **Settings → Quick Chat → Ask about this window**. It is
-off until you record one.
+off until you record one. On GNOME (Wayland) apps can't set global shortcuts:
+copy the command shown there and add it as a custom shortcut in GNOME's
+Keyboard settings.
 
 Quick Chat has its own thread. Set its defaults in
 [**Settings → Quick Chat**](settings.md).

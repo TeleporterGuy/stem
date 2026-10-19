@@ -68,6 +68,17 @@ export default [
     rules: { 'no-undef': 'off' }
   },
   {
+    // The Linux computer-control helper and GNOME Shell extension run under
+    // gjs, whose globals (global, print, printerr, TextEncoder…) eslint does
+    // not know.
+    files: ['native/linux/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: { global: 'readonly', print: 'readonly', printerr: 'readonly', TextEncoder: 'readonly', TextDecoder: 'readonly', console: 'readonly' }
+    }
+  },
+  {
     // Tests: Playwright's `use()` fixture API trips react-hooks/rules-of-hooks
     // (it's not a React Hook), and probing the renderer through `window.stem`
     // legitimately needs `any` casts.

@@ -14,12 +14,13 @@ import { recordDecision, type DecisionOutcome } from './decisions';
 import { degrade } from '../degrade';
 import { log } from '../log';
 import { ensureThreadScratch } from './scratch';
-import { clampTimeout, execEnv, resolveLoginPath, runCommand } from './executor';
+import { clampTimeout, execEnv, resolveLoginPath, runCommand, timedOutLine } from './executor';
 import { gitBashPathEnv, resolveHostShellTarget, type HostShellTarget } from './git-bash';
 import { SafetyJudge } from './judge';
 import { classify, deviceShellLabel, drivesGui, type Classification } from './policy';
 import { execReadRoots, scanCommandAgainstRoots, scanProtected } from './protected';
 import { execDeviceRouter, resolveExecTarget } from '../exec-device/router';
+import { deviceIsLocal } from '../transport/auth';
 import { clientFoldersForDevice } from '../workspace/connected-folders';
 import { listPersonas } from '../workspace/personas';
 
@@ -93,6 +94,8 @@ export interface ExecServiceDeps {
   /** Injection seams for tests; default to the wired exec-device router. */
   deviceRouter?: () => import('../exec-device/router').ExecDeviceRouter;
   resolveDevice?: typeof resolveExecTarget;
+  /** Whether a device shares this server's machine (DeviceRecord.local); tests override. */
+  deviceIsLocal?: (deviceId: string) => Promise<boolean>;
   /** Test seam for the per-device read-only client-folder roots. */
   clientFolders?: typeof clientFoldersForDevice;
   /** Test seam: the names of the personas pinned (computer pin) to a device. */
@@ -164,7 +167,11 @@ export class ExecService implements ExecBridge {
     // A command aimed at a paired computer takes its own path: same tiers, but
     // classified against that machine's platform and its own allowlist, and
     // executed over the wire instead of here.
-    if (req.device?.trim()) return this.handleDeviceExec(command, req.device.trim(), req, all);
+    if (req.device?.trim()) {
+      const here = await this.serverMachineGate(command, req.device.trim(), req, host.shell);
+      if (here === null) return this.handleDeviceExec(command, req.device.trim(), req, all);
+      if (here !== 'here') return here;
+    }
 
     // Resolve + validate the working directory. The default is this CHAT's own
     // scratch folder (see exec/scratch.ts); an explicit relative cwd is resolved
@@ -408,6 +415,91 @@ export class ExecService implements ExecBridge {
     return (this.deps.deviceRouter ?? execDeviceRouter)();
   }
 
+  /**
+   * A command addressed to the computer this server runs on — the desktop app
+   * hosting it, which the model names by its device label — runs here, under
+   * this server's own Commands switch and approvals (the per-computer switch
+   * is not even shown against a local server). Which device that is, is the
+   * server's own record (DeviceRecord.local, set in-process when the desktop
+   * proved it shares this disk), never the device's word. The device-path
+   * checks that are about that machine still apply first: the GUI hand-off to
+   * its pinned persona and its read-only connected folders. Returns null for
+   * any other device, 'here' to run locally, or the refusal.
+   */
+  private async serverMachineGate(
+    command: string,
+    device: string,
+    req: ExecRequest,
+    shell: HostShell
+  ): Promise<ExecBridgeResult | 'here' | null> {
+    // quiet: an unresolvable device is not this machine; the device path that
+    // runs next resolves it again and reports why it failed.
+    const target = await (this.deps.resolveDevice ?? resolveExecTarget)(device).catch(() => null);
+    if (!target?.ok) return null;
+    // quiet: unsure whether it is this machine means not here; the command then
+    // goes to the device as named, which says so if it cannot run it.
+    if (!(await (this.deps.deviceIsLocal ?? deviceIsLocal)(target.deviceId).catch(() => false))) return null;
+    const label = `“${target.label}”`;
+    return (
+      (await this.guiHandOff(command, target.deviceId, label, req)) ??
+      (await this.readOnlyRefusal(command, req.cwd?.trim() || null, target.deviceId, label, shell)) ??
+      'here'
+    );
+  }
+
+  /**
+   * GUI work on a computer belongs to the persona pinned to it: it has the
+   * `computer` tool, the consent switch and the banner. Another persona
+   * scripting that GUI over run_command (osascript at System Events, cliclick,
+   * SendKeys) slips past all three, so when someone IS pinned the command is
+   * refused with a hand-off. Nobody pinned → the escape hatch stays open. A
+   * plain chat allowed to drive that computer (Settings → Features) counts as
+   * its owner, as the pinned persona itself does.
+   */
+  private async guiHandOff(command: string, deviceId: string, label: string, req: ExecRequest): Promise<ExecBridgeResult | null> {
+    if (req.computerAnyDevice || req.personaComputerDevice === deviceId || !drivesGui(command)) return null;
+    const owners = await this.computerPersonasFor(deviceId);
+    if (!owners.length) return null;
+    const names = owners.map((n) => `“${n}”`).join(' or ');
+    return {
+      ok: false,
+      error:
+        `Driving the screen of ${label} — clicking, typing, scripting its apps or System Settings — is the ` +
+        `job of the persona pinned to that computer, ${names}: it has the \`computer\` tool and the user's ` +
+        `consent for it. Hand the task to ${names} (send_mail it in a mail thread the user added it to, or tell the ` +
+        `user to ask ${names}) rather than scripting the GUI from here. run_command on ${label} stays for ` +
+        'shell work: files, git, scripts, `open -a`.'
+    };
+  }
+
+  /**
+   * Read-only client folders on that computer, scanned fail-closed like the
+   * local protected-roots guard — and like it, ahead of Yolo: Yolo skips the
+   * approval tiers, never the user's read-only decision.
+   */
+  private async readOnlyRefusal(
+    command: string,
+    cwd: string | null,
+    deviceId: string,
+    label: string,
+    shell: HostShell
+  ): Promise<ExecBridgeResult | null> {
+    const clientFolders = await (this.deps.clientFolders ?? clientFoldersForDevice)(deviceId);
+    const readOnly = clientFolders.filter((f) => f.mode === 'read' && f.origin);
+    if (!readOnly.length) return null;
+    const scan = scanCommandAgainstRoots(command, cwd, readOnly.map((f) => f.origin!.clientPath), shell);
+    if (!scan.blocked) return null;
+    const folder = readOnly.find((f) => f.origin!.clientPath === scan.root);
+    return {
+      ok: false,
+      error:
+        `The command touches "${scan.root}" on ${label} — the folder “${folder?.label ?? scan.root}” is ` +
+        'connected to Stem read-only, and commands cannot run against read-only folders (Stem cannot ' +
+        'tell reads from writes). Read it through the server-side mirror instead, or ask the user to ' +
+        'switch the folder to read & write in the Folders tab.'
+    };
+  }
+
   private async computerPersonasFor(deviceId: string): Promise<string[]> {
     if (this.deps.computerPersonas) return this.deps.computerPersonas(deviceId);
     try {
@@ -443,28 +535,8 @@ export class ExecService implements ExecBridge {
     const target = await (this.deps.resolveDevice ?? resolveExecTarget)(device);
     if (!target.ok) return { ok: false, error: target.error };
     const label = `“${target.label}”`;
-    // GUI work on a computer belongs to the persona pinned to it: it has the
-    // `computer` tool, the consent switch and the banner. Another persona
-    // scripting that GUI over run_command (osascript at System Events, cliclick,
-    // SendKeys) slips past all three, so when someone IS pinned the command is
-    // refused with a hand-off. Nobody pinned → the escape hatch stays open. A
-    // plain chat allowed to drive that Mac (Settings → Features) counts as its
-    // owner, as the pinned persona itself does.
-    if (!req.computerAnyDevice && req.personaComputerDevice !== target.deviceId && drivesGui(command)) {
-      const owners = await this.computerPersonasFor(target.deviceId);
-      if (owners.length) {
-        const names = owners.map((n) => `“${n}”`).join(' or ');
-        return {
-          ok: false,
-          error:
-            `Driving the screen of ${label} — clicking, typing, scripting its apps or System Settings — is the ` +
-            `job of the persona pinned to that computer, ${names}: it has the \`computer\` tool and the user's ` +
-            `consent for it. Hand the task to ${names} (send_mail it in a mail thread the user added it to, or tell the ` +
-            `user to ask ${names}) rather than scripting the GUI from here. run_command on ${label} stays for ` +
-            'shell work: files, git, scripts, `open -a`.'
-        };
-      }
-    }
+    const handOff = await this.guiHandOff(command, target.deviceId, label, req);
+    if (handOff) return handOff;
     const host = await this.router().hostFor(target.deviceId);
     if (!host?.enabled) {
       return {
@@ -489,32 +561,10 @@ export class ExecService implements ExecBridge {
     const cwdLabel = cwd ?? `this chat's scratch folder on ${label}`;
     const dispatch = (): Promise<ExecBridgeResult> => this.runOnDevice(command, cwd, req, target.deviceId);
 
-    // Read-only client folders on the target device, scanned fail-closed like
-    // the local protected-roots guard — and like it, ahead of Yolo: Yolo skips
-    // the approval tiers, never the user's read-only decision.
+    // Windows scans both native and MSYS path shapes; everything else POSIX.
+    const readOnly = await this.readOnlyRefusal(command, cwd ?? null, target.deviceId, label, host.platform === 'win32' ? 'git-bash' : 'zsh');
+    if (readOnly) return readOnly;
     const clientFolders = await (this.deps.clientFolders ?? clientFoldersForDevice)(target.deviceId);
-    const readOnly = clientFolders.filter((f) => f.mode === 'read' && f.origin);
-    if (readOnly.length) {
-      // Windows scans both native and MSYS path shapes; everything else POSIX.
-      const shell: HostShell = host.platform === 'win32' ? 'git-bash' : 'zsh';
-      const scan = scanCommandAgainstRoots(
-        command,
-        cwd ?? null,
-        readOnly.map((f) => f.origin!.clientPath),
-        shell
-      );
-      if (scan.blocked) {
-        const folder = readOnly.find((f) => f.origin!.clientPath === scan.root);
-        return {
-          ok: false,
-          error:
-            `The command touches "${scan.root}" on ${label} — the folder “${folder?.label ?? scan.root}” is ` +
-            'connected to Stem read-only, and commands cannot run against read-only folders (Stem cannot ' +
-            'tell reads from writes). Read it through the server-side mirror instead, or ask the user to ' +
-            'switch the folder to read & write in the Folders tab.'
-        };
-      }
-    }
 
     const base = { kind: 'exec' as const, threadId: req.threadId ?? null, command, cwd: cwdLabel, device: target.deviceId };
     if (settings.approvalMode === 'yolo') {
@@ -670,7 +720,7 @@ export class ExecService implements ExecBridge {
       }
       const parts = [
         outcome.timedOut
-          ? `Timed out after ${clampTimeout(req.timeoutMs)} ms (process group killed).`
+          ? timedOutLine(clampTimeout(req.timeoutMs))
           : `Exit code: ${outcome.exitCode ?? `signal ${outcome.signal ?? 'unknown'}`}`,
         `stdout:\n${outcome.stdout.trim() || '(no output)'}`,
         `stderr:\n${outcome.stderr.trim() || '(no output)'}`

@@ -5,12 +5,13 @@ import type { QuickChatWindow } from '../../shared/types';
 
 // "Ask about this window": the helper calls behind the second Quick Chat
 // shortcut (native/mac/stem-computer/WindowPeek.swift, and its Windows twin
-// native/windows/stem-computer/Peek.cs). One helper process of its own,
+// native/windows/stem-computer/Peek.cs, and on GNOME native/linux/stem-computer).
+// One helper process of its own,
 // started on first use and kept, so a press costs a capture and not a process
 // launch; it never selects a window or touches a computer-control run.
 
 /** Where a helper can see other apps' windows. */
-export const windowPeekSupported = process.platform === 'darwin' || process.platform === 'win32';
+export const windowPeekSupported = process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux';
 
 /** The window as the panel needs it, plus the frame the panel docks against. */
 export interface PeekedWindow {
