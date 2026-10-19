@@ -71,6 +71,7 @@ import type {
   ThemeSettings,
   ThemeState,
   UpdateStatus,
+  MenuCommand,
   UpdatesSettings,
   RecorderState,
   DictationUpdate,
@@ -604,6 +605,12 @@ const api: StemApi = {
   markReleaseNotesSeen: () => ipcRenderer.invoke('releaseNotes:markSeen'),
   updateReleaseNotesSettings: (patch: Partial<ReleaseNotesSettings>) =>
     ipcRenderer.invoke('settings:updateReleaseNotes', patch),
+  onMenuCommand: (listener: (command: MenuCommand) => void) => {
+    const handler = (_e: unknown, command: MenuCommand) => listener(command);
+    ipcRenderer.on('menu:command', handler);
+    return () => ipcRenderer.removeListener('menu:command', handler);
+  },
+  setMenuChats: (threadIds: string[], titles: string[]) => ipcRenderer.invoke('menu:setChats', threadIds, titles),
   getUpdateStatus: () => ipcRenderer.invoke('updates:get'),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   installUpdate: () => ipcRenderer.invoke('updates:install'),

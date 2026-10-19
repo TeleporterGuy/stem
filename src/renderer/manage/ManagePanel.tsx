@@ -7,11 +7,11 @@ import { SourcesTab } from './tabs/FoldersTab';
 import { PersonasTab } from './tabs/PersonasTab';
 import { TasksTab } from './tabs/TasksTab';
 import { SettingsTab } from './tabs/settings/SettingsTab';
-import { useRememberedTab } from '../hooks/useRememberedTab';
 import { useRetrievalHealth } from '../hooks/useRetrievalHealth';
 import type { ModelTabProps, ActiveFactsViewProps } from './tabs/shared';
+import type { ManageTabId } from '../../shared/types';
 
-type Tab = 'chats' | 'memory' | 'mcp' | 'personas' | 'folders' | 'tasks' | 'settings';
+type Tab = ManageTabId;
 
 // Naming notes: "Tools", not "MCP" — the tab holds skills as well as MCP servers.
 // "Sources", not "Folders" — the Chats tab already organizes threads into folders,
@@ -28,7 +28,9 @@ const TABS: { id: Tab; label: string; icon: typeof Brain }[] = [
   { id: 'settings', label: 'Settings', icon: Settings }
 ];
 
-const TAB_IDS = TABS.map((t) => t.id);
+export const MANAGE_TAB_IDS = TABS.map((t) => t.id);
+/** Where the open tab is remembered across launches. */
+export const MANAGE_TAB_KEY = 'stem.manage.tab';
 
 export type ManagePanelProps = ChatListProps &
   ModelTabProps &
@@ -41,6 +43,9 @@ export type ManagePanelProps = ChatListProps &
      * quietly rather than raising a window, so the rail has to say so.
      */
     inboxUnreadCount?: number;
+    /** The open tab — owned by App so the View menu can switch it. */
+    tab: ManageTabId;
+    onTabChange: (tab: ManageTabId) => void;
   };
 
 function ManagePanelImpl({
@@ -54,6 +59,8 @@ function ManagePanelImpl({
   onTogglePreview,
   authDeadProvider,
   inboxUnreadCount = 0,
+  tab,
+  onTabChange: setTab,
   ...chatProps
 }: ManagePanelProps) {
   const activeFacts: ActiveFactsViewProps = {
@@ -63,7 +70,6 @@ function ManagePanelImpl({
     previewDraft,
     onTogglePreview
   };
-  const [tab, setTab] = useRememberedTab<Tab>('stem.manage.tab', TAB_IDS, 'chats');
   // Bumped when the Memory tab asks for its recall models, which live under
   // Settings → Models: a counter, so asking twice still re-opens the group.
   const [recallFocus, setRecallFocus] = useState(0);

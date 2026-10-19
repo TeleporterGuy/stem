@@ -2,6 +2,7 @@
 
 import type { InboxState } from './inbox';
 import type { TimeLocale } from './time-locale';
+import type { ShortcutId } from './shortcut-defs';
 
 export type { InboxEntry, InboxState } from './inbox';
 
@@ -3670,6 +3671,19 @@ export interface QuickChatSettings {
  * even when it succeeds — the compositor never routes the key to Stem — and
  * `summonCommand` is what to bind as a system shortcut there instead.
  */
+/** A right-hand panel tab, as the View menu names the place to jump to. */
+export type ManageTabId = 'chats' | 'memory' | 'mcp' | 'personas' | 'folders' | 'tasks' | 'settings';
+
+/**
+ * Something picked from the application menu, delivered to the main window. A
+ * `shortcut` runs the very handler the key would have (see renderer/shortcuts.tsx),
+ * so the menu and the keyboard can never disagree about what an action does.
+ */
+export type MenuCommand =
+  | { kind: 'shortcut'; id: ShortcutId }
+  | { kind: 'manage-tab'; tab: ManageTabId }
+  | { kind: 'open-chat'; threadId: string };
+
 export interface QuickChatShortcutStatus {
   accelerator: string | null;
   registered: boolean;
@@ -5403,6 +5417,15 @@ export interface StemApi {
    * "unavailable".
    */
   onConnectionChanged(listener: (reachable: boolean) => void): () => void;
+
+  // Application menu.
+  /** A command picked from the menu bar (or its key, when nothing on the page took it). */
+  onMenuCommand(listener: (command: MenuCommand) => void): () => void;
+  /**
+   * The chats the Window menu lists under ⌘1–9, as parallel id/title arrays, top
+   * row first. Empty whenever the numbers are not live on screen.
+   */
+  setMenuChats(threadIds: string[], titles: string[]): Promise<void>;
 
   // App settings + Quick Chat overlay.
   getSettings(): Promise<AppSettings>;

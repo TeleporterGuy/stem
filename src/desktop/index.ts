@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   globalShortcut,
   ipcMain,
   nativeImage,
@@ -12,7 +13,7 @@ import {
 } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { installAppMenu } from './app-menu';
+import { IN_WINDOW_SHORTCUTS, installAppMenu, updateAppMenu } from './app-menu';
 import { installContextMenu } from './context-menu';
 import { openLink } from './open-link';
 import { electronHost } from './host';
@@ -20,7 +21,7 @@ import { setHost } from '../server/host';
 import { startServer, type ServerHandle } from '../server';
 import { log } from '../server/log';
 import { resolveProfileOverride } from '../server/workspace/paths';
-import { bindServerChannels } from './ipc-bridge';
+import { bindServerChannels, handleLocal } from './ipc-bridge';
 import { registerLocalIpc } from './local';
 import { createMcpHost, type McpHost } from './mcp-host';
 import { createExecHost, type ExecHost } from './exec-host';
@@ -44,7 +45,7 @@ import { createQuickChat } from './quickchat';
 import { loadRenderer, PRELOAD_SCRIPT } from './renderer-assets';
 import { initTray } from './tray';
 import { RendererPushQueue } from './ui-lifecycle';
-import type { AppSettings, ThemeState } from '../shared/types';
+import type { AppSettings, MenuCommand, ThemeState } from '../shared/types';
 
 // The Electron main process: windows, tray, the global shortcut, and app
 // lifecycle. It owns nothing about chats, memory, skills or settings — it starts
@@ -302,6 +303,12 @@ function sendToMain(channel: string, payload: unknown): void {
   }
 }
 
+/** The summon key to print beside Quick Chat in the menu — only one the OS granted. */
+function liveQuickChatAccelerator(): string | null {
+  const status = quickChat.shortcutStatus();
+  return status.registered ? status.accelerator : null;
+}
+
 /** Bring the main window to the front (recreating it if it was closed). */
 function revealMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
@@ -325,6 +332,55 @@ const updates = createUpdates({
   send: (status) => sendToMain('updates:status', status),
   openExternal: openExternalUrl
 });
+
+/**
+ * Run a menu pick in the main window. Commands about what is on screen (the
+ * composer, the selection) only make sense while the main window is the one in
+ * front; picked over the Quick Chat overlay they are dropped rather than reaching
+ * into a window the user is not looking at. Everything else brings the main
+ * window forward first, reopening it if it was closed.
+ */
+function runMenuCommand(command: MenuCommand): void {
+  if (command.kind === 'shortcut' && IN_WINDOW_SHORTCUTS.has(command.id)) {
+    const focused = BrowserWindow.getFocusedWindow();
+    if (!focused || focused !== mainWindow) return;
+  } else {
+    revealMainWindow();
+  }
+  sendToMain('menu:command', command);
+}
+
+/**
+ * Check for Updates… from the menu. Unlike the background check, someone asked,
+ * so every outcome gets an answer — including "nothing newer", which the
+ * renderer's update prompt never shows.
+ */
+async function checkForUpdatesFromMenu(): Promise<void> {
+  const status = await updates.check();
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  const show = (options: Electron.MessageBoxOptions) =>
+    parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+  if (status.state === 'error') {
+    await show({ type: 'warning', message: 'Couldn’t check for updates', detail: status.error ?? undefined });
+    return;
+  }
+  if (!status.available) {
+    await show({ type: 'info', message: 'Stem is up to date', detail: `Version ${status.appVersion} is the newest.` });
+    return;
+  }
+  const ready = status.state === 'ready' || status.mode === 'manual';
+  const { response } = await show({
+    type: 'info',
+    message: `Stem ${status.available} is available`,
+    detail: ready
+      ? `You have ${status.appVersion}.`
+      : `You have ${status.appVersion}. It is downloading; Stem will offer to restart when it is ready.`,
+    buttons: ready ? [status.mode === 'manual' ? 'Download' : 'Restart Now', 'Later'] : ['OK'],
+    defaultId: 0,
+    cancelId: ready ? 1 : 0
+  });
+  if (ready && response === 0) await updates.install();
+}
 
 const quickChat = createQuickChat({
   mainWindow: () => mainWindow,
@@ -396,10 +452,17 @@ app.whenReady().then(async () => {
     app.dock?.setIcon(appIcon);
   }
 
-  // Stem's own menu, which is the stock one minus Close Window — no ⌘W closing
+  // Stem's own menu: every shortcut listed, and no Close Window — no ⌘W closing
   // the app's only window (or the Quick Chat overlay, which never comes back).
   // See app-menu.ts.
-  installAppMenu();
+  installAppMenu(
+    {
+      command: runMenuCommand,
+      toggleQuickChat: () => quickChat.toggle(),
+      checkForUpdates: () => void checkForUpdatesFromMenu()
+    },
+    { canCheckForUpdates: updates.status().mode !== 'none' }
+  );
 
   // Take this machine's own settings out of settings.json before anything can
   // rewrite that file without them. The migration runs exactly once and this is
@@ -553,7 +616,10 @@ app.whenReady().then(async () => {
     revealMainWindow,
     requestAttention: () => requestAttention(mainWindow),
     threadOpened: (threadId) => quickChat.threadOpened(threadId),
-    applyQuickChatSettings: (patch, next) => quickChat.applySettings(patch, next),
+    applyQuickChatSettings: (patch, next) => {
+      quickChat.applySettings(patch, next);
+      updateAppMenu({ quickChatAccelerator: liveQuickChatAccelerator() });
+    },
     // Renderer recovery keeps its existing replay order. The HUD uses the
     // separate post-replay snapshot above, with authenticated device identity.
     resync: () => sendToMain('client:resync', undefined),
@@ -628,6 +694,10 @@ app.whenReady().then(async () => {
     if (themeState.custom) themeChanged(themeState);
   });
   quickChat.registerIpc();
+  // The rows ⌘1–9 open, pushed by the chat list whenever they change.
+  handleLocal('menu:setChats', (_e, threadIds: string[], titles: string[]) => {
+    updateAppMenu({ chats: threadIds.slice(0, 9).map((threadId, i) => ({ threadId, title: titles[i] ?? '' })) });
+  });
   ipcMain.on('renderer:ready', (event) => {
     const win = mainWindow;
     if (!win || win.isDestroyed() || event.sender !== win.webContents) return;
@@ -673,6 +743,7 @@ app.whenReady().then(async () => {
   });
 
   quickChat.start(settings.quickChat);
+  updateAppMenu({ quickChatAccelerator: liveQuickChatAccelerator() });
   // After the windows exist and the first prompt's warm-up is on its way; the
   // first check waits a further beat inside (FIRST_CHECK_DELAY_MS).
   updates.start();

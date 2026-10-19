@@ -22,6 +22,10 @@ import { SHORTCUTS, chordFor, keycap, keycapFor, type Chord, type ShortcutId } f
 //      press, any other key, mod-up, or window blur cancels it — so a quick combo
 //      never flashes the hints.
 //
+// The application menu lists the same actions (desktop/app-menu.ts). A pick there
+// arrives as a `shortcut` MenuCommand and runs the registered handler exactly as
+// the key would — handed a bare keydown, since a menu pick has no key of its own.
+//
 // `ChatView` is reused in the Quick Chat window, which has no provider; the default
 // context is a no-op so the hook/components degrade silently there (no badges).
 
@@ -167,6 +171,14 @@ export function ShortcutsProvider({ children }: { children: ReactNode }) {
       clearTimer();
     };
   }, [clearTimer]);
+
+  useEffect(
+    () =>
+      window.stem.onMenuCommand((command) => {
+        if (command.kind === 'shortcut') handlers.current.get(command.id)?.(new KeyboardEvent('keydown'));
+      }),
+    []
+  );
 
   const register = useCallback((id: ShortcutId, h: Handler) => {
     handlers.current.set(id, h);

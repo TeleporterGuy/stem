@@ -27,6 +27,7 @@ export type ShortcutId =
   | 'archive-thread'
   | 'snooze-thread'
   | 'toggle-read'
+  | 'open-settings'
   | 'send';
 
 /** One key combination, before it becomes either a keycap or a keydown predicate. */
@@ -183,6 +184,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     description: 'asks to delete the open chat; press again to confirm',
     chord: { control: true, shift: true, key: 'X' },
     macChord: { control: true, key: 'X' }
+  },
+  // The platform convention for preferences: ⌘, on macOS, and Ctrl+, in most
+  // Windows/Linux apps that have one.
+  {
+    id: 'open-settings',
+    label: 'Settings',
+    description: 'opens Settings in the right-hand panel',
+    chord: { mod: true, shift: false, key: ',' }
   },
   {
     id: 'send',

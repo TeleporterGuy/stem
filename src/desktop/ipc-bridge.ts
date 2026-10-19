@@ -87,7 +87,8 @@ const LOCAL_IPC_ARGS: Record<string, ArgSpec[]> = {
   // Whether the compact bar keeps room for the window chip ("Ask about this window").
   'quickchat:compact': [a.optional(a.boolean)],
   // The System Settings pane the chip's missing-permission link opens.
-  'quickchat:openPrivacy': [a.oneOf(['screen', 'accessibility'])]
+  'quickchat:openPrivacy': [a.oneOf(['screen', 'accessibility'])],
+  'menu:setChats': [a.stringArray, a.stringArray]
 };
 
 /**

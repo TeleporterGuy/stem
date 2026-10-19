@@ -17,7 +17,8 @@ import type {
   TaskNotifyPayload,
   TurnAttachment,
   ThreadStatus,
-  UpdateStatus
+  UpdateStatus,
+  ManageTabId
 } from '../shared/types';
 import { AUTH_PROVIDER_IDS, providerName } from '../shared/providers';
 import { emptyInboxState, isUnread, placement, withArchived, withRead, type InboxState } from '../shared/inbox';
@@ -26,7 +27,7 @@ import { resendAttachments } from './attachments';
 import { ChatView, type ChatViewHandle } from './chat/ChatView';
 import { OnboardingGate } from './onboarding/OnboardingGate';
 import { ShortcutHint, glyphsFor, useShortcut } from './shortcuts';
-import { ManagePanel } from './manage/ManagePanel';
+import { MANAGE_TAB_IDS, MANAGE_TAB_KEY, ManagePanel } from './manage/ManagePanel';
 import { McpApprovalCard } from './manage/McpApprovalCard';
 import { InstructionsApprovalCard } from './manage/InstructionsApprovalCard';
 import { SkillApprovalCard } from './manage/SkillApprovalCard';
@@ -135,6 +136,9 @@ export default function App() {
   // ChatList) because the open-a-chat handlers below need to know whether the
   // Inbox was selected at that moment — that is what pins the Return-to-chat row.
   const [chatsTab, setChatsTab] = useRememberedTab<ChatsTab>(CHATS_TAB_KEY, CHATS_TAB_IDS, 'inbox');
+  // The right-hand panel's tab, held here rather than in ManagePanel so the View
+  // menu (and ⌘,) can switch it — even while the panel is hidden.
+  const [manageTab, setManageTab] = useRememberedTab<ManageTabId>(MANAGE_TAB_KEY, MANAGE_TAB_IDS, 'chats');
   const chatsTabRef = useRef(chatsTab);
   chatsTabRef.current = chatsTab;
   // The Return-to-chat target: the ordinary chat last opened (or created) while
@@ -1114,6 +1118,10 @@ export default function App() {
   // ⌘N / ⌘\ — mirror the titlebar buttons. (Composer shortcuts live in ChatView.)
   useShortcut('new-conversation', () => newConversation());
   useShortcut('toggle-inspector', () => setShowInspector((v) => !v));
+  useShortcut('open-settings', () => {
+    setShowInspector(true);
+    setManageTab('settings');
+  });
 
   const openChat = useCallback(
     // `userNavigation` separates the user opening a chat (clicks, alerts, forks —
@@ -1218,6 +1226,23 @@ export default function App() {
     window.addEventListener('focus', markVisibleRead);
     return () => window.removeEventListener('focus', markVisibleRead);
   }, [displayList, activeThreadId, mutateInbox, updatedAtMap]);
+
+  // The application menu's own commands — the ones that are not a shortcut (those
+  // run through ShortcutsProvider): jump to a panel tab, open a ⌘1–9 row by id.
+  const openChatRef = useRef(openChat);
+  openChatRef.current = openChat;
+  useEffect(
+    () =>
+      window.stem.onMenuCommand((command) => {
+        if (command.kind === 'manage-tab') {
+          setShowInspector(true);
+          setManageTab(command.tab);
+        } else if (command.kind === 'open-chat') {
+          void openChatRef.current(command.threadId);
+        }
+      }),
+    [setManageTab]
+  );
 
   // ---- Coming back after the event stream was away ----
   //
@@ -1944,6 +1969,8 @@ export default function App() {
             <ManagePanel
               data={displayList}
               activeThreadId={activeThreadId}
+              tab={manageTab}
+              onTabChange={setManageTab}
               chatsTab={chatsTab}
               onChatsTabChange={setChatsTab}
               inboxReturn={inboxReturn.row}

@@ -455,6 +455,20 @@ export function ChatList(props: ChatListProps) {
     const id = numberedChatIds[Number(e.key) - 1];
     if (id) onOpen(id);
   });
+  // The Window menu lists the same rows under the same keys, and only while they
+  // are live — a menu entry for a number the list is not showing would open a
+  // chat the key itself refuses to.
+  const menuIds = numbersLive ? numberedChatIds : [];
+  const menuTitles = menuIds.map((id) => {
+    const chat = data.chats.find((c) => c.threadId === id);
+    return chat ? (chat.subject ?? chat.title) : '';
+  });
+  const menuKey = JSON.stringify([menuIds, menuTitles]);
+  useEffect(() => {
+    const [ids, titles] = JSON.parse(menuKey) as [string[], string[]];
+    void window.stem.setMenuChats(ids, titles);
+  }, [menuKey]);
+  useEffect(() => () => void window.stem.setMenuChats([], []), []);
   const rowNumber = (threadId: string): number | null => {
     if (!hintMode || !numbersLive) return null;
     const i = numberedChatIds.indexOf(threadId);
