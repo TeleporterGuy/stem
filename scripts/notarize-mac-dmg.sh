@@ -3,6 +3,7 @@
 set -euo pipefail
 
 verify_only=false
+dmg_stapled=true
 if [ "${1:-}" = --verify-only ]; then
   verify_only=true
   shift
@@ -59,10 +60,17 @@ if [ "$verify_only" = false ]; then
       process.exit(1);
     }
   ' "$work_dir/notarization.json"
-  staple_retry staple "$dmg"
+  # Apple has accepted the DMG at this point, and the app inside carries its own
+  # stapled ticket (checked below). A ticket stapled to the DMG only spares
+  # Gatekeeper an online lookup on first open, so a CloudKit outage on the
+  # runner is a warning here, not a failed release.
+  if ! staple_retry staple "$dmg"; then
+    echo "::warning::Apple accepted the DMG but its ticket could not be stapled; Gatekeeper will fetch it online on first open."
+    dmg_stapled=false
+  fi
 fi
 
-staple_retry validate "$dmg"
+if [ "$dmg_stapled" = true ]; then staple_retry validate "$dmg"; fi
 codesign --verify --strict --verbose=2 -R "$requirement" "$dmg"
 spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
 
