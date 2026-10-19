@@ -23,6 +23,10 @@ import { closeApp, expect, launchApp, mainWindowOf, openSettings, test } from '.
 
 const REGISTRY_KEY = 'HKCU\\Software\\Chromium\\NativeMessagingHosts\\com.stem.browser';
 
+// A real browser starting on a shared CI machine is slow now and then: the
+// extension once took over 45 s to connect on a macOS runner.
+test.describe.configure({ retries: process.env.CI ? 2 : 0 });
+
 test('a real browser drives a page through the Stem extension', async () => {
   test.setTimeout(150_000);
   const executable = process.env.STEM_E2E_BROWSER || chromium.executablePath();

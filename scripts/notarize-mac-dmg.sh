@@ -32,6 +32,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# stapler asks Apple's CloudKit for the ticket, and that connection drops now
+# and then from CI runners (Error 68) though nothing is wrong with the file.
+staple_retry() {
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    if xcrun stapler "$@"; then return 0; fi
+    [ "$attempt" = 6 ] && return 1
+    echo "stapler $1 failed (attempt $attempt); retrying in 20s" >&2
+    sleep 20
+  done
+}
+
 if [ "$verify_only" = false ]; then
   : "${APPLE_API_KEY:?Notarization key path is required}"
   : "${APPLE_API_KEY_ID:?Notarization key ID is required}"
@@ -47,17 +59,10 @@ if [ "$verify_only" = false ]; then
       process.exit(1);
     }
   ' "$work_dir/notarization.json"
-  # Stapling fetches the ticket from Apple's CDN, which can lag the Accepted
-  # answer or drop the connection (Error 68); the notarization itself is done.
-  for attempt in 1 2 3 4 5 6; do
-    if xcrun stapler staple "$dmg"; then break; fi
-    if [ "$attempt" = 6 ]; then exit 1; fi
-    echo "Stapling failed (attempt $attempt); retrying in 20s" >&2
-    sleep 20
-  done
+  staple_retry staple "$dmg"
 fi
 
-xcrun stapler validate "$dmg"
+staple_retry validate "$dmg"
 codesign --verify --strict --verbose=2 -R "$requirement" "$dmg"
 spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
 
@@ -67,7 +72,7 @@ mounted=true
 app="$mount_point/Stem.app"
 test "$(lipo -archs "$app/Contents/MacOS/Stem")" = arm64
 codesign --verify --deep --strict --verbose=2 -R "$requirement" "$app"
-xcrun stapler validate "$app"
+staple_retry validate "$app"
 spctl --assess --type execute --verbose=4 "$app"
 syspolicy_check distribution "$app"
 hdiutil detach "$mount_point"
