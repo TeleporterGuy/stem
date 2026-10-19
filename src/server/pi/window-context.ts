@@ -33,6 +33,25 @@ const fence = (text: string): string => text.replace(/<(\/?)stem_window/gi, '<$1
 /** A server's tool-name prefix, as the bridge names its directly loaded tools (directMcpToolName). */
 const toolPrefix = (server: string): string => server.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
 
+/** The Chromium browsers the Stem extension runs in (browser-host/install.ts), by bundle id. */
+const BROWSER_BUNDLES = new Set([
+  'com.google.Chrome',
+  'company.thebrowser.Browser',
+  'company.thebrowser.dia',
+  'com.brave.Browser',
+  'org.chromium.Chromium',
+  'com.microsoft.edgemac',
+  'com.google.chrome.for.testing'
+]);
+
+/** Whether the window belongs to a browser the `browser` tool can drive. */
+export function isBrowserWindow(w: WindowContext): boolean {
+  return w.bundleId ? BROWSER_BUNDLES.has(w.bundleId) : /^(google chrome|chromium|arc|dia|brave|microsoft edge)\b/i.test(w.app);
+}
+
+const deviceArg = (d: { device: string | null }): string =>
+  d.device ? ` on device "${fence(d.device).replace(/"/g, "'")}"` : '';
+
 /**
  * `servers`: the MCP servers that cover this window's app (app-match.ts), which
  * the model is told to reach for first — the window shows a slice of the app,
@@ -46,7 +65,9 @@ export function formatWindowBlock(
    * the turn's fixed Mac, its name when the model picks the Mac per call.
    * Absent = no computer control for this window.
    */
-  computer?: { device: string | null }
+  computer?: { device: string | null },
+  /** Browser control reaches the asking Mac's browser; same shape as `computer`. */
+  browser?: { device: string | null }
 ): string {
   const attrs = [`app="${fence(w.app).replace(/"/g, "'")}"`];
   if (w.bundleId) attrs.push(`bundle_id="${fence(w.bundleId).replace(/"/g, "'")}"`);
@@ -78,12 +99,20 @@ export function formatWindowBlock(
           "Before it sends, posts, edits or deletes anything there on the user's behalf, show them what you will do and wait for their go-ahead — unless their message already asked for exactly that. "
         : '') +
       "Answer from it. When something they ask about is not in it (older messages, other channels, a field you cannot see), say so, or use a tool that reaches that app's data if one is listed." +
-      (computer && w.windowId !== null
-        ? ` To click or type in this window, use the computer tool in window mode: start with select_window window_id ${w.windowId}` +
-          (computer.device ? ` on device "${fence(computer.device).replace(/"/g, "'")}"` : '') +
-          ' (no list_windows needed), then snapshot.' +
-          (servers.length ? ' Use it only for what the integration above cannot do.' : '')
-        : '')
+      // 2026-10-19, "fill out" over a Cloudflare billing form in Arc: told to
+      // select_window, the model hit two capture timeouts and gave up; the
+      // browser tool filled the form on the next turn.
+      (browser && isBrowserWindow(w)
+        ? ` To read or act in the page, use the browser tool${deviceArg(browser)}, not the computer tool: call tabs, ` +
+          // The title is page-controlled: point at the attribute, never repeat it here.
+          (w.title ? 'find the tab whose title matches the title attribute above (the active one in its window), ' : 'find the active tab, ') +
+          'then snapshot it and act by ref.'
+        : computer && w.windowId !== null
+          ? ` To click or type in this window, use the computer tool in window mode: start with select_window window_id ${w.windowId}` +
+            deviceArg(computer) +
+            ' (no list_windows needed), then snapshot.' +
+            (servers.length ? ' Use it only for what the integration above cannot do.' : '')
+          : '')
   ];
   return lines.join('\n');
 }

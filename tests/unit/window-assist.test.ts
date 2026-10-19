@@ -145,3 +145,27 @@ describe('computer control in the window', () => {
     expect(cleanWindowContext({ app: 'Figma', windowId: -1 })?.windowId).toBeNull();
   });
 });
+
+describe('browser control in the window', () => {
+  const arc = { windowId: 227, app: 'Arc', bundleId: 'company.thebrowser.Browser', title: 'Billing | Cloudflare', text: null };
+
+  it('sends a browser window to the browser tool, not select_window', () => {
+    const block = formatWindowBlock(arc, [], { device: null }, { device: null });
+    expect(block).toContain('use the browser tool, not the computer tool');
+    expect(block).toContain('find the tab whose title matches the title attribute above');
+    expect(block).not.toContain('select_window');
+  });
+
+  it('names the Mac when the model picks one per call', () => {
+    expect(formatWindowBlock(arc, [], undefined, { device: 'join3r-macbook' })).toContain('browser tool on device "join3r-macbook"');
+  });
+
+  it('keeps computer control for a browser window when browser control is off', () => {
+    expect(formatWindowBlock(arc, [], { device: null })).toContain('select_window window_id 227');
+  });
+
+  it('keeps computer control for a non-browser app even with browser control on', () => {
+    const figma = { windowId: 4, app: 'Figma', bundleId: 'com.figma.Desktop', title: '', text: null };
+    expect(formatWindowBlock(figma, [], { device: null }, { device: null })).toContain('select_window window_id 4');
+  });
+});

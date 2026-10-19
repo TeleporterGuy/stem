@@ -4934,7 +4934,18 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           .catch(() => undefined);
         if (label) computer = { device: label };
       }
-      blocks.push(formatWindowBlock(w, servers, computer));
+      // Browser control likewise, for a window of the user's browser.
+      const browserGrant = turn?.browserGrant;
+      let browser: { device: string | null } | undefined;
+      if (browserGrant && origin && browserGrant.device === origin) browser = { device: null };
+      else if (browserGrant?.kind === 'chat' && browserGrant.device === null && origin) {
+        const label = await readDevices()
+          .then((list) => list.find((d) => d.id === origin)?.label)
+          // quiet: without the name the model falls back to the computer pointer, or none.
+          .catch(() => undefined);
+        if (label) browser = { device: label };
+      }
+      blocks.push(formatWindowBlock(w, servers, computer, browser));
     }
 
     // The ambient blocks below go out only when the live context does not

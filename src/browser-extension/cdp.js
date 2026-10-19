@@ -116,6 +116,15 @@ function attachError(tabId, message) {
       `Something else is already debugging tab ${tabId} (another extension, or remote debugging): Stem can't work in it until that lets go.`
     );
   }
+  // A normal page that holds another extension's frame — a password manager's
+  // fill menu, say — refuses the debugger as a whole (2026-10-19: Bitwarden in
+  // a Cloudflare billing tab).
+  if (/chrome-extension:\/\/ URL of different extension/i.test(message)) {
+    return new UserError(
+      `Another extension has a frame inside tab ${tabId} (often a password manager's fill menu), and the browser then lets no other extension control the tab. ` +
+        'Open the same address in a new tab and work there, and tell the user that is where the result is; or ask them to close that menu and try again.'
+    );
+  }
   if (/cannot (access|attach)|chrome:\/\/|chrome-extension|webstore|not allowed/i.test(message)) {
     return new UserError(`The browser does not let extensions control tab ${tabId} (${message}).`);
   }
