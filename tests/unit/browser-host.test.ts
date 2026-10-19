@@ -190,15 +190,26 @@ describe('createBrowserHost', () => {
     await peer.closed;
   });
 
-  it('drops a native host that skips the handshake, and never sends the token itself', async () => {
+  /** A host from before the handshake: its hello carries the token itself. Answers what came back. */
+  const preHandshakeHost = async (sent: string): Promise<string> => {
     const socket = createConnection(socketPath);
     const seen: Buffer[] = [];
     socket.on('data', (c: Buffer) => seen.push(c));
     socket.on('error', () => undefined);
     await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
-    socket.write(encodeFrame({ type: 'host-hello', token, appPath: '/Applications/Arc.app', appName: 'Arc' }));
+    socket.write(encodeFrame({ type: 'host-hello', token: sent, appPath: '/Applications/Arc.app', appName: 'Arc' }));
     await new Promise<void>((resolve) => socket.on('close', () => resolve()));
-    expect(Buffer.concat(seen).toString('utf8')).not.toContain(token);
+    return Buffer.concat(seen).toString('utf8');
+  };
+
+  it('tells the extension behind a pre-handshake host to reload, and never sends the token itself', async () => {
+    const seen = await preHandshakeHost(token);
+    expect(seen).toContain('"type":"reload"');
+    expect(seen).not.toContain(token);
+  });
+
+  it('drops a pre-handshake host with the wrong token without a word', async () => {
+    expect(await preHandshakeHost('nope')).toBe('');
   });
 
   it('relays a request to the connected browser and its answer back, and announces it', async () => {

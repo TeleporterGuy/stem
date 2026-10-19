@@ -12,8 +12,10 @@
     "nativeMessaging",
     "storage",
     "alarms",
-    "webNavigation"
+    "webNavigation",
+    "scripting"
   ],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",
     "type": "module"

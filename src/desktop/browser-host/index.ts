@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, readdirSync, readlinkSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmod, mkdir, realpath, rm } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
@@ -284,6 +284,14 @@ function defaultOpenWith(appPath: string | null, target: string, platform: NodeJ
 
 const isPipe = (path: string): boolean => path.startsWith('\\\\.\\pipe\\');
 
+/** A pre-handshake host-hello carried the token itself; constant-time compare. */
+function legacyTokenMatches(token: string, sent: unknown): boolean {
+  if (typeof sent !== 'string') return false;
+  const a = Buffer.from(token);
+  const b = Buffer.from(sent);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 /** How long one action may take on this side before the extension is presumed stuck. */
 export function actionTimeoutMs(action: ExtensionAction): number {
   switch (action.kind) {
@@ -478,7 +486,20 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
           continue;
         }
         if (!conn && !pending) {
-          const h = message as Partial<HostHello>;
+          const h = message as Partial<HostHello> & { token?: unknown };
+          if (h?.type === 'host-hello' && config && !('nonce' in h) && legacyTokenMatches(config.token, h.token)) {
+            // A native host from before the handshake (Stem ≤ 0.6), still
+            // running because the browser kept its port open across a Stem
+            // update: it would retry every two seconds forever and the
+            // profile would never connect (2026-10-19). It relays whatever
+            // comes back unchecked, so tell the extension to reload — that
+            // closes the port, the old host exits, and the browser starts the
+            // one on disk.
+            log('browser-host', 'an old native host connected; reloading the extension so the browser starts the new one');
+            clearTimeout(hello);
+            socket.end(encodeFrame({ type: 'reload' } satisfies ToExtension));
+            return;
+          }
           if (h?.type !== 'host-hello' || !config || !isNonce(h.nonce) || typeof h.appPath !== 'string') {
             log('browser-host', 'refused a native host that did not start the handshake');
             socket.destroy();
