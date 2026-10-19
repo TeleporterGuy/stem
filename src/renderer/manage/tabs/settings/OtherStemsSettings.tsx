@@ -5,9 +5,9 @@ import { DisclosureRow, ValueRow } from './rows';
 import { formatFingerprint, useInterStem } from '../../../mail/useInterStem';
 
 /**
- * Settings → Features → Mail with other Stems: the email addresses people can
- * reach this Stem at (verified by an emailed code), who can find it, and the
- * contacts with their keys.
+ * Settings → Features → Your email address: the verified addresses this Stem
+ * goes by — other Stems write to it, and public share links carry it — who can
+ * find it, and the contacts with their keys.
  */
 export function OtherStemsSection() {
   const { status } = useInterStem();
@@ -33,9 +33,9 @@ export function OtherStemsSection() {
   if (status.policy?.mode === 'off') {
     return (
       <>
-        <div className="grp-head">Mail with other Stems</div>
+        <div className="grp-head">Your email address</div>
         <div className="group">
-          <ValueRow label="Turned off by your organization" hint="This Stem doesn't connect to any relay" />
+          <ValueRow label="Turned off by your organization" hint="No mail with other Stems and no public links" />
         </div>
       </>
     );
@@ -48,7 +48,7 @@ export function OtherStemsSection() {
 
   return (
     <>
-      <div className="grp-head">Mail with other Stems</div>
+      <div className="grp-head">Your email address</div>
       <div className="group">
         {allowed && (
           <ValueRow
@@ -106,14 +106,16 @@ export function OtherStemsSection() {
           </ValueRow>
         ))}
         <ValueRow
-          label="Add your email address"
+          stacked
+          label={status.addresses.length ? 'Add another address' : 'Add an address'}
           hint={
             <>
-              People on other Stems write to you at it{' '}
-              <InfoTip label="About mail with other Stems">
+              Other Stems write to you at it, and your shared links show it{' '}
+              <InfoTip label="About your email address">
                 We email a code to prove the address is yours. Mail between Stems is end-to-end encrypted: the relay
                 carrying it can't read it. Mail from others reaches you first; your agents only see what you release,
-                and nothing is sent without you.
+                and nothing is sent without you. Public links you share carry this address, so every link traces back
+                to a real person.
               </InfoTip>
             </>
           }

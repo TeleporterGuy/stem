@@ -19,6 +19,7 @@ import {
 import {
   b64,
   checkKeyBlob,
+  domainOf,
   edPrivate,
   fingerprint,
   makeKeyBlob,
@@ -361,10 +362,21 @@ export class InterStemService {
     if (!address) {
       throw new ShareUnavailableError(
         'no_address',
-        'Sharing needs a verified address. Add one in Settings → Mail with other Stems.'
+        'Sharing needs a verified address. Add one in Settings → Features → Your email address.'
       );
     }
+    if (await this.closedDomain(address)) throw new ShareUnavailableError('policy', CLOSED_DOMAIN_SHARE);
     return { relay: globalRelay().url, address, identity: await this.freshCert(address) };
+  }
+
+  /**
+   * Whether the address's domain publishes `access=closed` in its `_stem`
+   * record: its people talk only on the company relay, so the global relay
+   * refuses their share uploads (closed_relay) and we don't offer sharing.
+   */
+  async closedDomain(address: string): Promise<boolean> {
+    const rec = await this.resolver.domainRecord(domainOf(address));
+    return rec?.closed === true;
   }
 
   private async refreshCerts(force = false): Promise<void> {
@@ -870,6 +882,8 @@ export class InterStemService {
 }
 
 /** True when a held item must not reach any agent or model. */
+export const CLOSED_DOMAIN_SHARE = 'Your organization keeps your address on its own relay, so it can’t publish public links.';
+
 /** Why this Stem can't publish a share link; `code` is for the UI. */
 export class ShareUnavailableError extends Error {
   constructor(

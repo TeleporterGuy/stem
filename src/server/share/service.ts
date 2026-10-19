@@ -3,7 +3,7 @@
 // the user's verified address, and keep the link so it can be copied again
 // or revoked.
 import type { ChatBackend } from '../backend';
-import { ShareUnavailableError, type InterStemService } from '../interstem/service';
+import { CLOSED_DOMAIN_SHARE, ShareUnavailableError, type InterStemService } from '../interstem/service';
 import { deleteShare, postShare, RelayError, type Identity } from '../interstem/relay-client';
 import { degrade } from '../degrade';
 import { readMailConversation } from '../workspace/mail';
@@ -78,7 +78,7 @@ function relayMessage(err: unknown): Error {
     case 'suspended':
       return new Error('Sharing is suspended for your address. Write to the Stem team if you think this is a mistake.');
     case 'closed_relay':
-      return new Error('Your organization only lets your address talk to its own relay, so it can’t publish public links.');
+      return new Error(CLOSED_DOMAIN_SHARE);
     case 'share_disabled':
       return new Error('The share service is not available right now.');
     default:
@@ -125,6 +125,7 @@ export class ShareService {
           message: 'Sharing needs a verified email address, so every public link traces back to a real person.'
         };
       }
+      if (await s.closedDomain(address)) return { available: false, code: 'policy', message: CLOSED_DOMAIN_SHARE };
       return { available: true, address };
     } catch (err) {
       degrade('share', 'could not read the share status', err);

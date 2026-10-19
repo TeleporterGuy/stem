@@ -191,10 +191,11 @@ describe('ShareService', () => {
     findThreadImage: async () => ({ mimeType: 'image/png', data: PNG })
   } as unknown as ChatBackend;
   const identity = { seed: Buffer.alloc(32, 1), cert: {} as never };
-  const interStem = (address: string | null) =>
+  const interStem = (address: string | null, closed = false) =>
     ({
       status: async () => ({}),
       defaultSelf: async () => address,
+      closedDomain: async () => closed,
       shareIdentity: async () => {
         if (!address) throw new Error('no address');
         return { relay: 'https://relay.test', address, identity };
@@ -246,6 +247,8 @@ describe('ShareService', () => {
   it('says why it can’t share, in plain words', async () => {
     const svc = new ShareService({ runtime: () => runtime, interStem: () => interStem(null), store: store() });
     expect(await svc.status()).toMatchObject({ available: false, code: 'no_address' });
+    const closed = new ShareService({ runtime: () => runtime, interStem: () => interStem('a@acme.test', true), store: store() });
+    expect(await closed.status()).toMatchObject({ available: false, code: 'policy' });
     const limited = new ShareService({
       runtime: () => runtime,
       interStem: () => interStem('a@b.test'),

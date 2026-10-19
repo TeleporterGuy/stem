@@ -124,5 +124,7 @@ describe('relay URLs this server may contact', () => {
     const key = Buffer.alloc(32, 7).toString('base64');
     expect(parseRecord(`v=stem1; relay=https://relay.acme.com; k=k1:${key}`)?.relay).toBe('https://relay.acme.com');
     expect(parseRecord(`v=stem1; relay=http://10.0.0.5:8080; k=k1:${key}`)).toBeNull();
+    expect(parseRecord(`v=stem1; relay=https://relay.acme.com; k=k1:${key}`)?.closed).toBeUndefined();
+    expect(parseRecord(`v=stem1; relay=https://relay.acme.com; k=k1:${key}; access=closed`)?.closed).toBe(true);
   });
 });

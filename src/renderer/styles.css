@@ -4411,6 +4411,14 @@ button.set-vrow { border: none; background: none; font: inherit; color: inherit;
 button.set-vrow:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
 .set-vrow .vlab { flex: 1; min-width: 0; font-size: var(--fs-13); }
 .set-vrow .vlab em { display: block; font-style: normal; font-size: var(--fs-11); color: var(--muted); overflow-wrap: anywhere; }
+/* ValueRow stacked: the label on top, a full-width field and its button under it. */
+.set-vrow.stacked { flex-direction: column; align-items: stretch; gap: var(--sp-3); }
+.set-vrow.stacked .vlab { flex: none; }
+.set-vrow.stacked .row-inline { display: flex; }
+.set-vrow.stacked .vfield { flex: 1; min-width: 0; }
+/* A text field in a settings row: the same hairline box the editors use, not the browser default. */
+.set-vrow input.vfield { font: inherit; font-size: var(--fs-12); color: var(--ink); background: none; border: 0.5px solid var(--hair); border-radius: var(--radius-sm); padding: 5px var(--sp-4); }
+.set-vrow input.vfield:focus { outline: none; box-shadow: var(--shadow-focus); }
 /* The macOS-grant checklist under Computer control: one line per grant, a
    green check or red cross in front so a missing one is visible at a glance. */
 .set-vrow .vlab .perm-list { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }

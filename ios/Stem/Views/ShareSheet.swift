@@ -54,7 +54,7 @@ struct ShareLinkSheet: View {
             Section {
                 Label(status.message ?? "Sharing is not available.", systemImage: "exclamationmark.circle")
                 if status.code == "no_address" {
-                    Text("Verify an address in the desktop app: Settings → Features → Mail with other Stems.")
+                    Text("Verify an address in the desktop app: Settings → Features → Your email address.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }

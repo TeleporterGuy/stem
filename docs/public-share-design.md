@@ -147,8 +147,8 @@ The browser decrypts with WebCrypto and `DecompressionStream('gzip')`.
   (include my pictures, show model name), expiry (30 / 7 / 1 days), the link
   preview card (editable title and description, drawn like an unfurl, with a
   note that it is not encrypted), Create link. Then: the link with Copy, its end date, and Revoke. Without a verified address, the dialog explains and links to
-  Settings → Mail with other Stems.
-- Settings → Mail with other Stems → "Shared links": list, copy, revoke.
+  Settings → Your email address.
+- Settings → Your email address → "Shared links": list, copy, revoke.
 
 ## Phase 2: iOS
 

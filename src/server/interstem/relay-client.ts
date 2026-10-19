@@ -68,12 +68,15 @@ export interface Authority {
   relay: string;
   /** kid → raw Ed25519 public key. */
   keys: Record<string, Buffer>;
+  /** `access=closed`: the domain's people talk only on its own relay (PROTOCOL.md). */
+  closed?: boolean;
 }
 
 export function parseRecord(txt: string): Authority | null {
   let v = false;
   let relay = '';
   const keys: Record<string, Buffer> = {};
+  let closed = false;
   for (const part of txt.split(';')) {
     const eq = part.indexOf('=');
     if (eq < 0) continue;
@@ -82,7 +85,8 @@ export function parseRecord(txt: string): Authority | null {
     if (k === 'v') {
       if (val !== 'stem1') return null;
       v = true;
-    } else if (k === 'relay') relay = val.replace(/\/+$/, '');
+    } else if (k === 'access') closed = val === 'closed';
+    else if (k === 'relay') relay = val.replace(/\/+$/, '');
     else if (k === 'k') {
       const colon = val.indexOf(':');
       const raw = colon > 0 ? unb64(val.slice(colon + 1)) : Buffer.alloc(0);
@@ -90,7 +94,7 @@ export function parseRecord(txt: string): Authority | null {
     }
   }
   if (!v || !acceptableRelayUrl(relay) || Object.keys(keys).length === 0) return null;
-  return { relay, keys };
+  return closed ? { relay, keys, closed } : { relay, keys };
 }
 
 export type TxtLookup = (name: string) => Promise<string[][]>;
