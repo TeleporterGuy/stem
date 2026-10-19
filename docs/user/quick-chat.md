@@ -37,6 +37,12 @@ again or click the pill.
 - **Note**—or starting with `/note ` or `//`—is the optional direct-save path for
   Memory. No chat turn. Memory must be on; credential-like text is not saved.
 
+On Linux under GNOME on Wayland, the pill sits in the bottom-left corner only with
+Stem's GNOME extension (**Settings → Features → Computer control**); without it, GNOME
+places the pill itself. Linux also gets a tray icon with **Summon Quick Chat**,
+**Open Stem** and **Quit Stem**. Stock GNOME shows tray icons only with the
+AppIndicator extension.
+
 ## Ask about this window
 
 Maya is in Slack and Jana has asked her to decide something. She presses her
@@ -51,7 +57,7 @@ not on top of it, with a chip showing which window it captured. She asks
   to read what the window doesn't show and to act in the app, and shows you
   what it will send before sending. See
   [Works with apps](tools/mcp-servers.md#works-with-apps).
-- With computer control allowed for this Mac (**Settings → Features**), the
+- With computer control allowed for this computer (**Settings → Features**), the
   assistant can also click and type in that window.
 - Nothing is captured until you press the shortcut.
 - The panel sits right of the window, else left, else below or above. It covers
@@ -61,8 +67,8 @@ not on top of it, with a chip showing which window it captured. She asks
   window it starts a new one.
 - On a Mac it needs **Screen Recording** for the picture and **Accessibility**
   for the text. If one is off, the chip says which and opens the right System
-  Settings pane. On Linux it needs the GNOME extension from **Settings →
-  Features → Computer control**.
+  Settings pane. On Windows it needs no setup. On Linux it needs the GNOME
+  extension from **Settings → Features → Computer control**.
 
 Set the shortcut under **Settings → Quick Chat → Ask about this window**. It is
 off until you record one. On GNOME (Wayland) apps can't set global shortcuts:

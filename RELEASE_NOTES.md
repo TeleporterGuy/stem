@@ -18,16 +18,18 @@ Maintainer notes:
 
 - **Mail with other people's Stems.** Add your email address under Settings → Features → **Your
   email address** and confirm the code Stem emails you. People who use Stem can then mail you there,
-  and you can mail them. Mail is encrypted from one Stem to the other. Mail from someone new waits
-  under **Requests** until you accept them. Your personas see an incoming mail only after you let
-  them, and nothing goes out until you approve the draft. **Only people I've written to can reach
-  me** keeps everyone else from finding out that you use Stem. Compare keys in person to mark a
-  contact as checked.
-- **Share links.** Hover an answer and click **Share** to publish the whole chat, the question and
-  answer, or the answer alone as a link anyone can open. The content is encrypted in your Stem, and
-  the key is part of the link, so the server that hosts it can't read it. Links show a preview card
-  in chat apps, stay out of search engines, and expire after 30 days. Settings lists your links so
-  you can take one down. Sharing needs a verified email address. It works from the iPhone too.
+  and you can mail them. Mail is encrypted from one Stem to the other and is text only for now. Mail
+  from someone new waits under **Requests** until you accept them. Your personas see an incoming
+  mail only after you let them, and a reply a persona drafts goes out only after you approve it.
+  **Only people I've written to can reach me** keeps everyone else from finding out that you use
+  Stem. Compare keys in person to mark a contact as checked. Requests and drafts are on the desktop
+  only.
+- **Share links.** Hover an answer and click the share icon to publish the whole chat, the question
+  and answer, or the answer alone as a link anyone can open. The content is encrypted in your Stem,
+  and the key is part of the link, so the server that hosts it can't read it. Links show a preview
+  card in chat apps, stay out of search engines, and expire after 30 days. Settings lists your links
+  so you can take one down. Sharing needs a verified email address, and a company that limits mail
+  with other Stems turns it off. It works from the iPhone too.
 - **Ask about this window.** A second Quick Chat shortcut opens Quick Chat next to the window you're
   in, with a picture and the text of that window attached. Ask "What does Jana need from me?" in
   Slack and the answer appears beside it. If one of your MCP servers covers that app, Stem uses it

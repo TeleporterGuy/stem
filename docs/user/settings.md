@@ -14,10 +14,10 @@ instructions.
 </p>
 
 Settings has four tabs: **App** (appearance, the conversation, Quick Chat, dictation,
-the Escape key, notifications, About), **Features** (mail among personas, image
-generation, commands, coding agents, computer control, browser control), **Server**
-(where Stem runs, your devices, moving or backing up) and **Models** (providers, which
-model does which job, memory recall, web search).
+the Escape key, notifications, About), **Features** (mail among personas, your email
+address, shared links, image generation, commands, coding agents, computer control,
+browser control), **Server** (where Stem runs, your devices, moving or backing up) and
+**Models** (providers, which model does which job, memory recall, web search).
 
 ## Providers and models
 
@@ -271,16 +271,33 @@ reason: the chat runs as a persona without that setup, or chats are switched off
 On Linux, computer control needs GNOME on Wayland. Once you switch it on, a
 **GNOME extension** row appears: **Install** puts Stem's GNOME Shell extension in your
 extensions folder. GNOME loads a new extension only at login, so log out and back in
-once; the row then says **Running**. You can turn the extension off in GNOME's
-Extensions app. Two Wayland limits apply when Stem works inside one window instead of
+once; the row then says **Running**. Later updates to the extension arrive without
+logging out. You can turn the extension off in GNOME's Extensions app. Two Wayland limits apply when Stem works inside one window instead of
 the whole screen: that window gets no key presses, only text typed into a field and
 buttons pressed by name, and some GTK 4 lists can be selected but not opened. Working on
 the whole screen has no such limits.
 
+On Windows, computer control works on Windows 10 and 11 with nothing to install.
+Working inside one window, Stem can type and press plain keys there, but not Ctrl,
+Alt or Shift combinations; it uses the window's menus instead, or the whole screen.
+
 **Browser control** follows the same rules with its own pin and its own switch: a
 persona's **Browser** (Runs as → Computer), or Settings → Features → Browser control →
-Allow in chats, plus **Let Stem control this Mac's browser** on the Mac itself. Setting
-up the extension is described on the [Browser control](browser-control.md) page.
+Allow in chats, plus **Let Stem control this Mac's browser** (**this computer's
+browser** on Windows and Linux) on that computer itself. Setting up the extension is
+described on the [Browser control](browser-control.md) page.
+
+## Your email address
+
+Settings → Features → **Your email address** is the address other people's Stems
+reach you at. Type it in and Stem emails you a code to confirm it is yours. Once it
+is confirmed, you can [mail people who use Stem](other-stems.md), and your [share
+links](share-links.md) carry it. **Only people I've written to can reach me**,
+**Your key** and your **Contacts** appear here too.
+
+If your organization runs Stem for you, this section may say **Turned off by your
+organization** (no mail with other Stems and no public links) or **Limited by your
+organization** (only addresses at its domains, through its relay).
 
 ## Image generation
 
@@ -317,10 +334,18 @@ Under **Settings → App → Appearance**, set per computer:
 
 ## Dictation
 
-The mic button in the composer turns speech into text with the device's own model;
-the audio never leaves it. **Settings → App → Dictation → Language** picks the Mac's
-language, or **Automatic**. A language's model downloads the first time you use it.
-It needs macOS 26; on the phone (iOS 26), hold the mic to pick the language.
+The mic button in the composer turns speech into text on your own computer; the
+audio never leaves it. **Settings → App → Dictation → Language** picks the language,
+or **Automatic**.
+
+- **On a Mac** it uses the Mac's own speech model and needs macOS 26. A language's
+  model downloads the first time you use it.
+- **On Windows and Linux** it runs Whisper on the computer's processor (Beta). The
+  model downloads the first time you dictate. **Speech model** picks **Fast** (a
+  240 MB download, quick on any computer, best in English) or **Accurate** (a 730 MB
+  download, slower, much better in other languages). **Language** lists 38
+  languages, Slovak and Czech among them.
+- **On the phone** (iOS 26), hold the mic to pick the language.
 
 ## Escape key
 
@@ -376,8 +401,9 @@ server](../running-on-a-server.md) for setting one up.
 **Devices** lists everything signed in to this Stem, with when each was last seen.
 **Withdraw** signs one out; Stem warns first if MCP servers run on it. **Add a device**
 names the new one and gives a code to enter there (**Get a code**), or **Pair a phone**
-shows a QR code to scan in the Stem iPhone app (beta). The phone app has chats, mail,
-rich answers, dictation and approvals, against the same Stem.
+shows a QR code to scan in the Stem iPhone app (beta). The phone app has chats in their
+folders, mail, rich answers, dictation, approvals and share links, against the same
+Stem.
 
 **Move or back up this Stem** is described in [Moving and backups](moving-and-backups.md).
 
@@ -385,10 +411,12 @@ rich answers, dictation and approvals, against the same Stem.
 
 Shows the version you're running — worth quoting when you report a problem.
 
-**Updates** says whether a newer Stem exists and what to do about it. On Linux
-(the AppImage) a new release downloads in the background and installs itself the
-next time you start Stem — or right away with **Restart now**. On a Mac, **Get
-the update** opens the release page and you install it the way you did the first
+**Updates** says whether a newer Stem exists and what to do about it. The Linux
+AppImage, the Windows installer, and a Mac with Stem in its Applications folder
+download a new release in the background and install it the next time you start
+Stem, or right away with **Restart now**. The Linux .deb, and a Mac running Stem
+from anywhere else (straight off the disk image, say), only tell you: **Get the
+update** opens the release page and you install it the way you did the first
 time. **Check now** asks immediately; **Check for updates automatically** turns
 the periodic check off entirely. The check asks one question of GitHub, where
 Stem's releases live, and sends nothing about you or your chats.

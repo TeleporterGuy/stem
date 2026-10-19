@@ -117,8 +117,9 @@ Connected folders tab groups it under this computer's name and shows when it las
 - After the first sync, changes sync within seconds while this computer is online;
   deletes and renames follow. The folder on this computer is always the original —
   nothing Stem does can change the mirror's contents from the server side.
-- Mirrors skip `.git`, `node_modules`, OS junk files, symbolic links, and files over
-  25 MB. Anything else skipped is counted on the folder's page.
+- Mirrors skip `.git`, `node_modules`, OS junk files, whatever the folder's own
+  `.gitignore` files leave out, symbolic links, and files over 25 MB. Anything else
+  skipped is counted on the folder's page.
 - If the folder disappears (an unplugged drive, a rename), syncing freezes and the
   folder's row says so — the mirror keeps its last state rather than treating it as deleted.
   Disconnecting the folder in Stem is how you delete the mirror.

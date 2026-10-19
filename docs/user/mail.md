@@ -5,6 +5,9 @@ The first recipient coordinates the conversation and can consult the other
 personas. Replies arrive in your Inbox. A persona that makes pictures while answering
 (see [image generation](settings.md#image-generation)) attaches them to its reply.
 
+This page is about mail with your own personas. To mail other people who use Stem,
+see [Mail with other Stems](other-stems.md).
+
 ## Built-in personas
 
 Stem ships with four personas. You can edit each one, but you cannot delete
@@ -77,16 +80,21 @@ and says who gets your reply. Each conversation keeps its own reply draft. While
 personas work, a live card shows who is on it and the latest steps, with **Stop**.
 Below it the newest mail is open and older ones fold to one line. Mail the
 personas sent each other folds onto the reply it led to ("Consulted Verifier · 2
-mails"). If you reply while they are still working, your mail is read when the
-current run ends. A reply the server refused stays in the thread as **Not sent**,
+mails"). If you reply while they are still working and only ask how it is going
+("what's the status?"), the lead answers right away from their reports
+and live work, and the work carries on undisturbed. A mail that also asks for
+something is answered that way too and then read when the current run ends; any
+other mail just waits for the run to end. A reply the server refused stays in the thread as **Not sent**,
 with Retry, Edit and Delete, so its text is never lost. **Forward** sends a mail on
 to other personas with a note of your own.
 
 The Inbox lists **Waiting on you** first, then **Working** (conversations you
-sent that personas are still on), then the folded **Snoozed**, **Archived** and
+sent that personas are still on), then **Requests** (first mail from people on
+other Stems you haven't accepted yet), then the folded **Snoozed**, **Archived** and
 **Sent** sections. A run that needs your approval for a command waits in its
 mail with **Allow once** and **Deny**. You can also answer in words in the reply
-box instead. On the Mac the reply and compose boxes have the dictation mic too.
+box instead. Once you answer, the conversation moves out of **Waiting on you** to
+**Working**. The reply and compose boxes have the dictation mic too.
 
 ## Agents
 
@@ -131,8 +139,10 @@ A scheduled task that finds something worth telling you sends mail. All firings
 of one task share one conversation. Each firing keeps its own headline, and the
 conversation takes the latest headline as its subject. Beneath the short notice
 the mail carries the run's full reply, such as a report or the drafts it wrote,
-once the run finishes. Every run happens in a thread of its own that no chat
-shows; the mail, and the Work beneath it, is the only place a run appears. A
+once the run finishes. A task scheduled from a mail conversation, such as a
+follow-up check a persona set up, reports in that same conversation instead, so a
+chain of checks stays one Inbox row. Every run happens in a thread of its own that
+no chat shows; the mail, and the Work beneath it, is the only place a run appears. A
 task that starts failing sends one mail with the reason. Pictures a run makes come
 with its mail, and a run that made pictures always sends one.
 

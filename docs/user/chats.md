@@ -29,14 +29,16 @@ there:
   while it runs. Once the answer is done the rows fold into one line, such as
   "Used 3 tools and 1 skill" with the total time. Click it to see every call again.
 - The mic button in the composer dictates. Speech is turned into text on the
-  device, and the audio never leaves it. It needs macOS 26 or iOS 26; elsewhere
-  the button is hidden. Pick the Mac's language in **Settings → App → Dictation**;
-  on the phone, hold the mic.
+  device, and the audio never leaves it. On a Mac it needs macOS 26, on the phone
+  iOS 26; on Windows and Linux it runs Whisper on your computer, downloaded the
+  first time you dictate. Pick the language in **Settings → App → Dictation**
+  (see [Dictation](settings.md#dictation)); on the phone, hold the mic.
 - **Web** turns web search on or off for the next message. It stays where you leave
   it, and is the same switch as **Settings → App → Web search**. Quick Chat keeps
   its own.
 - Web answers include cited sources: the sites' icons show under the answer;
   open them for a card per source.
+- Places in an answer (an address, a shop, a venue) are links that open Maps.
 - The context meter shows how full the conversation is.
 - Ask for a picture and Stem draws it with your ChatGPT subscription (see
   [Settings → Image generation](settings.md#image-generation)). Click it to enlarge.
@@ -50,16 +52,23 @@ there:
 - Use **+** on a folder to start a chat inside it.
 - Drag chats and folders to move or nest them.
 - ⌘-click (Ctrl-click) several chats, or Shift-click a range. A bar over the list
-  marks them read or unread, moves them to a folder, or deletes them after asking.
+  marks them read or unread, moves them to a folder, archives them, or deletes them
+  after asking.
   Dragging one of them moves them all. **Esc** clears the selection.
-- Right-click a chat to mark it read or unread, **Write a subject**, **Rename**,
-  move, or delete it. Deletion is permanent. Tasks scheduled from the chat stay:
-  they run on their own and report by mail.
+- Right-click a chat to mark it read or unread, **Archive** it, **Write a subject**,
+  **Rename**, move, or delete it. Deletion is permanent, so the confirmation offers
+  **Archive instead**. Tasks scheduled from the chat stay: they run on their own and
+  report by mail.
+- **Archive** (`⌘⇧A`, `Ctrl+Shift+A`) moves a chat out of the list into the folded
+  **Archived** section at its foot. Nothing is lost: an archived chat still opens and
+  shows up in search, with an archive badge. Right-click it and choose **Move out of
+  archive** to bring it back, or just continue it: a new message brings it back on
+  its own.
 - Right-click a folder for **New subfolder**, **Settings…**, **Mark all as read**
   (every unread chat in it and its subfolders), **Rename** or **Delete**. Deleting
   a folder moves its chats and child folders to the parent.
-- Use **Search**, `⌘F` on Mac, or `Ctrl+F` on Linux to search titles and message
-  text across every chat.
+- Use **Search**, `⌘F` on Mac, or `Ctrl+F` on Windows and Linux to search titles
+  and message text across every chat.
 
 ### Folders that file chats for you
 
@@ -74,6 +83,17 @@ existing chats** to look once at the idle chats outside any folder.
 Stem never moves a chat you placed yourself or a private chat. To undo a move,
 drag the chat back; it then stays wherever you put it. Filing runs on the same
 model as chat subjects (**Settings → Models → Quick tasks**).
+
+### The menu bar
+
+The app's menu bar lists every action that has a shortcut, with its keys beside it,
+so it is a good place to learn them. **File** has new chat, new mail, Quick Chat and
+**Attach Files…**. **View** opens the side panel's tabs (**Chats**, **Memory**,
+**Tools**, **Personas**, **Sources**, **Scheduled Tasks**). **Chat** has Stop,
+effort, Fast, **Archive**, **Snooze…**, read or unread, and **Delete Chat…**.
+**Window** lists the first nine chats under ⌘1–9 (Ctrl+1–9). **Settings** and
+**Check for Updates…** are under **Stem** on a Mac and under **File** on Windows and
+Linux. There is no Close Window item, so ⌘W (Ctrl+W) never closes Stem's window.
 
 ## Private chats
 
@@ -93,6 +113,8 @@ Hover over a message to reveal its actions:
 - **Delete from here**: remove that turn and everything after it. Requires a second
   click.
 - **Pin to this chat**: keep it on the chat's pinboard.
+- **Share this answer as a link**: publish the chat, or part of it, as a link anyone
+  can open (see [Share links](share-links.md)).
 
 The pinboard is the strip under the chat title, **Pinned in this chat**. Besides
 whole messages, you can select a few words of a reply and click **Pin**, or type
