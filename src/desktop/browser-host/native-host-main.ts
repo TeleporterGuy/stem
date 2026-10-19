@@ -41,6 +41,7 @@ import {
   type ExtensionDownload,
   type FromExtension,
   type HostHello,
+  appImageName,
   linuxBrowserName,
   windowsBrowserName
 } from '../../shared/browser-native';
@@ -67,8 +68,24 @@ export function browserOf(command: string): { appPath: string; appName: string }
   if (/^[a-z]:\\/i.test(command)) {
     return { appPath: command, appName: windowsBrowserName(command) ?? (win32.basename(command).replace(/\.exe$/i, '') || 'Browser') };
   }
-  const appName = linuxBrowserName(command) ?? (basename(command) || 'Browser');
+  const appName = linuxBrowserName(command) ?? (/\.appimage$/i.test(command) ? appImageName(command) : basename(command) || 'Browser');
   return { appPath: command, appName };
+}
+
+/**
+ * Linux: the AppImage a browser runs from, by the environment it passed us
+ * (the AppImage runtime sets APPIMAGE and APPDIR; the browser's own
+ * /proc/<pid>/environ is no help, Chromium writes its process title over it).
+ * The executable sits in a mount that changes on every launch, so the
+ * AppImage file is what stays the same and what starts the browser again.
+ * The executable must be inside APPDIR: a browser started from another
+ * AppImage (Stem's own) inherits its variables.
+ */
+export function appImageOf(exe: string, env: NodeJS.ProcessEnv): string | null {
+  const image = env.APPIMAGE;
+  const dir = env.APPDIR?.replace(/\/+$/, '');
+  if (!image?.startsWith('/') || !dir?.startsWith('/') || !exe.startsWith(`${dir}/`)) return null;
+  return image;
 }
 
 /**
@@ -95,7 +112,8 @@ function parentCommand(): string {
     if (process.platform === 'linux') {
       // `ps -o comm=` is cut to 15 characters there; the exe link is the whole
       // path. A browser updated in place while running reads "… (deleted)".
-      return readlinkSync(`/proc/${process.ppid}/exe`).replace(/ \(deleted\)$/, '');
+      const exe = readlinkSync(`/proc/${process.ppid}/exe`).replace(/ \(deleted\)$/, '');
+      return appImageOf(exe, process.env) ?? exe;
     }
     return execFileSync('/bin/ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8' }).trim();
   } catch {

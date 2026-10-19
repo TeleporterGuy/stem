@@ -2,7 +2,7 @@
 // copied out for Load unpacked, the wrapper the manifests point at, the
 // manifests in each installed browser — Arc's twice — and a startup refresh
 // that only touches an install this profile made.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,8 +19,9 @@ import {
   wrapperBatch,
   wrapperScript
 } from '../../src/desktop/browser-host/install';
-import { FrameReader, encodeFrame, launchableBrowser, launchableOnLinux, windowsBrowserName } from '../../src/shared/browser-native';
-import { browserOf } from '../../src/desktop/browser-host/native-host-main';
+import { FrameReader, appImageName, encodeFrame, launchableBrowser, launchableOnLinux, windowsBrowserName } from '../../src/shared/browser-native';
+import { appImageOf, browserOf } from '../../src/desktop/browser-host/native-host-main';
+import { launchableAppImage } from '../../src/desktop/browser-host/appimage';
 import { expectPosixMode } from './posix-mode';
 
 let home: string;
@@ -130,8 +131,83 @@ describe('Linux', () => {
     expect(browserOf('/usr/bin/vivaldi-bin').appName).toBe('vivaldi-bin');
   });
 
+  it('registers any other Chromium browser, but not Electron apps', async () => {
+    for (const d of [['net.imput.helium'], ['thorium'], ['BraveSoftware', 'Brave-Browser-Beta']]) {
+      mkdirSync(config(...d), { recursive: true });
+      writeFileSync(config(...d, 'Local State'), '{}');
+    }
+    // Before its first profile, Helium has only these.
+    mkdirSync(config('net.imput.helium', 'Crash Reports'));
+    writeFileSync(config('net.imput.helium', 'Variations'), '');
+    mkdirSync(config('thorium', 'Default'));
+    mkdirSync(config('BraveSoftware', 'Brave-Browser-Beta', 'Default'));
+    // Electron apps: the folder is the profile, Preferences and all; or one that died early.
+    mkdirSync(config('Code', 'Default'), { recursive: true });
+    writeFileSync(config('Code', 'Local State'), '{}');
+    writeFileSync(config('Code', 'Preferences'), '{}');
+    mkdirSync(config('oe', 'Crashpad'), { recursive: true });
+    writeFileSync(config('oe', 'Local State'), '{}');
+    const res = await installBrowserControl(src(), browserInstallPaths(state), home, 'linux');
+    expect(res.registered.sort()).toEqual(['Brave Browser Beta', 'Helium', 'Thorium']);
+    expect(existsSync(config('net.imput.helium', 'NativeMessagingHosts', 'com.stem.browser.json'))).toBe(true);
+    expect(existsSync(config('Code', 'NativeMessagingHosts'))).toBe(false);
+    // No command to run, so not among Set up's steps.
+    expect(setupBrowsers(home, 'linux', [], null)).toEqual([]);
+  });
+
+  it('names an AppImage browser by its file, inside its own mount only', () => {
+    expect(appImageName('/home/u/Applications/Helium-0.4.5.1-x86_64.AppImage')).toBe('Helium');
+    expect(appImageName('/home/u/thorium-browser_130.0.6723.174_AVX2.AppImage')).toBe('Thorium Browser');
+    expect(appImageName('/home/u/ungoogled-chromium_131.0-1.appimage')).toBe('Ungoogled Chromium');
+    expect(browserOf('/home/u/Apps/Helium-0.4.5-x86_64.AppImage')).toEqual({
+      appPath: '/home/u/Apps/Helium-0.4.5-x86_64.AppImage',
+      appName: 'Helium'
+    });
+    const env = (vars: Record<string, string>) => vars;
+    const image = '/home/u/Apps/Helium.AppImage';
+    expect(appImageOf('/tmp/.mount_HeliumAb12/opt/helium/chrome', env({ APPIMAGE: image, APPDIR: '/tmp/.mount_HeliumAb12' }))).toBe(image);
+    // Chrome started by Stem's own AppImage inherits Stem's variables.
+    expect(appImageOf('/opt/google/chrome/chrome', env({ APPIMAGE: '/home/u/Stem.AppImage', APPDIR: '/tmp/.mount_Stem99' }))).toBeNull();
+    expect(appImageOf('/tmp/.mount_Stem99x/chrome', env({ APPIMAGE: image, APPDIR: '/tmp/.mount_Stem99' }))).toBeNull();
+    expect(appImageOf('/usr/bin/x', {})).toBeNull();
+  });
+
+  it.skipIf(process.platform === 'win32')('starts an AppImage only when the file is one and only its owner can change it', () => {
+    const elf = Buffer.alloc(64);
+    elf.write('\x7fELF', 0, 'latin1');
+    elf.write('AI\x02', 8, 'latin1');
+    const good = join(realpathSync(home), 'Helium.AppImage');
+    writeFileSync(good, elf);
+    chmodSync(good, 0o755);
+    expect(launchableAppImage(good)).toBe(true);
+    chmodSync(good, 0o777);
+    expect(launchableAppImage(good)).toBe(false);
+    chmodSync(good, 0o644);
+    expect(launchableAppImage(good)).toBe(false);
+    const script = join(home, 'evil.AppImage');
+    writeFileSync(script, '#!/bin/sh\necho hi\n');
+    chmodSync(script, 0o755);
+    expect(launchableAppImage(script)).toBe(false);
+    expect(launchableAppImage(`${home}/x/../Helium.AppImage`)).toBe(false);
+    // In a folder anyone may write to, someone else could swap it.
+    chmodSync(good, 0o755);
+    const open = join(home, 'open');
+    mkdirSync(open);
+    const there = join(open, 'Helium.AppImage');
+    writeFileSync(there, elf);
+    chmodSync(there, 0o755);
+    expect(launchableAppImage(realpathSync(there))).toBe(true);
+    chmodSync(open, 0o777);
+    expect(launchableAppImage(realpathSync(there))).toBe(false);
+    chmodSync(open, 0o755);
+    // A link to it is not it.
+    symlinkSync(there, join(home, 'link.AppImage'));
+    expect(launchableAppImage(join(realpathSync(home), 'link.AppImage'))).toBe(false);
+    expect(launchableAppImage('Helium.AppImage')).toBe(false);
+  });
+
   it('starts only known browsers from system folders', () => {
-    for (const ok of ['/opt/google/chrome/chrome', '/opt/brave.com/brave/brave', '/usr/lib64/chromium-browser/chromium-browser', 'google-chrome-stable']) {
+    for (const ok of ['/opt/google/chrome/chrome', '/opt/brave.com/brave/brave', '/usr/lib64/chromium-browser/chromium-browser', 'google-chrome-stable', '/opt/vivaldi/vivaldi-bin', '/usr/lib/x86_64-linux-gnu/opera/opera', '/opt/chromium.org/thorium/thorium']) {
       expect(launchableOnLinux(ok)).toBe(true);
     }
     for (const bad of ['/home/u/bin/chrome', '/tmp/brave-evil.sh', '/opt/google/chrome/../../../tmp/x', '/usr/bin/vivaldi-bin', 'sh', '']) {

@@ -36,6 +36,7 @@ import {
   type InstallSource
 } from './install';
 import { handshakeProof, isNonce, newNonce, proofMatches } from './handshake';
+import { launchableAppImage } from './appimage';
 import { arcSidebarText, readArcSidebar, type ArcSidebarTab } from './arc-tabs';
 import {
   appOf,
@@ -316,6 +317,8 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
   const launch = deps.launch ?? ((app: string) => defaultLaunch(app, platform));
   const launchWaitMs = deps.launchWaitMs ?? LAUNCH_WAIT_MS;
   const openWith = deps.openWith ?? ((app: string | null, target: string) => defaultOpenWith(app, target, platform));
+  /** A browser Stem knows, or on Linux an AppImage that vouches for itself. */
+  const mayLaunch = (app: string): boolean => launchableBrowser(app, platform) || (platform === 'linux' && launchableAppImage(app));
   const conns = new Map<string, Conn>();
   const connectWaiters = new Set<() => void>();
   /** Upload folders per thread, removed when the run ends. */
@@ -598,7 +601,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     const app = appOf(chosen);
     const profiles = settings.known.filter((b) => appOf(b.id) === app).length;
     const name = entry ? nameOf(entry, profileNames(settings.known)) : chosen;
-    if (!launchableBrowser(app, platform)) {
+    if (!mayLaunch(app)) {
       // The id came from a native host's word; Stem starts only browsers it knows.
       return {
         ok: false,
@@ -997,7 +1000,7 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       // comes forward, so typing its extensions page is all that is left.
       await openWith(null, paths.extensionDir).catch(() => undefined);
       // The renderer names the app; on Linux that is a program to run, so only a known browser.
-      if (app && launchableBrowser(app, platform)) {
+      if (app && mayLaunch(app)) {
         await openWith(app, extensionsPageUrl(app)).catch(() => undefined);
       }
     },

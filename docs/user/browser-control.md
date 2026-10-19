@@ -6,8 +6,10 @@ download, and check a page's console and network requests. It works in backgroun
 tabs, so the tab you are looking at never changes under you.
 
 It runs on a Mac, in Arc, Chrome, Dia or Brave; on Windows, in Chrome, Edge, Brave or
-Chromium; and on Linux, in Chrome, Brave, Chromium or Edge. It works whether Stem's server runs on that computer or somewhere else. On Linux,
-Snap and Flatpak builds of a browser can't reach Stem; use the browser's own .deb or .rpm.
+Chromium; and on Linux, in Chrome, Brave, Chromium, Edge, Vivaldi, Opera, or any other Chromium
+browser, including AppImages such as Helium or Thorium. It works whether Stem's server runs on that computer or somewhere else. On Linux,
+Snap and Flatpak builds of a browser can't reach Stem; use the browser's own .deb, .rpm or AppImage.
+Run a new browser once before Set up, so Stem finds its settings folder.
 
 ## Setting it up
 

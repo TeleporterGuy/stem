@@ -31,15 +31,34 @@ export const BROWSER_NATIVE_HOST = 'com.stem.browser';
  * binary. A known browser is the only thing Stem will start or hand a URL to:
  * the path arrives from the native host, and a peer that claimed some other
  * program must not get Stem to run it. System folders only, so a same-named
- * file in the user's home never qualifies. Snap and Flatpak are not here (their
- * sandbox will not start Stem's host anyway).
+ * file in the user's home never qualifies. AppImages live wherever the user put
+ * them and are checked on the desktop side (browser-host/appimage.ts). Snap and
+ * Flatpak are not here (their sandbox will not start Stem's host anyway).
  */
 const LINUX_BROWSERS: { name: string; exe: RegExp }[] = [
   { name: 'Google Chrome', exe: /^\/opt\/google\/chrome(-beta|-unstable)?\/chrome$/ },
   { name: 'Brave', exe: /^\/opt\/brave[^/]*(\/brave[^/]*)?\/brave$/ },
   { name: 'Microsoft Edge', exe: /^\/opt\/microsoft\/msedge(-beta|-dev)?\/msedge$/ },
-  { name: 'Chromium', exe: /^\/usr\/lib(64)?\/chromium(-browser)?\/chrom(e|ium)(-browser)?$/ }
+  { name: 'Chromium', exe: /^\/usr\/lib(64)?\/chromium(-browser)?\/chrom(e|ium)(-browser)?$/ },
+  { name: 'Vivaldi', exe: /^\/opt\/vivaldi(-snapshot)?\/vivaldi-bin$/ },
+  { name: 'Opera', exe: /^\/usr\/lib(64)?\/(x86_64-linux-gnu\/)?opera(-beta|-developer)?\/opera(-beta|-developer)?$/ },
+  { name: 'Thorium', exe: /^\/opt\/chromium\.org\/thorium(-browser)?\/thorium(-browser)?$/ }
 ];
+
+/**
+ * A browser shipped as an AppImage, named from its file: "Helium-0.4.5-x86_64.AppImage"
+ * is Helium, "thorium-browser_130.0_AVX2.AppImage" is Thorium Browser. The name
+ * stops at the first part that starts with a digit or names an architecture.
+ */
+export function appImageName(path: string): string {
+  const base = (path.split('/').pop() ?? '').replace(/\.appimage$/i, '');
+  const words: string[] = [];
+  for (const w of base.split(/[-_ .]+/)) {
+    if (!w || /^\d/.test(w) || /^v\d/i.test(w) || /^(x86|x64|amd64|aarch64|arm64|armhf|i[36]86|linux)/i.test(w)) break;
+    words.push(w[0]!.toUpperCase() + w.slice(1));
+  }
+  return words.join(' ') || 'Browser';
+}
 
 /** The commands Set up may hand the extensions page to on Linux (found on PATH). */
 export const LINUX_BROWSER_COMMANDS = [

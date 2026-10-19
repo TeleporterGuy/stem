@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { chmod, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { host } from '../../server/host';
 import { BROWSER_EXTENSION_ID, BROWSER_NATIVE_HOST } from '../../shared/browser-native';
 import type { SetupBrowser } from '../../shared/types';
@@ -154,7 +154,66 @@ function linuxBrowserDirs(home: string): BrowserDir[] {
     dir('Chromium', 'chromium', ['chromium', 'chromium-browser'], ['chromium.desktop', 'chromium-browser.desktop'], join(config, 'chromium')),
     dir('Microsoft Edge', 'microsoft-edge', ['microsoft-edge', 'microsoft-edge-stable'], ['microsoft-edge.desktop'], join(config, 'microsoft-edge')),
   ];
-  return dirs.filter((d) => existsSync(d.dataDir));
+  const known = dirs.filter((d) => existsSync(d.dataDir));
+  const taken = new Set(dirs.map((d) => d.dataDir));
+  // Any other Chromium browser — an AppImage (Helium, Thorium), a tarball, a
+  // beta channel, Vivaldi, Opera — reads <its user data>/NativeMessagingHosts
+  // too. It has no command Stem knows; Set up only writes its manifest.
+  const others = chromiumDataDirs(config)
+    .filter((d) => !taken.has(d))
+    .map((d) => dir(otherBrowserName(relative(config, d)), '', [], [], d));
+  return [...known, ...others];
+}
+
+/** Folder names that do not say the browser's name. */
+const OTHER_BROWSER_NAMES: Record<string, string> = {
+  'net.imput.helium': 'Helium',
+  'google-chrome-beta': 'Google Chrome Beta',
+  'google-chrome-unstable': 'Google Chrome Dev',
+  'microsoft-edge-beta': 'Microsoft Edge Beta',
+  'microsoft-edge-dev': 'Microsoft Edge Dev'
+};
+
+/** "BraveSoftware/Brave-Browser-Beta" → "Brave Browser Beta", "thorium" → "Thorium". */
+function otherBrowserName(rel: string): string {
+  if (OTHER_BROWSER_NAMES[rel]) return OTHER_BROWSER_NAMES[rel]!;
+  const last = rel.split(sep).pop() ?? rel;
+  return last
+    .split(/[-_ .]+/)
+    .filter(Boolean)
+    .map((w) => w[0]!.toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+/**
+ * Chromium user-data folders one or two levels under the config folder: a
+ * `Local State` file and something only a browser writes beside it (a fresh
+ * Helium has `Variations` and `Crash Reports` before its `Default` profile).
+ * Electron apps keep a Local State too, but their folder is itself the
+ * profile, `Preferences` and all, and they crash into `Crashpad`.
+ */
+const BROWSER_MARKS = ['Default', 'Crash Reports', 'BrowserMetrics', 'Variations'];
+
+function chromiumDataDirs(config: string): string[] {
+  const isData = (d: string) =>
+    existsSync(join(d, 'Local State')) &&
+    !existsSync(join(d, 'Preferences')) &&
+    BROWSER_MARKS.some((m) => existsSync(join(d, m)));
+  const subdirs = (d: string): string[] => {
+    try {
+      return readdirSync(d, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+        .map((e) => join(d, e.name));
+    } catch {
+      return [];
+    }
+  };
+  const found: string[] = [];
+  for (const d of subdirs(config)) {
+    if (isData(d)) found.push(d);
+    else found.push(...subdirs(d).filter(isData));
+  }
+  return found;
 }
 
 /**
