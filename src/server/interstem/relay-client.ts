@@ -348,7 +348,8 @@ export async function streamMail(
   relay: string,
   id: Identity,
   onMail: (env: Envelope) => Promise<void>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  onOpen?: () => void
 ): Promise<void> {
   if (!acceptableRelayUrl(relay)) throw new RelayError(0, 'unacceptable_relay_url');
   const res = await fetch(relay + '/v1/stream', {
@@ -365,6 +366,7 @@ export async function streamMail(
     }
     throw new RelayError(res.status, code);
   }
+  onOpen?.();
   const decoder = new TextDecoder();
   let buf = '';
   for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {

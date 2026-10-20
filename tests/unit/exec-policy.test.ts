@@ -361,6 +361,22 @@ describe('classify: read-only probes stay read-only (H-01)', () => {
     expect(classify('git log -3', none, 'zsh', { confine: inside }).tier).toBe('run');
   });
 
+  it('judges git diff --no-index, which reads any file on the machine', () => {
+    const inside = { cwd: '/w/scratch', roots: ['/w'] };
+    expect(classify('git diff --no-index /home/me/.ssh/id_rsa /dev/null', none, 'zsh', { confine: inside }).tier).toBe('judge');
+    expect(classify('git diff HEAD~1', none, 'zsh', { confine: inside }).tier).toBe('run');
+  });
+
+  it('auto-runs git branch only while it lists', () => {
+    const inside = { cwd: '/w/scratch', roots: ['/w'] };
+    for (const read of ['git branch', 'git branch -a', 'git branch -vv', 'git branch --show-current', 'git branch --list "feat*"', 'git branch --contains HEAD', 'git branch -r --merged main']) {
+      expect(classify(read, none, 'zsh', { confine: inside }).tier, read).toBe('run');
+    }
+    for (const write of ['git branch -D main', 'git branch -d old', 'git branch -m new', 'git branch -M a b', 'git branch -f main HEAD~3', 'git branch newname', 'git branch --delete x', 'git branch -u origin/x', 'git branch -aD main']) {
+      expect(classify(write, none, 'zsh', { confine: inside }).tier, write).toBe('judge');
+    }
+  });
+
   // POSIX-host scenarios: on a Windows runner HOME and tmpdir are Windows paths, which a
   // zsh host never sees. The cmd.exe case below covers that host.
   it.skipIf(process.platform === 'win32')('without known roots, a reader naming an absolute, ~ or climbing path is judged', () => {

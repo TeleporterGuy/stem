@@ -2977,6 +2977,52 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * instructions cards store it) and by the dead worker's thread (skill cards,
    * exec/harness work — a worker's held requests all belong to its live turn).
    */
+  private onProcessExit(
+    worker: PiWorker,
+    proc: PiProcess,
+    info: { code: number | null; signal: string | null },
+    gen: number,
+    spawnedAt: number
+  ): void {
+    // shutdown()/restart()/retire detach the process before disposing it — only
+    // an exit of the worker's CURRENT process is unexpected and feeds the breaker.
+    const unexpected = worker.proc === proc;
+    // A child swapped out for a fresh one (stale persona prompt) can exit
+    // seconds after its successor took over the worker. Everything on the
+    // worker now belongs to the successor: release only what this child held.
+    if (worker.proc !== null && !unexpected) {
+      this.settleWorkerApprovals(proc, null);
+      log('pi', 'backend stopped', { ...info, uptimeMs: Date.now() - spawnedAt, gen, worker: worker.id, superseded: true });
+      return;
+    }
+    const deadThread = worker.currentTurn?.threadId ?? null;
+    const deadTurnId = worker.currentTurn?.turnId;
+    worker.proc = null;
+    worker.activeThreadId = null;
+    worker.currentTurn = null;
+    worker.currentModel = null;
+    worker.currentThinking = null;
+    // Only what THIS child was holding: its cards, its turn's exec/harness
+    // work. Turns streaming on other workers keep going.
+    this.settleWorkerApprovals(proc, deadThread);
+    worker.gate.finishTurn();
+    this.pumpCapacityWaiters();
+    // Attributed: `threadId` names the turn THIS child was carrying (null when
+    // it sat idle — a reaped extra worker). Consumers scope their reaction to
+    // it; before the pool, a bare process/exit meant "everything died", and an
+    // idle worker's retirement was failing every in-flight mail delivery and
+    // scheduled run on the other workers.
+    this.emitEvent('process/exit', { ...info, threadId: deadThread, turnId: deadTurnId });
+    const uptimeMs = Date.now() - spawnedAt;
+    log('pi', unexpected ? 'backend exited unexpectedly' : 'backend stopped', {
+      ...info,
+      uptimeMs,
+      gen,
+      worker: worker.id
+    });
+    if (unexpected) this.noteProcessExit(gen, uptimeMs);
+  }
+
   private settleWorkerApprovals(proc: PiProcess, threadId: string | null): void {
     for (const [id, pending] of [...this.adminApprovalProposals]) {
       if (pending.process === proc) {
@@ -3949,37 +3995,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       this.emitEvent('process/stderr', { text });
       log('pi.stderr', text.trim());
     });
-    proc.on('exit', (info: { code: number | null; signal: string | null }) => {
-      // shutdown()/restart()/retire detach the process before disposing it — only
-      // an exit of the worker's CURRENT process is unexpected and feeds the breaker.
-      const unexpected = worker.proc === proc;
-      const deadThread = worker.currentTurn?.threadId ?? null;
-      const deadTurnId = worker.currentTurn?.turnId;
-      worker.proc = null;
-      worker.activeThreadId = null;
-      worker.currentTurn = null;
-      worker.currentModel = null;
-      worker.currentThinking = null;
-      // Only what THIS child was holding: its cards, its turn's exec/harness
-      // work. Turns streaming on other workers keep going.
-      this.settleWorkerApprovals(proc, deadThread);
-      worker.gate.finishTurn();
-      this.pumpCapacityWaiters();
-      // Attributed: `threadId` names the turn THIS child was carrying (null when
-      // it sat idle — a reaped extra worker). Consumers scope their reaction to
-      // it; before the pool, a bare process/exit meant "everything died", and an
-      // idle worker's retirement was failing every in-flight mail delivery and
-      // scheduled run on the other workers.
-      this.emitEvent('process/exit', { ...info, threadId: deadThread, turnId: deadTurnId });
-      const uptimeMs = Date.now() - spawnedAt;
-      log('pi', unexpected ? 'backend exited unexpectedly' : 'backend stopped', {
-        ...info,
-        uptimeMs,
-        gen,
-        worker: worker.id
-      });
-      if (unexpected) this.noteProcessExit(gen, uptimeMs);
-    });
+    proc.on('exit', (info: { code: number | null; signal: string | null }) => this.onProcessExit(worker, proc, info, gen, spawnedAt));
 
     try {
       proc.start();

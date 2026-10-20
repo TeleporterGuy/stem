@@ -210,7 +210,8 @@ export async function createSubdir(name: string): Promise<FilesListing> {
 
 /** Delete a top-level subfolder and everything under it (guards the name first). */
 export async function removeSubdir(name: string): Promise<FilesListing> {
-  if (!isSafeSubdir(name)) throw new Error(`Unsafe files subfolder: ${name}`);
+  // '' passes isSafeSubdir (it is its own basename) and would rm the whole root.
+  if (!name || !isSafeSubdir(name)) throw new Error(`Unsafe files subfolder: ${name}`);
   await rm(join(filesRoot(), name), { recursive: true, force: true });
   return listFiles();
 }
