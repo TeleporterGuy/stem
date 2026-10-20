@@ -23,6 +23,12 @@ export interface SourceMessage {
   role: 'user' | 'assistant';
   /** What an anchor names: a chat turn id (question and reply share it) or a mail item id. */
   group?: string;
+  /**
+   * The chat turn's runtime id. A reply still on screen from its live stream
+   * carries that id until the chat is reloaded from disk, so a Share click
+   * right after an answer names the turn by it.
+   */
+  runtimeGroup?: string;
   text: string;
   author?: string;
   createdAt?: string;
@@ -47,6 +53,7 @@ export function chatMessages(messages: ChatMessage[]): SourceMessage[] {
     .map((m) => ({
       role: m.role as 'user' | 'assistant',
       ...(m.turnId ? { group: m.turnId } : {}),
+      ...(m.runtimeTurnId ? { runtimeGroup: m.runtimeTurnId } : {}),
       text: m.content,
       ...(m.createdAt ? { createdAt: m.createdAt } : {}),
       ...(m.meta?.model ? { model: m.meta.model } : {}),
@@ -88,7 +95,7 @@ export function mailMessages(items: MailItem[], name: (id: string) => string): S
 export function pickMessages(messages: SourceMessage[], scope: ShareScope = 'thread', anchorId?: string): SourceMessage[] {
   if (scope === 'thread') return messages;
   if (!anchorId) throw new ShareInputError('Choose the answer to share.');
-  const group = messages.filter((m) => m.group === anchorId);
+  const group = messages.filter((m) => m.group === anchorId || m.runtimeGroup === anchorId);
   const answers = group.filter((m) => m.role === 'assistant');
   if (!answers.length) throw new ShareInputError('That answer is no longer there.');
   if (scope === 'answer') return answers;

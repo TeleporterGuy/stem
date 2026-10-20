@@ -105,6 +105,17 @@ describe('share snapshot', () => {
     expect(() => pickMessages(msgs, 'answer')).toThrow(ShareInputError);
   });
 
+  it('finds an answer by its live turn id too', () => {
+    // Just streamed: the bubble names its turn by the runtime id until the
+    // chat is reloaded, while history keys it by the session entry id.
+    const msgs = chatMessages([
+      { id: 'u', role: 'user', content: 'q', turnId: 'entry-1', runtimeTurnId: 'live-1' },
+      { id: 'x', role: 'assistant', content: 'r', turnId: 'entry-1', runtimeTurnId: 'live-1' }
+    ]);
+    expect(pickMessages(msgs, 'pair', 'live-1').map((m) => m.text)).toEqual(['q', 'r']);
+    expect(pickMessages(msgs, 'answer', 'live-1').map((m) => m.text)).toEqual(['r']);
+  });
+
   it('reads a mail thread as the user sees it', async () => {
     const at = 1_760_000_000_000;
     const items: MailItem[] = [
