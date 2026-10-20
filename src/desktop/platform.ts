@@ -58,13 +58,13 @@ export function enableGlobalShortcutPortal(): void {
  * one itself (Wayland). A second launch hands its argv to the running instance,
  * which toggles the overlay — see the second-instance handler in index.ts.
  */
-export function quickChatSummonCommand(): string {
+export function quickChatSummonCommand(flag: '--quick-chat' | '--ask-window' = '--quick-chat'): string {
   // Inside an AppImage, execPath points at the extracted temp mount, which is
   // gone by the time the user's keybinding fires. $APPIMAGE is the stable file.
   const exe = process.env.APPIMAGE || process.execPath;
   const quoted = /\s/.test(exe) ? `"${exe}"` : exe;
   // Unpackaged (dev) runs need the app directory too, or Electron opens its demo.
-  return app.isPackaged ? `${quoted} --quick-chat` : `${quoted} ${app.getAppPath()} --quick-chat`;
+  return app.isPackaged ? `${quoted} ${flag}` : `${quoted} ${app.getAppPath()} ${flag}`;
 }
 
 /**

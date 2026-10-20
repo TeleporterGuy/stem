@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { degrade } from '../degrade';
 import { mailDeviceQueuePath } from './paths';
+import { replaceFile } from '../replace-file';
 
 // Mail waiting for a computer: conversations whose delivery was held because
 // the target persona's coding work is pinned to a paired device that was not
@@ -77,7 +78,7 @@ async function writeEntries(entries: MailDeviceQueueEntry[]): Promise<void> {
   const path = mailDeviceQueuePath();
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify({ version: 1, entries } satisfies QueueStore, null, 2), 'utf8');
-  await rename(tmp, path); // atomic on the same volume
+  await replaceFile(tmp, path); // atomic on the same volume
 }
 
 /** Record a wait (upsert by conversation — a newer send replaces the older wait). */

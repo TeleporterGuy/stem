@@ -1,13 +1,18 @@
-import { readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import ignore, { type Ignore } from 'ignore';
 import type { MirrorManifestEntry } from '../../shared/types';
 
 // One scan of a mirrored folder on THIS machine: the full tree as
 // '/'-separated rels with {size, mtimeMs}, minus what deliberately never
-// mirrors. The rules are fixed (decision: no .gitignore/.stemignore in v1)
-// and every exclusion the user might miss is REPORTED, not silent — the
-// skipped list reaches the Folders tab, and the prompt discloses the rules so
-// the assistant does not read a missing node_modules as a broken folder.
+// mirrors: the fixed names below, and whatever the folder's own .gitignore
+// files exclude (build output, caches, local state). A repo's ios/build or
+// dist can be thousands of files nobody reads; the project already says so.
+// Only .gitignore files inside the folder count — not .git/info/exclude or
+// a global excludes file, which belong to one checkout, not the project.
+// Every exclusion the user might miss is REPORTED, not silent — the skipped
+// list reaches the Folders tab, and the prompt discloses the rules so the
+// assistant does not read a missing node_modules as a broken folder.
 
 /** Names that never mirror, wherever they appear in the tree. */
 export const MIRROR_IGNORED_NAMES = new Set(['.git', 'node_modules', '.DS_Store', 'Thumbs.db', 'desktop.ini']);
@@ -35,7 +40,7 @@ export async function scanMirrorRoot(root: string): Promise<MirrorScan> {
     if (skipped.length < MAX_SKIPPED) skipped.push({ rel, reason });
   };
 
-  async function walk(dir: string, relBase: string): Promise<void> {
+  async function walk(dir: string, relBase: string, rules: GitignoreRules[]): Promise<void> {
     let names;
     try {
       names = await readdir(dir, { withFileTypes: true });
@@ -43,9 +48,15 @@ export async function scanMirrorRoot(root: string): Promise<MirrorScan> {
       skip(relBase || '.', 'unreadable directory');
       return;
     }
+    if (names.some((d) => d.name === '.gitignore' && d.isFile())) {
+      const text = await readFile(join(dir, '.gitignore'), 'utf8').catch(() => null);
+      if (text !== null) rules = [...rules, { base: relBase, ig: ignore().add(text) }];
+    }
     for (const d of names) {
       if (MIRROR_IGNORED_NAMES.has(d.name)) continue; // the fixed rules; disclosed, not reported
       const rel = relBase ? `${relBase}/${d.name}` : d.name;
+      // Not entering an ignored directory matches git: nothing under it can be re-included.
+      if (!d.isSymbolicLink() && gitignored(rules, rel, d.isDirectory())) continue;
       // A symlink is skipped whatever it points at: following one could walk
       // out of the folder the user picked, which is the one thing a mirror
       // must never upload.
@@ -54,7 +65,7 @@ export async function scanMirrorRoot(root: string): Promise<MirrorScan> {
         continue;
       }
       if (d.isDirectory()) {
-        await walk(join(dir, d.name), rel);
+        await walk(join(dir, d.name), rel, rules);
         continue;
       }
       if (!d.isFile()) {
@@ -74,6 +85,24 @@ export async function scanMirrorRoot(root: string): Promise<MirrorScan> {
     }
   }
 
-  await walk(root, '');
+  await walk(root, '', []);
   return { entries, skipped, rootMissing: false };
+}
+
+/** One .gitignore's patterns, which apply to paths relative to the directory holding it. */
+interface GitignoreRules {
+  base: string;
+  ig: Ignore;
+}
+
+/** Whether git would ignore `rel`: the deepest .gitignore with an opinion wins, so a `!pattern` can re-include. */
+export function gitignored(rules: GitignoreRules[], rel: string, isDir: boolean): boolean {
+  let ignored = false;
+  for (const { base, ig } of rules) {
+    const path = base ? rel.slice(base.length + 1) : rel;
+    const verdict = ig.test(isDir ? `${path}/` : path);
+    if (verdict.ignored) ignored = true;
+    else if (verdict.unignored) ignored = false;
+  }
+  return ignored;
 }

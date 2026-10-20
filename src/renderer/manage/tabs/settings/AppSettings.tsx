@@ -16,7 +16,7 @@ import { ReleaseNotesModal } from '../../../ReleaseNotesModal';
 import { InfoTip } from '../../../ui/InfoTip';
 import { RowSelect, ValueRow } from './rows';
 import { ConversationSections } from './ChatSettings';
-import { dictationLocale, loadDictationLanguages, setDictationLocale } from '../../../chat/dictation';
+import { dictationLocale, dictationModel, loadDictationLanguages, setDictationLocale, setDictationModel } from '../../../chat/dictation';
 
 /**
  * Settings → App: using Stem day to day — how it looks (first, as settings
@@ -215,13 +215,15 @@ function AppearanceSection() {
 
 /** What the Escape key does mid-reply. One setting, but a loaded one. */
 /**
- * The language the composer's mic listens in, on this Mac (a per-machine
+ * The language the composer's mic listens in, on this computer (a per-machine
  * choice, kept in localStorage). Hidden where dictation is unavailable.
  */
 function DictationSection() {
   const [langs, setLangs] = useState<{ id: string; name: string }[] | null>(null);
   const [current, setCurrent] = useState('');
   const [locale, setLocale] = useState(() => dictationLocale() ?? '');
+  const [model, setModel] = useState(dictationModel);
+  const mac = window.stem.platform === 'darwin';
 
   useEffect(() => {
     let live = true;
@@ -246,9 +248,9 @@ function DictationSection() {
             <>
               Language{' '}
               <InfoTip label="About dictation">
-                The mic button in the composer turns speech into text with the Mac’s own on-device
-                model; the audio never leaves this computer. A language’s model downloads the first
-                time you use it.
+                {mac
+                  ? 'The mic button in the composer turns speech into text with the Mac’s own on-device model; the audio never leaves this computer. A language’s model downloads the first time you use it.'
+                  : 'The mic button in the composer turns speech into text with Whisper, running on this computer; the audio never leaves it. The model downloads the first time you dictate.'}
               </InfoTip>
             </>
           }
@@ -266,6 +268,30 @@ function DictationSection() {
             }}
           />
         </ValueRow>
+        {!mac && (
+          <ValueRow
+            label="Speech model"
+            hint={
+              model === 'fast'
+                ? 'Fast: a 240 MB download, quick on any computer. Best in English.'
+                : 'Accurate: a 730 MB download, slower, much better in other languages.'
+            }
+          >
+            <RowSelect
+              ariaLabel="Speech model"
+              value={model}
+              options={[
+                { value: 'fast', label: 'Fast' },
+                { value: 'accurate', label: 'Accurate' }
+              ]}
+              onChange={(v) => {
+                const next = v === 'accurate' ? 'accurate' : 'fast';
+                setModel(next);
+                setDictationModel(next);
+              }}
+            />
+          </ValueRow>
+        )}
       </div>
     </>
   );

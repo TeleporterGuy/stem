@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { InboxEntry, InboxState } from '../../shared/inbox';
 import { toMs } from '../../shared/inbox';
 import { degrade } from '../degrade';
 import { inboxStorePath } from './paths';
+import { replaceFile } from '../replace-file';
 
 // The Stem-owned inbox store: per-thread read / archived / snoozed state for the
 // Chats panel's Inbox mode. Same shape as the chat-folder store next door —
@@ -83,7 +84,7 @@ async function writeFileAtomic(store: InboxFile): Promise<void> {
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(store, null, 2), 'utf8');
   // rename is atomic on the same volume — readers never see a half-written file.
-  await rename(tmp, path);
+  await replaceFile(tmp, path);
 }
 
 /**
@@ -312,6 +313,24 @@ export function noteSilentRun(threadId: string, before: number, at: number): Pro
     target.quietFrom = inOpenWindow ? target.quietFrom : prev;
     target.quietUntil = Math.max(at, target.quietUntil ?? 0);
   });
+}
+
+/**
+ * How far past a rename's own write its quiet window reaches. pi appends the
+ * session_info entry before answering, so the mtime is already final when the
+ * thread list is re-read; the grace covers a filesystem that rounds mtimes up.
+ */
+const RENAME_GRACE_MS = 2_000;
+
+/**
+ * A rename is not new activity, whoever made it: the user from the sidebar, or
+ * the naming pass a couple of seconds after a turn settles. Without this the
+ * automatic one lands after Quick Chat has stamped its answer read, and the
+ * chat the user just read sits bold in the list. `before`/`after` are the
+ * thread's listed mtimes either side of the rename.
+ */
+export function noteRename(threadId: string, before: number, after: number): Promise<InboxState> {
+  return noteSilentRun(threadId, before, Math.max(Date.now(), toMs(after)) + RENAME_GRACE_MS);
 }
 
 /** Drop a thread's inbox state when the chat itself is deleted. */

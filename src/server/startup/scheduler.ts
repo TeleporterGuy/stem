@@ -49,6 +49,8 @@ export function initTaskScheduler(deps: {
     images?: GeneratedImageRef[];
     /** A parked run's Allow/Deny, carried on the item. */
     park?: ParkRequest;
+    /** The mail conversation the task was scheduled from: the mail is a reply there. */
+    conversationId?: string;
   }) => Promise<string | void>;
   /**
    * The run behind a notification settled with a reply: put it on that mail.
@@ -66,15 +68,28 @@ export function initTaskScheduler(deps: {
    * read into the next run's preamble so a watch task reports each finding
    * once. Optional for hosts without mail (tests).
    */
-  taskMailHistory?: (taskId: string, limit: number) => Promise<ScheduledRunReport[]>;
+  taskMailHistory?: (taskId: string, limit: number, conversationId?: string) => Promise<ScheduledRunReport[]>;
+  /**
+   * The mail conversation a task scheduled from `threadId` reports into (see
+   * ScheduledTask.mailConversationId), or null for a chat. `taskId` is the
+   * scheduled run in that thread, when it is one. Optional for hosts without
+   * mail (tests).
+   */
+  mailConversationFor?: (threadId: string, taskId?: string) => Promise<string | null>;
 }): TaskScheduler {
+  // Every task mail goes through here: a task scheduled from mail replies in
+  // that conversation (the scheduler is assigned below, before any run fires).
+  const deliver: typeof deps.deliverTaskMail = (input) => {
+    const conversationId = scheduler.snapshot().find((t) => t.id === input.taskId)?.mailConversationId;
+    return deps.deliverTaskMail({ ...input, ...(conversationId ? { conversationId } : {}) });
+  };
   // A run's thread got indexed for chat search when its turn landed, like any
   // thread; deleting it must forget that too, or the deleted run stays findable.
   const discardThread = async (threadId: string) => {
     await deps.runtime.deleteThread(threadId);
     dropChatThread(threadId);
   };
-  const scheduler = new TaskScheduler({
+  const scheduler: TaskScheduler = new TaskScheduler({
     runtime: deps.runtime,
     onChange: (tasks) => deps.emit('tasks:changed', tasks),
     // Scheduled runs defer while the user is active, and an in-flight scheduled
@@ -84,7 +99,14 @@ export function initTaskScheduler(deps: {
     deleteThread: discardThread,
     // The only memory a run has of the task's earlier firings: what they mailed.
     ...(deps.taskMailHistory
-      ? { priorReports: (taskId: string) => deps.taskMailHistory!(taskId, PRIOR_REPORTS_SHOWN) }
+      ? {
+          priorReports: (taskId: string) =>
+            deps.taskMailHistory!(
+              taskId,
+              PRIOR_REPORTS_SHOWN,
+              scheduler.snapshot().find((t) => t.id === taskId)?.mailConversationId
+            )
+        }
       : {}),
     // A persona run that settled ok reflects into the persona's memory, the
     // same pass a mail delivery gets (mail/reflect.ts never rejects).
@@ -102,7 +124,7 @@ export function initTaskScheduler(deps: {
     // A run stopped for the user's Allow/Deny: the approval is a mail from the
     // task, like its notify; the run's thread stays for the answer to resume.
     onParked: async (args) => {
-      await deps.deliverTaskMail({
+      await deliver({
         subject: args.title,
         body:
           `This task paused: Stem's safety check would not run a command` +
@@ -115,7 +137,7 @@ export function initTaskScheduler(deps: {
       });
     },
     onResumedReply: async (args) => {
-      await deps.deliverTaskMail({
+      await deliver({
         subject: args.title,
         body: args.reply,
         taskId: args.taskId,
@@ -126,7 +148,7 @@ export function initTaskScheduler(deps: {
     onUnreportedImages: async (args) => {
       const images = deps.runtime.takeGeneratedImages(args.threadId);
       if (!images.length) return false;
-      await deps.deliverTaskMail({
+      await deliver({
         subject: args.title,
         body: args.reply || 'Pictures from this run.',
         taskId: args.taskId,
@@ -141,7 +163,7 @@ export function initTaskScheduler(deps: {
     // the reason after that. Inbox only: this is Stem's notice, not the agent's
     // own notify_user judgment, so no window is raised and no phone woken.
     onFailureTransition: async (args) => {
-      await deps.deliverTaskMail({
+      await deliver({
         subject: args.title,
         body: `This task failed on its latest run:\n\n${args.error}\n\nIt will try again on its next schedule. Repeated failures are shown on the task's row in the Tasks tab, not mailed.`,
         taskId: args.taskId,
@@ -168,7 +190,7 @@ export function initTaskScheduler(deps: {
         for (const t of untouched) lines.push(`- ${t.title}`);
         lines.push('', 'If one of these refers to its chat, edit its prompt in the Tasks tab so each run has everything it needs.');
       }
-      await deps.deliverTaskMail({
+      await deliver({
         subject: 'Scheduled task prompts rewritten',
         body: lines.join('\n'),
         taskId: 'tasks:rewrite',
@@ -194,7 +216,18 @@ export function initTaskScheduler(deps: {
   deps.runtime.setTaskBridge({
     // schedule_task binds the task to wherever it was called — a chat or a mail
     // persona's hidden session. Either works: no run ever writes there.
-    schedule: async (req, threadId) => scheduler.create(req, threadId),
+    // A call from mail — a persona's session, or a scheduled run that reports
+    // there — also binds the mail: the task's reports reply in that thread.
+    schedule: async (req, threadId) => {
+      const running = scheduler.runningTask(threadId);
+      const mailConversationId =
+        running?.mailConversationId ??
+        (await deps
+          .mailConversationFor?.(threadId, running?.id)
+          .catch((err) => degrade('tasks', 'could not bind a task to the mail it was scheduled from', err))) ??
+        undefined;
+      return scheduler.create(req, threadId, mailConversationId ? { mailConversationId } : {});
+    },
     listForThread: async (threadId) => scheduler.listForThread(threadId),
     originThread: (taskId) => scheduler.snapshot().find((t) => t.id === taskId)?.threadId ?? null,
     cancel: async (taskId) => {
@@ -220,21 +253,19 @@ export function initTaskScheduler(deps: {
       const running = scheduler.runningTask(threadId);
       let conversationId: string | void = undefined;
       if (running) {
-        conversationId = await deps
-          .deliverTaskMail({
-            subject: title?.trim() || running.title,
-            body: message,
-            taskId: running.id,
-            threadId,
-            ...(title?.trim() ? { headline: title.trim() } : {}),
-            ...(running.runsAs.kind === 'persona' ? { personaId: running.runsAs.personaId } : {})
-          })
-          .catch((err) =>
-            // The mail IS the surfacing — an undelivered one is a watch
-            // task that found something and told nobody but the modal (if the
-            // mode even shows one).
-            degrade('tasks', 'dropped a scheduled result on the way to the Inbox', err)
-          );
+        conversationId = await deliver({
+          subject: title?.trim() || running.title,
+          body: message,
+          taskId: running.id,
+          threadId,
+          ...(title?.trim() ? { headline: title.trim() } : {}),
+          ...(running.runsAs.kind === 'persona' ? { personaId: running.runsAs.personaId } : {})
+        }).catch((err) =>
+          // The mail IS the surfacing — an undelivered one is a watch
+          // task that found something and told nobody but the modal (if the
+          // mode even shows one).
+          degrade('tasks', 'dropped a scheduled result on the way to the Inbox', err)
+        );
         // Only a mail that landed keeps the thread: a notified flag with no
         // mail item naming the thread would leave a session nothing points at,
         // never listed and never deleted.

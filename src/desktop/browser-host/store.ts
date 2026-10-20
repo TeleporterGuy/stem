@@ -9,9 +9,25 @@ import { log } from '../../server/log';
 // decision. Off by default; only a window on this machine can flip it.
 
 export interface KnownBrowser {
-  /** The app bundle the native host was launched from ("/Applications/Arc.app"). */
+  /**
+   * The app bundle the native host was launched from, then "#" and the
+   * profile id the extension keeps ("/Applications/Arc.app#3f2a…"). Entries
+   * written before profiles were told apart are the bare bundle path; the
+   * first profile of that app to connect takes the entry over.
+   */
   id: string;
+  /** The app's display name ("Arc"). */
   name: string;
+  /** What the user called this profile ("Work"). */
+  label?: string;
+  /** A few sites open in it when it last connected. */
+  hint?: string;
+}
+
+/** The app bundle a known browser is launched from. */
+export function appOf(id: string): string {
+  const at = id.indexOf('#');
+  return at >= 0 ? id.slice(0, at) : id;
 }
 
 export interface BrowserHostSettings {
@@ -37,7 +53,12 @@ export async function readBrowserHostSettings(): Promise<BrowserHostSettings> {
     const known = Array.isArray(parsed?.known)
       ? parsed.known.filter(
           (b): b is KnownBrowser => !!b && typeof b.id === 'string' && !!b.id && typeof b.name === 'string'
-        )
+        ).map((b) => ({
+          id: b.id,
+          name: b.name,
+          ...(typeof b.label === 'string' && b.label.trim() ? { label: b.label.trim() } : {}),
+          ...(typeof b.hint === 'string' && b.hint ? { hint: b.hint } : {})
+        }))
       : [];
     return {
       enabled: parsed?.enabled === true,
@@ -75,7 +96,7 @@ export async function writeBrowserHostEnabled(enabled: boolean): Promise<Browser
   const next = await updateBrowserHostSettings((cur) => ({ ...cur, enabled }));
   log(
     'browser-host',
-    enabled ? 'this Mac now lets Stem drive its browser' : 'this Mac stopped letting Stem drive its browser'
+    enabled ? 'this computer now lets Stem drive its browser' : 'this computer stopped letting Stem drive its browser'
   );
   return next;
 }

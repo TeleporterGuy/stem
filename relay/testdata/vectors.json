@@ -1,0 +1,68 @@
+{
+  "cert": {
+    "cert": {
+      "v": 1,
+      "address": "vlado@gmail.test",
+      "keyFp": "6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827",
+      "issuer": "https://relay.test",
+      "kid": "k1",
+      "iat": 1760000000000,
+      "exp": 1760086400000,
+      "sig": "aQ5YhvjWZWkntsA6jdrb67CeyDbYy6ZVtEVUi5HUhfNa37fgNyAoMM8mGUNgd91KAWqDt1J2MnqtOHJEZ2vSBg=="
+    },
+    "signingString": "stem-cert-v1\nvlado@gmail.test\n6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827\nhttps://relay.test\n1760000000000\n1760086400000\nk1"
+  },
+  "envelope": {
+    "envelope": {
+      "v": 1,
+      "id": "0123456789abcdef0123456789abcdef",
+      "ts": 1760000000000,
+      "from": "vlado@gmail.test",
+      "to": "martin@acme.test",
+      "cert": {
+        "v": 1,
+        "address": "vlado@gmail.test",
+        "keyFp": "6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827",
+        "issuer": "https://relay.test",
+        "kid": "k1",
+        "iat": 1760000000000,
+        "exp": 1760086400000,
+        "sig": "aQ5YhvjWZWkntsA6jdrb67CeyDbYy6ZVtEVUi5HUhfNa37fgNyAoMM8mGUNgd91KAWqDt1J2MnqtOHJEZ2vSBg=="
+      },
+      "signer": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "sealed": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qua8uKYt5Y/9dv9P9yjny1jG/dy0C1tmQ2HQRNesxENNGz89e60I1KCzyTume52Wm7aoRXeESe2I2hDdmE=",
+      "sig": "qArl/QwEYaruTlZviGBxCR5A+nZ3uZPYvKxrKl0g29c1OjUHjQL56JbZM5/fHd8HmRYP17VgLqxP+f04jxLLBg=="
+    },
+    "plaintext": "{\"v\":1,\"subject\":\"Hi\",\"body\":\"Hello Martin\"}",
+    "signingString": "stem-env-v1\n0123456789abcdef0123456789abcdef\n1760000000000\nvlado@gmail.test\nmartin@acme.test\n77dbd136fea07844749fbec4981164f2236f368eaec26deb407cf67a1cf10368\n95941c60650ff18bc4bd6dae5696f4864200442ce56ffa32e260b50de575c906"
+  },
+  "keyBlob": {
+    "enc": "Xf7dO2vUf2+ijuFdlp1bsOpTd01Ii9r53xxuASSz7yI=",
+    "encSig": "RNV2v8xF56jjjHKLXzPrKA6kT6KAQq8UVIimCSHLEO9AOOqNgCP7McL0esJEVfgf6ZC2omk9tJcc+Jk6pNsZDw=="
+  },
+  "keys": {
+    "ephemeralPriv": "0404040404040404040404040404040404040404040404040404040404040404",
+    "ephemeralPub": "rAGyIJ6GNU+4UyN7XeD0+rE8f8v0M6YcAZNpYX/s8Qs=",
+    "recipientEncPriv": "0303030303030303030303030303030303030303030303030303030303030303",
+    "recipientEncPub": "Xf7dO2vUf2+ijuFdlp1bsOpTd01Ii9r53xxuASSz7yI=",
+    "relayPub": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "relaySeed": "0101010101010101010101010101010101010101010101010101010101010101",
+    "stemFp": "6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827",
+    "stemPub": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+    "stemSeed": "0202020202020202020202020202020202020202020202020202020202020202"
+  },
+  "pow": {
+    "address": "vlado@gmail.test",
+    "bits": 8,
+    "key": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+    "nonce": "247"
+  },
+  "request": {
+    "body": "{\"address\":\"martin@acme.test\"}",
+    "method": "POST",
+    "path": "/v1/cert",
+    "sig": "vfdCX1bgSPItDSuDyqeVsAhrsd25iP15ViCXfy9cbEZBO9b5wlCAgCXaFc3WTXFdIAZ0MZ1pva48k7VR7mAdAQ==",
+    "signingString": "stem-req-v1\nPOST\n/v1/cert\n1760000000000\na7a7aca75482e2b8587b3a48840c894fbfd62b0a762f2646582f274a0a57ce13",
+    "time": 1760000000000
+  }
+}

@@ -2,11 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, X, FolderOpen, Trash2 } from 'lucide-react';
 import type {
   BrowserHostLocalState,
+  BrowserInfo,
   SetupBrowser,
   ComputerHostLocalState,
   DeviceInfo,
   ExecHostShellInfo,
   ExecSettings,
+  LinuxComputerSetup,
+  LinuxComputerSetupState,
   ScratchUsageRow,
   WindowsShell
 } from '../../../../shared/types';
@@ -19,6 +22,75 @@ import {
   MAX_COMMAND_ALLOW_RULES,
   MAX_COMMAND_PREFIX_LENGTH
 } from '../../../../shared/exec-rules';
+
+/** Browser control runs on Macs, Windows and Linux; say which this one is. */
+const IS_MAC = window.stem?.platform === 'darwin';
+const MACHINE = IS_MAC ? 'Mac' : 'computer';
+const SETUP_BROWSERS = IS_MAC
+  ? 'Arc, Chrome, Dia and Brave'
+  : window.stem?.platform === 'win32'
+    ? 'Chrome, Edge, Brave and Chromium'
+    : 'Chrome, Brave, Chromium and Edge';
+
+/**
+ * Linux: the GNOME Shell extension computer control runs through, and the one
+ * thing to do next. GNOME loads a newly installed extension only at login.
+ */
+const GNOME_SETUP: Record<LinuxComputerSetupState, { ok?: true; text: string; action?: string }> = {
+  ready: { ok: true, text: 'Running' },
+  'not-installed': { text: 'Stem needs its GNOME Shell extension to see the screen and use the mouse and keyboard.', action: 'Install' },
+  relogin: { text: 'Installed. GNOME loads a new extension when you log in: log out and back in to finish.', action: 'Re-check' },
+  disabled: { text: 'Turned off in GNOME’s Extensions app.', action: 'Turn on' },
+  'extensions-off': { text: 'GNOME has all user extensions turned off. Turn them on in the Extensions app, then re-check.', action: 'Re-check' },
+  error: { text: 'GNOME could not load it.', action: 'Reinstall' },
+  'not-gnome': { text: 'Computer control on Linux needs GNOME Shell; this desktop isn’t supported yet.' },
+  'not-wayland': { text: 'Computer control on Linux needs a GNOME Wayland session.' },
+  'no-gjs': { text: 'Computer control on Linux needs GNOME Shell (its gjs runtime wasn’t found).' }
+};
+
+function GnomeExtensionRow({ setup, onChange }: { setup: LinuxComputerSetup; onChange(s: ComputerHostLocalState): void }) {
+  const [busy, setBusy] = useState(false);
+  const shown = GNOME_SETUP[setup.state];
+  return (
+    <ValueRow
+      label={
+        <>
+          GNOME extension{' '}
+          <InfoTip label="About the GNOME extension">
+            On Wayland an app can’t see other windows or move the pointer, so Stem asks GNOME Shell through a small
+            extension of its own. It does nothing unless computer control is running. It lives in your extensions
+            folder and shows up in GNOME’s Extensions app, where you can turn it off.
+          </InfoTip>
+        </>
+      }
+      hint={
+        <span className={`perm${shown.ok ? ' ok' : ' missing'}`}>
+          {shown.ok ? <Check size={12} strokeWidth={3} aria-label="ready" /> : <X size={12} strokeWidth={3} aria-label="not ready" />}
+          <span>
+            {shown.text}
+            {setup.state === 'error' && setup.error ? ` ${setup.error}` : ''}
+          </span>
+        </span>
+      }
+    >
+      {shown.action && (
+        <button
+          className="btn sm"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void window.stem
+              .requestComputerAccess()
+              .then(onChange)
+              .finally(() => setBusy(false));
+          }}
+        >
+          {shown.action}
+        </button>
+      )}
+    </ValueRow>
+  );
+}
 
 /** How long a chat's scratch folder survives being ignored. null = never sweep. */
 const SCRATCH_TTLS: { label: string; days: number | null }[] = [
@@ -787,20 +859,20 @@ export function AutonomySections() {
         {computerHost?.supported && (
           <>
             <ValueRow
-              label={<strong>Let Stem control this Mac</strong>}
+              label={<strong>Let Stem control this {MACHINE}</strong>}
               hint={
                 <>
                   Stem can see the screen and drive the mouse and keyboard here{' '}
                   <InfoTip label="What switching this on means">
-                    A persona pinned to this Mac in Manage → Personas — or a chat, when “Allow in chats”
+                    A persona pinned to this {MACHINE} in Manage → Personas — or a chat, when “Allow in chats”
                     above sends it here — gets a <code>computer</code> tool:
                     it takes screenshots, clicks and types here, with no per-action approval. While it
                     works a banner says so. Driving the whole screen, any key or mouse movement of your
                     own stops the run at once; working inside one app’s window (which it can do even
-                    when that window is on another Space or behind others), it leaves your mouse and
+                    when that window is {IS_MAC ? 'on another Space or ' : ''}behind others), it leaves your mouse and
                     keyboard alone and the banner’s Stop button ends it. Switching this off stops new
-                    runs immediately. Leave it off if this Stem server isn’t yours alone. Needs macOS 14
-                    or newer.
+                    runs immediately. Leave it off if this Stem server isn’t yours alone.
+                    {IS_MAC ? ' Needs macOS 14 or newer.' : ''}
                   </InfoTip>
                 </>
               }
@@ -809,7 +881,7 @@ export function AutonomySections() {
                 className={`switch${computerHost.enabled ? ' on' : ''}`}
                 role="switch"
                 aria-checked={computerHost.enabled}
-                aria-label="Let Stem control this Mac"
+                aria-label={`Let Stem control this ${MACHINE}`}
                 onClick={() =>
                   void window.stem.setComputerHostEnabled(!computerHost.enabled).then((s) => {
                     setComputerHost(s);
@@ -818,7 +890,7 @@ export function AutonomySections() {
                 }
               />
             </ValueRow>
-            {computerHost.enabled && (
+            {computerHost.enabled && IS_MAC && (
               <ValueRow
                 label={
                   <>
@@ -867,6 +939,7 @@ export function AutonomySections() {
                 </button>
               </ValueRow>
             )}
+            {computerHost.enabled && computerHost.linux && <GnomeExtensionRow setup={computerHost.linux} onChange={setComputerHost} />}
           </>
         )}
       </div>
@@ -882,12 +955,12 @@ export function AutonomySections() {
         {browserHost?.supported && (
           <>
             <ValueRow
-              label={<strong>Let Stem control this Mac’s browser</strong>}
+              label={<strong>Let Stem control this {MACHINE}’s browser</strong>}
               hint={
                 <>
                   Stem can work in your browser here, signed in as you{' '}
                   <InfoTip label="What switching this on means">
-                    A persona pinned to this Mac’s browser in Manage → Personas — or a chat, when “Allow in
+                    A persona pinned to this {MACHINE}’s browser in Manage → Personas — or a chat, when “Allow in
                     chats” above sends it here — gets a <code>browser</code> tool: it opens pages in background
                     tabs, reads them, clicks, types, fills forms, uploads files Stem holds and downloads, in
                     any ordinary tab, with no per-action approval. The tab it works in shows a coloured border
@@ -902,7 +975,7 @@ export function AutonomySections() {
                 className={`switch${browserHost.enabled ? ' on' : ''}`}
                 role="switch"
                 aria-checked={browserHost.enabled}
-                aria-label="Let Stem control this Mac’s browser"
+                aria-label={`Let Stem control this ${MACHINE}’s browser`}
                 onClick={() =>
                   void window.stem.setBrowserHostEnabled(!browserHost.enabled).then((s) => {
                     setBrowserHost(s);
@@ -929,19 +1002,122 @@ export function AutonomySections() {
               />
             )}
             {browserHost.enabled && browserHost.browsers.length > 1 && (
-              <ValueRow label="Use" hint="The browser Stem drives on this Mac; it starts it when it is closed">
-                <RowSelect
-                  ariaLabel="Browser Stem uses"
-                  value={browserHost.chosen ?? browserHost.browsers[0]!.id}
-                  options={browserHost.browsers.map((b) => ({ value: b.id, label: b.name }))}
-                  onChange={(id) => void window.stem.chooseBrowser(id).then(setBrowserHost)}
-                />
-              </ValueRow>
+              <>
+                <ValueRow
+                  label="Use"
+                  hint={
+                    <>
+                      The browser profile Stem starts in; it opens the browser when it is closed{' '}
+                      <InfoTip label="Several profiles">
+                        Stem works in every browser profile that has the extension. A task starts in this one, and
+                        moves to another when you ask (“in my work browser…”) or when the page it needs is open
+                        there. Name the profiles below so you and Stem can tell them apart.
+                      </InfoTip>
+                    </>
+                  }
+                >
+                  <RowSelect
+                    ariaLabel="Browser profile Stem uses"
+                    value={browserHost.chosen ?? browserHost.browsers[0]!.id}
+                    options={browserHost.browsers.map((b) => ({ value: b.id, label: browserLabel(b) }))}
+                    onChange={(id) => void window.stem.chooseBrowser(id).then(setBrowserHost)}
+                  />
+                </ValueRow>
+                <BrowserProfilesRow state={browserHost} onState={setBrowserHost} />
+              </>
             )}
           </>
         )}
       </div>
     </>
+  );
+}
+
+/** "Arc · Work" once named, else "Arc 2" — or just "Arc" for an app's only profile. */
+function browserLabel(b: BrowserInfo): string {
+  return b.named && b.profile ? `${b.name} · ${b.profile}` : (b.profile ?? b.name);
+}
+
+/**
+ * The browser profiles that have the extension, each with a name field — what
+ * the model passes as `profile`, and what the extension's popup says, which is
+ * how the user tells which profile is which — and, once closed, a way to
+ * forget one (its extension was removed, or the profile deleted).
+ */
+function BrowserProfilesRow({
+  state,
+  onState
+}: {
+  state: BrowserHostLocalState;
+  onState: (s: BrowserHostLocalState) => void;
+}) {
+  return (
+    <DisclosureRow
+      label="Profiles"
+      hint="Name them, so you and Stem can tell work from personal"
+      value={String(state.browsers.length)}
+    >
+      <div className="browser-profiles">
+        {state.browsers.map((b) => (
+          <BrowserProfileLine key={b.id} browser={b} onState={onState} />
+        ))}
+        <em className="scratch-empty">Each browser’s Stem button shows the name its profile goes by.</em>
+      </div>
+    </DisclosureRow>
+  );
+}
+
+function BrowserProfileLine({ browser, onState }: { browser: BrowserInfo; onState: (s: BrowserHostLocalState) => void }) {
+  // The name the user gave; "Arc 2" is only a placeholder.
+  const given = browser.named && browser.profile ? browser.profile : '';
+  const [draft, setDraft] = useState(given);
+  const [error, setError] = useState('');
+  useEffect(() => setDraft(given), [given]);
+  const commit = () => {
+    if (draft.trim() === given) return;
+    window.stem
+      .renameBrowser(browser.id, draft)
+      .then((s) => {
+        setError('');
+        onState(s);
+      })
+      .catch((e: unknown) => {
+        setError(String(e instanceof Error ? e.message : e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
+        setDraft(given);
+      });
+  };
+  return (
+    <div className="browser-profile">
+      <span className={`ext-status${browser.connected ? ' ok' : ''}`} title={browser.connected ? 'Open' : 'Not open'}>
+        {browser.name}
+      </span>
+      <input
+        className="ifield"
+        type="text"
+        maxLength={40}
+        placeholder={browser.profile ?? 'Name, e.g. Work'}
+        aria-label={`Name for this ${browser.name} profile`}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          if (e.key === 'Escape') setDraft(given);
+        }}
+      />
+      {!browser.connected && (
+        <button
+          className="icon-action sm"
+          title="Forget this profile"
+          aria-label={`Forget this ${browser.name} profile`}
+          onClick={() => void window.stem.forgetBrowser(browser.id).then(onState)}
+        >
+          <Trash2 size={14} />
+        </button>
+      )}
+      {browser.hint && <em className="browser-profile-hint">{browser.hint}</em>}
+      {error && <em className="exec-rule-error">{error}</em>}
+    </div>
   );
 }
 
@@ -970,9 +1146,9 @@ function BrowserExtensionRow({
   const connected = state.browsers.filter((b) => b.connected);
   const status =
     connected.length > 0
-      ? connected.map((b) => `${b.name} connected${b.version ? ` · ${b.version}` : ''}`).join(', ')
+      ? connected.map((b) => `${browserLabel(b)} connected${b.version ? ` · ${b.version}` : ''}`).join(', ')
       : state.browsers.length > 0
-        ? `${state.browsers.map((b) => b.name).join(', ')} not running`
+        ? `${state.browsers.map(browserLabel).join(', ')} not running`
         : state.extensionPath
           ? 'Waiting for Load unpacked'
           : 'Not set up yet';
@@ -993,7 +1169,7 @@ function BrowserExtensionRow({
           <>
             <span className={`ext-status${connected.length > 0 ? ' ok' : ''}`}>{status}</span>{' '}
             <InfoTip label="Installing the extension">
-              Set up puts the extension in a folder and tells Arc, Chrome, Dia and Brave how to reach Stem. Then you
+              Set up puts the extension in a folder and tells {SETUP_BROWSERS} how to reach Stem. Then you
               load that folder once in each browser, following the steps shown here. Stem updates the extension itself
               afterwards.
             </InfoTip>
@@ -1056,9 +1232,9 @@ function CopyIcon({ text, label }: { text: string; label: string }) {
 /**
  * Load unpacked, spelled out for one browser: browsers will not open their
  * extensions page when asked from outside, and the folder sits inside
- * Application Support, which the picker hides — so the steps give the address
- * to type and the path to paste with ⌘⇧G (Set up already put it on the
- * clipboard). The picker starts on the default browser, the one Set up opened.
+ * Application Support (or ~/.config), which the picker hides — so the steps
+ * give the address to type and the path to paste with ⌘⇧G or Ctrl+L (Set up
+ * already put it on the clipboard). The picker starts on the default browser, the one Set up opened.
  */
 function LoadUnpackedSteps({
   extensionPath,
@@ -1107,13 +1283,23 @@ function LoadUnpackedSteps({
         </li>
         <li>
           Turn on <strong>Developer mode</strong>,{' '}
-          {browser?.app === 'Microsoft Edge' ? 'in the left sidebar' : 'the switch at the top right'} of that page.
+          {browser?.name === 'Microsoft Edge' ? 'in the left sidebar' : 'the switch at the top right'} of that page.
         </li>
         <li>
-          Click <strong>Load unpacked</strong>. In the folder picker press <kbd>⌘</kbd>
-          <kbd>⇧</kbd>
-          <kbd>G</kbd>, paste the path below with <kbd>⌘</kbd>
-          <kbd>V</kbd> (Set up already copied it), press Return, then <strong>Select</strong>.
+          {IS_MAC ? (
+            <>
+              Click <strong>Load unpacked</strong>. In the folder picker press <kbd>⌘</kbd>
+              <kbd>⇧</kbd>
+              <kbd>G</kbd>, paste the path below with <kbd>⌘</kbd>
+              <kbd>V</kbd> (Set up already copied it), press Return, then <strong>Select</strong>.
+            </>
+          ) : (
+            <>
+              Click <strong>Load unpacked</strong>. In the folder picker press <kbd>Ctrl</kbd>
+              <kbd>L</kbd>, paste the path below with <kbd>Ctrl</kbd>
+              <kbd>V</kbd> (Set up already copied it), press Enter, then <strong>Select</strong>.
+            </>
+          )}
           <div className="ext-line">
             <code className="ext-path">{extensionPath}</code>
             <CopyIcon text={extensionPath} label="Copy the folder’s path" />

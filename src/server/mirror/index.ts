@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { MirrorApplyInput, MirrorDiffResult, MirrorManifestEntry } from '../../shared/types';
 import { resolveUploadHandle } from '../files/staging';
 import { log } from '../log';
 import { mirrorManifestPath, mirrorRoot } from '../workspace/paths';
+import { replaceFile } from '../replace-file';
 
 // The server half of client-folder mirroring. The owning device scans, diffs
 // against the manifest kept here, streams changed files through the ordinary
@@ -97,7 +98,7 @@ async function writeManifest(folderId: string, manifest: MirrorManifest): Promis
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(manifest), 'utf8');
-  await rename(tmp, path); // atomic on the same volume
+  await replaceFile(tmp, path); // atomic on the same volume
 }
 
 /** Coerce a client-sent manifest into valid entries; junk is dropped, last rel wins. */
@@ -175,7 +176,7 @@ export async function applyMirror(folderId: string, input: MirrorApplyInput): Pr
       const target = join(root, rel);
       await mkdir(dirname(target), { recursive: true });
       try {
-        await rename(staged, target);
+        await replaceFile(staged, target);
       } catch {
         // quiet: cross-device staging (STEM_UPLOADS_DIR on another volume) is the
         // one expected cause, and the copy below either works or throws for real.

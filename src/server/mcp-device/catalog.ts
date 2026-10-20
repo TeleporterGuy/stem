@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { log } from '../log';
@@ -10,6 +10,7 @@ import type {
   DeviceMcpServerReport,
   DeviceMcpTool
 } from '../../shared/types';
+import { replaceFile } from '../replace-file';
 
 // What each device says it is hosting, remembered across the moment it goes away.
 //
@@ -229,7 +230,7 @@ async function writeCatalogFile(next: DeviceMcpCatalog): Promise<void> {
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-    await rename(tmp, path);
+    await replaceFile(tmp, path);
   } finally {
     // quiet: after a successful rename there is nothing left to remove, and after a
     // failed write the error from the try is the one worth having — a stray `.tmp`

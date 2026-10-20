@@ -113,6 +113,10 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   // The device id, or null for "the machine hosting stem-server". Whether that
   // id names a paired desktop is decided in pi/mcp.ts, where the registry is.
   'mcp:setLocation': [a.string, a.nullish(a.string)],
+  // A server's "Works with apps" list, or null for "match by its name".
+  'mcp:setApps': [a.string, a.nullish(a.stringArray)],
+  // An app name and its bundle id (null when the app has none).
+  'mcp:forApp': [a.string, a.nullish(a.string)],
   'mcp:login': [a.string],
   'mcp:adminDecision': [a.id, a.boolean],
   // The MCP host channels. No device id on any of them: the caller IS the
@@ -206,13 +210,28 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'personas:notes:consolidate': [a.string],
   // Mail: compose is reshaped where it lands (mail/router.ts). The triage
   // mutators take conversation-id lists, the inbox-mutator shape.
-  // ('mail:list' takes no arguments, so it is absent.)
+  // ('mail:list' and 'mail:summary' take no arguments, so they are absent.)
+  'mail:open': [a.string],
   'mail:compose': [a.object],
   'mail:work': [a.string],
   'mail:reply': [a.string, a.string, a.optional(a.nullish(a.objectArray))],
   'mail:addParticipant': [a.string, a.string],
   'mail:stop': [a.string],
-  'mail:resolveApproval': [a.string, a.oneOf(['allow', 'deny'])],
+  'mail:resolveApproval': [a.string, a.oneOf(['allow', 'deny']), a.optional(a.nullish(a.string))],
+  // Inter-Stem mail (ipc/interstem.ts).
+  'mail:composeExternal': [a.object],
+  'mail:release': [a.string, a.string],
+  'mail:draftExternal': [a.string, a.string, a.optional(a.nullish(a.string))],
+  'share:preview': [a.object, a.optional(a.nullish(a.object))],
+  'share:create': [a.object, a.optional(a.nullish(a.object))],
+  'share:revoke': [a.string],
+  'interstem:addAddress': [a.string],
+  'interstem:verifyAddress': [a.string, a.string],
+  'interstem:checkLink': [a.string],
+  'interstem:removeAddress': [a.string],
+  'interstem:setUnlisted': [a.boolean],
+  'interstem:contact': [a.oneOf(['accept', 'block', 'unblock', 'verify', 'unverify', 'ackKey']), a.string],
+  'interstem:invite': [a.string],
   'mail:setRead': [a.stringArray, a.boolean],
   'mail:setArchived': [a.stringArray, a.boolean],
   'mail:snooze': [a.stringArray, a.nullish(a.number)],

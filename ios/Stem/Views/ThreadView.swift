@@ -10,9 +10,14 @@ struct ThreadView: View {
     /// Forms in this chat send from the answer bar over the composer.
     @State private var formHost = MdxFormHost(place: .below)
     @State private var focusRequest = 0
+    /// Whether the list sits at its end, so growth below follows it there.
+    /// Not observed: re-rendering on every scroll step looped the layout.
+    @State private var follow = ScrollFollow()
+    /// The answer whose Share sheet is open.
+    @State private var sharing: ShareRequest?
 
-    init(session: Session, threadId: String?) {
-        _store = State(initialValue: ThreadStore(session: session, threadId: threadId))
+    init(session: Session, threadId: String?, folderId: String? = nil) {
+        _store = State(initialValue: ThreadStore(session: session, threadId: threadId, folderId: folderId))
         let key = threadId.map { "chat:\($0)" } ?? "chat:new"
         _draftKey = State(initialValue: key)
         _draft = State(initialValue: DraftStore.load(key))
@@ -24,19 +29,35 @@ struct ThreadView: View {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if store.threadId == nil && store.messages.isEmpty { newChatHeader }
                     if store.loading { ProgressView().frame(maxWidth: .infinity).padding() }
+                    let rows = Array(store.messages.enumerated())
+                    // The split moves in steps, so a row isn't rebuilt on every message.
+                    let split = max(0, (rows.count - Self.eagerTail) / Self.eagerStep * Self.eagerStep)
                     let latest = latestReplyId
-                    ForEach(Array(store.messages.enumerated()), id: \.element.id) { i, m in
-                        MessageRow(message: m, store: store, isLatest: m.id == latest, submit: submitFromReply)
-                            .environment(\.mdxSource, MdxSource(key: "chat:\(store.threadId ?? ""):\(m.turnId ?? m.id)",
-                                                                scrollId: m.id, order: Double(i)))
-                            .id(m.id)
-                    }
-                    if store.busy {
-                        LiveActivity(label: store.activityLabel, activities: store.activities)
+                    ForEach(rows[..<split], id: \.element.id) { i, m in row(m, i, latest: latest) }
+                    // The end of the chat is drawn in one block, not lazily. The
+                    // lazy stack guesses the height of rows it hasn't drawn, and
+                    // when the sent bubble was swapped for its saved copy or a
+                    // reply grew, the bottom anchor landed past the drawn rows: a
+                    // blank screen until a scroll redrew them.
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(rows[split...], id: \.element.id) { i, m in row(m, i, latest: latest) }
+                        if store.busy {
+                            LiveActivity(label: store.activityLabel, activities: store.activities)
+                                .id(Self.activityId)
+                        }
                     }
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
+            }
+            .onScrollGeometryChange(for: Bool.self) { g in
+                g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 80
+            } action: { _, now in follow.atBottom = now }
+            // The bottom anchor alone stopped short of a new reply in a long
+            // chat; scrolling to the (always drawn) last row lands exactly.
+            .onChange(of: tailSignature) { old, new in
+                guard new.userCount > old.userCount || follow.atBottom, let last = lastRowId else { return }
+                DispatchQueue.main.async { proxy.scrollTo(last, anchor: .bottom) }
             }
             .environment(\.mdxFormHost, formHost)
             .onAppear {
@@ -74,6 +95,7 @@ struct ThreadView: View {
                 }
             }
         }
+        .sheet(item: $sharing) { r in ShareLinkSheet(request: r).environment(session) }
         .navigationTitle(navTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -108,6 +130,31 @@ struct ThreadView: View {
         }
     }
 
+    /// At least this many of the last messages are always drawn.
+    private static let eagerTail = 12
+    private static let eagerStep = 8
+    private static let activityId = "thread-activity"
+
+    /// The row drawn last. A spacer row as the target instead hung the layout.
+    private var lastRowId: String? { store.busy ? Self.activityId : store.messages.last?.id }
+
+    /// What changes at the end of the list: a new row, a growing reply, the activity line.
+    private var tailSignature: TailSignature {
+        TailSignature(count: store.messages.count, lastId: store.messages.last?.id,
+                      lastLength: store.messages.last?.content.count ?? 0, busy: store.busy,
+                      userCount: store.messages.lazy.filter { $0.role == "user" }.count)
+    }
+
+    private func row(_ m: ChatMessage, _ i: Int, latest: String?) -> some View {
+        MessageRow(message: m, store: store, isLatest: m.id == latest, submit: submitFromReply,
+                   onShare: { turnId in
+                       if let id = store.threadId { sharing = ShareRequest(source: .chat(threadId: id), anchorId: turnId) }
+                   })
+            .environment(\.mdxSource, MdxSource(key: "chat:\(store.threadId ?? ""):\(m.turnId ?? m.id)",
+                                                scrollId: m.id, order: Double(i)))
+            .id(m.id)
+    }
+
     private var unreadOnScreen: Bool {
         guard phase == .active, let id = store.threadId,
               session.chats.inbox.entries[id]?.forcedUnread != true,
@@ -127,6 +174,9 @@ struct ThreadView: View {
 
     private var newChatHeader: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if let folder = session.chats.folder(store.folderId) {
+                Label("In \(folder.name)", systemImage: "folder").font(.footnote).foregroundStyle(.secondary)
+            }
             if !session.chatPersonas.isEmpty {
                 Text("Talk to").font(.footnote).foregroundStyle(.secondary)
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -196,6 +246,18 @@ struct ThreadView: View {
     }
 }
 
+private final class ScrollFollow {
+    var atBottom = true
+}
+
+private struct TailSignature: Equatable {
+    var count: Int
+    var lastId: String?
+    var lastLength: Int
+    var busy: Bool
+    var userCount: Int
+}
+
 struct ErrorBanner: View {
     let text: String
     var dismiss: () -> Void
@@ -233,6 +295,8 @@ struct MessageRow: View {
     let store: ThreadStore
     var isLatest = false
     var submit: ((String) -> Void)?
+    /// Opens the Share sheet for this answer's turn.
+    var onShare: ((String) -> Void)?
 
     var body: some View {
         switch message.role {
@@ -272,7 +336,12 @@ struct MessageRow: View {
                 ForEach(message.images ?? [], id: \.id) { ref in GeneratedImage(ref: ref, store: store) }
                 if let sources = message.sources, !sources.isEmpty { SourcesList(sources: sources) }
             }
-            .contextMenu { Button("Copy") { UIPasteboard.general.string = message.content } }
+            .contextMenu {
+                Button("Copy") { UIPasteboard.general.string = message.content }
+                if let onShare, let turn = message.turnId, !message.content.isEmpty, !store.busy || !isLatest {
+                    Button("Share as Link…", systemImage: "square.and.arrow.up") { onShare(turn) }
+                }
+            }
         }
     }
 }

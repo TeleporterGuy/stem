@@ -23,8 +23,12 @@ export type ComputerGrant =
   /** `device: null` = the model names the Mac per call. */
   | { kind: 'chat'; device: string | null };
 
-/** Same shape as ComputerGrant: a Mac, fixed by a pin or the chat setting, or the model's pick. */
-export type BrowserGrant = ComputerGrant;
+/**
+ * ComputerGrant's Mac, plus the browser profiles there the turn may use
+ * (absent = every profile) — from the persona's pin, or the chat setting when
+ * it fixes the Mac.
+ */
+export type BrowserGrant = ComputerGrant & { profiles?: string[] };
 
 export type Granted<G> = { ok: true; grant: G } | { ok: false; refusal: string };
 
@@ -150,7 +154,7 @@ export function resolveBrowserGrant(
   turn: GrantTurn,
   chat: ChatFeatureSettings['browser'] | undefined
 ): Granted<BrowserGrant> {
-  return resolveMacGrant(turn, chat, turn.persona?.browser, {
+  const granted = resolveMacGrant(turn, chat, turn.persona?.browser, {
     feature: 'browser control',
     personaLacks: 'drives no browser',
     pinWhere: 'its browser pin (Manage → Personas → "Browser this persona controls")',
@@ -160,4 +164,12 @@ export function resolveBrowserGrant(
       'Do not work around it by driving the browser with the computer tool or over run_command (open, ' +
       'osascript) — the user chose who drives their browser.'
   });
+  if (!granted.ok) return granted;
+  const profiles =
+    granted.grant.kind === 'pin'
+      ? turn.persona?.browser?.profiles
+      : granted.grant.device !== null
+        ? chat?.target?.profiles
+        : undefined;
+  return profiles ? { ok: true, grant: { ...granted.grant, profiles } } : granted;
 }

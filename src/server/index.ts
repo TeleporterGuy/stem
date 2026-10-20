@@ -14,13 +14,16 @@ import {
   registerMemoryCheckIpc,
   memoryCheckLlm,
   registerMailIpc,
+  registerInterStemIpc,
   registerPersonasIpc,
   registerPinsIpc,
   registerServer,
+  registerShareIpc,
   registerWorkspaceIpc,
   type IpcDeps
 } from './ipc';
 import { degrade } from './degrade';
+import { InterStemService } from './interstem/service';
 import { log } from './log';
 import { ensureWorkspace } from './workspace/bootstrap';
 import { publishProtectedRootsNow } from './workspace/connected-folders';
@@ -45,6 +48,7 @@ import type { HarnessService } from './harness/service';
 import { registerHarnessIpc } from './harness/ipc';
 import { closeHarnessDeviceRouter, harnessDeviceRouter } from './harness/device-host';
 import { initSkills } from './startup/skills';
+import { cleanWindowContext } from './pi/window-context';
 import { practiceSkillFor, practiceStarted, practiceTurnSettled, setPracticeStopper, setRecordingDraftPush } from './startup/record-skills';
 import {
   closeTransport,
@@ -58,7 +62,7 @@ import { setActivityEmitter } from './activity';
 import { foldTurnEvent, liveTurnCount, noteTurnStart } from './live-turns';
 import { startTurnOnce } from './start-turn-once';
 import { pushApprovalRequest, pushMailReceived, pushTurnFinished, type ApprovalPushKind } from './push';
-import { onMailChanged, onMailReceived, taskMailHistory, taskRunThreadIds } from './workspace/mail';
+import { mailConversationFor, onMailChanged, onMailReceived, taskMailHistory, taskRunThreadIds } from './workspace/mail';
 import { closeApns } from './push/apns';
 import { closeDeviceMcpRouter } from './mcp-device/router';
 import { closeExecDeviceRouter, resolveHarnessTarget } from './exec-device/router';
@@ -190,6 +194,8 @@ let harness: { service: HarnessService; close: () => Promise<void> } | null = nu
 /** Scheduled-tasks engine (cron/once → autonomous turns). Created in startServer. */
 let scheduler: TaskScheduler | null = null;
 let mailRouter: MailRouter | null = null;
+/** Inter-Stem mail (server/interstem): addresses, relay streams, the send queue. */
+let interStem: InterStemService | null = null;
 // In-app provider sign-in (OAuth / API key) for the onboarding wizard; created in
 // startServer alongside the runtime.
 let providerAuth: ProviderAuth | null = null;
@@ -409,6 +415,8 @@ function registerIpc(): void {
   // persona list (the composer's To: field included) stays current.
   onPersonasChanged(() => emit('personas:changed', undefined));
   registerMailIpc({ router: () => mailRouter, runtime: () => runtime! });
+  registerInterStemIpc({ service: () => interStem, router: () => mailRouter });
+  registerShareIpc({ runtime: () => runtime!, interStem: () => interStem });
   registerMemoryCheckIpc({ router: () => mailRouter, runtime: () => runtime!, emit });
   onMailChanged(() => emit('mail:changed', undefined));
   onMailWorkChanged((event) => emit('mail:workChanged', event));
@@ -491,6 +499,8 @@ function registerIpc(): void {
       persona: personaFields?.persona,
       mail: undefined,
       practiceSkill: practiceSkill ?? undefined,
+      // Only Quick Chat asks about a window; anything else claiming one is dropped.
+      windowContext: quickChat ? cleanWindowContext(input.windowContext) ?? undefined : undefined,
       originDeviceId: e?.deviceId
     });
     if (practiceSkill && input.practiceDraftId && started.turnId) {
@@ -827,9 +837,15 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   // The mail router: turns MailItems into persona turns and settled turns back
   // into reply mail. Created with the runtime; the IPC layer reaches it through
   // the late-bound getter registerIpc wires.
+  interStem = new InterStemService({ onChange: () => emit('interstem:changed', undefined) });
   mailRouter = new MailRouter({
     runtime,
     onChange: () => emit('mail:changed', undefined),
+    // The user's mail in a conversation with another Stem goes out through the
+    // relay; progress lands on the item (external.status).
+    externalSend: (conversationId, itemId) => {
+      void interStem?.send(conversationId, itemId).catch((e) => degrade('interstem', 'could not queue a send', e));
+    },
     // What the coding agent itself said during a code persona's turn, taken
     // when the persona's reply mail lands so the Inbox can show both. Late
     // bound: the harness service is built after the router.
@@ -856,6 +872,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       return { deviceId: target.deviceId, label: target.label, online };
     }
   });
+  // Connect every verified address's relay stream. No addresses, no network.
+  void interStem.start().catch((e) => degrade('interstem', 'could not start inter-Stem mail', e));
   // The send_mail/spawn_agent tools inside a persona's delivery turn route
   // here; the runtime supplies the conversation + sender off the live turn.
   runtime.setMailBridge({
@@ -877,6 +895,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     taskRunThreadIds,
     // What the task already mailed rides into each run's preamble.
     taskMailHistory,
+    // A task scheduled from mail reports back into that conversation.
+    mailConversationFor,
     // Raising a window and bouncing a dock are things only a machine with a
     // screen can do, so they leave as pushes rather than calls. There is no
     // allowlist deciding who hears them — every SSE client gets every channel
@@ -1213,6 +1233,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     },
 
     shutdown() {
+      interStem?.stop();
       if (webSearchRestartTimer) clearTimeout(webSearchRestartTimer);
       scheduler?.stop();
       stopScratchSweeper();

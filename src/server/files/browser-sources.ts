@@ -38,7 +38,7 @@ export interface BrowserSourceDeps {
 
 const FORMS =
   'Name files the way you read them: `files/<name>` for the Files place, a path in your scratch folder or a ' +
-  'connected folder, or an attached image’s `img_…` id. Paths on the user’s Mac cannot be uploaded.';
+  'connected folder, or an attached image’s `img_…` id. Paths on the user’s computer cannot be uploaded.';
 
 function extFor(mimeType: string): string {
   const sub = mimeType.split('/')[1]?.toLowerCase() ?? '';

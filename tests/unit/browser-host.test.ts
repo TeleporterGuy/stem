@@ -12,7 +12,9 @@ import { createBrowserHost, type BrowserHost } from '../../src/desktop/browser-h
 import { parseArcTabs, type ArcSidebarTab } from '../../src/desktop/browser-host/arc-tabs';
 import { browserInstallPaths, ensureHostConfig } from '../../src/desktop/browser-host/install';
 import { writeBrowserHostEnabled } from '../../src/desktop/browser-host/store';
-import { encodeFrame, FrameReader, type ToExtension } from '../../src/shared/browser-native';
+import { encodeFrame, FrameReader, type ServerHello, type ToExtension } from '../../src/shared/browser-native';
+import { handshakeProof, newNonce, proofMatches } from '../../src/desktop/browser-host/handshake';
+import { serverProved } from '../../src/desktop/browser-host/native-host-main';
 import type { DeviceBrowserRequest } from '../../src/shared/types';
 
 interface Peer {
@@ -23,19 +25,48 @@ interface Peer {
   closed: Promise<void>;
 }
 
-async function connectPeer(socketPath: string, hello: Record<string, unknown>): Promise<Peer> {
+/** The extension's own hello, from before profiles (no profileId). */
+const LEGACY_HELLO = { type: 'hello', protocol: 1, extensionId: 'x', extensionVersion: '0.6.0', userAgent: 'UA' };
+
+/**
+ * A native host: the handshake (handshake.ts) with the token in `hello`, which
+ * never goes on the wire, then — as the real one replays it on every
+ * connection — the extension's hello (`ext`; null for a host whose extension
+ * has not said it yet). Resolves once the host has sent its proof, or once the
+ * desktop hung up on it.
+ */
+async function connectPeer(
+  socketPath: string,
+  hello: Record<string, unknown>,
+  ext: Record<string, unknown> | null = LEGACY_HELLO
+): Promise<Peer> {
+  const { token, ...claim } = hello as { token: string };
   const socket = createConnection(socketPath);
   const reader = new FrameReader();
   const received: ToExtension[] = [];
   const waiters: Array<() => void> = [];
+  const nonce = newNonce();
+  let proved: () => void = () => undefined;
+  const handshake = new Promise<void>((resolve) => (proved = resolve));
   socket.on('data', (chunk: Buffer) => {
-    for (const body of reader.push(chunk)) received.push(JSON.parse(body.toString('utf8')) as ToExtension);
+    for (const body of reader.push(chunk)) {
+      const m = JSON.parse(body.toString('utf8')) as ToExtension | ServerHello;
+      if (m.type === 'server-hello') {
+        expect(proofMatches(token, 'stem', nonce, m.proof) || token === 'nope').toBe(true);
+        socket.write(encodeFrame({ type: 'host-proof', proof: handshakeProof(token, 'host', m.nonce) }));
+        proved();
+        continue;
+      }
+      received.push(m);
+    }
     for (const w of waiters.splice(0)) w();
   });
   const closed = new Promise<void>((resolve) => socket.on('close', () => resolve()));
   socket.on('error', () => undefined);
   await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
-  socket.write(encodeFrame(hello));
+  socket.write(encodeFrame({ ...claim, nonce }));
+  const proof = await Promise.race([handshake.then(() => true), closed.then(() => false)]);
+  if (proof && ext) socket.write(encodeFrame(ext));
   const send = (message: unknown): void => void socket.write(encodeFrame(message));
   const next = async (type: ToExtension['type']): Promise<ToExtension> => {
     for (;;) {
@@ -47,9 +78,25 @@ async function connectPeer(socketPath: string, hello: Record<string, unknown>): 
   return { socket, received, send, next, closed };
 }
 
+/** Two seconds of polling, by the clock: Windows rounds a 5 ms timer up to ~16 ms. */
 const until = async (cond: () => boolean): Promise<void> => {
-  for (let i = 0; i < 400 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+  const end = Date.now() + 2000;
+  while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 5));
 };
+
+describe('the native host', () => {
+  it('relays only to a peer that proves it holds the token', () => {
+    const token = 'a'.repeat(64);
+    const nonce = newNonce();
+    const hello = (proof: string) => Buffer.from(JSON.stringify({ type: 'server-hello', nonce: newNonce(), proof }));
+    expect(serverProved(token, nonce, hello(handshakeProof(token, 'stem', nonce)))).toBe(true);
+    // A squatter on the socket: no token, or a proof replayed for another nonce, or the host's own role.
+    expect(serverProved(token, nonce, hello(handshakeProof('b'.repeat(64), 'stem', nonce)))).toBe(false);
+    expect(serverProved(token, nonce, hello(handshakeProof(token, 'stem', newNonce())))).toBe(false);
+    expect(serverProved(token, nonce, hello(handshakeProof(token, 'host', nonce)))).toBe(false);
+    expect(serverProved(token, nonce, Buffer.from('{"type":"request"}'))).toBe(false);
+  });
+});
 
 describe('createBrowserHost', () => {
   let root: string;
@@ -143,11 +190,32 @@ describe('createBrowserHost', () => {
     await peer.closed;
   });
 
+  /** A host from before the handshake: its hello carries the token itself. Answers what came back. */
+  const preHandshakeHost = async (sent: string): Promise<string> => {
+    const socket = createConnection(socketPath);
+    const seen: Buffer[] = [];
+    socket.on('data', (c: Buffer) => seen.push(c));
+    socket.on('error', () => undefined);
+    await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+    socket.write(encodeFrame({ type: 'host-hello', token: sent, appPath: '/Applications/Arc.app', appName: 'Arc' }));
+    await new Promise<void>((resolve) => socket.on('close', () => resolve()));
+    return Buffer.concat(seen).toString('utf8');
+  };
+
+  it('tells the extension behind a pre-handshake host to reload, and never sends the token itself', async () => {
+    const seen = await preHandshakeHost(token);
+    expect(seen).toContain('"type":"reload"');
+    expect(seen).not.toContain(token);
+  });
+
+  it('drops a pre-handshake host with the wrong token without a word', async () => {
+    expect(await preHandshakeHost('nope')).toBe('');
+  });
+
   it('relays a request to the connected browser and its answer back, and announces it', async () => {
     await writeBrowserHostEnabled(true);
     const peer = await connectPeer(socketPath, arc());
     peers.push(peer);
-    peer.send({ type: 'hello', protocol: 1, extensionId: 'x', extensionVersion: '0.6.0', userAgent: 'UA' });
     await until(() => invoked.some((c) => c.channel === 'browserHost:announce' && JSON.stringify(c.args).includes('0.6.0')));
     const announced = invoked.filter((c) => c.channel === 'browserHost:announce').at(-1)!.args[0];
     expect(announced).toMatchObject({
@@ -206,7 +274,7 @@ describe('createBrowserHost', () => {
     expect(sent.action.kind).toBe('upload');
     const paths = (sent.action as { paths: string[] }).paths;
     expect(paths).toHaveLength(1);
-    expect(paths[0]).toMatch(/uploads\/[0-9a-f]{16}\/cv\.pdf$/);
+    expect(paths[0]).toMatch(/uploads[\\/][0-9a-f]{16}[\\/]cv\.pdf$/);
 
     // The native host's spool copy is sent up; a path anywhere else never is.
     const spooled = join(root, 'browser', 'spool', 'abcd');
@@ -229,7 +297,7 @@ describe('createBrowserHost', () => {
     });
     await until(() => !!result('r1'));
     expect(uploads).toHaveLength(1);
-    expect(uploads[0]).toMatch(/spool\/abcd\/report\.pdf$/);
+    expect(uploads[0]).toMatch(/spool[\\/]abcd[\\/]report\.pdf$/);
     const res = result('r1') as { ok: boolean; text: string; downloads: unknown[] };
     expect(res.downloads).toEqual([{ handle: 'stem-upload:1', name: 'report.pdf', size: 9 }]);
     expect(res.text).toContain('“secret.txt” finished on the Mac but could not be copied');
@@ -260,7 +328,6 @@ describe('createBrowserHost', () => {
 
   it('reloads each browser once when the extension files change, never on every hello', async () => {
     const peer = await connectPeer(socketPath, arc());
-    peer.send({ type: 'hello', protocol: 1, extensionId: 'x', extensionVersion: '0.6.0', userAgent: 'UA' });
     await until(() => invoked.some((c) => JSON.stringify(c.args).includes('"connected":true')));
     writeFileSync(join(extSource, 'background.js'), '// v2');
     await host.setUp();
@@ -271,7 +338,6 @@ describe('createBrowserHost', () => {
     await peer.closed;
     const again = await connectPeer(socketPath, arc());
     peers.push(again);
-    again.send({ type: 'hello', protocol: 1, extensionId: 'x', extensionVersion: '0.6.0', userAgent: 'UA' });
     await until(() => invoked.filter((c) => JSON.stringify(c.args).includes('"connected":true')).length >= 2);
     await new Promise((r) => setTimeout(r, 50));
     expect(again.received.filter((m) => m.type === 'reload')).toEqual([]);
@@ -286,15 +352,12 @@ describe('createBrowserHost', () => {
     writeFileSync(join(extSource, 'background.js'), '// v3');
     await host.setUp();
 
-    const hello = { type: 'hello', protocol: 1, extensionId: 'x', extensionVersion: '0.6.0', userAgent: 'UA' };
     const back = await connectPeer(socketPath, arc());
-    back.send(hello);
     expect(await back.next('reload')).toEqual({ type: 'reload' });
     back.socket.destroy();
     await back.closed;
     const reloaded = await connectPeer(socketPath, arc());
     peers.push(reloaded);
-    reloaded.send(hello);
     await until(() => invoked.some((c) => c.channel === 'browserHost:announce' && JSON.stringify(c.args).includes('"version":"0.6.0"')));
     await new Promise((r) => setTimeout(r, 50));
     expect(reloaded.received.filter((m) => m.type === 'reload')).toEqual([]);
@@ -304,7 +367,6 @@ describe('createBrowserHost', () => {
     await writeBrowserHostEnabled(true);
     const peer = await connectPeer(socketPath, arc());
     peers.push(peer);
-    peer.send({ type: 'hello', protocol: 1, extensionId: 'x', extensionVersion: '0.6.0', userAgent: 'UA' });
     await until(() => invoked.some((c) => JSON.stringify(c.args).includes('"connected":true')));
     sidebar = {
       tabs: [
@@ -330,10 +392,146 @@ describe('createBrowserHost', () => {
 
     sidebar = { error: 'macOS did not let Stem read Arc’s sidebar.' };
     host.onRequest(request('r2', { kind: 'tabs' }));
-    await until(() => peer.received.filter((m) => m.type === 'request').length >= 2);
+    // peer.next above took r1 out of `received`, so r2 is the only request left there.
+    await peer.next('request');
     peer.send({ type: 'result', id: 'r2', result: { ok: true, text: '0 open tabs.', urls: [] } });
     await until(() => !!result('r2'));
     expect(result('r2')!.text).toBe('0 open tabs.\n\nmacOS did not let Stem read Arc’s sidebar.');
+  });
+
+  describe('several profiles of one browser', () => {
+    const profileHello = (profileId: string, hint?: string) => ({ ...LEGACY_HELLO, profileId, ...(hint ? { hint } : {}) });
+    const WORK = 'aaaaaaaa-1111-4111-8111-111111111111';
+    const HOME = 'bbbbbbbb-2222-4222-8222-222222222222';
+    const lastAnnounce = () =>
+      invoked.filter((c) => c.channel === 'browserHost:announce').at(-1)?.args[0] as
+        | { browsers: Array<{ id: string; name: string; profile?: string; connected: boolean; hint?: string }>; chosen?: string }
+        | undefined;
+    const bothUp = () => lastAnnounce()?.browsers.filter((b) => b.connected).length === 2;
+
+    async function twoProfiles(): Promise<{ work: Peer; home: Peer }> {
+      await writeBrowserHostEnabled(true);
+      const work = await connectPeer(socketPath, arc(), profileHello(WORK, 'jira.example, mail.google.com'));
+      peers.push(work);
+      await until(() => lastAnnounce()?.browsers.length === 1);
+      const home = await connectPeer(socketPath, arc(), profileHello(HOME));
+      peers.push(home);
+      await until(bothUp);
+      return { work, home };
+    }
+
+    it('keeps both connected, numbers them, keeps the sites hint on this Mac, and tells each extension its name', async () => {
+      const { work, home } = await twoProfiles();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(work.socket.destroyed).toBe(false);
+      expect(home.socket.destroyed).toBe(false);
+      expect(lastAnnounce()!.browsers).toEqual([
+        { id: `/Applications/Arc.app#${WORK}`, name: 'Arc', profile: 'Arc 1', connected: true, version: '0.6.0' },
+        { id: `/Applications/Arc.app#${HOME}`, name: 'Arc', profile: 'Arc 2', connected: true, version: '0.6.0' }
+      ]);
+      expect(lastAnnounce()!.chosen).toBe(`/Applications/Arc.app#${WORK}`);
+      expect((await host.localState()).browsers[0]).toMatchObject({ hint: 'jira.example, mail.google.com' });
+      expect(work.received.filter((m) => m.type === 'profile').at(-1)).toEqual({ type: 'profile', name: 'Arc 1' });
+      expect(home.received.filter((m) => m.type === 'profile').at(-1)).toEqual({ type: 'profile', name: 'Arc 2' });
+
+      await host.rename(`/Applications/Arc.app#${HOME}`, '  Personal ');
+      await until(() => home.received.some((m) => m.type === 'profile' && m.name === 'Personal'));
+      expect(lastAnnounce()!.browsers[1]).toMatchObject({ profile: 'Personal' });
+      await expect(host.rename(`/Applications/Arc.app#${WORK}`, 'personal')).rejects.toThrow('already called');
+    });
+
+    it('routes to the named profile, which then sticks for the thread, while other threads keep the default', async () => {
+      const { work, home } = await twoProfiles();
+      await host.rename(`/Applications/Arc.app#${HOME}`, 'Personal');
+
+      host.onRequest({ ...request('r1', { kind: 'snapshot' }), profile: 'personal' });
+      expect(await home.next('request')).toMatchObject({ id: 'r1' });
+      home.send({ type: 'result', id: 'r1', result: { ok: true, text: 'outline' } });
+      await until(() => !!result('r1'));
+
+      host.onRequest(request('r2', { kind: 'snapshot' }));
+      expect(await home.next('request')).toMatchObject({ id: 'r2' });
+      home.send({ type: 'result', id: 'r2', result: { ok: true, text: 'outline' } });
+      await until(() => !!result('r2'));
+
+      host.onRequest(request('r3', { kind: 'snapshot' }, 't2'));
+      expect(await work.next('request')).toMatchObject({ id: 'r3' });
+
+      host.onRequest({ ...request('r4', { kind: 'snapshot' }), profile: 'Office' });
+      await until(() => !!result('r4'));
+      expect(result('r4')?.error).toBe('This Mac has no browser profile called “Office”. Its profiles: “Arc 1” (Arc), “Personal” (Arc).');
+
+      // Its run over, the thread starts again from the default.
+      host.onEnd({ threadId: 't1' });
+      host.onRequest(request('r5', { kind: 'snapshot' }));
+      expect(await work.next('request')).toMatchObject({ id: 'r5' });
+    });
+
+    it('lists every open profile’s tabs under its name when no profile is named', async () => {
+      const { work, home } = await twoProfiles();
+      await host.rename(`/Applications/Arc.app#${WORK}`, 'Work');
+      sidebar = { tabs: [{ space: 'S', location: 'pinned', title: 'Unloaded', url: 'https://unloaded.example/' }] };
+      host.onRequest(request('r1', { kind: 'tabs' }));
+      const [a, b] = await Promise.all([work.next('request'), home.next('request')]);
+      work.send({ type: 'result', id: (a as { id: string }).id, result: { ok: true, text: '- 3 · Jira', urls: ['https://jira.example/'] } });
+      home.send({ type: 'result', id: (b as { id: string }).id, result: { ok: false, error: 'boom' } });
+      await until(() => !!result('r1'));
+      const text = result('r1')!.text!;
+      expect(text).toContain('2 profiles with Stem: “Work” (Arc), “Arc 2” (Arc)');
+      expect(text).toContain('## Profile “Work” (Arc) — your current profile, default\n- 3 · Jira');
+      expect(text).toContain('## Profile “Arc 2” (Arc)\nIts tabs could not be listed: boom');
+      expect(text).toContain('Arc also has 1 sidebar tab');
+    });
+
+    it('keeps a turn limited to its allowed profiles: names, fallback and the tab list', async () => {
+      const { work, home } = await twoProfiles();
+      await host.rename(`/Applications/Arc.app#${HOME}`, 'Personal');
+      const onlyHome = [`/Applications/Arc.app#${HOME}`];
+
+      // Named outside the list: refused, and only the allowed names are offered.
+      host.onRequest({ ...request('r1', { kind: 'snapshot' }), profile: 'Arc 1', allowed: onlyHome });
+      await until(() => !!result('r1'));
+      expect(result('r1')?.error).toBe(
+        'This conversation may use no browser profile called “Arc 1”. The ones it may use: “Personal” (Arc).'
+      );
+      // No name: the Mac's default (Work) is outside the list, so the allowed one is used.
+      host.onRequest({ ...request('r2', { kind: 'snapshot' }, 't2'), allowed: onlyHome });
+      expect(await home.next('request')).toMatchObject({ id: 'r2' });
+      // `tabs` asks only the allowed profile.
+      host.onRequest({ ...request('r3', { kind: 'tabs' }, 't3'), allowed: onlyHome });
+      expect(await home.next('request')).toMatchObject({ id: 'r3' });
+      home.send({ type: 'result', id: 'r3', result: { ok: true, text: '- 9 · Netflix' } });
+      await until(() => !!result('r3'));
+      expect(work.received.filter((m) => m.type === 'request')).toEqual([]);
+      // Nothing allowed is set up any more: refused, never a fallback to another profile.
+      host.onRequest({ ...request('r4', { kind: 'snapshot' }, 't4'), allowed: ['/Applications/Arc.app#gone'] });
+      await until(() => !!result('r4'));
+      expect(result('r4')?.error).toContain('none of those is set up');
+      expect(work.received.filter((m) => m.type === 'request')).toEqual([]);
+    });
+
+    it('lets the first profile take over an entry from before profiles, and forgets only a closed one', async () => {
+      writeFileSync(
+        process.env.STEM_BROWSER_HOST_FILE!,
+        JSON.stringify({ version: 1, enabled: true, chosen: '/Applications/Arc.app', known: [{ id: '/Applications/Arc.app', name: 'Arc', label: 'Work' }] })
+      );
+      const { home } = await twoProfiles();
+      const state = await host.localState();
+      expect(state.browsers.map((b) => [b.id, b.profile])).toEqual([
+        [`/Applications/Arc.app#${WORK}`, 'Work'],
+        [`/Applications/Arc.app#${HOME}`, 'Arc 2']
+      ]);
+      expect(state.chosen).toBe(`/Applications/Arc.app#${WORK}`);
+
+      expect((await host.forget(`/Applications/Arc.app#${HOME}`)).browsers).toHaveLength(2);
+      home.socket.destroy();
+      await home.closed;
+      await until(() => lastAnnounce()?.browsers.filter((b) => b.connected).length === 1);
+      const after = await host.forget(`/Applications/Arc.app#${HOME}`);
+      expect(after.browsers.map((b) => b.id)).toEqual([`/Applications/Arc.app#${WORK}`]);
+      // An app's only profile goes by the app's name unless the user named it.
+      expect(after.browsers[0]!.profile).toBe('Work');
+    });
   });
 
   it('parses the AppleScript output once per tab, however many windows list the Spaces', () => {
@@ -344,5 +542,90 @@ describe('createBrowserHost', () => {
       { space: 'Home', location: 'topApp', title: 'B', url: 'https://b/' }
     ]);
     expect(parseArcTabs('\n')).toEqual([]);
+  });
+});
+
+describe('createBrowserHost on Linux', () => {
+  let root: string;
+  let host: BrowserHost;
+  let invoked: Array<{ channel: string; args: unknown[] }>;
+  let launched: string[];
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'sbl-'));
+    const extSource = join(root, 'ext-src');
+    mkdirSync(extSource);
+    writeFileSync(join(extSource, 'manifest.json'), '{"manifest_version":3}');
+    mkdirSync(join(root, 'home', '.config', 'google-chrome'), { recursive: true });
+    process.env.STEM_BROWSER_HOST_FILE = join(root, 'browser-host.json');
+    invoked = [];
+    launched = [];
+    host = createBrowserHost({
+      invoke: async (channel, args) => void invoked.push({ channel, args }),
+      uploadFile: async () => 'unused',
+      downloadOutbox: async () => 'unused',
+      installSource: () => ({ extensionSource: extSource, hostScript: '/dev/null', nodeCommand: '/bin/false' }),
+      home: join(root, 'home'),
+      launch: async (app) => void launched.push(app),
+      openWith: async () => undefined,
+      paths: browserInstallPaths(root),
+      platform: 'linux',
+      launchWaitMs: 300
+    });
+    await host.start();
+  });
+
+  afterEach(() => {
+    host.close();
+    rmSync(root, { recursive: true, force: true });
+    delete process.env.STEM_BROWSER_HOST_FILE;
+  });
+
+  it('is supported, says “computer”, and announces as linux', async () => {
+    expect((await host.localState()).supported).toBe(true);
+    await writeBrowserHostEnabled(true);
+    host.onRequest({ requestId: 'r0', threadId: 't1', action: { kind: 'tabs' } });
+    await until(() => invoked.some((c) => c.channel === 'browserHost:result'));
+    const error = (invoked.find((c) => c.channel === 'browserHost:result')!.args[1] as { error: string }).error;
+    expect(error).toContain('on this computer');
+    expect(error).not.toContain('Mac');
+
+    const { token, socketPath } = await ensureHostConfig(browserInstallPaths(root));
+    const chrome = '/opt/google/chrome/chrome';
+    const peer = await connectPeer(socketPath, { type: 'host-hello', token, appPath: chrome, appName: 'Google Chrome' });
+    peer.send({ type: 'hello', protocol: 1, extensionId: 'x', extensionVersion: '0.7.0', userAgent: 'UA' });
+    await until(() => invoked.some((c) => c.channel === 'browserHost:announce' && JSON.stringify(c.args).includes('0.7.0')));
+    expect(invoked.filter((c) => c.channel === 'browserHost:announce').at(-1)!.args[0]).toMatchObject({
+      platform: 'linux',
+      browsers: [{ id: chrome, name: 'Google Chrome', connected: true }]
+    });
+
+    // Closed: the executable is what gets started again.
+    peer.socket.destroy();
+    await peer.closed;
+    host.onRequest({ requestId: 'r1', threadId: 't1', action: { kind: 'tabs' } });
+    await until(() => launched.length === 1);
+    expect(launched).toEqual([chrome]);
+  });
+
+  it('never starts a program a native host merely claimed is its browser', async () => {
+    await writeBrowserHostEnabled(true);
+    const { token, socketPath } = await ensureHostConfig(browserInstallPaths(root));
+    const peer = await connectPeer(socketPath, { type: 'host-hello', token, appPath: '/tmp/evil', appName: 'Evil' });
+    // The connect remembers the browser on its own schedule; choose it once it is known.
+    let known = false;
+    for (let i = 0; i < 200 && !known; i++) {
+      known = (await host.localState()).browsers.some((b) => b.id === '/tmp/evil');
+      if (!known) await new Promise((r) => setTimeout(r, 5));
+    }
+    await host.choose('/tmp/evil');
+    peer.socket.destroy();
+    await peer.closed;
+    host.onRequest({ requestId: 'r2', threadId: 't1', action: { kind: 'tabs' } });
+    await until(() => invoked.some((c) => c.channel === 'browserHost:result'));
+    expect((invoked.find((c) => c.channel === 'browserHost:result')!.args[1] as { error: string }).error).toContain(
+      'only starts browsers it knows'
+    );
+    expect(launched).toEqual([]);
   });
 });

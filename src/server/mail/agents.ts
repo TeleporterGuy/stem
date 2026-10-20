@@ -84,6 +84,9 @@ export function agentPersona(role: Persona, agent: MailAgent, starter: Pick<Pers
   const persona: Persona = { ...role, id: agent.id, name: agent.name, memory: false };
   delete persona.builtin;
   delete persona.clients;
+  // Bringing personas in is the user's grant to the persona they mail, and an
+  // agent never drives the conversation, so it never carries it.
+  delete persona.addsPersonas;
   if (!role.canSpawn || isAgentId(agent.spawnedBy)) delete persona.canSpawn;
   if (agent.blind || starter.recall === false) persona.recall = false;
   // spawn_agent refuses a model for a role with one; this keeps a later pin the user sets in charge.
@@ -97,22 +100,41 @@ export function agentPersona(role: Persona, agent: MailAgent, starter: Pick<Pers
 /**
  * The roles a persona may start agents of here, for its preamble: every
  * persona not pinned to the user's computer, plus pinned ones the user put in
- * the conversation (the same rule bridgeSpawn enforces). Without the list a
+ * the conversation (the same rule bridgeSpawn enforces), or every persona
+ * for a starter that brings personas in on its own. Without the list a
  * lead guesses at persona names; with the model it can pick roles on
  * different models for independent attempts, and `code` marks the roles that
  * run a coding agent (the Code recipe's writers).
  */
 export function spawnableRoles(
   personas: Persona[],
-  participants: string[]
+  participants: string[],
+  addsPersonas = false
 ): { id: string; name: string; model?: string; blind?: true; code?: true }[] {
   return personas
-    .filter((p) => !isPinned(p) || participants.includes(p.id))
+    .filter((p) => addsPersonas || !isPinned(p) || participants.includes(p.id))
     .map((p) => ({
       id: p.id,
       name: p.name,
       ...(p.model ? { model: p.model } : {}),
       ...(p.recall === false ? { blind: true as const } : {}),
       ...(p.harness ? { code: true as const } : {})
+    }));
+}
+
+/**
+ * The personas pinned to the user's computer that a lead cannot start here
+ * (not in the conversation), with what each drives — so the lead asks the
+ * user to add the right one instead of guessing none exists.
+ */
+export function outsidePersonas(personas: Persona[], participants: string[]): { id: string; name: string; does: string }[] {
+  return personas
+    .filter((p) => isPinned(p) && !participants.includes(p.id))
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      does: p.harness
+        ? 'coding agent'
+        : [p.browser ? 'browser' : '', p.computer ? 'screen and apps' : ''].filter(Boolean).join(', ')
     }));
 }

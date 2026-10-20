@@ -366,6 +366,41 @@ export function provisionalTail(block: StreamBlock): { live: string; pending: st
   return { live, pending: null };
 }
 
+// Data components a streaming reply draws while their data is still arriving.
+const LIVE_DATA: ReadonlySet<string> = new Set(['Diagram', 'Chart', 'DataTable', 'Stats', 'Compare']);
+const ATTR = /\b([A-Za-z][A-Za-z0-9]*)=(?:"([^"]*)"|'([^']*)')/g;
+
+/**
+ * A top-level data component still being written (Diagram, Chart, DataTable,
+ * Stats, Compare): its name, its attributes, and its data fence so far. Null
+ * for anything else. `closed` says the fence itself has ended, so its last
+ * line is complete. The streaming view draws these live instead of showing a
+ * placeholder.
+ */
+export function streamingData(
+  block: StreamBlock
+): { name: string; props: Record<string, string>; value: string; closed: boolean } | null {
+  if (block.open === null || !LIVE_DATA.has(block.open) || block.stack.length !== 1) return null;
+  const name = block.open;
+  const lines = block.text.split('\n');
+  const open = new RegExp(`^\\s{0,3}<${name}\\b((?:[^>"']|"[^"]*"|'[^']*')*)>\\s*$`).exec(lines[0]);
+  if (!open) return null;
+  const props: Record<string, string> = {};
+  for (const m of open[1].matchAll(ATTR)) props[m[1]] = m[2] ?? m[3];
+  const fenceAt = lines.findIndex((line, i) => i > 0 && FENCE_OPEN.test(line));
+  if (fenceAt === -1) return { name, props, value: '', closed: false };
+  const marker = FENCE_OPEN.exec(lines[fenceAt])![1];
+  const body: string[] = [];
+  for (const line of lines.slice(fenceAt + 1)) {
+    const close = FENCE_CLOSE.exec(line);
+    if (close && close[1][0] === marker[0] && close[1].length >= marker.length) {
+      return { name, props, value: body.join('\n'), closed: true };
+    }
+    body.push(line);
+  }
+  return { name, props, value: body.join('\n'), closed: false };
+}
+
 /**
  * Split markdown into top-level blocks (see {@link splitStreamBlocks}), text only.
  */

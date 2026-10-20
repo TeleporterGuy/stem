@@ -1,23 +1,28 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { InboxEntry, InboxState } from '../../shared/inbox';
 import { toMs } from '../../shared/inbox';
 import { cleanMailSubject, deriveMailSubject, NO_SUBJECT, resolveMailSubject } from '../../shared/mail-subject';
-import type {
-  GeneratedImageRef,
-  MailApproval,
-  MailApprovalStatus,
-  MailAgent,
-  MailConversation,
-  MailItem,
-  MailListResult,
-  ScheduledRunReport
+import {
+  isExternalAddress,
+  type GeneratedImageRef,
+  type MailApproval,
+  type MailApprovalStatus,
+  type MailAgent,
+  type MailConversation,
+  type MailExternal,
+  type MailExternalThread,
+  type MailItem,
+  type MailListResult,
+  type ScheduledRunReport,
+  type SystemVersion
 } from '../../shared/types';
 import { coerceSystemVersion } from '../../shared/sys-version';
 import { systemVersion } from '../sys-version';
 import { degrade } from '../degrade';
 import { mailStorePath } from './paths';
+import { replaceFile } from '../replace-file';
 
 // The Stem-owned mail store: the Inbox's conversations and items, plus the
 // per-conversation read/archive/snooze state. Same shape as the inbox store
@@ -58,8 +63,9 @@ function coerceApproval(raw: unknown): MailApproval | undefined {
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
   return {
     id: a.id,
-    kind: a.kind === 'harness' ? 'harness' : 'exec',
+    kind: a.kind === 'harness' ? 'harness' : a.kind === 'send' ? 'send' : 'exec',
     command: a.command,
+    ...(str(a.to) ? { to: str(a.to) } : {}),
     ...(str(a.cwd) ? { cwd: str(a.cwd) } : {}),
     ...(str(a.deviceLabel) ? { deviceLabel: str(a.deviceLabel) } : {}),
     ...(str(a.reason) ? { reason: str(a.reason) } : {}),
@@ -101,6 +107,8 @@ function coerceItem(raw: unknown): MailItem | null {
   if (typeof r.result === 'string' && r.result) item.result = r.result;
   if (r.stale === true) item.stale = true;
   if (r.filed === true) item.filed = true;
+  if (r.statusQuery === true) item.statusQuery = true;
+  if (r.statusReply === true) item.statusReply = true;
   if (Array.isArray(r.agentReplies)) {
     const replies = r.agentReplies.filter((t): t is string => typeof t === 'string' && t.length > 0);
     if (replies.length) item.agentReplies = replies;
@@ -127,6 +135,8 @@ function coerceItem(raw: unknown): MailItem | null {
   if (sys) item.sys = sys;
   const approval = coerceApproval(r.approval);
   if (approval) item.approval = approval;
+  const external = coerceExternal(r.external);
+  if (external) item.external = external;
   if (Array.isArray(r.attachments)) {
     const attachments = r.attachments.flatMap((a) => {
       if (!a || typeof a !== 'object') return [];
@@ -147,6 +157,30 @@ function coerceItem(raw: unknown): MailItem | null {
   return item;
 }
 
+const EXTERNAL_STATUSES = ['queued', 'sent', 'delivered', 'expired', 'failed', 'unreachable', 'key-changed'] as const;
+
+function coerceExternal(raw: unknown): MailExternal | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const out: MailExternal = {};
+  if (typeof r.envelopeId === 'string' && r.envelopeId) out.envelopeId = r.envelopeId;
+  if (r.held === true) out.held = true;
+  if (r.keyChanged === true) out.keyChanged = true;
+  if (r.unsupported === true) out.unsupported = true;
+  if (EXTERNAL_STATUSES.includes(r.status as (typeof EXTERNAL_STATUSES)[number])) out.status = r.status as MailExternal['status'];
+  if (typeof r.error === 'string' && r.error) out.error = r.error;
+  return out;
+}
+
+function coerceExternalThread(raw: unknown): MailExternalThread | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.address !== 'string' || !isExternalAddress(r.address)) return undefined;
+  if (typeof r.thread !== 'string' || !/^[0-9a-f]{32}$/.test(r.thread)) return undefined;
+  if (typeof r.self !== 'string' || !isExternalAddress(r.self)) return undefined;
+  return { address: r.address, thread: r.thread, self: r.self };
+}
+
 /**
  * Conversation ids THIS process marked working. The set — not the file — is
  * the authority on "a delivery is in flight": ids enter on
@@ -162,7 +196,10 @@ function coerceConversation(raw: unknown): MailConversation | null {
   const participants = Array.isArray(r.participants)
     ? r.participants.filter((p): p is string => typeof p === 'string' && !!p)
     : [];
-  if (!participants.length) return null;
+  const external = coerceExternalThread(r.external);
+  // An inter-Stem conversation starts with no personas: the user handles it
+  // until they bring one in to draft.
+  if (!participants.length && !external) return null;
   const sessions: Record<string, string> = {};
   if (r.sessions && typeof r.sessions === 'object') {
     for (const [personaId, threadId] of Object.entries(r.sessions as Record<string, unknown>)) {
@@ -201,12 +238,14 @@ function coerceConversation(raw: unknown): MailConversation | null {
     ...(agents.length ? { agents } : {}),
     ...(r.private === true ? { private: true as const } : {}),
     ...(r.owner === 'memory-check' ? { owner: 'memory-check' as const } : {}),
+    ...(external ? { external } : {}),
     status,
     exchangeCount: num(r.exchangeCount) ?? 0,
     sendCounts,
     updatedAt: num(r.updatedAt) ?? 0,
     userUpdatedAt: num(r.userUpdatedAt) ?? 0,
     userSentAt: num(r.userSentAt) ?? 0,
+    ...(num(r.userAnsweredAt) !== undefined ? { userAnsweredAt: num(r.userAnsweredAt) } : {}),
     createdAt: num(r.createdAt) ?? 0
   };
 }
@@ -251,11 +290,14 @@ function coerce(parsed: unknown): MailFile {
   const raw = (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, unknown>;
   const conversations: MailConversation[] = [];
   const seen = new Set<string>();
+  // Conversations stored before userSentAt existed, to backfill from their items.
+  const legacy = new Set<string>();
   for (const entry of Array.isArray(raw.conversations) ? raw.conversations : []) {
     const conversation = coerceConversation(entry);
     if (conversation && !seen.has(conversation.id)) {
       seen.add(conversation.id);
       conversations.push(conversation);
+      if (num((entry as Record<string, unknown>).userSentAt) === undefined) legacy.add(conversation.id);
     }
   }
   const items: MailItem[] = [];
@@ -265,8 +307,10 @@ function coerce(parsed: unknown): MailFile {
     if (item && seen.has(item.conversationId)) {
       items.push(item);
       // Backfill userSentAt for stores written before the field existed — the
-      // items are the full history, so the derivation is exact.
-      if (item.from === 'user') {
+      // items are the full history, so the derivation is exact. Only those: a
+      // stored value is authoritative, because a user mail can land without
+      // counting as a send (appendMailItem's deferUserSend).
+      if (item.from === 'user' && legacy.has(item.conversationId) && !item.statusQuery) {
         const c = byId.get(item.conversationId);
         if (c && item.at > c.userSentAt) c.userSentAt = item.at;
       }
@@ -347,7 +391,7 @@ async function writeFileAtomic(store: MailFile): Promise<void> {
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(store, null, 2), 'utf8');
   // rename is atomic on the same volume — readers never see a half-written file.
-  await rename(tmp, path);
+  await replaceFile(tmp, path);
 }
 
 async function readFileStore(): Promise<MailFile> {
@@ -371,6 +415,63 @@ function asResult(store: MailFile): MailListResult {
 
 export function readMail(): Promise<MailListResult> {
   return enqueue(async () => asResult(await readFileStore()));
+}
+
+/** How much of a mail body a summary keeps: enough for a two-line row preview. */
+const SUMMARY_BODY_CHARS = 400;
+
+/**
+ * The list without the mail: every conversation and the inbox state, plus per
+ * conversation only the mails a list row needs (the newest the user sent or
+ * received, for the preview, and the user's newest send, for Sent's order),
+ * bodies cut to a preview and the heavy fields dropped. A phone reads this on
+ * every launch and every mail:changed; the whole store was 1.3 MB by October
+ * and growing with every mail. A conversation's own mails come from
+ * readMailConversation when it is opened.
+ */
+export function readMailSummary(): Promise<MailListResult> {
+  return enqueue(async () => {
+    const store = await readFileStore();
+    const preview = new Map<string, MailItem>();
+    const sent = new Map<string, MailItem>();
+    for (const item of store.items) {
+      if (item.from === 'user' || item.to.includes('user')) {
+        const cur = preview.get(item.conversationId);
+        if (!cur || item.at >= cur.at) preview.set(item.conversationId, item);
+      }
+      if (item.from === 'user') {
+        const cur = sent.get(item.conversationId);
+        if (!cur || item.at >= cur.at) sent.set(item.conversationId, item);
+      }
+    }
+    const keep = new Set([...preview.values(), ...sent.values()]);
+    const items = store.items
+      .filter((item) => keep.has(item))
+      .map((item): MailItem => ({
+        id: item.id,
+        conversationId: item.conversationId,
+        from: item.from,
+        to: item.to,
+        body: item.body.length > SUMMARY_BODY_CHARS ? item.body.slice(0, SUMMARY_BODY_CHARS) : item.body,
+        at: item.at,
+        ...(item.subject !== undefined ? { subject: item.subject } : {})
+      }));
+    return { ...asResult(store), items };
+  });
+}
+
+/** One conversation and all of its mails, whole: what opening it shows. */
+export function readMailConversation(
+  conversationId: string
+): Promise<{ conversation: MailConversation | null; items: MailItem[]; sys: SystemVersion }> {
+  return enqueue(async () => {
+    const store = await readFileStore();
+    return {
+      conversation: store.conversations.find((c) => c.id === conversationId) ?? null,
+      items: store.items.filter((item) => item.conversationId === conversationId),
+      sys: systemVersion()
+    };
+  });
 }
 
 /**
@@ -414,7 +515,7 @@ export function createConversation(
   subject: string,
   participants: string[],
   bodyForSubject = '',
-  opts: { private?: boolean; owner?: MailConversation['owner'] } = {}
+  opts: { private?: boolean; owner?: MailConversation['owner']; external?: MailExternalThread } = {}
 ): Promise<MailConversation> {
   const conversation: MailConversation = {
     id: randomUUID(),
@@ -423,6 +524,7 @@ export function createConversation(
     sessions: {},
     ...(opts.private ? { private: true as const } : {}),
     ...(opts.owner ? { owner: opts.owner } : {}),
+    ...(opts.external ? { external: opts.external } : {}),
     status: 'idle',
     exchangeCount: 0,
     sendCounts: {},
@@ -463,7 +565,8 @@ export function exchangeHops(
 ): number {
   if (from === 'user') return 0;
   const starter = conversation.agents?.find((a) => a.id === from)?.spawnedBy;
-  return to.filter((t) => t !== 'user' && t !== starter).length;
+  // Mail to another Stem is the user's to send, never a hop between personas.
+  return to.filter((t) => t !== 'user' && t !== starter && !isExternalAddress(t)).length;
 }
 
 /**
@@ -484,15 +587,21 @@ export function exchangeHops(
  * checked here, inside the atomic write, so a user reply racing the append
  * cannot slip between a read and the stamp. A persona→user item landing after
  * a NEWER user send is marked stale — it answers an earlier message.
+ *
+ * `deferUserSend` lands a user mail without counting it as a send yet: no
+ * fresh exchange window, no new epoch for the stale check. The router uses it
+ * for a mail that may turn out to be only a progress question (status-check),
+ * and settles it with {@link settleUserSend} once it knows.
  */
 export function appendMailItem(
   input: Omit<MailItem, 'id' | 'at'> & {
     at?: number;
     guard?: { exchangeCap: number; senderBudget?: number; budgetExempt?: boolean };
     staleIfUserSentAfter?: number;
+    deferUserSend?: boolean;
   }
 ): Promise<MailListResult> {
-  const { guard, staleIfUserSentAfter, ...fields } = input;
+  const { guard, staleIfUserSentAfter, deferUserSend, ...fields } = input;
   let appended: MailItem | undefined;
   return update((store) => {
     const conversation = conversationOf(store, fields.conversationId);
@@ -520,11 +629,7 @@ export function appendMailItem(
     store.items.push(item);
     appended = item;
     conversation.updatedAt = item.at;
-    if (item.from === 'user') {
-      conversation.exchangeCount = 0;
-      conversation.sendCounts = {};
-      conversation.userSentAt = item.at;
-    }
+    if (item.from === 'user' && !deferUserSend) countUserSend(conversation, item.at);
     if (item.to.includes('user')) conversation.userUpdatedAt = item.at;
     if (hops > 0) {
       conversation.exchangeCount += hops;
@@ -535,6 +640,27 @@ export function appendMailItem(
   }).then((result) => {
     if (appended && appended.from !== 'user' && appended.to.includes('user')) announce(receivedListeners, appended);
     return result;
+  });
+}
+
+/** A user send buys a fresh exchange window and becomes the stale check's epoch. */
+function countUserSend(conversation: MailConversation, at: number): void {
+  conversation.exchangeCount = 0;
+  conversation.sendCounts = {};
+  conversation.userSentAt = Math.max(conversation.userSentAt, at);
+}
+
+/**
+ * Settle a user mail appended with `deferUserSend`: delivered to the personas
+ * after all, it counts as the send it would have been; answered on the spot
+ * as a progress question, it is marked so and never counts.
+ */
+export function settleUserSend(itemId: string, answeredAsStatus: boolean): Promise<MailListResult> {
+  return update((store) => {
+    const item = store.items.find((i) => i.id === itemId && i.from === 'user');
+    if (!item) return;
+    if (answeredAsStatus) item.statusQuery = true;
+    else countUserSend(conversationOf(store, item.conversationId), item.at);
   });
 }
 
@@ -694,9 +820,89 @@ export async function settleMailApproval(itemId: string, status: Exclude<MailApp
     settled = { ...item.approval };
     item.approval = { ...item.approval, status };
     const conversation = conversationOf(store, item.conversationId);
-    conversation.updatedAt = Math.max(conversation.updatedAt, Date.now());
+    // Superseded/cancelled are Stem's housekeeping, not the user's answer.
+    if (status === 'allowed' || status === 'denied') markAnswered(conversation);
+    else conversation.updatedAt = Math.max(conversation.updatedAt, Date.now());
   });
   return settled;
+}
+
+// ---- inter-Stem mail ----
+
+/** The conversation filed under a shared thread token with an external address. */
+export async function findExternalConversation(thread: string, address: string, self: string): Promise<MailConversation | null> {
+  const { conversations } = await readMail();
+  return (
+    conversations.find(
+      (c) => c.external?.thread === thread && c.external.address === address && c.external.self === self
+    ) ?? null
+  );
+}
+
+/** Whether an inbound envelope is already stored (redelivery after a missed ack). */
+export async function hasExternalEnvelope(envelopeId: string): Promise<boolean> {
+  const { items } = await readMail();
+  return items.some((i) => i.external?.envelopeId === envelopeId);
+}
+
+/**
+ * Release a held inbound mail to the user's agents. Every held item in the
+ * conversation up to and including this one is released together: the user
+ * read them in order.
+ */
+export function releaseExternalItems(conversationId: string, upToItemId: string): Promise<MailListResult> {
+  return update((store) => {
+    const items = store.items.filter((i) => i.conversationId === conversationId);
+    const idx = items.findIndex((i) => i.id === upToItemId);
+    if (idx < 0) throw new Error('That mail no longer exists.');
+    let changed = false;
+    for (const item of items.slice(0, idx + 1)) {
+      if (item.external?.held) {
+        item.external = { ...item.external, held: false };
+        delete item.external.held;
+        changed = true;
+      }
+    }
+    if (!changed) return false;
+  });
+}
+
+/** Record an outbound send's progress on its item. */
+export function setExternalStatus(itemId: string, patch: Partial<MailExternal>): Promise<MailListResult> {
+  return update((store) => {
+    const item = store.items.find((i) => i.id === itemId);
+    if (!item) return false;
+    const next: MailExternal = { ...item.external, ...patch };
+    if (!patch.error && patch.status && patch.status !== 'failed' && patch.status !== 'unreachable') delete next.error;
+    item.external = next;
+  });
+}
+
+/**
+ * Settle a persona's send draft, once. `body` is what the user actually
+ * sent (they may have edited it). Returns the draft as it was while pending.
+ */
+export async function settleSendDraft(
+  itemId: string,
+  status: 'allowed' | 'denied',
+  body?: string
+): Promise<{ item: MailItem; approval: MailApproval } | null> {
+  let settled: { item: MailItem; approval: MailApproval } | null = null;
+  await update((store) => {
+    const item = store.items.find((i) => i.id === itemId);
+    if (item?.approval?.kind !== 'send' || item.approval.status !== 'pending') return false;
+    settled = { item: { ...item }, approval: { ...item.approval } };
+    item.approval = { ...item.approval, status, ...(body !== undefined ? { command: body } : {}) };
+    markAnswered(conversationOf(store, item.conversationId));
+  });
+  return settled;
+}
+
+/** The user answered an approval item: the mail that asked is dealt with. */
+function markAnswered(conversation: MailConversation): void {
+  const now = Date.now();
+  conversation.updatedAt = Math.max(conversation.updatedAt, now);
+  conversation.userAnsweredAt = Math.max(conversation.userAnsweredAt ?? 0, now);
 }
 
 /** Record the hidden pi thread a persona's deliveries run in. */
@@ -748,11 +954,24 @@ export async function taskRunThreadIds(taskId: string): Promise<string[]> {
  * task reports each finding once. The user's own mails in the conversation are
  * not the task's reports and stay out.
  */
-export async function taskMailHistory(taskId: string, limit: number): Promise<ScheduledRunReport[]> {
+export async function taskMailHistory(
+  taskId: string,
+  limit: number,
+  /**
+   * The thread the task reports into, when it was scheduled from mail: earlier
+   * tasks' reports there count too, so the next check in a chain of one-off
+   * follow-ups knows what the previous checks already said.
+   */
+  conversationId?: string
+): Promise<ScheduledRunReport[]> {
   const { conversations, items } = await readMail();
   const subjectOf = new Map(conversations.map((c) => [c.id, c.subject]));
   return items
-    .filter((i) => i.taskId === taskId && i.from !== 'user')
+    .filter(
+      (i) =>
+        i.from !== 'user' &&
+        (i.taskId === taskId || (!!conversationId && !!i.taskId && i.conversationId === conversationId))
+    )
     .sort((a, b) => b.at - a.at)
     .slice(0, limit)
     .map((i) => ({
@@ -761,6 +980,42 @@ export async function taskMailHistory(taskId: string, limit: number): Promise<Sc
       body: i.body,
       ...(i.result ? { reply: i.result } : {})
     }));
+}
+
+/**
+ * The mail conversation a schedule_task call should report into: the one whose
+ * persona session `threadId` is, the one a scheduled run in `threadId` already
+ * mailed, or — for a run that has not mailed yet — wherever its task's earlier
+ * firings went (`taskId`). Null for a plain chat.
+ */
+export async function mailConversationFor(threadId: string, taskId?: string): Promise<string | null> {
+  const { conversations, items } = await readMail();
+  const bySession = conversations.find((c) => Object.values(c.sessions).includes(threadId));
+  if (bySession) return bySession.id;
+  const byRun = items.find((i) => i.runThreadId === threadId) ?? (taskId ? items.find((i) => i.taskId === taskId) : undefined);
+  return byRun && conversations.some((c) => c.id === byRun.conversationId) ? byRun.conversationId : null;
+}
+
+/**
+ * The thread a picture was made in, when it reached `threadId` by mail: a
+ * persona's mail carries the images its turn made (by id, the bytes stay in
+ * the sender's session), so the recipient names an id its own thread never
+ * held. Only mail the recipient's persona sent or was sent counts. Null when
+ * no such mail carries `imageId`.
+ */
+export async function mailedImageThread(threadId: string, imageId: string): Promise<string | null> {
+  const { conversations, items } = await readMail();
+  for (const c of conversations) {
+    const persona = Object.keys(c.sessions).find((p) => c.sessions[p] === threadId);
+    if (!persona) continue;
+    for (const item of items) {
+      if (item.conversationId !== c.id) continue;
+      if (item.from !== persona && !item.to.includes(persona)) continue;
+      const hit = item.images?.find((img) => img.id === imageId);
+      if (hit && hit.threadId !== threadId) return hit.threadId;
+    }
+  }
+  return null;
 }
 
 /** Delete a conversation + its items + triage state. Returns the orphaned thread ids. */

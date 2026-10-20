@@ -68,6 +68,7 @@ import { clampPinnedCwd } from '../harness/pin';
 import { hostShellAgentHint } from '../exec/host-shell';
 import { plainLine, previewText } from '../../shared/plain-text';
 import { autoTitle, nameThread, nameThreadIfDue as nameIfDue, type SubjectDeps } from '../chats/subject';
+import { noteRename } from '../workspace/inbox';
 import { getChatFormat, isChatPrivate, markTurnTainted, setChatFormat, setChatPrivate, setNaming, taintedTurns } from '../workspace/chats';
 import { captureMemoryFromUserInput, isRecallEnabled } from '../workspace/memory';
 import { buildRecallContext, type RecallTimings } from '../recall/inject';
@@ -127,12 +128,15 @@ import { formatSkillsBlock, selectSkills, type SkillUsageStat } from '../skills/
 import { loadedSkillNames } from '../skills/thread-history';
 import { AmbientBlocks, liveUserTexts } from './context-dedupe';
 import { formatPracticeBlock } from '../skills/record';
+import { formatWindowBlock } from './window-context';
+import { mcpServersForAppName } from './mcp';
+import { readDevices } from '../transport/auth';
 import { listSkillRecords } from '../skills/store';
 import { gradeSkillUse, reportedSkillIssues } from '../skills/grade';
 import { parseThreadEvidence, type LearnTurn } from '../skills/thread-evidence';
 import { resolvePi, type PiInvocation } from './locate';
 import { repairMissingSessionCwd } from './session-cwd';
-import { PiProcess, stderrReason, type PiEvent } from './rpc';
+import { PI_READY_TIMEOUT_MS, PiProcess, stderrReason, type PiEvent } from './rpc';
 import {
   completeInternalCwd,
   ensureCompleteModel,
@@ -330,6 +334,28 @@ const PRE_START_CANCEL_CAP = 32;
 /** A condense is one long summarizing call over the whole history; the default
  * request timeout would give up on a big chat that is still being summarized. */
 const COMPACT_TIMEOUT_MS = 10 * 60_000;
+
+/** Session files read at once on a cold chat-list scan; each is read whole. */
+const SESSION_META_READS = 4;
+
+/** Run the given tasks at most `limit` at a time, in the order they arrive. */
+function limitConcurrency(limit: number): <T>(task: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiting: Array<() => void> = [];
+  return async (task) => {
+    // A finished task hands its slot straight to the next waiter, so a new
+    // arrival can't slip in between and run a fifth.
+    if (running >= limit) await new Promise<void>((resolve) => waiting.push(resolve));
+    else running += 1;
+    try {
+      return await task();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else running -= 1;
+    }
+  };
+}
 
 /** Accept a client-minted turn id only in canonical UUID form; anything else is
  * replaced with a server-minted one (the turn still runs, it just cannot be
@@ -581,6 +607,11 @@ function slowestTools(turn: TurnContext): { tools: string[] } | undefined {
   };
 }
 
+/** What every side-effect bridge answers in an inter-Stem external-context turn. */
+const EXTERNAL_TOOL_REFUSAL =
+  "This conversation is with someone outside — another Stem's owner — so only reading the user's memory and " +
+  'files and drafting a reply are available here.';
+
 export class PiRuntime extends EventEmitter implements ChatBackend {
   // ---- the pool ----
   /**
@@ -621,6 +652,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * list/delete cost, so this keeps repeated `listThreads` refreshes cheap.
    */
   private metaCache = new Map<string, { mtimeMs: number; meta: SessionFile }>();
+  /** The scan in flight: concurrent list calls share it rather than each reading every file. */
+  private sessionScan: Promise<SessionFile[]> | null = null;
   /**
    * Sessions pre-created via createThread (e.g. Quick Chat) that haven't had a
    * turn yet, so their first turn still gets an auto-derived title — matching the
@@ -1308,11 +1341,36 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // to, who may be mailed, and who the sender is — all read from the live
       // turn, never from the tool payload.
       if (input.mail) turn.mail = { conversationId: input.mail.conversationId, participants: input.mail.participants };
+      // Inter-Stem external context: full memory to read, but nothing leaves
+      // except the user-approved draft. Kept out of Recall too: content from
+      // outside must not become "facts about the user" (contact-tagged capture
+      // is a later step).
+      if (input.mail?.external) {
+        turn.external = true;
+        this.taintTurn(turn);
+      }
       if (input.persona) turn.personaId = input.persona.id;
       if (input.persona?.harness) turn.personaHarness = input.persona.harness;
       if (input.persona?.recall === false || isPrivate) turn.noRecall = true;
       if (input.persona?.computer) turn.personaComputer = input.persona.computer;
       if (input.persona?.browser) turn.personaBrowser = input.persona.browser;
+      // "Ask about this window": the window's app servers stay loaded as real
+      // tools for the whole chat. Only its first turn carries the window, and a
+      // follow-up ("read the thread", "who wrote that?") needs them as much; a
+      // tool set that changed between turns would also miss the prompt cache.
+      if (input.windowContext) {
+        const w = input.windowContext;
+        // quiet: without the match the model still gets the window, just no pointer to its app's server.
+        const servers = await mcpServersForAppName(w.app, w.bundleId, input.persona?.mcpServers ?? null).catch(
+          () => [] as string[]
+        );
+        if (servers.length) this.windowServers.set(threadId, servers);
+        else this.windowServers.delete(threadId);
+        turn.windowServers = servers;
+      } else {
+        const kept = this.windowServers.get(threadId);
+        if (kept) turn.windowServers = kept.filter((n) => !input.persona?.mcpServers || input.persona.mcpServers.includes(n));
+      }
       // coding_agent / computer / browser: the persona's pins, or for a chat
       // run as no persona, Settings → Features.
       // quiet: readSettings answers coerced defaults rather than rejecting; a failure here leaves both tools off, with the "off for chats" refusal, which is the default anyway.
@@ -1331,6 +1389,13 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       const browser = resolveBrowserGrant(grantTurn, chatFeatures.browser);
       if (browser.ok) turn.browserGrant = browser.grant;
       else turn.browserRefusal = browser.refusal;
+      if (turn.external) {
+        // The bridges refuse these regardless of what the persona is pinned to.
+        delete turn.codingGrant;
+        delete turn.computerGrant;
+        delete turn.browserGrant;
+        turn.codingRefusal = turn.computerRefusal = turn.browserRefusal = EXTERNAL_TOOL_REFUSAL;
+      }
       // generate_image: one Settings switch for every kind of turn, on the
       // user's ChatGPT sign-in; a code persona is a relay and never gets it.
       const imageGen = await this.imageGenGrant(chatFeatures.images, !!turn.personaHarness);
@@ -1408,12 +1473,16 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
             // verification, so the persona's own read/grep/run_command/MCP
             // tools are off for the turn (codeRelayRefusal in the extension).
             relay: !!turn.personaHarness,
-            imageGen: imageGen.ok,
+            external: turn.external === true,
+            imageGen: imageGen.ok && !turn.external,
             imageGenRefusal: imageGen.ok ? null : imageGen.refusal,
             // The persona's MCP allowlist; buildMessage filters the catalog
             // from the same list, so the model never hears of a server the
             // bridge would refuse. A no-persona chat sees everything.
-            mcpServers: input.persona?.mcpServers ?? null
+            mcpServers: input.persona?.mcpServers ?? null,
+            // Servers whose tools are loaded directly rather than behind
+            // find_tools: the window's app servers (see windowServers).
+            directMcp: turn.external || turn.personaHarness ? [] : (turn.windowServers ?? [])
           },
           w.gateDir
         ).catch(
@@ -1465,7 +1534,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         void setNaming(threadId, { step: 0, since: 0 }).catch(() => undefined);
       }
 
-      if (isRecallEnabled() && !input.scheduled && (!input.mail || input.mail.from === 'user')) {
+      if (isRecallEnabled() && !input.scheduled && !input.mail?.external && (!input.mail || input.mail.from === 'user')) {
         // Deferred, not captured: at prompt time the turn's memorize:false
         // verdict is unknowable (the taint is only set once the assistant reads
         // a private folder). The message is flushed by flushPendingUserCapture
@@ -2236,6 +2305,8 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    */
   async findThreadImage(threadId: string, imageId: string): Promise<{ mimeType: string; data: string } | null> {
     if (!/^img_[0-9a-f]{6,32}$/.test(imageId)) return null;
+    const unsaved = this.unsavedImages.get(`${threadId}/${imageId}`);
+    if (unsaved) return unsaved;
     const file = await this.resolveSessionFile(threadId);
     if (!file) {
       const live = this.workers.find((w) => w.proc?.running && w.activeThreadId === threadId);
@@ -2565,7 +2636,18 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // Not priority: unlike the exec judge, nobody is blocked on this.
       complete: (prompt, opts) => this.complete(prompt, opts),
       currentTitle: async (id) => (await this.listThreads()).find((c) => c.threadId === id)?.title ?? null,
-      rename: (id, name) => this.renameThread(id, name),
+      // The naming pass renames a couple of seconds after the turn settled —
+      // after a reader may already have stamped the answer read. Its write
+      // must not paint the row bold again (see noteRename).
+      rename: async (id, name) => {
+        const mtime = async () => (await this.listThreads()).find((c) => c.threadId === id)?.updatedAt;
+        const before = await mtime();
+        await this.renameThread(id, name);
+        if (before === undefined) return;
+        await noteRename(id, before, (await mtime()) ?? 0).catch((err) =>
+          log('chats', 'naming left a chat looking like it had a new message', { threadId: id, error: String(err) })
+        );
+      },
       readMessages: async (id) => (await this.readThread(id)).messages
     };
   }
@@ -3006,6 +3088,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       try {
         const bridge = this.execBridge;
         if (!bridge) return respond({ ok: false, error: 'Command execution is unavailable.' });
+        if (turn?.external) return respond({ ok: false, error: EXTERNAL_TOOL_REFUSAL });
         const req = JSON.parse(payload ?? '{}') as {
           command?: string;
           cwd?: string;
@@ -3217,10 +3300,12 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           'should take it, or that chats can be allowed in Settings → Features → Browser control.',
       unavailable: 'Browser control is unavailable.',
       choices: browserChoicesText,
-      call: (bridge, device, action) =>
+      call: (bridge, device, action, req) =>
         bridge.handleBrowserRequest({
           device,
           action: action as BrowserRequest['action'],
+          ...(typeof req.profile === 'string' && req.profile.trim() ? { profile: req.profile.trim() } : {}),
+          ...(turn?.browserGrant?.profiles ? { allowed: turn.browserGrant.profiles } : {}),
           threadId: turn?.threadId ?? ''
         })
     });
@@ -3242,7 +3327,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       refusal: string;
       unavailable: string;
       choices: () => Promise<string>;
-      call: (bridge: B, device: string, action: object, req: { shot?: unknown }) => Promise<unknown>;
+      call: (bridge: B, device: string, action: object, req: { shot?: unknown; profile?: unknown }) => Promise<unknown>;
     }
   ): void {
     const requestProcess = worker.proc;
@@ -3256,7 +3341,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         if (!bridge) return respond({ ok: false, error: spec.unavailable });
         const grant = spec.grant;
         if (!grant) return respond({ ok: false, error: spec.refusal });
-        const req = JSON.parse(payload ?? '{}') as { action?: unknown; device?: unknown; shot?: unknown };
+        const req = JSON.parse(payload ?? '{}') as { action?: unknown; device?: unknown; shot?: unknown; profile?: unknown };
         const action = req.action;
         if (!action || typeof action !== 'object' || typeof (action as { kind?: unknown }).kind !== 'string') {
           return respond({ ok: false, error: `The ${spec.tool} tool sent no action.` });
@@ -3558,6 +3643,9 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           personaId: turn.personaId,
           turnId: turn.turnId
         };
+        if (turn.external && (req.op === 'spawn_agent' || req.op === 'remember_note')) {
+          return respond({ ok: false, error: EXTERNAL_TOOL_REFUSAL });
+        }
         switch (req.op) {
           case 'send': {
             const to = Array.isArray(req.to) ? req.to.filter((t): t is string => typeof t === 'string') : [];
@@ -3896,7 +3984,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     try {
       proc.start();
       // Probe readiness and capture the initial session id/file.
-      const state = await proc.request({ type: 'get_state' }, 20_000);
+      const state = await proc.request({ type: 'get_state' }, PI_READY_TIMEOUT_MS);
       this.recordState(worker, state.data);
       this.lastStartError = null;
       // More than one worker alive: start retiring the extras once they idle.
@@ -4064,6 +4152,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       for (const steer of turn.steers ?? []) this.sendSteer(worker, turn, steer);
     } else if (ev.type === 'tool_execution_end') {
       turn.toolsRunning = Math.max(0, (turn.toolsRunning ?? 0) - 1);
+      this.holdUnsavedImage(turn.threadId, ev);
     } else if (ev.type === 'message_start' && turn.steers?.length) {
       // The model is shown a steered mail as a user message of its own.
       const message = ev.message as { role?: string; content?: unknown } | undefined;
@@ -4102,12 +4191,37 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    */
   private readonly generatedImages = new Map<string, GeneratedImageRef[]>();
 
+  /**
+   * "Ask about this window" chats → the MCP servers matched to the window's
+   * app, set by the chat's first turn. In memory: after a restart a follow-up
+   * turn falls back to find_tools, which still reaches the same tools.
+   */
+  private readonly windowServers = new Map<string, string[]>();
+
   private bufferGeneratedImage(params: unknown): void {
     const image = (params as { item?: { image?: GeneratedImageRef } } | undefined)?.item?.image;
     if (!image?.threadId) return;
     const list = this.generatedImages.get(image.threadId) ?? [];
     if (!list.some((i) => i.id === image.id)) list.push(image);
     this.generatedImages.set(image.threadId, list);
+  }
+
+  /**
+   * Picture bytes from tool_execution_end, kept until the turn settles. pi
+   * writes a tool result to the session only after EVERY call of a parallel
+   * batch has finished, but the renderer fetches each picture the moment its
+   * own call ends — without this, all but the last of three pictures made at
+   * once read as gone until the chat was reopened.
+   */
+  private readonly unsavedImages = new Map<string, { mimeType: string; data: string }>();
+
+  private holdUnsavedImage(threadId: string, ev: PiEvent): void {
+    if (ev.isError === true) return;
+    const result = ev.result as { content?: unknown; details?: unknown } | undefined;
+    const message = { role: 'toolResult', toolName: ev.toolName, content: result?.content, details: result?.details };
+    const made = stemImageOf(message);
+    const bytes = made ? findImageInEntries([message], made.id) : null;
+    if (made && bytes) this.unsavedImages.set(`${threadId}/${made.id}`, bytes);
   }
 
   /** The thread's generated images since the last take, then forgotten. */
@@ -4123,6 +4237,10 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * work until agent_settled (see onPiEvent). */
   private settleTurn(worker: PiWorker, turn: TurnContext, now: number): void {
     turn.endedAt = now;
+    // Every tool result is in the session file by agent_end.
+    for (const key of this.unsavedImages.keys()) {
+      if (key.startsWith(`${turn.threadId}/`)) this.unsavedImages.delete(key);
+    }
     // Steered mail the model never read (the run ended first, or failed) must
     // not ride into this thread's NEXT prompt as a stale queued message: the
     // mail router redelivers it the ordinary way (steerConsumed says unread).
@@ -4799,6 +4917,36 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // A practice run of a recorded draft (the draft card's "Practice run"):
     // the draft is not in the library yet, so it is handed over here.
     if (input.practiceSkill) blocks.push(formatPracticeBlock(input.practiceSkill));
+    // "Ask about this window": which window the question came from, and its text.
+    if (input.windowContext) {
+      const w = input.windowContext;
+      // quiet: without the match the model still gets the window, just no pointer to its app's server.
+      const servers = turn?.windowServers ?? [];
+      // Computer control reaches this window only when it drives the Mac the user asked from.
+      const grant = turn?.computerGrant;
+      const origin = input.originDeviceId;
+      let computer: { device: string | null } | undefined;
+      if (grant && origin && grant.device === origin) computer = { device: null };
+      else if (grant?.kind === 'chat' && grant.device === null && origin) {
+        const label = await readDevices()
+          .then((list) => list.find((d) => d.id === origin)?.label)
+          // quiet: without the name the model is told nothing about acting in the window.
+          .catch(() => undefined);
+        if (label) computer = { device: label };
+      }
+      // Browser control likewise, for a window of the user's browser.
+      const browserGrant = turn?.browserGrant;
+      let browser: { device: string | null } | undefined;
+      if (browserGrant && origin && browserGrant.device === origin) browser = { device: null };
+      else if (browserGrant?.kind === 'chat' && browserGrant.device === null && origin) {
+        const label = await readDevices()
+          .then((list) => list.find((d) => d.id === origin)?.label)
+          // quiet: without the name the model falls back to the computer pointer, or none.
+          .catch(() => undefined);
+        if (label) browser = { device: label };
+      }
+      blocks.push(formatWindowBlock(w, servers, computer, browser));
+    }
 
     // The ambient blocks below go out only when the live context does not
     // already hold them verbatim (context-dedupe.ts): a long thread, and above
@@ -4826,17 +4974,17 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     // "Let the model choose") is told what it can pick from, fresh each turn.
     if (turn?.codingGrant?.kind === 'chat' && turn.codingGrant.target === null) {
       // quiet: without the list the model can still ask the user, and a wrong pick is refused with the options attached.
-      const choices = await codingChoicesText().catch(() => '');
+      const choices = await codingChoicesText(input.originDeviceId).catch(() => '');
       if (choices) ambient.add(choices, 'the coding agents you can choose');
     }
     if (turn?.computerGrant?.kind === 'chat' && turn.computerGrant.device === null) {
       // quiet: same as the coding list above.
-      const choices = await computerChoicesText().catch(() => '');
+      const choices = await computerChoicesText(input.originDeviceId).catch(() => '');
       if (choices) ambient.add(choices, 'the computers you can control');
     }
     if (turn?.browserGrant?.kind === 'chat' && turn.browserGrant.device === null) {
       // quiet: same as the coding list above.
-      const choices = await browserChoicesText().catch(() => '');
+      const choices = await browserChoicesText(input.originDeviceId).catch(() => '');
       if (choices) ambient.add(choices, 'the browsers you can drive');
     }
     try {
@@ -4935,9 +5083,25 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     return files.find((f) => f.id === threadId)?.path ?? null;
   }
 
-  /** Walk the session dir and read each JSONL header + name for the chat list. */
-  private async scanSessions(): Promise<SessionFile[]> {
+  /**
+   * Walk the session dir and read each JSONL header + name for the chat list.
+   * Callers that arrive while a scan runs get that scan. After a restart the
+   * cache is empty and every session is read in full; a reconnecting client
+   * asks for the chat list and the mail list together, and with ~1 GB of
+   * sessions three parallel cold scans ran the server out of heap at boot.
+   */
+  private scanSessions(): Promise<SessionFile[]> {
+    this.sessionScan ??= this.scanSessionsOnce().finally(() => {
+      this.sessionScan = null;
+    });
+    return this.sessionScan;
+  }
+
+  private async scanSessionsOnce(): Promise<SessionFile[]> {
     const seen = new Set<string>();
+    // Uncached files are read whole, so only a few at a time: all of them at
+    // once held every session in memory together.
+    const readMeta = limitConcurrency(SESSION_META_READS);
     const walk = async (dir: string): Promise<SessionFile[]> => {
       let entries;
       try {
@@ -4972,7 +5136,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           }
           const cached = this.metaCache.get(full);
           if (cached && cached.mtimeMs === mtimeMs) return [cached.meta];
-          const meta = await this.readSessionMeta(full, mtimeMs);
+          const meta = await readMeta(() => this.readSessionMeta(full, mtimeMs!));
           if (!meta) return [];
           this.metaCache.set(full, { mtimeMs, meta });
           return [meta];

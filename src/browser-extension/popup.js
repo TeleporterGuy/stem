@@ -26,7 +26,7 @@ function render(state) {
     text = 'Stem app isn’t running';
   } else {
     tone = 'on';
-    text = 'Connected to Stem';
+    text = state.profile ? `Connected to Stem as “${state.profile}”` : 'Connected to Stem';
   }
   status.dataset.tone = tone;
   $('status-text').textContent = text;

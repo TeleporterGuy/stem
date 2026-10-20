@@ -1,4 +1,4 @@
-/* global chrome, setTimeout, clearTimeout, setInterval */
+/* global chrome, setTimeout, clearTimeout, setInterval, document, HTMLIFrameElement, HTMLEmbedElement, HTMLObjectElement */
 import { ConsoleLog, NetworkLog } from './logs.js';
 import { installMarkerHooks, markerCall, MARKER_BINDING, MARKER_PING_MS } from './marker.js';
 import { UserError } from './util.js';
@@ -23,6 +23,15 @@ export const IDLE_DETACH_MS = 3 * 60_000;
 
 const sessions = new Map();
 const attaching = new Map();
+/**
+ * The snapshot of a tab Chrome detached Stem from on its own (another
+ * extension's frame appearing — a password manager's fill menu opening on the
+ * field Stem just focused), for the re-attach to take back when the document
+ * is still the same: node ids outlive the debugger session, so the model's
+ * refs keep working.
+ */
+const orphanSnapshots = new Map();
+const ORPHAN_SNAPSHOT_MS = 2 * 60_000;
 const queues = new Map();
 const handlers = { markerStop: () => {}, detached: () => {}, downloadStart: () => {} };
 
@@ -110,10 +119,22 @@ export function attachedTabs() {
   return [...sessions.keys()];
 }
 
+/** chrome.debugger's refusal when a page holds another extension's frame. */
+const FOREIGN_FRAME = /chrome-extension:\/\/ URL of different extension/i;
+
 function attachError(tabId, message) {
   if (/another debugger/i.test(message)) {
     return new UserError(
       `Something else is already debugging tab ${tabId} (another extension, or remote debugging): Stem can't work in it until that lets go.`
+    );
+  }
+  // A normal page that holds another extension's frame — a password manager's
+  // fill menu, say — refuses the debugger as a whole (2026-10-19: Bitwarden in
+  // a Cloudflare billing tab).
+  if (FOREIGN_FRAME.test(message)) {
+    return new UserError(
+      `Another extension has a frame inside tab ${tabId} (often a password manager's fill menu), and the browser then lets no other extension control the tab. ` +
+        'Open the same address in a new tab and work there, and tell the user that is where the result is; or ask them to close that menu and try again.'
     );
   }
   if (/cannot (access|attach)|chrome:\/\/|chrome-extension|webstore|not allowed/i.test(message)) {
@@ -133,11 +154,55 @@ export function attach(tabId) {
   return p;
 }
 
+/**
+ * Take out the frames other extensions put in a page (in every frame of the
+ * tab, closed shadow roots included), so the debugger may attach. Answers how
+ * many went; 0 when none were found or scripting is not allowed there.
+ */
+async function removeForeignFrames(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      args: [chrome.runtime.id],
+      func: (ownId) => {
+        const own = `chrome-extension://${ownId}/`;
+        let removed = 0;
+        const visit = (root) => {
+          for (const el of root.querySelectorAll('*')) {
+            const src = el instanceof HTMLIFrameElement || el instanceof HTMLEmbedElement ? el.src : el instanceof HTMLObjectElement ? el.data : '';
+            if (/^chrome-extension:\/\//i.test(src || '') && !src.startsWith(own)) {
+              el.remove();
+              removed++;
+              continue;
+            }
+            const shadow = chrome.dom?.openOrClosedShadowRoot?.(el) ?? el.shadowRoot;
+            if (shadow) visit(shadow);
+          }
+        };
+        visit(document);
+        return removed;
+      }
+    });
+    return results.reduce((n, r) => n + (typeof r.result === 'number' ? r.result : 0), 0);
+  } catch {
+    return 0;
+  }
+}
+
 async function doAttach(tabId) {
   try {
     await chrome.debugger.attach({ tabId }, '1.3');
   } catch (err) {
-    throw attachError(tabId, cdpMessage(err));
+    const message = cdpMessage(err);
+    // Another extension's frame (a password manager's fill menu) blocks the
+    // debugger for the whole tab. It is that extension's overlay, not the
+    // page: remove it and try once more.
+    if (!FOREIGN_FRAME.test(message) || !(await removeForeignFrames(tabId))) throw attachError(tabId, message);
+    try {
+      await chrome.debugger.attach({ tabId }, '1.3');
+    } catch (again) {
+      throw attachError(tabId, cdpMessage(again));
+    }
   }
   const s = new Session(tabId);
   sessions.set(tabId, s);
@@ -153,6 +218,9 @@ async function doAttach(tabId) {
     const { frameTree } = await s.send('Page.getFrameTree');
     s.mainFrameId = frameTree.frame.id;
     s.loaderId = frameTree.frame.loaderId;
+    const orphan = orphanSnapshots.get(tabId);
+    orphanSnapshots.delete(tabId);
+    if (orphan && orphan.snapshot.loaderId === s.loaderId && Date.now() - orphan.at < ORPHAN_SNAPSHOT_MS) s.snapshot = orphan.snapshot;
     await installMarkerHooks((m, p) => s.send(m, p));
     await ping(s);
   } catch (err) {
@@ -302,6 +370,7 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   if (s) {
     sessions.delete(tabId);
     clearTimeout(s.idleTimer);
+    if (s.snapshot && reason !== 'canceled_by_user') orphanSnapshots.set(tabId, { snapshot: s.snapshot, at: Date.now() });
   }
   handlers.detached(tabId, reason);
 });

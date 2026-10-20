@@ -9,7 +9,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { rmSync } from 'node:fs';
-import { addMcpServer, getMcpServer, updateMcpServer } from '../../src/server/pi/mcp';
+import { addMcpServer, getMcpServer, mcpServersForAppName, setMcpServerApps, updateMcpServer } from '../../src/server/pi/mcp';
 import {
   mcpServerAuthIdentity,
   piMcpOAuthPath,
@@ -184,5 +184,28 @@ describe('saving an edit', () => {
     await expect(updateMcpServer({ name: 'nope', transport: 'stdio', command: 'x' })).rejects.toThrow(
       'No MCP server named "nope"'
     );
+  });
+});
+
+describe('Works with apps ("Ask about this window")', () => {
+  it('is set on its own write, survives an edit, and goes back to name matching when cleared', async () => {
+    await addMcpServer({ name: 'chat', transport: 'http', url: 'https://mcp.slack.test/mcp' });
+    expect(await mcpServersForAppName('Slack', 'com.tinyspeck.slackmacgap')).toEqual([]);
+
+    const list = await setMcpServerApps('chat', [' Slack ', 'slack', '']);
+    expect(list.find((s) => s.name === 'chat')?.apps).toEqual(['Slack']);
+    expect(await mcpServersForAppName('Slack', 'com.tinyspeck.slackmacgap')).toEqual(['chat']);
+
+    await updateMcpServer({ name: 'chat', transport: 'http', url: 'https://mcp.slack.test/v2' });
+    expect((await readMcpConfig()).servers.chat.apps).toEqual(['Slack']);
+
+    await setMcpServerApps('chat', null);
+    expect((await readMcpConfig()).servers.chat).not.toHaveProperty('apps');
+  });
+
+  it('honours a persona allowlist', async () => {
+    await addMcpServer({ name: 'slack', transport: 'http', url: 'https://mcp.slack.test/mcp' });
+    expect(await mcpServersForAppName('Slack', null, ['slack'])).toEqual(['slack']);
+    expect(await mcpServersForAppName('Slack', null, [])).toEqual([]);
   });
 });

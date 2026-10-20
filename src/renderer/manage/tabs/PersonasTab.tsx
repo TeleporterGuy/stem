@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Smartphone,
   Trash2,
+  UserPlus,
   Users
 } from 'lucide-react';
 import type {
@@ -25,7 +26,7 @@ import type {
   PersonaNote
 } from '../../../shared/types';
 import { InfoTip } from '../../ui/InfoTip';
-import { COMPUTER_ALPHA_TITLE } from './settings/ChatFeatureRows';
+import { BrowserProfileChecks, COMPUTER_ALPHA_TITLE } from './settings/ChatFeatureRows';
 import { ModelPicker } from '../../ui/ModelPicker';
 import { clampEffort, effortsOf, EffortSelect } from '../../ui/EffortSelect';
 import { EFFORT_LABELS } from '../../modelLabels';
@@ -138,7 +139,9 @@ function sameEdit(a: Persona, b: Persona): boolean {
     (a.harness?.autoMode ?? false) === (b.harness?.autoMode ?? false) &&
     (a.computer?.device ?? '') === (b.computer?.device ?? '') &&
     (a.browser?.device ?? '') === (b.browser?.device ?? '') &&
+    sameMcpServers(a.browser?.profiles, b.browser?.profiles) &&
     (a.canSpawn ?? false) === (b.canSpawn ?? false) &&
+    (a.addsPersonas ?? false) === (b.addsPersonas ?? false) &&
     (a.memory ?? true) === (b.memory ?? true) &&
     (a.recall ?? true) === (b.recall ?? true) &&
     (a.sendBudget ?? 0) === (b.sendBudget ?? 0) &&
@@ -641,6 +644,7 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
         {p.harness?.autoMode && <Flag icon={<ShieldCheck size={12} />} tone="warn" label="Approves its own actions" />}
         {p.clients && <Flag icon={<Smartphone size={12} />} tone="ok" label="Open to chats from your other devices" />}
         {p.canSpawn && <Flag icon={<Users size={12} />} label="Can start helpers" />}
+        {p.addsPersonas && <Flag icon={<UserPlus size={12} />} tone="warn" label="Adds personas without asking" />}
         {(p.memory === false || p.recall === false) && (
           <Flag
             icon={<EyeOff size={12} />}
@@ -975,6 +979,24 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
                         ))}
                     </select>
                   </Field>
+                  {/* Which of that Mac's browser profiles: a work persona kept to
+                      the work profile. Shown once the Mac has several. */}
+                  {p.browser &&
+                    ((devices.find((d) => d.id === p.browser?.device)?.browserProfiles?.length ?? 0) > 1 ||
+                      p.browser.profiles) && (
+                      <Field label="Browser profiles">
+                        <BrowserProfileChecks
+                          profiles={devices.find((d) => d.id === p.browser?.device)?.browserProfiles ?? []}
+                          value={p.browser.profiles}
+                          onChange={(profiles) =>
+                            setDraft({
+                              ...p,
+                              browser: { device: p.browser!.device, ...(profiles ? { profiles } : {}) }
+                            })
+                          }
+                        />
+                      </Field>
+                    )}
                   {!p.computer && !p.browser && (
                     <p className="ld-hint">Pick a computer or a browser. With neither, it saves as an assistant.</p>
                   )}
@@ -1022,6 +1044,12 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
                 hint="Starts named copies of your other personas for parts of a job. They keep no memory."
                 on={p.canSpawn === true}
                 onChange={(on) => setDraft({ ...p, canSpawn: on || undefined })}
+              />
+              <ToggleRow
+                title="Adds personas without asking"
+                hint="Brings any persona into a conversation it leads, including ones that work on your computer."
+                on={p.addsPersonas === true}
+                onChange={(on) => setDraft({ ...p, addsPersonas: on || undefined })}
               />
               <ToggleRow
                 title="Uses every MCP server"
@@ -1151,7 +1179,7 @@ export function PersonasTab({ models }: { models: ModelSummary[] }) {
             icon: <Monitor size={12} />,
             tone: 'warn',
             label: 'Computer control',
-            hint: 'Uses the screen or the browser on a Mac',
+            hint: 'Uses the screen of a Mac or Windows PC, or the browser on a Mac, Windows or Linux computer',
             onPick: () => add(undefined, 'computer')
           }
         ]}

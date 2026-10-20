@@ -5,6 +5,9 @@ The first recipient coordinates the conversation and can consult the other
 personas. Replies arrive in your Inbox. A persona that makes pictures while answering
 (see [image generation](settings.md#image-generation)) attaches them to its reply.
 
+This page is about mail with your own personas. To mail other people who use Stem,
+see [Mail with other Stems](other-stems.md).
+
 ## Built-in personas
 
 Stem ships with four personas. You can edit each one, but you cannot delete
@@ -13,7 +16,7 @@ it.
 | Persona | What it does | Starts agents | Your memory |
 | --- | --- | --- | --- |
 | Normal | Answers on its own and brings in agents when a job needs them | yes | yes |
-| Secretary | Delegates the work instead of doing it, schedules follow-ups, and mails you only decisions and results | yes | yes |
+| Secretary | Delegates the work and keeps at it until the job is done, brings in any persona it needs without asking you, schedules follow-ups, and mails you only decisions and results | yes | yes |
 | Verifier | Checks the factual claims in the work it is sent and lists what is wrong | no | yes |
 | Critic | Reads what it is sent as its recipient would, without knowing who wrote it | no | no |
 
@@ -35,7 +38,9 @@ persona**. Nothing changes until you press **Save**. Three tabs:
 - **Access** — **Private memory** (notes it keeps from its work; for a coding agent,
   **Standing answers** to the agent's recurring questions), **Sees your memory**,
   **Open to chats** (offered in the chat composer on the phone), **Can start
-  helpers** (see Agents below), **Uses every MCP server** (switch it off to pick which
+  helpers** (see Agents below), **Adds personas without asking** (it brings any
+  persona into a conversation it leads, including ones that work on your
+  computer; Secretary ships with it on), **Uses every MCP server** (switch it off to pick which
   servers it may use; the rest are hidden from it entirely), and **Send budget** (how
   many mails it may start between your sends).
 
@@ -46,12 +51,18 @@ starts agents when a job needs checking or several hands.
 
 Mail **Secretary** for errands you want handled without the details, especially
 ones that need a follow-up later. It always hands the work to someone else, so
-it adds a step that a direct question does not need.
+it adds a step that a direct question does not need. It adds whichever personas
+the job needs to the conversation itself, your coding, screen and browser
+personas included, and does not ask you first. When a reply comes back
+incomplete or stuck, it sends the work back or tries another persona instead of
+handing the problem to you. It writes to you with the result, or when only you
+can unblock it (a decision, a password, a payment). Normal is the one that stops
+and suggests which persona to add.
 
 Mail **Verifier** or **Critic** directly when that is the whole job: check
 these claims, or read this draft cold. Mail a coding, screen or browser persona
-directly when the request is that work. To let Normal or Secretary use one of
-those, add it to the conversation yourself.
+directly when the request is that work. Secretary brings those in on its own.
+To let Normal use one of them, add it to the conversation yourself.
 
 ## Write and read mail
 
@@ -69,16 +80,21 @@ and says who gets your reply. Each conversation keeps its own reply draft. While
 personas work, a live card shows who is on it and the latest steps, with **Stop**.
 Below it the newest mail is open and older ones fold to one line. Mail the
 personas sent each other folds onto the reply it led to ("Consulted Verifier · 2
-mails"). If you reply while they are still working, your mail is read when the
-current run ends. A reply the server refused stays in the thread as **Not sent**,
+mails"). If you reply while they are still working and only ask how it is going
+("what's the status?"), the lead answers right away from their reports
+and live work, and the work carries on undisturbed. A mail that also asks for
+something is answered that way too and then read when the current run ends; any
+other mail just waits for the run to end. A reply the server refused stays in the thread as **Not sent**,
 with Retry, Edit and Delete, so its text is never lost. **Forward** sends a mail on
 to other personas with a note of your own.
 
 The Inbox lists **Waiting on you** first, then **Working** (conversations you
-sent that personas are still on), then the folded **Snoozed**, **Archived** and
+sent that personas are still on), then **Requests** (first mail from people on
+other Stems you haven't accepted yet), then the folded **Snoozed**, **Archived** and
 **Sent** sections. A run that needs your approval for a command waits in its
 mail with **Allow once** and **Deny**. You can also answer in words in the reply
-box instead. On the Mac the reply and compose boxes have the dictation mic too.
+box instead. Once you answer, the conversation moves out of **Waiting on you** to
+**Working**. The reply and compose boxes have the dictation mic too.
 
 ## Agents
 
@@ -110,7 +126,8 @@ agent can fill only five of those places. The last one is kept for the persona
 you mailed, so it can always have its lead's work checked. An agent never
 gets integrations its starter lacks, and a persona that works on your
 computer (a coding agent, screen or browser control) is started as an agent
-only in a conversation you added it to.
+only in a conversation you added it to, or one led by a persona with **Adds
+personas without asking** on.
 
 Orchestrator is no longer a built-in persona, because every persona that can
 start agents now does its job. If you had edited Orchestrator's prompt, it
@@ -122,8 +139,10 @@ A scheduled task that finds something worth telling you sends mail. All firings
 of one task share one conversation. Each firing keeps its own headline, and the
 conversation takes the latest headline as its subject. Beneath the short notice
 the mail carries the run's full reply, such as a report or the drafts it wrote,
-once the run finishes. Every run happens in a thread of its own that no chat
-shows; the mail, and the Work beneath it, is the only place a run appears. A
+once the run finishes. A task scheduled from a mail conversation, such as a
+follow-up check a persona set up, reports in that same conversation instead, so a
+chain of checks stays one Inbox row. Every run happens in a thread of its own that
+no chat shows; the mail, and the Work beneath it, is the only place a run appears. A
 task that starts failing sends one mail with the reason. Pictures a run makes come
 with its mail, and a run that made pictures always sends one.
 

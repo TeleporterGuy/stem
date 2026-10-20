@@ -5,16 +5,28 @@ import Foundation
 
 // MARK: Chats
 
-struct ChatListResult: Decodable {
+struct ChatListResult: Codable {
     var chats: [ChatSummary]
+    /// Absent only from a server older than folders.
+    var folders: [ChatFolder]?
     var inbox: InboxState
 }
 
-struct ChatSummary: Decodable, Identifiable, Hashable {
+/// A user-made chat folder; `parentId` nil = top level.
+struct ChatFolder: Codable, Identifiable, Hashable {
+    var id: String
+    var name: String
+    var parentId: String?
+    /// Sort order among siblings.
+    var order: Double
+}
+
+struct ChatSummary: Codable, Identifiable, Hashable {
     var threadId: String
     var title: String
     var subject: String?
     var preview: String?
+    var folderId: String?
     var `private`: Bool?
     /// "md" when the chat runs as plain Markdown; nil means MDX.
     var format: String?
@@ -210,11 +222,20 @@ struct MailConversation: Decodable, Hashable, Identifiable {
     var subject: String
     var participants: [String]
     var `private`: Bool?
+    /// Inter-Stem: a conversation with another person (only presence matters here).
+    var external: JSONValue?
+    /// Owned by a server feature ("memory-check") instead of a persona.
+    var owner: String?
     var status: String
     var updatedAt: Double
     var userUpdatedAt: Double
     var userSentAt: Double?
+    /// The user's latest approval answer; absent from older servers.
+    var userAnsweredAt: Double?
     var createdAt: Double
+
+    /// Mail for the user landed after their last send or approval answer.
+    var waitingOnUser: Bool { userUpdatedAt > max(userSentAt ?? 0, userAnsweredAt ?? 0) }
 }
 
 struct MailItem: Decodable, Hashable, Identifiable {
@@ -228,6 +249,10 @@ struct MailItem: Decodable, Hashable, Identifiable {
     var stale: Bool?
     /// Persona↔persona mail that reached a persona after it had answered: filed, no turn started.
     var filed: Bool?
+    /// A progress question asked mid-work, answered on the spot instead of delivered.
+    var statusQuery: Bool?
+    /// The on-the-spot answer to a progress question, written from the thread and the live work log.
+    var statusReply: Bool?
     var attachments: [MessageAttachment]?
     var images: [GeneratedImageRef]?
     var agentReplies: [String]?

@@ -3,7 +3,8 @@ import SwiftUI
 
 /// Every MDX fixture (tests/fixtures/mdx) drawn natively, for previews and
 /// for simulator screenshots: launch with `-mdxGallery` to open it instead of
-/// the app (add `-mdxOnly <name>` for one sample). Interactive components get a submit that only logs, never sends.
+/// the app (add `-mdxOnly <name>` for one sample, and `-mdxStream` to type it
+/// out the way a streaming reply arrives). Interactive components get a submit that only logs, never sends.
 struct MdxGallery: View {
     static let samples: [(String, String)] = [
         ("callout", ##"""
@@ -108,6 +109,22 @@ SQLite wins because you have one writer.
 ```mermaid
 flowchart LR
   App --> Gateway --> Orders --> DB[(Postgres)]
+```
+</Diagram>
+"""##),
+        // Not a fixture: a diagram long enough to watch grow under `-mdxStream`.
+        ("diagram-stream", ##"""
+<Diagram title="Sign-in">
+```mermaid
+sequenceDiagram
+  participant P as Phone
+  participant S as Stem server
+  participant R as Relay
+  P->>S: Pair with code
+  S-->>P: Device token
+  P->>S: Open chat
+  S->>R: Push subscription
+  R-->>P: Notification
 ```
 </Diagram>
 """##),
@@ -246,6 +263,8 @@ sudo apt install ./stem.deb
     ]
 
     @State private var lastSubmit: String?
+    /// Characters shown so far under `-mdxStream`; nil shows every sample whole.
+    @State private var typed: Int?
     @State private var formHost = MdxFormHost(place: .below)
 
     var body: some View {
@@ -257,7 +276,7 @@ sudo apt install ./stem.deb
                     ForEach(Array(Self.samples.filter { only == nil || $0.0 == only }.enumerated()), id: \.element.0) { i, sample in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(sample.0).font(.caption.monospaced()).foregroundStyle(.tertiary)
-                            MarkdownView(sample.1)
+                            MarkdownView(typed.map { String(sample.1.prefix($0)) } ?? sample.1)
                                 .environment(\.mdxSource, MdxSource(key: "gallery:\(sample.0)", scrollId: sample.0, order: Double(i)))
                         }
                         .id(sample.0)
@@ -273,6 +292,15 @@ sudo apt install ./stem.deb
             .safeAreaInset(edge: .bottom, spacing: 0) { MdxAnswerBar(host: formHost, running: false) }
         }
         .environment(\.mdxFormHost, formHost)
+        .task {
+            guard ProcessInfo.processInfo.arguments.contains("-mdxStream"),
+                  let only = UserDefaults.standard.string(forKey: "mdxOnly"),
+                  let sample = Self.samples.first(where: { $0.0 == only })?.1 else { return }
+            for i in 0...sample.count {
+                typed = i
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+        }
         .onAppear { formHost.ask = { lastSubmit = "About “\($0)”: " } }
         .environment(\.mdxActions, MdxActions(submit: { lastSubmit = $0; print("MDX submit:", $0) }, running: false))
         .environment(\.mdxIsLatest, true)

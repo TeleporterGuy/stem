@@ -9,12 +9,15 @@ export function DeleteThreadDialog({
   title,
   count = 1,
   onConfirm,
+  onArchive,
   onCancel
 }: {
   title: string;
   /** More than one: a multi-selection in the chat list, named by count. */
   count?: number;
   onConfirm: () => void;
+  /** Offered as the gentler choice: the chat leaves the list but nothing is lost. */
+  onArchive?: () => void;
   onCancel: () => void;
 }) {
   const confirmRef = useRef<HTMLButtonElement>(null);
@@ -60,6 +63,11 @@ export function DeleteThreadDialog({
           <button className="push" onClick={onCancel}>
             Cancel
           </button>
+          {onArchive && (
+            <button className="push" onClick={onArchive}>
+              {count > 1 ? 'Archive them instead' : 'Archive instead'}
+            </button>
+          )}
           <button ref={confirmRef} className="push default danger" onClick={onConfirm}>
             Delete
           </button>

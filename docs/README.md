@@ -7,6 +7,8 @@ Pick the feature you see in Stem.
 | [Chats](user/chats.md) | Ask, attach files, organize conversations |
 | [Quick Chat](user/quick-chat.md) | Ask from any app |
 | [Mail](user/mail.md) | Send requests to personas and get replies in your Inbox |
+| [Mail with other Stems](user/other-stems.md) | Write to people who use Stem, with your personas drafting the replies |
+| [Share links](user/share-links.md) | Publish an answer or a chat as a link anyone can open |
 | [Memory](user/memory/README.md) | Learn useful context and recall earlier chats |
 | └ [Facts](user/memory/facts.md) | Durable details: preferences, people, projects |
 | └ [Past chats](user/memory/recall.md) | Recall: find relevant parts of past conversations |

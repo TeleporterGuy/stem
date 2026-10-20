@@ -1,6 +1,6 @@
 import { host } from '../host';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,7 @@ import {
 import { decryptSecretValue, encryptSecretValue, secretKeyAvailable } from './secrets';
 import { degrade } from '../degrade';
 import { compactCatalogText } from './mcp-discovery.mjs';
+import { replaceFile } from '../replace-file';
 
 // Stem's MCP config for the pi backend (mcp.json). Consumed by the bridge
 // extension (stem-mcp-extension.mjs), which pi loads via `-e`. Stem owns this file
@@ -89,6 +90,14 @@ export interface PiMcpServer {
      */
     label?: string;
   };
+  /**
+   * The apps this server works with, by name or bundle id ("Slack",
+   * "com.tinyspeck.slackmacgap"): asking about one of their windows tells the
+   * model to prefer this server (see app-match.ts). Absent = matched by the
+   * server's own name. Not part of how it is reached, so outside the auth
+   * identity and the device fingerprint, like `location`.
+   */
+  apps?: string[];
   /**
    * Which `env`/`headers` values were in the file and could not be decrypted,
    * filled in by {@link readMcpConfig} and stripped again on write. Derived, not
@@ -383,9 +392,12 @@ export async function writeTurnContextGate(
     browserRefusal?: string | null;
     recall: boolean;
     relay: boolean;
+    /** Inter-Stem external context: only the read-only allowlist (externalRefusal). */
+    external?: boolean;
     imageGen?: boolean;
     imageGenRefusal?: string | null;
     mcpServers?: readonly string[] | null;
+    directMcp?: readonly string[];
   },
   gateDir?: string
 ): Promise<void> {
@@ -424,6 +436,7 @@ export async function writeTurnContextGate(
         browserRefusal: ctx.browserRefusal ?? null,
         recall: ctx.recall,
         relay: ctx.relay,
+        external: ctx.external === true,
         // `imageGen`: whether generate_image is offered this turn (the bridge
         // also hides it from the tool set when false). Defaults to false.
         imageGen: ctx.imageGen === true,
@@ -433,7 +446,11 @@ export async function writeTurnContextGate(
         // an older main). The bridge hides the rest from find_tools /
         // describe_tool / list_mcp_servers and refuses them in invoke_tool;
         // the prompt's catalog is filtered in main from the same list.
-        mcpServers: ctx.mcpServers ? [...ctx.mcpServers] : null
+        mcpServers: ctx.mcpServers ? [...ctx.mcpServers] : null,
+        // `directMcp`: servers whose tools the bridge loads as ordinary tools
+        // this turn instead of leaving them behind find_tools/invoke_tool —
+        // the app servers of an "Ask about this window" chat. Empty when absent.
+        directMcp: ctx.directMcp ? [...ctx.directMcp] : []
       },
       null,
       2
@@ -514,7 +531,7 @@ async function writeSecretFile(path: string, data: string): Promise<void> {
   try {
     await writeFile(tmp, data, { encoding: 'utf8', mode: 0o600 });
     await chmod(tmp, 0o600);
-    await rename(tmp, path); // atomic on the same filesystem (same dir)
+    await replaceFile(tmp, path); // atomic on the same filesystem (same dir)
   } finally {
     // quiet: the temp is created 0600 inside the 0700 dir, so one that survives
     // is exactly as unreadable to anyone else as the file it was to become. It

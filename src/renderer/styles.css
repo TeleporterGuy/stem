@@ -174,6 +174,11 @@
 
 * { box-sizing: border-box; }
 
+/* A native select's list is drawn by Chromium from the options' own colours.
+   On Linux it keeps a light background under the dark theme's light text, so
+   the choices are unreadable: give the options the theme's colours. */
+select option { background-color: var(--surface); color: var(--ink); }
+
 html, body, #root { height: 100%; margin: 0; }
 
 body {
@@ -793,6 +798,7 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
    shown while the turn runs before answer text starts streaming */
 .activity { display: flex; align-items: center; gap: var(--sp-4); color: var(--muted); font-size: var(--fs-13); }
 .activity-dots { display: inline-flex; gap: var(--sp-2); }
+.activity-tail { margin-top: var(--sp-4); }
 .activity-dot {
   width: 6px;
   height: 6px;
@@ -1584,8 +1590,32 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .compare-pros li::before { content: '+'; position: absolute; left: 2px; color: var(--success); font-weight: 700; }
 .compare-cons li::before { content: '−'; position: absolute; left: 2px; color: var(--danger); font-weight: 700; }
 
-/* ---- Diagram (Mermaid) ---- */
-.mdx-diagram { margin: 0.9em 0; }
+/* ---- Diagram (Mermaid source, drawn by pele) ----
+   Pele's SVG reads its colors from these variables, so a theme flip recolors
+   a drawn diagram in place. */
+.mdx-diagram {
+  margin: 0.9em 0;
+  --pele-bg: var(--content);
+  --pele-fg: var(--ink);
+  --pele-muted: var(--muted);
+  --pele-line: var(--muted);
+  --pele-surface: var(--surface);
+  --pele-surface-alt: var(--inline-bg);
+  --pele-border: var(--muted);
+  --pele-accent: var(--accent);
+  --pele-critical: var(--danger);
+  --pele-error: var(--danger);
+  --pele-font: var(--font-ui);
+  --pele-font-mono: var(--font-mono);
+  --pele-series-1: var(--series-1);
+  --pele-series-2: var(--series-2);
+  --pele-series-3: var(--series-3);
+  --pele-series-4: var(--series-4);
+  --pele-series-5: var(--series-5);
+  --pele-series-6: var(--series-6);
+  --pele-series-7: var(--series-7);
+  --pele-series-8: var(--series-8);
+}
 .mdx-diagram-svg { overflow-x: auto; }
 .mdx-diagram-svg svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
 .mdx-diagram-note { color: var(--muted); font-size: var(--fs-12); margin-bottom: var(--sp-1); }
@@ -3139,6 +3169,48 @@ body.platform-win32 .qc-card {
   font-size: var(--fs-10);
 }
 
+/* "Ask about this window": the captured window as a chip above the bar. */
+.qc-chips { display: flex; gap: var(--sp-4); padding: var(--sp-6) var(--sp-9) 0; }
+.qc-chip.mcp { flex: none; padding: var(--sp-2) var(--sp-5); background: color-mix(in srgb, var(--ink) 5%, transparent); color: var(--ok, var(--accent)); }
+.qc-chip.mcp strong { max-width: 140px; }
+.qc-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--sp-2);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  -webkit-app-region: no-drag;
+}
+.qc-chip.warn { background: none; border-color: var(--warn, var(--line)); }
+.qc-chip-thumb {
+  flex: none;
+  width: 52px;
+  height: 34px;
+  object-fit: cover;
+  object-position: top left;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid var(--hair);
+}
+.qc-chip-thumb.empty { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.qc-chip-text { display: grid; min-width: 0; line-height: 1.25; }
+.qc-chip-text strong { font-size: var(--fs-13); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.qc-chip-text small { font-size: var(--fs-11); color: var(--muted); }
+.qc-chip-btn {
+  flex: none;
+  font: inherit;
+  font-size: var(--fs-12);
+  padding: var(--sp-1) var(--sp-5);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+  color: var(--ink);
+  cursor: pointer;
+}
+
 /* Expanded conversation panel: the frosted card fills the window and stacks a
    draggable header over the reused ChatView. */
 .qc-panel {
@@ -3567,7 +3639,7 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 .task-editor { display: flex; flex-direction: column; gap: var(--sp-3); padding-left: var(--sp-1); }
 .task-field { display: flex; flex-direction: column; gap: var(--sp-2); max-width: 320px; }
 .task-field-label { font-size: var(--fs-11); color: var(--muted); }
-/* select.vfield is tuned for a settings row (right-aligned, half width); here it
+/* select.vfield is tuned for a settings row (sized to its value, half width); here it
    is a form field like the inputs beside it. */
 .task-editor .vfield { text-align: left; border: 0.5px solid var(--hair); border-radius: var(--radius-sm); padding: 5px var(--sp-4); width: 100%; max-width: 100%; }
 /* A paragraph-long watch task scrolls inside its box instead of becoming the page. */
@@ -3648,6 +3720,9 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 .mail-item-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-4); margin-bottom: var(--sp-3); }
 .mail-item-at { font-size: var(--fs-11); color: var(--muted); margin-left: auto; }
 .mail-item-btn { width: 22px; height: 22px; align-self: center; color: var(--muted); }
+/* Share shows on hover, like a chat answer's action row. */
+.mail-item-share { opacity: 0; transition: opacity 0.12s; }
+.mail-item:hover .mail-item-share, .mail-item-share:focus-visible { opacity: 1; }
 .mail-item-foot { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--sp-3); margin-top: var(--sp-5); }
 .mail-item-foot .mail-work { flex: 1 1 260px; }
 .mail-item-stale, .mail-item-sys { font-size: var(--fs-11); color: var(--muted); font-style: italic; white-space: nowrap; }
@@ -3661,6 +3736,21 @@ body.platform-win32 .hud-pill { background: color-mix(in srgb, var(--surface) 94
 /* A parked run's Allow/Deny inside its mail item. */
 .mail-item-approval { margin-top: var(--sp-5); padding: var(--sp-4) var(--sp-5); border: 0.5px solid var(--hair); border-radius: var(--radius-md); font-size: var(--fs-12); }
 .mail-item-approval .mcp-approval-actions { margin-top: var(--sp-4); }
+/* Inter-Stem mail: held mail, Requests, key changes, drafts, send status. */
+.mail-ext-held { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); margin: var(--sp-3) 0; padding: var(--sp-3) var(--sp-4); border: 0.5px solid var(--hair); border-radius: var(--radius-md); background: var(--sel); font-size: var(--fs-12); color: var(--ink); }
+.mail-ext-held > span { display: inline-flex; align-items: center; gap: var(--sp-2); flex: 1 1 12rem; }
+.mail-ext-banner { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); padding: var(--sp-3) var(--sp-10); border-bottom: 0.5px solid var(--hair); background: var(--sel); font-size: var(--fs-12); color: var(--ink); }
+.mail-ext-banner > span { display: inline-flex; align-items: center; gap: var(--sp-2); flex: 1 1 14rem; }
+.mail-ext-banner.warn { color: var(--warn); }
+.mail-ext-status { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-11); color: var(--muted); white-space: nowrap; }
+.mail-ext-status.delivered { color: var(--success); }
+.mail-ext-status.failed, .mail-ext-status.unreachable { color: var(--danger); }
+.mail-ext-status.key-changed, .mail-ext-status.expired { color: var(--warn); }
+.mail-draft-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); margin: var(--sp-3) 0; font-size: var(--fs-12); color: var(--muted); }
+.mail-draft-row input { flex: 1 1 12rem; min-width: 0; }
+.mail-draft-row .task-failed { flex-basis: 100%; }
+.mail-draft-edit { display: block; width: 100%; box-sizing: border-box; margin-top: var(--sp-3); padding: var(--sp-3); border: 0.5px solid var(--line); border-radius: var(--radius-sm); background: var(--field); color: var(--ink); font: inherit; font-size: var(--fs-13); resize: vertical; }
+.row-inline { display: inline-flex; align-items: center; gap: var(--sp-2); }
 .mail-item-agent-summary { padding: var(--sp-4) var(--sp-5); cursor: pointer; color: var(--muted); line-height: 1.8; }
 .mail-item-agent-summary > * { margin-right: var(--sp-4); }
 .mail-item-agent-summary strong { color: var(--ink); }
@@ -4288,6 +4378,27 @@ button.set-vrow { border: none; background: none; font: inherit; color: inherit;
   background: var(--muted);
 }
 .set-vrow .vlab .ext-status.ok::before { background: var(--success); }
+/* Browser control → Profiles: one line per browser profile, its name field in the middle. */
+.browser-profiles { display: flex; flex-direction: column; gap: var(--sp-3); }
+.browser-profile { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+.browser-profile .ext-status { flex: none; min-width: 64px; font-size: var(--fs-12); color: var(--muted); }
+.browser-profile .ext-status::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--muted);
+}
+.browser-profile .ext-status.ok::before { background: var(--success); }
+.browser-profile .ifield { flex: 1; min-width: 0; width: auto; padding: var(--sp-2) var(--sp-4); font-size: var(--fs-12); }
+.browser-profile-hint, .browser-profile .exec-rule-error { flex-basis: 100%; padding-left: calc(64px + var(--sp-3)); font-size: var(--fs-11); color: var(--muted); }
+.browser-profile .exec-rule-error { color: var(--danger); }
+/* Which browser profiles a persona or chats may use (BrowserProfileChecks). */
+.browser-profile-checks { display: flex; flex-direction: column; gap: var(--sp-2); }
+.browser-profile-check { padding-left: var(--sp-7); }
 /* …and, while it waits for Load unpacked, the steps under it. */
 .ext-steps ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: var(--sp-3); }
 .ext-steps .ext-line { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
@@ -4300,6 +4411,14 @@ button.set-vrow { border: none; background: none; font: inherit; color: inherit;
 button.set-vrow:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
 .set-vrow .vlab { flex: 1; min-width: 0; font-size: var(--fs-13); }
 .set-vrow .vlab em { display: block; font-style: normal; font-size: var(--fs-11); color: var(--muted); overflow-wrap: anywhere; }
+/* ValueRow stacked: the label on top, a full-width field and its button under it. */
+.set-vrow.stacked { flex-direction: column; align-items: stretch; gap: var(--sp-3); }
+.set-vrow.stacked .vlab { flex: none; }
+.set-vrow.stacked .row-inline { display: flex; }
+.set-vrow.stacked .vfield { flex: 1; min-width: 0; }
+/* A text field in a settings row: the same hairline box the editors use, not the browser default. */
+.set-vrow input.vfield { font: inherit; font-size: var(--fs-12); color: var(--ink); background: none; border: 0.5px solid var(--hair); border-radius: var(--radius-sm); padding: 5px var(--sp-4); }
+.set-vrow input.vfield:focus { outline: none; box-shadow: var(--shadow-focus); }
 /* The macOS-grant checklist under Computer control: one line per grant, a
    green check or red cross in front so a missing one is visible at a glance. */
 .set-vrow .vlab .perm-list { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
@@ -4319,14 +4438,17 @@ button.set-vrow:hover { background: color-mix(in srgb, var(--ink) 4%, transparen
 .vchev { flex: none; color: var(--muted); transition: transform var(--motion-fast); }
 .vchev.open { transform: rotate(90deg); }
 
-/* The row's control: a borderless right-aligned select showing its value. */
+/* The row's control: a borderless select showing its value, sized to that
+   value so the row's label pushes it to the right edge. Not text-align: right —
+   on Linux and Windows Chromium draws the open list itself and right-aligns
+   the options with it (macOS uses a native menu and ignores it). */
 select.vfield {
   border: none;
   background: none;
   font: inherit;
   font-size: var(--fs-12);
   color: var(--ink);
-  text-align: right;
+  field-sizing: content;
   max-width: 50%;
   padding: var(--sp-1) 0;
   cursor: pointer;
@@ -4789,3 +4911,171 @@ select.vfield:focus { outline: none; border-radius: var(--radius-sm); box-shadow
 .ld-run-main strong { display: block; font-size: var(--fs-12); font-weight: 600; font-variant-numeric: tabular-nums; }
 .ld-run-main em { display: block; font-style: normal; font-size: var(--fs-11); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ld-run-main em.failed { color: var(--danger); }
+
+/* ---- Public share links (renderer/share; also the share.heystem.app viewer) ---- */
+.mcp-approval-card.share-dialog {
+  width: min(720px, calc(100vw - 48px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+}
+.share-scope {
+  margin-bottom: var(--sp-5);
+}
+.share-preview {
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: 52vh;
+  overflow: auto;
+  background: var(--content);
+  border: 0.5px solid var(--line);
+  border-radius: var(--radius-md, 8px);
+  padding: var(--sp-6) var(--sp-8);
+  margin-bottom: var(--sp-6);
+}
+.share-preview .share-head h1 {
+  font-size: var(--fs-16, 16px);
+}
+.share-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4) var(--sp-8);
+  margin-bottom: var(--sp-4);
+}
+.share-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.share-options select {
+  margin-left: auto;
+}
+.share-note {
+  margin: 0 0 var(--sp-4);
+}
+.share-unavailable {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-5) var(--sp-6);
+  margin-bottom: var(--sp-6);
+  border-radius: var(--radius-md, 8px);
+  background: var(--inline-bg);
+}
+.share-unavailable p {
+  margin: 0;
+  flex: 1;
+}
+.share-link-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+.share-link-row .share-link {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, monospace);
+}
+.mcp-approval-actions .push svg {
+  vertical-align: -2px;
+}
+.share-view .share-head {
+  margin-bottom: var(--sp-8);
+}
+.share-view .share-head h1 {
+  margin: 0 0 var(--sp-2);
+  font-size: 1.6em;
+  line-height: 1.25;
+}
+.share-view .share-head p {
+  margin: 0;
+}
+.share-messages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+.share-sources {
+  margin-top: var(--sp-4);
+  font-size: var(--fs-12, 12px);
+}
+.share-sources summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.share-sources ul {
+  list-style: none;
+  padding: 0;
+  margin: var(--sp-3) 0 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+.share-sources a {
+  display: flex;
+  gap: var(--sp-4);
+  color: inherit;
+  text-decoration: none;
+}
+.share-sources a:hover .share-source-title {
+  text-decoration: underline;
+}
+.share-source-site {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.share-source-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-card-edit {
+  margin-bottom: var(--sp-4);
+}
+.share-card-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+/* Drawn like a chat app's unfurl, so the user edits what people will see. */
+.share-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  border-left: 3px solid var(--line);
+  padding: var(--sp-2) var(--sp-5);
+  margin-bottom: var(--sp-3);
+}
+.share-card input,
+.share-card textarea {
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 0.5px solid transparent;
+  border-radius: var(--radius);
+  padding: 2px var(--sp-2);
+  margin-left: calc(-1 * var(--sp-2));
+  resize: none;
+}
+.share-card input:hover,
+.share-card textarea:hover,
+.share-card input:focus,
+.share-card textarea:focus {
+  border-color: var(--line);
+  background: var(--field);
+  outline: none;
+}
+.share-card .share-card-title {
+  font-weight: 600;
+}
+.share-card .share-card-desc {
+  color: var(--muted);
+  font-size: var(--fs-12);
+}
+.share-card-site {
+  color: var(--muted);
+  font-size: var(--fs-11);
+}

@@ -56,6 +56,12 @@ jobs:
       - name: Headless server boots under plain node
         run: npm run test:server
 
+      # tests/e2e/browser-live.spec.ts drives a real Chromium with the Stem
+      # extension through the native host — the one check of the per-platform
+      # browser-control glue. It skips itself when no browser is installed.
+      - name: Install Chromium for the browser-control E2E
+        run: npx playwright install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
+
       - name: E2E tests (Playwright + Electron)
         run: ${{ runner.os == 'Linux' && 'xvfb-run --auto-servernum --' || '' }} npm run test:e2e
 
@@ -94,3 +100,17 @@ jobs:
 
       - name: Unit tests (Vitest, Windows-relevant subset)
         run: npm run test:win
+
+  relay:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: relay/go.mod
+          cache-dependency-path: relay/go.sum
+      - run: go vet ./...
+      - run: go test ./...

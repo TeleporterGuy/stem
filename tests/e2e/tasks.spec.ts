@@ -4,7 +4,7 @@
 // touched: the tasks load, the Tasks tab renders them, and pause/delete persist
 // through real IPC. The flood's exact timing is guarded deterministically by the
 // unit test (tests/unit/scheduler.test.ts); this proves the surrounding plumbing.
-import { expect, launchApp, mainWindowOf, removeUserData, type LaunchedApp } from './electron';
+import { closeApp, expect, launchApp, mainWindowOf, type LaunchedApp } from './electron';
 import { test } from '@playwright/test';
 import type { ScheduledTask } from '../../src/shared/types';
 
@@ -42,16 +42,13 @@ async function boot(seedTasks: ScheduledTask[]) {
   return win;
 }
 
-test.afterEach(() => {
+// Close, then delete: one hook, because Playwright runs afterEach hooks in
+// the order they are declared, and Windows will not delete a running app's files.
+test.afterEach(async () => {
   if (launched) {
-    removeUserData(launched.userDataDir);
+    await closeApp(launched);
     launched = null;
   }
-});
-
-// Closing happens after cleanup registration so a failed assertion still tears down.
-test.afterEach(async () => {
-  await launched?.app.close().catch(() => {});
 });
 
 test('Tasks tab renders seeded scheduled tasks', async () => {

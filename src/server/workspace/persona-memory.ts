@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Persona, PersonaNote } from '../../shared/types';
 import { degrade } from '../degrade';
 import { log } from '../log';
 import { personaMemoryDir } from './paths';
+import { replaceFile } from '../replace-file';
 
 // A persona's private memory: durable lessons from its past work (procedures,
 // gotchas, stable domain facts) — one JSON file per persona under
@@ -187,7 +188,7 @@ async function writeNotesFile(personaId: string, store: NotesFile): Promise<void
   await mkdir(personaMemoryDir(), { recursive: true }).catch(() => undefined);
   const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
   await writeFile(tmp, JSON.stringify(store, null, 2), 'utf8');
-  await rename(tmp, path);
+  await replaceFile(tmp, path);
 }
 
 /** One persona's notes, newest first. Empty when there are none (or the file is corrupt). */

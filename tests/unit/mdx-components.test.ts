@@ -64,7 +64,7 @@ describe('Compare', () => {
 });
 
 describe('Diagram', () => {
-  it('waits for mermaid behind a placeholder and never renders the source as HTML', () => {
+  it('waits for the renderer behind a placeholder and never renders the source as HTML', () => {
     const out = html('<Diagram title="Flow">\n```mermaid\nflowchart LR\n  A --> B\n```\n</Diagram>');
     expect(out).toContain('Drawing diagram…');
     expect(out).toContain('Flow');

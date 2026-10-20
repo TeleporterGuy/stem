@@ -108,7 +108,7 @@ describe('stemAssistantInstructions', () => {
       // Markdown chats pay for nothing they don't use; the MDX card is the one
       // deliberate cost, measured by npm run eval:mdx.
       expect(stemAssistantInstructions('md').length).toBeLessThanOrEqual(5000);
-      expect(stemAssistantInstructions('mdx').length).toBeLessThanOrEqual(8000);
+      expect(stemAssistantInstructions('mdx').length).toBeLessThanOrEqual(8200);
       const prompt = stemAssistantInstructions();
       // The large examples/procedures must remain available without being
       // transmitted on every greeting.
@@ -135,6 +135,15 @@ describe('stemAssistantInstructions', () => {
     expect(prompt).toContain('The user chooses the surface in an approval card');
     expect(prompt).toContain('Otherwise finish silently');
     expect(prompt).toContain('Never use `notify_user` in ordinary interactive chat');
+  });
+
+  // An address the user has to copy into Maps by hand is a chore; an https
+  // maps.apple.com link opens the Maps app on the phone and the Mac, and both
+  // clients already let https links through.
+  it('links places to maps in both formats', () => {
+    for (const format of ['md', 'mdx'] as const) {
+      expect(stemAssistantInstructions(format), format).toContain('](https://maps.apple.com/?q=');
+    }
   });
 
 });

@@ -212,7 +212,15 @@ async function snapshot(): Promise<DevicesSnapshot> {
         // Same rule as runsCommands: only an announced yes earns the tag.
         ...(harnessHosts[d.id]?.enabled ? { runsCodingAgents: true } : {}),
         ...(computerHosts[d.id]?.enabled ? { runsComputer: true } : {}),
-        ...(browserHosts[d.id]?.enabled ? { runsBrowser: true } : {})
+        ...(browserHosts[d.id]?.enabled ? { runsBrowser: true } : {}),
+        ...(browserHosts[d.id]?.browsers.length
+          ? {
+              browserProfiles: browserHosts[d.id]!.browsers.map((b) => ({
+                id: b.id,
+                name: b.profile && b.profile !== b.name ? `${b.name} · ${b.profile}` : b.name
+              }))
+            }
+          : {})
       })
     ),
     pending: pending.map((p) => ({ label: p.label, expiresAt: p.expiresAt }))

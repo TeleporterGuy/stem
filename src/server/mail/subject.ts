@@ -75,6 +75,9 @@ export function isMadeUpMailSubject(subject: string, mails: MailItem[]): boolean
  * opened by the user, answered at least once, and still wearing a made-up subject.
  */
 export function mailSubjectEligible(conversation: MailConversation, mails: MailItem[]): boolean {
+  // Inter-Stem: the subject is the sender's, and their mail never goes to a
+  // model before the user releases it.
+  if (conversation.external) return false;
   if (mails.some((i) => i.taskId)) return false;
   if (!mails.some((i) => i.from === 'user')) return false;
   if (!mails.some(isReplyToUser)) return false;

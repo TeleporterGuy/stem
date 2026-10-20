@@ -8,9 +8,10 @@
 // which is a thing it can only do while it is still running.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { setHost } from '../../src/server/host';
 import { clientStorePath, readClientIdentity, writeClientIdentity } from '../../src/desktop/client-store';
+import { expectPosixMode } from './posix-mode';
 
 const path = clientStorePath();
 
@@ -42,7 +43,7 @@ describe('storing this device\'s identity', () => {
     const onDisk = readFileSync(path, 'utf8');
     expect(onDisk).not.toContain(token);
     expect(JSON.parse(onDisk).token).toBeUndefined();
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expectPosixMode(path, 0o600);
   });
 
   it('falls back to 0600 plaintext where there is no keyring, rather than to nothing', async () => {
@@ -53,7 +54,7 @@ describe('storing this device\'s identity', () => {
 
     expect(JSON.parse(readFileSync(path, 'utf8')).token).toBe('b'.repeat(64));
     expect(await readClientIdentity()).toEqual({ deviceId: 'dev-2', token: 'b'.repeat(64) });
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expectPosixMode(path, 0o600);
   });
 });
 

@@ -8,15 +8,18 @@
 // Stem app's unix socket, frames from the socket go to the extension (stdout).
 // Both legs use Chrome's framing, so a frame passes through unparsed — except:
 //
-// - The first frame on every socket connection is this host's own
-//   `host-hello`: the token from the config Set up wrote (0600, this profile's
-//   state folder) and the browser that launched it, read off the parent process.
-//   Proof that the peer was installed by this Stem — not proof against malware
-//   running as the same user, which can read the same file.
+// - Every socket connection opens with a handshake (handshake.ts): this host's
+//   `host-hello` names the browser that launched it, read off the parent
+//   process, and each side proves it holds the token from the config Set up
+//   wrote (0600, this profile's state folder) without sending it. Nothing is
+//   relayed until the desktop has proved itself. Proof that both were installed
+//   by this Stem — not proof against malware running as the same user, which
+//   can read the same file.
 // - A result that carries finished downloads has each file copied out of the
 //   user's Downloads into Stem's spool first. This process is the browser's
 //   child, so macOS attributes that read to the browser, which already has
 //   Downloads; the Stem app reading it directly would raise a privacy prompt.
+//   (Linux has no such prompt; the copy is kept so both take one path.)
 //
 // It never exits on its own while the browser keeps the port open: with Stem
 // not running it retries the socket every two seconds, and that open port is
@@ -26,17 +29,21 @@
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readlinkSync } from 'node:fs';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { createConnection, type Socket } from 'node:net';
-import { basename, join } from 'node:path';
+import { basename, join, win32 } from 'node:path';
+import { handshakeProof, isNonce, newNonce, proofMatches } from './handshake';
 import {
   encodeFrame,
   FrameReader,
   MAX_TO_EXTENSION_BYTES,
   type ExtensionDownload,
   type FromExtension,
-  type HostHello
+  type HostHello,
+  appImageName,
+  linuxBrowserName,
+  windowsBrowserName
 } from '../../shared/browser-native';
 
 interface HostConfig {
@@ -47,16 +54,67 @@ interface HostConfig {
 
 const RETRY_MS = 2000;
 
-/** The browser's app bundle and name, from the process that started us. */
+/**
+ * The browser and its name, from the process that started us: a Mac reports
+ * the binary inside the bundle and the bundle is the browser; on Linux the
+ * executable is the browser (and what launching it again runs).
+ */
 export function browserOf(command: string): { appPath: string; appName: string } {
   const at = command.indexOf('.app/');
-  const appPath = at >= 0 ? command.slice(0, at + 4) : command;
-  const appName = basename(appPath).replace(/\.app$/, '') || 'Browser';
-  return { appPath, appName };
+  if (at >= 0 || command.endsWith('.app')) {
+    const appPath = at >= 0 ? command.slice(0, at + 4) : command;
+    return { appPath, appName: basename(appPath).replace(/\.app$/, '') || 'Browser' };
+  }
+  if (/^[a-z]:\\/i.test(command)) {
+    return { appPath: command, appName: windowsBrowserName(command) ?? (win32.basename(command).replace(/\.exe$/i, '') || 'Browser') };
+  }
+  const appName = linuxBrowserName(command) ?? (/\.appimage$/i.test(command) ? appImageName(command) : basename(command) || 'Browser');
+  return { appPath: command, appName };
 }
+
+/**
+ * Linux: the AppImage a browser runs from, by the environment it passed us
+ * (the AppImage runtime sets APPIMAGE and APPDIR; the browser's own
+ * /proc/<pid>/environ is no help, Chromium writes its process title over it).
+ * The executable sits in a mount that changes on every launch, so the
+ * AppImage file is what stays the same and what starts the browser again.
+ * The executable must be inside APPDIR: a browser started from another
+ * AppImage (Stem's own) inherits its variables.
+ */
+export function appImageOf(exe: string, env: NodeJS.ProcessEnv): string | null {
+  const image = env.APPIMAGE;
+  const dir = env.APPDIR?.replace(/\/+$/, '');
+  if (!image?.startsWith('/') || !dir?.startsWith('/') || !exe.startsWith(`${dir}/`)) return null;
+  return image;
+}
+
+/**
+ * Windows: the browser starts a batch-file host through cmd.exe, so the
+ * browser is the first ancestor that is not cmd.exe. One PowerShell call walks
+ * the chain (Node has no API for another process's executable).
+ */
+const WINDOWS_PARENT = [
+  '$p = Get-CimInstance Win32_Process -Filter "ProcessId=$args";',
+  'while ($p -and $p.Name -ieq "cmd.exe") { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)" }',
+  'if ($p) { $p.ExecutablePath }'
+].join(' ');
 
 function parentCommand(): string {
   try {
+    if (process.platform === 'win32') {
+      const out = execFileSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', `& { ${WINDOWS_PARENT} } ${process.ppid}`],
+        { encoding: 'utf8', timeout: 10_000, windowsHide: true }
+      ).trim();
+      return out || 'Browser';
+    }
+    if (process.platform === 'linux') {
+      // `ps -o comm=` is cut to 15 characters there; the exe link is the whole
+      // path. A browser updated in place while running reads "… (deleted)".
+      const exe = readlinkSync(`/proc/${process.ppid}/exe`).replace(/ \(deleted\)$/, '');
+      return appImageOf(exe, process.env) ?? exe;
+    }
     return execFileSync('/bin/ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8' }).trim();
   } catch {
     return 'Browser';
@@ -88,6 +146,17 @@ async function spoolDownloads(downloads: ExtensionDownload[], spoolDir: string):
   return out;
 }
 
+/** Is this frame the desktop's server-hello, with a proof under the token for our nonce? */
+export function serverProved(token: string, nonce: string, body: Buffer): boolean {
+  let m: { type?: unknown; nonce?: unknown; proof?: unknown };
+  try {
+    m = JSON.parse(body.toString('utf8')) as typeof m;
+  } catch {
+    return false;
+  }
+  return m?.type === 'server-hello' && isNonce(m.nonce) && proofMatches(token, 'stem', nonce, m.proof);
+}
+
 function main(): void {
   const config = JSON.parse(readFileSync(process.argv[2] ?? '', 'utf8')) as HostConfig;
   const browser = browserOf(parentCommand());
@@ -115,15 +184,29 @@ function main(): void {
     const s = createConnection(config.socketPath);
     socket = s;
     const reader = new FrameReader(MAX_TO_EXTENSION_BYTES);
+    const nonce = newNonce();
+    /** Set once the desktop proved it holds the token; until then nothing is relayed either way. */
+    let verified = false;
     s.on('connect', () => {
-      const first: HostHello = { type: 'host-hello', token: config.token, ...browser };
+      const first: HostHello = { type: 'host-hello', nonce, ...browser };
       s.write(encodeFrame(first));
-      if (hello) s.write(hello);
-      status(true);
     });
     s.on('data', (chunk: Buffer) => {
       try {
         for (const body of reader.push(chunk)) {
+          if (!verified) {
+            if (!serverProved(config.token, nonce, body)) {
+              log('a peer on the socket could not prove it is Stem; not relaying to it');
+              s.destroy();
+              return;
+            }
+            const answer = JSON.parse(body.toString('utf8')) as { nonce: string };
+            s.write(encodeFrame({ type: 'host-proof', proof: handshakeProof(config.token, 'host', answer.nonce) }));
+            verified = true;
+            if (hello) s.write(hello);
+            status(true);
+            continue;
+          }
           const head = Buffer.alloc(4);
           head.writeUInt32LE(body.length, 0);
           toExtension(Buffer.concat([head, body]));

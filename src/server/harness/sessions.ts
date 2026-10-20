@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { degrade } from '../degrade';
 import { harnessSessionsStorePath } from '../workspace/paths';
+import { replaceFile } from '../replace-file';
 
 // The (thread, host, agent, cwd) -> harness sessionId mapping
 // (harness-sessions.json), which is what makes a repeated coding_agent call
@@ -81,7 +82,7 @@ async function writeSessions(sessions: HarnessSessionEntry[]): Promise<void> {
   const path = harnessSessionsStorePath();
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify({ version: 1, sessions } satisfies SessionsStore, null, 2), 'utf8');
-  await rename(tmp, path); // atomic on the same volume
+  await replaceFile(tmp, path); // atomic on the same volume
 }
 
 /** The remembered sessionId for this exact (thread, host, agent, cwd), or null. */

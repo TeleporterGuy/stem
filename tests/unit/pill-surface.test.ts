@@ -33,7 +33,7 @@ vi.mock('../../src/desktop/ipc-bridge', () => ({
 import { createQuickChat } from '../../src/desktop/quickchat';
 
 const settings: QuickChatSettings = {
-  shortcut: null, defaultModel: null, defaultEffort: 'medium', defaultServiceTier: null,
+  shortcut: null, windowShortcut: null, defaultModel: null, defaultEffort: 'medium', defaultServiceTier: null,
   showOnAllDisplays: true, newThreadTimeoutMs: 300000, followAcrossSpaces: true, finishSound: true
 };
 beforeEach(() => {

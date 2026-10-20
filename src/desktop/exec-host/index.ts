@@ -1,7 +1,7 @@
 import { mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { log } from '../../server/log';
-import { clampTimeout, execEnv, resolveLoginPath, runCommand } from '../../server/exec/executor';
+import { clampTimeout, execEnv, resolveLoginPath, runCommand, timedOutLine } from '../../server/exec/executor';
 import { scanCommandAgainstRoots } from '../../server/exec/protected';
 import { hostShellFromPlatform } from '../../server/exec/host-shell';
 import { host } from '../../server/host';
@@ -159,7 +159,7 @@ export function createExecHost(deps: ExecHostDeps): ExecHost {
     // model reads one format wherever a command ran.
     const parts = [
       outcome.timedOut
-        ? `Timed out after ${timeoutMs} ms (process group killed).`
+        ? timedOutLine(timeoutMs)
         : `Exit code: ${outcome.exitCode ?? `signal ${outcome.signal ?? 'unknown'}`}`,
       `stdout:\n${outcome.stdout.trim() || '(no output)'}`,
       `stderr:\n${outcome.stderr.trim() || '(no output)'}`

@@ -1,0 +1,40 @@
+url = "https://relay.heystem.app"
+global = true
+data_dir = "/data"
+listen = ":8080"
+trust_proxy = true
+
+[mail]
+# Verification codes go out through Fastmail (heystem.app is a Fastmail
+# domain: MX, SPF, DKIM fm1-3 and DMARC on Cloudflare). smtp_pass is a
+# Fastmail app password with SMTP access; it lives only in the deployed
+# data/relay.toml.
+driver = "smtp"
+smtp_host = "smtp.fastmail.com"
+smtp_port = 587
+smtp_user = "FASTMAIL_LOGIN"
+smtp_pass = "FASTMAIL_APP_PASSWORD"
+verify_from = "Stem <codes@heystem.app>"
+invite_from = "Stem <invites@invites.relay.heystem.app>"
+
+[invites]
+enabled = false
+
+# APNs gateway for every Stem without the app's key (relay/README.md).
+[push]
+enabled = true
+key_path = "/secrets/apns.p8"
+key_id = "ND4436FVW9"
+team_id = "AX23G9CAL9"
+bundle_id = "sk.awantech.stem"
+
+# Public share links: encrypted blobs, viewer at share.heystem.app (Caddy
+# serves the static viewer and proxies /v1/shares/* here).
+[share]
+enabled = true
+viewer_url = "https://share.heystem.app"
+viewer_dir = "/viewer"
+# Abuse limits: links last at most 30 days, 100 working links per address.
+max_ttl_days = 30
+max_live = 100
+per_address_day = 30

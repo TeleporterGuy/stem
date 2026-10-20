@@ -53,13 +53,21 @@ describe('createBrowserDeviceRouter', () => {
       ],
       chosen: '/Applications/Arc.app'
     });
-    await router.announce('mac-1', { enabled: true, platform: 'linux', browsers: [] }); // ignored: mac only
+    await router.announce('mac-1', { enabled: true, platform: 'beos', browsers: [] }); // ignored: not a platform Stem runs on
     expect(await router.hostFor('mac-1')).toMatchObject({
       enabled: true,
       platform: 'darwin',
       browsers: [{ id: '/Applications/Arc.app', name: 'Arc', connected: true, version: '0.6.0' }],
       chosen: '/Applications/Arc.app'
     });
+    await router.announce('linux-1', {
+      enabled: true,
+      platform: 'linux',
+      browsers: [{ id: '/opt/google/chrome/chrome', name: 'Google Chrome', connected: true }]
+    });
+    expect(await router.hostFor('linux-1')).toMatchObject({ platform: 'linux', browsers: [{ name: 'Google Chrome' }] });
+    await router.announce('pc-1', { enabled: true, platform: 'win32', browsers: [] });
+    expect(await router.hostFor('pc-1')).toMatchObject({ platform: 'win32' });
   });
 
   it('round-trips one action and answers each id once, only from its device', async () => {
@@ -92,6 +100,33 @@ describe('createBrowserDeviceRouter', () => {
       expect(res.downloads?.map((d) => d.name)).toEqual(['report.pdf']);
       expect(res.screenshot).toBeUndefined();
     }
+  });
+
+  it('refuses a profile-limited action to a Mac that never said it enforces the list', async () => {
+    await router.announce('mac-1', { enabled: true, platform: 'darwin', browsers: [] });
+    const res = await router.send('t1', 'mac-1', { kind: 'snapshot' }, { allowed: ['/Applications/Arc.app#p1'] });
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('too old') });
+    expect(sent).toEqual([]);
+    // Unlimited actions still reach it.
+    void router.send('t1', 'mac-1', { kind: 'snapshot' });
+    expect(sent).toHaveLength(1);
+  });
+
+  it('carries the browser profile the model named to the Mac, and keeps a profile name an announcement gives', async () => {
+    await router.announce('mac-1', { enabled: true, platform: 'darwin', browsers: [], enforcesProfiles: true });
+    void router.send('t1', 'mac-1', { kind: 'snapshot' }, { profile: 'Work', allowed: ['/Applications/Arc.app#p1'] });
+    await new Promise((r) => setTimeout(r, 0));
+    void router.send('t1', 'mac-1', { kind: 'snapshot' });
+    expect(requestOf(0)).toMatchObject({ profile: 'Work', allowed: ['/Applications/Arc.app#p1'] });
+    expect(requestOf(1)).not.toHaveProperty('profile');
+    await router.announce('mac-1', {
+      enabled: true,
+      platform: 'darwin',
+      browsers: [{ id: '/Applications/Arc.app#p1', name: 'Arc', profile: 'Work', connected: true }]
+    });
+    expect((await router.hostFor('mac-1'))?.browsers).toEqual([
+      { id: '/Applications/Arc.app#p1', name: 'Arc', profile: 'Work', connected: true }
+    ]);
   });
 
   it('fails at once when the Mac is not connected', async () => {

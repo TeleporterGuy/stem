@@ -10,6 +10,7 @@
 // it is what is checked here. transport.test.ts drives the same server from the
 // desktop proxy's side, i.e. through the real client.
 import { request as httpRequest } from 'node:http';
+import { gunzipSync } from 'node:zlib';
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -284,6 +285,60 @@ describe('argument validation', () => {
     const res = await rpc({ channel: 'chats:list', args: [] });
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ ok: false, error: 'pi is not running' });
+  });
+});
+
+describe('big answers', () => {
+  const big = { items: Array.from({ length: 2000 }, (_, i) => ({ id: i, body: 'mail body '.repeat(5) })) };
+  beforeAll(() => registerServer('mail:list', () => big));
+  afterAll(() => ipcMain.removeHandler('mail:list'));
+
+  /** One /rpc call over node:http, so the wire bytes are seen before any decoding. */
+  function wire(headers: Record<string, string>): Promise<{ headers: Record<string, unknown>; bytes: Buffer }> {
+    return new Promise((done, fail) => {
+      const req = httpRequest(
+        {
+          host: '127.0.0.1',
+          port: server.port,
+          path: '/rpc',
+          method: 'POST',
+          headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', ...headers }
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => done({ headers: res.headers, bytes: Buffer.concat(chunks) }));
+        }
+      );
+      req.on('error', fail);
+      req.end(JSON.stringify({ channel: 'mail:list', args: [] }));
+    });
+  }
+
+  it('go out gzipped to a caller that accepts gzip', async () => {
+    const res = await wire({ 'accept-encoding': 'br, gzip, deflate' });
+    expect(res.headers['content-encoding']).toBe('gzip');
+    expect(Number(res.headers['content-length'])).toBe(res.bytes.length);
+    const plain = JSON.stringify({ ok: true, result: big });
+    expect(res.bytes.length).toBeLessThan(plain.length / 4);
+    expect(JSON.parse(gunzipSync(res.bytes).toString('utf8'))).toEqual({ ok: true, result: big });
+  });
+
+  it('go out plain to a caller that never said it reads gzip', async () => {
+    const res = await wire({});
+    expect(res.headers['content-encoding']).toBeUndefined();
+    expect(JSON.parse(res.bytes.toString('utf8')).result).toEqual(big);
+  });
+
+  it('are left out for a caller that asked for none', async () => {
+    const res = await rpc({ channel: 'mail:list', args: [] }, { headers: { 'x-stem-result': 'none' } });
+    expect(await res.json()).toEqual({ ok: true, result: null });
+  });
+
+  it('reach a fetch client intact', async () => {
+    const res = await rpc({ channel: 'mail:list', args: [] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, result: big });
   });
 });
 
@@ -1078,7 +1133,8 @@ describe('what it will bind', () => {
     }
   });
 
-  it('serves over a Unix socket, where there is no interface to answer at all', async () => {
+  // The socket listener is the container's shape (STEM_SERVER_SOCKET); Windows has no Unix sockets to give it.
+  it.skipIf(process.platform === 'win32')('serves over a Unix socket, where there is no interface to answer at all', async () => {
     // Short, and deliberately not under a mkdtemp: macOS puts TMPDIR somewhere
     // long enough that a nested throwaway directory can blow the kernel's ~104
     // byte limit for a socket path — the exact failure socketPathProblem names.
@@ -1125,7 +1181,7 @@ describe('what it will bind', () => {
     expect(existsSync(socketPath)).toBe(false);
   });
 
-  it('clears a socket left behind by a run that was killed', async () => {
+  it.skipIf(process.platform === 'win32')('clears a socket left behind by a run that was killed', async () => {
     const socketPath = join(tmpdir(), `stem-stale-${process.pid}.sock`);
     // What `docker kill` leaves in the volume: a socket file with nothing behind
     // it. Binding must succeed anyway, or the container never comes back up.

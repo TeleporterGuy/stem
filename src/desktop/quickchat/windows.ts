@@ -1,5 +1,6 @@
 import { BrowserWindow, screen } from 'electron';
-import { overlayOuterBounds, overlayWindowOptions, timeLocaleArguments, workspaceVisibilityOptions } from '../platform';
+import { placeOwnWindow } from '../computer-host/helper';
+import { isWaylandSession, overlayOuterBounds, overlayWindowOptions, timeLocaleArguments, workspaceVisibilityOptions } from '../platform';
 import { loadRenderer, PRELOAD_SCRIPT } from '../renderer-assets';
 
 // The two windows Quick Chat owns, and where on screen they go. Construction
@@ -19,6 +20,8 @@ const QUICK_CHAT_PANEL_HEIGHT = 518;
 // Bottom-left status HUD pill.
 const HUD_WIDTH = 320;
 const HUD_HEIGHT = 46;
+/** The pill's window title: how Stem's GNOME extension finds it to place it on Wayland. */
+const HUD_TITLE = 'Stem status';
 
 /**
  * The Quick Chat overlay (Spotlight-style): a frameless, always-on-top,
@@ -126,6 +129,9 @@ export function createHudWindow(deps: { installNavigationGuards(win: BrowserWind
   });
 
   deps.installNavigationGuards(win);
+  // A fixed title, not the page's: on Wayland the pill is found by it.
+  win.setTitle(HUD_TITLE);
+  win.on('page-title-updated', (e) => e.preventDefault());
 
   // The status pill must float above everything and follow the user across every
   // Space and into full-screen apps — unlike the overlay, this is unconditional
@@ -158,13 +164,68 @@ export function placeOverlay(win: BrowserWindow, reset: boolean): void {
   );
 }
 
+/** Height the window chip adds to the compact bar ("Ask about this window"). */
+const WINDOW_CHIP_HEIGHT = 58;
+/** Space between the panel and the window it docks against. */
+const DOCK_GAP = 12;
+
+export interface DockRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Where the panel goes next to the window it was asked about, never on top of
+ * it when the screen has room: right of the window (top edges level), else
+ * left, else below, else above — the first spot the whole panel fits on the
+ * window's display. A window that leaves no room anywhere (it fills the
+ * screen) gets the panel over its bottom-right corner. Pure, for the tests.
+ */
+export function dockBeside(target: DockRect, panel: { width: number; height: number }, area: DockRect): { x: number; y: number } {
+  const { width: w, height: h } = panel;
+  const right = area.x + area.width;
+  const bottom = area.y + area.height;
+  const clamp = (v: number, lo: number, hi: number) => Math.round(Math.max(lo, Math.min(v, hi)));
+  const levelY = clamp(target.y, area.y, bottom - h);
+  const centredX = clamp(target.x + (target.width - w) / 2, area.x, right - w);
+  if (target.x + target.width + DOCK_GAP + w <= right) return { x: Math.round(target.x + target.width + DOCK_GAP), y: levelY };
+  if (target.x - DOCK_GAP - w >= area.x) return { x: Math.round(target.x - DOCK_GAP - w), y: levelY };
+  if (target.y + target.height + DOCK_GAP + h <= bottom) return { x: centredX, y: Math.round(target.y + target.height + DOCK_GAP) };
+  if (target.y - DOCK_GAP - h >= area.y) return { x: centredX, y: Math.round(target.y - DOCK_GAP - h) };
+  const inset = 16;
+  return {
+    x: clamp(Math.min(target.x + target.width, right) - w - inset, area.x, right - w),
+    y: clamp(Math.min(target.y + target.height, bottom) - h - inset, area.y, bottom - h)
+  };
+}
+
+/**
+ * Place the overlay beside the window it was summoned for (see dockBeside),
+ * on that window's display. `chip`: the compact bar carries the window chip.
+ */
+export function placeOverlayBeside(win: BrowserWindow, target: DockRect, expanded: boolean, chip: boolean): void {
+  const { workArea } = screen.getDisplayMatching({
+    x: Math.round(target.x),
+    y: Math.round(target.y),
+    width: Math.max(1, Math.round(target.width)),
+    height: Math.max(1, Math.round(target.height))
+  });
+  const w = QUICK_CHAT_WIDTH;
+  const h = expanded ? QUICK_CHAT_PANEL_HEIGHT : QUICK_CHAT_HEIGHT + (chip ? WINDOW_CHIP_HEIGHT : 0);
+  const { x, y } = dockBeside(target, { width: w, height: h }, workArea);
+  win.setBounds(overlayOuterBounds({ x, y, width: w, height: h }));
+}
+
 /**
  * Shrink a visible overlay back to the compact bar where it stands (New thread,
  * or a deleted thread, empties the panel). Keeps the top edge, so the bar stays
  * where the panel's head was rather than jumping to the cursor's display.
+ * `chip`: the bar carries a window chip ("Ask about this window").
  */
-export function compactOverlay(win: BrowserWindow): void {
-  const outer = overlayOuterBounds({ x: 0, y: 0, width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT });
+export function compactOverlay(win: BrowserWindow, chip = false): void {
+  const outer = overlayOuterBounds({ x: 0, y: 0, width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT + (chip ? WINDOW_CHIP_HEIGHT : 0) });
   const { x, y, width } = win.getBounds();
   win.setBounds({ x, y, width, height: outer.height });
 }
@@ -172,10 +233,9 @@ export function compactOverlay(win: BrowserWindow): void {
 /** Park the pill in the bottom-left of the display under the cursor. */
 export function placeHud(win: BrowserWindow): void {
   const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  win.setBounds({
-    x: Math.round(workArea.x + 16),
-    y: Math.round(workArea.y + workArea.height - HUD_HEIGHT - 16),
-    width: HUD_WIDTH,
-    height: HUD_HEIGHT
-  });
+  const x = Math.round(workArea.x + 16);
+  const y = Math.round(workArea.y + workArea.height - HUD_HEIGHT - 16);
+  win.setBounds({ x, y, width: HUD_WIDTH, height: HUD_HEIGHT });
+  // Wayland ignores setBounds' position (GNOME centres new windows).
+  if (isWaylandSession()) placeOwnWindow(HUD_TITLE, x, y);
 }

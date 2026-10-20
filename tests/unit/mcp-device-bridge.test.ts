@@ -358,6 +358,46 @@ describe('one call, from the bridge extension to the machine that hosts it', () 
     expect(sent[1].data).toMatchObject({ server: 'files', tool: 'list_files', args: { path: '/' } });
   });
 
+  // "Ask about this window": the window's app server is loaded as ordinary
+  // tools for the turn (turn-context `directMcp`), switched on at
+  // before_agent_start, and off again for a turn that does not name it.
+  it('loads a directMcp server as ordinary tools for the turn, and drops them when the gate stops naming it', async () => {
+    answer = (request) =>
+      request.op === 'tools'
+        ? { ok: true, tools: [{ name: 'list_files', description: 'List files.', signature: '(path)' }] }
+        : { ok: true, content: [{ type: 'text', text: `ran ${request.tool}` }] };
+    const tools = new Map<string, { name: string; defaultActive?: boolean; parameters?: unknown; execute: (...args: unknown[]) => Promise<unknown> }>();
+    const handlers: Record<string, ((...args: unknown[]) => void)[]> = {};
+    let active: string[] = ['read', 'invoke_tool'];
+    const fakePi = {
+      registerTool: (tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) => tools.set(tool.name, tool),
+      on: (event: string, fn: (...args: unknown[]) => void) => (handlers[event] ??= []).push(fn),
+      getActiveTools: () => active,
+      getAllTools: () => [...tools.keys(), 'read'].map((name) => ({ name })),
+      setActiveTools: (next: string[]) => {
+        active = next;
+      }
+    };
+    await stemMcpBridge(fakePi);
+    await mcpConnectionsSettledForTests();
+    const gate = (directMcp: string[]) => writeFile(join(root, 'turn-context.json'), JSON.stringify({ directMcp }));
+
+    await gate(['files']);
+    for (const fn of handlers.before_agent_start ?? []) fn({});
+    const direct = [...tools.values()].filter((t) => t.name.startsWith('files_'));
+    expect(direct.map((t) => t.name)).toEqual(['files_list_files']);
+    expect(direct[0].defaultActive).toBe(false); // never on for a turn that did not ask
+    expect(active).toContain('files_list_files');
+    const result = await direct[0].execute('id', { path: '/' });
+    expect(textOf(result)).toBe('ran list_files');
+    expect(sent.at(-1)!.data).toMatchObject({ server: 'files', tool: 'list_files', args: { path: '/' } });
+
+    await gate([]);
+    for (const fn of handlers.before_agent_start ?? []) fn({});
+    expect(active).not.toContain('files_list_files');
+    expect(active).toContain('invoke_tool');
+  });
+
   it('still offers the tools of a machine that is asleep, and fails the CALL by name', async () => {
     connected.delete('mac');
 

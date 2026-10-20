@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { startCapture, stopCapture } from './dictation-capture';
 import type {
   FolderSettings,
   ActivitySnapshot,
@@ -70,12 +71,14 @@ import type {
   ThemeSettings,
   ThemeState,
   UpdateStatus,
+  MenuCommand,
   UpdatesSettings,
   RecorderState,
   DictationUpdate,
   RecordingDraft
 } from '../shared/types';
 import { parseTimeLocaleArgs } from '../shared/time-locale';
+import type { ShareOptions, ShareSource } from '../shared/share';
 
 const api: StemApi = {
   // Sandboxed preloads still see process.platform; exotic platforms never ship.
@@ -192,6 +195,8 @@ const api: StemApi = {
     ipcRenderer.invoke('mcp:setEnabled', name, enabled),
   setMcpServerLocation: (name: string, deviceId: string | null) =>
     ipcRenderer.invoke('mcp:setLocation', name, deviceId),
+  setMcpServerApps: (name: string, apps: string[] | null) => ipcRenderer.invoke('mcp:setApps', name, apps),
+  mcpServersForApp: (app: string, bundleId: string | null) => ipcRenderer.invoke('mcp:forApp', app, bundleId),
   loginMcpServer: (name: string) => ipcRenderer.invoke('mcp:login', name),
   restartRuntime: () => ipcRenderer.invoke('runtime:restart'),
 
@@ -230,9 +235,34 @@ const api: StemApi = {
     return () => ipcRenderer.removeListener('recorder:openSheet', handler);
   },
   dictationLanguages: () => ipcRenderer.invoke('dictation:languages'),
-  startDictation: (locale: string | null) => ipcRenderer.invoke('dictation:start', locale),
-  stopDictation: () => ipcRenderer.invoke('dictation:stop'),
-  cancelDictation: () => ipcRenderer.invoke('dictation:cancel'),
+  // Off a Mac the microphone is captured here and streamed to Whisper in the
+  // main process. Start is sent first, so the session exists before the
+  // first block of audio arrives; what is said while the model loads is kept.
+  startDictation: async (locale: string | null, model?: 'fast' | 'accurate'): Promise<{ session: number; locale: string }> => {
+    if (process.platform === 'darwin') return ipcRenderer.invoke('dictation:start', locale);
+    const started = ipcRenderer.invoke('dictation:start', locale, model ?? 'fast') as Promise<{ session: number; locale: string }>;
+    try {
+      await startCapture((samples) => void ipcRenderer.invoke('dictation:audio', samples).catch(() => undefined));
+    } catch (e) {
+      started.catch(() => undefined);
+      await ipcRenderer.invoke('dictation:cancel');
+      throw e;
+    }
+    try {
+      return await started;
+    } catch (e) {
+      stopCapture();
+      throw e;
+    }
+  },
+  stopDictation: () => {
+    stopCapture();
+    return ipcRenderer.invoke('dictation:stop');
+  },
+  cancelDictation: () => {
+    stopCapture();
+    return ipcRenderer.invoke('dictation:cancel');
+  },
   onDictationUpdate: (listener: (update: DictationUpdate) => void) => {
     const handler = (_e: unknown, update: DictationUpdate) => listener(update);
     ipcRenderer.on('dictation:update', handler);
@@ -255,6 +285,8 @@ const api: StemApi = {
   browserHostState: () => ipcRenderer.invoke('browserHost:localState'),
   setBrowserHostEnabled: (enabled: boolean) => ipcRenderer.invoke('browserHost:setEnabled', enabled),
   chooseBrowser: (id: string) => ipcRenderer.invoke('browserHost:choose', id),
+  renameBrowser: (id: string, name: string) => ipcRenderer.invoke('browserHost:rename', id, name),
+  forgetBrowser: (id: string) => ipcRenderer.invoke('browserHost:forget', id),
   setUpBrowserControl: () => ipcRenderer.invoke('browserHost:setUp'),
   openBrowserExtensionsPage: (browserId?: string) => ipcRenderer.invoke('browserHost:openExtensions', browserId),
   onMcpAdminApproval: (listener: (proposal: McpAdminProposal) => void) => {
@@ -429,6 +461,11 @@ const api: StemApi = {
     ipcRenderer.invoke('pins:update', threadId, pinId, patch),
   removePin: (threadId: string, pinId: string) => ipcRenderer.invoke('pins:remove', threadId, pinId),
   reorderPins: (threadId: string, pinIds: string[]) => ipcRenderer.invoke('pins:reorder', threadId, pinIds),
+  shareStatus: () => ipcRenderer.invoke('share:status'),
+  previewShare: (source: ShareSource, opts?: ShareOptions) => ipcRenderer.invoke('share:preview', source, opts),
+  createShare: (source: ShareSource, opts?: ShareOptions) => ipcRenderer.invoke('share:create', source, opts),
+  listShares: () => ipcRenderer.invoke('share:list'),
+  revokeShare: (id: string) => ipcRenderer.invoke('share:revoke', id),
   renameChat: (threadId: string, name: string) => ipcRenderer.invoke('chats:rename', threadId, name),
   deleteChat: (threadId: string) => ipcRenderer.invoke('chats:delete', threadId),
   createFolder: (name: string, parentId: string | null, settings?: Omit<FolderSettings, 'name'>) =>
@@ -474,8 +511,30 @@ const api: StemApi = {
   addMailParticipant: (conversationId: string, personaId: string) =>
     ipcRenderer.invoke('mail:addParticipant', conversationId, personaId),
   stopMail: (conversationId: string) => ipcRenderer.invoke('mail:stop', conversationId),
-  resolveMailApproval: (itemId: string, decision: 'allow' | 'deny') =>
-    ipcRenderer.invoke('mail:resolveApproval', itemId, decision),
+  // The edited draft body rides only for a send draft (older servers reject a 3rd arg).
+  resolveMailApproval: (itemId: string, decision: 'allow' | 'deny', body?: string) =>
+    body !== undefined
+      ? ipcRenderer.invoke('mail:resolveApproval', itemId, decision, body)
+      : ipcRenderer.invoke('mail:resolveApproval', itemId, decision),
+  composeExternalMail: (input: { to: string; subject?: string; body: string; self?: string }) =>
+    ipcRenderer.invoke('mail:composeExternal', input),
+  releaseMail: (conversationId: string, itemId: string) => ipcRenderer.invoke('mail:release', conversationId, itemId),
+  draftExternalMail: (conversationId: string, personaId: string, instructions?: string) =>
+    ipcRenderer.invoke('mail:draftExternal', conversationId, personaId, instructions ?? ''),
+  interStemStatus: () => ipcRenderer.invoke('interstem:status'),
+  interStemAddAddress: (address: string) => ipcRenderer.invoke('interstem:addAddress', address),
+  interStemVerifyAddress: (address: string, code: string) => ipcRenderer.invoke('interstem:verifyAddress', address, code),
+  interStemCheckLink: (address: string) => ipcRenderer.invoke('interstem:checkLink', address),
+  interStemRemoveAddress: (address: string) => ipcRenderer.invoke('interstem:removeAddress', address),
+  interStemSetUnlisted: (unlisted: boolean) => ipcRenderer.invoke('interstem:setUnlisted', unlisted),
+  interStemContact: (op: 'accept' | 'block' | 'unblock' | 'verify' | 'unverify' | 'ackKey', address: string) =>
+    ipcRenderer.invoke('interstem:contact', op, address),
+  interStemInvite: (address: string) => ipcRenderer.invoke('interstem:invite', address),
+  onInterStemChanged: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on('interstem:changed', handler);
+    return () => ipcRenderer.removeListener('interstem:changed', handler);
+  },
   setMailRead: (conversationIds: string[], read: boolean) =>
     ipcRenderer.invoke('mail:setRead', conversationIds, read),
   setMailArchived: (conversationIds: string[], archived: boolean) =>
@@ -552,6 +611,12 @@ const api: StemApi = {
   markReleaseNotesSeen: () => ipcRenderer.invoke('releaseNotes:markSeen'),
   updateReleaseNotesSettings: (patch: Partial<ReleaseNotesSettings>) =>
     ipcRenderer.invoke('settings:updateReleaseNotes', patch),
+  onMenuCommand: (listener: (command: MenuCommand) => void) => {
+    const handler = (_e: unknown, command: MenuCommand) => listener(command);
+    ipcRenderer.on('menu:command', handler);
+    return () => ipcRenderer.removeListener('menu:command', handler);
+  },
+  setMenuChats: (threadIds: string[], titles: string[]) => ipcRenderer.invoke('menu:setChats', threadIds, titles),
   getUpdateStatus: () => ipcRenderer.invoke('updates:get'),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   installUpdate: () => ipcRenderer.invoke('updates:install'),
@@ -622,7 +687,8 @@ const api: StemApi = {
   revealQuickChat: () => ipcRenderer.invoke('quickchat:reveal'),
   revealMain: () => ipcRenderer.invoke('main:reveal'),
   hideQuickChat: () => ipcRenderer.invoke('quickchat:hide'),
-  compactQuickChat: () => ipcRenderer.invoke('quickchat:compact'),
+  openQuickChatPrivacy: (which: 'screen' | 'accessibility') => ipcRenderer.invoke('quickchat:openPrivacy', which),
+  compactQuickChat: (chip?: boolean) => ipcRenderer.invoke('quickchat:compact', chip === true),
   onQuickChatFocus: (listener: (focus: QuickChatFocus) => void) => {
     const handler = (_e: unknown, focus: QuickChatFocus) => listener(focus);
     ipcRenderer.on('quickchat:focus', handler);

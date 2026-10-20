@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { degrade } from '../degrade';
 import { log } from '../log';
 import { connectedDeviceIds, pushToDevice } from '../startup/transport';
@@ -16,6 +16,7 @@ import {
   type DeviceComputerRequest,
   type DeviceComputerResult
 } from '../../shared/types';
+import { replaceFile } from '../replace-file';
 
 // The server's half of the `computer` tool: one screen action out to the Mac
 // a persona is pinned to, one screenshot back.
@@ -106,11 +107,11 @@ function asAnnouncement(report: unknown): DeviceComputerAnnouncement | null {
   const value = report as Partial<DeviceComputerAnnouncement> | null;
   if (!value || typeof value !== 'object') return null;
   if (typeof value.enabled !== 'boolean') return null;
-  if (value.platform !== 'darwin') return null;
+  if (value.platform !== 'darwin' && value.platform !== 'linux' && value.platform !== 'win32') return null;
   const access = asAccess(value.access);
   return {
     enabled: value.enabled,
-    platform: 'darwin',
+    platform: value.platform,
     ...(access ? { access } : {})
   };
 }
@@ -384,7 +385,7 @@ async function writeHostsFile(hosts: Record<string, DeviceComputerHostEntry>): P
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(tmp, `${JSON.stringify({ version: 1, hosts }, null, 2)}\n`, 'utf8');
-    await rename(tmp, path);
+    await replaceFile(tmp, path);
   } finally {
     // quiet: on the happy path the rename already moved it; a temp file left
     // behind by a torn write is inert.

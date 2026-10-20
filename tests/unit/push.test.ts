@@ -29,6 +29,7 @@ const TASKS_STORE = join(tmpdir(), `stem-push-tasks-${process.pid}.json`);
 process.env.STEM_TASKS_STORE = TASKS_STORE;
 
 import { closeApns, sendApns, setApnsPost, type ApnsRequest } from '../../src/server/push/apns';
+import { resetGateway, setGatewayPost } from '../../src/server/push/gateway';
 import {
   MIN_TURN_PUSH_MS,
   pushApprovalRequest,
@@ -240,7 +241,7 @@ describe('registering for push', () => {
 });
 
 describe('the off switch', () => {
-  it('sends nothing when APNs is not configured — the default everywhere', async () => {
+  it('sends nothing when APNs is not configured and the gateway is off', async () => {
     await pairedPhone();
 
     pushApprovalRequest('exec', { id: 'x1', threadId: 't1' });
@@ -726,5 +727,85 @@ describe('mail delivery notifications', () => {
     pushTaskAlert({ threadId: 'hidden', conversationId: 'm', taskId: 'task' });
     await waitForSends(1);
     expect(JSON.parse(sent[0].body).stem).toEqual({ kind: 'mail', conversationId: 'm', taskId: 'task' });
+  });
+});
+
+describe('the relay gateway, for a server without the APNs key', () => {
+  let posts: { url: string; headers: Record<string, string>; body: string }[] = [];
+  let reply = { status: 200, body: '{"result":"sent"}' };
+
+  beforeEach(() => {
+    posts = [];
+    reply = { status: 200, body: '{"result":"sent"}' };
+    process.env.STEM_PUSH_GATEWAY = 'on';
+    process.env.STEM_PUSH_GATEWAY_KEY = join(tmpdir(), `stem-push-gw-${process.pid}.key`);
+    resetGateway();
+    setGatewayPost(async (url, headers, body) => {
+      posts.push({ url, headers, body });
+      return reply;
+    });
+  });
+
+  afterEach(() => {
+    setGatewayPost(null);
+    process.env.STEM_PUSH_GATEWAY = 'off';
+    rmSync(process.env.STEM_PUSH_GATEWAY_KEY!, { force: true });
+    delete process.env.STEM_PUSH_GATEWAY_KEY;
+  });
+
+  it('hands the token and ids to the global relay, signed, and never a label', async () => {
+    await pairedPhone();
+    let resolved = 0;
+    pushApprovalRequest('exec', { id: 'x1', threadId: 't1' });
+    pushTaskAlert({ threadId: 't1', taskId: 'task-1', label: () => (resolved++, 'Secret project') });
+    const deadline = Date.now() + 2_000;
+    while (posts.length < 2 && Date.now() < deadline) await sleep(5);
+
+    expect(posts).toHaveLength(2);
+    expect(sent).toHaveLength(0);
+    expect(resolved).toBe(0);
+    expect(posts[0].url).toBe('https://relay.heystem.app/v1/push');
+    expect(posts[0].headers['Stem-Key']).toBeTruthy();
+    expect(posts[0].headers['Stem-Sig']).toBeTruthy();
+    expect(JSON.parse(posts[0].body)).toEqual({
+      token: PHONE_TOKEN,
+      env: 'production',
+      wake: { kind: 'approval', approvalKind: 'exec', approvalId: 'x1', threadId: 't1' }
+    });
+    expect(posts[1].body).not.toContain('Secret');
+    // One key per server, kept across sends.
+    expect(posts[1].headers['Stem-Key']).toBe(posts[0].headers['Stem-Key']);
+  });
+
+  it('drops a token the relay reports as gone', async () => {
+    const id = await pairedPhone();
+    reply = { status: 200, body: '{"result":"gone"}' };
+    pushApprovalRequest('exec', { id: 'x1', threadId: 't1' });
+    const deadline = Date.now() + 2_000;
+    let device;
+    while (Date.now() < deadline) {
+      device = (await readDevices()).find((d) => d.id === id);
+      if (!device?.apnsToken) break;
+      await sleep(10);
+    }
+    expect(device?.apnsToken).toBeUndefined();
+  });
+
+  it('stays out of the way of a server that holds the key, even half of it', async () => {
+    await pairedPhone();
+    apnsEnv();
+    delete process.env.STEM_APNS_TEAM_ID;
+    pushApprovalRequest('exec', { id: 'x1', threadId: 't1' });
+    await quiet();
+    expect(posts).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('is off when the operator says so', async () => {
+    await pairedPhone();
+    process.env.STEM_PUSH_GATEWAY = 'off';
+    pushApprovalRequest('exec', { id: 'x1', threadId: 't1' });
+    await quiet();
+    expect(posts).toHaveLength(0);
   });
 });

@@ -381,6 +381,37 @@ function jpegName(name: string): string {
   return name.replace(/\.(heic|heif|hif)$/i, '') + '.jpg';
 }
 
+/**
+ * POST a JSON body and read the whole answer, over node:http(s) rather than
+ * fetch. Node's fetch drops any response whose headers take longer than five
+ * minutes (undici's headersTimeout), whatever signal the caller passes, and an
+ * RPC may legitimately wait that long: a sign-in waits on the person in the
+ * browser. A slow ChatGPT login was cut off that way, and onboarding sat on
+ * "Setting things up…" while the server finished the sign-in nobody was
+ * waiting for any more. node:http has no such default; `signal` is the bound.
+ */
+function postJson(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  signal: AbortSignal
+): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const req = openStream(
+      url,
+      { method: 'POST', headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) }, signal },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }));
+        res.on('error', reject);
+      }
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
 function openStream(url: string, options: Parameters<typeof httpRequest>[1], onRes: Parameters<typeof httpRequest>[2]) {
   return (url.startsWith('https:') ? httpsRequest : httpRequest)(url, options, onRes);
 }
@@ -530,18 +561,16 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
   // ---- POST /rpc ----
 
   async function post(channel: string, args: unknown[], signal?: AbortSignal): Promise<unknown> {
-    let res: Response;
+    let res: { status: number; text: string };
     try {
-      res = await fetch(`${base}/rpc`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: auth },
-        body: JSON.stringify({ channel, args }),
+      res = await postJson(
+        `${base}/rpc`,
+        { 'content-type': 'application/json', authorization: auth },
+        JSON.stringify({ channel, args }),
         // A caller's own signal (a cancellable prefetch) on top of the timeout
         // every call gets. Either one aborting aborts the request.
-        signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(RPC_TIMEOUT_MS)])
-          : AbortSignal.timeout(RPC_TIMEOUT_MS)
-      });
+        signal ? AbortSignal.any([signal, AbortSignal.timeout(RPC_TIMEOUT_MS)]) : AbortSignal.timeout(RPC_TIMEOUT_MS)
+      );
     } catch (e) {
       // Nothing on the other end answered — as opposed to answering badly. This
       // is the ONLY place the cache is allowed to speak, and the reason is the
@@ -555,13 +584,18 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       // the renderer could not have seen before the split.
       throw new Error(`Stem's server is unreachable: ${String((e as Error)?.message ?? e)}`);
     }
-    const body = (await res.json().catch(() => null)) as
-      | { ok?: boolean; result?: unknown; error?: string }
-      | null;
+    type RpcReply = { ok?: boolean; result?: unknown; error?: string } | null;
+    let body: RpcReply;
+    try {
+      body = JSON.parse(res.text) as RpcReply;
+    } catch {
+      // Not JSON: the status line below says what happened.
+      body = null;
+    }
     // Anything with a status line came from the server, including a 401 and a
     // 500. It is up.
     setReachable(true);
-    if (res.ok && body?.ok) {
+    if (res.status >= 200 && res.status < 300 && body?.ok) {
       // The server answered, so it is up. That does not make the stream healthy —
       // a dead stream means missed events — so re-open it now rather than waiting
       // out the backoff.
@@ -862,8 +896,20 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
     if (typeof frame.threadId !== 'string' || !frame.threadId) return null;
     const action = frame.action as { kind?: unknown } | undefined;
     if (!action || typeof action !== 'object' || typeof action.kind !== 'string') return null;
-    // As with the screen: the extension refuses what it cannot do.
-    return { requestId: frame.requestId, threadId: frame.threadId, action: frame.action! };
+    // As with the screen: the extension refuses what it cannot do. The profile
+    // and the allowed list ride along: dropped here, every action went to the
+    // default profile and a persona's profile limit was never kept.
+    const allowed = Array.isArray(frame.allowed)
+      ? frame.allowed.filter((a): a is string => typeof a === 'string')
+      : undefined;
+    return {
+      requestId: frame.requestId,
+      threadId: frame.threadId,
+      action: frame.action!,
+      ...(typeof frame.profile === 'string' && frame.profile ? { profile: frame.profile } : {}),
+      // A malformed list is still a limit: kept (empty), never widened to every profile.
+      ...(frame.allowed !== undefined ? { allowed: allowed ?? [] } : {})
+    };
   }
 
   function asHarnessRequest(data: unknown): DeviceHarnessRequest | null {

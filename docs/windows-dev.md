@@ -1,9 +1,10 @@
 # Windows development (experimental)
 
-Stem’s released installers target macOS and Linux. **Windows is a terminal-first
-dev port**: you can clone, install, and run from a user account **without admin
-rights**, using a portable Node.js zip. Packaging (NSIS/portable exe) is not
-included yet.
+Releases from 0.7.0 on include a Windows installer, `Stem-Setup-<version>.exe`
+(per user, no admin prompt, updates itself; unsigned, so SmartScreen asks once).
+This page is about running Stem from a clone: you can clone, install, and run
+from a user account **without admin rights**, using a portable Node.js zip.
+`npm run dist:win` builds the installer on a Windows machine, into `release\`.
 
 Personal data still lives outside the clone, under `%APPDATA%\Stem\` (and
 `%APPDATA%\Stem Profiles\` for `--fresh` / `--profile=`). Reinstalling Node or

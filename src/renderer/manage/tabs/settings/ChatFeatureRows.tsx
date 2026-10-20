@@ -167,16 +167,17 @@ const MAC_FEATURES = {
     tipLabel: 'About computer control in chats',
     tip: (
       <>
-        With this on, a chat that runs as no persona can see and drive a Mac when you ask it to do something
-        there. Personas are not affected: a persona controls a computer only if it is pinned to one in Manage →
+        With this on, a chat that runs as no persona can see and drive a Mac or Windows PC when you ask it to do
+        something there. Personas are not affected: a persona controls a computer only if it is pinned to one in Manage →
         Personas, even with this on. This is a setting of your Stem server, so it applies to chats from every
-        device — the Mac itself still needs its own “Let Stem control this Mac” switch, and shows a banner while
-        it is being driven. The chat’s model has to accept images.
+        device — the computer itself still needs its own “Let Stem control this computer” switch, and shows a
+        banner while it is being driven. The chat’s model has to accept images.
       </>
     ),
     targetLabel: 'In chats, control',
-    targetAria: 'Mac chats control',
-    fixedHint: 'Every chat drives this Mac'
+    targetAria: 'Computer chats control',
+    pickHint: 'The model picks the computer per request',
+    fixedHint: 'Every chat drives this computer'
   },
   browser: {
     qualifies: (d: DeviceInfo) => !!d.runsBrowser,
@@ -188,13 +189,14 @@ const MAC_FEATURES = {
         With this on, a chat that runs as no persona can work in your browser — your real one, signed in —
         when you ask it to. Personas are not affected: a persona drives a browser only if it is pinned to one in
         Manage → Personas, even with this on. This is a setting of your Stem server, so it applies to chats from
-        every device — the Mac itself still needs its own “Let Stem control this Mac’s browser” switch, and the
-        tab Stem works in shows a marker with a Stop button.
+        every device — the computer itself still needs its own browser-control switch, and the tab Stem works in
+        shows a marker with a Stop button.
       </>
     ),
     targetLabel: 'Browser for chats',
-    targetAria: 'Mac whose browser chats use',
-    fixedHint: 'Every chat uses this Mac’s browser'
+    targetAria: 'Computer whose browser chats use',
+    pickHint: 'The model picks the computer per request',
+    fixedHint: 'Every chat uses this computer’s browser'
   }
 } as const;
 
@@ -208,13 +210,14 @@ function ChatMacRows({
   clientDeviceId: string | null;
 }) {
   const f = MAC_FEATURES[feature];
-  const [value, setValue] = useState<ChatFeatureSettings['computer'] | null>(null);
+  // The browser's target also carries `profiles`; the shared rows treat both as computer's shape.
+  const [value, setValue] = useState<NonNullable<ChatFeatureSettings['browser']> | null>(null);
 
   useEffect(() => {
     void window.stem.getSettings().then((s) => setValue(s.chatFeatures?.[feature] ?? OFF));
   }, [feature]);
 
-  function save(next: ChatFeatureSettings['computer']) {
+  function save(next: NonNullable<ChatFeatureSettings['browser']>) {
     setValue(next); // optimistic; reconcile below
     window.stem
       .updateChatFeatureSettings({ [feature]: next })
@@ -266,7 +269,7 @@ function ChatMacRows({
       {value.allow && (
         <ValueRow
           label={f.targetLabel}
-          hint={value.target ? f.fixedHint : 'The model picks the Mac per request'}
+          hint={value.target ? f.fixedHint : f.pickHint}
         >
           <RowSelect
             ariaLabel={f.targetAria}
@@ -276,7 +279,38 @@ function ChatMacRows({
           />
         </ValueRow>
       )}
+      {feature === 'browser' && value.allow && value.target && (
+        <ChatBrowserProfiles
+          profiles={devices.find((d) => d.id === value.target?.device)?.browserProfiles ?? []}
+          target={value.target as NonNullable<NonNullable<ChatFeatureSettings['browser']>['target']>}
+          onChange={(target) => save({ ...value, target })}
+        />
+      )}
     </>
+  );
+}
+
+/** Settings' chats row: which profiles of the fixed Mac's browser chats may use, once it has several. */
+function ChatBrowserProfiles({
+  profiles,
+  target,
+  onChange
+}: {
+  profiles: { id: string; name: string }[];
+  target: NonNullable<NonNullable<ChatFeatureSettings['browser']>['target']>;
+  onChange: (target: NonNullable<NonNullable<ChatFeatureSettings['browser']>['target']>) => void;
+}) {
+  if (profiles.length < 2 && !target.profiles) return null;
+  return (
+    <div className="set-vbody">
+      <BrowserProfileChecks
+        profiles={profiles}
+        value={target.profiles}
+        onChange={(profilesNext) =>
+          onChange({ device: target.device, ...(profilesNext ? { profiles: profilesNext } : {}) })
+        }
+      />
+    </div>
   );
 }
 
@@ -289,4 +323,59 @@ export function ChatComputerRows(props: { devices: DeviceInfo[]; clientDeviceId:
 
 export function ChatBrowserRows(props: { devices: DeviceInfo[]; clientDeviceId: string | null }) {
   return <ChatMacRows feature="browser" {...props} />;
+}
+
+/**
+ * Which browser profiles on a Mac a persona or chats may use: every one
+ * (absent — profiles set up later included) or the ones ticked. Shared by the
+ * persona editor's browser pin and Settings' chat rows. The Mac enforces it.
+ */
+export function BrowserProfileChecks({
+  profiles,
+  value,
+  onChange
+}: {
+  profiles: { id: string; name: string }[];
+  value: string[] | undefined;
+  onChange: (next: string[] | undefined) => void;
+}) {
+  const all = value === undefined;
+  const ticked = (id: string) => all || value.includes(id);
+  const count = all ? profiles.length : value.filter((id) => profiles.some((p) => p.id === id)).length;
+  const stale = all ? [] : value.filter((id) => !profiles.some((p) => p.id === id));
+  return (
+    <div className="browser-profile-checks">
+      <label className="persona-cap">
+        <input
+          type="checkbox"
+          checked={all}
+          onChange={(e) => onChange(e.target.checked ? undefined : profiles.map((p) => p.id))}
+        />
+        <span>Every profile, including ones set up later</span>
+      </label>
+      {profiles.map((p) => (
+        <label key={p.id} className="persona-cap browser-profile-check">
+          <input
+            type="checkbox"
+            checked={ticked(p.id)}
+            // The last one stays: a browser with no profile to use is no browser.
+            disabled={ticked(p.id) && count <= 1}
+            onChange={(e) => {
+              const current = all ? profiles.map((x) => x.id) : value;
+              const rest = current.filter((id) => id !== p.id);
+              const next = e.target.checked ? [...rest, p.id] : rest;
+              onChange(profiles.every((x) => next.includes(x.id)) && stale.length === 0 ? undefined : next);
+            }}
+          />
+          <span>{p.name}</span>
+        </label>
+      ))}
+      {stale.map((id) => (
+        <label key={id} className="persona-cap browser-profile-check persona-mcp-stale">
+          <input type="checkbox" checked onChange={() => onChange(value!.filter((x) => x !== id))} />
+          <span>A profile no longer set up on this Mac</span>
+        </label>
+      ))}
+    </div>
+  );
 }

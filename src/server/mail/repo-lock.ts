@@ -1,5 +1,5 @@
 import { realpath } from 'node:fs/promises';
-import { normalize, resolve } from 'node:path';
+import { posix, resolve, win32 } from 'node:path';
 
 // Repo locks: two delivery turns must never run a coding harness inside the
 // same working tree at once — concurrent agents in one repo corrupt each
@@ -31,11 +31,19 @@ interface Waiter {
   grant: (release: () => void) => void;
 }
 
+/** A drive-letter or UNC path: Windows rules, whichever OS this server runs on. */
+const isWindowsPath = (p: string) => /^[a-zA-Z]:[\\/]|^\\\\/.test(p);
+
+/** Windows paths compare with either slash and in any case, as NTFS treats them. */
+const comparable = (p: string) => (isWindowsPath(p) ? p.replace(/\\/g, '/').toLowerCase() : p);
+
 /** True when `outer` is `inner` or a path-segment ancestor of it. */
 function contains(outer: string, inner: string): boolean {
-  if (outer === inner) return true;
-  const prefix = outer.endsWith('/') ? outer : `${outer}/`;
-  return inner.startsWith(prefix);
+  const o = comparable(outer);
+  const i = comparable(inner);
+  if (o === i) return true;
+  const prefix = o.endsWith('/') ? o : `${o}/`;
+  return i.startsWith(prefix);
 }
 
 function conflicts(a: Claim, b: Claim): boolean {
@@ -49,7 +57,7 @@ function conflicts(a: Claim, b: Claim): boolean {
  * filesystem anyway).
  */
 async function resolveClaimPath(cwd: string, remote: boolean): Promise<string> {
-  const lexical = remote ? normalize(cwd) : resolve(cwd);
+  const lexical = remote ? (isWindowsPath(cwd) ? win32 : posix).normalize(cwd) : resolve(cwd);
   if (remote) return lexical;
   // quiet: a cwd that doesn't exist yet (the harness may create it) still
   // locks under its lexical name — the fallback IS the handling.

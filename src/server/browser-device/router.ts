@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { degrade } from '../degrade';
 import { isUploadHandle } from '../files/staging';
 import { log } from '../log';
@@ -16,6 +16,7 @@ import {
   type DeviceBrowserRequest,
   type DeviceBrowserResult
 } from '../../shared/types';
+import { replaceFile } from '../replace-file';
 
 // The server's half of the `browser` tool: one browser action out to the Mac
 // the turn is pinned to, one answer back.
@@ -67,8 +68,18 @@ export interface BrowserDeviceRouter {
   hosts(): Promise<Record<string, DeviceBrowserHostEntry>>;
   hostFor(deviceId: string): Promise<DeviceBrowserHostEntry | null>;
   isAvailable(deviceId: string): boolean;
-  /** Send one action to `deviceId` for `threadId`; resolves with the device's answer or a refusal. */
-  send(threadId: string, deviceId: string, action: BrowserAction): Promise<DeviceBrowserResult>;
+  /**
+   * Send one action to `deviceId` for `threadId` — in the browser `profile`
+   * the model named, when it named one, and only ever within the `allowed`
+   * profiles when the turn's grant limits them; resolves with the device's
+   * answer or a refusal.
+   */
+  send(
+    threadId: string,
+    deviceId: string,
+    action: BrowserAction,
+    scope?: { profile?: string; allowed?: string[] }
+  ): Promise<DeviceBrowserResult>;
   /** Answer one held action — `browserHost:result`. False for an id that is not live. */
   settle(deviceId: string, requestId: string, result: unknown): boolean;
   /**
@@ -97,6 +108,7 @@ function asBrowsers(raw: unknown): BrowserInfo[] {
     out.push({
       id: b.id.slice(0, 500),
       name: b.name.slice(0, 100),
+      ...(typeof b.profile === 'string' && b.profile ? { profile: b.profile.slice(0, 60) } : {}),
       connected: b.connected === true,
       ...(typeof b.version === 'string' && b.version ? { version: b.version.slice(0, 40) } : {})
     });
@@ -108,12 +120,13 @@ function asAnnouncement(report: unknown): DeviceBrowserAnnouncement | null {
   const value = report as Partial<DeviceBrowserAnnouncement> | null;
   if (!value || typeof value !== 'object') return null;
   if (typeof value.enabled !== 'boolean') return null;
-  if (value.platform !== 'darwin') return null;
+  if (value.platform !== 'darwin' && value.platform !== 'linux' && value.platform !== 'win32') return null;
   return {
     enabled: value.enabled,
-    platform: 'darwin',
+    platform: value.platform,
     browsers: asBrowsers(value.browsers),
-    ...(typeof value.chosen === 'string' && value.chosen ? { chosen: value.chosen.slice(0, 500) } : {})
+    ...(typeof value.chosen === 'string' && value.chosen ? { chosen: value.chosen.slice(0, 500) } : {}),
+    ...(value.enforcesProfiles === true ? { enforcesProfiles: true as const } : {})
   };
 }
 
@@ -212,7 +225,9 @@ export function createBrowserDeviceRouter(deps: BrowserDeviceRouterDeps): Browse
       log('browser-device', 'a device announced whether it lets Stem drive its browser', {
         deviceId,
         enabled: announcement.enabled,
-        browsers: announcement.browsers.map((b) => `${b.name}${b.connected ? '' : ' (closed)'}`),
+        browsers: announcement.browsers.map(
+          (b) => `${b.name}${b.profile ? ` · ${b.profile}` : ''}${b.connected ? '' : ' (closed)'}`
+        ),
         chosen: announcement.chosen
       });
     },
@@ -225,10 +240,26 @@ export function createBrowserDeviceRouter(deps: BrowserDeviceRouterDeps): Browse
 
     isAvailable: (deviceId) => deps.connectedDevices().has(deviceId),
 
-    async send(threadId, deviceId, action) {
+    async send(threadId, deviceId, action, scope) {
       if (stoppedThreads.has(threadId)) return { ok: false, error: USER_STOPPED_BROWSER, stopped: true };
+      // Fail closed: a Mac too old to keep to the allowed profiles would
+      // quietly use any of them, so it gets no limited action at all.
+      if (scope?.allowed && !(await deps.store.read())[deviceId]?.enforcesProfiles) {
+        return {
+          ok: false,
+          error:
+            'This conversation may use only some browser profiles, and the Stem app on that Mac is too old to ' +
+            'keep to them. Do not retry; tell the user to update Stem on that Mac.'
+        };
+      }
       const requestId = mintRequestId();
-      const frame: DeviceBrowserRequest = { requestId, threadId, action };
+      const frame: DeviceBrowserRequest = {
+        requestId,
+        threadId,
+        action,
+        ...(scope?.profile ? { profile: scope.profile.slice(0, 60) } : {}),
+        ...(scope?.allowed ? { allowed: scope.allowed } : {})
+      };
       const reached = deps.pushTo(deviceId, BROWSER_REQUEST_FRAME, frame);
       if (reached === 0) {
         return {
@@ -364,7 +395,7 @@ async function writeHostsFile(hosts: Record<string, DeviceBrowserHostEntry>): Pr
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(tmp, `${JSON.stringify({ version: 1, hosts }, null, 2)}\n`, 'utf8');
-    await rename(tmp, path);
+    await replaceFile(tmp, path);
   } finally {
     // quiet: on the happy path the rename already moved it; a temp file left
     // behind by a torn write is inert.

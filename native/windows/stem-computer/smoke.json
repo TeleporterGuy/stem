@@ -1,0 +1,15 @@
+[
+  {"cmd": "status"},
+  "notepad.exe",
+  {"sleep": 2000},
+  {"cmd": "list-windows"},
+  {"cmd": "screenshot"},
+  {"cmd": "select-window", "app": "notepad"},
+  {"cmd": "snapshot", "depth": 14},
+  {"cmd": "type", "text": "Hello from Stem window mode"},
+  {"cmd": "select-window"},
+  {"cmd": "peek-window"},
+  {"cmd": "watch", "on": true},
+  {"cmd": "move", "x": 100, "y": 100},
+  {"cmd": "click", "x": 400, "y": 300}
+]

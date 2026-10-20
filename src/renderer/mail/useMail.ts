@@ -44,6 +44,8 @@ export interface MailApi {
   refresh: () => void;
   /** Resolves with the fresh list so the caller can open the new conversation. */
   compose: (input: MailComposeInput) => Promise<MailListResult>;
+  /** Inter-Stem: start a conversation with another Stem's owner. */
+  composeExternal: (input: { to: string; subject?: string; body: string }) => Promise<MailListResult>;
   /** Never rejects: a failure stays in `pending` as a failed send. */
   reply: (conversationId: string, body: string, attachments?: TurnAttachment[]) => Promise<void>;
   pending: PendingSend[];
@@ -162,6 +164,14 @@ export function useMail(ready: boolean): MailApi {
     },
     [applyServer]
   );
+  const composeExternal = useCallback(
+    async (input: { to: string; subject?: string; body: string }) => {
+      const list = await window.stem.composeExternalMail(input);
+      applyServer(list);
+      return list;
+    },
+    [applyServer]
+  );
   const deliver = useCallback(
     async (send: PendingSend) => {
       try {
@@ -240,6 +250,7 @@ export function useMail(ready: boolean): MailApi {
     personas,
     refresh,
     compose,
+    composeExternal,
     reply,
     pending,
     retrySend,
@@ -257,13 +268,14 @@ export function useMail(ready: boolean): MailApi {
  * True when the latest user-relevant event is mail TO the user, not the user's
  * own send. A replied-to conversation has been dealt with — the turn is on the
  * personas — so it waits under Sent until new mail for the user lands.
+ * Answering an approval item deals with it the same way (userAnsweredAt).
  *
  * A server predating the field omits userSentAt; `undefined > x` and
  * `x > undefined` are both false, which would file EVERY conversation under
  * Sent. Fall back to 0 so version skew degrades to the old inbox behavior.
  */
 export function hasMailWaiting(c: MailConversation): boolean {
-  return c.userUpdatedAt > (c.userSentAt ?? 0);
+  return c.userUpdatedAt > Math.max(c.userSentAt ?? 0, c.userAnsweredAt ?? 0);
 }
 
 /**
@@ -272,6 +284,8 @@ export function hasMailWaiting(c: MailConversation): boolean {
  */
 export function personaName(personas: Persona[], id: string): string {
   if (id.startsWith('task:')) return 'Scheduled task';
+  // Another Stem's owner: their email address is their name.
+  if (id.includes('@')) return id;
   if (id === 'memory-check') return 'Memory check';
   const at = id.lastIndexOf('~');
   if (at > 0) {

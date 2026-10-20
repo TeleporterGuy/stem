@@ -4,7 +4,7 @@
 // empty-memory state, and a tidy-up cadence that writes through to the store.
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { test, expect, launchApp, mainWindowOf, removeUserData } from './electron';
 
 test('opens the Memory tab and shows the empty state on a fresh workspace', async ({ mainWindow }) => {
@@ -166,7 +166,7 @@ test('a connected folder saves its edits on Save, and New opens the wizard with 
     await mainWindow.getByRole('button', { name: 'Sources — files & connected folders' }).click();
     await mainWindow.getByRole('button', { name: 'Connected folders', exact: true }).click();
 
-    const label = dir.split('/').pop()!;
+    const label = basename(dir);
     await mainWindow.getByText(label, { exact: true }).click();
     await mainWindow.getByLabel('Kind').selectOption('notes');
     await mainWindow.getByRole('tab', { name: 'Access' }).click();

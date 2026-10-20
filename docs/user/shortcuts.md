@@ -24,6 +24,7 @@ Everything Stem binds to a key, and a few composer tricks that no keycap adverti
 | **Mark read or unread** — flips the unread mark on the selection | ⌘⇧D | Ctrl+Shift+D |
 | **Stop** — interrupts the answer in progress | ⌘. | Ctrl+. |
 | **Delete chat** — asks to delete the open chat; press again to confirm | ⌃X | Ctrl+Shift+X |
+| **Settings** — opens Settings in the right-hand panel | ⌘, | Ctrl+, |
 | **Send** — sends the message; Shift+Enter starts a new line instead | ⏎ | Enter |
 
 ## Tricks

@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { readFile, utimes } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import {
   isUploadHandle,
@@ -57,7 +57,7 @@ describe('staged uploads', () => {
     expect(await readFile(path!, 'utf8')).toBe('chocolate');
     // The name survives the round trip, which is what lets files:add land the
     // file the user dropped rather than a uuid.
-    expect(path!.endsWith('/cake.pdf')).toBe(true);
+    expect(basename(path!)).toBe('cake.pdf');
   });
 
   it('keeps two uploads of the same name apart', async () => {

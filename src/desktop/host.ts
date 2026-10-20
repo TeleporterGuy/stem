@@ -1,5 +1,6 @@
 import { app, safeStorage, shell, utilityProcess } from 'electron';
 import type { StemHost, WorkerTransport } from '../server/host';
+import { log } from '../server/log';
 
 // The Electron half of the host shim (src/server/host/index.ts). Everything the
 // server used to reach for directly, supplied by the process that actually has
@@ -58,7 +59,11 @@ export function electronHost(): Partial<StemHost> {
     // Electron's own child windows.
     nodeSpawn: () => ({ command: process.execPath, env: { ELECTRON_RUN_AS_NODE: '1' } }),
     openExternal: (url) => {
-      void shell.openExternal(url);
+      shell.openExternal(url).catch((e: unknown) => {
+        // A sign-in that opens no browser leaves the person at "paste the code"
+        // with nothing to paste: say why in the log at least.
+        log('desktop', 'could not open the browser', { error: e instanceof Error ? e.message : String(e) });
+      });
     },
     onShutdown: (fn) => {
       app.on('will-quit', () => fn());

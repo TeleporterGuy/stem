@@ -115,4 +115,20 @@ describe('resolveBrowserGrant', () => {
     });
     expect(resolveBrowserGrant({ unattended: true }, { allow: true, target: null }).ok).toBe(false);
   });
+
+  it('carries the profiles a pin or a fixed-Mac chat setting allows; a model-chosen Mac gets them all', () => {
+    expect(
+      resolveBrowserGrant({ persona: { browser: { device: 'mac-1', profiles: ['arc#work'] } }, unattended: true }, OFF)
+    ).toEqual({ ok: true, grant: { kind: 'pin', device: 'mac-1', profiles: ['arc#work'] } });
+    expect(
+      resolveBrowserGrant({ unattended: false }, { allow: true, target: { device: 'mac-1', profiles: ['arc#home'] } })
+    ).toEqual({ ok: true, grant: { kind: 'chat', device: 'mac-1', profiles: ['arc#home'] } });
+    // A persona's pin decides alone: the chat setting's profiles never leak into a persona turn.
+    expect(
+      resolveBrowserGrant(
+        { persona: { browser: { device: 'mac-1' } }, unattended: false },
+        { allow: true, target: { device: 'mac-1', profiles: ['arc#home'] } }
+      )
+    ).toEqual({ ok: true, grant: { kind: 'pin', device: 'mac-1' } });
+  });
 });

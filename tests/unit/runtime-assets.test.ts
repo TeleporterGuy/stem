@@ -27,7 +27,7 @@ describe('main runtime asset paths', () => {
 
   it('resolves the pi bridge extension from the source tree in unit/dev mode', () => {
     const path = piExtensionPath();
-    expect(path.endsWith('src/server/pi/stem-mcp-extension.mjs')).toBe(true);
+    expect(path.replaceAll('\\', '/').endsWith('src/server/pi/stem-mcp-extension.mjs')).toBe(true);
     expect(existsSync(path)).toBe(true);
   });
 

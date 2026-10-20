@@ -18,7 +18,15 @@ import { folderIndexDbPath, folderIndexDir } from '../../src/server/workspace/pa
 // worker's message plumbing for the episodic legs.
 
 const dir = mkdtempSync(join(tmpdir(), 'stem-doc-handles-'));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch (e) {
+    // The caches under test still hold some of these indexes open, and Windows
+    // will not delete an open file; the OS temp folder takes it from here.
+    if (process.platform !== 'win32') throw e;
+  }
+});
 
 const MODEL = 'test-model';
 const QE = { vec: Float32Array.from([1, 0, 0]), model: MODEL };
@@ -92,7 +100,9 @@ function workerTransport(): WorkerTransport {
 }
 
 describe('scan worker doc-handle cache', () => {
-  it('re-opens an index that was deleted and recreated at the same path', () => {
+  // Windows refuses to delete a file that is open, so there the stale handle
+  // cannot happen; main evicts before it deletes (next test).
+  it.skipIf(process.platform === 'win32')('re-opens an index that was deleted and recreated at the same path', () => {
     const file = join(dir, 'recreated.sqlite');
     makeIndex(file, 'cottage.md', 'The cottage deposit is 400 euro.');
     const first = scanDocs(file);

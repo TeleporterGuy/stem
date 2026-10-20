@@ -18,15 +18,17 @@ enum WindowCapture {
   }
 
   /// Runs an async SCK call from the helper's synchronous command loop.
-  private static func wait<T>(_ work: @escaping () async throws -> T) throws -> T {
+  private static func wait<T>(
+    seconds: Double = 10, timeout message: String = "Capturing the window took too long.", _ work: @escaping () async throws -> T
+  ) throws -> T {
     let done = DispatchSemaphore(value: 0)
     var result: Result<T, Error>?
     Task.detached {
       do { result = .success(try await work()) } catch { result = .failure(error) }
       done.signal()
     }
-    if done.wait(timeout: .now() + 10) == .timedOut {
-      throw HelperError("Capturing the window took too long.")
+    if done.wait(timeout: .now() + seconds) == .timedOut {
+      throw HelperError(message)
     }
     switch result! {
     case .success(let v): return v
@@ -44,7 +46,24 @@ enum WindowCapture {
   private static var cached: (windowID: CGWindowID, filter: SCContentFilter)?
 
   private static func filter(for windowID: CGWindowID) throws -> SCContentFilter {
-    try wait {
+    // On-screen windows first: a few dozen, where the full list carries every
+    // window the system holds. On 2026-10-14 CursorUIViewService had leaked
+    // 7,000 off-screen windows, the full list took 3 s inside the helper (10 s
+    // and a timeout under load), and the on-screen one 17 ms.
+    let onScreen = try wait {
+      try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        .windows.first(where: { $0.windowID == windowID })
+    }
+    if let onScreen { return SCContentFilter(desktopIndependentWindow: onScreen) }
+    // A window on another Space or minimized is only in the full list. Give
+    // that its own, longer budget: a leak like the one above should make the
+    // lookup slow, not fail it, and when it does fail the model is told why
+    // and what still works.
+    trace("window \(windowID) is not on screen; looking it up in the full window list")
+    return try wait(
+      seconds: 30,
+      timeout: "macOS took too long to list its windows, and this window is not on the current screen (another Space, minimized or hidden), so only that list has it. Ask the user to bring the window onto the screen, or clear the window (select_window with no arguments) and use the whole screen, which does not need the list."
+    ) {
       let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
       guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
         throw HelperError("That window is gone. Run list_windows and select again.")

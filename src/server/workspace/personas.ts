@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Persona, PersonaHarnessPin } from '../../shared/types';
 import { degrade } from '../degrade';
 import { personasStorePath } from './paths';
+import { coerceBrowserProfiles } from '../../shared/browser-native';
 import { deletePersonaMemory } from './persona-memory';
+import { replaceFile } from '../replace-file';
 
 // The Stem-owned persona registry. Same shape as the inbox store next door —
 // serialized read-modify-write, atomic temp+rename, and a corrupt file degrading
@@ -19,7 +21,7 @@ import { deletePersonaMemory } from './persona-memory';
 // persona would come back blank.
 
 interface PersonasFile {
-  version: 6;
+  version: 8;
   personas: Persona[];
 }
 
@@ -53,12 +55,21 @@ const BUILTINS: Persona[] = [
     id: 'secretary',
     name: 'Secretary',
     prompt:
-      'You are Secretary. You triage requests: decide what a task needs and delegate rather ' +
-      'than doing the work yourself. Start agents from the existing personas with spawn_agent ' +
-      '(each gets a name and a brief) and schedule follow-ups with schedule_task (set its ' +
-      'personaId so the run happens as the right persona). Keep the inbox quiet: mail the user ' +
-      'only decisions and results, not process.',
+      'You are Secretary. The user hands you errands to get done without being bothered with ' +
+      'the details, and expects them finished. Decide what each one needs and delegate the work ' +
+      '(a step that takes a single tool call you may simply do yourself): bring in the persona whose job it is by mailing it with ' +
+      'send_mail (you may add any persona to the conversation, including the ones that work on ' +
+      'the user\'s computer, without asking), start agents with spawn_agent for one-off pieces, ' +
+      'and schedule follow-ups with schedule_task (set its personaId so the run happens as the ' +
+      'right persona). See every errand through: when a reply comes back incomplete, wrong or ' +
+      'stuck, send it back with what is missing, or try another persona or another approach, ' +
+      'and keep going until the job is done. Come back to the user only with the result, or ' +
+      'when you are truly blocked on something only the user can give (a decision, a password, ' +
+      'a payment) — and then say what you tried. Never ask the user to add a persona or to ' +
+      'confirm a routine step. Keep the inbox quiet: mail the user only decisions and results, ' +
+      'not process.',
     canSpawn: true,
+    addsPersonas: true,
     builtin: true
   },
   {
@@ -111,6 +122,14 @@ function coerceDevicePin(raw: unknown): { device: string } | undefined {
   return device ? { device } : undefined;
 }
 
+/** The browser pin: the Mac, and the profiles there it may use. */
+function coerceBrowserPin(raw: unknown): Persona['browser'] {
+  const pin = coerceDevicePin(raw);
+  if (!pin) return undefined;
+  const profiles = coerceBrowserProfiles((raw as Record<string, unknown>).profiles);
+  return profiles ? { ...pin, profiles } : pin;
+}
+
 /** Reshape one stored/submitted persona; null when it isn't one. */
 function coercePersona(raw: unknown): Persona | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -128,12 +147,13 @@ function coercePersona(raw: unknown): Persona | null {
   if (harness) persona.harness = harness;
   const computer = coerceDevicePin(r.computer);
   if (computer) persona.computer = computer;
-  const browser = coerceDevicePin(r.browser);
+  const browser = coerceBrowserPin(r.browser);
   if (browser) persona.browser = browser;
   if (r.lightweight === true) persona.lightweight = true;
   // `canManagePersonas` and `canAddPersonas` are the flag's earlier spellings —
   // files written before the renames migrate here, on read.
   if (r.canSpawn === true || r.canManagePersonas === true || r.canAddPersonas === true) persona.canSpawn = true;
+  if (r.addsPersonas === true) persona.addsPersonas = true;
   // Memory defaults on; only an explicit opt-out is stored (see the type doc).
   if (r.memory === false) persona.memory = false;
   if (r.recall === false) persona.recall = false;
@@ -179,6 +199,8 @@ const LEGACY_SEED_PROMPTS: Record<string, string[]> = {
     "You are Secretary. You triage requests: decide what a task needs and delegate rather than doing the work yourself. Bring the right personas into the conversation with add_persona, hand them their piece with send_mail, and schedule follow-ups with schedule_task (set its personaId so the run happens as the right persona). Keep the inbox quiet: mail the user only decisions and results, not process.",
     "You are Secretary. You triage requests: decide what a task needs and delegate rather than doing the work yourself. Bring the right personas into the conversation with add_persona, hand them their piece with send_mail, and schedule follow-ups with schedule_task (set its personaId so the run happens as the right persona). When no existing persona fits, create one with save_persona and clean it up with delete_persona when its job is done. Keep the inbox quiet: mail the user only decisions and results, not process.",
     "You are Secretary. You triage requests: decide what a task needs and delegate rather than doing the work yourself. Bring the right personas into the conversation with add_persona, hand them their piece with send_mail, and schedule follow-ups with schedule_task (set its personaId so the run happens as the right persona). When no existing persona fits, create one with save_persona and clean it up with delete_persona when its job is done. When a job needs several workers, hand the whole job to Orchestrator in one brief: it creates and runs its own helpers and returns one assembled answer. Keep the inbox quiet: mail the user only decisions and results, not process.",
+    "You are Secretary. You triage requests: decide what a task needs and delegate rather than doing the work yourself. Start agents from the existing personas with spawn_agent (each gets a name and a brief) and schedule follow-ups with schedule_task (set its personaId so the run happens as the right persona). Keep the inbox quiet: mail the user only decisions and results, not process.",
+    "You are Secretary. You triage requests: decide what a task needs and delegate the work. Start agents from the existing personas with spawn_agent (each gets a name and a brief) and schedule follow-ups with schedule_task (set its personaId so the run happens as the right persona); a step that takes a single tool call you may simply do yourself. Keep the inbox quiet: mail the user only decisions and results, not process.",
   ]
 };
 
@@ -261,7 +283,9 @@ function coerce(parsed: unknown): PersonasFile {
     const normal = personas.find((p) => p.id === 'normal');
     if (normal) normal.canSpawn = true;
   }
-  if (version < 5) {
+  // v7 re-runs the refresh: Secretary's v5 seed ("delegate rather than doing
+  // the work yourself") kept it from making a picture in one call.
+  if (version < 7) {
     for (const [id, legacy] of Object.entries(LEGACY_SEED_PROMPTS)) {
       const row = personas.find((p) => p.id === id);
       const seed = BUILTINS.find((b) => b.id === id);
@@ -277,10 +301,22 @@ function coerce(parsed: unknown): PersonasFile {
       if (at >= 0 && retired.includes(personas[at].prompt)) personas.splice(at, 1);
     }
   }
+  // v8 makes Secretary the persona that brings others in on its own: the
+  // stored row gains the flag (version-gated so unticking it sticks), and an
+  // untouched prompt moves to the seed that says so.
+  if (version < 8) {
+    const secretary = personas.find((p) => p.id === 'secretary');
+    if (secretary) secretary.addsPersonas = true;
+    for (const [id, legacy] of Object.entries(LEGACY_SEED_PROMPTS)) {
+      const row = personas.find((p) => p.id === id);
+      const seed = BUILTINS.find((b) => b.id === id);
+      if (row && seed && legacy.includes(row.prompt)) row.prompt = seed.prompt;
+    }
+  }
   for (const builtin of BUILTINS) {
     if (!seen.has(builtin.id)) personas.push({ ...builtin });
   }
-  return { version: 6, personas };
+  return { version: 8, personas };
 }
 
 // The registry is written by the editor's IPC (and migrations on read); the
@@ -314,7 +350,7 @@ async function writeFileAtomic(store: PersonasFile): Promise<void> {
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(store, null, 2), 'utf8');
   // rename is atomic on the same volume — readers never see a half-written file.
-  await rename(tmp, path);
+  await replaceFile(tmp, path);
 }
 
 /** Read the registry, seeding the built-ins on first use. */

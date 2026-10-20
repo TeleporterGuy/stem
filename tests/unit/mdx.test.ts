@@ -231,3 +231,89 @@ describe('provisionalTail', () => {
     expect(provisionalTail(blocks.at(-1)!)).toEqual({ live: 'Look:', pending: '' });
   });
 });
+
+import { render as drawDiagram } from 'pele';
+import { streamingData } from '../../src/renderer/mdx/render';
+import { completeLines } from '../../src/renderer/mdx/Diagram';
+import { completeRows, parseTable } from '../../src/renderer/mdx/data';
+
+/** The Mermaid source a streaming <Diagram live> is handed. */
+function liveSource(text: string): string | null {
+  const [block] = splitStreamBlocks(text);
+  const live = block && streamingData(block);
+  if (!live || live.name !== 'Diagram') return null;
+  return live.closed ? `${live.value}\n` : live.value;
+}
+
+describe('streamingData', () => {
+  const full = '<Diagram title="Order flow">\n```mermaid\nflowchart LR\n  App --> Gateway\n  Gateway --> DB[(Postgres)]\n```\n</Diagram>';
+
+  it('hands over the attributes and the data written so far', () => {
+    const [block] = splitStreamBlocks(full.slice(0, full.indexOf('Gateway -->') + 4));
+    expect(streamingData(block)).toEqual({
+      name: 'Diagram',
+      props: { title: 'Order flow' },
+      value: 'flowchart LR\n  App --> Gateway\n  Gate',
+      closed: false
+    });
+    const [chart] = splitStreamBlocks('<Chart type="bar" unit=\'€\'>\n');
+    expect(streamingData(chart)).toEqual({ name: 'Chart', props: { type: 'bar', unit: '€' }, value: '', closed: false });
+  });
+
+  it('counts a diagram\'s last line as complete once the fence closes', () => {
+    expect(completeLines(liveSource(full.slice(0, full.indexOf('</Diagram>')))!)).toBe(
+      'flowchart LR\n  App --> Gateway\n  Gateway --> DB[(Postgres)]'
+    );
+  });
+
+  it('leaves prose and interactive components and nested data to the placeholder', () => {
+    const [quiz] = splitStreamBlocks('<Quiz topic="x">\n<Question prompt="a"');
+    expect(streamingData(quiz)).toBeNull();
+    const [nested] = splitStreamBlocks('<Tabs>\n<Tab label="a">\n<Diagram>\n```mermaid\nflowchart LR\n');
+    expect(streamingData(nested)).toBeNull();
+  });
+
+  it('draws every diagram prefix that ends on a complete line, so the diagram grows', () => {
+    let nodes = 0;
+    for (let i = full.indexOf('flowchart'); i <= full.length; i++) {
+      const source = liveSource(full.slice(0, i));
+      const code = source ? completeLines(source).trim() : '';
+      if (!code) continue;
+      const count = (drawDiagram(code).svg.match(/class="pele-node /g) ?? []).length;
+      expect(count).toBeGreaterThanOrEqual(nodes);
+      nodes = count;
+    }
+    expect(nodes).toBe(3);
+  });
+});
+
+describe('completeRows', () => {
+  it('closes the array after the last complete row', () => {
+    expect(completeRows('[{"a":1},{"a":2},{"a"')).toBe('[{"a":1},{"a":2}]');
+    expect(completeRows('[\n  {"a":1}\n')).toBe('[\n  {"a":1}]');
+    expect(completeRows('[{"a":1}]')).toBe('[{"a":1}]');
+  });
+
+  it('is not fooled by brackets and quotes inside strings or nested values', () => {
+    expect(completeRows('[{"s":"}]\\"{"},{"t":[1,{"u":2}]},{"v":"x')).toBe('[{"s":"}]\\"{"},{"t":[1,{"u":2}]}]');
+  });
+
+  it('waits for the first row, and for data that is not an array', () => {
+    expect(completeRows('')).toBeNull();
+    expect(completeRows('[{"a":')).toBeNull();
+    expect(completeRows('{"columns":["a"],"rows":[[1]')).toBeNull();
+  });
+
+  it('grows a table one row at a time over every prefix', () => {
+    const full = JSON.stringify([{ Country: 'Russia', Area: 17098246 }, { Country: 'Canada', Area: 9984670 }, { Country: 'China', Area: 9596961 }]);
+    let rows = 0;
+    for (let i = 0; i <= full.length; i++) {
+      const json = completeRows(full.slice(0, i));
+      if (!json) continue;
+      const count = parseTable(json)!.rows.length;
+      expect(count).toBeGreaterThanOrEqual(rows);
+      rows = count;
+    }
+    expect(rows).toBe(3);
+  });
+});

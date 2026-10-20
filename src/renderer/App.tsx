@@ -17,16 +17,17 @@ import type {
   TaskNotifyPayload,
   TurnAttachment,
   ThreadStatus,
-  UpdateStatus
+  UpdateStatus,
+  ManageTabId
 } from '../shared/types';
 import { AUTH_PROVIDER_IDS, providerName } from '../shared/providers';
-import { emptyInboxState, isUnread, placement, withRead, type InboxState } from '../shared/inbox';
+import { emptyInboxState, isUnread, placement, withArchived, withRead, type InboxState } from '../shared/inbox';
 import { previewText } from '../shared/plain-text';
 import { resendAttachments } from './attachments';
 import { ChatView, type ChatViewHandle } from './chat/ChatView';
 import { OnboardingGate } from './onboarding/OnboardingGate';
 import { ShortcutHint, glyphsFor, useShortcut } from './shortcuts';
-import { ManagePanel } from './manage/ManagePanel';
+import { MANAGE_TAB_IDS, MANAGE_TAB_KEY, ManagePanel } from './manage/ManagePanel';
 import { McpApprovalCard } from './manage/McpApprovalCard';
 import { InstructionsApprovalCard } from './manage/InstructionsApprovalCard';
 import { SkillApprovalCard } from './manage/SkillApprovalCard';
@@ -35,6 +36,8 @@ import { ApprovalNotice, MissedApprovalDialog } from './manage/ApprovalCard';
 import { approvalsElsewhere, approvalsForThread } from './manage/approvalQueue';
 import { useApprovals } from './manage/approvalStore';
 import { DeleteThreadDialog } from './DeleteThreadDialog';
+import { ShareDialog } from './share/ShareDialog';
+import type { ShareSource } from '../shared/share';
 import { CHATS_TAB_IDS, CHATS_TAB_KEY, type ChatsTab } from './chats/ChatList';
 import {
   persistReturnChatId,
@@ -45,7 +48,7 @@ import {
 } from './chats/return-chat';
 import { SnoozeMenu } from './chats/SnoozeMenu';
 import { hasMailWaiting, useMail } from './mail/useMail';
-import { MailComposeView, MailConversationView, type MailForwardDraft, type MailViewHandle } from './mail/MailView';
+import { MailComposeView, MailConversationView, type ExternalComposeInput, type MailForwardDraft, type MailViewHandle } from './mail/MailView';
 import { ActivityIndicator } from './ui/ActivityIndicator';
 import { TaskAlertModal } from './TaskAlertModal';
 import { ReleaseNotesModal } from './ReleaseNotesModal';
@@ -135,6 +138,11 @@ export default function App() {
   // ChatList) because the open-a-chat handlers below need to know whether the
   // Inbox was selected at that moment — that is what pins the Return-to-chat row.
   const [chatsTab, setChatsTab] = useRememberedTab<ChatsTab>(CHATS_TAB_KEY, CHATS_TAB_IDS, 'inbox');
+  // The right-hand panel's tab, held here rather than in ManagePanel so the View
+  // menu (and ⌘,) can switch it — even while the panel is hidden.
+  const [manageTab, setManageTab] = useRememberedTab<ManageTabId>(MANAGE_TAB_KEY, MANAGE_TAB_IDS, 'chats');
+  // Public share links: one answer (turnId) or the whole chat.
+  const [shareTarget, setShareTarget] = useState<{ source: ShareSource; anchorId: string } | null>(null);
   const chatsTabRef = useRef(chatsTab);
   chatsTabRef.current = chatsTab;
   // The Return-to-chat target: the ordinary chat last opened (or created) while
@@ -385,13 +393,16 @@ export default function App() {
         returnChatId,
         chats: displayList.chats,
         chatsLoaded,
+        inbox: displayList.inbox,
+        now: Date.now(),
         activeThreadId,
         mailPaneOpen: mailView !== null
       }),
-    [returnChatId, displayList.chats, chatsLoaded, activeThreadId, mailView]
+    [returnChatId, displayList.chats, displayList.inbox, chatsLoaded, activeThreadId, mailView]
   );
-  // A target the loaded list no longer contains can't be returned to (deleted
-  // here or on another device) — drop it rather than keep a dead pointer.
+  // A target the loaded list no longer contains (deleted here or on another
+  // device) or that was archived can't be returned to — drop it rather than
+  // keep a dead pointer.
   useEffect(() => {
     if (inboxReturn.orphaned) dismissInboxReturn();
   }, [inboxReturn.orphaned, dismissInboxReturn]);
@@ -1111,6 +1122,10 @@ export default function App() {
   // ⌘N / ⌘\ — mirror the titlebar buttons. (Composer shortcuts live in ChatView.)
   useShortcut('new-conversation', () => newConversation());
   useShortcut('toggle-inspector', () => setShowInspector((v) => !v));
+  useShortcut('open-settings', () => {
+    setShowInspector(true);
+    setManageTab('settings');
+  });
 
   const openChat = useCallback(
     // `userNavigation` separates the user opening a chat (clicks, alerts, forks —
@@ -1215,6 +1230,23 @@ export default function App() {
     window.addEventListener('focus', markVisibleRead);
     return () => window.removeEventListener('focus', markVisibleRead);
   }, [displayList, activeThreadId, mutateInbox, updatedAtMap]);
+
+  // The application menu's own commands — the ones that are not a shortcut (those
+  // run through ShortcutsProvider): jump to a panel tab, open a ⌘1–9 row by id.
+  const openChatRef = useRef(openChat);
+  openChatRef.current = openChat;
+  useEffect(
+    () =>
+      window.stem.onMenuCommand((command) => {
+        if (command.kind === 'manage-tab') {
+          setShowInspector(true);
+          setManageTab(command.tab);
+        } else if (command.kind === 'open-chat') {
+          void openChatRef.current(command.threadId);
+        }
+      }),
+    [setManageTab]
+  );
 
   // ---- Coming back after the event stream was away ----
   //
@@ -1343,6 +1375,18 @@ export default function App() {
     },
     [mutateInbox, updatedAtMap]
   );
+  // Chat archive: out of the tree into its folded Archived section, kept whole.
+  // A timestamp like mail's, so a new turn in the chat brings it back by itself.
+  const onSetArchived = useCallback(
+    (threadIds: string[], archived: boolean) => {
+      const now = Date.now();
+      mutateInbox(
+        (inbox) => withArchived(inbox, threadIds, archived, now),
+        () => window.stem.setInboxArchived(threadIds, archived)
+      );
+    },
+    [mutateInbox]
+  );
 
   // ---- mail actions the rail and centre pane share ----
   const composeMail = useCallback(() => setMailView({ kind: 'compose' }), []);
@@ -1370,9 +1414,9 @@ export default function App() {
    *  just sent stays in view, with the personas' progress on it, instead of
    *  vanishing into a folded Sent section. */
   const onComposeSend = useCallback(
-    async (input: Parameters<typeof mailApi.compose>[0]) => {
+    async (input: Parameters<typeof mailApi.compose>[0] | ExternalComposeInput) => {
       const before = new Set(mailRef.current.conversations.map((c) => c.id));
-      const list = await mailApi.compose(input);
+      const list = 'external' in input ? await mailApi.composeExternal(input) : await mailApi.compose(input);
       const created = list.conversations
         .filter((c) => !before.has(c.id))
         .sort((a, b) => b.createdAt - a.createdAt)[0];
@@ -1381,6 +1425,10 @@ export default function App() {
     },
     [mailApi, openMail]
   );
+  const onShareMessage = useCallback((turnId: string) => {
+    const threadId = activeThreadIdRef.current;
+    if (threadId) setShareTarget({ source: { kind: 'chat', threadId }, anchorId: turnId });
+  }, []);
   const onWriteSubject = useCallback(
     (threadId: string) => {
       // Round-trips through a model, so this resolves in a second or two rather
@@ -1451,9 +1499,8 @@ export default function App() {
   });
 
   // ---- triage shortcuts ----
-  // ⌘⇧A / ⌘⇧S act on the mail conversation you are reading — archive and snooze
-  // are mail concepts now. ⌘⇧U toggles read on whichever the centre pane holds:
-  // the open mail conversation, else the open chat. Registered here, not in the
+  // ⌘⇧A and ⌘⇧D act on whichever the centre pane holds: the open mail
+  // conversation, else the open chat. ⌘⇧S snoozes mail only — chats have no snooze. Registered here, not in the
   // list, so they survive a hidden inspector or a parked-on-Settings panel.
   const mailViewRef = useRef(mailView);
   mailViewRef.current = mailView;
@@ -1462,10 +1509,19 @@ export default function App() {
     mailViewRef.current?.kind === 'conversation' ? mailViewRef.current.id : null;
 
   useShortcut('archive-thread', () => {
-    const id = openMailId();
+    const mailId = openMailId();
+    if (mailId) {
+      mailApi.archive([mailId], true);
+      setMailView(null);
+      return;
+    }
+    // The chat stays open: archiving tidies the list, it doesn't close what you
+    // are reading. Pressed again on an archived chat, it brings it back.
+    const id = activeThreadIdRef.current;
     if (!id) return;
-    mailApi.archive([id], true);
-    setMailView(null);
+    const chat = displayList.chats.find((c) => c.threadId === id);
+    if (!chat) return;
+    onSetArchived([id], placement(chat, displayList.inbox, Date.now()) === 'inbox');
   });
 
   useShortcut('snooze-thread', () => {
@@ -1863,6 +1919,9 @@ export default function App() {
                     mailApi.addParticipant(conversation.id, personaId)
                   }
                   onStop={() => void mailApi.stop(conversation.id)}
+                  onShare={(itemId) =>
+                    setShareTarget({ source: { kind: 'mail', conversationId: conversation.id }, anchorId: itemId })
+                  }
                   onForward={(forward) => setMailView({ kind: 'compose', forward })}
                 />
               );
@@ -1888,6 +1947,7 @@ export default function App() {
           onRetry={onRetry}
           onEdit={onEditMessage}
           onFork={onForkMessage}
+          onShare={onShareMessage}
           onDelete={onDeleteFromTurn}
           onRetryFailedSend={onRetryFailedSend}
           onEditFailedSend={onEditFailedSend}
@@ -1921,6 +1981,8 @@ export default function App() {
             <ManagePanel
               data={displayList}
               activeThreadId={activeThreadId}
+              tab={manageTab}
+              onTabChange={setManageTab}
               chatsTab={chatsTab}
               onChatsTabChange={setChatsTab}
               inboxReturn={inboxReturn.row}
@@ -1943,6 +2005,7 @@ export default function App() {
               onDeleteChat={onDeleteChat}
               onMoveChat={onMoveChat}
               onSetRead={onSetRead}
+              onSetArchived={onSetArchived}
               onWriteSubject={onWriteSubject}
               mail={mail}
               personas={mailApi.personas}
@@ -1977,10 +2040,31 @@ export default function App() {
           and dismissed. It waits here until the main window is opened. */}
       <SkillsResetDialog />
       <MissedApprovalDialog />
+      {shareTarget && (
+        <ShareDialog
+          source={shareTarget.source}
+          anchorId={shareTarget.anchorId}
+          onClose={() => setShareTarget(null)}
+          onOpenSettings={() => {
+            try {
+              localStorage.setItem('stem.settings.tab', 'features');
+            } catch {
+              // Lands on the remembered settings tab instead.
+            }
+            setShareTarget(null);
+            setShowInspector(true);
+            setManageTab('settings');
+          }}
+        />
+      )}
       {pendingDelete && (
         <DeleteThreadDialog
           title={pendingDelete.title}
           onConfirm={confirmDeleteThread}
+          onArchive={() => {
+            onSetArchived([pendingDelete.threadId], true);
+            setPendingDelete(null);
+          }}
           onCancel={() => setPendingDelete(null)}
         />
       )}
@@ -2086,6 +2170,7 @@ export default function App() {
       </div>
       <div className="toolbar-spacer" />
       <ActivityIndicator onOpenMail={openMail} />
+
       <button
         className={`tbtn${showInspector ? ' active' : ''}`}
         title={`Toggle inspector (${glyphsFor('toggle-inspector')})`}

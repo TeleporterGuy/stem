@@ -217,6 +217,18 @@ export function execEnv(loginPath: string, platform: NodeJS.Platform = process.p
   return env;
 }
 
+/**
+ * The result line for a command that ran out of time. Everything it started
+ * went with it, a desktop app included, so the line says how to start one
+ * that outlives the command (the model's usual mistake: `firefox`, not
+ * `gtk-launch org.mozilla.firefox`).
+ */
+export function timedOutLine(ms: number, platform: NodeJS.Platform = process.platform): string {
+  const detached =
+    platform === 'darwin' ? '`open -a App`' : platform === 'win32' ? '`start app`' : '`gtk-launch <desktop id>` or `setsid -f app`';
+  return `Timed out after ${ms} ms (process group killed). Anything it started was closed with it; to open an app that stays open, start it detached: ${detached}.`;
+}
+
 /** Clamp a requested timeout into [1s, MAX]; undefined → the default. */
 export function clampTimeout(requested: number | undefined): number {
   if (typeof requested !== 'number' || !Number.isFinite(requested)) return DEFAULT_TIMEOUT_MS;

@@ -7,8 +7,15 @@ final class MailStore {
     private(set) var sections: [MailFolder: [MailConversation]] = [:]
     private(set) var loaded = false
     var error: String?
+    /// Whole mails of the conversations on screen. The list itself carries only
+    /// what its rows show (mail:summary); a conversation's mail comes on open.
+    private(set) var threads: [String: [MailItem]] = [:]
 
     private let client: StemClient
+    /// Conversations on screen, with how many views show each.
+    @ObservationIgnored private var openCounts: [String: Int] = [:]
+    /// False on a server older than mail:summary: the whole list it sends holds every mail already.
+    @ObservationIgnored private var slim = true
 
     init(client: StemClient) { self.client = client }
 
@@ -24,12 +31,46 @@ final class MailStore {
 
     func reload() async {
         do {
-            apply(try await client.call("mail:list", as: MailListResult.self))
+            apply(try await fetchList())
             error = nil
         } catch {
             self.error = error.localizedDescription
         }
         loaded = true
+        await withTaskGroup(of: Void.self) { group in
+            for id in openCounts.keys { group.addTask { await self.fetchThread(id) } }
+        }
+    }
+
+    private func fetchList() async throws -> MailListResult {
+        if slim {
+            do { return try await client.call("mail:summary", as: MailListResult.self) }
+            catch let e as StemError where e.message.contains("no handler registered") { slim = false }
+        }
+        return try await client.call("mail:list", as: MailListResult.self)
+    }
+
+    private struct OpenResult: Decodable { var items: [MailItem] }
+
+    private func fetchThread(_ id: String) async {
+        guard slim else { return }
+        do {
+            threads[id] = try await client.call("mail:open", [.string(id)], as: OpenResult.self).items
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    /// A conversation came on screen: fetch its mail, and keep it fresh while it stays.
+    func open(_ id: String) async {
+        openCounts[id, default: 0] += 1
+        await fetchThread(id)
+    }
+
+    func close(_ id: String) {
+        let n = (openCounts[id] ?? 1) - 1
+        openCounts[id] = n > 0 ? n : nil
+        if n <= 0 { threads[id] = nil }
     }
 
     private func apply(_ r: MailListResult) {
@@ -43,22 +84,28 @@ final class MailStore {
 
     func conversation(_ id: String) -> MailConversation? { mail.conversations.first { $0.id == id } }
 
+    /// A conversation's mails, oldest first. Empty for the moment between opening
+    /// it and its mail arriving: the list's copies are cut-down previews.
     func items(_ id: String) -> [MailItem] {
-        mail.items.filter { $0.conversationId == id }.sorted { $0.at < $1.at }
+        let all = slim ? threads[id] ?? [] : mail.items.filter { $0.conversationId == id }
+        return all.sorted { $0.at < $1.at }
     }
 
-    // Every mutator answers with the fresh list.
+    // Mutators: the server answers each with the whole mail list; the phone
+    // asks it to leave that out and re-reads the slim one instead.
 
+    /// Starts a conversation; answers with the list it now appears in.
     func compose(_ input: MailComposeInput) async throws -> MailListResult {
-        let r = try await client.call("mail:compose", [.from(input)], as: MailListResult.self)
-        apply(r)
-        return r
+        try await client.run("mail:compose", [.from(input)])
+        await reload()
+        return mail
     }
 
     func reply(_ id: String, body: String, attachments: [TurnAttachment]) async throws {
         var args: [JSONValue] = [.string(id), .string(body)]
         if !attachments.isEmpty { args.append(.from(attachments)) }
-        apply(try await client.call("mail:reply", args, as: MailListResult.self))
+        try await client.run("mail:reply", args)
+        await reload()
     }
 
     func addParticipant(_ id: String, persona: String) async {
@@ -85,7 +132,8 @@ final class MailStore {
     }
 
     private func mutate(_ channel: String, _ args: [JSONValue]) async {
-        do { apply(try await client.call(channel, args, as: MailListResult.self)) }
+        do { try await client.run(channel, args) }
         catch { self.error = error.localizedDescription }
+        await reload()
     }
 }

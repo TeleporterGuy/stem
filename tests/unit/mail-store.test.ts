@@ -13,7 +13,10 @@ import {
   createConversation,
   deleteConversation,
   mailSessionThreadIds,
+  mailedImageThread,
   readMail,
+  readMailConversation,
+  readMailSummary,
   setConversationSession,
   setConversationStatus,
   setConversationSubject,
@@ -21,9 +24,11 @@ import {
   setMailItemResult,
   setMailRead,
   setMailSnooze,
+  settleMailApproval,
   taskMailHistory,
   taskRunThreadIds
 } from '../../src/server/workspace/mail';
+import { hasMailWaiting } from '../../src/renderer/mail/useMail';
 import { mailStorePath } from '../../src/server/workspace/paths';
 import { isUnread, placement } from '../../src/shared/inbox';
 
@@ -110,6 +115,38 @@ describe('conversations and items', () => {
     expect(row.userUpdatedAt).toBeGreaterThan(row.userSentAt);
   });
 
+  it('answering an approval deals with it like a send, without moving the stale epoch', async () => {
+    const c = await createConversation('s', ['normal']);
+    const t0 = Date.now() - 1000;
+    await appendMailItem({ conversationId: c.id, from: 'user', to: ['normal'], body: 'go', at: t0 });
+    const asked = await appendMailItem({
+      conversationId: c.id,
+      from: 'normal',
+      to: ['user'],
+      body: 'may I run it?',
+      at: t0 + 10,
+      approval: {
+        id: 'a1',
+        kind: 'exec',
+        command: 'ls',
+        status: 'pending',
+        resume: { personaId: 'normal', threadId: 't', from: 'user', epoch: t0, sourceItemId: 'x' }
+      }
+    });
+    let row = (await readMail()).conversations[0];
+    expect(hasMailWaiting(row)).toBe(true);
+
+    await settleMailApproval(asked.items.at(-1)!.id, 'allowed');
+    row = (await readMail()).conversations[0];
+    expect(hasMailWaiting(row)).toBe(false);
+    expect(row.userSentAt).toBe(t0);
+
+    // The next mail for the user brings it back.
+    await appendMailItem({ conversationId: c.id, from: 'normal', to: ['user'], body: 'done', at: Date.now() + 50 });
+    row = (await readMail()).conversations[0];
+    expect(hasMailWaiting(row)).toBe(true);
+  });
+
   it('stamps every appended item and the list with the system version; a mangled stamp is dropped on read', async () => {
     const c = await createConversation('ver', ['normal']);
     await appendMailItem({ conversationId: c.id, from: 'user', to: ['normal'], body: 'x' });
@@ -173,6 +210,20 @@ describe('conversations and items', () => {
     const c = await createConversation('s', ['normal']);
     await setConversationSession(c.id, 'normal', 'thread-9');
     expect(await mailSessionThreadIds()).toEqual(new Set(['thread-9']));
+  });
+
+  it('a picture mailed to a persona resolves to the thread that made it; mail it never saw does not', async () => {
+    const c = await createConversation('Crypt art', ['normal', 'mac']);
+    await setConversationSession(c.id, 'normal', 'lead-thread');
+    await setConversationSession(c.id, 'mac', 'mac-thread');
+    await setConversationSession(c.id, 'other', 'other-thread');
+    const image = { id: 'img_3dae606efb', threadId: 'lead-thread', mime: 'image/png' };
+    await appendMailItem({ conversationId: c.id, from: 'normal', to: ['mac'], body: 'install this', images: [image] });
+    expect(await mailedImageThread('mac-thread', 'img_3dae606efb')).toBe('lead-thread');
+    expect(await mailedImageThread('mac-thread', 'img_0000000000')).toBeNull();
+    // Not addressed to it, and the sender's own thread already holds the bytes.
+    expect(await mailedImageThread('other-thread', 'img_3dae606efb')).toBeNull();
+    expect(await mailedImageThread('lead-thread', 'img_3dae606efb')).toBeNull();
   });
 
   it('a scheduled run\'s thread rides its mail item: hidden from the chat list, released when the task goes', async () => {
@@ -475,5 +526,38 @@ describe('mail observers', () => {
       expect(received).toEqual(['answer']);
       expect(changes).toBe(6);
     } finally { off(); offReceived(); }
+  });
+});
+
+describe('the phone\'s summary and open', () => {
+  it('lists every conversation with only the mails a row needs, bodies cut to a preview', async () => {
+    const a = await createConversation('Plan the trip', ['normal']);
+    await appendMailItem({ conversationId: a.id, from: 'user', to: ['normal'], body: 'plan it' });
+    await appendMailItem({ conversationId: a.id, from: 'normal', to: ['travel'], body: 'consult' });
+    await appendMailItem({ conversationId: a.id, from: 'travel', to: ['normal'], body: 'x'.repeat(5000) });
+    await appendMailItem({ conversationId: a.id, from: 'normal', to: ['user'], body: 'y'.repeat(5000) });
+    const b = await createConversation('Quiet', ['normal']);
+
+    const summary = await readMailSummary();
+    expect(summary.conversations.map((c) => c.id).sort()).toEqual([a.id, b.id].sort());
+    expect(summary.inbox).toEqual((await readMail()).inbox);
+    // The user's send (Sent's order) and the reply to them (the preview); the
+    // persona-to-persona exchange stays on the server.
+    expect(summary.items.map((i) => i.from)).toEqual(['user', 'normal']);
+    expect(summary.items[1].to).toEqual(['user']);
+    expect(summary.items[1].body).toBe('y'.repeat(400));
+  });
+
+  it('opens one conversation whole', async () => {
+    const a = await createConversation('A', ['normal']);
+    const b = await createConversation('B', ['normal']);
+    await appendMailItem({ conversationId: a.id, from: 'user', to: ['normal'], body: 'a1' });
+    await appendMailItem({ conversationId: b.id, from: 'user', to: ['normal'], body: 'b1' });
+    await appendMailItem({ conversationId: a.id, from: 'normal', to: ['travel'], body: 'z'.repeat(5000) });
+
+    const open = await readMailConversation(a.id);
+    expect(open.conversation?.id).toBe(a.id);
+    expect(open.items.map((i) => i.body)).toEqual(['a1', 'z'.repeat(5000)]);
+    expect((await readMailConversation('gone')).conversation).toBeNull();
   });
 });

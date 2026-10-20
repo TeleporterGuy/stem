@@ -2,6 +2,8 @@
 
 import type { InboxState } from './inbox';
 import type { TimeLocale } from './time-locale';
+import type { ShortcutId } from './shortcut-defs';
+import type { SharedLink, ShareOptions, SharePreview, ShareSource, ShareStatus } from './share';
 
 export type { InboxEntry, InboxState } from './inbox';
 
@@ -489,6 +491,13 @@ export interface StartTurnInput {
   /** Files/images attached to this turn. */
   attachments?: TurnAttachment[];
   /**
+   * "Ask about this window": the window the user asked from (Quick Chat's
+   * window shortcut, Mac only). Its picture rides in `attachments`; this is
+   * what the picture cannot say exactly — which app, which window, and the
+   * text it shows — put before the model as a `<stem_window>` block.
+   */
+  windowContext?: WindowContext;
+  /**
    * Set by the scheduler for a scheduled-task run. The backend prepends an
    * automated-run preamble (so the agent knows it's running headless and should use
    * notify_user) plus a replay-detectable marker, and tags the turn's events so the
@@ -600,6 +609,19 @@ export interface StartTurnInput {
      */
     roles?: { id: string; name: string; model?: string; blind?: true; code?: true }[];
     /**
+     * Personas pinned to the user's computer that are NOT in this
+     * conversation, with what each drives. The lead cannot start them, but
+     * without the list it told the user to make a browser persona that
+     * already existed instead of asking them to add it.
+     */
+    outside?: { id: string; name: string; does: string }[];
+    /**
+     * Personas outside this conversation that the driver may bring in by
+     * mailing them (set with Persona.addsPersonas). `computer` marks the ones
+     * pinned to the user's computer.
+     */
+    addable?: { id: string; name: string; computer?: true }[];
+    /**
      * Model ids spawn_agent may put an agent on (set with roles when a role
      * has no model of its own), the default marked — so two agents of one
      * role can still run on different models.
@@ -619,6 +641,12 @@ export interface StartTurnInput {
      * ride only the original user delivery.
      */
     source?: { itemId: string; body: string; attachmentNames?: string[] };
+    /**
+     * Inter-Stem: the conversation is with another Stem's owner. The turn is
+     * external context — side-effect tools are removed in code, web reads
+     * always ask — and send_mail to `address` saves a draft for the user.
+     */
+    external?: { address: string };
   };
 }
 
@@ -1115,6 +1143,13 @@ export interface ScheduledTask {
    * log at best, and for a whole class of failures not even there.
    */
   lastError?: string;
+  /**
+   * The firing in flight: when it started and, once the backend named it, its
+   * thread. Cleared when the run settles, so one still set at boot is a run the
+   * process died under — the schedule had already moved on, so without this the
+   * firing vanished with the row stuck on "running".
+   */
+  inFlight?: { at: string; threadId?: string };
   /** Short human label derived from the prompt, for the list + chat badge. */
   title: string;
   /** Who and what this task's runs execute as (see {@link TaskRunsAs}). */
@@ -1132,6 +1167,16 @@ export interface ScheduledTask {
    * quiet run leaves; `threadId` is set only for a run whose thread was kept.
    */
   recentRuns?: TaskRunRecord[];
+  /**
+   * The mail conversation this task reports into, when it was scheduled from
+   * mail: a persona's session in that conversation, or a scheduled run that
+   * itself reported there (a follow-up check scheduled by an earlier check).
+   * Its notify_user mails land in that thread as replies, so a chain of
+   * "check again in 15 minutes" tasks reads as one conversation in the Inbox
+   * rather than a new mail per check. Absent = the task's own conversation,
+   * opened by its first mail.
+   */
+  mailConversationId?: string;
 }
 
 /** One firing of a scheduled task, as the Tasks tab's Runs list shows it. */
@@ -1145,6 +1190,8 @@ export interface TaskRunRecord {
   threadId?: string;
   /** Stopped for an Allow/Deny that went out by mail. */
   parked?: boolean;
+  /** Cut off by a server restart; the next boot ran it once more. */
+  interrupted?: boolean;
 }
 
 /** How many firings a task remembers in `recentRuns`. */
@@ -1238,6 +1285,8 @@ export interface McpServerSummary {
   enabled: boolean;
   /** Where it runs; absent = on the machine hosting the server. */
   location?: McpServerLocation;
+  /** "Works with apps", as set; absent = matched by the server's name. */
+  apps?: string[];
 }
 
 /**
@@ -1677,7 +1726,7 @@ export interface ComputerAccess {
 /** A device's account of whether it lets Stem drive its screen — `computerHost:announce`. */
 export interface DeviceComputerAnnouncement {
   enabled: boolean;
-  platform: 'darwin';
+  platform: 'darwin' | 'linux' | 'win32';
   access?: ComputerAccess;
 }
 
@@ -1692,12 +1741,38 @@ export interface DeviceComputerEvent {
   kind: 'human-input';
 }
 
+/**
+ * Where computer control stands on a Linux desktop, which needs Stem's GNOME
+ * Shell extension (native/linux/gnome-extension): `ready`; `not-installed`
+ * (or an older copy is installed); `relogin` (installed, loads at the next
+ * login); `disabled` (turned off in GNOME's Extensions app); `extensions-off`
+ * (all user extensions are off); `error` (the shell failed to load it);
+ * `not-gnome` / `not-wayland` / `no-gjs` (this desktop cannot run it).
+ */
+export type LinuxComputerSetupState =
+  | 'ready'
+  | 'not-installed'
+  | 'relogin'
+  | 'disabled'
+  | 'extensions-off'
+  | 'error'
+  | 'not-gnome'
+  | 'not-wayland'
+  | 'no-gjs';
+
+export interface LinuxComputerSetup {
+  state: LinuxComputerSetupState;
+  error?: string;
+}
+
 /** The answer to `computerHost:localState` — client-owned, never on the wire. */
 export interface ComputerHostLocalState {
-  /** False on every platform but macOS: there is no helper to run. */
+  /** False where there is no helper to run (macOS before 14, other systems). */
   supported: boolean;
   enabled: boolean;
   access: ComputerAccess | null;
+  /** Linux only: the GNOME Shell extension's setup. */
+  linux?: LinuxComputerSetup;
 }
 
 // ---- Skill recorder: the person shows Stem a task, Stem writes the skill ----
@@ -1929,6 +2004,14 @@ export interface DeviceBrowserRequest {
   /** The turn's thread; the extension keeps the run's tabs under it. */
   threadId: string;
   action: BrowserAction;
+  /** The browser profile the model named; absent = the one the thread is using, else the Mac's default. */
+  profile?: string;
+  /**
+   * The only profiles this turn may use (BrowserInfo.id), from the persona's
+   * pin or the chat setting; absent = every profile. The Mac lists, resolves
+   * and falls back within these alone.
+   */
+  allowed?: string[];
 }
 
 /** A finished download the Mac streamed up (POST /upload); the server files it for the thread. */
@@ -1959,10 +2042,23 @@ export type DeviceBrowserResult =
 
 /** A browser with the Stem extension, as the Mac knows it. */
 export interface BrowserInfo {
-  /** Stable key: the app bundle path the native host was launched from. */
+  /**
+   * Stable key: the app bundle path the native host was launched from, then
+   * "#" and the profile id the extension keeps in that browser profile. A key
+   * without "#" was remembered before profiles were told apart (0.6.0).
+   */
   id: string;
-  /** Display name ("Arc", "Google Chrome"). */
+  /** The app's display name ("Arc", "Google Chrome"). */
   name: string;
+  /**
+   * The profile's name — the user's, or "Arc 2" when an app has several
+   * unnamed ones. Absent for an app's only profile until the user names it.
+   */
+  profile?: string;
+  /** `profile` is the user's name for it, not a number Stem gave. This Mac's Settings only. */
+  named?: boolean;
+  /** A few sites open in the profile when it last connected, to tell unnamed ones apart. This Mac's Settings only. */
+  hint?: string;
   connected: boolean;
   /** The extension's version, when connected. */
   version?: string;
@@ -1971,10 +2067,16 @@ export interface BrowserInfo {
 /** A device's account of whether it lets Stem drive its browser — `browserHost:announce`. */
 export interface DeviceBrowserAnnouncement {
   enabled: boolean;
-  platform: 'darwin';
+  platform: 'darwin' | 'linux' | 'win32';
   browsers: BrowserInfo[];
-  /** The browser Stem uses on this Mac (BrowserInfo.id); absent = none known yet. */
+  /** The browser Stem uses on this computer (BrowserInfo.id); absent = none known yet. */
   chosen?: string;
+  /**
+   * This Mac keeps an action within DeviceBrowserRequest.allowed. A Mac
+   * without it (older than 0.7.0) would ignore the list, so the server never
+   * sends it a limited action.
+   */
+  enforcesProfiles?: true;
 }
 
 export interface DeviceBrowserHostEntry extends DeviceBrowserAnnouncement {
@@ -2856,6 +2958,11 @@ export interface PersonaComputerPin {
 export interface PersonaBrowserPin {
   /** Paired computer id (a desktop that announced browser control). */
   device: string;
+  /**
+   * The browser profiles on that Mac it may use (BrowserInfo.id). Absent =
+   * every profile, including ones added later.
+   */
+  profiles?: string[];
 }
 
 export interface Persona {
@@ -2886,6 +2993,14 @@ export interface Persona {
    * flag on read.
    */
   canSpawn?: boolean;
+  /**
+   * May bring any persona into a conversation it drives, without asking the
+   * user: mailing a persona that is not a participant adds it, and that
+   * includes personas pinned to the user's computer (which otherwise only the
+   * user can bring in). The built-in Secretary ships with it — "do what needs
+   * doing and don't bug me". Never passed on to agents.
+   */
+  addsPersonas?: boolean;
   /**
    * Whether this persona keeps a private memory (expertise notes). Default on;
    * stored only when switched off (`false`) — e.g. the built-in Critic, whose
@@ -2978,8 +3093,75 @@ export interface PersonaNotesConsolidation {
 // the user; the persona work behind a reply lives in hidden pi threads (one per
 // conversation+persona, recorded in `sessions`) and is collapsible, not gone.
 
-/** 'user', or a persona id. */
+/**
+ * 'user', a persona id, an agent id (`role~name`), or — inter-Stem mail — an
+ * email address of another Stem's owner (contains '@').
+ */
 export type MailAddress = string;
+
+/** An address on another Stem (an email address), never a persona or agent. */
+export const isExternalAddress = (a: string): boolean => a.includes('@');
+
+/**
+ * Inter-Stem state of one mail item (docs/inter-stem-mail-design.md).
+ * Inbound: `held` until the user releases it — no agent, recall, capture or
+ * draft touches a held item. Outbound: the send's progress.
+ */
+export interface MailExternal {
+  /** The relay envelope id (dedupe for inbound, status lookups for outbound). */
+  envelopeId?: string;
+  held?: boolean;
+  /** Inbound: the sender's key differs from the one pinned for them. */
+  keyChanged?: boolean;
+  /** Outbound progress. Toward strangers 'sent' is all the relay ever says. */
+  status?: 'queued' | 'sent' | 'delivered' | 'expired' | 'failed' | 'unreachable' | 'key-changed';
+  error?: string;
+  /** Inbound mail in a format this Stem doesn't understand. */
+  unsupported?: boolean;
+}
+
+/** The other side of an inter-Stem conversation. */
+export interface MailExternalThread {
+  /** Their email address. */
+  address: string;
+  /** Shared conversation token both Stems file the thread under (32 hex). */
+  thread: string;
+  /** Which of OUR addresses this conversation runs under. */
+  self: string;
+}
+
+export interface InterStemContact {
+  address: string;
+  /** request = they knocked and we haven't answered; accepted = a contact. */
+  state: 'request' | 'accepted' | 'blocked';
+  keyFp: string;
+  /** Upgraded from "verified by email" by an in-person fingerprint check. */
+  verifiedByUser?: boolean;
+  /** Their key changed since it was pinned and the user hasn't acknowledged it. */
+  keyChanged?: boolean;
+  firstSeen: number;
+}
+
+export interface InterStemAddress {
+  address: string;
+  state: 'pending' | 'verified';
+  relay: string;
+}
+
+export interface InterStemStatus {
+  addresses: InterStemAddress[];
+  unlisted: boolean;
+  /** Our key fingerprint, for in-person verification. */
+  fingerprint: string;
+  /** Live connection to each verified address's relay. */
+  connected: boolean;
+  contacts: InterStemContact[];
+  /**
+   * Set when an organization policy file limits inter-Stem mail: "off", or
+   * only these domains through the organization's own relay. Absent = no limit.
+   */
+  policy?: { mode: 'off' } | { mode: 'restricted'; domains: string[] };
+}
 
 /** Recorded work, separate from mail delivery/read state. Never contains reasoning. */
 export interface MailWorkActivity {
@@ -3064,6 +3246,18 @@ export interface MailItem {
    */
   filed?: boolean;
   /**
+   * User mail only: it asked how the work was going while the personas were
+   * still at it, and was answered on the spot from the thread and the live
+   * work log (a `statusReply` item) instead of being delivered to them.
+   */
+  statusQuery?: boolean;
+  /**
+   * The on-the-spot answer to a progress question asked mid-work, written from
+   * the thread and the live work log — not by the persona it is from, whose
+   * turn was left running undisturbed.
+   */
+  statusReply?: boolean;
+  /**
    * What the sender attached, for DISPLAY: image thumbnails as data URLs,
    * everything else a named chip. The attachment bytes themselves ride only
    * the delivery turn — they are never persisted here.
@@ -3093,14 +3287,20 @@ export interface MailItem {
    * persisted with the mail, answered by `mail:resolveApproval`.
    */
   approval?: MailApproval;
+  /** Inter-Stem mail only — see MailExternal. */
+  external?: MailExternal;
 }
 
 export type MailApprovalStatus = 'pending' | 'allowed' | 'denied' | 'superseded' | 'cancelled';
 
 export interface MailApproval {
   id: string;
-  kind: 'exec' | 'harness';
+  /** 'send' = a persona's draft to another Stem, waiting for the user to send it. */
+  kind: 'exec' | 'harness' | 'send';
+  /** exec/harness: the command. send: the draft body (the user may edit it before sending). */
   command: string;
+  /** send only: the external address the draft goes to. */
+  to?: string;
   cwd?: string;
   /** The paired computer it would run on (absent = the Stem server). */
   deviceLabel?: string;
@@ -3172,6 +3372,12 @@ export interface MailConversation {
    */
   owner?: 'memory-check';
   /**
+   * Inter-Stem: the conversation is with another Stem's owner. Every turn in
+   * it is external context (side-effect tools gated in code); personas in
+   * `participants` only ever draft — the user sends.
+   */
+  external?: MailExternalThread;
+  /**
    * 'working' while a delivery is in flight; 'awaiting-user' when the wave is
    * held on the user rather than answered (a paired computer offline, the
    * exchange cap spent) — a persona's answer, explicit or implicit, settles
@@ -3202,6 +3408,14 @@ export interface MailConversation {
    * with — the turn is on the personas — so it waits under Sent, not Inbox.
    */
   userSentAt: number;
+  /**
+   * ms of the user's latest answer to an approval item (Allow/Deny, or a send
+   * draft). Like a send, it deals with the mail that asked: the conversation
+   * leaves the Inbox for Working. Kept apart from userSentAt, which is also
+   * the stale-reply epoch — an answer resumes the same wave, it starts none.
+   * Absent from servers predating it.
+   */
+  userAnsweredAt?: number;
   createdAt: number;
 }
 
@@ -3422,6 +3636,11 @@ export interface ChatListResult {
 export interface QuickChatSettings {
   /** Electron global accelerator (e.g. 'Alt+Space'); null = shortcut disabled. */
   shortcut: string | null;
+  /**
+   * "Ask about this window" (Mac only): summons Quick Chat with the window the
+   * user is in attached. Electron accelerator; null = off.
+   */
+  windowShortcut: string | null;
   /** Model the overlay opens with; null = follow the app's default model. */
   defaultModel: string | null;
   /** Reasoning effort the overlay opens with (low/medium/high/xhigh). */
@@ -3453,11 +3672,29 @@ export interface QuickChatSettings {
  * even when it succeeds — the compositor never routes the key to Stem — and
  * `summonCommand` is what to bind as a system shortcut there instead.
  */
+/** A right-hand panel tab, as the View menu names the place to jump to. */
+export type ManageTabId = 'chats' | 'memory' | 'mcp' | 'personas' | 'folders' | 'tasks' | 'settings';
+
+/**
+ * Something picked from the application menu, delivered to the main window. A
+ * `shortcut` runs the very handler the key would have (see renderer/shortcuts.tsx),
+ * so the menu and the keyboard can never disagree about what an action does.
+ */
+export type MenuCommand =
+  | { kind: 'shortcut'; id: ShortcutId }
+  | { kind: 'manage-tab'; tab: ManageTabId }
+  | { kind: 'open-chat'; threadId: string };
+
 export interface QuickChatShortcutStatus {
   accelerator: string | null;
   registered: boolean;
+  /** The same two for the "Ask about this window" shortcut. */
+  windowAccelerator: string | null;
+  windowRegistered: boolean;
   wayland: boolean;
   summonCommand: string;
+  /** The command for "Ask about this window" (`--ask-window`), bound the same way. */
+  windowSummonCommand: string;
 }
 
 /**
@@ -3471,7 +3708,7 @@ export interface QuickChatShortcutStatus {
  */
 export type ClientQuickChatSettings = Pick<
   QuickChatSettings,
-  'shortcut' | 'showOnAllDisplays' | 'followAcrossSpaces'
+  'shortcut' | 'windowShortcut' | 'showOnAllDisplays' | 'followAcrossSpaces'
 >;
 
 /**
@@ -3739,8 +3976,12 @@ export interface ChatFeatureSettings {
    */
   browser?: {
     allow: boolean;
-    /** A paired Mac's device id. */
-    target: { device: string } | null;
+    /**
+     * A paired Mac's device id, and the browser profiles there chats may use
+     * (BrowserInfo.id; absent = every profile). The model choosing the Mac
+     * gets every profile on it.
+     */
+    target: { device: string; profiles?: string[] } | null;
   };
   /**
    * Image generation (`generate_image`, the user's ChatGPT subscription).
@@ -4385,6 +4626,12 @@ export interface ClientSettings {
  */
 export interface QuickChatPrompt {
   input: string;
+  /**
+   * The window chip was still attached when this was sent: main adds that
+   * window's text (read while the user typed) to the turn. Its picture is
+   * already among `attachments`.
+   */
+  windowId?: number;
   /** Client-minted turn id, forwarded into StartTurnInput — see its doc there. */
   turnId?: string;
   /** Model chosen in the overlay; null = use the overlay's default model. */
@@ -4422,6 +4669,36 @@ export interface QuickChatStatus {
 /** Main → overlay: sent on each summon; `reset` starts a fresh session. */
 export interface QuickChatFocus {
   reset: boolean;
+  /**
+   * Summoned with the window shortcut: the window the user was in, shown as a
+   * removable chip. Absent for a plain summon (which keeps whatever chip the
+   * session already has).
+   */
+  window?: QuickChatWindow;
+}
+
+/** The window "Ask about this window" captured, as the overlay shows it. */
+export interface QuickChatWindow {
+  /** The window server's id, which main keys the window's text by. */
+  windowId: number;
+  app: string;
+  bundleId: string | null;
+  title: string;
+  /** JPEG of the window; null when Screen Recording is off. */
+  imageBase64: string | null;
+  /** Grants that were missing: no picture without 'screen', no text without 'accessibility'. */
+  missing: ('screen' | 'accessibility')[];
+}
+
+/** What the model is told about the window a turn was asked from. */
+export interface WindowContext {
+  /** The window server's id on the Mac the user asked from (computer control's select_window). */
+  windowId: number | null;
+  app: string;
+  bundleId: string | null;
+  title: string;
+  /** The window's readable text, when the app exposes it. */
+  text: string | null;
 }
 
 /** Main → overlay: capture an atomic state snapshot for an implicit handoff. */
@@ -4497,6 +4774,8 @@ export interface DeviceInfo {
    * Same rule as runsComputer; surfaced for the persona editor's browser pin.
    */
   runsBrowser?: boolean;
+  /** The browser profiles that Mac announced, for the persona editor's and Settings' profile pickers. */
+  browserProfiles?: { id: string; name: string }[];
 }
 
 /**
@@ -4822,7 +5101,22 @@ export interface StemApi {
   /** Stop a conversation's in-flight deliveries (queued dropped, turns interrupted). */
   stopMail(conversationId: string): Promise<{ stopped: boolean }>;
   /** Allow or deny a parked run's command (an approval item in a conversation). */
-  resolveMailApproval(itemId: string, decision: 'allow' | 'deny'): Promise<{ ok: boolean; error?: string }>;
+  /** `body`: a send draft as the user edited it before sending. */
+  resolveMailApproval(itemId: string, decision: 'allow' | 'deny', body?: string): Promise<{ ok: boolean; error?: string }>;
+  // Inter-Stem mail (docs/inter-stem-mail-design.md).
+  composeExternalMail(input: { to: string; subject?: string; body: string; self?: string }): Promise<MailListResult>;
+  /** Let the user's agents see held mail from another Stem, up to and including this item. */
+  releaseMail(conversationId: string, itemId: string): Promise<MailListResult>;
+  draftExternalMail(conversationId: string, personaId: string, instructions?: string): Promise<MailListResult>;
+  interStemStatus(): Promise<InterStemStatus>;
+  interStemAddAddress(address: string): Promise<InterStemStatus>;
+  interStemVerifyAddress(address: string, code: string): Promise<InterStemStatus>;
+  interStemCheckLink(address: string): Promise<InterStemStatus>;
+  interStemRemoveAddress(address: string): Promise<InterStemStatus>;
+  interStemSetUnlisted(unlisted: boolean): Promise<InterStemStatus>;
+  interStemContact(op: 'accept' | 'block' | 'unblock' | 'verify' | 'unverify' | 'ackKey', address: string): Promise<InterStemStatus>;
+  interStemInvite(address: string): Promise<{ ok: boolean }>;
+  onInterStemChanged(listener: () => void): () => void;
   setMailRead(conversationIds: string[], read: boolean): Promise<MailListResult>;
   setMailArchived(conversationIds: string[], archived: boolean): Promise<MailListResult>;
   snoozeMail(conversationIds: string[], until: number | null): Promise<MailListResult>;
@@ -4856,6 +5150,10 @@ export interface StemApi {
    * still approves it there before anything runs.
    */
   setMcpServerLocation(name: string, deviceId: string | null): Promise<McpServerSummary[]>;
+  /** Set which apps a server works with; null = match by its name again. */
+  setMcpServerApps(name: string, apps: string[] | null): Promise<McpServerSummary[]>;
+  /** The MCP servers that cover an app ("Ask about this window" chip). */
+  mcpServersForApp(app: string, bundleId: string | null): Promise<string[]>;
   loginMcpServer(name: string): Promise<McpLoginResult>;
   restartRuntime(): Promise<RuntimeStatus>;
   /** Assistant proposed an MCP change; fired so the UI can show a confirm card. */
@@ -4919,7 +5217,8 @@ export interface StemApi {
   /** Dictation on this Mac's microphone (client-owned; see desktop/dictation.ts). */
   dictationLanguages(): Promise<DictationLanguages>;
   /** Starts listening (null locale = the Mac's language). Rejects with the reason. */
-  startDictation(locale: string | null): Promise<{ session: number; locale: string }>;
+  /** `model`: which Whisper model listens off a Mac (a Mac ignores it). */
+  startDictation(locale: string | null, model?: 'fast' | 'accurate'): Promise<{ session: number; locale: string }>;
   /** Stops and answers with everything heard. */
   stopDictation(): Promise<string>;
   cancelDictation(): Promise<void>;
@@ -4943,6 +5242,10 @@ export interface StemApi {
   setBrowserHostEnabled(enabled: boolean): Promise<BrowserHostLocalState>;
   /** Pick the browser Stem drives on this Mac (BrowserInfo.id). */
   chooseBrowser(id: string): Promise<BrowserHostLocalState>;
+  /** Name a browser profile ("Work"); an empty name drops it back to the default. */
+  renameBrowser(id: string, name: string): Promise<BrowserHostLocalState>;
+  /** Forget a browser profile that is not connected (its extension was removed). */
+  forgetBrowser(id: string): Promise<BrowserHostLocalState>;
   /** Copy the extension and register it with the installed browsers; answers with the new state. */
   setUpBrowserControl(): Promise<BrowserHostLocalState>;
   /** Open a browser's extensions page (or Finder at the extension folder when that fails). */
@@ -5038,6 +5341,14 @@ export interface StemApi {
   removePin(threadId: string, pinId: string): Promise<ChatPin[]>;
   /** Put the chat's pins in this order (every id of the chat, once). */
   reorderPins(threadId: string, pinIds: string[]): Promise<ChatPin[]>;
+  /** Public share links (docs/public-share-design.md). */
+  shareStatus(): Promise<ShareStatus>;
+  /** The snapshot exactly as it would be published, for the dialog's preview. */
+  previewShare(source: ShareSource, opts?: ShareOptions): Promise<SharePreview>;
+  createShare(source: ShareSource, opts?: ShareOptions): Promise<SharedLink>;
+  listShares(): Promise<SharedLink[]>;
+  /** Take a link down; answers the remaining links. */
+  revokeShare(id: string): Promise<SharedLink[]>;
   /** A chat's pins changed — on another client, or a label just written. Refetch that chat. */
   onPinsChanged(listener: (payload: { threadId: string }) => void): () => void;
   renameChat(threadId: string, name: string): Promise<void>;
@@ -5115,6 +5426,15 @@ export interface StemApi {
    * "unavailable".
    */
   onConnectionChanged(listener: (reachable: boolean) => void): () => void;
+
+  // Application menu.
+  /** A command picked from the menu bar (or its key, when nothing on the page took it). */
+  onMenuCommand(listener: (command: MenuCommand) => void): () => void;
+  /**
+   * The chats the Window menu lists under ⌘1–9, as parallel id/title arrays, top
+   * row first. Empty whenever the numbers are not live on screen.
+   */
+  setMenuChats(threadIds: string[], titles: string[]): Promise<void>;
 
   // App settings + Quick Chat overlay.
   getSettings(): Promise<AppSettings>;
@@ -5340,8 +5660,11 @@ export interface StemApi {
   revealMain(): Promise<void>;
   /** Hide the overlay (Escape from within it). */
   hideQuickChat(): Promise<void>;
+  /** Overlay: open System Settings at the Privacy pane the window chip is missing. */
+  openQuickChatPrivacy(which: 'screen' | 'accessibility'): Promise<void>;
   /** Shrink the visible overlay to the compact bar (its session just emptied). */
-  compactQuickChat(): Promise<void>;
+  /** `chip`: the bar is showing an "Ask about this window" chip. */
+  compactQuickChat(chip?: boolean): Promise<void>;
   /** Overlay: fired each time the overlay is summoned; `reset` => fresh session. */
   onQuickChatFocus(listener: (focus: QuickChatFocus) => void): () => void;
   /** HUD: fired with the current one-line status while the overlay is hidden. */

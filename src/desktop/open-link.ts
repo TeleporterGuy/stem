@@ -37,6 +37,9 @@ export function classifyLink(url: string): LinkAction {
   }
   if (EXTERNAL_URL_PROTOCOLS.has(parsed.protocol)) return { kind: 'external', url: parsed.toString() };
   if (parsed.protocol !== 'file:') return { kind: 'ignore' };
+  // A host names another machine. POSIX refuses one in fileURLToPath; Windows
+  // turns it into a UNC path and would open a file off someone's SMB share.
+  if (parsed.hostname) return { kind: 'ignore' };
   let path: string;
   try {
     path = fileURLToPath(parsed);

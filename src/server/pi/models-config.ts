@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { LocalProviderApi, LocalProviderId, LocalProviderTestResult, ModelOverride } from '../../shared/types';
 import { isCustomProviderId, isLocalProviderId } from '../../shared/providers';
@@ -8,6 +8,7 @@ import { log } from '../log';
 import { parseModelOverrides } from './model-overrides';
 import { piModelsConfigPath } from '../workspace/paths';
 import { readSettings } from '../workspace/settings';
+import { replaceFile } from '../replace-file';
 
 // Stem's custom-providers config for the pi backend (models.json under the
 // isolated pi home). OpenAI-compatible servers (Ollama, LM Studio, and a custom
@@ -316,7 +317,7 @@ async function writeModelsConfig(config: PiModelsConfig): Promise<void> {
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(tmp, JSON.stringify(config, null, 2), 'utf8');
-    await rename(tmp, path); // atomic in the same dir
+    await replaceFile(tmp, path); // atomic in the same dir
   } finally {
     // quiet: this is the accumulation guard the doc comment describes, not the
     // write. A rename that succeeded already consumed the temp; one that failed

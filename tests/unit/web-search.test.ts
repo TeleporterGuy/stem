@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { expectPosixMode } from './posix-mode';
 
 // The module reads piHome() to place web-search.json; point it at a temp dir.
 let home = '';
@@ -219,7 +220,7 @@ describe('writeWebSearchConfig', () => {
 
   it('keeps the file owner-only — it holds the user API keys', async () => {
     await writeWebSearchConfig({ ...base, credentials: { exaApiKey: 'exa-123' } });
-    expect(statSync(webSearchConfigPath()).mode & 0o077).toBe(0);
+    expectPosixMode(webSearchConfigPath(), 0, 0o077);
   });
 
   it('overwrites cleanly, so a cleared key does not linger from a previous write', async () => {

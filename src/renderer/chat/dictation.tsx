@@ -2,13 +2,31 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Mic, Square } from 'lucide-react';
 import type { DictationLanguages } from '../../shared/types';
 
-// Dictation into a text field, on the Mac's own on-device speech model (see
-// desktop/dictation.ts). The words land in the field as they are heard: what
+// Dictation into a text field, on the computer's own on-device speech model
+// (Apple's on a Mac, Whisper elsewhere; see desktop/dictation). The words land in the field as they are heard: what
 // was there before stays, and the live tail is rewritten in place until the
 // model settles it. Typing in the field while dictating stops the dictation,
 // so a hand edit is never overwritten by the next update.
 
 const LOCALE_KEY = 'stem.dictationLocale';
+const MODEL_KEY = 'stem.dictationModel';
+
+/** Windows and Linux: which Whisper model listens. A per-machine choice too. */
+export function dictationModel(): 'fast' | 'accurate' {
+  try {
+    return localStorage.getItem(MODEL_KEY) === 'accurate' ? 'accurate' : 'fast';
+  } catch {
+    return 'fast';
+  }
+}
+
+export function setDictationModel(model: 'fast' | 'accurate'): void {
+  try {
+    localStorage.setItem(MODEL_KEY, model);
+  } catch {
+    // Unsaved; the next dictation uses the fast model.
+  }
+}
 
 /** The chosen language, or null for the Mac's own. A per-machine choice, so localStorage. */
 export function dictationLocale(): string | null {
@@ -130,7 +148,7 @@ export function useDictation(value: string, setValue: (text: string) => void): D
     setError(null);
     move('starting');
     window.stem
-      .startDictation(dictationLocale())
+      .startDictation(dictationLocale(), dictationModel())
       .then((s) => {
         if (phaseRef.current !== 'starting' && phaseRef.current !== 'downloading') return;
         session.current = s.session;

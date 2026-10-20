@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
+  Archive,
   CheckCheck,
   ChevronRight,
   Clock,
@@ -23,7 +24,7 @@ import type {
   Persona,
   ThreadStatus
 } from '../../shared/types';
-import { isUnread } from '../../shared/inbox';
+import { isUnread, placement } from '../../shared/inbox';
 import { useOffline } from '../hooks/useServerReachable';
 import { stripCiteMarkers } from '../../shared/citations';
 import { Kbd, glyphsFor, runKeyGlyphs, useShortcut, useShortcutHintMode, type ShortcutId } from '../shortcuts';
@@ -66,8 +67,10 @@ export interface ChatListProps {
   onRenameChat: (threadId: string, name: string) => void;
   onDeleteChat: (threadId: string) => void;
   onMoveChat: (threadId: string, folderId: string | null) => void;
-  /** Chat read/unread (the tree's bolding). Archive/snooze are mail concepts now. */
+  /** Chat read/unread (the tree's bolding). */
   onSetRead: (threadIds: string[], read: boolean) => void;
+  /** Archive (or bring back) chats: out of the tree, into the folded Archived section. */
+  onSetArchived: (threadIds: string[], archived: boolean) => void;
   /** Have a model write this thread's subject from its conversation, now. */
   onWriteSubject: (threadId: string) => void;
 
@@ -210,6 +213,7 @@ export function ChatList(props: ChatListProps) {
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const anchorRef = useRef<string | null>(null);
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
 
   // ---- search ----
   // The search box is collapsed to a header icon by default so it costs no vertical
@@ -327,17 +331,31 @@ export function ChatList(props: ChatListProps) {
       return next;
     });
 
+  // Archived chats leave the tree for the folded section at its foot. The same
+  // rule the phone uses (ios ChatListStore.isArchived): anything not in the
+  // Inbox placement — a leftover snooze from the old chat Inbox counts too —
+  // and new activity in the chat lifts it back out on its own.
+  const { treeChats, archivedChats } = useMemo(() => {
+    const now = Date.now();
+    const tree: ChatSummary[] = [];
+    const archived: ChatSummary[] = [];
+    for (const c of data.chats) (placement(c, data.inbox, now) === 'inbox' ? tree : archived).push(c);
+    return { treeChats: tree, archivedChats: archived };
+  }, [data.chats, data.inbox]);
+  const archivedIds = useMemo(() => new Set(archivedChats.map((c) => c.threadId)), [archivedChats]);
+
   const childFolders = (parentId: string | null): Folder[] =>
     data.folders.filter((f) => f.parentId === parentId).sort((a, b) => a.order - b.order);
   const folderChats = (folderId: string | null): ChatSummary[] =>
-    data.chats.filter((c) => c.folderId === folderId);
+    treeChats.filter((c) => c.folderId === folderId);
 
   // ⌘1…⌘9 open the first nine chat rows exactly as the Chats tab shows them, top
   // to bottom — a collapsed folder's chats are not on screen, so they are not
   // counted. The same walk the tree renders with, so the number on a row's hint
   // and the key that opens it can never disagree.
-  // The same walk orders a Shift-click range.
-  const visibleChatIds = useMemo(() => {
+  // The same walk orders a Shift-click range, which may run on into the open
+  // Archived section; the numbers stay on the tree.
+  const treeChatIds = useMemo(() => {
     const out: string[] = [];
     const walk = (parentId: string | null) => {
       for (const f of childFolders(parentId)) if (expanded.has(f.id)) walk(f.id);
@@ -346,8 +364,12 @@ export function ChatList(props: ChatListProps) {
     walk(null);
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- childFolders/folderChats are plain views over these
-  }, [data.chats, data.folders, expanded]);
-  const numberedChatIds = useMemo(() => visibleChatIds.slice(0, 9), [visibleChatIds]);
+  }, [treeChats, data.folders, expanded]);
+  const visibleChatIds = useMemo(
+    () => (archivedOpen ? [...treeChatIds, ...archivedChats.map((c) => c.threadId)] : treeChatIds),
+    [treeChatIds, archivedChats, archivedOpen]
+  );
+  const numberedChatIds = useMemo(() => treeChatIds.slice(0, 9), [treeChatIds]);
 
   // ---- multi-selection ----
   const clearPicked = useCallback(() => {
@@ -355,19 +377,19 @@ export function ChatList(props: ChatListProps) {
     anchorRef.current = null;
   }, []);
   // The selection belongs to the tree as it is on screen: leaving the tab or
-  // searching drops it, and a chat that went away (deleted, here or elsewhere)
-  // leaves it.
+  // searching drops it, and a chat that went off screen (deleted here or
+  // elsewhere, archived, or folded away with the Archived section) leaves it.
   useEffect(() => {
     if (tab !== 'chats' || results !== null) clearPicked();
   }, [tab, results, clearPicked]);
   useEffect(() => {
     setPicked((prev) => {
       if (!prev.size) return prev;
-      const live = new Set(data.chats.map((c) => c.threadId));
+      const live = new Set(visibleChatIds);
       const next = new Set([...prev].filter((id) => live.has(id)));
       return next.size === prev.size ? prev : next;
     });
-  }, [data.chats]);
+  }, [visibleChatIds]);
   useEffect(() => {
     if (!picked.size) return;
     const onKey = (e: KeyboardEvent) => {
@@ -433,6 +455,20 @@ export function ChatList(props: ChatListProps) {
     const id = numberedChatIds[Number(e.key) - 1];
     if (id) onOpen(id);
   });
+  // The Window menu lists the same rows under the same keys, and only while they
+  // are live — a menu entry for a number the list is not showing would open a
+  // chat the key itself refuses to.
+  const menuIds = numbersLive ? numberedChatIds : [];
+  const menuTitles = menuIds.map((id) => {
+    const chat = data.chats.find((c) => c.threadId === id);
+    return chat ? (chat.subject ?? chat.title) : '';
+  });
+  const menuKey = JSON.stringify([menuIds, menuTitles]);
+  useEffect(() => {
+    const [ids, titles] = JSON.parse(menuKey) as [string[], string[]];
+    void window.stem.setMenuChats(ids, titles);
+  }, [menuKey]);
+  useEffect(() => () => void window.stem.setMenuChats([], []), []);
   const rowNumber = (threadId: string): number | null => {
     if (!hintMode || !numbersLive) return null;
     const i = numberedChatIds.indexOf(threadId);
@@ -445,7 +481,7 @@ export function ChatList(props: ChatListProps) {
   const folderUnreadIds = useMemo(() => {
     const parents = new Map(data.folders.map((f) => [f.id, f.parentId]));
     const ids = new Map<string, string[]>();
-    for (const chat of data.chats) {
+    for (const chat of treeChats) {
       if (!chat.folderId) continue;
       if (!isUnread(chat, data.inbox, props.statuses[chat.threadId] === 'running')) continue;
       for (let id: string | null = chat.folderId; id != null; id = parents.get(id) ?? null) {
@@ -455,7 +491,7 @@ export function ChatList(props: ChatListProps) {
       }
     }
     return ids;
-  }, [data.chats, data.folders, data.inbox, props.statuses]);
+  }, [treeChats, data.folders, data.inbox, props.statuses]);
   const folderUnread = useMemo(
     () => new Map([...folderUnreadIds].map(([id, list]) => [id, list.length])),
     [folderUnreadIds]
@@ -720,12 +756,27 @@ export function ChatList(props: ChatListProps) {
               </>
             )}
           </span>
+          {!isEditing && archivedIds.has(hit.threadId) && (
+            <span className="chat-sched-badge" title="Archived" aria-label="Archived">
+              <Archive size={11} />
+            </span>
+          )}
         </div>
       );
     });
   };
 
   const isEmpty = data.chats.length === 0 && data.folders.length === 0;
+  const allPickedArchived = () => {
+    const ids = pickedIds();
+    return ids.length > 0 && ids.every((id) => archivedIds.has(id));
+  };
+  const archivePicked = () => {
+    const ids = pickedIds();
+    const restore = allPickedArchived();
+    clearPicked();
+    props.onSetArchived(ids, !restore);
+  };
   const showingSearch = searching || results !== null;
   // Render-time clock for the tree's date buckets; the mail list keeps its own
   // wake-timer clock (a snoozed conversation returns on its own schedule).
@@ -871,6 +922,8 @@ export function ChatList(props: ChatListProps) {
             const r = e.currentTarget.getBoundingClientRect();
             setMenu({ kind: 'move', id: '', x: r.left, y: r.bottom + 4 });
           }}
+          allArchived={allPickedArchived()}
+          onArchive={archivePicked}
           onDelete={() => setConfirmBulkDelete(true)}
           onClear={clearPicked}
         />
@@ -910,6 +963,15 @@ export function ChatList(props: ChatListProps) {
               }
               return rows;
             })()}
+            {archivedChats.length > 0 && (
+              <>
+                <button className="memory-view-toggle inbox-snoozed-toggle" onClick={() => setArchivedOpen((v) => !v)}>
+                  <ChevronRight size={13} className={archivedOpen ? 'open' : ''} />
+                  Archived ({archivedChats.length})
+                </button>
+                {archivedOpen && archivedChats.map((c) => renderChat(c, 0))}
+              </>
+            )}
           </>
         ) : (
           <MailList
@@ -952,6 +1014,15 @@ export function ChatList(props: ChatListProps) {
                 }}
               >
                 Mark as unread
+              </button>
+              <button
+                onClick={() => {
+                  archivePicked();
+                  closeMenu();
+                }}
+              >
+                {allPickedArchived() ? 'Move out of archive' : `Archive ${picked.size} chats`}
+                <Accel id="archive-thread" />
               </button>
               <button
                 className="danger"
@@ -1053,6 +1124,15 @@ export function ChatList(props: ChatListProps) {
                     {unread ? 'Mark as read' : 'Mark as unread'}
                     <Accel id="toggle-read" />
                   </button>
+                  <button
+                    onClick={() => {
+                      props.onSetArchived([menu.id], !archivedIds.has(menu.id));
+                      closeMenu();
+                    }}
+                  >
+                    {archivedIds.has(menu.id) ? 'Move out of archive' : 'Archive'}
+                    <Accel id="archive-thread" />
+                  </button>
                   <div className="ctx-sep" />
                   <button
                     onClick={() => {
@@ -1128,6 +1208,14 @@ export function ChatList(props: ChatListProps) {
             clearPicked();
             for (const id of ids) props.onDeleteChat(id);
           }}
+          onArchive={
+            allPickedArchived()
+              ? undefined
+              : () => {
+                  setConfirmBulkDelete(false);
+                  archivePicked();
+                }
+          }
           onCancel={() => setConfirmBulkDelete(false)}
         />
       )}

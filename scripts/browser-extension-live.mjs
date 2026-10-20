@@ -249,6 +249,8 @@ function fixture(req, res, state) {
       return send(204, 'text/plain', '');
     case '/user':
       return html('The user’s own page', '<h1>The user is reading this</h1><p>Stem must not switch away from it.</p>');
+    case '/extframe':
+      return html('Page with a fill menu', '<h1>Billing address</h1><label>City <input id="city"></label>');
     case '/page2':
       return html('Page two', '<h1>Second page</h1><p>Nothing else here.</p>');
     case '/help':
@@ -390,6 +392,7 @@ async function writeHelperExtension(dir, origin, recordFixture) {
         permissions: ['debugger', 'tabs', 'downloads'],
         host_permissions: ['http://127.0.0.1/*'],
         background: { service_worker: 'sw.js' },
+        web_accessible_resources: [{ resources: ['frame.html'], matches: ['http://127.0.0.1/*'] }],
         content_scripts: [{ matches: ['http://127.0.0.1/*'], js: ['cs.js'], run_at: 'document_start' }]
       },
       null,
@@ -413,7 +416,20 @@ async function writeHelperExtension(dir, origin, recordFixture) {
     report();
   };
   if (document.documentElement) start(); else document.addEventListener('readystatechange', start, { once: true });
+  // A password manager's fill menu, as Bitwarden draws it: an element with a
+  // closed shadow root holding a frame of this extension's own page. A page
+  // with one refuses every other extension's debugger.
+  const foreignFrame = () => {
+    const host = document.createElement('test-fill-menu');
+    host.attachShadow({ mode: 'closed' }).innerHTML = '<iframe src="' + chrome.runtime.getURL('frame.html') + '"></iframe>';
+    document.documentElement.append(host);
+  };
+  if (location.pathname === '/extframe') addEventListener('DOMContentLoaded', foreignFrame);
   addEventListener('hashchange', () => {
+    if (location.hash === '#stem-test-foreign-frame') {
+      foreignFrame();
+      return;
+    }
     if (['#stem-test-minimize', '#stem-test-restore', '#stem-test-user-download'].includes(location.hash)) {
       chrome.runtime.sendMessage({ op: location.hash.slice(11) });
       return;
@@ -427,6 +443,7 @@ async function writeHelperExtension(dir, origin, recordFixture) {
   });
 })();\n`
   );
+  await writeFile(join(dir, 'frame.html'), '<!doctype html><p>Fill menu</p>\n');
   // Service worker: optionally captures a raw AX tree of the fixture form in a
   // tab of its own (never one the scenario uses) for tests/fixtures.
   await writeFile(
@@ -587,7 +604,8 @@ async function nativeHost(configPath) {
       assert(hello.extensionId === config.extensionId, `id ${hello.extensionId} != ${config.extensionId}`);
       assert(hello.extensionVersion === config.expectedVersion, `version ${hello.extensionVersion}`);
       assert(/Chrome\//.test(hello.userAgent), 'userAgent');
-      return `${hello.extensionId} v${hello.extensionVersion}`;
+      assert(/^[0-9a-f-]{36}$/.test(hello.profileId || ''), `profileId ${hello.profileId}`);
+      return `${hello.extensionId} v${hello.extensionVersion}, profile ${hello.profileId.slice(0, 8)}…`;
     });
     sendFrame({ type: 'host', connected: true });
 
@@ -938,6 +956,23 @@ async function nativeHost(configPath) {
       const formDocs = log.filter((e) => /tab=F/.test(e.href));
       assert(formDocs.at(-1).present === false, 'marker left behind after end');
       return c.text;
+    });
+
+    await check('another extension’s frame in the page is taken out so Stem can attach; one added later too', async () => {
+      const D = 'thread-d';
+      const opened = ok(await req(D, { kind: 'open', url: `${config.origin}/extframe` }), /Page with a fill menu/);
+      const s1 = ok(await req(D, { kind: 'snapshot' }), /Billing address/);
+      const menus = await evalIn(D, opened.tab, 'document.querySelectorAll("test-fill-menu").length');
+      assert(menus === 1, `fill menu host count ${menus}`);
+      // The menu coming back while Stem is attached (the user focused a field).
+      await req(D, { kind: 'evaluate', script: 'location.hash = "stem-test-foreign-frame", 1' });
+      await sleep(800);
+      // Chrome drops the debugger then; the next action attaches again, and the refs still work.
+      const s2 = ok(await req(D, { kind: 'fill', ref: refOf(s1.text, 'textbox', 'City'), value: 'Most' }), /Set textbox "City"/, 'fill after a later frame');
+      const city = await evalIn(D, opened.tab, 'document.querySelector("#city").value');
+      sendFrame({ type: 'end', threadId: D });
+      assert(city === 'Most', `city ${city}`);
+      return s2.text.split('\n').at(-1);
     });
 
     await check('stale and unknown refs say so', async () => {

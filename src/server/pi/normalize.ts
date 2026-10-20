@@ -158,6 +158,8 @@ export interface TurnContext {
    * comes back to a persona that can mail the user about it.
    */
   isMail?: boolean;
+  /** Inter-Stem external context: only read-only tools and drafting (see EXTERNAL_TOOLS). */
+  external?: boolean;
   /**
    * The mail delivery's conversation + participant set, for the mail bridge:
    * send_mail's recipients are validated against `participants`, and the
@@ -197,6 +199,12 @@ export interface TurnContext {
   personaComputer?: PersonaComputerPin;
   /** The turn's persona browser pin: the Mac whose browser the `browser` tool drives. */
   personaBrowser?: PersonaBrowserPin;
+  /**
+   * "Ask about this window": the MCP servers that cover the window's app. The
+   * bridge loads their tools as ordinary tools for the turn (turn-context
+   * `directMcp`) and the window block points the model at them.
+   */
+  windowServers?: string[];
   /**
    * What coding_agent may do this turn — the persona pin, or a plain chat's
    * Settings → Features choice — or, absent, why not (`codingRefusal`).

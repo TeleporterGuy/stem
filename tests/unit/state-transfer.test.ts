@@ -16,7 +16,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setHost } from '../../src/server/host';
@@ -24,6 +24,7 @@ import { passphraseKeyWrapper } from '../../src/server/host/passphrase-key';
 import { SECRET_VALUE_PREFIX } from '../../src/server/pi/protocol';
 import { exportState, importState, stateRootObstruction } from '../../src/server/workspace/state-transfer';
 import { listTar } from '../../src/server/workspace/tar';
+import { expectPosixMode } from './posix-mode';
 
 const PASSPHRASE = 'a passphrase for the container';
 
@@ -154,7 +155,7 @@ describe('the credential key that has to open on the other side', () => {
       servers: Record<string, { headers: Record<string, string> }>;
     };
     expect(decryptWith(recovered, config.servers.fastmail.headers.Authorization)).toBe('Bearer real-token');
-    expect(statSync(join(to, 'pi-home', 'secret.key')).mode & 0o777).toBe(0o600);
+    expectPosixMode(join(to, 'pi-home', 'secret.key'), 0o600);
   });
 
   it('reports a wrong passphrase as every tool needing a sign-in, rather than failing silently', async () => {
@@ -285,7 +286,7 @@ describe('what travels and what stays', () => {
     populate(from);
     const archive = join(scratch(), 'move.tar');
     await exportState({ out: archive, passphrase: PASSPHRASE });
-    expect(statSync(archive).mode & 0o777).toBe(0o600);
+    expectPosixMode(archive, 0o600);
   });
 });
 

@@ -24,7 +24,8 @@ import {
   PinOff,
   ChevronRight,
   Clock,
-  Lock
+  Lock,
+  Share2
 } from 'lucide-react';
 import type {
   ActivityItem,
@@ -132,6 +133,8 @@ interface ChatViewProps {
   onEdit: (turnId: string, newText: string) => void;
   /** Branch the conversation into a new chat ending at this turn. */
   onFork: (turnId: string) => void;
+  /** Publish this answer as a public link (opens the share dialog). */
+  onShare?: (turnId: string) => void;
   /** Delete this turn and everything after it (truncate, no re-send). */
   onDelete: (turnId: string) => void;
   /** Re-send a message whose send failed before a turn existed (startTurn rejected —
@@ -405,6 +408,7 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
   onRetry,
   onEdit,
   onFork,
+  onShare,
   onDelete,
   onRetryFailedSend,
   onEditFailedSend,
@@ -728,6 +732,13 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
           {m.role === 'assistant' && !isEditing && (m.sources?.length ?? 0) > 0 && (
             <SourcesList sources={m.sources!} />
           )}
+          {isLive && !isEditing && !!m.content && (
+            // Text written mid-turn ("I'll go through the threads…") is not the
+            // end: the model may still be thinking or calling tools, whose rows
+            // sit above the text, often scrolled away. Keep the dots at the
+            // bottom of the reply until the turn settles.
+            <div className="activity-tail">{activityIndicator}</div>
+          )}
           {!isEditing && m.attachments && m.attachments.length > 0 && (
             <div className="message-attachments">
               {m.attachments.map((att, i) =>
@@ -804,6 +815,18 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                   </ActionTip>
                 );
               })()}
+              {onShare && m.role === 'assistant' && m.turnId && m.content.trim() && (
+                <ActionTip tip="Share this answer as a link">
+                  <button
+                    type="button"
+                    className="message-action"
+                    aria-label="Share this answer as a link"
+                    onClick={() => onShare(m.turnId!)}
+                  >
+                    <Share2 size={13} />
+                  </button>
+                </ActionTip>
+              )}
               {m.role !== 'system' && m.turnId && (
                 <>
                   <ActionTip tip="Fork into a new chat from here">

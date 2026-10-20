@@ -26,6 +26,8 @@ import guideMd from '../../../docs/README.md?raw';
 import chatsMd from '../../../docs/user/chats.md?raw';
 import quickChatMd from '../../../docs/user/quick-chat.md?raw';
 import mailMd from '../../../docs/user/mail.md?raw';
+import otherStemsMd from '../../../docs/user/other-stems.md?raw';
+import shareLinksMd from '../../../docs/user/share-links.md?raw';
 import memoryMd from '../../../docs/user/memory/README.md?raw';
 import memoryFactsMd from '../../../docs/user/memory/facts.md?raw';
 import memoryRecallMd from '../../../docs/user/memory/recall.md?raw';
@@ -91,6 +93,8 @@ export const STEM_GUIDE_PAGES: readonly StemGuidePage[] = [
   page('chats', 'docs/user/chats.md', 'asking, attaching files, dictation, tool rows, folders and auto-filing, selecting several chats, private chats, retry/edit/fork, the pinboard, /compact', chatsMd),
   page('quick-chat', 'docs/user/quick-chat.md', 'the shortcut-summoned overlay for asking from any app, and Note mode', quickChatMd),
   page('mail', 'docs/user/mail.md', 'mailing personas: writing and reading mail, the Inbox, the built-in personas and who to mail first, the Personas tab editor, agents they start, scheduled-task mail, Work history', mailMd),
+  page('other-stems', 'docs/user/other-stems.md', 'mail with other people\'s Stems: verifying your email address, writing to someone, Requests, held mail, persona drafts you approve, keys and blocking, relays and encryption, company policy', otherStemsMd),
+  page('share-links', 'docs/user/share-links.md', 'public share links: the Share dialog and its scopes, what is left out, the preview card, encryption, expiry and limits, revoking links in Settings, what can\'t be shared', shareLinksMd),
   page('memory', 'docs/user/memory/README.md', 'what Memory learns on its own, the summary of you, where Facts and Past chats live, and the memory models', memoryMd),
   page('memory-facts', 'docs/user/memory/facts.md', 'durable facts: how they arrive, reviewing them, the Deep check, conflicts, tidy-up, erasing them', memoryFactsMd),
   page('memory-recall', 'docs/user/memory/recall.md', 'Past chats (Recall): searchable chat history and summaries, its storage limit, erasing it', memoryRecallMd),

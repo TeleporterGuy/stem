@@ -1,5 +1,6 @@
 import { BrowserWindow, screen } from 'electron';
-import { workspaceVisibilityOptions } from '../platform';
+import { isWaylandSession, workspaceVisibilityOptions } from '../platform';
+import { placeOwnWindow } from './helper';
 
 // The "Stem is controlling this Mac" pill: a small always-on-top window at the
 // top centre of the main display for as long as a run is on. It is the one
@@ -16,16 +17,18 @@ import { workspaceVisibilityOptions } from '../platform';
 
 const WIDTH = 340;
 const HEIGHT = 44;
+/** The window's title: how the Linux helper finds it to place it (Wayland ignores setPosition). */
+const TITLE = 'Stem computer control';
 
-const HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
-  html,body{margin:0;background:transparent;font:13px -apple-system,BlinkMacSystemFont,sans-serif;-webkit-user-select:none}
+const HTML = `<!doctype html><html><head><meta charset="utf-8"><title>${TITLE}</title><style>
+  html,body{margin:0;background:transparent;font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-user-select:none}
   .pill{display:flex;align-items:center;gap:10px;height:36px;margin:4px;padding:0 6px 0 14px;border-radius:18px;
     background:rgba(20,20,24,.92);color:#fff;box-shadow:0 4px 18px rgba(0,0,0,.35)}
   .dot{width:8px;height:8px;border-radius:50%;background:#ff5f57;animation:p 1.2s infinite}
   @keyframes p{50%{opacity:.35}}
   .txt{flex:1;white-space:nowrap}
   button{height:26px;padding:0 12px;border:0;border-radius:13px;background:#fff;color:#111;font:600 12px -apple-system,sans-serif;cursor:pointer}
-</style></head><body><div class="pill"><span class="dot"></span><span class="txt" id="txt">Stem is controlling this Mac</span>
+</style></head><body><div class="pill"><span class="dot"></span><span class="txt" id="txt">${labelFor(null)}</span>
 <button id="stop">Stop</button></div></body></html>`;
 
 // An https URL, not a custom scheme: Chromium routes unknown schemes to the OS
@@ -43,7 +46,7 @@ export interface ComputerBanner {
 }
 
 function labelFor(app: string | null): string {
-  return app ? `Stem is controlling ${app}` : 'Stem is controlling this Mac';
+  return app ? `Stem is controlling ${app}` : `Stem is controlling this ${process.platform === 'darwin' ? 'Mac' : 'computer'}`;
 }
 
 export function createComputerBanner(): ComputerBanner {
@@ -59,6 +62,7 @@ export function createComputerBanner(): ComputerBanner {
   function ensure(): BrowserWindow {
     if (win && !win.isDestroyed()) return win;
     win = new BrowserWindow({
+      title: TITLE,
       width: WIDTH,
       height: HEIGHT,
       frame: false,
@@ -103,8 +107,12 @@ export function createComputerBanner(): ComputerBanner {
     show() {
       const w = ensure();
       const area = screen.getPrimaryDisplay().workArea;
-      w.setPosition(Math.round(area.x + (area.width - WIDTH) / 2), area.y + 8);
+      const x = Math.round(area.x + (area.width - WIDTH) / 2);
+      w.setPosition(x, area.y + 8);
       w.showInactive();
+      // A Wayland compositor places new windows itself (GNOME: centred), so
+      // Stem's GNOME extension moves the pill to the top, above everything.
+      if (isWaylandSession()) placeOwnWindow(TITLE, x, area.y + 8);
     },
     hide() {
       if (win && !win.isDestroyed()) win.hide();

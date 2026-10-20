@@ -91,7 +91,7 @@ enum Uploads {
         for a in items {
             guard var data = a.data else { throw StemError(message: "\(a.name) is no longer on this phone") }
             var name = a.name, mime = a.mime
-            if mime == "image/heic" || mime == "image/heif", let img = UIImage(data: data), let jpg = img.jpegData(compressionQuality: 0.85) {
+            if isHeic(name: name, mime: mime), let img = UIImage(data: data), let jpg = img.jpegData(compressionQuality: 0.85) {
                 data = jpg
                 mime = "image/jpeg"
                 name = (name as NSString).deletingPathExtension + ".jpg"
@@ -101,16 +101,25 @@ enum Uploads {
         return out
     }
 
+    /// HEIC/HEIF stills and sequences, by MIME or extension. Windows and Linux
+    /// clients have no HEVC decoder, so these never leave the phone as-is.
+    static func isHeic(name: String, mime: String) -> Bool {
+        let m = mime.lowercased()
+        if m.hasPrefix("image/heic") || m.hasPrefix("image/heif") { return true }
+        return ["heic", "heif", "hif"].contains((name as NSString).pathExtension.lowercased())
+    }
+
     /// Note images travel inline: the memory model reads the bytes directly.
     static func inline(_ items: [DraftAttachment]) -> [TurnAttachment] {
         items.compactMap { a in
             guard let d = a.data else { return nil }
-            var data = d, mime = a.mime
-            if let img = UIImage(data: d), d.count > 1_500_000 || mime.contains("heic") || mime.contains("heif"),
+            var data = d, mime = a.mime, name = a.name
+            if let img = UIImage(data: d), d.count > 1_500_000 || isHeic(name: a.name, mime: mime),
                let jpg = img.jpegData(compressionQuality: 0.8) {
                 data = jpg; mime = "image/jpeg"
+                if isHeic(name: name, mime: a.mime) { name = (name as NSString).deletingPathExtension + ".jpg" }
             }
-            return TurnAttachment(name: a.name, path: nil, dataBase64: data.base64EncodedString(), mime: mime)
+            return TurnAttachment(name: name, path: nil, dataBase64: data.base64EncodedString(), mime: mime)
         }
     }
 }

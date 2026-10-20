@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   markAllRead,
+  noteRename,
   noteSilentRun,
   readInbox,
   removeInboxEntry,
@@ -168,6 +169,24 @@ describe('read state', () => {
     const missing = { threadId: 'z', updatedAt: base.baseline + HOUR };
     const state = await markAllRead([{ threadId: 'a', updatedAt: base.baseline + HOUR }]);
     expect(isUnread(missing, state)).toBe(true);
+  });
+});
+
+describe('rename', () => {
+  it('keeps an answer read in Quick Chat read when the naming pass renames the chat after', async () => {
+    await readInbox();
+    const answered = Date.now() + 1000; // the answer's write
+    await setRead(['a'], true, new Map([['a', answered]]));
+    const renamed = answered + 2000; // session_info lands a couple of seconds later
+    const state = await noteRename('a', answered, renamed);
+    expect(isUnread({ threadId: 'a', updatedAt: renamed }, state)).toBe(false);
+  });
+
+  it('leaves an unread answer bold', async () => {
+    const base = await readInbox();
+    const answered = base.baseline + HOUR;
+    const state = await noteRename('a', answered, answered + 2000);
+    expect(isUnread({ threadId: 'a', updatedAt: answered + 2000 }, state)).toBe(true);
   });
 });
 

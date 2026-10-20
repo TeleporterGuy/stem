@@ -23,7 +23,19 @@ describe('browser extension id', () => {
     expect(manifest.manifest_version).toBe(3);
     expect(manifest.name).toBe('Stem');
     expect(manifest.incognito).toBe('not_allowed');
-    expect(manifest.host_permissions).toBeUndefined();
-    expect([...manifest.permissions].sort()).toEqual(['alarms', 'debugger', 'downloads', 'nativeMessaging', 'storage', 'tabs', 'webNavigation']);
+    // Only so a password manager's frame can be taken out of a page before the
+    // debugger attaches (cdp.js removeForeignFrames); `debugger` reaches every
+    // page already.
+    expect(manifest.host_permissions).toEqual(['<all_urls>']);
+    expect([...manifest.permissions].sort()).toEqual([
+      'alarms',
+      'debugger',
+      'downloads',
+      'nativeMessaging',
+      'scripting',
+      'storage',
+      'tabs',
+      'webNavigation'
+    ]);
   });
 });

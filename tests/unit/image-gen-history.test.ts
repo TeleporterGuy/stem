@@ -149,4 +149,24 @@ describe('readThread: generated images', () => {
     expect(await runtime.findThreadImage('img-session', '../etc')).toBeNull();
     expect(await runtime.findThreadImage('no-such-thread', 'img_0a1b2c3d4e')).toBeNull();
   });
+
+  it('serves a picture before pi has saved its tool result, until the turn settles', async () => {
+    // pi saves a parallel batch's tool results only once every call is done,
+    // while the chat fetches each picture as soon as its own call ends.
+    const { runtime, sessions } = await tempRuntime();
+    await session(sessions, [header, user, call]);
+    const internal = runtime as unknown as {
+      primaryWorker(): { currentTurn: unknown; proc: null };
+      onPiEvent: (worker: unknown, event: Record<string, unknown>) => void;
+    };
+    const worker = internal.primaryWorker();
+    worker.currentTurn = newTurnContext('img-session', 'turn-1');
+    internal.onPiEvent(worker, { type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'generate_image', args: {} });
+    internal.onPiEvent(worker, { type: 'tool_execution_end', toolCallId: 'call-1', toolName: 'generate_image', result: toolResult(), isError: false });
+    expect(await runtime.findThreadImage('img-session', 'img_0a1b2c3d4e')).toEqual({ mimeType: 'image/png', data: BYTES });
+    expect(await runtime.findThreadImage('other-thread', 'img_0a1b2c3d4e')).toBeNull();
+    internal.onPiEvent(worker, { type: 'agent_end' });
+    // Settled: the session file is the only source again (and here it lacks it).
+    expect(await runtime.findThreadImage('img-session', 'img_0a1b2c3d4e')).toBeNull();
+  });
 });

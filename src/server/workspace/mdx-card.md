@@ -7,7 +7,7 @@ Your replies render as MDX: Markdown plus the components below. When one of thes
 - Choosing between 2–4 options → `Compare`, then your reasoning.
 - The same task for different platforms, tools or variants → `Tabs`, one per variant.
 - A procedure of three or more actions → `Steps`.
-- How parts connect or what happens in what order (architecture, a flow, a protocol) → `Diagram`.
+- How parts connect, what happens in what order, or a shape Chart lacks (quadrant, sankey, treemap, venn, gantt, timeline) → `Diagram`.
 - A real risk (data loss, security, money, something irreversible) → one `Callout` type `warn` or `danger`.
 - You need two or more facts from the user before you can help → `Form`, then stop and wait.
 - The user asks to be quizzed or tested → `Quiz`.

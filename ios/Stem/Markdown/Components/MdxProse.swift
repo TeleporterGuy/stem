@@ -124,11 +124,13 @@ struct MdxCollapsible: View {
     }
 }
 
-/// A Mermaid diagram, drawn by mermaid in a web view (MermaidView). Source it
-/// can't parse falls back to the source in a code block, as on the desktop.
+/// A Mermaid diagram, drawn by pele in a web view (DiagramView), growing line
+/// by line while the reply streams. Final source it can't parse falls back to
+/// the source in a code block, as on the desktop.
 struct MdxDiagram: View {
     let title: String?
     let source: String
+    var closed = true
     @State private var failed = false
 
     var body: some View {
@@ -145,7 +147,7 @@ struct MdxDiagram: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    MermaidView(source: code, onError: { failed = true })
+                    DiagramView(source: closed ? code : source, live: !closed, onError: { failed = true })
                 }
             }
         }

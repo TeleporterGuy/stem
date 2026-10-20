@@ -111,6 +111,8 @@ interface Draft {
   oauthScope: string;
   /** Device id it is pinned to; '' = the machine hosting the Stem server. */
   location: string;
+  /** "Works with apps", comma-separated; '' = matched by the server's name. */
+  apps: string;
 }
 
 interface Editing {
@@ -132,7 +134,8 @@ function blankDraft(transport: McpTransport): Draft {
     oauthClientId: '',
     oauthClientSecret: '',
     oauthScope: '',
-    location: ''
+    location: '',
+    apps: ''
   };
 }
 
@@ -368,7 +371,8 @@ function McpTab() {
           oauthClientId: d.oauthClientId,
           oauthClientSecret: d.oauthClientSecret,
           oauthScope: d.oauthScope,
-          location: s.location?.deviceId ?? ''
+          location: s.location?.deviceId ?? '',
+          apps: (s.apps ?? []).join(', ')
         };
         setEditing((cur) => new Map(cur).set(key, { base, draft: { ...base }, isNew: false }));
         if (d.oauthClientId) setOauthOpen((cur) => new Set(cur).add(key));
@@ -433,6 +437,11 @@ function McpTab() {
       let list = entry.isNew ? await window.stem.addMcpServer(input) : await window.stem.updateMcpServer(input);
       if (!entry.isNew && d.location !== entry.base.location) {
         list = await window.stem.setMcpServerLocation(input.name, d.location || null);
+      }
+      // Like the location, not part of how the server is reached: its own write.
+      if (d.apps.trim() !== entry.base.apps.trim()) {
+        const apps = d.apps.split(',').map((a) => a.trim()).filter(Boolean);
+        list = await window.stem.setMcpServerApps(input.name, apps.length ? apps : null);
       }
       setServers(list);
       dropEditing(key);
@@ -941,6 +950,21 @@ function McpTab() {
         {hasSecret && (
           <p className="ld-hint">{MCP_SECRET_MASK} is a stored secret. Leave it to keep it, or type a new value.</p>
         )}
+        {/* "Ask about this window" (Quick Chat, Mac): which apps' windows point at this server. */}
+        <Field label="Works with apps" htmlFor="mcp-apps">
+          <input
+            id="mcp-apps"
+            className="vfield"
+            aria-label="Apps this server works with"
+            placeholder={d.name.trim() ? `Any app named like “${d.name.trim()}”` : 'App names, comma-separated'}
+            value={d.apps}
+            onChange={(e) => setDraft(key, { ...d, apps: e.target.value })}
+          />
+        </Field>
+        <p className="ld-hint">
+          When you ask about a window from one of these apps, Stem uses this server to read and act in it. Leave
+          empty to match apps by the server's name. App names or bundle ids, comma-separated.
+        </p>
       </>
     );
   }

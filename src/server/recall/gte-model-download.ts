@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, rm, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { GTE_MODEL_ARTIFACT, type GteModelArtifact } from './gte-model-artifact';
+import { replaceFile } from '../replace-file';
 
 export interface GteDownloadOptions {
   signal?: AbortSignal;
@@ -114,7 +115,7 @@ export function createGteModelDownloader(deps: {
           throw new Error(`Stem GTE Memory download failed verification: ${file}`);
         }
         signal.throwIfAborted();
-        await rename(temporary, destination);
+        await replaceFile(temporary, destination);
         completedBytes += expected.size;
         report(completedBytes);
       } finally {

@@ -10,10 +10,24 @@ import { ChevronRight } from 'lucide-react';
  * DisclosureRow so they stop swallowing the 320px panel.
  */
 
-/** One setting as a row: label (and optional second line) left, control right. */
-export function ValueRow({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children?: ReactNode }) {
+/**
+ * One setting as a row: label (and optional second line) left, control right.
+ * `stacked` puts the control on its own full-width line under the label, for a
+ * text field too wide to share the 320px panel with a two-line label.
+ */
+export function ValueRow({
+  label,
+  hint,
+  stacked,
+  children
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  stacked?: boolean;
+  children?: ReactNode;
+}) {
   return (
-    <div className="set-vrow">
+    <div className={stacked ? 'set-vrow stacked' : 'set-vrow'}>
       <span className="vlab">
         {label}
         {hint && <em>{hint}</em>}

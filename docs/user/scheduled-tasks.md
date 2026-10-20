@@ -26,6 +26,10 @@ arrives as mail in the Inbox.
 
 - Stem must be running. If Stem is closed or the computer sleeps, each overdue task
   runs once when Stem can run again.
+- If the server stops in the middle of a run, the run is recorded as cut off by a
+  server restart and runs once more when Stem starts again. A run cut off twice in a
+  row is not retried; it waits for its next scheduled time, and the task's row says
+  why.
 - Times use the local time of the machine Stem runs on: your computer, or your
   server if you moved Stem to one.
 - Each run starts with an empty context: the task’s prompt, the persona it runs
@@ -42,7 +46,8 @@ arrives as mail in the Inbox.
 - Runs can use enabled tools. Web-search tasks request search automatically. Native
   search needs a compatible model; otherwise enable a search-capable tool.
 - A run that has something for you sends **mail**: all firings of one task share
-  one conversation in the Inbox, and the run’s full reply is attached beneath the
+  one conversation in the Inbox (a task scheduled from a mail conversation reports
+  in that conversation), and the run’s full reply is attached beneath the
   notice once it finishes. Each run is also shown what the task's earlier runs
   already mailed, so a watch task reports a finding once rather than every morning.
   A run that finds nothing leaves no trace, and no run ever makes a chat unread.

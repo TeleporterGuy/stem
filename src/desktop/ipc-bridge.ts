@@ -64,6 +64,8 @@ const LOCAL_IPC_ARGS: Record<string, ArgSpec[]> = {
   // The browser host's switch and browser pick ('browserHost:localState' / ':setUp' take no arguments).
   'browserHost:setEnabled': [a.boolean],
   'browserHost:choose': [a.string],
+  'browserHost:rename': [a.string, a.string],
+  'browserHost:forget': [a.string],
   'browserHost:openExtensions': [a.optional(a.nullish(a.string))],
   // Folders this machine mirrors: the native picker's absolute paths.
   // ('mirror:localState' takes no arguments, so it is absent.)
@@ -74,11 +76,19 @@ const LOCAL_IPC_ARGS: Record<string, ArgSpec[]> = {
   // ':pause' / ':cancel' take no arguments): the chat it records for, and the
   // draft a second example is added to.
   'recorder:start': [a.string, a.optional(a.nullish(a.string))],
-  // Dictation on this Mac ('dictation:languages' / ':stop' / ':cancel' take no
-  // arguments): the language to listen in, null for the Mac's own.
-  'dictation:start': [a.nullish(a.string)],
+  // Dictation ('dictation:languages' / ':stop' / ':cancel' take no
+  // arguments): the language to listen in, null for the computer's own, and
+  // off a Mac which Whisper model; then the microphone, 16 kHz mono blocks
+  // (a Float32Array, checked again in the handler).
+  'dictation:start': [a.nullish(a.string), a.optional(a.oneOf(['fast', 'accurate']))],
+  'dictation:audio': [a.object],
   'quickchat:run': [a.object],
-  'quickchat:handoff': [a.object]
+  'quickchat:handoff': [a.object],
+  // Whether the compact bar keeps room for the window chip ("Ask about this window").
+  'quickchat:compact': [a.optional(a.boolean)],
+  // The System Settings pane the chip's missing-permission link opens.
+  'quickchat:openPrivacy': [a.oneOf(['screen', 'accessibility'])],
+  'menu:setChats': [a.stringArray, a.stringArray]
 };
 
 /**
@@ -181,5 +191,9 @@ export function bindServerChannels(
  */
 const NEEDS_A_NEWER_SERVER: Record<string, string> = {
   'mcp:setLocation':
-    'This Stem server is older than this copy of Stem and cannot pin an MCP server to a computer. Update the server (or its container) and try again.'
+    'This Stem server is older than this copy of Stem and cannot pin an MCP server to a computer. Update the server (or its container) and try again.',
+  'mcp:setApps':
+    'This Stem server is older than this copy of Stem and cannot match MCP servers to apps. Update the server (or its container) and try again.',
+  'mcp:forApp':
+    'This Stem server is older than this copy of Stem and cannot match MCP servers to apps. Update the server (or its container) and try again.'
 };

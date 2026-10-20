@@ -25,9 +25,10 @@ The user chose the computer-control posture instead.
 | Actions | `tabs`, `open`, `navigate`, `snapshot` (an accessibility outline with refs), `screenshot`, `click`, `hover`, `type`, `fill`, `press`, `scroll`, `wait`, `dialog`, `evaluate`, `console`, `network`, `upload`, `downloads`, `close`. |
 | Uploads | Only files Stem holds: Files, scratch, connected folders, `img_` ids, and the conversation's attachments, which a browser turn keeps as files. Never an arbitrary path on the Mac. |
 | Downloads | Copied into the conversation's scratch `downloads/` on the server. |
-| Several browsers | One per Mac, chosen in that Mac's Settings. The chosen browser is started (`open -g -a`) when a run needs it and it is closed. |
+| Several browsers | One per computer, chosen in that computer's Settings. The chosen browser is started when a run needs it and it is closed: `open -g -a` on a Mac; on Linux its executable is run unless a process already runs it, and it may come to the front. |
+| Several profiles (2026-10-13) | Every profile with the extension connects on its own and stays connected. Settings names them and picks the default; the model names another with `profile`, and that profile sticks to the thread until the run ends. `tabs` with no profile lists every open profile's tabs. See below. |
 | Concurrency | Several runs at once, each keeping track of its own tabs, with one action queue per tab. A run is warned when another run used the same tab recently. |
-| Platform | macOS only for now: Arc, Chrome, Dia, Brave, plus Chromium, Edge and Chrome for Testing when they are installed. |
+| Platform | macOS: Arc, Chrome, Dia, Brave, plus Chromium, Edge and Chrome for Testing when they are installed. Linux: Chrome, Brave, Chromium, Edge, plus every other Chromium user-data folder under `$XDG_CONFIG_HOME` (one or two levels down, `Local State` + `Default/`, which leaves Electron apps out) — Helium, Thorium, Vivaldi, Opera, beta channels. The browser is named by `/proc/<ppid>/exe`; for an AppImage (exe inside the parent's `APPDIR`) by its `APPIMAGE` file instead, since the mount changes every launch. Stem starts known system binaries, and AppImages that are a regular executable file with the AppImage magic, owned by the user or root and writable by no one else; a tarball browser in the home folder connects but is never started. Snap and Flatpak browsers are out: their sandbox reads its own manifest folder and will not start a host outside it. Windows: no. |
 | Install | An unpacked extension: Set up copies it into the profile's state folder and writes native-messaging manifests. The extension id is fixed by the manifest `key`. A Web Store listing comes later. |
 | Local server | Works when the server runs on the same Mac. Computer control was opened up to that case at the same time. |
 
@@ -55,6 +56,37 @@ pi `browser` tool ──ctx.ui.input(stem-browser-bridge)──▶ PiRuntime.han
   scratch.
 - The native host keeps retrying the socket while Stem is down. The open native port
   keeps the extension's service worker alive, so it sees Stem come back.
+
+## Profiles
+
+Each browser profile runs its own copy of the extension, and so its own native host.
+Until 0.7.0 the desktop keyed connections by the app bundle the host was launched from,
+so Arc's work and personal profiles replaced each other's connection every few seconds.
+Now the extension keeps a random id in `chrome.storage.local` (one per profile) and sends
+it in its `hello`, along with the three sites most open there. The desktop keys
+connections by `<app path>#<profile id>`, and a connection counts only once that hello
+has arrived (the native host replays it on every socket connection).
+
+- Names: the user's label from Settings, otherwise "Arc 2" by connect order when an app
+  has several profiles, otherwise the app's name. The desktop sends each extension its
+  name (`{type: 'profile'}`) for the toolbar popup, which is how the user tells the
+  profiles apart. The sites hint is shown only in that Mac's Settings and never goes to
+  the server.
+- Routing: `DeviceBrowserRequest.profile` is the name the model passed. The desktop
+  resolves it (a profile's name, or an app with one profile), and it then sticks to the
+  thread until the `end` frame. With no name, the thread's last profile is used, or the
+  default.
+- `tabs` without a profile on a Mac with several asks every connected profile, plus the
+  thread's own one (started if needed), and answers with one section per profile. Arc's
+  sidebar completion is added once.
+- Entries remembered before profiles (the bare app path) are taken over by the first
+  profile of that app to connect, keeping their name and their place as the default.
+- An extension older than 0.7.0 sends no id and is keyed by the app path, as before.
+- Starting a closed profile: Stem can only start the app (`open -g -a`). Chrome then
+  opens its last-used profile. When the wanted profile does not connect, the error tells
+  the model to ask the user to open a window of it.
+- A persona pin to a single profile is not built. The model picks the profile from the
+  task.
 
 ## Arc's unloaded tabs
 

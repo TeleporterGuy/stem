@@ -192,6 +192,61 @@ describe('TaskScheduler catch-up', () => {
     scheduler.stop();
   });
 
+  it('runs a firing the last process died under once more, and records the cut-off run', async () => {
+    // What a crash mid-run leaves: the schedule already moved on, the row says running.
+    const future = new Date(Date.now() + 60 * 60_000).toISOString();
+    const started = new Date(Date.now() - 60_000).toISOString();
+    await saveTasks([
+      seed({
+        id: 'c',
+        prompt: 'morning news',
+        nextRunAt: future,
+        lastStatus: 'running',
+        inFlight: { at: started, threadId: 'dead-run' },
+        recentRuns: [{ at: started, status: 'ok' }]
+      })
+    ]);
+    const runtime = new FakeRuntime();
+    const { scheduler } = makeScheduler(runtime);
+    await scheduler.start();
+    await until(async () => (await readTasks())[0]?.recentRuns?.length === 3, 'the retry to be recorded');
+
+    expect(runtime.starts).toHaveLength(1);
+    expect(runtime.deleted).toContain('dead-run');
+    const [task] = await readTasks();
+    expect(task.lastStatus).toBe('ok');
+    expect(task.inFlight).toBeUndefined();
+    expect(new Date(task.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
+    expect(task.recentRuns![1]).toMatchObject({ at: started, status: 'failed', interrupted: true });
+    scheduler.stop();
+  });
+
+  it('does not rerun a firing cut off twice in a row', async () => {
+    const future = new Date(Date.now() + 60 * 60_000).toISOString();
+    const started = new Date(Date.now() - 60_000).toISOString();
+    await saveTasks([
+      seed({
+        id: 'd',
+        prompt: 'crashes the server',
+        nextRunAt: future,
+        lastStatus: 'running',
+        inFlight: { at: started },
+        recentRuns: [{ at: started, status: 'failed', interrupted: true }]
+      })
+    ]);
+    const runtime = new FakeRuntime();
+    const { scheduler } = makeScheduler(runtime);
+    await scheduler.start();
+    await flush();
+
+    expect(runtime.starts).toHaveLength(0);
+    const [task] = await readTasks();
+    expect(task.lastStatus).toBe('failed');
+    expect(task.lastError).toMatch(/twice in a row/);
+    expect(task.inFlight).toBeUndefined();
+    scheduler.stop();
+  });
+
   it('does not catch up a task whose next-run is still in the future', async () => {
     const future = new Date(Date.now() + 60 * 60_000).toISOString();
     await saveTasks([seed({ id: 'b', prompt: 'later', createdAt: future, nextRunAt: future })]);

@@ -2,6 +2,7 @@ import { degrade } from '../degrade';
 import { log } from '../log';
 import { devicesWithPushTokens, setDevicePushToken, type DeviceRecord } from '../transport/auth';
 import { apnsConfigured, sendApns } from './apns';
+import { gatewayEnabled, sendViaGateway } from './gateway';
 import { isAnyDesktopPresent, PRESENCE_WINDOW_MS } from './presence';
 
 // What Stem is allowed to wake a phone for, and what it is allowed to say when
@@ -19,8 +20,9 @@ import { isAnyDesktopPresent, PRESENCE_WINDOW_MS } from './presence';
 //
 // The rest of this file is about NOT sending:
 //
-//   - Unconfigured is silent. No APNs key, no pushes, no work — the default for
-//     every install that is not the author's phone (see apns.ts).
+//   - No APNs key means the relay's gateway, which shows only fixed wording
+//     (see gateway.ts); with STEM_PUSH_GATEWAY=off too, no pushes and no work.
+//     Either way nothing happens until a phone has registered a token.
 //   - Somebody at a desk is silent. If a machine reported real input in the last
 //     few minutes, the notification would arrive on a phone in the pocket of
 //     someone already looking at the answer (see presence.ts).
@@ -160,7 +162,10 @@ async function resolveLabel(label?: LabelSource): Promise<string | null> {
  * connected until every refusal has been passed.
  */
 async function deliver(wake: WakeUp, label?: LabelSource): Promise<void> {
-  if (!apnsConfigured()) return;
+  // Direct when this server holds the APNs key; otherwise the relay's gateway
+  // (push/gateway.ts), which never carries a label.
+  const direct = apnsConfigured();
+  if (!direct && !gatewayEnabled()) return;
   if (isAnyDesktopPresent(PRESENCE_WINDOW_MS)) {
     // Logged rather than silent: "why did my phone not buzz" is otherwise an
     // unanswerable question, and this is the answer in almost every case.
@@ -169,7 +174,7 @@ async function deliver(wake: WakeUp, label?: LabelSource): Promise<void> {
   }
   const targets = await devicesWithPushTokens();
   if (targets.length === 0) return;
-  const payload = wakeUpPayload(wake, await resolveLabel(label));
+  const payload = direct ? wakeUpPayload(wake, await resolveLabel(label)) : null;
   // Once per TOKEN, not once per record. A token addresses an app install, and
   // the registry addresses pairings — one phone can hold two rows (unpair,
   // re-pair) and sending down both would buzz it twice for one event. The write
@@ -183,7 +188,7 @@ async function deliver(wake: WakeUp, label?: LabelSource): Promise<void> {
     else byToken.set(device.apnsToken!, [device]);
   }
   for (const [token, devices] of byToken) {
-    const result = await sendApns(token, payload);
+    const result = direct ? await sendApns(token, payload) : await sendViaGateway(token, wake);
     if (result === 'gone') {
       // The token outlived the app it addressed. Drop it now, or every later
       // push spends a request learning the same thing — from every record that

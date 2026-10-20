@@ -64,6 +64,8 @@ interface Entry {
   folder: MirroredFolder;
   watcher: FSWatcher | null;
   timer: NodeJS.Timeout | null;
+  /** When the pending timer fires (Date.now() ms). */
+  dueAt: number;
   running: boolean;
   dirty: boolean;
   frozen: boolean;
@@ -80,7 +82,7 @@ export function createMirrorHost(deps: MirrorHostDeps): MirrorHost {
   function ensureEntry(folder: MirroredFolder): Entry {
     let entry = entries.get(folder.folderId);
     if (!entry) {
-      entry = { folder, watcher: null, timer: null, running: false, dirty: false, frozen: false, lastCount: 0 };
+      entry = { folder, watcher: null, timer: null, dueAt: 0, running: false, dirty: false, frozen: false, lastCount: 0 };
       entries.set(folder.folderId, entry);
     } else {
       entry.folder = folder;
@@ -121,7 +123,13 @@ export function createMirrorHost(deps: MirrorHostDeps): MirrorHost {
   function scheduleSync(folderId: string, delayMs: number): void {
     const entry = entries.get(folderId);
     if (!entry || closed) return;
+    // A sync already due sooner stays put: a steady stream of events must not
+    // push it back forever. (Windows' watcher fires nonstop once its root is
+    // deleted, which kept the round that notices the missing root from running.)
+    const dueAt = Date.now() + delayMs;
+    if (entry.timer && entry.dueAt <= dueAt) return;
     if (entry.timer) clearTimeout(entry.timer);
+    entry.dueAt = dueAt;
     entry.timer = setTimeout(() => {
       entry.timer = null;
       void syncNow(entry);
@@ -175,6 +183,9 @@ export function createMirrorHost(deps: MirrorHostDeps): MirrorHost {
     // last good state, and sync resumes when a scan sees files again.
     if (scan.rootMissing || (entry.lastCount > 0 && scan.entries.length === 0)) {
       entry.frozen = true;
+      // Nothing left to watch; the next successful scan re-arms it.
+      entry.watcher?.close();
+      entry.watcher = null;
       await deps.invoke('mirror:report', [folderId, { state: 'root-missing' }]);
       return;
     }

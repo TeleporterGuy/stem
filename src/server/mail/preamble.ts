@@ -143,6 +143,8 @@ export function mailPreamble(
     canSpawn?: boolean;
     agents?: string[];
     roles?: { id: string; name: string; model?: string; blind?: true; code?: true }[];
+    outside?: { id: string; name: string; does: string }[];
+    addable?: { id: string; name: string; computer?: true }[];
     models?: string[];
     agent?: { role: string; spawnedBy: string };
     source?: { itemId: string; body: string; attachmentNames?: string[] };
@@ -227,11 +229,41 @@ export function mailPreamble(
           'problems only; send those findings back to the writer once; then answer with one report. '
         : '') +
       'Never start agents for a chat-like ask, and never send an agent work you could finish in the same time.' +
-      (roles ? ` Roles you can start: ${roles}.` : '') +
+      (roles
+        ? ` Roles you can start: ${roles}. Agents you start have the tools you have, so whatever you could ` +
+          'try, they can try: a role list names who to start, not what they are able to do.'
+        : '') +
+      (mail.outside?.length
+        ? ` On the user's computer, not in this conversation (you cannot start these; if part of the job ` +
+          `truly needs one, do every other part first, then ask the user to add it here for what is left — ` +
+          `it already exists, so never ask them to make a new one): ${mail.outside
+            .map((p) => `${cleanName(p.name) || p.id} (${p.does})`)
+            .join('; ')}.`
+        : '') +
       (mail.models?.length
         ? ` Models for a role without its own (spawn_agent model): ${mail.models.map(cleanName).filter(Boolean).join(', ')}.`
         : '') +
       (agents.length ? ` Your agents here: ${agents.map(label).join(', ')}.` : '')
+    : '';
+  // Bringing personas in (Persona.addsPersonas, drivers only): the user chose
+  // a persona that acts without asking, so the line says both halves — it may,
+  // and it must not turn the choice back into a question for the user.
+  const addable = (mail.addable ?? [])
+    .map((p) => {
+      const name = cleanName(p.name) || p.id;
+      const traits = [p.id !== name ? p.id : '', p.computer ? "works on the user's computer" : '']
+        .filter(Boolean)
+        .join(', ');
+      return traits ? `${name} (${traits})` : name;
+    })
+    .join('; ');
+  const adding = addable
+    ? ` You may bring any persona into this conversation on your own: send_mail to its id adds it, and the user ` +
+      `is not asked — never ask the user to add one. Personas you can add: ${addable}.` +
+      (mail.addable?.some((p) => p.computer)
+        ? " The ones that work on the user's computer run a coding agent, the screen or the browser there: work " +
+          'on that computer goes to them.'
+        : '')
     : '';
   const role = mail.agent
     ? // An agent: one job's worker, reporting to whoever started it. A blind
@@ -247,8 +279,8 @@ export function mailPreamble(
       ? others.length
         ? `Also on this conversation: ${others.map(label).join(', ')}. You may bring one in with the send_mail tool when the ` +
           'task calls for its role; its reply arrives as a later mail to you, and your current turn ends after ' +
-          `sending. Your plain final message is your answer, and never goes back to a persona you brought in.${spawning ? ` ${spawning}` : ''}`
-        : spawning
+          `sending. Your plain final message is your answer, and never goes back to a persona you brought in.${spawning ? ` ${spawning}` : ''}${adding}`
+        : `${spawning}${adding}`.trim()
       : `You are a consulted participant here; the driver (${label(participants[0])}) alone coordinates the ` +
         `personas, so you cannot mail the others${spawning ? ' except agents you start' : ''}. Answer whoever ` +
         `mailed you — your plain final message goes back to them.${spawning ? ` ${spawning}` : ''}`
@@ -275,10 +307,11 @@ export function mailPreamble(
         'they added (never re-paste a report the user can already read in the thread — pick out what matters ' +
         'from it), and never mail a persona just to ' +
         'acknowledge it. Mail that reaches you after you have answered is filed in the thread without waking ' +
-        `you; the user's next mail brings it to you.${spawning ? ` ${spawning}` : ''}`
+        `you; the user's next mail brings it to you.${spawning ? ` ${spawning}` : ''}${adding}`
       : 'Your plain final message goes to the user. send_mail can also reach the user directly (to ["user"]) — ' +
         'useful for a progress note mid-work.' +
-        (spawning ? ` ${spawning}` : '')
+        (spawning ? ` ${spawning}` : '') +
+        adding
     : `You are a consulted participant here; the driver (${label(participants[0])}) alone answers the user and ` +
       `alone coordinates the personas, so you cannot mail the others${spawning ? ' except agents you start' : ''} ` +
       'and a send_mail to ["user"] is rerouted to the driver. Answer whoever mailed you — your plain final ' +
@@ -315,7 +348,7 @@ export function mailPreamble(
   // Who reads what this persona writes: a non-driver's every word goes to a
   // model; a driver's final message goes to the user, but its send_mail to
   // personas and agents (when it can mail any) goes to models.
-  const writesToModels = !isDriver || !!mail.agent || others.length > 0 || !!mail.canSpawn;
+  const writesToModels = !isDriver || !!mail.agent || others.length > 0 || !!mail.canSpawn || !!adding;
   const writing = writesToModels
     ? [
         isDriver && !mail.agent
@@ -339,6 +372,11 @@ export function mailPreamble(
     ...standing,
     ...source,
     'If a command is blocked by the safety check, find a safer way that stays within what was asked, or carry on without that step; never reach the same effect another way. If Stem pauses this task for approval, end your turn — it resumes you with the answer. If you need a decision only the sender can make, say exactly what you need in your reply: it lands in their inbox and the conversation waits.',
+    // Seen live: a Secretary asked the user for a coding persona to draw art it
+    // could have made itself, then answered "Coding persona can't create
+    // images" with "You're right, I can" and stopped. Listing every capability
+    // does not scale; these two rules cover the failure in general.
+    'Asking the sender for help is the last resort: first do every part of the job your tools can do (or agents you start can), then ask only for what is left and say what is already done. When the sender answers your question with a correction or an objection, take it as the go-ahead and do the work in this turn.',
     MAIL_CLOSE
   ].join('\n');
 }
