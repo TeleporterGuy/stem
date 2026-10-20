@@ -1034,8 +1034,10 @@ export class MailRouter {
     const target =
       conversation ?? (await createConversation(input.subject, [input.personaId ?? 'normal'], input.body));
     // Retitled only when the thread is the task's own: a conversation the user
-    // started keeps the subject it was given.
-    const tasksOwn = !!conversation && items.every((i) => i.conversationId !== conversation.id || !!i.taskId);
+    // started keeps the subject it was given. Ownership goes by the thread's
+    // first mail, so the user replying to a watch thread doesn't freeze its title.
+    const opener = conversation && items.find((i) => i.conversationId === conversation.id);
+    const tasksOwn = !!opener?.taskId;
     if (conversation && tasksOwn && headline && headline !== conversation.subject) {
       await setConversationSubject(conversation.id, headline);
     }
