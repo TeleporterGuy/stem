@@ -66,6 +66,12 @@ itself and a small pill with **Stop** stays on screen.
 
 ## Seeing a skill in use
 
+Stem decides which skills to load by comparing your message with each skill's
+description and with a few example requests it writes for every skill in the
+background, in the languages you write in. When a description changes, its examples
+are written again. While Memory is off, no examples are written and skills are matched
+on their descriptions alone.
+
 Under the reply, the folded tool line counts skills separately — "Used 2 tools and 1
 skill". A skill is listed there only when the answer actually followed it ("Followed
 the skill monthly-invoice-report"); one that was merely loaded, or only known by name,

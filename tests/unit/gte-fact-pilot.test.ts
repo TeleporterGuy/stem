@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalRerankStatus, RetrievalSettings } from '../../src/shared/types';
 import type { EmbedWorkerManager } from '../../src/server/recall/embed-manager';
 import {
-  createGteFactPilot, GTE_FACT_PILOT_FLOOR, GTE_FACT_PILOT_ID, GTE_SKILL_FLOOR,
+  createGteFactPilot, GTE_FACT_PILOT_FLOOR, GTE_FACT_PILOT_ID, GTE_SKILL_EXAMPLE_FLOOR, GTE_SKILL_FLOOR,
   gteFactPilotEligible, verifyGteFactModel
 } from '../../src/server/recall/gte-fact-pilot';
 import { createLocalRerankClient } from '../../src/server/recall/rerank-local';
@@ -168,6 +168,7 @@ describe('GTE fact pilot validation and client', () => {
     expect(client!.maxFacts).toBe(16);
     expect(await client!.factGateScore!()).toBe(-1.6370911598205566);
     expect(await client!.minRelevantScore!()).toBe(GTE_SKILL_FLOOR);
+    expect(await client!.skillExampleFloor!()).toBe(GTE_SKILL_EXAMPLE_FLOOR);
     expect(client!.factQuery!('What next?', ['discarded', 'Earlier one', 'Earlier two'])).toBe(
       'Earlier messages from the user in this conversation:\n- Earlier one\n- Earlier two\n\nCurrent message: What next?'
     );
@@ -201,6 +202,7 @@ describe('GTE fact pilot validation and client', () => {
     h.setStatus({ model: GTE_FACT_PILOT_ID, state: 'error', error: 'worker exited' });
     expect(await client!.available()).toBe(false);
     expect(await client!.factGateScore!()).toBeNull();
+    expect(await client!.skillExampleFloor!()).toBeNull();
     await expect(client!.rerank('query', ['doc'], 1)).rejects.toBeInstanceOf(RerankUnavailableError);
     expect(h.fake.rerank).not.toHaveBeenCalled();
   });

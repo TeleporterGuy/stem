@@ -27,6 +27,13 @@ export interface RerankClient {
    */
   factGateScore?(): Promise<number | null>;
   /**
+   * The raw-score floor for a skill scored with its example requests (the best
+   * of description and examples — see skills/examples.ts), or null when this
+   * backend was never calibrated for that. A best-of score sits on its own scale,
+   * so a backend without this floor scores skills on their descriptions alone.
+   */
+  skillExampleFloor?(): Promise<number | null>;
+  /**
    * Rerank `docs` against `query`; returns up to `topN` results, best first.
    * `index` refers into the input `docs`. Throws {@link RerankUnavailableError}
    * when unconfigured, or a plain Error on any transport/shape failure.

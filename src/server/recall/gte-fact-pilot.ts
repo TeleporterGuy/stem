@@ -15,6 +15,12 @@ export { GTE_FACT_PILOT_ID, GTE_FACT_PILOT_FILES } from './gte-model-artifact';
 export const GTE_FACT_PILOT_FLOOR = -1.6370911598205566;
 // Frozen by the separate skill-selection evaluation; do not use the fact floor.
 export const GTE_SKILL_FLOOR = -3.9743599891662598;
+// A skill with example requests is scored as the best of its description and
+// each example (skills/examples.ts). Calibrated on the 2026-10 relabel of 429
+// real turns with production's own query: 37/51 needed skills served with 26
+// wrong-load turns, against 33/51 and 28 for the description floor above
+// (recall-bench/gte-skill-train-20261010/expand, scores-xpgenerated-max).
+export const GTE_SKILL_EXAMPLE_FLOOR = 3.0;
 
 export async function verifyGteFactModel(directory: string): Promise<void> {
   if (!isAbsolute(directory)) throw new Error('The GTE fact model directory must be absolute');
@@ -73,6 +79,7 @@ export function createGteFactPilot(deps: {
     async available() { return ready(); },
     async minRelevantScore() { return ready() ? spec.minRelevantScore : null; },
     async factGateScore() { return ready() ? spec.factGateScore : null; },
+    async skillExampleFloor() { return ready() ? GTE_SKILL_EXAMPLE_FLOOR : null; },
     async rerank(query, docs, topN) {
       if (!ready()) throw new RerankUnavailableError('GTE fact model is not ready');
       return docs.length ? deps.manager.rerank(query, docs, topN) : [];

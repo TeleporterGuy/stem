@@ -190,6 +190,19 @@ export function saveUserProfileText(text: string): UserProfile {
 }
 
 /**
+ * The summary's "How they communicate" section, or null when there is none.
+ * Skill example requests use it to pick their languages (skills/examples.ts).
+ */
+export function userWritingStyle(): string | null {
+  if (!isUserProfileEnabled()) return null;
+  const text = readRecord()?.text ?? '';
+  const heading = SECTIONS.find((s) => s.key === 'style')!.heading;
+  const section = text.split('\n\n').find((part) => part.startsWith(`${heading}\n`));
+  const body = section?.slice(heading.length + 1).trim();
+  return body ? body : null;
+}
+
+/**
  * The block for a turn's context, or null when there is none. The caller
  * applies the recall gates (memory on, persona may see memory, not private).
  */

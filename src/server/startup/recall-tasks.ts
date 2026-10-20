@@ -7,11 +7,13 @@ import { distillNewMessages, shouldConsolidate } from '../recall/distill';
 import { processPendingRelationChecks, relationSweepBackfillDone, stepRelationSweepBackfill } from '../recall/reconcile';
 import { MAX_ADJUDICATE_ATTEMPTS, adjudicateOpenConflicts } from '../recall/adjudicate';
 import { consolidateFacts, fullTidyDue } from '../recall/consolidate';
-import { buildUserProfile, userProfileDue } from '../recall/profile';
+import { buildUserProfile, userProfileDue, userWritingStyle } from '../recall/profile';
 import { getMemoryRebuildStatus, runMemoryRebuildStep } from '../recall/rebuild';
 import { summarizeFactTexts } from '../recall/audit';
 import { recallStore } from '../recall/store';
 import { curateSkills } from '../skills/curate';
+import { refreshSkillExamples } from '../skills/examples';
+import { listSkillRecords } from '../skills/store';
 import { migrateSkillProvenance } from '../skills/provenance';
 import { degrade } from '../degrade';
 import { log } from '../log';
@@ -251,6 +253,10 @@ export function initRecallTasks(deps: {
         detail: `Split ${r.split}, merged ${r.merged}, archived ${r.archived}, expired ${expired}`
       }));
       if (res.split || res.merged || res.archived || expired || repaired) await deps.runtime().requestSkillReload();
+      // After curation, so a split or merge gets examples for the skills it left.
+      // A sidecar write, never a reload: examples only change how skills rank.
+      const examples = await refreshSkillExamples(skillsLlm, listSkillRecords(), { writingStyle: userWritingStyle() });
+      if (examples.written || examples.missing) log('skills', 'example requests', examples);
     } catch {
       // quiet: track() already failed the skills.curate row.
     } finally {
