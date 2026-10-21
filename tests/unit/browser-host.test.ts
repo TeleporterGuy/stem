@@ -233,6 +233,22 @@ describe('createBrowserHost', () => {
     expect(result('r1')).toEqual({ ok: true, text: 'Opened tab 7', tab: 7 });
   });
 
+  it('reads the page in front of a browser window it is connected to, and nothing while switched off', async () => {
+    expect(await host.peekWindow('Arc', 'Issues')).toEqual({ ready: false, page: null });
+    await writeBrowserHostEnabled(true);
+    const peer = await connectPeer(socketPath, arc());
+    peers.push(peer);
+    await until(() => invoked.some((c) => c.channel === 'browserHost:announce' && JSON.stringify(c.args).includes('0.6.0')));
+    const peeking = host.peekWindow('Arc', 'Issues');
+    const sent = (await peer.next('peek')) as { id: string };
+    peer.send({ type: 'result', id: sent.id, result: { ok: true, page: { url: 'https://linear.app/a', title: 'Issues' } } });
+    expect(await peeking).toEqual({ ready: true, page: { url: 'https://linear.app/a', title: 'Issues' } });
+    // Another browser's window: not this extension's to answer for.
+    expect(await host.peekWindow('Google Chrome', 'Issues')).toEqual({ ready: false, page: null });
+    await writeBrowserHostEnabled(false);
+    expect(await host.peekWindow('Arc', 'Issues')).toEqual({ ready: false, page: null });
+  });
+
   it('launches the chosen browser when it is closed and carries on once the extension connects', async () => {
     await writeBrowserHostEnabled(true);
     const first = await connectPeer(socketPath, arc());

@@ -27,12 +27,16 @@ import {
 } from './windows';
 import { peekFrontWindow, readWindowText, stopWindowPeek, warmWindowPeek, windowBounds, windowPeekSupported } from './window-peek';
 import { eventTurnId } from '../../shared/settledTurns';
+import { isBrowserApp } from '../../shared/browser-apps';
 import { PillTurns, type PillEventParams } from './pill-turns';
 import { activityLabel } from '../../shared/activity';
 import type {
   BackendEventEnvelope,
   ItemEventParams,
   LiveTurnInfo,
+  ManageIntent,
+  ManageTabId,
+  MenuCommand,
   QuickChatHandoff,
   QuickChatPrompt,
   QuickChatSettings,
@@ -81,6 +85,12 @@ export interface QuickChatDeps {
    * open the main app."
    */
   beginSummon(): void;
+  /**
+   * A browser window: whether its browser has the Stem extension connected,
+   * and the page in front (browser-host peekWindow). Absent until the browser
+   * host exists.
+   */
+  peekBrowser?(app: string, title: string): Promise<{ ready: boolean; page: { url: string; title: string } | null }>;
 }
 
 export interface QuickChatSurface {
@@ -141,7 +151,7 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
    * that does nothing.
    */
   let desiredShortcut: string | null = null;
-  /** The same pair for "Ask about this window" (Mac only). */
+  /** The same pair for "Ask about this window". */
   let currentWindowShortcut: string | null = null;
   let desiredWindowShortcut: string | null = null;
 
@@ -428,6 +438,13 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
         toggleQuickChat();
         return;
       }
+      const w = peeked.window;
+      if (deps.peekBrowser && isBrowserApp(w.app, w.bundleId)) {
+        // quiet: a browser that cannot answer is one without browser control.
+        const seen = await deps.peekBrowser(w.app, w.title).catch(() => ({ ready: false, page: null }));
+        w.browserReady = seen.ready;
+        if (seen.page) w.url = seen.page.url;
+      }
       const sameWindow = peek?.window.windowId === peeked.window.windowId;
       const reset = !sameWindow || overlay.shouldStartFresh(Date.now(), newThreadTimeoutMs);
       if (reset) overlay.clearForFreshSession();
@@ -448,14 +465,22 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
   async function windowContextFor(windowId: number | undefined): Promise<WindowContext | undefined> {
     const anchored = peek;
     if (windowId === undefined || !anchored || anchored.window.windowId !== windowId) return undefined;
-    const { app, bundleId, title } = anchored.window;
+    const { app, bundleId, title, url, browserReady } = anchored.window;
     // A slow app's tree must not hold the question up for long: past this the
     // turn goes with the picture alone.
     const text = await Promise.race([
       anchored.text,
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000))
     ]);
-    return { windowId, app, bundleId, title, text };
+    return {
+      windowId,
+      app,
+      bundleId,
+      title,
+      text,
+      ...(url ? { url } : {}),
+      ...(browserReady !== undefined ? { browserReady } : {})
+    };
   }
 
   /**
@@ -882,6 +907,19 @@ export function createQuickChat(deps: QuickChatDeps): QuickChatSurface {
       handleLocal('quickchat:openPrivacy', (_e, which: 'screen' | 'accessibility') => {
         const pane = which === 'accessibility' ? 'Privacy_Accessibility' : 'Privacy_ScreenCapture';
         void shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
+      });
+
+      // The window chip's Connect / Set up: the work happens in the main window's panel.
+      handleLocal('quickchat:openManage', (_e, tab: ManageTabId, raw?: ManageIntent | null) => {
+        const intent: ManageIntent | null =
+          raw?.kind === 'mcp-connect' && typeof raw.entryId === 'string'
+            ? { kind: 'mcp-connect', entryId: raw.entryId.slice(0, 100) }
+            : raw?.kind === 'browser-control'
+              ? { kind: 'browser-control' }
+              : null;
+        dismissQuickChat();
+        deps.revealMainWindow();
+        deps.sendToMain('menu:command', { kind: 'manage-tab', tab, ...(intent ? { intent } : {}) } satisfies MenuCommand);
       });
 
       // The panel emptied while on screen (New thread, deleted thread): drop back

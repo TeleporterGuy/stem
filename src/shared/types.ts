@@ -1,6 +1,7 @@
 // Shared contracts between main, preload, and renderer. Single source of truth.
 
 import type { InboxState } from './inbox';
+import type { McpCatalogEntry } from './mcp-app-catalog';
 import type { TimeLocale } from './time-locale';
 import type { ShortcutId } from './shortcut-defs';
 import type { SharedLink, ShareOptions, SharePreview, ShareSource, ShareStatus } from './share';
@@ -3707,8 +3708,15 @@ export type ManageTabId = 'chats' | 'memory' | 'mcp' | 'personas' | 'folders' | 
  */
 export type MenuCommand =
   | { kind: 'shortcut'; id: ShortcutId }
-  | { kind: 'manage-tab'; tab: ManageTabId }
+  | { kind: 'manage-tab'; tab: ManageTabId; intent?: ManageIntent }
   | { kind: 'open-chat'; threadId: string };
+
+/** Where a jump to a panel tab lands inside it (renderer/manage/intents.ts). */
+export type ManageIntent =
+  /** MCP: a new server filled in from the official-server catalog (mcp-app-catalog.ts). */
+  | { kind: 'mcp-connect'; entryId: string }
+  /** Settings → Features → Browser control. */
+  | { kind: 'browser-control' };
 
 export interface QuickChatShortcutStatus {
   accelerator: string | null;
@@ -4713,7 +4721,23 @@ export interface QuickChatWindow {
   imageBase64: string | null;
   /** Grants that were missing: no picture without 'screen', no text without 'accessibility'. */
   missing: ('screen' | 'accessibility')[];
+  /**
+   * A browser window's active tab address, read through the Stem extension;
+   * absent when it is not a browser or the extension did not answer.
+   */
+  url?: string;
+  /** A browser window whose browser has the Stem extension connected; absent = not a browser. */
+  browserReady?: boolean;
 }
+
+/**
+ * What the window chip offers for the app's official MCP server
+ * (mcp:windowSuggestion): connect the catalog's server, or turn on the
+ * user's own that covers the app but is switched off.
+ */
+export type WindowMcpSuggestion =
+  | { kind: 'connect'; entry: McpCatalogEntry }
+  | { kind: 'enable'; server: string; entry: McpCatalogEntry };
 
 /** What the model is told about the window a turn was asked from. */
 export interface WindowContext {
@@ -4724,6 +4748,13 @@ export interface WindowContext {
   title: string;
   /** The window's readable text, when the app exposes it. */
   text: string | null;
+  /** A browser window's active tab address (QuickChatWindow.url). */
+  url?: string;
+  /**
+   * A browser window: whether the asking computer's Stem extension is
+   * connected in that browser. Absent from older desktops and for other apps.
+   */
+  browserReady?: boolean;
 }
 
 /** Main → overlay: capture an atomic state snapshot for an implicit handoff. */
@@ -5178,7 +5209,9 @@ export interface StemApi {
   /** Set which apps a server works with; null = match by its name again. */
   setMcpServerApps(name: string, apps: string[] | null): Promise<McpServerSummary[]>;
   /** The MCP servers that cover an app ("Ask about this window" chip). */
-  mcpServersForApp(app: string, bundleId: string | null): Promise<string[]>;
+  mcpServersForApp(app: string, bundleId: string | null, url?: string | null): Promise<string[]>;
+  /** What the window chip offers for the app's official MCP server; null = nothing. */
+  mcpWindowSuggestion(app: string, bundleId: string | null, url?: string | null): Promise<WindowMcpSuggestion | null>;
   loginMcpServer(name: string): Promise<McpLoginResult>;
   restartRuntime(): Promise<RuntimeStatus>;
   /** Assistant proposed an MCP change; fired so the UI can show a confirm card. */
@@ -5687,6 +5720,8 @@ export interface StemApi {
   hideQuickChat(): Promise<void>;
   /** Overlay: open System Settings at the Privacy pane the window chip is missing. */
   openQuickChatPrivacy(which: 'screen' | 'accessibility'): Promise<void>;
+  /** The window chip's Connect / Set up: put Quick Chat away and open the main window's panel there. */
+  openManageFromQuickChat(tab: ManageTabId, intent?: ManageIntent): Promise<void>;
   /** Shrink the visible overlay to the compact bar (its session just emptied). */
   /** `chip`: the bar is showing an "Ask about this window" chip. */
   compactQuickChat(chip?: boolean): Promise<void>;

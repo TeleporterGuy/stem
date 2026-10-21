@@ -130,8 +130,8 @@ import { formatSkillsBlock, selectSkills, type SkillUsageStat } from '../skills/
 import { loadedSkillNames } from '../skills/thread-history';
 import { AmbientBlocks, liveUserTexts } from './context-dedupe';
 import { formatPracticeBlock } from '../skills/record';
-import { formatWindowBlock } from './window-context';
-import { mcpServersForAppName } from './mcp';
+import { formatWindowBlock, isBrowserWindow } from './window-context';
+import { mcpServersForAppName, windowSuggestionFor } from './mcp';
 import { readDevices } from '../transport/auth';
 import { listSkillRecords } from '../skills/store';
 import { gradeSkillUse, reportedSkillIssues } from '../skills/grade';
@@ -1364,7 +1364,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       if (input.windowContext) {
         const w = input.windowContext;
         // quiet: without the match the model still gets the window, just no pointer to its app's server.
-        const servers = await mcpServersForAppName(w.app, w.bundleId, input.persona?.mcpServers ?? null).catch(
+        const servers = await mcpServersForAppName(w.app, w.bundleId, input.persona?.mcpServers ?? null, w.url ?? null).catch(
           () => [] as string[]
         );
         if (servers.length) this.windowServers.set(threadId, servers);
@@ -5013,7 +5013,15 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           .catch(() => undefined);
         if (label) browser = { device: label };
       }
-      blocks.push(formatWindowBlock(w, servers, computer, browser));
+      // What would open the page or the app's data up, for the model to tell
+      // the user when it would have helped: browser control that cannot reach
+      // this browser window, and the app's official MCP server not connected.
+      const browserOff = isBrowserWindow(w) && !browser ? ('off' as const) : undefined;
+      const allow = input.persona?.mcpServers ?? null;
+      // quiet: without it the model is just not told about the app's official server.
+      const suggestion = servers.length ? null : await windowSuggestionFor(w.app, w.bundleId, w.url ?? null, allow).catch(() => null);
+      const offer = suggestion ? { name: suggestion.entry.name, kind: suggestion.kind } : undefined;
+      blocks.push(formatWindowBlock(w, servers, computer, browser, { browserOff, offer }));
     }
 
     // The ambient blocks below go out only when the live context does not

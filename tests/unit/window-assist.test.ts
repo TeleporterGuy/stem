@@ -151,7 +151,8 @@ describe('browser control in the window', () => {
 
   it('sends a browser window to the browser tool, not select_window', () => {
     const block = formatWindowBlock(arc, [], { device: null }, { device: null });
-    expect(block).toContain('use the browser tool, not the computer tool');
+    expect(block).toContain('you can work in this very page with the browser tool');
+    expect(block).toContain('Before you answer, read it with the browser tool');
     expect(block).toContain('find the tab whose title matches the title attribute above');
     expect(block).not.toContain('select_window');
   });

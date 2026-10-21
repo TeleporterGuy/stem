@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, X, FolderOpen, Trash2 } from 'lucide-react';
 import type {
   BrowserHostLocalState,
@@ -22,6 +22,7 @@ import {
   MAX_COMMAND_ALLOW_RULES,
   MAX_COMMAND_PREFIX_LENGTH
 } from '../../../../shared/exec-rules';
+import { useManageIntent } from '../../intents';
 
 /** Browser control runs on Macs, Windows and Linux; say which this one is. */
 const IS_MAC = window.stem?.platform === 'darwin';
@@ -161,6 +162,30 @@ function scratchLabel(row: ScratchUsageRow): string {
  * keeps everything about talking; this is everything about acting.
  */
 export function AutonomySections() {
+  // Quick Chat's "Set up" / "Turn on" for browser control: scroll to its group,
+  // once the group is on screen (it renders after the settings load).
+  const browserHead = useRef<HTMLDivElement | null>(null);
+  const wantBrowser = useRef(false);
+  // The rows above load on their own and push the group down, so it is scrolled
+  // to again once they have had a moment to land.
+  const scrollToBrowser = useCallback((el: HTMLDivElement) => {
+    el.scrollIntoView({ block: 'start' });
+    setTimeout(() => el.isConnected && el.scrollIntoView({ block: 'start', behavior: 'smooth' }), 500);
+  }, []);
+  const browserHeadRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      browserHead.current = el;
+      if (el && wantBrowser.current) {
+        wantBrowser.current = false;
+        scrollToBrowser(el);
+      }
+    },
+    [scrollToBrowser]
+  );
+  useManageIntent('browser-control', () => {
+    if (browserHead.current) scrollToBrowser(browserHead.current);
+    else wantBrowser.current = true;
+  });
   const [exec, setExec] = useState<ExecSettings | null>(null);
   const [allowInput, setAllowInput] = useState('');
   const [allowKind, setAllowKind] = useState<'prefix' | 'regex'>('prefix');
@@ -949,7 +974,9 @@ export function AutonomySections() {
           its browser through the Stem extension — client-local like the switch
           above. Set up copies the extension out for Load unpacked and registers
           its native host with the installed browsers (desktop/browser-host). */}
-      <div className="grp-head">Browser control</div>
+      <div className="grp-head" ref={browserHeadRef}>
+        Browser control
+      </div>
       <div className="group">
         <ChatBrowserRows devices={devices} clientDeviceId={clientDeviceId} />
         {browserHost?.supported && (

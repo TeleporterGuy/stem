@@ -87,6 +87,7 @@ import { deletePendingIfCurrent, rekeyPendingIfCurrent } from './pendingTurn';
 import { RequestGate } from './requestGate';
 import { dismissTaskAlert, enqueueTaskAlert } from './taskAlerts';
 import { practiceInput } from './chat/recorder-store';
+import { requestManageIntent } from './manage/intents';
 
 // Sentinel key for a brand-new chat that has no backend thread id yet. Its slice is
 // migrated to the real thread id once the first turn returns one.
@@ -1241,6 +1242,7 @@ export default function App() {
         if (command.kind === 'manage-tab') {
           setShowInspector(true);
           setManageTab(command.tab);
+          if (command.intent) requestManageIntent(command.intent);
         } else if (command.kind === 'open-chat') {
           void openChatRef.current(command.threadId);
         }

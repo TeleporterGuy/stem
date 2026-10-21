@@ -390,6 +390,8 @@ const quickChat = createQuickChat({
   // Late-bound: the proxy only exists once the server (embedded or external) has
   // answered, and Quick Chat is created before any of that.
   invoke: (channel, args) => proxy!.invoke(channel, args),
+  // Late-bound like `invoke`: the browser host starts after Quick Chat exists.
+  peekBrowser: (app, title) => browserHost?.peekWindow(app, title) ?? Promise.resolve({ ready: false, page: null }),
   beginSummon: () => {
     // Cleared on the next tick, after the activation has been handled.
     summoningOverlay = true;

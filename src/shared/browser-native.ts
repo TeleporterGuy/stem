@@ -139,6 +139,8 @@ export type ExtensionResult =
       downloads?: ExtensionDownload[];
       /** `tabs` only: every loaded tab's URL, so the desktop can add Arc's unloaded sidebar tabs. Never forwarded. */
       urls?: string[];
+      /** `peek` only: the active tab of the last focused window, when it is an ordinary web page. */
+      page?: { url: string; title: string };
     }
   | { ok: false; error: string; stopped?: true };
 
@@ -149,6 +151,8 @@ export type ToExtension =
   | { type: 'end'; threadId: string }
   /** The extension's files on disk changed (a Stem update): reload to pick them up. */
   | { type: 'reload' }
+  /** "Ask about this window": answer with the page in front (ExtensionResult.page). Older extensions ignore it. */
+  | { type: 'peek'; id: string }
   /** What Stem calls this browser profile ("Work", "Arc 2"), for the popup. */
   | { type: 'profile'; name: string }
   /** From the native host only: whether it currently reaches the Stem app. */
