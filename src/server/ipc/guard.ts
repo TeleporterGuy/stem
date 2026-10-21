@@ -193,6 +193,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'chats:setFolder': [a.string, a.nullish(a.string)],
   'chats:setFormat': [a.string, a.oneOf(['md', 'mdx'])],
   'sources:favicon': [a.string],
+  'chats:remoteImage': [a.string, a.string],
   'chats:writeSubject': [a.string],
   'pins:list': [a.string],
   'pins:add': [a.string, a.object],

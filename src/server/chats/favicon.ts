@@ -92,14 +92,31 @@ export const publicLookup: LookupFunction = (hostname, options, callback) => {
   });
 };
 
-type Hop = { redirect: string } | { icon: string } | null;
+type Hop = { redirect: string } | { image: string } | null;
 
-/** One GET over https, through the checked lookup, reading at most MAX_BYTES. */
-function getOnce(url: URL): Promise<Hop> {
+/** Limits for one public image fetch. */
+export interface ImageFetchLimits {
+  maxBytes: number;
+  timeoutMs: number;
+  /** Accepted content types (lower-case, no parameters). */
+  types: RegExp;
+  userAgent: string;
+}
+
+const ICON_LIMITS: ImageFetchLimits = {
+  maxBytes: MAX_BYTES,
+  timeoutMs: TIMEOUT_MS,
+  // SVG is excluded on purpose: it is a document, not a picture.
+  types: /^image\/(x-icon|vnd\.microsoft\.icon|png|gif|jpeg|webp)$/,
+  userAgent: 'Mozilla/5.0 (compatible; Stem favicon)'
+};
+
+/** One GET over https, through the checked lookup, reading at most `maxBytes`. */
+function getOnce(url: URL, limits: ImageFetchLimits): Promise<Hop> {
   return new Promise((resolve) => {
     const req = httpsGet(
       url,
-      { lookup: publicLookup, timeout: TIMEOUT_MS, headers: { accept: 'image/*', 'user-agent': 'Mozilla/5.0 (compatible; Stem favicon)' } },
+      { lookup: publicLookup, timeout: limits.timeoutMs, headers: { accept: 'image/*', 'user-agent': limits.userAgent } },
       (res) => {
         const status = res.statusCode ?? 0;
         if (status >= 300 && status < 400) {
@@ -107,8 +124,7 @@ function getOnce(url: URL): Promise<Hop> {
           return resolve(res.headers.location ? { redirect: res.headers.location } : null);
         }
         const type = String(res.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
-        // SVG is excluded on purpose: it is a document, not a picture.
-        if (status !== 200 || !/^image\/(x-icon|vnd\.microsoft\.icon|png|gif|jpeg|webp)$/.test(type)) {
+        if (status !== 200 || !limits.types.test(type)) {
           res.resume();
           return resolve(null);
         }
@@ -118,7 +134,7 @@ function getOnce(url: URL): Promise<Hop> {
           size += chunk.length;
           // Counted as it arrives: a missing or lying content-length can't
           // make the server buffer more than the cap.
-          if (size > MAX_BYTES) {
+          if (size > limits.maxBytes) {
             req.destroy();
             resolve(null);
             return;
@@ -127,7 +143,7 @@ function getOnce(url: URL): Promise<Hop> {
         });
         res.on('end', () => {
           const bytes = Buffer.concat(chunks);
-          resolve(bytes.length && size <= MAX_BYTES ? { icon: `data:${type};base64,${bytes.toString('base64')}` } : null);
+          resolve(bytes.length && size <= limits.maxBytes ? { image: `data:${type};base64,${bytes.toString('base64')}` } : null);
         });
         res.on('error', () => resolve(null));
       }
@@ -137,17 +153,37 @@ function getOnce(url: URL): Promise<Hop> {
     const deadline = setTimeout(() => {
       req.destroy();
       resolve(null);
-    }, TIMEOUT_MS);
+    }, limits.timeoutMs);
     req.on('close', () => clearTimeout(deadline));
     req.on('timeout', () => req.destroy());
     req.on('error', () => resolve(null));
   });
 }
 
+/**
+ * A public https image as a data URL, or null. The same refusals as the icon
+ * fetch: named public hosts only, private addresses refused at connect time,
+ * redirects re-checked at every hop, the byte cap enforced while streaming.
+ */
+export async function fetchPublicImage(start: URL, limits: ImageFetchLimits): Promise<string | null> {
+  let url = start;
+  if (url.protocol !== 'https:' || !isFetchableHost(url.hostname) || url.username || url.password) return null;
+  for (let hop = 0; hop <= MAX_HOPS; hop++) {
+    const result = await getOnce(url, limits);
+    if (!result) return null;
+    if ('image' in result) return result.image;
+    const target = new URL(result.redirect, url);
+    if (target.protocol !== 'https:' || !isFetchableHost(target.hostname) || target.username || target.password) return null;
+    url = target;
+  }
+  return null;
+}
+
 let running = 0;
 const waiting: Array<() => void> = [];
 
-async function limited<T>(task: () => Promise<T>): Promise<T> {
+/** Runs `task` once a fetch slot is free (shared by every public image fetch). */
+export async function limited<T>(task: () => Promise<T>): Promise<T> {
   if (running >= MAX_CONCURRENT) await new Promise<void>((go) => waiting.push(go));
   running += 1;
   try {
@@ -158,17 +194,8 @@ async function limited<T>(task: () => Promise<T>): Promise<T> {
   }
 }
 
-async function fetchIcon(host: string): Promise<string | null> {
-  let url = new URL(`https://${host}/favicon.ico`);
-  for (let hop = 0; hop <= MAX_HOPS; hop++) {
-    const result = await getOnce(url);
-    if (!result) return null;
-    if ('icon' in result) return result.icon;
-    const target = new URL(result.redirect, url);
-    if (target.protocol !== 'https:' || !isFetchableHost(target.hostname)) return null;
-    url = target;
-  }
-  return null;
+function fetchIcon(host: string): Promise<string | null> {
+  return fetchPublicImage(new URL(`https://${host}/favicon.ico`), ICON_LIMITS);
 }
 
 /** The site's favicon as a data URL, or null when it has none (or isn't asked). */

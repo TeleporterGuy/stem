@@ -62,6 +62,8 @@ private struct BlockView: View {
             TableBlock(header: header, rows: rows)
         case .rule:
             Divider()
+        case .image(let alt, let url):
+            RemoteImageBlock(alt: alt, url: url)
         case .component(_, let text):
             // A tag the component parser left inside Markdown (say, nested in a
             // list): like the desktop, the tag goes and its content stays.
@@ -162,5 +164,51 @@ private struct TableBlock: View {
             .padding(10)
         }
         .background(Color(.secondarySystemBackground).opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// A picture a reply links to on the web. The server fetches it, and only when
+/// the URL came from a web tool or the user (src/server/chats/remote-image.ts);
+/// anything else, or a failed fetch, shows as a link to open in the browser.
+struct RemoteImageBlock: View {
+    let alt: String
+    let url: String
+    @Environment(\.mdxRemoteImage) private var load
+    @State private var image: UIImage?
+    @State private var loading = true
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .frame(maxWidth: 320, maxHeight: 480, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .accessibilityLabel(alt.isEmpty ? "Image" : alt)
+                    .contextMenu {
+                        Button { UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil) } label: { Label("Save to Photos", systemImage: "square.and.arrow.down") }
+                        if let link = URL(string: url) { Link(destination: link) { Label("Open in Browser", systemImage: "safari") } }
+                    }
+            } else if let link = URL(string: url), ["http", "https"].contains(link.scheme?.lowercased() ?? "") {
+                Link(destination: link) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "photo")
+                        Text(alt.isEmpty ? "Image" : alt).lineLimit(1)
+                        Text(link.host() ?? "").foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .font(.footnote)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                }
+                .opacity(loading && load != nil ? 0.6 : 1)
+            } else if !alt.isEmpty {
+                Text(alt).foregroundStyle(.secondary)
+            }
+        }
+        // Keyed on the loader too: a reply that streamed in has none until it settles.
+        .task(id: "\(load != nil) \(url)") {
+            defer { loading = false }
+            guard let load, let data = await load(url) else { return }
+            image = UIImage(data: data)
+        }
     }
 }

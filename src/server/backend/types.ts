@@ -437,6 +437,12 @@ export interface ChatBackend extends EventEmitter {
   readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[]; complete?: boolean }>;
   /** One image a thread's session holds, by id (generate_image output or an attachment). */
   findThreadImage(threadId: string, imageId: string): Promise<{ mimeType: string; data: string } | null>;
+  /**
+   * Whether `url` first reached the thread from outside a model (the user's own
+   * words or a tool's output) rather than from something a model wrote. Gates
+   * fetching pictures a reply links to (chats/remote-image.ts).
+   */
+  urlCameFromInput(threadId: string, url: string): Promise<boolean>;
   /** Generated images a thread made since the last take (mail replies, scheduled results). */
   takeGeneratedImages(threadId: string): GeneratedImageRef[];
   /** Raw persisted action history for Mail; excludes private reasoning. */

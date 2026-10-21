@@ -1342,6 +1342,11 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .mdx ul, .mdx ol { padding-left: 1.4em; }
 .mdx table { border-collapse: collapse; margin: 0.8em 0; }
 .mdx td { border: 0.5px solid var(--line); padding: var(--sp-3) var(--sp-5); }
+.mdx-remote-image { display: block; max-width: 100%; max-height: 480px; object-fit: contain; margin: 0.5em 0; border-radius: var(--radius); }
+.mdx-remote-link { display: inline-flex; align-items: center; gap: var(--sp-3); max-width: 100%; padding: var(--sp-2) var(--sp-4); margin: 0.2em 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); text-decoration: none; vertical-align: middle; }
+.mdx-remote-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdx-remote-link .mdx-remote-host { color: var(--muted); font-size: 0.9em; }
+.mdx-remote-link.loading { opacity: 0.6; }
 .inline-code {
   background: var(--inline-bg);
   padding: 1px 5px;

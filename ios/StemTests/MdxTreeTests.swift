@@ -187,3 +187,20 @@ final class MdxFormTests: XCTestCase {
         XCTAssertEqual(MdxText.preview(body), "I read all 672 facts. Fixed Raycast")
     }
 }
+
+final class MarkdownImageLineTests: XCTestCase {
+    func testImageOnlyLinesBecomeImageBlocks() {
+        let blocks = MarkdownParser.parse("Here:\n\n![Deck-Man](https://is1-ssl.mzstatic.com/a.jpg)\n\n![a](https://x.com/1.png) ![b](https://x.com/2.png \"t\")")
+        XCTAssertEqual(blocks, [
+            .paragraph("Here:"),
+            .image(alt: "Deck-Man", url: "https://is1-ssl.mzstatic.com/a.jpg"),
+            .image(alt: "a", url: "https://x.com/1.png"),
+            .image(alt: "b", url: "https://x.com/2.png")
+        ])
+    }
+
+    func testImageInsideTextStaysInline() {
+        XCTAssertEqual(MarkdownParser.parse("see ![a](https://x.com/1.png) here"), [.paragraph("see ![a](https://x.com/1.png) here")])
+        XCTAssertNil(MarkdownParser.imageLine("![a](https://x.com/1.png) and text"))
+    }
+}

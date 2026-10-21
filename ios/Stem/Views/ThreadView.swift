@@ -332,6 +332,8 @@ struct MessageRow: View {
                     MarkdownView(message.content)
                         .environment(\.mdxActions, submit.map { MdxActions(submit: $0, running: store.busy) })
                         .environment(\.mdxIsLatest, isLatest)
+                        // Settled replies only: a streaming one would ask for half-typed URLs.
+                        .environment(\.mdxRemoteImage, store.busy && isLatest ? nil : { await store.remoteImage($0) })
                 }
                 ForEach(message.images ?? [], id: \.id) { ref in GeneratedImage(ref: ref, store: store) }
                 if let sources = message.sources, !sources.isEmpty { SourcesList(sources: sources) }

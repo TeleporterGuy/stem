@@ -166,6 +166,7 @@ import { trackGeneration } from './generation-speed';
 
 import { PiWorker } from './worker';
 import { findImageInEntries, newImageId, parseImagesMarker, stemImageOf } from './image-gen.mjs';
+import { cameFromInput, jsonNeedle } from '../chats/remote-image';
 import { mailPreamble, personaNotesBlock, priorReportsBlock } from '../mail/preamble';
 import { systemVersion } from '../sys-version';
 import { secretKeyHex } from './secrets';
@@ -2329,6 +2330,29 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       }
     }
     return null;
+  }
+
+  async urlCameFromInput(threadId: string, url: string): Promise<boolean> {
+    const file = await this.resolveSessionFile(threadId);
+    if (!file) {
+      const live = this.workers.find((w) => w.proc?.running && w.activeThreadId === threadId);
+      if (!live) return false;
+      const res = await live.proc!.request({ type: 'get_messages' });
+      return cameFromInput((res.data as { messages?: unknown[] } | undefined)?.messages ?? [], url);
+    }
+    const text = await readFile(file, 'utf8');
+    const needle = jsonNeedle(url);
+    // Only lines naming the URL are worth parsing — the others can be megabytes.
+    const entries: unknown[] = [];
+    for (const line of text.split('\n')) {
+      if (!line.includes(needle) && !line.includes(url)) continue;
+      try {
+        entries.push(JSON.parse(line));
+      } catch {
+        // quiet: a torn line (pi still appending) says nothing about the URL yet
+      }
+    }
+    return cameFromInput(entries, url);
   }
 
   async readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[]; complete?: boolean }> {

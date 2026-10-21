@@ -351,6 +351,11 @@ export class FakeBackend extends EventEmitter implements ChatBackend {
     return has ? { mimeType: 'image/png', data: testPatternPng(96, 64).toString('base64') } : null;
   }
 
+  async urlCameFromInput(threadId: string, url: string): Promise<boolean> {
+    // The fake's tools have no output, so the user's own messages stand in for it.
+    return !!this.threads.get(threadId)?.messages.some((m) => m.role === 'user' && m.content.includes(url));
+  }
+
   async readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[] }> {
     const thread = this.threads.get(threadId);
     return { title: thread?.title ?? '', messages: [...(thread?.messages ?? [])] };

@@ -458,6 +458,11 @@ final class ThreadStore {
     func image(_ ref: GeneratedImageRef) async -> Data? {
         await ImageCache.shared.generated(ref, client: client)
     }
+
+    func remoteImage(_ url: String) async -> Data? {
+        guard let id = threadId else { return nil }
+        return await ImageCache.shared.remote(url, threadId: id, client: client)
+    }
 }
 
 /// `/note`: a fact straight into memory, no turn.

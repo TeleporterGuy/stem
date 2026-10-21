@@ -47,7 +47,7 @@ import type { PendingApproval } from '../manage/approvalQueue';
 import { MdxView } from './MdxView';
 import { StreamingMdxView } from './StreamingMdxView';
 import { HoverTip } from '../ui/InfoTip';
-import { EARLIER_MESSAGE, LATEST_MESSAGE, MdxActionContext, MdxMessageContext } from '../mdx/ActionContext';
+import { EARLIER_MESSAGE, LATEST_MESSAGE, MdxActionContext, MdxMessageContext, MdxThreadContext } from '../mdx/ActionContext';
 import { FormHostContext, MdxSourceContext, createFormHost } from '../mdx/FormHost';
 import { AnswerBar } from '../mdx/AnswerBar';
 import { useAutoHideScroll } from '../hooks/useAutoHideScroll';
@@ -710,7 +710,9 @@ export const ChatView = forwardRef<ChatViewHandle, ChatViewProps>(function ChatV
                 value={m.id === lastAssistantId && !running ? LATEST_MESSAGE : EARLIER_MESSAGE}
               >
                 <MdxSourceContext.Provider value={`chat:${threadId ?? ''}:${m.turnId ?? m.id}`}>
-                  <MdxView text={m.content} />
+                  <MdxThreadContext.Provider value={threadId ?? null}>
+                    <MdxView text={m.content} />
+                  </MdxThreadContext.Provider>
                 </MdxSourceContext.Provider>
               </MdxMessageContext.Provider>
             )

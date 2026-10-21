@@ -5429,6 +5429,12 @@ export interface StemApi {
   adoptPlainFormat(): Promise<ChatListResult>;
   /** A cited site's favicon as a data URL (fetched by the server), or null. */
   sourceFavicon(host: string): Promise<string | null>;
+  /**
+   * A web picture a reply in the thread links to, as a data URL fetched by the
+   * server, or null (refused: only URLs that reached the chat from a tool's
+   * output or the user, never ones a model wrote; or the fetch failed).
+   */
+  getRemoteImage(threadId: string, url: string): Promise<string | null>;
 
   // Inbox: read/archive/snooze state for the Chats panel's Inbox mode. Every
   // mutator takes a list of thread ids so a bulk selection is the same call as a
