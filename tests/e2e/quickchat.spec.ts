@@ -92,6 +92,31 @@ test('reading a Quick Chat answer marks it read; ⌘N shrinks back to a fresh ba
   expect((await windowState(electronApp, 'quickchat')).visible).toBe(true);
 });
 
+test('⌘N in an "Ask about this window" session keeps asking about that window', async ({ electronApp, mainWindow }) => {
+  await expect.poll(async () => (await windowState(electronApp, 'quickchat')).exists).toBe(true);
+  await mainWindow.evaluate(() => (window as any).stem.revealQuickChat());
+  await expect.poll(async () => (await windowState(electronApp, 'quickchat')).visible).toBe(true);
+  // Stand in for the window shortcut: main summons the overlay with the peeked window.
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('quickchat'))!;
+    win.webContents.send('quickchat:focus', {
+      reset: true,
+      window: { windowId: 4242, app: 'Notes', bundleId: 'com.apple.Notes', title: 'Groceries', imageBase64: null, missing: ['screen'] }
+    });
+  });
+  const overlay = electronApp.windows().find((w) => w.url().includes('quickchat'))!;
+  const input = overlay.getByPlaceholder('Ask about this Notes window…');
+  await input.fill('What is on the list?');
+  await input.press('Enter');
+  await mainWindow.evaluate(() => (window as any).stem.revealQuickChat());
+  await expect(overlay.getByText('Echo: What is on the list?')).toBeVisible();
+
+  // A fresh thread is a fresh question about the same window, not a plain Quick Chat.
+  await overlay.keyboard.press('ControlOrMeta+n');
+  await expect(overlay.getByPlaceholder('Ask about this Notes window…')).toBeVisible();
+  await expect(overlay.locator('.qc-chip-text', { hasText: 'Notes' })).toBeVisible();
+});
+
 test('a cold `--quick-chat` launch opens the overlay, not the main window', async () => {
   // The command a Wayland user binds to a system shortcut. With Stem closed it has
   // to feel like the shortcut does when Stem is running: overlay up front, main

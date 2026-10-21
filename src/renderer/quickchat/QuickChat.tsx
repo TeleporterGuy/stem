@@ -67,6 +67,10 @@ export function QuickChat() {
   // "Ask about this window": the window the user summoned from, shown as a chip
   // until it goes out with the first prompt or the user removes it.
   const [windowChip, setWindowChip] = useState<QuickChatWindow | null>(null);
+  // The window this overlay session was summoned for, kept after the chip goes
+  // out with a prompt: ⌘N starts a fresh question about the same window, the
+  // way main keeps the panel docked beside it. A plain summon that resets forgets it.
+  const summonedWindowRef = useRef<QuickChatWindow | null>(null);
   // The MCP servers that cover the chip's app (Manage → MCP → Works with apps).
   const [windowServers, setWindowServers] = useState<string[]>([]);
   useEffect(() => {
@@ -204,7 +208,12 @@ export function QuickChat() {
   useEffect(() => {
     return window.stem.onQuickChatFocus(({ reset, window: summonedFor }) => {
       if (reset) resetSession();
-      if (summonedFor) setWindowChip(summonedFor);
+      if (summonedFor) {
+        summonedWindowRef.current = summonedFor;
+        setWindowChip(summonedFor);
+      } else if (reset) {
+        summonedWindowRef.current = null;
+      }
       // The overlay window is only hidden between summons, so a Quick Chat web
       // search change made over in Settings has to be picked up here — the usual
       // `focus` event doesn't fire on show.
@@ -452,6 +461,7 @@ export function QuickChat() {
       if (resolvedOldId) ignoredThreadIdsRef.current.add(resolvedOldId);
       await window.stem.newQuickChatThread();
       resetSession();
+      if (summonedWindowRef.current) setWindowChip(summonedWindowRef.current);
       requestAnimationFrame(() => inputRef.current?.focus());
     } catch (e) {
       if (oldThreadId) ignoredThreadIdsRef.current.delete(oldThreadId);
