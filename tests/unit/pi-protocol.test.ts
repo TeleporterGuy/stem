@@ -8,6 +8,7 @@ import {
   ENV_GATE_DIR,
   ENV_SECRET_KEY,
   EXEC_BRIDGE_TITLE,
+  SAVE_BRIDGE_TITLE,
   HARNESS_BRIDGE_TITLE,
   INSTRUCTIONS_APPROVAL_TITLE,
   MCP_DEVICE_CATALOG_FILE,
@@ -50,6 +51,9 @@ describe('sentinel titles match the bridge extension', () => {
   });
   it('exec bridge', () => {
     expect(extensionConst('EXEC_BRIDGE_TITLE')).toBe(EXEC_BRIDGE_TITLE);
+  });
+  it('save bridge', () => {
+    expect(extensionConst('SAVE_BRIDGE_TITLE')).toBe(SAVE_BRIDGE_TITLE);
   });
   it('harness bridge', () => {
     expect(extensionConst('HARNESS_BRIDGE_TITLE')).toBe(HARNESS_BRIDGE_TITLE);

@@ -45,7 +45,10 @@ there:
   Under each picture, or on right-click: **Save to Downloads** (straight into your
   Downloads folder, no dialog) and **Copy**. On the phone, tap the picture and use
   **Share**, which has Save Image. To change a picture, just say what to change;
-  to edit a photo, attach it and say what to change.
+  to edit a photo, attach it and say what to change. Stem can also save a picture
+  for you: "put it in my project's art folder" writes it to Files or to a folder you
+  connected read & write, on its own computer when it lives on one (that computer
+  must accept commands).
 
 ## Organize and find work
 

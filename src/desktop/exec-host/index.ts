@@ -1,11 +1,13 @@
-import { mkdir, readdir, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { lstat, mkdir, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { log } from '../../server/log';
 import { clampTimeout, execEnv, resolveLoginPath, runCommand, timedOutLine } from '../../server/exec/executor';
 import { scanCommandAgainstRoots } from '../../server/exec/protected';
 import { hostShellFromPlatform } from '../../server/exec/host-shell';
 import { host } from '../../server/host';
-import type { DeviceExecRequest, DeviceExecResult, ExecHostLocalState } from '../../shared/types';
+import type { DeviceExecRequest, DeviceExecResult, DeviceSaveRequest, ExecHostLocalState } from '../../shared/types';
+import { hiddenPart, mkdirInside } from '../../server/files/save-file';
 import { readMirroredFolders } from '../mirror-host/store';
 import { readExecHostEnabled, writeExecHostEnabled } from './store';
 
@@ -44,6 +46,13 @@ export interface ExecHostDeps {
    * rather than waiting for the watcher or the reconcile timer.
    */
   commandFinished?(request: DeviceExecRequest): void;
+  /**
+   * Stream one outbox entry from the server into `dir` under `name`; resolves
+   * to the path written. Absent = this machine cannot receive files (save_file).
+   */
+  downloadOutbox?(id: string, dir: string, name: string): Promise<string>;
+  /** A file was saved here; the mirror host pushes the folder it is in. */
+  fileSaved?(path: string): void;
 }
 
 export interface ExecHost {
@@ -53,6 +62,8 @@ export interface ExecHost {
   refresh(): Promise<void>;
   /** A command arrived on the event stream. Never throws; answers over RPC. */
   onRequest(request: DeviceExecRequest): void;
+  /** A file to save arrived on the event stream. Never throws; answers over RPC. */
+  onSave(request: DeviceSaveRequest): void;
   localState(): Promise<ExecHostLocalState>;
   /** The switch. Persists locally, then tells the server. */
   setEnabled(enabled: boolean): Promise<ExecHostLocalState>;
@@ -65,7 +76,7 @@ export function createExecHost(deps: ExecHostDeps): ExecHost {
 
   async function announce(): Promise<void> {
     const enabled = await readExecHostEnabled();
-    await deps.invoke('execHost:announce', [{ enabled, platform }]).catch((e) => {
+    await deps.invoke('execHost:announce', [{ enabled, platform, ...(deps.downloadOutbox ? { saves: true } : {}) }]).catch((e) => {
       // An older server has no such channel; this machine simply cannot be a
       // target there, which is also what the server will say if asked.
       log('exec-host', 'could not announce', { error: e instanceof Error ? e.message : String(e) });
@@ -167,6 +178,54 @@ export function createExecHost(deps: ExecHostDeps): ExecHost {
     return { ok: true, text: parts.join('\n\n') };
   }
 
+  const REFUSED =
+    'This computer does not accept commands from Stem. The switch is in Settings → Features → Commands, on this computer.';
+
+  /**
+   * save_file into a folder on this machine. Same switch as a command, and the
+   * destination re-checked against THIS machine's own list: only inside a
+   * folder it mirrors read & write, with symlinks resolved, so a server that
+   * names another path gets nowhere.
+   */
+  async function save(request: DeviceSaveRequest): Promise<DeviceExecResult> {
+    if (!(await readExecHostEnabled())) return { ok: false, error: REFUSED };
+    if (!deps.downloadOutbox) return { ok: false, error: 'This computer cannot receive files from Stem.' };
+    const target = resolve(request.path);
+    const inside = (p: string, root: string): boolean => p.startsWith(root.endsWith(sep) ? root : root + sep);
+    const root = (await readMirroredFolders())
+      .filter((f) => f.mode === 'readwrite')
+      .map((f) => resolve(f.clientPath))
+      .find((r) => inside(target, r));
+    if (!root) {
+      return { ok: false, error: `"${request.path}" is not inside a folder this computer shares with Stem read & write.` };
+    }
+    const hidden = hiddenPart(relative(root, target));
+    if (hidden) return { ok: false, error: `"${hidden}" is hidden; files are not saved into hidden files or folders.` };
+    if (!(await mkdirInside(root, dirname(target)))) {
+      return { ok: false, error: `"${request.path}" leads outside its folder.` };
+    }
+    const parent = await realpath(dirname(target));
+    const dest = join(parent, basename(target));
+    // Again on the resolved path: a visible link can point into a hidden folder.
+    if (hiddenPart(relative(await realpath(root), dest))) {
+      return { ok: false, error: `"${request.path}" leads into a hidden folder.` };
+    }
+    // quiet: absent is the usual case — a new file.
+    const existing = await lstat(dest).catch(() => null);
+    if (existing && !existing.isFile()) return { ok: false, error: `Something that is not a file is already at "${request.path}".` };
+    let downloaded: string | null = null;
+    try {
+      downloaded = await deps.downloadOutbox(request.outboxId, parent, `.stem-save-${randomBytes(6).toString('hex')}`);
+      await rename(downloaded, dest);
+    } catch (e) {
+      // quiet: the partial download goes; the reason is the answer.
+      if (downloaded) await rm(downloaded, { force: true }).catch(() => undefined);
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    deps.fileSaved?.(dest);
+    return { ok: true, text: `Saved ${dest}` };
+  }
+
   return {
     async start() {
       await announce();
@@ -194,6 +253,22 @@ export function createExecHost(deps: ExecHostDeps): ExecHost {
           });
         });
         deps.commandFinished?.(request);
+      })();
+    },
+
+    onSave(request) {
+      void (async () => {
+        let result: DeviceExecResult;
+        try {
+          result = await save(request);
+        } catch (e) {
+          result = { ok: false, error: `The file could not be saved: ${e instanceof Error ? e.message : String(e)}` };
+        }
+        await deps.invoke('execHost:result', [request.requestId, result]).catch((e) => {
+          log('exec-host', 'could not deliver a save result', {
+            error: e instanceof Error ? e.message : String(e)
+          });
+        });
       })();
     },
 

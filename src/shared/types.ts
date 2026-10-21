@@ -1595,6 +1595,29 @@ export interface DeviceExecRequest {
 export type DeviceExecResult = { ok: true; text: string } | { ok: false; error: string };
 
 /**
+ * The addressed frame that asks a device to write one file the server holds
+ * (save_file into a writable folder that lives on that computer). Its own
+ * frame, not a DeviceExecRequest with no command: a client that predates it
+ * drops a frame it does not know, where it would have run an empty command
+ * and answered "exit 0".
+ */
+export const EXEC_SAVE_FRAME = 'exec-save';
+
+/** One file for the device to fetch from its outbox and write — answered on `execHost:result`. */
+export interface DeviceSaveRequest {
+  /** Unguessable and single-use — same defence as {@link DeviceExecRequest.requestId}. */
+  requestId: string;
+  threadId: string;
+  /** The outbox entry holding the bytes (files/outbox.ts), fetched as GET /files/stem-outbox:<id>. */
+  outboxId: string;
+  /**
+   * Absolute path ON THE DEVICE. The device writes it only inside a folder it
+   * mirrors read & write, checked against its own list.
+   */
+  path: string;
+}
+
+/**
  * A device's account of whether it runs commands — `execHost:announce`, sent on
  * connect and whenever the switch is flipped. `platform` travels with it because
  * the server's policy (tier-1 grammar, the judge's shell name) is decided
@@ -1604,6 +1627,8 @@ export type DeviceExecResult = { ok: true; text: string } | { ok: false; error: 
 export interface DeviceExecAnnouncement {
   enabled: boolean;
   platform: 'darwin' | 'linux' | 'win32';
+  /** Understands EXEC_SAVE_FRAME. Absent on clients that predate save_file. */
+  saves?: boolean;
 }
 
 /** One device's last exec announcement, as the server remembers it. */

@@ -62,7 +62,7 @@ import { resolveLoginPath } from '../exec/executor';
 import { resolveHostShell } from '../exec/git-bash';
 import { ensureThreadScratch } from '../exec/scratch';
 import { capActions, capUserWords, parseJudgeSession, type JudgeAction, type JudgeContext } from '../exec/judge-context';
-import { readMail } from '../workspace/mail';
+import { mailedImageThread, readMail } from '../workspace/mail';
 import { formatPastChat, pastChatLink } from './past-chat';
 import { clampPinnedCwd } from '../harness/pin';
 import { hostShellAgentHint } from '../exec/host-shell';
@@ -79,7 +79,7 @@ import { previousFactUserMessages } from '../recall/fact-query';
 import { reconcileExplicitFact } from '../recall/reconcile';
 import { buildFilesContext } from '../files/inject';
 import { buildConnectedFoldersContext } from '../connected-folders/inject';
-import { getPrivateFolderLabels, getPrivateRoots } from '../workspace/connected-folders';
+import { getPrivateFolderLabels, getPrivateRoots, listConnectedFolders } from '../workspace/connected-folders';
 import { resolveAttachments, saveAttachmentsTo, type PiImageContent } from './attachments';
 import { readPdfText } from './pdf-read';
 import { captureUserImages, captureUserMessage, MAX_DESCRIBED_IMAGES } from '../recall/capture';
@@ -114,6 +114,8 @@ import {
 } from './mcp-config';
 import { authorizeMcp } from './oauth';
 import { runDeviceMcpBridgeOp } from '../mcp-device/pi-bridge';
+import { execDeviceRouter } from '../exec-device/router';
+import { saveFiles, type SaveItem } from '../files/save-file';
 import { providerIsSpawnable, syncModelsConfig } from './models-config';
 import {
   buildWebSearchContext,
@@ -177,6 +179,7 @@ import {
   ENV_SKILLS_DIR,
   EXEC_BRIDGE_TITLE,
   FILE_BRIDGE_TITLE,
+  SAVE_BRIDGE_TITLE,
   BROWSER_BRIDGE_TITLE,
   CHAT_BRIDGE_TITLE,
   COMPUTER_BRIDGE_TITLE,
@@ -3187,6 +3190,50 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
   }
 
   /**
+   * Handle the save_file tool's ctx.ui.input round-trip (sentinel
+   * SAVE_BRIDGE_TITLE). Which conversation the `img_…` ids and the scratch
+   * folder belong to is the live turn's thread, never the payload's.
+   */
+  private handleSaveBridgeRequest(worker: PiWorker, id: string, payload: string | undefined): void {
+    const requestProcess = worker.proc;
+    const respond = (value: unknown): void => {
+      if (worker.proc !== requestProcess) return;
+      requestProcess?.send({ type: 'extension_ui_response', id, value: JSON.stringify(value) });
+    };
+    const turn = worker.currentTurn;
+    void (async () => {
+      try {
+        if (turn?.external) return respond({ ok: false, error: EXTERNAL_TOOL_REFUSAL });
+        if (!turn?.threadId) return respond({ ok: false, error: 'Saving files is unavailable outside a conversation.' });
+        const req = JSON.parse(payload ?? '{}') as { files?: SaveItem[] };
+        respond(
+          await saveFiles(turn.threadId, Array.isArray(req.files) ? req.files : [], {
+            findThreadImage: async (threadId, imageId) => {
+              const own = await this.findThreadImage(threadId, imageId);
+              if (own) return own;
+              // A picture another persona made and mailed here: the bytes are
+              // in the sender's thread (same lookup as a browser upload).
+              const origin = await mailedImageThread(threadId, imageId);
+              return origin ? this.findThreadImage(origin, imageId) : null;
+            },
+            folders: listConnectedFolders,
+            devices: {
+              hostFor: (deviceId) => execDeviceRouter().hostFor(deviceId),
+              isAvailable: (deviceId) => execDeviceRouter().isAvailable(deviceId),
+              label: async (deviceId) =>
+                // quiet: a registry that will not read leaves the generic name.
+                (await readDevices().catch(() => [])).find((d) => d.id === deviceId)?.label ?? 'its computer',
+              save: (deviceId, request) => execDeviceRouter().save(deviceId, request)
+            }
+          })
+        );
+      } catch (e) {
+        respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    })();
+  }
+
+  /**
    * Handle the coding_agent tool's ctx.ui.input round-trip (sentinel
    * HARNESS_BRIDGE_TITLE). The placeholder is a JSON { prompt, cwd?,
    * fresh_session?, agent?, device? } payload (agent and device come from the
@@ -4057,6 +4104,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // the held elicitation is answered when the command settles.
       if (ev.method === 'input' && ev.title === EXEC_BRIDGE_TITLE) {
         this.handleExecBridgeRequest(worker, id, ev.placeholder as string | undefined);
+        return;
+      }
+      // The save_file tool round-trip: the copy happens here (files/save-file.ts).
+      if (ev.method === 'input' && ev.title === SAVE_BRIDGE_TITLE) {
+        this.handleSaveBridgeRequest(worker, id, ev.placeholder as string | undefined);
         return;
       }
       // The coding_agent tool round-trip: the whole harness turn runs in main

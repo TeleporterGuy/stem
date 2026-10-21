@@ -5,6 +5,7 @@ import { log } from '../log';
 import { hostShellFromPlatform } from './host-shell';
 import { buildJudgePrompt, parseJudgeVerdict, resolveJudgeModel, resolveJudgeQuickModel } from './policy';
 import type { JudgeContext } from './judge-context';
+import type { JudgedScript } from './judge-scripts';
 import type { StageRecord } from './decisions';
 
 // The LLM safety judge, shared by run_command (ExecService) and coding-agent
@@ -56,6 +57,10 @@ export interface JudgeRequest {
   defaults: Pick<DefaultsSettings, 'backgroundModel'>;
   /** The user's words and the agent's earlier commands (judge-context.ts). */
   context: JudgeContext;
+  /** Files the command runs, shown to the judge (judge-scripts.ts). */
+  scripts?: readonly JudgedScript[];
+  /** Files the command runs that the judge is not shown. */
+  scriptsNotShown?: number;
   currentModel?: string | null;
   shell?: HostShell | NodeJS.Platform;
   /**
@@ -106,6 +111,8 @@ export class SafetyJudge {
       shellLabel: req.shellLabel,
       userWords: req.context.userWords,
       actions: req.context.actions,
+      ...(req.scripts?.length ? { scripts: req.scripts } : {}),
+      ...(req.scriptsNotShown ? { scriptsNotShown: req.scriptsNotShown } : {}),
       rules: { allow: req.settings.judgeAllow, deny: req.settings.judgeDeny, environment: req.settings.judgeEnvironment }
     };
     const prompt = buildJudgePrompt(promptInput, 1);

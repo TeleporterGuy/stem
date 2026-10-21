@@ -7,10 +7,12 @@ import { connectedDeviceIds, pushToDevice } from '../startup/transport';
 import { execDeviceHostsPath } from '../workspace/paths';
 import {
   EXEC_REQUEST_FRAME,
+  EXEC_SAVE_FRAME,
   type DeviceExecAnnouncement,
   type DeviceExecHostEntry,
   type DeviceExecRequest,
-  type DeviceExecResult
+  type DeviceExecResult,
+  type DeviceSaveRequest
 } from '../../shared/types';
 import { replaceFile } from '../replace-file';
 
@@ -39,6 +41,9 @@ import { replaceFile } from '../replace-file';
  * time.
  */
 const RESULT_GRACE_MS = 30_000;
+
+/** A save is one download from this server and one rename; two minutes covers a slow link. */
+const SAVE_TIMEOUT_MS = 120_000;
 
 /** One command, out on the wire and waiting to be answered or to run out of time. */
 interface Pending {
@@ -73,6 +78,8 @@ export interface ExecDeviceRouter {
   isAvailable(deviceId: string): boolean;
   /** Run one command on `deviceId`. The request's timeout is already clamped. */
   run(deviceId: string, request: Omit<DeviceExecRequest, 'requestId'>): Promise<DeviceExecResult>;
+  /** Have `deviceId` fetch one outbox entry and write it (save_file). Answered like a command. */
+  save(deviceId: string, request: Omit<DeviceSaveRequest, 'requestId'>): Promise<DeviceExecResult>;
   /**
    * Answer one held command — `execHost:result`. Returns whether the id was
    * live: false for an id that never existed, was already spent, or timed out —
@@ -98,7 +105,7 @@ function asAnnouncement(report: unknown): DeviceExecAnnouncement | null {
   if (!value || typeof value !== 'object') return null;
   if (typeof value.enabled !== 'boolean') return null;
   if (value.platform !== 'darwin' && value.platform !== 'linux' && value.platform !== 'win32') return null;
-  return { enabled: value.enabled, platform: value.platform };
+  return { enabled: value.enabled, platform: value.platform, ...(value.saves === true ? { saves: true } : {}) };
 }
 
 function asResult(raw: unknown): DeviceExecResult {
@@ -122,6 +129,35 @@ export function createExecDeviceRouter(deps: ExecDeviceRouterDeps): ExecDeviceRo
 
   const mintRequestId = (): string => randomBytes(16).toString('hex');
 
+  /** Push one addressed frame and hold its correlation id until the answer or the deadline. */
+  function send(
+    deviceId: string,
+    threadId: string,
+    frameName: string,
+    request: object,
+    timeoutMs: number,
+    words: { unsent: string; sent: string; silent: (seconds: number) => string }
+  ): Promise<DeviceExecResult> {
+    const requestId = mintRequestId();
+    const reached = deps.pushTo(deviceId, frameName, { requestId, ...request });
+    // The caller checked availability before classifying, but the stream can
+    // close in the window since. Act on the write that actually tried:
+    // nothing was written, so nobody is going to answer.
+    if (reached === 0) return Promise.resolve({ ok: false, error: words.unsent });
+    log('exec-device', words.sent, { deviceId, streams: reached });
+    return new Promise<DeviceExecResult>((resolve) => {
+      const timer = setTimeout(() => {
+        // Forget it first: a late answer must find nothing, or it would settle
+        // a promise that has already been settled.
+        pending.delete(requestId);
+        log('exec-device', 'a device request went unanswered', { deviceId, frame: frameName });
+        resolve({ ok: false, error: words.silent(Math.round(timeoutMs / 1000)) });
+      }, timeoutMs);
+      timer.unref?.();
+      pending.set(requestId, { deviceId, threadId, settle: resolve, timer });
+    });
+  }
+
   return {
     async announce(deviceId, report) {
       const announcement = asAnnouncement(report);
@@ -144,31 +180,19 @@ export function createExecDeviceRouter(deps: ExecDeviceRouterDeps): ExecDeviceRo
 
     isAvailable: (deviceId) => deps.connectedDevices().has(deviceId),
 
-    async run(deviceId, request) {
-      const requestId = mintRequestId();
-      const frame: DeviceExecRequest = { requestId, ...request };
-      const reached = deps.pushTo(deviceId, EXEC_REQUEST_FRAME, frame);
-      // The caller checked availability before classifying, but the stream can
-      // close in the window since. Act on the write that actually tried:
-      // nothing was written, so nobody is going to answer.
-      if (reached === 0) {
-        return { ok: false, error: 'That computer disconnected from Stem before the command could be sent.' };
-      }
-      log('exec-device', 'sent a command to a device', { deviceId, streams: reached });
-      const timeoutMs = request.timeoutMs + RESULT_GRACE_MS;
-      return new Promise<DeviceExecResult>((resolve) => {
-        const timer = setTimeout(() => {
-          // Forget it first: a late answer must find nothing, or it would settle
-          // a promise that has already been settled.
-          pending.delete(requestId);
-          log('exec-device', 'a device command went unanswered', { deviceId });
-          resolve({
-            ok: false,
-            error: `The computer did not answer within ${Math.round(timeoutMs / 1000)}s. The command may still be running there.`
-          });
-        }, timeoutMs);
-        timer.unref?.();
-        pending.set(requestId, { deviceId, threadId: request.threadId, settle: resolve, timer });
+    run(deviceId, request) {
+      return send(deviceId, request.threadId, EXEC_REQUEST_FRAME, request, request.timeoutMs + RESULT_GRACE_MS, {
+        unsent: 'That computer disconnected from Stem before the command could be sent.',
+        sent: 'sent a command to a device',
+        silent: (s) => `The computer did not answer within ${s}s. The command may still be running there.`
+      });
+    },
+
+    save(deviceId, request) {
+      return send(deviceId, request.threadId, EXEC_SAVE_FRAME, request, SAVE_TIMEOUT_MS, {
+        unsent: 'That computer disconnected from Stem before the file could be sent.',
+        sent: 'sent a file to a device',
+        silent: (s) => `The computer did not confirm the file within ${s}s; it may or may not have been written.`
       });
     },
 

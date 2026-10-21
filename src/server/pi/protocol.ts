@@ -62,6 +62,13 @@ export const MAIL_BRIDGE_TITLE = 'stem-mail-bridge';
 export const EXEC_BRIDGE_TITLE = 'stem-exec-bridge';
 
 /**
+ * save_file tool round-trip (`input`): `{ files: [{ from, to }] }` rides in
+ * `placeholder`; PiRuntime saves them (files/save-file.ts) for the live turn's
+ * thread and answers with a JSON result string.
+ */
+export const SAVE_BRIDGE_TITLE = 'stem-save-bridge';
+
+/**
  * Device-located MCP round-trip (`input`): `{ op: 'tools' | 'call', server, tool?,
  * args? }` rides in `placeholder`. PiRuntime resolves which device the server
  * belongs to from mcp.json — never from the payload — and hands the op to the

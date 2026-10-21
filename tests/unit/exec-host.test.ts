@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -114,5 +114,96 @@ describe('createExecHost', () => {
     const result = await lastResult();
     expect(result.ok).toBe(false);
     expect(result.error).toContain('does not exist on this computer');
+  });
+});
+
+describe('createExecHost save', () => {
+  let dir: string;
+  let calls: Array<{ channel: string; args: unknown[] }>;
+  let host: ExecHost;
+  let saved: string[];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'stem-exec-save-'));
+    process.env.STEM_EXEC_HOST_FILE = join(dir, 'exec-host.json');
+    process.env.STEM_MIRRORS_FILE = join(dir, 'mirrors.json');
+    mkdirSync(join(dir, 'project'));
+    mkdirSync(join(dir, 'notes'));
+    mkdirSync(join(dir, 'outside'));
+    symlinkSync(join(dir, 'outside'), join(dir, 'project', 'escape'));
+    mkdirSync(join(dir, 'project', '.git', 'hooks'), { recursive: true });
+    symlinkSync(join(dir, 'project', '.git', 'hooks'), join(dir, 'project', 'hooks'));
+    calls = [];
+    saved = [];
+    host = createExecHost({
+      invoke: (channel, args) => {
+        calls.push({ channel, args });
+        return Promise.resolve(undefined);
+      },
+      downloadOutbox: async (id, into, name) => {
+        const path = join(into, name);
+        writeFileSync(path, `bytes of ${id}`);
+        return path;
+      },
+      fileSaved: (path) => saved.push(path)
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.STEM_EXEC_HOST_FILE;
+    delete process.env.STEM_MIRRORS_FILE;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function result(requestId: string): Promise<{ ok: boolean; text?: string; error?: string }> {
+    for (let i = 0; i < 400; i++) {
+      const call = calls.find((c) => c.channel === 'execHost:result' && c.args[0] === requestId);
+      if (call) return call.args[1] as { ok: boolean; text?: string; error?: string };
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error('no execHost:result was delivered');
+  }
+
+  const id = 'a'.repeat(32);
+
+  it('announces that it takes files', async () => {
+    await host.start();
+    expect(calls.find((c) => c.channel === 'execHost:announce')!.args[0]).toMatchObject({ saves: true });
+  });
+
+  it('refuses while the switch is off', async () => {
+    await writeMirroredFolders([{ folderId: 'p', clientPath: join(dir, 'project'), mode: 'readwrite' }]);
+    host.onSave({ requestId: 's0', threadId: 't', outboxId: id, path: join(dir, 'project', 'a.png') });
+    expect((await result('s0')).error).toContain('does not accept commands');
+    expect(existsSync(join(dir, 'project', 'a.png'))).toBe(false);
+  });
+
+  it.skipIf(winlt)('writes only inside folders it shares read & write', async () => {
+    await writeExecHostEnabled(true);
+    await writeMirroredFolders([
+      { folderId: 'p', clientPath: join(dir, 'project'), mode: 'readwrite' },
+      { folderId: 'n', clientPath: join(dir, 'notes'), mode: 'read' }
+    ]);
+    host.onSave({ requestId: 's1', threadId: 't', outboxId: id, path: join(dir, 'project', 'art', 'a.png') });
+    expect((await result('s1')).ok).toBe(true);
+    expect(readFileSync(join(dir, 'project', 'art', 'a.png'), 'utf8')).toBe(`bytes of ${id}`);
+    expect(saved).toEqual([join(realpathSync(dir), 'project', 'art', 'a.png')]);
+
+    for (const [rid, path] of [
+      ['s2', join(dir, 'notes', 'a.png')],
+      ['s3', join(dir, 'outside', 'a.png')],
+      ['s4', join(dir, 'project', '..', 'outside', 'a.png')],
+      ['s5', join(dir, 'project', 'escape', 'a.png')],
+      // mkdir must not follow the link to make folders outside.
+      ['s6', join(dir, 'project', 'escape', 'new', 'a.png')],
+      ['s7', join(dir, 'project', '.git', 'hooks', 'pre-commit')],
+      ['s8', join(dir, 'project', 'hooks', 'pre-commit')]
+    ] as const) {
+      host.onSave({ requestId: rid, threadId: 't', outboxId: id, path });
+      expect((await result(rid)).ok, path).toBe(false);
+    }
+    expect(readdirSync(join(dir, 'outside'))).toEqual([]);
+    expect(readdirSync(join(dir, 'notes'))).toEqual([]);
+    expect(readdirSync(join(dir, 'project', '.git', 'hooks'))).toEqual([]);
   });
 });

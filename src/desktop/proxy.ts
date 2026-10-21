@@ -8,6 +8,7 @@ import {
   COMPUTER_END_FRAME,
   COMPUTER_REQUEST_FRAME,
   EXEC_REQUEST_FRAME,
+  EXEC_SAVE_FRAME,
   HARNESS_CANCEL_FRAME,
   HARNESS_REQUEST_FRAME,
   MCP_ASSIGNMENTS_FRAME,
@@ -18,6 +19,7 @@ import {
   type DeviceBrowserRequest,
   type DeviceComputerRequest,
   type DeviceExecRequest,
+  type DeviceSaveRequest,
   type DeviceHarnessCancel,
   type DeviceHarnessRequest,
   type DeviceMcpRequest,
@@ -262,6 +264,8 @@ export interface DeviceMcpHostBinding {
  */
 export interface DeviceExecHostBinding {
   onRequest(request: DeviceExecRequest): void;
+  /** A file to fetch and write (save_file). Optional: a binding without it drops the frame. */
+  onSave?(request: DeviceSaveRequest): void;
 }
 
 /**
@@ -783,6 +787,11 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       if (request) deps.execHost.onRequest(request);
       return;
     }
+    if (name === EXEC_SAVE_FRAME) {
+      const request = asSaveRequest(data);
+      if (request) deps.execHost.onSave?.(request);
+      return;
+    }
     // A coding-agent ensure/run for THIS machine, and the graceful cancel of
     // one. Addressed and off the ring like the frames above; an unreadable
     // frame is dropped silently for the same reason — without a requestId
@@ -947,6 +956,19 @@ export function createServerProxy(deps: ProxyDeps): ServerProxy {
       };
     }
     return null;
+  }
+
+  function asSaveRequest(data: unknown): DeviceSaveRequest | null {
+    const frame = data as Partial<DeviceSaveRequest> | null;
+    if (!frame || typeof frame.requestId !== 'string' || !frame.requestId) return null;
+    if (typeof frame.outboxId !== 'string' || !/^[0-9a-f]{32}$/.test(frame.outboxId)) return null;
+    if (typeof frame.path !== 'string' || !frame.path) return null;
+    return {
+      requestId: frame.requestId,
+      threadId: typeof frame.threadId === 'string' ? frame.threadId : '',
+      outboxId: frame.outboxId,
+      path: frame.path
+    };
   }
 
   function asExecRequest(data: unknown): DeviceExecRequest | null {
