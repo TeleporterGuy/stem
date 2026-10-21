@@ -12,9 +12,22 @@ import { GTE_EMBED_MODELS } from '../../shared/recall-recommended';
 import { GTE_FACT_PILOT_ID, GTE_FACT_PILOT_FILES } from './gte-model-artifact';
 export { GTE_FACT_PILOT_ID, GTE_FACT_PILOT_FILES } from './gte-model-artifact';
 
+// Unchanged by the 20261021 release: its training held fact scores to epoch2,
+// and at this floor its fact benchmarks matched epoch2's within a few percent.
 export const GTE_FACT_PILOT_FLOOR = -1.6370911598205566;
-// Frozen by the separate skill-selection evaluation; do not use the fact floor.
-export const GTE_SKILL_FLOOR = -3.9743599891662598;
+// The skill floors belong to the 20261021 weights (gte-model-artifact.ts) and
+// were measured on 815 real turns that training never saw
+// (recall-bench/gte-skill-train-20261010, gold-v3, production query and
+// shortlist), scored both on macOS and in the Linux server image: the q8 graph's
+// logits differ between the two by up to several points on some pairs (epoch2
+// as much), so each floor sits where both platforms agree.
+// A skill without example requests is scored on its description alone:
+// Linux 36/81 needed skills served with 21 wrong-load turns, macOS 33 with 35.
+export const GTE_SKILL_FLOOR = -3.25;
+// A skill with example requests is scored as the best of its description and
+// each example (skills/examples.ts). Linux 44/81 served with 17 wrong-load
+// turns, macOS 45 with 22; epoch2 at its +3.0 served 42 with 35 on Linux.
+export const GTE_SKILL_EXAMPLE_FLOOR = -0.5;
 
 export async function verifyGteFactModel(directory: string): Promise<void> {
   if (!isAbsolute(directory)) throw new Error('The GTE fact model directory must be absolute');
@@ -73,6 +86,7 @@ export function createGteFactPilot(deps: {
     async available() { return ready(); },
     async minRelevantScore() { return ready() ? spec.minRelevantScore : null; },
     async factGateScore() { return ready() ? spec.factGateScore : null; },
+    async skillExampleFloor() { return ready() ? GTE_SKILL_EXAMPLE_FLOOR : null; },
     async rerank(query, docs, topN) {
       if (!ready()) throw new RerankUnavailableError('GTE fact model is not ready');
       return docs.length ? deps.manager.rerank(query, docs, topN) : [];

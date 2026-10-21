@@ -3,7 +3,8 @@ import { getEmbeddingsClient, getSkillRerankClient } from '../recall/retrieval';
 import type { EmbeddingsClient } from '../recall/embeddings';
 import type { RerankClient } from '../recall/rerank';
 import { dot, magnitude } from '../recall/vector';
-import { ensureSkillVectors, skillVectorText, type SkillEmbedder } from './vectors';
+import { ensureSkillExampleVectors, ensureSkillVectors, skillVectorText, type SkillEmbedder } from './vectors';
+import { readSkillExamples } from './examples';
 import { DEFAULT_SHORTLIST_SIZE, countWords, queryHasSignal, selectCut, type CutReason, type CutResult } from './gate';
 
 // Per-turn skill selection: which saved procedures the model gets, and in what
@@ -211,6 +212,11 @@ export interface SelectSkillsOptions {
    * seat to the runner-up; they are just never inlined a second time.
    */
   alreadyLoaded?: ReadonlySet<string>;
+  /**
+   * Example requests by slug (skills/examples.ts). Read from the skills dir
+   * when absent. Used only with a reranker calibrated for them.
+   */
+  examples?: ReadonlyMap<string, readonly string[]>;
 }
 
 /**
@@ -299,8 +305,20 @@ export async function selectSkills(
   // see MIN_QUERY_WORDS in gate.ts for the observed failure this closes.
   if (!queryHasSignal(query)) return indexAll(candidates, 'low-signal');
 
+  // Resolved before ranking: whether example requests take part depends on it.
+  const rr = opts.rerank !== undefined ? opts.rerank : await getSkillRerankClient();
+  let exampleFloor: number | null = null;
+  try {
+    exampleFloor = (await rr?.skillExampleFloor?.()) ?? null;
+  } catch {
+    // quiet: no example floor means descriptions alone, which is the shipped
+    // behaviour and needs no saying.
+  }
+  const examples = exampleFloor === null ? new Map<string, readonly string[]>() : (opts.examples ?? readSkillExamples(candidates));
+
   let qVec: Float32Array;
   let vectors: Map<string, Float32Array>;
+  let exampleVectors = new Map<string, Float32Array[]>();
   try {
     if (!(await client.available())) return indexAll(candidates);
     const model = await client.modelId();
@@ -311,6 +329,7 @@ export async function selectSkills(
     if (!qVec) return indexAll(candidates);
     const embedder: SkillEmbedder = { model, embed: (texts) => client.embed(texts, 'passage') };
     vectors = await ensureSkillVectors(candidates, embedder);
+    if (examples.size > 0) exampleVectors = await ensureSkillExampleVectors(examples, embedder);
   } catch (error) {
     // Indistinguishable from the honest no-embedder case at the caller: both
     // arrive as reason 'no-embeddings', and a turn that silently stops inlining
@@ -328,7 +347,12 @@ export async function selectSkills(
       unscored.push(record); // missing vector or dim mismatch — index it, don't rank it
       continue;
     }
-    const cosine = dot(qVec, v) / (qMag * (magnitude(v) || 1));
+    // A message may resemble one of the skill's example requests more than its
+    // description; the shortlist takes whichever is closer.
+    let cosine = dot(qVec, v) / (qMag * (magnitude(v) || 1));
+    for (const e of exampleVectors.get(record.slug) ?? []) {
+      if (e.length === qVec.length) cosine = Math.max(cosine, dot(qVec, e) / (qMag * (magnitude(e) || 1)));
+    }
     const stat = opts.usage?.(record.slug);
     const rate = stat ? skillUsageRate(stat, now) : 0.5;
     scored.push({ record, cosine, blended: cosine + usageWeight * (rate - 0.5) });
@@ -348,7 +372,6 @@ export async function selectSkills(
   // gate had: usage reorders candidates, it never admits or ejects one.
   const shortlist = scored.slice(0, DEFAULT_SHORTLIST_SIZE);
   let cut: CutResult = { inlined: [], reason: 'no-rerank-score' };
-  const rr = opts.rerank !== undefined ? opts.rerank : await getSkillRerankClient();
   if (rr && shortlist.length > 0) {
     try {
       // A floor of null means a backend whose score scale we cannot know yet
@@ -362,16 +385,26 @@ export async function selectSkills(
         // comparing against an absolute floor is not, and the drift is wider
         // than the margin at the floor. Costs `shortlistSize` forward passes
         // (~22 ms each) to make the score a property of the pair alone.
+        //
+        // A skill with example requests is scored against its description AND
+        // each example, keeping the best; that best-of score has its own floor.
+        // The cut then compares margins over each skill's own floor, so a skill
+        // still waiting for examples competes fairly with one that has them.
         const scores = await Promise.all(
           shortlist.map(async (s) => {
-            const [top] = await rr.rerank(query, [skillVectorText(s.record)], 1);
-            return { slug: s.record.slug, cosine: s.cosine, rerankScore: top?.score };
+            const own = exampleFloor === null ? [] : (examples.get(s.record.slug) ?? []);
+            const docs = [skillVectorText(s.record), ...own.map((e) => `${s.record.name}\n${e}`)];
+            const raw = await Promise.all(docs.map(async (doc) => (await rr.rerank(query, [doc], 1))[0]?.score));
+            const valid = raw.filter((x): x is number => typeof x === 'number');
+            const best = valid.length ? Math.max(...valid) : undefined;
+            const skillFloor = own.length && exampleFloor !== null ? exampleFloor : floor;
+            return { slug: s.record.slug, cosine: s.cosine, rerankScore: best === undefined ? undefined : best - skillFloor };
           })
         );
         cut = selectCut(scores, {
           strategy: 'rerank',
           maxInlined,
-          minRerankScore: floor,
+          minRerankScore: 0,
           shortlistSize: shortlist.length
         });
       }

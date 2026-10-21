@@ -9,10 +9,14 @@ import type { RetrievalSettings } from '../../shared/types';
  * Gemma 2 for older, weaker results. Their settings ids coerce to the default
  * embedder on read (settings.ts), so nothing references these weights again and
  * a few hundred MB each would sit in the model cache forever.
+ *
+ * Also earlier Stem GTE Memory releases: each release downloads into its own
+ * folder (GTE_MODEL_VERSION), and the runtime only ever verifies the current one.
  */
 export const RETIRED_EMBED_REPOS: readonly string[] = [
   'Xenova/multilingual-e5-base',
-  'onnx-community/embeddinggemma-300m-ONNX'
+  'onnx-community/embeddinggemma-300m-ONNX',
+  'gte-memory-20260905-epoch2'
 ];
 
 /**
@@ -36,8 +40,9 @@ export async function pruneRetiredModels(cacheDir: string, retrieval: RetrievalS
       continue;
     }
     removed.push(repo);
-    // The owner dir (Xenova/, onnx-community/) goes too once it is empty.
-    await rmdir(dirname(dir)).catch(() => {
+    // The owner dir (Xenova/, onnx-community/) goes too once it is empty. A
+    // top-level folder like a GTE release has no owner dir: its parent is the cache.
+    if (repo.includes('/')) await rmdir(dirname(dir)).catch(() => {
       // quiet: ENOTEMPTY is the normal answer while another model shares the owner dir.
     });
   }

@@ -74,19 +74,19 @@ function hashText(text: string): string {
   return createHash('sha1').update(text).digest('hex').slice(0, 16);
 }
 
-function vectorsFile(): string {
-  return join(skillsRoot(), SKILLS_VECTORS_FILE);
+function vectorsFile(name = SKILLS_VECTORS_FILE): string {
+  return join(skillsRoot(), name);
 }
 
 /**
  * Tolerant read: a missing, corrupt, wrong-version or wrong-model file yields an
  * empty cache for `model`, which simply means everything gets re-embedded.
  */
-function readVectors(model: string): StoredVectors {
+function readVectors(file: string, model: string): StoredVectors {
   const empty: StoredVectors = { version: SKILL_VECTORS_VERSION, model, skills: {} };
   let raw: string;
   try {
-    raw = readFileSync(vectorsFile(), 'utf8');
+    raw = readFileSync(vectorsFile(file), 'utf8');
   } catch {
     // quiet: no file yet is the first turn after a model change or a fresh
     // install, and the whole library is re-embedded either way.
@@ -111,14 +111,65 @@ function readVectors(model: string): StoredVectors {
   }
 }
 
-function writeVectors(data: StoredVectors): void {
+function writeVectors(file: string, data: StoredVectors): void {
   try {
     mkdirSync(skillsRoot(), { recursive: true });
-    writeFileSync(vectorsFile(), `${JSON.stringify(data)}\n`, 'utf8');
+    writeFileSync(vectorsFile(file), `${JSON.stringify(data)}\n`, 'utf8');
   } catch {
     // quiet: the cache is an optimization, so a failed write costs a re-embed
     // next turn rather than a broken turn — ranking is unchanged either way.
   }
+}
+
+/**
+ * The shared cache walk: resolve a vector for every keyed text, embedding only
+ * the ones whose text changed (or all of them, when the model changed), persist,
+ * and drop keys that were not asked for. A key whose embed failed is absent.
+ */
+async function ensureKeyedVectors(
+  file: string,
+  items: Array<{ key: string; text: string }>,
+  embedder: SkillEmbedder
+): Promise<Map<string, Float32Array>> {
+  const cached = readVectors(file, embedder.model);
+  const next: Record<string, StoredEntry> = {};
+  const stale: Array<{ key: string; text: string; hash: string }> = [];
+
+  for (const item of items) {
+    const hash = hashText(item.text);
+    const hit = cached.skills[item.key];
+    if (hit && hit.hash === hash) next[item.key] = hit;
+    else stale.push({ key: item.key, text: item.text, hash });
+  }
+
+  if (stale.length > 0) {
+    try {
+      const vecs = await embedder.embed(stale.map((s) => s.text));
+      stale.forEach((s, i) => {
+        const vec = vecs[i];
+        if (vec) next[s.key] = { hash: s.hash, vector: Array.from(vec) };
+      });
+    } catch (error) {
+      // Embeddings went away mid-refresh. Keep whatever the cache already had —
+      // a partially warm map still ranks the skills it covers. But inject.ts
+      // treats a missing vector as "not a candidate", so every skill in `stale`
+      // — which on the turn after an edit is the edited one — cannot be inlined
+      // at all, and nothing downstream can tell that from a poor match.
+      degrade('skills.vectors', `left ${stale.length} skill texts unranked this turn`, error);
+    }
+  }
+
+  // Rewrite only when something actually moved: an unchanged library must not
+  // rewrite the file (and churn its mtime) on every turn.
+  const changed =
+    stale.length > 0 ||
+    cached.model !== embedder.model ||
+    Object.keys(cached.skills).length !== Object.keys(next).length;
+  if (changed) writeVectors(file, { version: SKILL_VECTORS_VERSION, model: embedder.model, skills: next });
+
+  const out = new Map<string, Float32Array>();
+  for (const [key, entry] of Object.entries(next)) out.set(key, Float32Array.from(entry.vector));
+  return out;
 }
 
 /**
@@ -134,44 +185,33 @@ export async function ensureSkillVectors(
   records: SkillVectorInput[],
   embedder: SkillEmbedder
 ): Promise<Map<string, Float32Array>> {
-  const cached = readVectors(embedder.model);
-  const next: Record<string, StoredEntry> = {};
-  const stale: Array<{ slug: string; text: string; hash: string }> = [];
+  return ensureKeyedVectors(
+    SKILLS_VECTORS_FILE,
+    records.map((r) => ({ key: r.slug, text: skillVectorText(r) })),
+    embedder
+  );
+}
 
-  for (const record of records) {
-    const text = skillVectorText(record);
-    const hash = hashText(text);
-    const hit = cached.skills[record.slug];
-    if (hit && hit.hash === hash) next[record.slug] = hit;
-    else stale.push({ slug: record.slug, text, hash });
+/**
+ * Example requests are embedded on their own, in a file of their own: each is a
+ * separate thing a message can resemble (see skills/examples.ts), and keeping
+ * them out of `.skills-vectors.json` leaves that file's walk — which dedup and
+ * the curator also run over subsets of the library — free to drop them.
+ */
+export const SKILLS_EXAMPLE_VECTORS_FILE = '.skills-example-vectors.json';
+
+/** Vectors for each skill's example requests, keyed by slug, in example order. */
+export async function ensureSkillExampleVectors(
+  examples: ReadonlyMap<string, readonly string[]>,
+  embedder: SkillEmbedder
+): Promise<Map<string, Float32Array[]>> {
+  const items: Array<{ key: string; text: string }> = [];
+  for (const [slug, list] of examples) list.forEach((text, i) => items.push({ key: `${slug}#${i}`, text }));
+  const flat = await ensureKeyedVectors(SKILLS_EXAMPLE_VECTORS_FILE, items, embedder);
+  const out = new Map<string, Float32Array[]>();
+  for (const [slug, list] of examples) {
+    const vecs = list.map((_, i) => flat.get(`${slug}#${i}`)).filter((v): v is Float32Array => !!v);
+    if (vecs.length) out.set(slug, vecs);
   }
-
-  if (stale.length > 0) {
-    try {
-      const vecs = await embedder.embed(stale.map((s) => s.text));
-      stale.forEach((s, i) => {
-        const vec = vecs[i];
-        if (vec) next[s.slug] = { hash: s.hash, vector: Array.from(vec) };
-      });
-    } catch (error) {
-      // Embeddings went away mid-refresh. Keep whatever the cache already had —
-      // a partially warm map still ranks the skills it covers. But inject.ts
-      // treats a missing vector as "not a candidate", so every skill in `stale`
-      // — which on the turn after an edit is the edited one — cannot be inlined
-      // at all, and nothing downstream can tell that from a poor match.
-      degrade('skills.vectors', `left ${stale.length} skills unranked this turn`, error);
-    }
-  }
-
-  // Rewrite only when something actually moved: an unchanged library must not
-  // rewrite the file (and churn its mtime) on every turn.
-  const changed =
-    stale.length > 0 ||
-    cached.model !== embedder.model ||
-    Object.keys(cached.skills).length !== Object.keys(next).length;
-  if (changed) writeVectors({ version: SKILL_VECTORS_VERSION, model: embedder.model, skills: next });
-
-  const out = new Map<string, Float32Array>();
-  for (const [slug, entry] of Object.entries(next)) out.set(slug, Float32Array.from(entry.vector));
   return out;
 }

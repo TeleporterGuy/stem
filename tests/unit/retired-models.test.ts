@@ -42,6 +42,13 @@ describe('pruneRetiredModels', () => {
     expect(existsSync(join(cache, 'onnx-community/embeddinggemma-300m-ONNX'))).toBe(true);
   });
 
+  it('deletes an earlier GTE release folder but keeps the cache dir itself', async () => {
+    model('gte-memory-20260905-epoch2');
+    expect(await pruneRetiredModels(cache, retrieval())).toEqual(['gte-memory-20260905-epoch2']);
+    expect(existsSync(join(cache, 'gte-memory-20260905-epoch2'))).toBe(false);
+    expect(existsSync(cache)).toBe(true);
+  });
+
   it('is a no-op on a cache that never had them', async () => {
     expect(await pruneRetiredModels(cache, retrieval())).toEqual([]);
   });
