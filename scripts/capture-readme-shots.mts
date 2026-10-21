@@ -40,6 +40,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import electronPath from 'electron';
+import { GTE_MODEL_VERSION } from '../src/server/recall/gte-model-artifact';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const OUT = join(ROOT, 'docs', 'screenshots');
@@ -499,7 +500,7 @@ async function runSeed(): Promise<void> {
   // Reuse the signed-in profile's recall models (APFS clone, read-only source) so
   // the instance doesn't download them. Missing ones download on first use.
   const realModels = join(APP_DATA, 'stem', 'embed-models');
-  for (const m of ['onnx-community', 'gte-memory-20260905-epoch2']) {
+  for (const m of ['onnx-community', GTE_MODEL_VERSION]) {
     if (existsSync(join(realModels, m)) && !existsSync(join(PROFILE, 'embed-models', m))) {
       mkdirSync(join(PROFILE, 'embed-models'), { recursive: true });
       cpSync(join(realModels, m), join(PROFILE, 'embed-models', m), { recursive: true, mode: constants.COPYFILE_FICLONE });

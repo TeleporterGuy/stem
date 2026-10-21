@@ -14,7 +14,8 @@ import { createEmbedWorkerManager, type EmbedWorkerManager } from '../recall/emb
 import { createEmbeddingsRouter, createLocalEmbeddingsClient } from '../recall/embed-local';
 import { resolveRerankSpec } from '../recall/rerank-catalog';
 import { createLocalRerankClient, createRerankRouter } from '../recall/rerank-local';
-import { createGteFactPilot, GTE_FACT_PILOT_ID } from '../recall/gte-fact-pilot';
+import { createGteFactPilot } from '../recall/gte-fact-pilot';
+import { GTE_MODEL_VERSION } from '../recall/gte-model-artifact';
 import { ensureGteModel } from '../recall/gte-model-download';
 import { pruneRetiredModels } from '../recall/retired-models';
 import { spawnEmbedWorker } from '../recall/embed-worker-host';
@@ -168,7 +169,7 @@ export function initRetrieval(deps: {
   // The retrieval host owns the download, whether it is a desktop or shared
   // server. Preserve the trial's explicit read-only/offline model override.
   const gteOverride = process.env.STEM_GTE_FACT_MODEL_DIR?.trim();
-  const gteDirectory = gteOverride || join(embedModelsDir(), GTE_FACT_PILOT_ID);
+  const gteDirectory = gteOverride || join(embedModelsDir(), GTE_MODEL_VERSION);
   const factManager = !deps.e2e
     ? createEmbedWorkerManager({ spawn: spawnEmbedWorker, cacheDir: embedModelsDir }) : null;
   const factPilot = factManager ? createGteFactPilot({

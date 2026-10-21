@@ -12,15 +12,18 @@ import { GTE_EMBED_MODELS } from '../../shared/recall-recommended';
 import { GTE_FACT_PILOT_ID, GTE_FACT_PILOT_FILES } from './gte-model-artifact';
 export { GTE_FACT_PILOT_ID, GTE_FACT_PILOT_FILES } from './gte-model-artifact';
 
+// Unchanged by the 20261021 release: its training held fact scores to epoch2,
+// and at this floor its fact benchmarks matched epoch2's within a few percent.
 export const GTE_FACT_PILOT_FLOOR = -1.6370911598205566;
-// Frozen by the separate skill-selection evaluation; do not use the fact floor.
-export const GTE_SKILL_FLOOR = -3.9743599891662598;
+// The skill floors belong to the 20261021 weights (gte-model-artifact.ts) and
+// were measured on 815 real turns that training never saw
+// (recall-bench/gte-skill-train-20261010, gold-v3, production query and shortlist).
+// A skill without example requests is scored on its description alone.
+export const GTE_SKILL_FLOOR = -2.4;
 // A skill with example requests is scored as the best of its description and
-// each example (skills/examples.ts). Calibrated on the 2026-10 relabel of 429
-// real turns with production's own query: 37/51 needed skills served with 26
-// wrong-load turns, against 33/51 and 28 for the description floor above
-// (recall-bench/gte-skill-train-20261010/expand, scores-xpgenerated-max).
-export const GTE_SKILL_EXAMPLE_FLOOR = 3.0;
+// each example (skills/examples.ts). At this floor: 45/81 needed skills served
+// with 18 wrong-load turns, where epoch2 at its +3.0 served 45 with 57.
+export const GTE_SKILL_EXAMPLE_FLOOR = -0.25;
 
 export async function verifyGteFactModel(directory: string): Promise<void> {
   if (!isAbsolute(directory)) throw new Error('The GTE fact model directory must be absolute');
