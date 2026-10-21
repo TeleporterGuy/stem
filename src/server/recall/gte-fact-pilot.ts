@@ -17,13 +17,17 @@ export { GTE_FACT_PILOT_ID, GTE_FACT_PILOT_FILES } from './gte-model-artifact';
 export const GTE_FACT_PILOT_FLOOR = -1.6370911598205566;
 // The skill floors belong to the 20261021 weights (gte-model-artifact.ts) and
 // were measured on 815 real turns that training never saw
-// (recall-bench/gte-skill-train-20261010, gold-v3, production query and shortlist).
-// A skill without example requests is scored on its description alone.
-export const GTE_SKILL_FLOOR = -2.4;
+// (recall-bench/gte-skill-train-20261010, gold-v3, production query and
+// shortlist), scored both on macOS and in the Linux server image: the q8 graph's
+// logits differ between the two by up to several points on some pairs (epoch2
+// as much), so each floor sits where both platforms agree.
+// A skill without example requests is scored on its description alone:
+// Linux 36/81 needed skills served with 21 wrong-load turns, macOS 33 with 35.
+export const GTE_SKILL_FLOOR = -3.25;
 // A skill with example requests is scored as the best of its description and
-// each example (skills/examples.ts). At this floor: 45/81 needed skills served
-// with 18 wrong-load turns, where epoch2 at its +3.0 served 45 with 57.
-export const GTE_SKILL_EXAMPLE_FLOOR = -0.25;
+// each example (skills/examples.ts). Linux 44/81 served with 17 wrong-load
+// turns, macOS 45 with 22; epoch2 at its +3.0 served 42 with 35 on Linux.
+export const GTE_SKILL_EXAMPLE_FLOOR = -0.5;
 
 export async function verifyGteFactModel(directory: string): Promise<void> {
   if (!isAbsolute(directory)) throw new Error('The GTE fact model directory must be absolute');
