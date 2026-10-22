@@ -7,6 +7,33 @@ struct HelperError: Error, CustomStringConvertible {
   init(_ text: String) { description = text }
 }
 
+/// macOS gave no picture: a capture that timed out, came back empty or was
+/// refused. Whatever action came before it still happened; only the frame is
+/// missing, and a window's controls (snapshot, press, set_value) need
+/// Accessibility alone, so the run can go on without pictures.
+struct NoPicture: Error, CustomStringConvertible {
+  let reason: String
+  /// A wait ran out: worth a fresh window lookup only if it was not this.
+  var timedOut = false
+  /// Said again within a minute of the first refusal: the advice is not repeated.
+  var again = false
+
+  var description: String {
+    if again {
+      return "\(reason) Keep working through the window's controls (snapshot, press, set_value, type, key)."
+    }
+    let advice: String
+    if CGPreflightScreenCaptureAccess() {
+      // 2026-10-20 and 2026-10-22: preflight said granted while every capture
+      // under Stem's identity failed, and re-granting the permission did not help.
+      advice = "Screen Recording shows as granted, so macOS itself is not answering Stem's capture requests; when this happened before it lasted until the user logged out or restarted the Mac, and removing and re-adding the permission did not help."
+    } else {
+      advice = "Stem needs Screen Recording access (System Settings → Privacy & Security → Screen Recording)."
+    }
+    return "\(reason) \(advice) Without pictures, work through a window's controls: select_window still selects, and snapshot, press, set_value, type and key need only Accessibility. If they cannot get you what you need, tell the user pictures are blocked rather than asking for a screenshot first."
+  }
+}
+
 /// Longest side of a frame handed to the model, in pixels. Anthropic's
 /// computer-use guidance: past ~1568 px the image is downscaled by the API
 /// anyway, and coordinates the model returns then drift from what it saw.
@@ -43,6 +70,38 @@ final class Capture {
 
   private var displayID: CGDirectDisplayID { CGMainDisplayID() }
 
+  /// When macOS last refused a picture. Each refusal costs a 10 s wait (5 s
+  /// for the screen), so for a minute after one a capture fails at once and
+  /// the run carries on through controls; then it tries again. Shared by
+  /// every Capture, the window peek's included.
+  private static var refusedAt: Date?
+
+  /// The coordinate space a frame of `bounds` would have, `pixels` across.
+  private func adopt(_ bounds: CGRect, width: Int, height: Int) {
+    lastWidth = width
+    lastHeight = height
+    pointsPerPixel = bounds.width / Double(width)
+    origin = bounds.origin
+  }
+
+  /// A frame's size once its long side fits MAX_SIDE.
+  private func fitted(_ width: Int, _ height: Int) -> (Int, Int) {
+    let longest = Double(max(width, height))
+    let factor = longest > MAX_SIDE ? MAX_SIDE / longest : 1.0
+    return (max(1, Int((Double(width) * factor).rounded())), max(1, Int((Double(height) * factor).rounded())))
+  }
+
+  /// The coordinate space of a frame that could not be taken, from the
+  /// window's (or display's) bounds alone — the same one a real frame would
+  /// have, so snapshot positions and clicks still line up. Throws when the
+  /// selected window has closed.
+  func frameWithoutPicture(records: [[String: Any]]? = nil) throws {
+    let bounds = try currentBounds(records)
+    let scale = WindowCapture.pixelScale(for: bounds)
+    let (width, height) = fitted(Int((bounds.width * scale).rounded()), Int((bounds.height * scale).rounded()))
+    adopt(bounds, width: width, height: height)
+  }
+
   /// The area the frame covers, in global points — refreshed for a window,
   /// which may have moved. One read of the window server for bounds and title
   /// (`records`, when the caller already has them).
@@ -62,13 +121,23 @@ final class Capture {
   }
 
   private func grab() throws -> CGImage {
-    if let t = target {
-      return try WindowCapture.capture(windowID: t.windowID, bounds: t.bounds)
+    if let at = Capture.refusedAt, Date().timeIntervalSince(at) < 60 {
+      throw NoPicture(reason: "No picture: macOS refused one less than a minute ago.", again: true)
     }
-    guard let image = CGDisplayCreateImage(displayID) else {
-      throw HelperError("Could not capture the screen. Stem needs Screen Recording access (System Settings → Privacy & Security → Screen Recording).")
+    do {
+      let image: CGImage
+      if let t = target {
+        image = try WindowCapture.capture(windowID: t.windowID, bounds: t.bounds)
+      } else {
+        guard let screen = CGDisplayCreateImage(displayID) else { throw NoPicture(reason: "Could not capture the screen.") }
+        image = screen
+      }
+      Capture.refusedAt = nil
+      return image
+    } catch let refused as NoPicture {
+      Capture.refusedAt = Date()
+      throw refused
     }
-    return image
   }
 
   /// A frame of the whole main display or the selected window: {jpegBase64, width, height, scale}.
@@ -76,15 +145,9 @@ final class Capture {
   func screenshot(records: [[String: Any]]? = nil) throws -> [String: Any] {
     let bounds = try currentBounds(records)
     let image = try grab()
-    let longest = Double(max(image.width, image.height))
-    let factor = longest > MAX_SIDE ? MAX_SIDE / longest : 1.0
-    let width = max(1, Int((Double(image.width) * factor).rounded()))
-    let height = max(1, Int((Double(image.height) * factor).rounded()))
+    let (width, height) = fitted(image.width, image.height)
     let scaled = try resize(image, width: width, height: height)
-    lastWidth = width
-    lastHeight = height
-    pointsPerPixel = bounds.width / Double(width)
-    origin = bounds.origin
+    adopt(bounds, width: width, height: height)
     return [
       "jpegBase64": try jpeg(scaled),
       "width": width,
