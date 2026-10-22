@@ -63,6 +63,7 @@ final class Transcriber: @unchecked Sendable {
   private var format: AVAudioFormat?
   private var converter: AVAudioConverter?
   private var engine: AVAudioEngine?
+  private var reroute: NSObjectProtocol?
   private var settled = ""
   private var pending = ""
 
@@ -129,15 +130,30 @@ final class Transcriber: @unchecked Sendable {
   /// Starts feeding the microphone. Call after prepare (and, on iOS, after the audio session is active).
   func listen() throws {
     let engine = AVAudioEngine()
+    try tap(engine)
+    engine.prepare()
+    try engine.start()
+    self.engine = engine
+    // A route change (CarPlay, a headset, another Mac input) stops the engine and
+    // changes the input format; without a restart the tap goes silent for good.
+    reroute = NotificationCenter.default.addObserver(
+      forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+    ) { [weak self, weak engine] _ in
+      guard let self, let engine, self.engine === engine else { return }
+      engine.inputNode.removeTap(onBus: 0)
+      guard (try? self.tap(engine)) != nil else { return }
+      engine.prepare()
+      try? engine.start()
+    }
+  }
+
+  private func tap(_ engine: AVAudioEngine) throws {
     let input = engine.inputNode
     let inFormat = input.outputFormat(forBus: 0)
     guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else { throw TranscriberError.noMicrophone }
     input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, _ in
       self?.push(buffer)
     }
-    engine.prepare()
-    try engine.start()
-    self.engine = engine
   }
 
   /// Feeds a recording instead of the microphone, then finishes: the helper's self-test path.
@@ -180,7 +196,10 @@ final class Transcriber: @unchecked Sendable {
     return error == nil && out.frameLength > 0 ? out : nil
   }
 
-  private func stopMic() {
+  /// Lets go of the microphone; finish or cancel still has to follow.
+  func stopMic() {
+    if let reroute { NotificationCenter.default.removeObserver(reroute) }
+    reroute = nil
     engine?.inputNode.removeTap(onBus: 0)
     engine?.stop()
     engine = nil

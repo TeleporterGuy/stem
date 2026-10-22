@@ -85,6 +85,12 @@ final class PhoneDictation {
       guard transcriber === t else { return await t.cancel() }
       let session = AVAudioSession.sharedInstance()
       try session.setCategory(.record, mode: .measurement, options: .duckOthers)
+      // Under CarPlay the car's mic raised CarPlay's Siri-style overlay and gave
+      // dictation no words; the phone's own mic hears the cabin fine.
+      if session.availableInputs?.contains(where: { $0.portType == .carAudio }) == true,
+         let mic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+        try? session.setPreferredInput(mic)
+      }
       try session.setActive(true, options: .notifyOthersOnDeactivation)
       try t.listen()
       phase = .listening
@@ -98,6 +104,10 @@ final class PhoneDictation {
   func stop() async {
     guard #available(iOS 26, *), let t = transcriber as? Transcriber else { return }
     phase = .stopping
+    // Hand the audio back now, not once the model settles, so the car or the
+    // music isn't held while the last words are worked out.
+    t.stopMic()
+    endAudioSession()
     do {
       let text = try await t.finish()
       if transcriber === t, !text.isEmpty { write(text) }
@@ -111,6 +121,8 @@ final class PhoneDictation {
   func freeze() {
     guard phase != .idle else { return }
     if #available(iOS 26, *), let t = transcriber as? Transcriber {
+      // The engine has to stop before release() can deactivate the session.
+      t.stopMic()
       Task { await t.cancel() }
     }
     release()
@@ -126,6 +138,12 @@ final class PhoneDictation {
     apply = nil
     lastWritten = nil
     phase = .idle
-    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    endAudioSession()
+  }
+
+  private func endAudioSession() {
+    let session = AVAudioSession.sharedInstance()
+    try? session.setPreferredInput(nil)
+    try? session.setActive(false, options: .notifyOthersOnDeactivation)
   }
 }
