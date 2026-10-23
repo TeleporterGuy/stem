@@ -12,6 +12,52 @@ Maintainer notes:
   date, tag.
 -->
 
+## 0.7.1 — 2026-10-23
+
+### Added
+
+- **MCP suggestions in Ask about this window.** When an app you ask about has an official MCP
+  server you haven't connected, Stem offers to set it up. For a browser window, it offers browser
+  control instead and works in the page you're looking at.
+- **Pictures from the web show in replies.** When an answer links to a picture, the picture now
+  appears in the reply on the desktop and the iPhone. Your server fetches it, so the site never
+  sees your device.
+
+### Changed
+
+- **Save files where you want them.** Ask Stem to put a picture it made, or a file it holds, in
+  your Files, a connected folder you've made writable, or a folder on your Mac, and it saves it
+  there. Hidden folders are off limits.
+- **Stem picks the right skill more often.** Each skill now gets example requests written in the
+  languages you use, and the recall model was retrained on them. Short or Slovak messages find the
+  skill they need, and unrelated skills load less often. The new model downloads on its own.
+- **Command approvals look inside scripts.** When a command runs a script, Stem reads the script
+  before deciding whether it's safe to run without asking you.
+
+### Fixed
+
+- **Computer control keeps going when macOS withholds screenshots.** If macOS refused to take a
+  picture of a window, a run stopped; it now carries on using the window's controls.
+- **Ask about this window sees the app you're in.** The shortcut could keep showing the same app no
+  matter which window was in front.
+- **⌘N in Ask about this window** starts a new question about the same window instead of leaving
+  it.
+- **Dictation works over CarPlay.** The iPhone microphone button failed while the phone was
+  connected to a car, and could hold on to the car's audio after you stopped.
+- **Browser control works in Arc's background tabs.** Clicks and screenshots failed in a tab Arc
+  opened in the background.
+- **Sharing a reply right after it finishes works.** Clicking Share on an answer that had just
+  streamed in could fail to find it.
+- **Watch threads keep their latest headline** after you reply in them, instead of freezing on
+  the title they had.
+- **Editing a persona no longer breaks a running chat.** An answer could fail when the old copy of
+  the persona shut down right after the new one took over.
+- **Contacts you added before their first mail** no longer show a changed-key warning when that
+  mail arrives.
+- **Commands that delete or rename git branches**, or diff files outside your folders, now ask
+  before they run.
+- **An unreachable mail relay** is retried with growing pauses instead of every second.
+
 ## 0.7.0 — 2026-10-19
 
 ### Added
