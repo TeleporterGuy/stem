@@ -62,7 +62,7 @@ import { resolveLoginPath } from '../exec/executor';
 import { resolveHostShell } from '../exec/git-bash';
 import { ensureThreadScratch } from '../exec/scratch';
 import { capActions, capUserWords, parseJudgeSession, type JudgeAction, type JudgeContext } from '../exec/judge-context';
-import { readMail } from '../workspace/mail';
+import { mailedImageThread, readMail } from '../workspace/mail';
 import { formatPastChat, pastChatLink } from './past-chat';
 import { clampPinnedCwd } from '../harness/pin';
 import { hostShellAgentHint } from '../exec/host-shell';
@@ -79,7 +79,7 @@ import { previousFactUserMessages } from '../recall/fact-query';
 import { reconcileExplicitFact } from '../recall/reconcile';
 import { buildFilesContext } from '../files/inject';
 import { buildConnectedFoldersContext } from '../connected-folders/inject';
-import { getPrivateFolderLabels, getPrivateRoots } from '../workspace/connected-folders';
+import { getPrivateFolderLabels, getPrivateRoots, listConnectedFolders } from '../workspace/connected-folders';
 import { resolveAttachments, saveAttachmentsTo, type PiImageContent } from './attachments';
 import { readPdfText } from './pdf-read';
 import { captureUserImages, captureUserMessage, MAX_DESCRIBED_IMAGES } from '../recall/capture';
@@ -114,6 +114,8 @@ import {
 } from './mcp-config';
 import { authorizeMcp } from './oauth';
 import { runDeviceMcpBridgeOp } from '../mcp-device/pi-bridge';
+import { execDeviceRouter } from '../exec-device/router';
+import { saveFiles, type SaveItem } from '../files/save-file';
 import { providerIsSpawnable, syncModelsConfig } from './models-config';
 import {
   buildWebSearchContext,
@@ -128,8 +130,8 @@ import { formatSkillsBlock, selectSkills, type SkillUsageStat } from '../skills/
 import { loadedSkillNames } from '../skills/thread-history';
 import { AmbientBlocks, liveUserTexts } from './context-dedupe';
 import { formatPracticeBlock } from '../skills/record';
-import { formatWindowBlock } from './window-context';
-import { mcpServersForAppName } from './mcp';
+import { formatWindowBlock, isBrowserWindow } from './window-context';
+import { mcpServersForAppName, windowSuggestionFor } from './mcp';
 import { readDevices } from '../transport/auth';
 import { listSkillRecords } from '../skills/store';
 import { gradeSkillUse, reportedSkillIssues } from '../skills/grade';
@@ -164,6 +166,7 @@ import { trackGeneration } from './generation-speed';
 
 import { PiWorker } from './worker';
 import { findImageInEntries, newImageId, parseImagesMarker, stemImageOf } from './image-gen.mjs';
+import { cameFromInput, jsonNeedle } from '../chats/remote-image';
 import { mailPreamble, personaNotesBlock, priorReportsBlock } from '../mail/preamble';
 import { systemVersion } from '../sys-version';
 import { secretKeyHex } from './secrets';
@@ -177,6 +180,7 @@ import {
   ENV_SKILLS_DIR,
   EXEC_BRIDGE_TITLE,
   FILE_BRIDGE_TITLE,
+  SAVE_BRIDGE_TITLE,
   BROWSER_BRIDGE_TITLE,
   CHAT_BRIDGE_TITLE,
   COMPUTER_BRIDGE_TITLE,
@@ -1361,7 +1365,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       if (input.windowContext) {
         const w = input.windowContext;
         // quiet: without the match the model still gets the window, just no pointer to its app's server.
-        const servers = await mcpServersForAppName(w.app, w.bundleId, input.persona?.mcpServers ?? null).catch(
+        const servers = await mcpServersForAppName(w.app, w.bundleId, input.persona?.mcpServers ?? null, w.url ?? null).catch(
           () => [] as string[]
         );
         if (servers.length) this.windowServers.set(threadId, servers);
@@ -2328,6 +2332,29 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
     return null;
   }
 
+  async urlCameFromInput(threadId: string, url: string): Promise<boolean> {
+    const file = await this.resolveSessionFile(threadId);
+    if (!file) {
+      const live = this.workers.find((w) => w.proc?.running && w.activeThreadId === threadId);
+      if (!live) return false;
+      const res = await live.proc!.request({ type: 'get_messages' });
+      return cameFromInput((res.data as { messages?: unknown[] } | undefined)?.messages ?? [], url);
+    }
+    const text = await readFile(file, 'utf8');
+    const needle = jsonNeedle(url);
+    // Only lines naming the URL are worth parsing — the others can be megabytes.
+    const entries: unknown[] = [];
+    for (const line of text.split('\n')) {
+      if (!line.includes(needle) && !line.includes(url)) continue;
+      try {
+        entries.push(JSON.parse(line));
+      } catch {
+        // quiet: a torn line (pi still appending) says nothing about the URL yet
+      }
+    }
+    return cameFromInput(entries, url);
+  }
+
   async readThread(threadId: string): Promise<{ title: string; messages: ChatMessage[]; complete?: boolean }> {
     const file = await this.resolveSessionFile(threadId);
     if (!file) {
@@ -2977,6 +3004,52 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
    * instructions cards store it) and by the dead worker's thread (skill cards,
    * exec/harness work — a worker's held requests all belong to its live turn).
    */
+  private onProcessExit(
+    worker: PiWorker,
+    proc: PiProcess,
+    info: { code: number | null; signal: string | null },
+    gen: number,
+    spawnedAt: number
+  ): void {
+    // shutdown()/restart()/retire detach the process before disposing it — only
+    // an exit of the worker's CURRENT process is unexpected and feeds the breaker.
+    const unexpected = worker.proc === proc;
+    // A child swapped out for a fresh one (stale persona prompt) can exit
+    // seconds after its successor took over the worker. Everything on the
+    // worker now belongs to the successor: release only what this child held.
+    if (worker.proc !== null && !unexpected) {
+      this.settleWorkerApprovals(proc, null);
+      log('pi', 'backend stopped', { ...info, uptimeMs: Date.now() - spawnedAt, gen, worker: worker.id, superseded: true });
+      return;
+    }
+    const deadThread = worker.currentTurn?.threadId ?? null;
+    const deadTurnId = worker.currentTurn?.turnId;
+    worker.proc = null;
+    worker.activeThreadId = null;
+    worker.currentTurn = null;
+    worker.currentModel = null;
+    worker.currentThinking = null;
+    // Only what THIS child was holding: its cards, its turn's exec/harness
+    // work. Turns streaming on other workers keep going.
+    this.settleWorkerApprovals(proc, deadThread);
+    worker.gate.finishTurn();
+    this.pumpCapacityWaiters();
+    // Attributed: `threadId` names the turn THIS child was carrying (null when
+    // it sat idle — a reaped extra worker). Consumers scope their reaction to
+    // it; before the pool, a bare process/exit meant "everything died", and an
+    // idle worker's retirement was failing every in-flight mail delivery and
+    // scheduled run on the other workers.
+    this.emitEvent('process/exit', { ...info, threadId: deadThread, turnId: deadTurnId });
+    const uptimeMs = Date.now() - spawnedAt;
+    log('pi', unexpected ? 'backend exited unexpectedly' : 'backend stopped', {
+      ...info,
+      uptimeMs,
+      gen,
+      worker: worker.id
+    });
+    if (unexpected) this.noteProcessExit(gen, uptimeMs);
+  }
+
   private settleWorkerApprovals(proc: PiProcess, threadId: string | null): void {
     for (const [id, pending] of [...this.adminApprovalProposals]) {
       if (pending.process === proc) {
@@ -3134,6 +3207,50 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
         }
         if (this.parkTurn(worker, turn, result)) return respond(result);
         respond(result);
+      } catch (e) {
+        respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    })();
+  }
+
+  /**
+   * Handle the save_file tool's ctx.ui.input round-trip (sentinel
+   * SAVE_BRIDGE_TITLE). Which conversation the `img_…` ids and the scratch
+   * folder belong to is the live turn's thread, never the payload's.
+   */
+  private handleSaveBridgeRequest(worker: PiWorker, id: string, payload: string | undefined): void {
+    const requestProcess = worker.proc;
+    const respond = (value: unknown): void => {
+      if (worker.proc !== requestProcess) return;
+      requestProcess?.send({ type: 'extension_ui_response', id, value: JSON.stringify(value) });
+    };
+    const turn = worker.currentTurn;
+    void (async () => {
+      try {
+        if (turn?.external) return respond({ ok: false, error: EXTERNAL_TOOL_REFUSAL });
+        if (!turn?.threadId) return respond({ ok: false, error: 'Saving files is unavailable outside a conversation.' });
+        const req = JSON.parse(payload ?? '{}') as { files?: SaveItem[] };
+        respond(
+          await saveFiles(turn.threadId, Array.isArray(req.files) ? req.files : [], {
+            findThreadImage: async (threadId, imageId) => {
+              const own = await this.findThreadImage(threadId, imageId);
+              if (own) return own;
+              // A picture another persona made and mailed here: the bytes are
+              // in the sender's thread (same lookup as a browser upload).
+              const origin = await mailedImageThread(threadId, imageId);
+              return origin ? this.findThreadImage(origin, imageId) : null;
+            },
+            folders: listConnectedFolders,
+            devices: {
+              hostFor: (deviceId) => execDeviceRouter().hostFor(deviceId),
+              isAvailable: (deviceId) => execDeviceRouter().isAvailable(deviceId),
+              label: async (deviceId) =>
+                // quiet: a registry that will not read leaves the generic name.
+                (await readDevices().catch(() => [])).find((d) => d.id === deviceId)?.label ?? 'its computer',
+              save: (deviceId, request) => execDeviceRouter().save(deviceId, request)
+            }
+          })
+        );
       } catch (e) {
         respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
       }
@@ -3949,37 +4066,7 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       this.emitEvent('process/stderr', { text });
       log('pi.stderr', text.trim());
     });
-    proc.on('exit', (info: { code: number | null; signal: string | null }) => {
-      // shutdown()/restart()/retire detach the process before disposing it — only
-      // an exit of the worker's CURRENT process is unexpected and feeds the breaker.
-      const unexpected = worker.proc === proc;
-      const deadThread = worker.currentTurn?.threadId ?? null;
-      const deadTurnId = worker.currentTurn?.turnId;
-      worker.proc = null;
-      worker.activeThreadId = null;
-      worker.currentTurn = null;
-      worker.currentModel = null;
-      worker.currentThinking = null;
-      // Only what THIS child was holding: its cards, its turn's exec/harness
-      // work. Turns streaming on other workers keep going.
-      this.settleWorkerApprovals(proc, deadThread);
-      worker.gate.finishTurn();
-      this.pumpCapacityWaiters();
-      // Attributed: `threadId` names the turn THIS child was carrying (null when
-      // it sat idle — a reaped extra worker). Consumers scope their reaction to
-      // it; before the pool, a bare process/exit meant "everything died", and an
-      // idle worker's retirement was failing every in-flight mail delivery and
-      // scheduled run on the other workers.
-      this.emitEvent('process/exit', { ...info, threadId: deadThread, turnId: deadTurnId });
-      const uptimeMs = Date.now() - spawnedAt;
-      log('pi', unexpected ? 'backend exited unexpectedly' : 'backend stopped', {
-        ...info,
-        uptimeMs,
-        gen,
-        worker: worker.id
-      });
-      if (unexpected) this.noteProcessExit(gen, uptimeMs);
-    });
+    proc.on('exit', (info: { code: number | null; signal: string | null }) => this.onProcessExit(worker, proc, info, gen, spawnedAt));
 
     try {
       proc.start();
@@ -4041,6 +4128,11 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
       // the held elicitation is answered when the command settles.
       if (ev.method === 'input' && ev.title === EXEC_BRIDGE_TITLE) {
         this.handleExecBridgeRequest(worker, id, ev.placeholder as string | undefined);
+        return;
+      }
+      // The save_file tool round-trip: the copy happens here (files/save-file.ts).
+      if (ev.method === 'input' && ev.title === SAVE_BRIDGE_TITLE) {
+        this.handleSaveBridgeRequest(worker, id, ev.placeholder as string | undefined);
         return;
       }
       // The coding_agent tool round-trip: the whole harness turn runs in main
@@ -4945,7 +5037,15 @@ export class PiRuntime extends EventEmitter implements ChatBackend {
           .catch(() => undefined);
         if (label) browser = { device: label };
       }
-      blocks.push(formatWindowBlock(w, servers, computer, browser));
+      // What would open the page or the app's data up, for the model to tell
+      // the user when it would have helped: browser control that cannot reach
+      // this browser window, and the app's official MCP server not connected.
+      const browserOff = isBrowserWindow(w) && !browser ? ('off' as const) : undefined;
+      const allow = input.persona?.mcpServers ?? null;
+      // quiet: without it the model is just not told about the app's official server.
+      const suggestion = servers.length ? null : await windowSuggestionFor(w.app, w.bundleId, w.url ?? null, allow).catch(() => null);
+      const offer = suggestion ? { name: suggestion.entry.name, kind: suggestion.kind } : undefined;
+      blocks.push(formatWindowBlock(w, servers, computer, browser, { browserOff, offer }));
     }
 
     // The ambient blocks below go out only when the live context does not

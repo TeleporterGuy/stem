@@ -68,7 +68,8 @@ export async function buildConnectedFoldersContext(): Promise<string | null> {
         `The mirror itself is never writable. To create or change files in one marked ` +
         `writable, run commands on the named computer (run_command's \`device\` parameter) ` +
         `against the folder's path there — and verify a fresh write by reading it back ` +
-        `through that computer, not the mirror. Mirrors exclude what the folder's \`.gitignore\` ` +
+        `through that computer, not the mirror. To put a picture from this chat or a file ` +
+        `Stem holds there, use save_file instead of a command. Mirrors exclude what the folder's \`.gitignore\` ` +
         `files exclude, \`.git\`, \`node_modules\`, ` +
         `OS junk files, symlinks, and files over 25 MB, so those being absent is expected, ` +
         `not a problem with the folder.`

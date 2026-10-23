@@ -116,7 +116,9 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   // A server's "Works with apps" list, or null for "match by its name".
   'mcp:setApps': [a.string, a.nullish(a.stringArray)],
   // An app name and its bundle id (null when the app has none).
-  'mcp:forApp': [a.string, a.nullish(a.string)],
+  'mcp:forApp': [a.string, a.nullish(a.string), a.optional(a.nullish(a.string))],
+  // The same, plus a browser window's tab address.
+  'mcp:windowSuggestion': [a.string, a.nullish(a.string), a.optional(a.nullish(a.string))],
   'mcp:login': [a.string],
   'mcp:adminDecision': [a.id, a.boolean],
   // The MCP host channels. No device id on any of them: the caller IS the
@@ -191,6 +193,7 @@ const IPC_ARGS: Record<string, ArgSpec[]> = {
   'chats:setFolder': [a.string, a.nullish(a.string)],
   'chats:setFormat': [a.string, a.oneOf(['md', 'mdx'])],
   'sources:favicon': [a.string],
+  'chats:remoteImage': [a.string, a.string],
   'chats:writeSubject': [a.string],
   'pins:list': [a.string],
   'pins:add': [a.string, a.object],

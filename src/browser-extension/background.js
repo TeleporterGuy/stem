@@ -3,7 +3,7 @@ import { initActions, notifyStopped, perform } from './actions.js';
 import * as cdp from './cdp.js';
 import { noteDownloadStart, trackDownloads } from './downloads.js';
 import { Runs } from './runs.js';
-import { capText, clip, UserError } from './util.js';
+import { capText, clip, restrictedReason, UserError } from './util.js';
 
 // The extension's service worker: the native-messaging link to Stem, request
 // dispatch, run lifecycle and Stop.
@@ -184,11 +184,32 @@ async function handleRequest(msg) {
   post({ type: 'result', id, result });
 }
 
+/**
+ * "Ask about this window" over this browser: the page the user is looking at —
+ * the active tab of the last focused window. Never a private window's, and
+ * never a browser page or local file. Reads only; no run starts.
+ */
+async function handlePeek(msg) {
+  let result;
+  try {
+    const w = await chrome.windows.getLastFocused({ populate: true, windowTypes: ['normal'] });
+    const tab = w && !w.incognito ? (w.tabs || []).find((t) => t.active) : null;
+    const url = tab ? tab.url || tab.pendingUrl : '';
+    result = url && !restrictedReason(url) ? { ok: true, page: { url, title: clip(tab.title || '', 200) } } : { ok: true };
+  } catch (err) {
+    result = { ok: false, error: clip(String((err && err.message) || err), 200) };
+  }
+  post({ type: 'result', id: msg.id, result });
+}
+
 async function onNativeMessage(msg) {
   if (!msg || typeof msg !== 'object') return;
   switch (msg.type) {
     case 'request':
       return handleRequest(msg);
+    case 'peek':
+      if (typeof msg.id === 'string') return handlePeek(msg);
+      return;
     case 'end':
       if (typeof msg.threadId === 'string') await endRun(msg.threadId);
       return;

@@ -199,7 +199,23 @@ function label(r) {
 }
 
 async function viewport(s) {
-  const m = await s.send('Page.getLayoutMetrics');
+  let m = await s.send('Page.getLayoutMetrics');
+  if (m.cssVisualViewport.clientWidth < 1 || m.cssVisualViewport.clientHeight < 1) {
+    // Arc never lays out a tab opened in the background: its view stays 0×0,
+    // so every ref click finds "no visible box" and screenshots fail with
+    // "Cannot take screenshot with 0 width". Give the page its window's size;
+    // the override goes away with the debugger on detach.
+    let width = 1280;
+    let height = 800;
+    try {
+      const w = await chrome.windows.get((await chrome.tabs.get(s.tabId)).windowId);
+      if (w.width > 0 && w.height > 0) ({ width, height } = w);
+    } catch {
+      // Keep the default size.
+    }
+    await s.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 0, mobile: false }).catch(() => {});
+    m = await s.send('Page.getLayoutMetrics');
+  }
   return { vw: m.cssVisualViewport.clientWidth, vh: m.cssVisualViewport.clientHeight, metrics: m };
 }
 

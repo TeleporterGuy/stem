@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, readdirSync, readlinkSync } from 'node:fs';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmod, mkdir, realpath, rm } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
@@ -109,7 +109,31 @@ export interface BrowserHost {
   forget(id: string): Promise<BrowserHostLocalState>;
   setUp(): Promise<BrowserHostLocalState>;
   openExtensionsPage(browserId?: string): Promise<void>;
+  /**
+   * "Ask about this window" over a browser window: whether that browser has
+   * the extension connected, and the page in front when it can say. `app` and
+   * `title` are the window's, to tell which browser (and profile) it is.
+   */
+  peekWindow(app: string, title: string): Promise<{ ready: boolean; page: { url: string; title: string } | null }>;
   close(): void;
+}
+
+/** How long a peek may hold "Ask about this window" up. */
+const PEEK_TIMEOUT_MS = 1_500;
+
+/** A tab's title and its window's, one cut short or added to by the browser. */
+export function sameTitle(page: string, window: string): boolean {
+  const a = page.trim().toLowerCase();
+  const b = window.trim().toLowerCase();
+  return a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a));
+}
+
+/** "Google Chrome" ~ "Chrome", "Brave Browser" ~ "Brave": the window's app and the host's name for it. */
+export function sameBrowser(windowApp: string, hostName: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/\.app$|\.exe$/, '').replace(/[^a-z0-9]+/g, ' ').replace(/\b(google|microsoft|browser)\b/g, '').trim();
+  const a = norm(windowApp);
+  const b = norm(hostName);
+  return !!a && !!b && (a === b || a.split(' ')[0] === b.split(' ')[0]);
 }
 
 interface Conn {
@@ -676,6 +700,25 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
     });
   }
 
+  function peekConn(conn: Conn): Promise<{ url: string; title: string } | null> {
+    return new Promise((resolve) => {
+      const id = `peek-${randomUUID()}`;
+      const timer = setTimeout(() => {
+        conn.pending.delete(id);
+        resolve(null);
+      }, PEEK_TIMEOUT_MS);
+      conn.pending.set(id, (r) => {
+        clearTimeout(timer);
+        resolve(r.ok && r.page ? r.page : null);
+      });
+      if (!send(conn, { type: 'peek', id })) {
+        clearTimeout(timer);
+        conn.pending.delete(id);
+        resolve(null);
+      }
+    });
+  }
+
   /** Arc's sidebar tabs the extension could not list, as lines to add to a `tabs` answer. */
   async function arcExtra(loadedUrls: string[]): Promise<string> {
     const sidebar = await (deps.readArcSidebar ?? readArcSidebar)();
@@ -1003,6 +1046,20 @@ export function createBrowserHost(deps: BrowserHostDeps): BrowserHost {
       if (app && mayLaunch(app)) {
         await openWith(app, extensionsPageUrl(app)).catch(() => undefined);
       }
+    },
+
+    async peekWindow(app, title) {
+      // Switched off here: Stem does not drive this browser, nor read what is in it.
+      if (!supported || !(await readBrowserHostSettings()).enabled) return { ready: false, page: null };
+      const mine = [...conns.values()].filter((c) => c.key && sameBrowser(app, c.appName));
+      if (!mine.length) return { ready: false, page: null };
+      const pages = await Promise.all(mine.map(peekConn));
+      // Two profiles of one app each have a front tab: the window's title names
+      // the right one. Either may be the longer: Chrome's window adds " - Google
+      // Chrome", Arc's drops the page title's " - Wikipedia".
+      const found = pages.filter((p): p is { url: string; title: string } => !!p);
+      const page = (found.length === 1 ? found[0] : found.find((p) => sameTitle(p.title, title))) ?? null;
+      return { ready: true, page };
     },
 
     close() {

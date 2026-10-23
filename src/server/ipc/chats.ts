@@ -30,6 +30,7 @@ import {
 } from '../workspace/chats';
 import { IDLE_MS } from '../chats/autofile';
 import { faviconFor } from '../chats/favicon';
+import { remoteImageFor } from '../chats/remote-image';
 import {
   markAllRead,
   noteRename,
@@ -255,6 +256,11 @@ export function registerChatsIpc(deps: IpcDeps): void {
   // The Sources panel's site icons, fetched here because neither the renderer's
   // CSP nor the phone should reach arbitrary sites (see chats/favicon.ts).
   registerServer('sources:favicon', (_e, host: string) => faviconFor(host));
+  // A picture a reply links to on the web, fetched here for the same reason —
+  // and only when the URL came from outside a model (see chats/remote-image.ts).
+  registerServer('chats:remoteImage', (_e, threadId: string, url: string) =>
+    remoteImageFor(threadId, url, (t, u) => deps.runtime().urlCameFromInput(t, u))
+  );
   registerServer('chats:setFolder', async (_e, threadId: string, folderId: string | null) => {
     await setChatFolder(threadId, folderId);
     return chatList();

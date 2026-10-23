@@ -451,16 +451,18 @@ export class InterStemService {
       while (!ctl.signal.aborted && !this.stopped) {
         try {
           const state = await this.store.read();
-          this.connected.add(relay);
-          this.onChange();
-          backoff = 1_000;
-          await streamMail(relay, this.identity(state), (env) => this.receive(relay, env), ctl.signal);
+          // Connected (and the backoff forgiven) only once the relay accepted the
+          // stream: resetting before the attempt kept a down relay on a 1 s retry.
+          await streamMail(relay, this.identity(state), (env) => this.receive(relay, env), ctl.signal, () => {
+            this.connected.add(relay);
+            this.onChange();
+            backoff = 1_000;
+          });
         } catch (err) {
           if (ctl.signal.aborted) break;
           degrade('interstem', `relay stream to ${relay} dropped`, err);
         }
-        this.connected.delete(relay);
-        this.onChange();
+        if (this.connected.delete(relay)) this.onChange();
         if (ctl.signal.aborted || this.stopped) break;
         await new Promise((r) => setTimeout(r, backoff).unref?.());
         backoff = Math.min(backoff * 2, 60_000);
@@ -539,6 +541,11 @@ export class InterStemService {
       const c = s.contacts[env.from];
       if (!c) {
         s.contacts[env.from] = { address: env.from, state: 'request', authKey: signer, keyFp, firstSeen: this.now() };
+      } else if (!c.authKey) {
+        // A contact made before we ever saw their key (blocked or accepted by
+        // address): this is their first key, not a changed one.
+        c.authKey = signer;
+        c.keyFp = keyFp;
       } else if (c.authKey !== signer) {
         keyChanged = true;
         c.keyChanged = true;
@@ -785,8 +792,13 @@ export class InterStemService {
     }
     await this.store.update((s) => {
       const c = s.contacts[to];
-      if (c) c.encKey = b64(keys.encPub);
-      else
+      if (c) {
+        c.encKey = b64(keys.encPub);
+        if (!c.authKey) {
+          c.authKey = found.authKey;
+          c.keyFp = fingerprint(keys.sigPub);
+        }
+      } else
         s.contacts[to] = {
           address: to,
           // We wrote to them first: a contact by our own choice.

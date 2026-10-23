@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useRetrievalHealth } from '../../../hooks/useRetrievalHealth';
 import { useRememberedTab } from '../../../hooks/useRememberedTab';
 import { AppSettings } from './AppSettings';
@@ -6,6 +6,7 @@ import { FeaturesSettings } from './FeaturesSettings';
 import { ServerSettings } from './ServerSettings';
 import { ModelsSettings } from './ModelsSettings';
 import type { ModelTabProps } from '../shared';
+import { useManageIntent } from '../../intents';
 
 /**
  * Settings, as four sub-tabs rather than one very long scroll.
@@ -48,13 +49,27 @@ export function SettingsTab({
   // on the remembered sub-tab would hide the thing the dot is about, so a dead
   // sign-in pulls the panel to Models. Once, on the transition: reselecting
   // it every render would make the other sub-tabs unreachable until it's fixed.
+  // An explicit jump (Quick Chat's browser-control Set up) is not undone by a
+  // dead sign-in reported a moment after the panel opened.
+  const askedAt = useRef(0);
   useEffect(() => {
-    if (deadProvider) setSub('models');
+    if (deadProvider && Date.now() - askedAt.current > 3_000) setSub('models');
   }, [deadProvider, setSub]);
 
   useEffect(() => {
     if (recallFocus) setSub('models');
   }, [recallFocus, setSub]);
+
+  // Quick Chat's "Set up browser control" lands in Features. After the two
+  // above: on a fresh mount theirs run too, and an explicit ask wins.
+  useManageIntent(
+    'browser-control',
+    () => {
+      askedAt.current = Date.now();
+      setSub('features');
+    },
+    false
+  );
 
   // The recall models live under Models now, so a failed one marks that segment
   // the way a dead sign-in does (the Memory rail keeps its own dot and banner).

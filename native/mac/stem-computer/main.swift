@@ -112,6 +112,11 @@ func answerWithScreenshot(_ id: Any, settleMs: Int = 300, text: String? = nil) {
     var reply: [String: Any] = ["id": id, "ok": true, "screenshot": shot, "cursor": input.cursorInScreenshot(), "target": targetField()]
     if !said.isEmpty { reply["text"] = said }
     emit(reply)
+  } catch let missing as NoPicture {
+    // The action went through; failing the reply would say it had not.
+    do { try capture.frameWithoutPicture(records: records) } catch { fail(id, "\(error)"); return }
+    let text = [said, "Done, but there is no picture of the result. \(missing)"].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    emit(["id": id, "ok": true, "text": text, "target": targetField()])
   } catch {
     fail(id, "\(error)")
   }
@@ -261,36 +266,55 @@ while let line = readLine(strippingNewline: true) {
         // serves it and the first look at the app's windows.
         let records = Windows.records()
         _ = noteNewWindows(records)
-        let shot: [String: Any]
+        var shot: [String: Any]?
+        var said: [String] = []
         do {
           shot = try capture.screenshot(records: records)
+        } catch let missing as NoPicture {
+          // Selecting needs no picture: the window's controls work through
+          // Accessibility alone (2026-10-22: a refused capture here left the
+          // model no way into WhatsApp at all).
+          do { try capture.frameWithoutPicture(records: records) } catch {
+            selectWindow(nil)
+            throw error
+          }
+          said.append("Selected, but with no picture of it. \(missing)")
         } catch {
           selectWindow(nil)
           throw error
         }
         var reply: [String: Any] = ["id": id, "ok": true, "target": targetField()]
-        if wantShot {
+        if wantShot, let shot {
           reply["screenshot"] = shot
           reply["cursor"] = input.cursorInScreenshot()
         }
-        let note = Windows.chromiumOffScreenNote(info)
-        if let note { reply["text"] = note } else if !wantShot { reply["text"] = "Done." }
+        if let note = Windows.chromiumOffScreenNote(info) { said.append(note) }
+        if !said.isEmpty { reply["text"] = said.joined(separator: "\n\n") } else if !wantShot { reply["text"] = "Done." }
         emit(reply)
       }
     case "snapshot":
       guard let target = capture.target, let ax = windowAX() else {
         throw HelperError("snapshot lists the controls of a selected window; select_window first (or take a screenshot of the screen).")
       }
-      // The picture first, so the ids' positions are in its pixels.
-      let shot = try capture.screenshot()
+      // The picture first, so the ids' positions are in its pixels. Without
+      // one, the pixels a picture would have had.
+      var shot: [String: Any]?
+      var missing: NoPicture?
+      do {
+        shot = try capture.screenshot()
+      } catch let refused as NoPicture {
+        missing = refused
+        try capture.frameWithoutPicture()
+      }
       let depth = Int(number(obj["depth"]) ?? 12)
       var tree = try ax.snapshot(depth: max(1, min(depth, 30)), windowBounds: capture.target?.bounds ?? target.bounds, toPixel: { capture.pixel($0) }, ppp: capture.pointsPerPixel)
       if ax.lastSnapshotCount < 12, let selected, selected.chromium, !Windows.isOnScreen(selected.id) {
         tree += "\n\n" + (Windows.chromiumOffScreenNote(selected) ?? "")
       }
+      if let missing { tree += "\n\nNo picture this time. \(missing)" }
       // Without a picture wanted the frame above still set the geometry the ids' positions are in.
       var reply: [String: Any] = ["id": id, "ok": true, "text": tree, "target": targetField()]
-      if wantShot {
+      if wantShot, let shot {
         reply["screenshot"] = shot
         reply["cursor"] = input.cursorInScreenshot()
       }

@@ -1,6 +1,7 @@
 // Shared contracts between main, preload, and renderer. Single source of truth.
 
 import type { InboxState } from './inbox';
+import type { McpCatalogEntry } from './mcp-app-catalog';
 import type { TimeLocale } from './time-locale';
 import type { ShortcutId } from './shortcut-defs';
 import type { SharedLink, ShareOptions, SharePreview, ShareSource, ShareStatus } from './share';
@@ -1595,6 +1596,29 @@ export interface DeviceExecRequest {
 export type DeviceExecResult = { ok: true; text: string } | { ok: false; error: string };
 
 /**
+ * The addressed frame that asks a device to write one file the server holds
+ * (save_file into a writable folder that lives on that computer). Its own
+ * frame, not a DeviceExecRequest with no command: a client that predates it
+ * drops a frame it does not know, where it would have run an empty command
+ * and answered "exit 0".
+ */
+export const EXEC_SAVE_FRAME = 'exec-save';
+
+/** One file for the device to fetch from its outbox and write — answered on `execHost:result`. */
+export interface DeviceSaveRequest {
+  /** Unguessable and single-use — same defence as {@link DeviceExecRequest.requestId}. */
+  requestId: string;
+  threadId: string;
+  /** The outbox entry holding the bytes (files/outbox.ts), fetched as GET /files/stem-outbox:<id>. */
+  outboxId: string;
+  /**
+   * Absolute path ON THE DEVICE. The device writes it only inside a folder it
+   * mirrors read & write, checked against its own list.
+   */
+  path: string;
+}
+
+/**
  * A device's account of whether it runs commands — `execHost:announce`, sent on
  * connect and whenever the switch is flipped. `platform` travels with it because
  * the server's policy (tier-1 grammar, the judge's shell name) is decided
@@ -1604,6 +1628,8 @@ export type DeviceExecResult = { ok: true; text: string } | { ok: false; error: 
 export interface DeviceExecAnnouncement {
   enabled: boolean;
   platform: 'darwin' | 'linux' | 'win32';
+  /** Understands EXEC_SAVE_FRAME. Absent on clients that predate save_file. */
+  saves?: boolean;
 }
 
 /** One device's last exec announcement, as the server remembers it. */
@@ -3682,8 +3708,15 @@ export type ManageTabId = 'chats' | 'memory' | 'mcp' | 'personas' | 'folders' | 
  */
 export type MenuCommand =
   | { kind: 'shortcut'; id: ShortcutId }
-  | { kind: 'manage-tab'; tab: ManageTabId }
+  | { kind: 'manage-tab'; tab: ManageTabId; intent?: ManageIntent }
   | { kind: 'open-chat'; threadId: string };
+
+/** Where a jump to a panel tab lands inside it (renderer/manage/intents.ts). */
+export type ManageIntent =
+  /** MCP: a new server filled in from the official-server catalog (mcp-app-catalog.ts). */
+  | { kind: 'mcp-connect'; entryId: string }
+  /** Settings → Features → Browser control. */
+  | { kind: 'browser-control' };
 
 export interface QuickChatShortcutStatus {
   accelerator: string | null;
@@ -4688,7 +4721,23 @@ export interface QuickChatWindow {
   imageBase64: string | null;
   /** Grants that were missing: no picture without 'screen', no text without 'accessibility'. */
   missing: ('screen' | 'accessibility')[];
+  /**
+   * A browser window's active tab address, read through the Stem extension;
+   * absent when it is not a browser or the extension did not answer.
+   */
+  url?: string;
+  /** A browser window whose browser has the Stem extension connected; absent = not a browser. */
+  browserReady?: boolean;
 }
+
+/**
+ * What the window chip offers for the app's official MCP server
+ * (mcp:windowSuggestion): connect the catalog's server, or turn on the
+ * user's own that covers the app but is switched off.
+ */
+export type WindowMcpSuggestion =
+  | { kind: 'connect'; entry: McpCatalogEntry }
+  | { kind: 'enable'; server: string; entry: McpCatalogEntry };
 
 /** What the model is told about the window a turn was asked from. */
 export interface WindowContext {
@@ -4699,6 +4748,13 @@ export interface WindowContext {
   title: string;
   /** The window's readable text, when the app exposes it. */
   text: string | null;
+  /** A browser window's active tab address (QuickChatWindow.url). */
+  url?: string;
+  /**
+   * A browser window: whether the asking computer's Stem extension is
+   * connected in that browser. Absent from older desktops and for other apps.
+   */
+  browserReady?: boolean;
 }
 
 /** Main → overlay: capture an atomic state snapshot for an implicit handoff. */
@@ -5153,7 +5209,9 @@ export interface StemApi {
   /** Set which apps a server works with; null = match by its name again. */
   setMcpServerApps(name: string, apps: string[] | null): Promise<McpServerSummary[]>;
   /** The MCP servers that cover an app ("Ask about this window" chip). */
-  mcpServersForApp(app: string, bundleId: string | null): Promise<string[]>;
+  mcpServersForApp(app: string, bundleId: string | null, url?: string | null): Promise<string[]>;
+  /** What the window chip offers for the app's official MCP server; null = nothing. */
+  mcpWindowSuggestion(app: string, bundleId: string | null, url?: string | null): Promise<WindowMcpSuggestion | null>;
   loginMcpServer(name: string): Promise<McpLoginResult>;
   restartRuntime(): Promise<RuntimeStatus>;
   /** Assistant proposed an MCP change; fired so the UI can show a confirm card. */
@@ -5371,6 +5429,12 @@ export interface StemApi {
   adoptPlainFormat(): Promise<ChatListResult>;
   /** A cited site's favicon as a data URL (fetched by the server), or null. */
   sourceFavicon(host: string): Promise<string | null>;
+  /**
+   * A web picture a reply in the thread links to, as a data URL fetched by the
+   * server, or null (refused: only URLs that reached the chat from a tool's
+   * output or the user, never ones a model wrote; or the fetch failed).
+   */
+  getRemoteImage(threadId: string, url: string): Promise<string | null>;
 
   // Inbox: read/archive/snooze state for the Chats panel's Inbox mode. Every
   // mutator takes a list of thread ids so a bulk selection is the same call as a
@@ -5662,6 +5726,8 @@ export interface StemApi {
   hideQuickChat(): Promise<void>;
   /** Overlay: open System Settings at the Privacy pane the window chip is missing. */
   openQuickChatPrivacy(which: 'screen' | 'accessibility'): Promise<void>;
+  /** The window chip's Connect / Set up: put Quick Chat away and open the main window's panel there. */
+  openManageFromQuickChat(tab: ManageTabId, intent?: ManageIntent): Promise<void>;
   /** Shrink the visible overlay to the compact bar (its session just emptied). */
   /** `chip`: the bar is showing an "Ask about this window" chip. */
   compactQuickChat(chip?: boolean): Promise<void>;

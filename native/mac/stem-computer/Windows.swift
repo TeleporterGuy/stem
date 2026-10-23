@@ -45,10 +45,29 @@ enum Windows {
   /// `minimized: false` skips telling minimized windows apart — one AX round
   /// trip (up to 0.3 s) per app with an off-screen window, which only the
   /// listing the model reads needs.
+  /// The app in front right now. `NSWorkspace.frontmostApplication` is only
+  /// refreshed by notifications on the main run loop, which this process never
+  /// runs (it blocks in readLine), so on its own it keeps naming whichever app
+  /// was in front when the helper started. Accessibility asks the system live;
+  /// without it, the pending notifications are drained first.
+  static func frontmostPid() -> pid_t? {
+    if AXIsProcessTrusted() {
+      let system = AXUIElementCreateSystemWide()
+      AXUIElementSetMessagingTimeout(system, 0.3)
+      var pid: pid_t = 0
+      if let app = AX.attribute(system, kAXFocusedApplicationAttribute as String),
+         AXUIElementGetPid(app as! AXUIElement, &pid) == .success, pid > 0 {
+        return pid
+      }
+    }
+    if Thread.isMainThread { RunLoop.current.run(until: Date()) }
+    return NSWorkspace.shared.frontmostApplication?.processIdentifier
+  }
+
   static func list(minimized wantMinimized: Bool = true) -> [WindowInfo] {
     guard let raw = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return [] }
     trace("window list: \(raw.count) entries")
-    let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    let front = frontmostPid()
     let ours = getppid()
     var seen = Set<CGWindowID>()
     var apps: [pid_t: NSRunningApplication?] = [:]

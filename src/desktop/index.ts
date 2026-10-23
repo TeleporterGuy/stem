@@ -11,7 +11,7 @@ import {
   session,
   shell
 } from 'electron';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { IN_WINDOW_SHORTCUTS, installAppMenu, updateAppMenu } from './app-menu';
 import { installContextMenu } from './context-menu';
@@ -390,6 +390,8 @@ const quickChat = createQuickChat({
   // Late-bound: the proxy only exists once the server (embedded or external) has
   // answered, and Quick Chat is created before any of that.
   invoke: (channel, args) => proxy!.invoke(channel, args),
+  // Late-bound like `invoke`: the browser host starts after Quick Chat exists.
+  peekBrowser: (app, title) => browserHost?.peekWindow(app, title) ?? Promise.resolve({ ready: false, page: null }),
   beginSummon: () => {
     // Cleared on the next tick, after the activation has been handled.
     summoningOverlay = true;
@@ -542,7 +544,9 @@ app.whenReady().then(async () => {
     invoke: (channel, args) => proxy!.invoke(channel, args),
     // A device command may have written into a mirrored folder; push it now so
     // the assistant's next read of the mirror sees what it just did.
-    commandFinished: (request) => mirrorHost?.commandTouched(request.command, request.cwd)
+    commandFinished: (request) => mirrorHost?.commandTouched(request.command, request.cwd),
+    downloadOutbox: (id, dir, name) => downloadFile(endpoint, `stem-outbox:${id}`, dir, name),
+    fileSaved: (path) => mirrorHost?.commandTouched('', dirname(path))
   });
 
   harnessHost = createDesktopHarnessHost({

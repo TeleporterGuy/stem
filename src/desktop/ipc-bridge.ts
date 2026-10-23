@@ -88,6 +88,8 @@ const LOCAL_IPC_ARGS: Record<string, ArgSpec[]> = {
   'quickchat:compact': [a.optional(a.boolean)],
   // The System Settings pane the chip's missing-permission link opens.
   'quickchat:openPrivacy': [a.oneOf(['screen', 'accessibility'])],
+  // The chip's Connect / Set up: the panel tab to open, and where in it (checked again in the handler).
+  'quickchat:openManage': [a.oneOf(['mcp', 'settings']), a.optional(a.nullish(a.object))],
   'menu:setChats': [a.stringArray, a.stringArray]
 };
 
@@ -195,5 +197,7 @@ const NEEDS_A_NEWER_SERVER: Record<string, string> = {
   'mcp:setApps':
     'This Stem server is older than this copy of Stem and cannot match MCP servers to apps. Update the server (or its container) and try again.',
   'mcp:forApp':
-    'This Stem server is older than this copy of Stem and cannot match MCP servers to apps. Update the server (or its container) and try again.'
+    'This Stem server is older than this copy of Stem and cannot match MCP servers to apps. Update the server (or its container) and try again.',
+  'mcp:windowSuggestion':
+    'This Stem server is older than this copy of Stem and cannot suggest MCP servers for apps. Update the server (or its container) and try again.'
 };

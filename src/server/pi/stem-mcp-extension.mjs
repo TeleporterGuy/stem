@@ -1952,6 +1952,10 @@ export default async function stemMcpBridge(pi) {
   // (allowlist → LLM judge → approval card) and spawns the command itself.
   registerExecTool(pi);
 
+  // save_file: a picture or a file Stem holds, copied into Files, scratch, or
+  // a writable connected folder (on its own computer when it lives on one).
+  registerSaveTool(pi);
+
   // Coding agents: delegate coding work to an external harness (Claude Code,
   // OpenCode, ...). The tool only forwards the request — the main process owns
   // the settings gate, session continuity, approval cards and the acpx runtime,
@@ -3107,6 +3111,61 @@ function registerExecTool(pi) {
   });
 }
 
+// ---- Saving files: a picture or a file Stem holds, put where the user wants it ----
+
+// Sentinel title for the ctx.ui.input round-trip PiRuntime intercepts
+// (files/save-file.ts does the copy, for the live turn's thread).
+const SAVE_BRIDGE_TITLE = 'stem-save-bridge';
+
+function registerSaveTool(pi) {
+  pi.registerTool({
+    name: 'save_file',
+    label: 'Save file',
+    description:
+      'Save a picture from this conversation, or a copy of a file Stem holds, as a file somewhere the user can use it. ' +
+      'This is THE way to turn a generate_image result or an attached picture into a file: pass its `img_…` id as ' +
+      '`from` — never dig image data out of Stem\'s own storage. `from` can also be `files/<name>`, a path in this ' +
+      'chat\'s scratch folder, or a file in a connected folder. `to` is where it goes: `files/<path>` (the Files ' +
+      'place), a relative path (this chat\'s scratch folder, where run_command starts — e.g. to process a picture ' +
+      'with a script), or a path inside a folder the user connected read & write. For a folder that lives on one of ' +
+      'their computers, use its path on that computer (or its mirror path) and the file is written there directly; ' +
+      'that computer must accept commands and be connected. A `to` ending in "/" keeps the source\'s name. An ' +
+      'existing file at `to` is replaced. Several files go in one call.',
+    parameters: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'array',
+          description: 'What to save, at most 20.',
+          items: {
+            type: 'object',
+            properties: {
+              from: { type: 'string', description: 'An `img_…` id, `files/<name>`, a scratch path, or a connected-folder path.' },
+              to: { type: 'string', description: 'Destination file path (or folder path ending in "/").' }
+            },
+            required: ['from', 'to']
+          }
+        }
+      },
+      required: ['files']
+    },
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const files = params && Array.isArray(params.files) ? params.files : [];
+      if (!files.length) return taskErr('Pass `files`: [{ from, to }].');
+      if (!ctx || !ctx.ui || typeof ctx.ui.input !== 'function') return taskErr('Saving files is unavailable in this context.');
+      const payload = { files };
+      const raw = await ctx.ui.input(SAVE_BRIDGE_TITLE, JSON.stringify(payload));
+      let res;
+      try {
+        res = typeof raw === 'string' ? JSON.parse(raw) : { ok: false, error: 'No response from Stem.' };
+      } catch {
+        res = { ok: false, error: 'Malformed response from Stem.' };
+      }
+      return res.ok ? taskOk(res.text || 'Saved.') : taskErr(res.error || 'Nothing was saved.');
+    }
+  });
+}
+
 // ---- Computer control: see the screen of the pinned Mac and drive it ----
 
 const COMPUTER_BRIDGE_TITLE = 'stem-computer-bridge';
@@ -4019,7 +4078,8 @@ function registerImageTool(pi, turnContext) {
       const text =
         `Image ${id} created${dims ? ` (${dims.width}×${dims.height})` : ''}; the user already sees it in the chat.` +
         (out.revisedPrompt ? `\nPrompt used: ${out.revisedPrompt}` : '') +
-        `\nTo change it later, call generate_image again with references: ["${id}"].`;
+        `\nTo change it later, call generate_image again with references: ["${id}"]. ` +
+        `To put it in a file (a project, the Files place, scratch to process it), call save_file with from: "${id}".`;
       return {
         content: [
           { type: 'text', text },

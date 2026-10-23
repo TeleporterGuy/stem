@@ -40,3 +40,14 @@ export const MdxMessageContext = createContext<MdxMessage>(EARLIER_MESSAGE);
 export function useMdxMessage(): MdxMessage {
   return useContext(MdxMessageContext);
 }
+
+/**
+ * The chat thread a settled reply belongs to, or null (mail, release notes,
+ * a reply still streaming). Pictures a reply links to on the web are fetched
+ * by the server against this thread's session (RemoteImage).
+ */
+export const MdxThreadContext = createContext<string | null>(null);
+
+export function useMdxThread(): string | null {
+  return useContext(MdxThreadContext);
+}

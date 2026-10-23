@@ -14,6 +14,10 @@ extension EnvironmentValues {
     /// The newest assistant reply in a chat, once its turn has settled: the
     /// only place suggested replies show.
     @Entry var mdxIsLatest: Bool = false
+    /// Fetches a picture a settled chat reply links to (through the server,
+    /// `chats:remoteImage`). Nil elsewhere — mail, approvals, a reply still
+    /// streaming — where pictures show as links.
+    @Entry var mdxRemoteImage: ((String) async -> Data?)? = nil
 }
 
 /// A run of blocks from the component tree: Markdown runs drawn by the

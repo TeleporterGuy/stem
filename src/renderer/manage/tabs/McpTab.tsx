@@ -47,6 +47,8 @@ import {
   ListSearch
 } from '../ListDetail';
 import { parseMcpPaste, type PastedServer } from '../mcpPaste';
+import { useManageIntent } from '../intents';
+import { catalogEntryById, type McpCatalogEntry } from '../../../shared/mcp-app-catalog';
 
 const SUBS = ['mcp', 'skills'] as const;
 
@@ -69,6 +71,8 @@ const NO_OAUTH_ELSEWHERE =
 // Combined panel: MCP servers and Skills live under the same icon as two sub-tabs.
 export function McpSkillsTab({ models }: { models: ModelSummary[] }) {
   const [sub, setSub] = useRememberedTab('stem.tools.sub', SUBS, 'mcp');
+  // A Connect from Quick Chat's window chip opens a server editor: show the MCP list it lives in.
+  useManageIntent('mcp-connect', () => setSub('mcp'), false);
   return (
     <div>
       <div className="seg-ctl">
@@ -121,6 +125,8 @@ interface Editing {
   draft: Draft;
   /** A row that exists only on this screen until Save. */
   isNew: boolean;
+  /** Filled in from the official-server catalog (Quick Chat's Connect): the editor says how to finish. */
+  catalog?: McpCatalogEntry;
 }
 
 function blankDraft(transport: McpTransport): Draft {
@@ -423,6 +429,45 @@ function McpTab() {
     setTab('connection');
     setOpenKey(keys[0]);
   }
+
+  /** An app's official server from the catalog, as a new draft: name, address, apps and where it runs filled in. */
+  async function addFromCatalog(c: McpCatalogEntry) {
+    // Asked fresh: the intent can land before this tab's first load, and an add
+    // under a name that exists would replace that server, sign-in and all.
+    const [list, info] = await Promise.all([window.stem.listMcpServers(), window.stem.clientInfo()]);
+    const existing = list.find((x) => x.name === c.id);
+    if (existing) {
+      // Already there under the catalog's name: open it rather than a second copy.
+      void open(existing);
+      return;
+    }
+    const isUrl = 'url' in c.server;
+    const draft: Draft = {
+      ...blankDraft(isUrl ? 'http' : 'stdio'),
+      name: c.id,
+      ...('url' in c.server ? { url: c.server.url } : { command: c.server.command, args: c.server.args.join(' ') }),
+      // A key the user pastes: the line it goes on, waiting for the value.
+      text:
+        c.auth === 'token' && c.tokenEnv
+          ? isUrl
+            ? `${c.tokenEnv}: ${c.tokenEnv.toLowerCase() === 'authorization' ? 'Bearer ' : ''}`
+            : `${c.tokenEnv}=`
+          : '',
+      // Runs beside the app it talks to: on this computer, when the Stem server is elsewhere.
+      location: c.local && info.remote && info.deviceId ? info.deviceId : '',
+      apps: c.name
+    };
+    const key = `new:${crypto.randomUUID()}`;
+    setEditing((cur) => new Map(cur).set(key, { base: blankDraft(draft.transport), draft, isNew: true, catalog: c }));
+    if (c.setup) setOauthOpen((cur) => new Set(cur).add(key));
+    setTab('connection');
+    setOpenKey(key);
+  }
+
+  useManageIntent('mcp-connect', (intent) => {
+    const c = catalogEntryById(intent.entryId);
+    if (c) void addFromCatalog(c).catch((e) => setError(String(e instanceof Error ? e.message : e)));
+  });
 
   async function save(key: string) {
     const entry = editing.get(key);
@@ -812,6 +857,7 @@ function McpTab() {
     const showOauth = oauthOpen.has(key);
     return (
       <>
+        {entry.isNew && entry.catalog && <CatalogGuide entry={entry.catalog} url={d.url} />}
         {entry.isNew && (
           <div className="seg-ctl ld-kind" role="radiogroup" aria-label="How Stem reaches it">
             <button
@@ -950,7 +996,7 @@ function McpTab() {
         {hasSecret && (
           <p className="ld-hint">{MCP_SECRET_MASK} is a stored secret. Leave it to keep it, or type a new value.</p>
         )}
-        {/* "Ask about this window" (Quick Chat, Mac): which apps' windows point at this server. */}
+        {/* "Ask about this window" (Quick Chat): which apps' windows point at this server. */}
         <Field label="Works with apps" htmlFor="mcp-apps">
           <input
             id="mcp-apps"
@@ -1288,6 +1334,50 @@ function McpTab() {
         </ListGroup>
       )}
       {footerNotes}
+    </div>
+  );
+}
+
+/**
+ * What is left to do for an official server filled in from the catalog: whose
+ * it is, any part of the address only the user knows, the key to paste, or the
+ * OAuth app the vendor wants created first.
+ */
+function CatalogGuide({ entry, url }: { entry: McpCatalogEntry; url: string }) {
+  const placeholder = /\{[^}]+\}/.exec(url)?.[0];
+  return (
+    <div className="ld-hint mcp-guide">
+      <p>
+        {entry.name}’s official MCP server
+        {entry.source && (
+          <>
+            {' '}
+            (
+            <a href={entry.source} target="_blank" rel="noreferrer">
+              vendor docs
+            </a>
+            )
+          </>
+        )}
+        .{entry.note ? ` ${entry.note}` : ''}
+      </p>
+      {placeholder && <p>Replace {placeholder} in the URL with your own.</p>}
+      {entry.setup ? (
+        <p>
+          {entry.name} doesn’t let apps register themselves, so sign-in needs an OAuth app of your own first.{' '}
+          {entry.setup.steps}{' '}
+          <a href={entry.setup.url} target="_blank" rel="noreferrer">
+            Create it here
+          </a>
+          , add <code>http://127.0.0.1:41759/callback</code> as its redirect URL, then paste its client ID and secret below.
+        </p>
+      ) : entry.auth === 'oauth' ? (
+        <p>Save, then sign in to {entry.name}.</p>
+      ) : entry.auth === 'token' ? (
+        <p>Paste your {entry.name} API key{entry.tokenEnv ? ` after ${entry.tokenEnv}` : ''} below, then Save.</p>
+      ) : entry.auth === 'app' ? (
+        <p>It talks to the {entry.name} app: keep it open on the computer this server runs on.</p>
+      ) : null}
     </div>
   );
 }

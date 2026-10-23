@@ -795,6 +795,16 @@ describe('mail router', () => {
     expect(items.map((i) => i.subject)).toEqual(['Lab A ships model 1', undefined, 'Lab B narrows model 2 to Friday']);
   });
 
+  it('deliverTaskMail still retitles a task’s own thread after the user replied in it', async () => {
+    const fake = fakeBackend();
+    const router = new MailRouter({ runtime: fake.backend, onChange: () => undefined });
+    await router.deliverTaskMail({ subject: 'Lab A ships model 1', headline: 'Lab A ships model 1', body: 'model 1 is out', taskId: 'task-1' });
+    const [thread] = (await readMail()).conversations;
+    await appendMailItem({ conversationId: thread.id, from: 'user', to: ['normal'], body: 'what does that mean?' });
+    await router.deliverTaskMail({ subject: 'Watch the labs', headline: 'Lab B ships model 2', body: 'model 2 is out', taskId: 'task-1' });
+    expect((await readMail()).conversations[0].subject).toBe('Lab B ships model 2');
+  });
+
   it('deliverTaskMail replies in the conversation a task was scheduled from, keeping its subject', async () => {
     const fake = fakeBackend();
     const router = new MailRouter({ runtime: fake.backend, onChange: () => undefined });

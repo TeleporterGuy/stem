@@ -140,6 +140,17 @@ final class ImageCache {
         return img
     }
 
+    /// A web picture a reply in the thread links to, fetched by the server (or nil when refused).
+    func remote(_ url: String, threadId: String, client: StemClient) async -> Data? {
+        let key = "\(threadId)\n\(url)"
+        if let d = data[key] { return d }
+        guard let dataUrl = try? await client.call("chats:remoteImage", [.string(threadId), .string(url)], as: String?.self),
+              let comma = dataUrl.firstIndex(of: ","),
+              let d = Data(base64Encoded: String(dataUrl[dataUrl.index(after: comma)...])) else { return nil }
+        data[key] = d
+        return d
+    }
+
     func generated(_ ref: GeneratedImageRef, client: StemClient) async -> Data? {
         let key = "\(ref.threadId)/\(ref.id)"
         if let d = data[key] { return d }

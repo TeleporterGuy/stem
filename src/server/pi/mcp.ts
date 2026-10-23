@@ -1,10 +1,11 @@
-import { cleanAppList, mcpServersForApp } from './app-match';
+import { cleanAppList, mcpServersForApp, windowMcpSuggestion } from './app-match';
 import {
   MCP_SECRET_MASK,
   type McpServerDetails,
   type McpServerInput,
   type McpServerLocation,
-  type McpServerSummary
+  type McpServerSummary,
+  type WindowMcpSuggestion
 } from '../../shared/types';
 import { deviceKind, readDevices, type DeviceRecord } from '../transport/auth';
 import {
@@ -452,12 +453,36 @@ export async function setMcpServerApps(name: string, apps: string[] | null): Pro
 export async function mcpServersForAppName(
   app: string,
   bundleId: string | null,
-  allow: string[] | null = null
+  allow: string[] | null = null,
+  /** A browser window's tab address: the site's servers match too. */
+  url: string | null = null
 ): Promise<string[]> {
   if (typeof app !== 'string' || !app.trim()) return [];
+  const visible = await userServers();
+  return mcpServersForApp(visible, app, typeof bundleId === 'string' ? bundleId : null, allow, typeof url === 'string' ? url : null);
+}
+
+/** The window chip's offer of the app's official MCP server (app-match.ts windowMcpSuggestion). */
+export async function windowSuggestionFor(
+  app: string,
+  bundleId: string | null,
+  url: string | null = null,
+  /** The turn's persona allowlist (null = every server): a hidden server is not offered around. */
+  allow: string[] | null = null
+): Promise<WindowMcpSuggestion | null> {
+  if (typeof app !== 'string' || !app.trim()) return null;
+  return windowMcpSuggestion(
+    await userServers(),
+    app,
+    typeof bundleId === 'string' ? bundleId : null,
+    typeof url === 'string' ? url : null,
+    allow
+  );
+}
+
+async function userServers(): Promise<Record<string, PiMcpServer>> {
   const { servers } = await readMcpConfig();
-  const visible = Object.fromEntries(Object.entries(servers).filter(([name]) => !RESERVED_NAMES.has(name)));
-  return mcpServersForApp(visible, app, typeof bundleId === 'string' ? bundleId : null, allow);
+  return Object.fromEntries(Object.entries(servers).filter(([name]) => !RESERVED_NAMES.has(name)));
 }
 
 export async function removeMcpServer(name: string): Promise<McpServerSummary[]> {

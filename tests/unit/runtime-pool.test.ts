@@ -229,6 +229,33 @@ describe('runtime worker pool', () => {
     settle(harness, worker);
   });
 
+  it('a replaced child exiting late leaves its successor and its turn alone', async () => {
+    const harness = await poolRuntime();
+    const { runtime, internal } = harness;
+    const exits: unknown[] = [];
+    runtime.on('event', (ev: { method: string; params: unknown }) => {
+      if (ev.method === 'process/exit') exits.push(ev.params);
+    });
+
+    const first = await runtime.startTurn({ input: 'v1 mail', persona: { id: 'verifier', prompt: 'v1' } });
+    const worker = internal.workers[0];
+    const staleProc = worker.proc!;
+    settle(harness, worker);
+    await runtime.startTurn({ input: 'v2 mail', threadId: first.threadId!, persona: { id: 'verifier', prompt: 'v2' } });
+    const freshProc = worker.proc;
+    const liveTurn = worker.currentTurn;
+    expect(liveTurn).toBeTruthy();
+
+    // The SIGTERM'd v1 child's exit lands while the v2 turn is streaming.
+    (internal as unknown as { onProcessExit: (...args: unknown[]) => void }).onProcessExit(
+      worker, staleProc, { code: null, signal: 'SIGTERM' }, 1, Date.now()
+    );
+    expect(worker.proc).toBe(freshProc);
+    expect(worker.currentTurn).toBe(liveTurn);
+    expect(exits).toEqual([]);
+    settle(harness, worker);
+  });
+
   it('evicts an idle persona worker at the bound instead of queueing a plain turn', async () => {
     const harness = await poolRuntime();
     const { runtime, internal } = harness;

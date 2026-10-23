@@ -36,6 +36,8 @@ import type {
   FactRerankStatus,
   McpAdminProposal,
   McpHostLocalState,
+  ManageIntent,
+  ManageTabId,
   McpServerInput,
   McpServerStatus,
   MemoryModelSettings,
@@ -196,7 +198,11 @@ const api: StemApi = {
   setMcpServerLocation: (name: string, deviceId: string | null) =>
     ipcRenderer.invoke('mcp:setLocation', name, deviceId),
   setMcpServerApps: (name: string, apps: string[] | null) => ipcRenderer.invoke('mcp:setApps', name, apps),
-  mcpServersForApp: (app: string, bundleId: string | null) => ipcRenderer.invoke('mcp:forApp', app, bundleId),
+  // The address only when there is one: a server older than it refuses a third argument.
+  mcpServersForApp: (app: string, bundleId: string | null, url?: string | null) =>
+    url ? ipcRenderer.invoke('mcp:forApp', app, bundleId, url) : ipcRenderer.invoke('mcp:forApp', app, bundleId),
+  mcpWindowSuggestion: (app: string, bundleId: string | null, url?: string | null) =>
+    ipcRenderer.invoke('mcp:windowSuggestion', app, bundleId, url ?? null),
   loginMcpServer: (name: string) => ipcRenderer.invoke('mcp:login', name),
   restartRuntime: () => ipcRenderer.invoke('runtime:restart'),
 
@@ -480,6 +486,7 @@ const api: StemApi = {
   setChatFormat: (threadId: string, format: 'md' | 'mdx') => ipcRenderer.invoke('chats:setFormat', threadId, format),
   adoptPlainFormat: () => ipcRenderer.invoke('chats:adoptPlainFormat'),
   sourceFavicon: (host: string) => ipcRenderer.invoke('sources:favicon', host),
+  getRemoteImage: (threadId: string, url: string) => ipcRenderer.invoke('chats:remoteImage', threadId, url),
 
   listPersonas: () => ipcRenderer.invoke('personas:list'),
   listCodingAgents: () => ipcRenderer.invoke('personas:agents'),
@@ -688,6 +695,7 @@ const api: StemApi = {
   revealMain: () => ipcRenderer.invoke('main:reveal'),
   hideQuickChat: () => ipcRenderer.invoke('quickchat:hide'),
   openQuickChatPrivacy: (which: 'screen' | 'accessibility') => ipcRenderer.invoke('quickchat:openPrivacy', which),
+  openManageFromQuickChat: (tab: ManageTabId, intent?: ManageIntent) => ipcRenderer.invoke('quickchat:openManage', tab, intent),
   compactQuickChat: (chip?: boolean) => ipcRenderer.invoke('quickchat:compact', chip === true),
   onQuickChatFocus: (listener: (focus: QuickChatFocus) => void) => {
     const handler = (_e: unknown, focus: QuickChatFocus) => listener(focus);

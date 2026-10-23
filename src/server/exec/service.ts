@@ -17,6 +17,7 @@ import { ensureThreadScratch } from './scratch';
 import { clampTimeout, execEnv, resolveLoginPath, runCommand, timedOutLine } from './executor';
 import { gitBashPathEnv, resolveHostShellTarget, type HostShellTarget } from './git-bash';
 import { SafetyJudge } from './judge';
+import { scriptsForJudge, scriptsUnchanged, type JudgedScript } from './judge-scripts';
 import { classify, deviceShellLabel, drivesGui, type Classification } from './policy';
 import { execReadRoots, scanCommandAgainstRoots, scanProtected } from './protected';
 import { execDeviceRouter, resolveExecTarget } from '../exec-device/router';
@@ -212,8 +213,17 @@ export class ExecService implements ExecBridge {
       recordDecision({ ...base, outcome: 'ran-allowlist' });
       return this.run(command, cwd, req, host);
     }
-    const gate = await this.gate({ command, cwdLabel: cwd, req, all, cls, shell: host.shell });
+    // The judge reads the scripts the command runs, not just their names.
+    const scripts = settings.approvalMode === 'assisted' ? await scriptsForJudge(command, cwd, execReadRoots(host.shell)) : [];
+    const gate = await this.gate({ command, cwdLabel: cwd, req, all, cls, shell: host.shell, scripts });
     if (!gate.run) return gate.result;
+    if (scripts.length && !(await scriptsUnchanged(scripts))) {
+      recordDecision({ ...base, outcome: 'blocked' });
+      return {
+        ok: false,
+        error: 'A script this command runs changed after the safety check read it, so it was not run. Run it again.'
+      };
+    }
     if (gate.alwaysAllow && cls.prefixes.length) {
       const cur = (await this.deps.readSettings()).exec.allowlist;
       const merged = [...cur, ...cls.prefixes.filter((p) => !cur.includes(p))];
@@ -245,6 +255,7 @@ export class ExecService implements ExecBridge {
     shell: HostShell | NodeJS.Platform;
     shellLabel?: string;
     device?: { id: string; label: string };
+    scripts?: JudgedScript[] & { notShown?: number };
   }): Promise<{ run: true; alwaysAllow?: boolean } | { run: false; result: ExecBridgeResult }> {
     const { command, req, all } = p;
     const threadId = req.threadId ?? '';
@@ -269,7 +280,9 @@ export class ExecService implements ExecBridge {
         context: req.judgeContext ?? { userWords: req.userText ? [req.userText] : [], actions: [] },
         currentModel: req.currentModel,
         shell: p.shell,
-        ...(p.shellLabel ? { shellLabel: p.shellLabel } : {})
+        ...(p.shellLabel ? { shellLabel: p.shellLabel } : {}),
+        ...(p.scripts?.length ? { scripts: p.scripts } : {}),
+        ...(p.scripts?.notShown ? { scriptsNotShown: p.scripts.notShown } : {})
       });
       if (judged.verdict === 'safe') {
         this.noteRan(threadId);

@@ -10,6 +10,9 @@ enum MDBlock: Hashable {
     case list(ordered: Bool, start: Int, items: [[MDBlock]])
     case table(header: [String], rows: [[String]])
     case rule
+    /// A line holding only a picture (`![alt](url)`): fetched by the server
+    /// when the reply's chat allows it, else shown as a link.
+    case image(alt: String, url: String)
     /// An MDX component the phone can't draw (charts, cards): shown as a note.
     case component(name: String, text: String)
 }
@@ -81,6 +84,13 @@ enum MarkdownParser {
 
             if isRule(trimmed) { flush(); out.append(.rule); i += 1; continue }
 
+            if let images = imageLine(trimmed) {
+                flush()
+                out.append(contentsOf: images.map { MDBlock.image(alt: $0.alt, url: $0.url) })
+                i += 1
+                continue
+            }
+
             if trimmed.hasPrefix(">") {
                 flush()
                 var inner: [String] = []
@@ -122,6 +132,25 @@ enum MarkdownParser {
             i += 1
         }
         flush()
+        return out
+    }
+
+    /// `![alt](url)` one or more times, and nothing else on the line. An
+    /// optional `"title"` after the URL is dropped.
+    static func imageLine(_ t: String) -> [(alt: String, url: String)]? {
+        guard t.hasPrefix("![") else { return nil }
+        let pattern = #"!\[([^\]]*)\]\(\s*(\S+?)(?:\s+"[^"]*")?\s*\)"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = t as NSString
+        var out: [(alt: String, url: String)] = []
+        var at = 0
+        for m in re.matches(in: t, range: NSRange(location: 0, length: ns.length)) {
+            let gap = ns.substring(with: NSRange(location: at, length: m.range.location - at))
+            guard gap.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+            out.append((ns.substring(with: m.range(at: 1)), ns.substring(with: m.range(at: 2))))
+            at = m.range.location + m.range.length
+        }
+        guard !out.isEmpty, ns.substring(from: at).trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         return out
     }
 

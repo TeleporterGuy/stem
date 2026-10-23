@@ -195,6 +195,22 @@ describe.skipIf(!hasGo)('inter-Stem mail through the real relay', () => {
     expect(now.external?.status).toBe('unreachable');
   }, 30_000);
 
+  it('takes the first key from a contact blocked before they ever wrote, without a key-changed alarm', async () => {
+    const eva = makeStem('eva');
+    await verify(eva, 'eva@gmail.test');
+    await eva.svc.start();
+    await martin.svc.blockContact('eva@gmail.test');
+    await martin.svc.unblockContact('eva@gmail.test');
+
+    await startConversation(eva, 'eva@gmail.test', 'martin@gmail.test', 'Hi from Eva');
+    const got = await waitFor(() => martin.mail.items.find((i) => i.from === 'eva@gmail.test'), 'martin to receive from eva');
+    expect(got.external?.keyChanged).toBeFalsy();
+    const contact = (await martin.svc.status()).contacts.find((c) => c.address === 'eva@gmail.test');
+    expect(contact?.keyChanged).toBeFalsy();
+    expect(contact?.keyFp).toBeTruthy();
+    eva.svc.stop();
+  }, 30_000);
+
   it('stops sending when a contact’s key changes until the user acknowledges it', async () => {
     const laptop2 = makeStem('martin2');
     await verify(laptop2, 'martin@gmail.test');

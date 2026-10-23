@@ -96,7 +96,9 @@ describe('Files subfolders', () => {
     for (const bad of ['..', '.', '', '   ', 'a/b', '../escape', '.hidden']) {
       await expect(store.createSubdir(bad)).rejects.toThrow(/Unsafe files subfolder/);
     }
-    await expect(store.removeSubdir('../stage')).rejects.toThrow(/Unsafe files subfolder/);
+    for (const bad of ['../stage', '', '.', '..']) {
+      await expect(store.removeSubdir(bad)).rejects.toThrow(/Unsafe files subfolder/);
+    }
     // The guard must not have deleted anything on its way to throwing.
     expect((await store.listFiles()).dirs).toContain('Invoices');
   });

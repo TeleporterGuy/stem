@@ -8,6 +8,7 @@ import { stripCiteMarkers } from '../../shared/citations';
 import { findPhoneNumbers } from '../../shared/phone-links';
 import { openStemLink, parseStemLink } from '../stemLinks';
 import { CodeBlock, TaskItem, componentMap } from './components';
+import { RemoteImage } from './RemoteImage';
 
 // A minimal structural type for the mdast/mdx nodes we walk.
 interface MdNode {
@@ -176,6 +177,7 @@ function renderNode(node: MdNode, key: string): ReactNode {
     }
     case 'image': {
       const src = safeUrl(node.url);
+      if (src && /^https?:/i.test(src)) return <RemoteImage key={key} src={src} alt={node.alt ?? ''} />;
       return src ? <img key={key} src={src} alt={node.alt ?? ''} /> : <Fragment key={key}>{node.alt ?? ''}</Fragment>;
     }
     case 'blockquote':

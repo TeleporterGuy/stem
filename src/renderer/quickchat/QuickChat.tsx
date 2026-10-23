@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, SquarePen, PanelRight, Globe, NotebookPen, Check, Zap, X, Plug } from 'lucide-react';
-import type { ModelSummary, QuickChatSettings, QuickChatWindow, TurnAttachment } from '../../shared/types';
+import { Sparkles, SquarePen, PanelRight, Globe, NotebookPen, Check, Zap, X, Plug, PlugZap, AppWindow } from 'lucide-react';
+import type { ModelSummary, QuickChatSettings, QuickChatWindow, TurnAttachment, WindowMcpSuggestion } from '../../shared/types';
 import { ChatView } from '../chat/ChatView';
 import { EffortModelControl } from '../ui/EffortModelControl';
 import { McpApprovalCard } from '../manage/McpApprovalCard';
@@ -67,21 +67,44 @@ export function QuickChat() {
   // "Ask about this window": the window the user summoned from, shown as a chip
   // until it goes out with the first prompt or the user removes it.
   const [windowChip, setWindowChip] = useState<QuickChatWindow | null>(null);
-  // The MCP servers that cover the chip's app (Manage → MCP → Works with apps).
+  // The window this overlay session was summoned for, kept after the chip goes
+  // out with a prompt: ⌘N starts a fresh question about the same window, the
+  // way main keeps the panel docked beside it. A plain summon that resets forgets it.
+  const summonedWindowRef = useRef<QuickChatWindow | null>(null);
+  // The MCP servers that cover the chip's app (Manage → MCP → Works with apps),
+  // the app's official server when none does yet, and — over a browser —
+  // whether chats may use browser control at all.
   const [windowServers, setWindowServers] = useState<string[]>([]);
+  const [suggestion, setSuggestion] = useState<WindowMcpSuggestion | null>(null);
+  const [browserAllowed, setBrowserAllowed] = useState<boolean | null>(null);
+  const [matchRound, setMatchRound] = useState(0);
   useEffect(() => {
     setWindowServers([]);
+    setSuggestion(null);
     if (!windowChip) return;
     let live = true;
+    const { app, bundleId, url } = windowChip;
     // quiet: an older server cannot match; the chip then just shows no server.
     window.stem
-      .mcpServersForApp(windowChip.app, windowChip.bundleId)
+      .mcpServersForApp(app, bundleId, url)
       .then((names) => live && setWindowServers(names))
       .catch(() => undefined);
+    // quiet: an older server has no catalog; the chip offers nothing.
+    window.stem
+      .mcpWindowSuggestion(app, bundleId, url)
+      .then((s) => live && setSuggestion(s && !offerDismissed(s.entry.id) ? s : null))
+      .catch(() => undefined);
+    if (windowChip.browserReady !== undefined) {
+      window.stem
+        .getSettings()
+        .then((s) => live && setBrowserAllowed(!!s.chatFeatures?.browser?.allow))
+        // quiet: unknown reads as allowed, so the chip says what the extension says.
+        .catch(() => live && setBrowserAllowed(true));
+    }
     return () => {
       live = false;
     };
-  }, [windowChip]);
+  }, [windowChip, matchRound]);
   const inputRef = useRef<HTMLInputElement>(null);
   // `/note` / `//` quick-note capture in the compact bar (the expanded panel gets
   // its own instance inside ChatView).
@@ -204,7 +227,12 @@ export function QuickChat() {
   useEffect(() => {
     return window.stem.onQuickChatFocus(({ reset, window: summonedFor }) => {
       if (reset) resetSession();
-      if (summonedFor) setWindowChip(summonedFor);
+      if (summonedFor) {
+        summonedWindowRef.current = summonedFor;
+        setWindowChip(summonedFor);
+      } else if (reset) {
+        summonedWindowRef.current = null;
+      }
       // The overlay window is only hidden between summons, so a Quick Chat web
       // search change made over in Settings has to be picked up here — the usual
       // `focus` event doesn't fire on show.
@@ -452,6 +480,7 @@ export function QuickChat() {
       if (resolvedOldId) ignoredThreadIdsRef.current.add(resolvedOldId);
       await window.stem.newQuickChatThread();
       resetSession();
+      if (summonedWindowRef.current) setWindowChip(summonedWindowRef.current);
       requestAnimationFrame(() => inputRef.current?.focus());
     } catch (e) {
       if (oldThreadId) ignoredThreadIdsRef.current.delete(oldThreadId);
@@ -619,7 +648,20 @@ export function QuickChat() {
   return (
     <div className="qc-root">
       <div className="qc-card">
-        {windowChip && <WindowChip chip={windowChip} servers={windowServers} onRemove={() => setWindowChip(null)} />}
+        {windowChip && (
+          <WindowChip
+            chip={windowChip}
+            servers={windowServers}
+            suggestion={suggestion}
+            browserAllowed={browserAllowed}
+            onRemove={() => setWindowChip(null)}
+            onDismissOffer={(id) => {
+              dismissOffer(id);
+              setSuggestion(null);
+            }}
+            onServersChanged={() => setMatchRound((n) => n + 1)}
+          />
+        )}
         <div className="qc-row">
           {noteMode ? <NotebookPen className="qc-mark" size={22} /> : <Sparkles className="qc-mark" size={22} />}
           <input
@@ -714,12 +756,57 @@ export function QuickChat() {
   );
 }
 
+/** Apps whose "Connect its MCP server" offer was put away with "Not now" (per computer). */
+const DISMISSED_KEY = 'stem.quickchat.mcpOffersDismissed';
+
+function dismissedOffers(): string[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]');
+    return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function offerDismissed(entryId: string): boolean {
+  return dismissedOffers().includes(entryId);
+}
+
+function dismissOffer(entryId: string): void {
+  try {
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify([...new Set([...dismissedOffers(), entryId])]));
+  } catch {
+    // Storage blocked: the offer comes back next time, which is all that is lost.
+  }
+}
+
 /**
  * The window "Ask about this window" captured: a thumbnail, which window it is,
  * and what goes with the question. A missing grant says which and opens its
- * System Settings pane; the question can still be sent without it.
+ * System Settings pane; the question can still be sent without it. Beside it:
+ * the MCP server that will be used for the app, or the app's official one to
+ * connect (or turn back on), and over a browser, whether browser control can
+ * read and act in the page.
  */
-function WindowChip({ chip, servers, onRemove }: { chip: QuickChatWindow; servers: string[]; onRemove(): void }) {
+function WindowChip({
+  chip,
+  servers,
+  suggestion,
+  browserAllowed,
+  onRemove,
+  onDismissOffer,
+  onServersChanged
+}: {
+  chip: QuickChatWindow;
+  servers: string[];
+  suggestion: WindowMcpSuggestion | null;
+  browserAllowed: boolean | null;
+  onRemove(): void;
+  onDismissOffer(entryId: string): void;
+  onServersChanged(): void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [offerError, setOfferError] = useState<string | null>(null);
   const noScreen = chip.missing.includes('screen');
   const noText = chip.missing.includes('accessibility');
   const name = chip.title && chip.title !== chip.app ? `${chip.app} — ${chip.title}` : chip.app;
@@ -729,6 +816,22 @@ function WindowChip({ chip, servers, onRemove }: { chip: QuickChatWindow; server
       ? 'Picture attached. Turn on Accessibility to add its text'
       : 'Picture and text attached';
   const grant: 'screen' | 'accessibility' | null = noScreen ? 'screen' : noText ? 'accessibility' : null;
+  const isBrowser = chip.browserReady !== undefined;
+  const browserOn = isBrowser && chip.browserReady && browserAllowed !== false;
+
+  async function turnOn(server: string) {
+    setBusy(true);
+    setOfferError(null);
+    try {
+      await window.stem.setMcpServerEnabled(server, true);
+      onServersChanged();
+    } catch (e) {
+      setOfferError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="qc-chips">
       <div className={`qc-chip${grant ? ' warn' : ''}`}>
@@ -757,6 +860,72 @@ function WindowChip({ chip, servers, onRemove }: { chip: QuickChatWindow; server
             <strong>{servers.join(', ')}</strong>
             <small>MCP server for {chip.app}</small>
           </span>
+        </div>
+      )}
+      {servers.length === 0 && suggestion && (
+        <div
+          className="qc-chip offer"
+          title={
+            offerError ??
+            (suggestion.kind === 'enable'
+              ? `Your ${suggestion.server} server covers ${suggestion.entry.name} but is turned off`
+              : `${suggestion.entry.name} publishes an official MCP server. Connected, Stem can read and act in ${suggestion.entry.name} beyond this window.`)
+          }
+        >
+          <PlugZap size={13} />
+          <span className="qc-chip-text">
+            <strong>{suggestion.entry.name}</strong>
+            <small>{suggestion.kind === 'enable' ? 'MCP server is off' : 'Official MCP server'}</small>
+          </span>
+          {suggestion.kind === 'enable' ? (
+            <button type="button" className="qc-chip-btn" disabled={busy} onClick={() => void turnOn(suggestion.server)}>
+              Turn on
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="qc-chip-btn"
+              onClick={() => void window.stem.openManageFromQuickChat('mcp', { kind: 'mcp-connect', entryId: suggestion.entry.id })}
+            >
+              Connect
+            </button>
+          )}
+          <button
+            type="button"
+            className="qc-act"
+            title="Not now — don't offer this again"
+            aria-label="Not now"
+            onClick={() => onDismissOffer(suggestion.entry.id)}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+      {isBrowser && browserAllowed !== null && (
+        <div
+          className={`qc-chip ${browserOn ? 'mcp' : 'offer'}`}
+          title={
+            browserOn
+              ? `Stem can read and act in this ${chip.app} tab`
+              : browserAllowed === false
+                ? 'Browser control is off for chats'
+                : `The Stem extension is not connected in ${chip.app}`
+          }
+        >
+          <AppWindow size={13} />
+          <span className="qc-chip-text">
+            <strong>Browser control</strong>
+            <small>{browserOn ? 'Reads and acts in this tab' : browserAllowed === false ? 'Off for chats' : 'Not set up here'}</small>
+          </span>
+          {!browserOn && (
+            <button
+              type="button"
+              className="qc-chip-btn"
+              onClick={() => void window.stem.openManageFromQuickChat('settings', { kind: 'browser-control' })}
+            >
+              {browserAllowed === false ? 'Turn on' : 'Set up'}
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -28,11 +28,13 @@ enum WindowCapture {
       done.signal()
     }
     if done.wait(timeout: .now() + seconds) == .timedOut {
-      throw HelperError(message)
+      throw NoPicture(reason: message, timedOut: true)
     }
     switch result! {
     case .success(let v): return v
-    case .failure(let e): throw e
+    case .failure(let e as HelperError): throw e
+    case .failure(let e as NoPicture): throw e
+    case .failure(let e): throw NoPicture(reason: "macOS refused the capture (\(e.localizedDescription)).")
     }
   }
 
@@ -83,16 +85,17 @@ enum WindowCapture {
     let image: CGImage? = try wait {
       try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     }
-    guard let image else {
-      throw HelperError("Could not capture the window. Stem needs Screen Recording access (System Settings → Privacy & Security → Screen Recording).")
-    }
+    guard let image else { throw NoPicture(reason: "Could not capture the window.") }
     return image
   }
 
   /// `bounds`: the window's current frame in global points, refreshed by the caller.
   static func capture(windowID: CGWindowID, bounds: CGRect) throws -> CGImage {
     if let hit = cached, hit.windowID == windowID {
-      do { return try shoot(hit.filter, bounds: bounds) } catch {
+      do { return try shoot(hit.filter, bounds: bounds) } catch let missing as NoPicture where missing.timedOut {
+        // macOS not answering is no stale filter: a fresh lookup would only wait again.
+        throw missing
+      } catch {
         trace("cached window filter failed (\(error)); looking the window up again")
       }
     }
