@@ -12,6 +12,7 @@ import type { ConnectedFolder, DeviceSaveRequest } from '../../src/shared/types'
 const local = mkdtempSync(join(tmpdir(), 'stem-save-local-'));
 const readonly = mkdtempSync(join(tmpdir(), 'stem-save-ro-'));
 const mirror = mkdtempSync(join(tmpdir(), 'stem-save-mirror-'));
+const winMirror = mkdtempSync(join(tmpdir(), 'stem-save-winmirror-'));
 const outside = mkdtempSync(join(tmpdir(), 'stem-save-outside-'));
 const PNG = Buffer.from('89504e470d0a1a0a', 'hex');
 
@@ -25,6 +26,14 @@ const folders: ConnectedFolder[] = [
     mode: 'readwrite',
     memorize: false,
     origin: { deviceId: 'mac-1', clientPath: '/Users/v/smallgod' }
+  },
+  {
+    id: 'w',
+    path: winMirror,
+    label: 'site',
+    mode: 'readwrite',
+    memorize: false,
+    origin: { deviceId: 'pc-1', clientPath: 'C:\\Users\\v\\site\\' }
   }
 ];
 
@@ -132,6 +141,27 @@ describe('saveFiles', () => {
     expect(got && readFileSync(got.path)).toEqual(PNG);
     expect(await outboxTake('mac-1', sent[0]!.request.outboxId)).toBeNull();
     expect(await outboxTake('other', sent[1]!.request.outboxId)).toBeNull();
+  });
+
+  it('reads a Windows computer\'s folder by its own path rules, whatever this server runs', async () => {
+    const res = await saveFiles(
+      'thread-s',
+      [
+        { from: 'img_0123456789', to: 'C:\\Users\\v\\site\\img\\a.png' },
+        { from: 'img_0123456789', to: 'c:/users/v/SITE/b.png' }
+      ],
+      deps()
+    );
+    expect(res.ok).toBe(true);
+    expect(sent.map((s) => [s.deviceId, s.request.path])).toEqual([
+      ['pc-1', 'C:\\Users\\v\\site/img/a.png'],
+      ['pc-1', 'C:\\Users\\v\\site/b.png']
+    ]);
+    for (const to of ['C:\\Users\\v\\site\\..\\other\\x.png', 'C:\\Users\\v\\site2\\x.png', 'C:\\Users\\v\\site\\.git\\x', '/Users/v/smallgod/a\\..\\..\\x.png']) {
+      const bad = await saveFiles('thread-s', [{ from: 'img_0123456789', to }], deps());
+      expect(bad.ok, to).toBe(false);
+    }
+    expect(sent).toHaveLength(2);
   });
 
   it('says why a computer cannot take it: switched off, too old, asleep', async () => {

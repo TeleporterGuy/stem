@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { copyFile, lstat, mkdir, realpath, rename, rm } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { ensureThreadScratch } from '../exec/scratch';
 import { filesRoot } from '../workspace/paths';
 import { resolveUploadSources, type BrowserSourceDeps, type UploadSource } from './browser-sources';
@@ -50,6 +50,29 @@ type Target =
 
 const within = (path: string, root: string): boolean => path === root || path.startsWith(root + sep);
 
+const WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/;
+
+/**
+ * `path` under a folder on another computer, '/'-joined ('' for the folder
+ * itself), or null when it is not under it. That computer's path rules apply,
+ * not this server's: a Mac path resolved on Windows gains a drive letter, and a
+ * Windows path is not absolute on Linux at all.
+ */
+function deviceRelative(path: string, clientRoot: string): string | null {
+  const win = WINDOWS_PATH.test(clientRoot);
+  const norm = (p: string): string => posix.normalize(win ? p.replace(/\\/g, '/') : p).replace(/(.)\/+$/, '$1');
+  const same = (a: string, b: string): boolean => (win ? a.toLowerCase() === b.toLowerCase() : a === b);
+  const root = norm(clientRoot);
+  const p = norm(path);
+  if (same(p, root)) return '';
+  const head = root.endsWith('/') ? root : root + '/';
+  if (p.length <= head.length || !same(p.slice(0, head.length), head)) return null;
+  const rel = p.slice(head.length);
+  // A backslash is a plain name character on a Mac but a separator here on
+  // Windows, where `a\..\..\x` would climb out of the mirror: no such parts.
+  return rel.split(/[\\/]/).some((part) => part === '' || part === '.' || part === '..') ? null : rel;
+}
+
 /**
  * No hidden files or folders: `.git/hooks`, `.github/workflows`, `.envrc`,
  * editor and tool configs are where a written file turns into code that runs,
@@ -94,7 +117,7 @@ export async function resolveSaveTarget(
   if (!raw || raw.includes('\0')) return { ok: false, error: `Name where to save it. ${WHERE}` };
   const wanted = /[\\/]$/.test(raw) ? raw + name : raw;
 
-  if (!isAbsolute(wanted)) {
+  if (!isAbsolute(wanted) && !WINDOWS_PATH.test(wanted)) {
     const parts = wanted.split(/[\\/]+/);
     if (parts[0] === 'files') {
       const root = filesRoot();
@@ -114,12 +137,13 @@ export async function resolveSaveTarget(
       const clientRoot = f.origin.clientPath.replace(/[\\/]+$/, '');
       // The mirror path is what the model reads; the device path is what it
       // was told the folder is on that computer. Either names the same file.
-      const rel = within(path, f.path) ? relative(f.path, path) : within(path, clientRoot) ? relative(clientRoot, path) : null;
+      const rel = within(path, f.path) ? relative(f.path, path).split(sep).join('/') : deviceRelative(wanted, clientRoot);
       if (rel === null) continue;
       if (!rel) return { ok: false, error: `“${raw}” is the folder itself — name a file inside it.` };
       if (f.mode !== 'readwrite') return { ok: false, error: `“${f.label}” is connected read-only, so nothing can be saved in it.` };
-      const devicePath = clientRoot + '/' + rel.split(sep).join('/');
-      return { ok: true, target: { kind: 'device', deviceId: f.origin.deviceId, folder: f, path: devicePath, mirror: join(f.path, rel) } };
+      const mirror = resolve(f.path, rel);
+      if (!within(mirror, f.path) || mirror === f.path) return { ok: false, error: `“${raw}” is not a file inside “${f.label}”.` };
+      return { ok: true, target: { kind: 'device', deviceId: f.origin.deviceId, folder: f, path: clientRoot + '/' + rel, mirror } };
     }
     if (!within(path, f.path)) continue;
     if (path === f.path) return { ok: false, error: `“${raw}” is the folder itself — name a file inside it.` };

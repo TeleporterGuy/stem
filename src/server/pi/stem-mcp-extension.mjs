@@ -1037,14 +1037,16 @@ function makeNativeSearchGate(nsPath) {
  */
 export function makeFsRootsGate(prPath) {
   const strings = (v) => (Array.isArray(v) ? v.filter((r) => typeof r === 'string') : []);
-  let cache = { mtime: -1, roots: [], read: [], write: [], mirrors: [] };
+  // Keyed on the file's text, not its mtime: two rewrites inside one mtime tick
+  // (routine on Windows) would otherwise keep the older grants.
+  let cache = { raw: null, roots: [], read: [], write: [], mirrors: [] };
   return () => {
     try {
-      const mtime = statSync(prPath).mtimeMs;
-      if (mtime !== cache.mtime) {
-        const data = JSON.parse(readFileSync(prPath, 'utf8'));
+      const raw = readFileSync(prPath, 'utf8');
+      if (raw !== cache.raw) {
+        const data = JSON.parse(raw);
         cache = {
-          mtime,
+          raw,
           roots: strings(data && data.roots),
           read: strings(data && data.read),
           write: strings(data && data.write),
@@ -1052,7 +1054,7 @@ export function makeFsRootsGate(prPath) {
         };
       }
     } catch {
-      cache = { ...cache, mtime: -1 };
+      cache = { ...cache, raw: null };
     }
     return cache;
   };
